@@ -10,6 +10,7 @@ interface OntologyLifecycleSnapshot {
   activeGeneration: string;
   priorGeneration: string;
   generationValidation: string;
+  authoritativeModelEdges: string;
   rollbackState: "enabled" | "disabled";
   evaluationSnapshot: string;
   evaluationGate: string;
@@ -79,9 +80,14 @@ async function captureLifecycle(
   const activeGeneration = await factValue(generation, "Active generation");
   const priorGeneration = await factValue(generation, "Prior generation");
   const generationValidation = await factValue(generation, "Validation");
+  const authoritativeModelEdges = await factValue(
+    generation,
+    "Authoritative model edges",
+  );
   expect(activeGeneration).not.toBe("Not reported");
   expect(priorGeneration).not.toBe("Not reported");
   expect(generationValidation).toBe("Passed");
+  expect(authoritativeModelEdges).toBe("0");
   const rollback = generation.getByRole("button", { name: "Roll back generation" });
   await expect(rollback).toBeVisible();
   const rollbackState = (await rollback.isEnabled()) ? "enabled" : "disabled";
@@ -125,6 +131,7 @@ async function captureLifecycle(
     activeGeneration,
     priorGeneration,
     generationValidation,
+    authoritativeModelEdges,
     rollbackState,
     evaluationSnapshot,
     evaluationGate,

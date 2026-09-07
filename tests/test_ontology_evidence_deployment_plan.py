@@ -31,37 +31,6 @@ def _plan() -> dict[str, object]:
                     "type": "ServicePrincipal",
                 },
             }
-        elif address.startswith("fabric_onelake_data_access_security."):
-            after = {
-                "workspace_id": "workspace-" + address.rsplit("_", 1)[-1],
-                "item_id": "lakehouse-" + address.rsplit("_", 1)[-1],
-                "role_name": "Phase13EvidenceRead",
-                "decision_rules": [
-                    {
-                        "effect": "Permit",
-                        "permission": [
-                            {
-                                "attribute_name": "Path",
-                                "attribute_value_included_in": ["*"],
-                            },
-                            {
-                                "attribute_name": "Action",
-                                "attribute_value_included_in": ["Read"],
-                            },
-                        ],
-                    }
-                ],
-                "members": {
-                    "fabric_item_members": [],
-                    "microsoft_entra_members": [
-                        {
-                            "object_id": EVIDENCE_PRINCIPAL_ID,
-                            "object_type": "ManagedIdentity",
-                            "tenant_id": "33333333-3333-3333-3333-333333333333",
-                        }
-                    ],
-                },
-            }
         else:
             after = {
                 "name": "ontology-evidence-read",
@@ -85,7 +54,25 @@ def _plan() -> dict[str, object]:
                                 "command": ["python", "/app/scripts/collect_ontology_evidence.py"],
                                 "args": ["--emit-console-record"],
                                 "env": [
-                                    {"name": "AZURE_CLIENT_ID", "value": "client"},
+                                    {"name": name, "value": "fixed-value"}
+                                    for name in (
+                                        "AZURE_CLIENT_ID",
+                                        "AIOPS_EVIDENCE_OBJECT_ID",
+                                        "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
+                                        "AIOPS_EVIDENCE_RESOURCE_GROUP",
+                                        "AIOPS_EVIDENCE_API_URL",
+                                        "AIOPS_EVIDENCE_API_SCOPE",
+                                        "AIOPS_EVIDENCE_STATE_WORKSPACE_ID",
+                                        "AIOPS_EVIDENCE_STATE_LAKEHOUSE_ID",
+                                        "AIOPS_EVIDENCE_COMMAND_WORKSPACE_ID",
+                                        "AIOPS_EVIDENCE_COMMAND_LAKEHOUSE_ID",
+                                        "AIOPS_EVIDENCE_DISPATCH_WORKSPACE_ID",
+                                        "AIOPS_EVIDENCE_DISPATCH_LAKEHOUSE_ID",
+                                        "AIOPS_EVIDENCE_PUBLICATION_WORKSPACE_ID",
+                                        "AIOPS_EVIDENCE_PUBLICATION_LAKEHOUSE_ID",
+                                        "AIOPS_EVIDENCE_VALIDATION_WORKSPACE_ID",
+                                        "AIOPS_EVIDENCE_VALIDATION_LAKEHOUSE_ID",
+                                    )
                                 ],
                             }
                         ]
@@ -141,6 +128,9 @@ def test_targeted_plan_accepts_only_evidence_resources_and_phase13_images() -> N
     assert result["replace_count"] == 0
     assert result["create_addresses"] == sorted(CREATE_ADDRESSES)
     assert result["update_addresses"] == sorted(UPDATE_ADDRESSES)
+    assert result["external_onelake_role_contract"] == (
+        "ManagedIdentity:Path=*:Action=Read"
+    )
 
 
 @pytest.mark.parametrize(
@@ -191,52 +181,73 @@ def test_targeted_plan_requires_all_exact_resources() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "field", "value"),
+    ("field", "value"),
     [
-        ("workspace", "role", "Contributor"),
-        ("workspace", "workspace_id", PRODUCTION_WORKSPACE_ID),
-        ("workspace", "principal.id", "wrong-principal"),
-        ("onelake", "action", "ReadWrite"),
-        ("onelake", "action", "Write"),
-        ("onelake", "path", "/Files/too-broad"),
-        ("onelake", "object_type", "ServicePrincipal"),
-        ("onelake", "object_id", "wrong-principal"),
-        ("onelake", "workspace_id", PRODUCTION_WORKSPACE_ID),
+        ("role", "Contributor"),
+        ("workspace_id", PRODUCTION_WORKSPACE_ID),
+        ("principal.id", "wrong-principal"),
     ],
 )
 def test_targeted_plan_rejects_role_broadening_and_wrong_identity(
-    kind: str,
     field: str,
     value: str,
 ) -> None:
     plan = _plan()
-    prefix = (
-        "fabric_workspace_role_assignment."
-        if kind == "workspace"
-        else "fabric_onelake_data_access_security."
-    )
     row = next(
         change
         for change in plan["resource_changes"]
-        if change["address"].startswith(prefix)
+        if change["address"].startswith("fabric_workspace_role_assignment.")
     )
     after = row["change"]["after"]
     if field == "principal.id":
         after["principal"]["id"] = value
-    elif field == "action":
-        permission = after["decision_rules"][0]["permission"]
-        next(
-            entry for entry in permission if entry["attribute_name"] == "Action"
-        )["attribute_value_included_in"] = [value]
-    elif field == "path":
-        permission = after["decision_rules"][0]["permission"]
-        next(
-            entry for entry in permission if entry["attribute_name"] == "Path"
-        )["attribute_value_included_in"] = [value]
-    elif field in {"object_type", "object_id"}:
-        after["members"]["microsoft_entra_members"][0][field] = value
     else:
         after[field] = value
 
     with pytest.raises(EvidencePlanError):
+        _validate(plan)
+
+
+def test_targeted_plan_rejects_provider_managed_onelake_role() -> None:
+    plan = _plan()
+    plan["resource_changes"].append(
+        {
+            "address": (
+                "fabric_onelake_data_access_security."
+                "ontology_evidence_ontology_command[0]"
+            ),
+            "change": {"actions": ["create"], "before": None, "after": {}},
+        }
+    )
+
+    with pytest.raises(EvidencePlanError, match="unexpected"):
+        _validate(plan)
+
+
+def test_targeted_plan_rejects_missing_or_secret_evidence_environment() -> None:
+    plan = _plan()
+    job = next(
+        row
+        for row in plan["resource_changes"]
+        if row["address"]
+        == "azurerm_container_app_job.ontology_evidence_read[0]"
+    )
+    env = job["change"]["after"]["template"][0]["container"][0]["env"]
+    env.pop()
+
+    with pytest.raises(EvidencePlanError, match="secret-free"):
+        _validate(plan)
+
+    plan = _plan()
+    job = next(
+        row
+        for row in plan["resource_changes"]
+        if row["address"]
+        == "azurerm_container_app_job.ontology_evidence_read[0]"
+    )
+    job["change"]["after"]["template"][0]["container"][0]["env"][0][
+        "secret_name"
+    ] = "unexpected"
+
+    with pytest.raises(EvidencePlanError, match="secret-free"):
         _validate(plan)

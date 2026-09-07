@@ -99,3 +99,34 @@ output "fabric_lakehouse_id" {
   description = "Fabric lakehouse ID, or null when Fabric is disabled."
   value       = var.enable_fabric ? fabric_lakehouse.context_graph[0].id : null
 }
+
+output "ontology_evidence_role_contract" {
+  description = "Exact five-item contract consumed by the external OneLake ManagedIdentity Read reconciler."
+  sensitive   = true
+  value = var.enable_fabric && var.ontology_discovery_environment == "validation" ? {
+    principal_object_id = azurerm_user_assigned_identity.azure_mcp.principal_id
+    tenant_id           = var.tenant_id
+    targets = {
+      ontology_discovery_state = {
+        workspace_id = fabric_workspace.ontology_discovery_state[0].id
+        item_id      = fabric_lakehouse.ontology_discovery_state[0].id
+      }
+      ontology_command = {
+        workspace_id = fabric_workspace.ontology_command[0].id
+        item_id      = fabric_lakehouse.ontology_command[0].id
+      }
+      ontology_dispatch = {
+        workspace_id = fabric_workspace.ontology_dispatch[0].id
+        item_id      = fabric_lakehouse.ontology_dispatch[0].id
+      }
+      ontology_publication = {
+        workspace_id = fabric_workspace.ontology_publication[0].id
+        item_id      = fabric_lakehouse.ontology_publication[0].id
+      }
+      ontology_rbac_validation = {
+        workspace_id = fabric_workspace.ontology_rbac_validation[0].id
+        item_id      = fabric_lakehouse.ontology_rbac_validation[0].id
+      }
+    }
+  } : null
+}

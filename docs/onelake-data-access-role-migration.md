@@ -50,7 +50,7 @@ Key properties:
 - **Dry-run** mode before any write
 - **Bounded retries** on 412/429 with refetch and recompute
 - **Post-write GET verification** proves exact desired state
-- **DefaultAzureCredential** — no secrets on CLI
+- **Isolated Azure CLI context** — ambient service-principal credentials are removed
 - **Operator-invoked** — not a Terraform `local-exec`
 
 ## Migration Procedure
@@ -59,33 +59,28 @@ Key properties:
 
 1. The five `fabric_onelake_data_access_security` resources were previously
    applied via Terraform and exist in the Terraform state file.
-2. You have operator access to the deployment subscription with
-   `DefaultAzureCredential`.
-3. You have the workspace and lakehouse IDs from Terraform outputs.
+2. `AIOPS_DEPLOYER_AZURE_CONFIG_DIR` names the deployment principal's
+   mode-0700 Azure CLI directory.
+3. Terraform exposes the sensitive `ontology_evidence_role_contract` output.
 
 ### Step 1: Verify live roles via REST (read-only)
 
-Create an items JSON file with the five targets:
+Write the Terraform contract to a mode-0600 temporary file:
 
 ```bash
-cat > /tmp/evidence-items.json << 'EOF'
-[
-  {"name": "ontology_discovery_state", "workspace_id": "<STATE_WS_ID>", "item_id": "<STATE_LH_ID>"},
-  {"name": "ontology_command", "workspace_id": "<COMMAND_WS_ID>", "item_id": "<COMMAND_LH_ID>"},
-  {"name": "ontology_dispatch", "workspace_id": "<DISPATCH_WS_ID>", "item_id": "<DISPATCH_LH_ID>"},
-  {"name": "ontology_publication", "workspace_id": "<PUB_WS_ID>", "item_id": "<PUB_LH_ID>"},
-  {"name": "ontology_rbac_validation", "workspace_id": "<RBAC_WS_ID>", "item_id": "<RBAC_LH_ID>"}
-]
-EOF
+contract_file="$(mktemp)"
+chmod 0600 "$contract_file"
+terraform -chdir=infra/terraform output -json \
+  ontology_evidence_role_contract >"$contract_file"
 ```
 
 Run a dry-run to verify current state:
 
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
-  --items-json /tmp/evidence-items.json \
-  --object-id <AZURE_MCP_PRINCIPAL_ID> \
-  --tenant-id <TENANT_ID>
+  --contract-file "$contract_file" \
+  --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
+  --output .planning/eval/ontology-onelake-role-dry-run.json
 ```
 
 Expected output for each item: `"already_converged": true` if Terraform
@@ -98,10 +93,11 @@ If any item shows `"would_change": true`:
 
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
-  --items-json /tmp/evidence-items.json \
-  --object-id <AZURE_MCP_PRINCIPAL_ID> \
-  --tenant-id <TENANT_ID> \
+  --contract-file "$contract_file" \
+  --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
+  --output .planning/eval/ontology-onelake-role-reconciliation.json \
   --apply
+rm "$contract_file"
 ```
 
 Verify all items return `"verified": true`.

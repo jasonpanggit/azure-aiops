@@ -31,20 +31,25 @@ This is an explicit operator-invoked script, not a Terraform ``local-exec``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
-import sys
+import os
+import stat
+import subprocess
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 EVIDENCE_ROLE_NAME = "Phase13EvidenceRead"
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
-FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds, doubled per attempt
+SERVER_ROLE_KEYS = frozenset({"eTag", "id", "kind"})
 
 # The five Phase 13 evidence Lakehouse items.
 EVIDENCE_ITEMS = (
@@ -77,10 +82,8 @@ def build_desired_role(object_id: str, tenant_id: str) -> dict[str, Any]:
     - ``Action = Read`` (read-only)
     - One ``MicrosoftEntraMember`` with the given managed-identity objectId.
     """
-    if not object_id or not object_id.strip():
-        raise ValueError("objectId must not be empty")
-    if not tenant_id or not tenant_id.strip():
-        raise ValueError("tenantId must not be empty")
+    object_id = _validated_uuid(object_id, "objectId")
+    tenant_id = _validated_uuid(tenant_id, "tenantId")
 
     return {
         "name": EVIDENCE_ROLE_NAME,
@@ -126,14 +129,26 @@ def merge_roles(
 
     Does not mutate the input list.
     """
-    merged = [role for role in existing if role.get("name") != desired["name"]]
-    merged.append(desired)
+    matches = [role for role in existing if role.get("name") == desired["name"]]
+    if len(matches) > 1:
+        raise DataAccessRoleReconciliationError(
+            "duplicate evidence roles are forbidden"
+        )
+    merged = [
+        _request_role(role)
+        for role in existing
+        if role.get("name") != desired["name"]
+    ]
+    merged.append(_request_role(desired))
     return merged
 
 
 def _roles_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Deep-compare two role dicts by canonical JSON."""
-    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    return json.dumps(_request_role(a), sort_keys=True) == json.dumps(
+        _request_role(b),
+        sort_keys=True,
+    )
 
 
 def _find_role(roles: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
@@ -141,6 +156,119 @@ def _find_role(roles: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         if role.get("name") == name:
             return role
     return None
+
+
+def _request_role(role: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in role.items()
+        if str(key) not in SERVER_ROLE_KEYS
+    }
+
+
+def _validated_uuid(value: str, label: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"{label} must be a UUID") from exc
+
+
+def parse_contract(
+    value: object,
+) -> tuple[list[tuple[str, str, str]], str, str]:
+    """Parse the exact five-item Terraform output without CLI identifiers."""
+
+    if not isinstance(value, Mapping):
+        raise DataAccessRoleReconciliationError("role contract must be an object")
+    if set(value) != {"principal_object_id", "tenant_id", "targets"}:
+        raise DataAccessRoleReconciliationError(
+            "role contract has unexpected fields"
+        )
+    targets_value = value.get("targets")
+    if not isinstance(targets_value, Mapping) or set(targets_value) != set(
+        EVIDENCE_ITEMS
+    ):
+        raise DataAccessRoleReconciliationError(
+            "role contract must contain five exact targets"
+        )
+    items: list[tuple[str, str, str]] = []
+    for name in EVIDENCE_ITEMS:
+        row = targets_value.get(name)
+        if not isinstance(row, Mapping) or set(row) != {
+            "workspace_id",
+            "item_id",
+        }:
+            raise DataAccessRoleReconciliationError(
+                f"{name} target is invalid"
+            )
+        items.append(
+            (
+                name,
+                _validated_uuid(str(row.get("workspace_id")), "workspace_id"),
+                _validated_uuid(str(row.get("item_id")), "item_id"),
+            )
+        )
+    return (
+        items,
+        _validated_uuid(str(value.get("principal_object_id")), "objectId"),
+        _validated_uuid(str(value.get("tenant_id")), "tenantId"),
+    )
+
+
+def _opaque(value: object) -> str:
+    rendered = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return "sha256:" + hashlib.sha256(rendered.encode()).hexdigest()
+
+
+def _unrelated_roles(
+    roles: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        _request_role(role)
+        for role in roles
+        if role.get("name") != EVIDENCE_ROLE_NAME
+    ]
+
+
+def _list_roles(client: Any, url: str) -> tuple[list[dict[str, Any]], str]:
+    roles: list[dict[str, Any]] = []
+    continuation: str | None = None
+    etag = ""
+    while True:
+        response = client.get(
+            url,
+            params={"continuationToken": continuation} if continuation else None,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise DataAccessRoleReconciliationError(
+                "Fabric role response is invalid"
+            )
+        page = payload.get("value")
+        if not isinstance(page, list) or any(
+            not isinstance(row, Mapping) for row in page
+        ):
+            raise DataAccessRoleReconciliationError(
+                "Fabric role list is invalid"
+            )
+        roles.extend(dict(row) for row in page)
+        if not etag:
+            etag = str(response.headers.get("ETag", "")).strip()
+        continuation_value = payload.get("continuationToken")
+        continuation = str(continuation_value) if continuation_value else None
+        if not continuation:
+            break
+    if not etag:
+        raise DataAccessRoleReconciliationError(
+            "OneLake role collection ETag is missing"
+        )
+    return roles, etag
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +329,7 @@ def reconcile_item_roles(
     Returns
     -------
     dict with keys: ``already_converged``, ``would_change``, ``dry_run``,
-    ``verified``, ``retries``, ``etag_before``, ``etag_after``.
+    ``verified``, ``retries``, ``etag_before_hash``, ``etag_after_hash``.
     """
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items/{item_id}/dataAccessRoles"
     desired = build_desired_role(object_id, tenant_id)
@@ -209,10 +337,7 @@ def reconcile_item_roles(
 
     for attempt in range(MAX_RETRIES + 1):
         # ---- GET current state ----
-        get_resp = client.get(url)
-        get_resp.raise_for_status()
-        current_roles: list[dict[str, Any]] = get_resp.json().get("value", [])
-        etag = get_resp.headers.get("ETag", "")
+        current_roles, etag = _list_roles(client, url)
 
         # ---- Check convergence ----
         existing_evidence = _find_role(current_roles, EVIDENCE_ROLE_NAME)
@@ -223,12 +348,13 @@ def reconcile_item_roles(
                 "dry_run": dry_run,
                 "verified": True,
                 "retries": retries,
-                "etag_before": etag,
-                "etag_after": etag,
+                "etag_before_hash": _opaque(etag),
+                "etag_after_hash": _opaque(etag),
             }
 
         # ---- Merge ----
         merged = merge_roles(current_roles, desired)
+        unrelated_before = _unrelated_roles(current_roles)
 
         # ---- Dry-run exit ----
         if dry_run:
@@ -238,17 +364,24 @@ def reconcile_item_roles(
                 "dry_run": True,
                 "verified": False,
                 "retries": 0,
-                "etag_before": etag,
-                "etag_after": None,
-                "planned_roles": [r["name"] for r in merged],
+                "etag_before_hash": _opaque(etag),
+                "etag_after_hash": None,
+                "planned_role_count": len(merged),
             }
 
-        # ---- PUT with If-Match ----
+        # ---- Server dry run, then PUT with the same If-Match ----
         put_resp = client.put(
             url,
+            params={"dryRun": "true"},
             json={"value": merged},
             headers={"If-Match": etag},
         )
+        if put_resp.status_code < 400:
+            put_resp = client.put(
+                url,
+                json={"value": merged},
+                headers={"If-Match": etag},
+            )
 
         if put_resp.status_code in _RETRYABLE_STATUS:
             retries += 1
@@ -262,19 +395,17 @@ def reconcile_item_roles(
                         except ValueError:
                             pass
                 logger.warning(
-                    "Retryable %d on attempt %d/%d for %s/%s; waiting %.1fs",
+                    "Retryable %d on attempt %d/%d; waiting %.1fs",
                     put_resp.status_code,
                     attempt + 1,
                     MAX_RETRIES + 1,
-                    workspace_id,
-                    item_id,
                     delay,
                 )
                 time.sleep(delay)
                 continue  # refetch and recompute
             raise DataAccessRoleReconciliationError(
-                f"retries exhausted ({MAX_RETRIES}) for {workspace_id}/{item_id} "
-                f"— last status {put_resp.status_code}"
+                f"retries exhausted ({MAX_RETRIES}); "
+                f"last status {put_resp.status_code}"
             )
 
         if put_resp.status_code in _TRANSIENT_STATUS:
@@ -290,24 +421,23 @@ def reconcile_item_roles(
                 time.sleep(delay)
                 continue
             raise DataAccessRoleReconciliationError(
-                f"retries exhausted ({MAX_RETRIES}) for {workspace_id}/{item_id} "
-                f"— last status {put_resp.status_code}"
+                f"retries exhausted ({MAX_RETRIES}); "
+                f"last status {put_resp.status_code}"
             )
 
         if 400 <= put_resp.status_code < 600:
             raise DataAccessRoleReconciliationError(
-                f"non-retryable HTTP {put_resp.status_code} for "
-                f"{workspace_id}/{item_id}"
+                f"non-retryable HTTP {put_resp.status_code}"
             )
 
         put_resp.raise_for_status()
         etag_after = put_resp.headers.get("ETag", etag)
 
         # ---- POST-WRITE VERIFICATION ----
-        verify_resp = client.get(url)
-        verify_resp.raise_for_status()
-        actual_roles = verify_resp.json().get("value", [])
+        actual_roles, verified_etag = _list_roles(client, url)
         verify_roles_match(actual_roles, desired)
+        if _unrelated_roles(actual_roles) != unrelated_before:
+            raise VerificationDriftError("unrelated OneLake roles changed")
 
         return {
             "already_converged": False,
@@ -315,13 +445,13 @@ def reconcile_item_roles(
             "dry_run": False,
             "verified": True,
             "retries": retries,
-            "etag_before": etag,
-            "etag_after": etag_after,
+            "etag_before_hash": _opaque(etag),
+            "etag_after_hash": _opaque(verified_etag or etag_after),
         }
 
     # Unreachable under normal flow, but fail closed.
     raise DataAccessRoleReconciliationError(  # pragma: no cover
-        f"reconciliation loop exited without result for {workspace_id}/{item_id}"
+        "reconciliation loop exited without result"
     )
 
 
@@ -358,6 +488,23 @@ def reconcile_all_evidence_items(
     import httpx
 
     results: list[dict[str, Any]] = []
+    names = {name for name, _, _ in items}
+    workspaces = {
+        _validated_uuid(workspace_id, "workspace_id")
+        for _, workspace_id, _ in items
+    }
+    item_ids = {
+        _validated_uuid(item_id, "item_id") for _, _, item_id in items
+    }
+    if (
+        names != set(EVIDENCE_ITEMS)
+        or len(items) != 5
+        or len(workspaces) != 5
+        or len(item_ids) != 5
+    ):
+        raise DataAccessRoleReconciliationError(
+            "exactly five isolated Phase 13 evidence items are required"
+        )
 
     # Acquire token once for the batch.
     token = token_provider()
@@ -368,10 +515,8 @@ def reconcile_all_evidence_items(
     ) as client:
         for logical_name, workspace_id, item_id in items:
             logger.info(
-                "%s: reconciling %s/%s (dry_run=%s)",
+                "%s: reconciling target (dry_run=%s)",
                 logical_name,
-                workspace_id,
-                item_id,
                 dry_run,
             )
             result = reconcile_item_roles(
@@ -400,12 +545,55 @@ def reconcile_all_evidence_items(
 # ---------------------------------------------------------------------------
 
 
-def _get_token_from_default_credential() -> str:
-    from azure.identity import DefaultAzureCredential
-
-    credential = DefaultAzureCredential()
-    token = credential.get_token(FABRIC_SCOPE)
-    return token.token
+def _get_token_from_azure_cli(config_dir: Path) -> str:
+    try:
+        resolved = config_dir.expanduser().resolve(strict=True)
+        mode = stat.S_IMODE(resolved.stat().st_mode)
+    except OSError as exc:
+        raise DataAccessRoleReconciliationError(
+            "Azure CLI config is unavailable"
+        ) from exc
+    if not resolved.is_dir() or mode != 0o700:
+        raise DataAccessRoleReconciliationError(
+            "Azure CLI config must be a mode-0700 directory"
+        )
+    blocked = {
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_FEDERATED_TOKEN_FILE",
+        "AZURE_TENANT_ID",
+        "ARM_CLIENT_ID",
+        "ARM_CLIENT_SECRET",
+        "ARM_TENANT_ID",
+    }
+    environment = {
+        key: value for key, value in os.environ.items() if key not in blocked
+    }
+    environment["AZURE_CONFIG_DIR"] = str(resolved)
+    completed = subprocess.run(
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--resource",
+            FABRIC_API_BASE.removesuffix("/v1"),
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env=environment,
+    )
+    token = completed.stdout.strip()
+    if completed.returncode != 0 or not token:
+        raise DataAccessRoleReconciliationError(
+            "delegated Fabric token acquisition failed"
+        )
+    return token
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -416,15 +604,13 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--items-json",
+        "--contract-file",
         type=argparse.FileType("r"),
         required=True,
-        help=(
-            'JSON file: [{"name":"...", "workspace_id":"...", "item_id":"..."}]'
-        ),
+        help="JSON emitted by Terraform output ontology_evidence_role_contract",
     )
-    parser.add_argument("--object-id", required=True, help="Evidence UAI objectId (principal_id)")
-    parser.add_argument("--tenant-id", required=True, help="Entra tenant ID")
+    parser.add_argument("--azure-config-dir", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -440,15 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     args = _parser().parse_args(argv)
-    items_raw = json.load(args.items_json)
-    if not isinstance(items_raw, list):
-        logger.error("--items-json must be a JSON array")
-        return 1
-
-    items = [
-        (item["name"], item["workspace_id"], item["item_id"])
-        for item in items_raw
-    ]
+    items, object_id, tenant_id = parse_contract(json.load(args.contract_file))
     dry_run = not args.apply
 
     if dry_run:
@@ -458,13 +636,25 @@ def main(argv: list[str] | None = None) -> int:
 
     results = reconcile_all_evidence_items(
         items=items,
-        object_id=args.object_id,
-        tenant_id=args.tenant_id,
-        token_provider=_get_token_from_default_credential,
+        object_id=object_id,
+        tenant_id=tenant_id,
+        token_provider=lambda: _get_token_from_azure_cli(args.azure_config_dir),
         dry_run=dry_run,
     )
 
-    print(json.dumps(results, indent=2, sort_keys=True))
+    evidence = {
+        "schema_version": "ontology-onelake-role-reconciliation.v1",
+        "status": "PASS",
+        "sanitized": True,
+        "target_count": len(results),
+        "results": results,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
 
     if any(
         not r.get("verified") and not r.get("dry_run") and not r.get("already_converged")

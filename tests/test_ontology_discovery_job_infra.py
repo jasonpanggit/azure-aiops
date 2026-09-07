@@ -8,6 +8,8 @@ IDENTITY_TF = ROOT / "infra" / "terraform" / "ontology_discovery_identity.tf"
 PROVIDERS_TF = ROOT / "infra" / "terraform" / "providers.tf"
 VARIABLES_TF = ROOT / "infra" / "terraform" / "variables.tf"
 CONTAINER_APPS_TF = ROOT / "infra" / "terraform" / "container_apps.tf"
+OUTPUTS_TF = ROOT / "infra" / "terraform" / "outputs.tf"
+ROLE_RECONCILER = ROOT / "scripts" / "reconcile_onelake_data_access_roles.py"
 
 
 def _resource(text: str, kind: str, name: str) -> str:
@@ -248,9 +250,11 @@ def test_evidence_job_is_fixed_manual_only_and_uses_only_azure_mcp_identity() ->
     assert "Microsoft.App/jobs/start/action" not in job
 
 
-def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> None:
+def test_evidence_identity_has_exact_viewer_roles_and_rest_read_contract() -> None:
     terraform = IDENTITY_TF.read_text(encoding="utf-8")
     providers = PROVIDERS_TF.read_text(encoding="utf-8")
+    outputs = OUTPUTS_TF.read_text(encoding="utf-8")
+    reconciler = ROLE_RECONCILER.read_text(encoding="utf-8")
     exact_roots = (
         "ontology_discovery_state",
         "ontology_command",
@@ -266,11 +270,6 @@ def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> Non
             "fabric_workspace_role_assignment",
             f"ontology_evidence_{root}",
         )
-        data_role = _resource(
-            terraform,
-            "fabric_onelake_data_access_security",
-            f"ontology_evidence_{root}",
-        )
         assert 'role         = "Viewer"' in viewer
         assert f"fabric_workspace.{root}[0].id" in viewer
         assert (
@@ -281,33 +280,17 @@ def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> Non
         assert "Member" not in viewer
         assert "Admin" not in viewer
 
-        assert f"workspace_id = fabric_workspace.{root}[0].id" in data_role
-        assert f"item_id      = fabric_lakehouse.{root}[0].id" in data_role
-        assert 'attribute_name              = "Path"' in data_role
-        assert 'attribute_value_included_in = ["*"]' in data_role
-        assert 'attribute_name              = "Action"' in data_role
-        assert 'attribute_value_included_in = ["Read"]' in data_role
-        assert "ReadWrite" not in data_role
-        assert '"Write"' not in data_role
-        assert "microsoft_entra_members" in data_role
-        assert 'object_type = "ManagedIdentity"' in data_role
-        assert (
-            "object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id"
-            in data_role
-        )
-        assert "tenant_id   = var.tenant_id" in data_role
+        assert f"workspace_id = fabric_workspace.{root}[0].id" in outputs
+        assert f"item_id      = fabric_lakehouse.{root}[0].id" in outputs
 
     evidence_resources = [
         block
         for block in terraform.split('\nresource "')
         if block.startswith(
-            (
-                'fabric_workspace_role_assignment" "ontology_evidence_',
-                'fabric_onelake_data_access_security" "ontology_evidence_',
-            )
+            'fabric_workspace_role_assignment" "ontology_evidence_'
         )
     ]
-    assert len(evidence_resources) == 10
+    assert len(evidence_resources) == 5
     joined = "\n".join(evidence_resources)
     assert "fabric_workspace.ops" not in joined
     assert "fabric_lakehouse.context_graph" not in joined
@@ -317,8 +300,16 @@ def test_evidence_identity_has_exact_viewer_and_onelake_read_only_roles() -> Non
     assert "Contributor" not in joined
     assert "Member" not in joined
     assert "Admin" not in joined
-    assert "ReadWrite" not in joined
-    assert '"Write"' not in joined
+    assert (
+        'resource "fabric_onelake_data_access_security" "ontology_evidence_'
+        not in terraform
+    )
+    assert '"objectType": "ManagedIdentity"' in reconciler
+    assert '"attributeName": "Path"' in reconciler
+    assert '"attributeValueIncludedIn": ["*"]' in reconciler
+    assert '"attributeName": "Action"' in reconciler
+    assert '"attributeValueIncludedIn": ["Read"]' in reconciler
+    assert '"ReadWrite"' not in reconciler
 
 
 def test_evidence_collector_is_packaged_in_the_immutable_api_image() -> None:

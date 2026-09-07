@@ -581,9 +581,16 @@ def _collect_onelake(
     return {"count": len(hashes), "hashes": hashes}, facts
 
 
-def _collect_api(env: Mapping[str, str]) -> dict[str, object]:
+def _collect_api(
+    env: Mapping[str, str],
+    token: str,
+) -> dict[str, object]:
     base = env["AIOPS_EVIDENCE_API_URL"].rstrip("/")
-    payload = _request_json("GET", f"{base}/health")
+    payload = _request_json(
+        "GET",
+        f"{base}/api/v1/connections?limit=1",
+        token=token,
+    )
     return {"count": 1, "hashes": [_hash(payload)]}
 
 
@@ -600,7 +607,10 @@ def collect() -> dict[str, object]:
             "arg": _collect_arg(env, management_token),
             "fabric": _collect_fabric(env, _token(credential, FABRIC_SCOPE)),
             "onelake": onelake_observation,
-            "api": _collect_api(env),
+            "api": _collect_api(
+                env,
+                _token(credential, env["AIOPS_EVIDENCE_API_SCOPE"]),
+            ),
         }
         return build_closed_record(
             identity=identity,

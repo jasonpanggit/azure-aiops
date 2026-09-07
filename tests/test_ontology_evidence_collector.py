@@ -6,6 +6,7 @@ import pytest
 
 from scripts.collect_ontology_evidence import (
     EvidenceCollectionError,
+    _collect_api,
     build_closed_record,
     decode_identity_claims,
     sanitize_closed_record,
@@ -42,6 +43,45 @@ def test_managed_identity_claims_are_hashed_and_token_is_never_retained() -> Non
     }
     assert all(value.startswith("sha256:") for value in claims.values())
     assert token not in json.dumps(claims)
+
+
+def test_api_observation_uses_managed_identity_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def request(
+        method: str,
+        url: str,
+        *,
+        token: str | None = None,
+        json_body: object = None,
+    ) -> object:
+        observed.update(
+            method=method,
+            url=url,
+            token=token,
+            json_body=json_body,
+        )
+        return {"data": []}
+
+    monkeypatch.setattr(
+        "scripts.collect_ontology_evidence._request_json",
+        request,
+    )
+
+    result = _collect_api(
+        {"AIOPS_EVIDENCE_API_URL": "https://api.example"},
+        "managed-identity-token",
+    )
+
+    assert observed == {
+        "method": "GET",
+        "url": "https://api.example/api/v1/connections?limit=1",
+        "token": "managed-identity-token",
+        "json_body": None,
+    }
+    assert result["count"] == 1
 
 
 def test_closed_record_rejects_raw_sensitive_values_and_write_capabilities() -> None:

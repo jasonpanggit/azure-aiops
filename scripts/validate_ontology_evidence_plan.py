@@ -18,15 +18,41 @@ _ROLE_NAMES = (
     "ontology_publication",
     "ontology_rbac_validation",
 )
+_EVIDENCE_ENV_NAMES = frozenset(
+    {
+        "AZURE_CLIENT_ID",
+        "AIOPS_EVIDENCE_OBJECT_ID",
+        "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
+        "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
+        *{
+            f"AIOPS_EVIDENCE_{name}_WORKSPACE_ID"
+            for name in (
+                "STATE",
+                "COMMAND",
+                "DISPATCH",
+                "PUBLICATION",
+                "VALIDATION",
+            )
+        },
+        *{
+            f"AIOPS_EVIDENCE_{name}_LAKEHOUSE_ID"
+            for name in (
+                "STATE",
+                "COMMAND",
+                "DISPATCH",
+                "PUBLICATION",
+                "VALIDATION",
+            )
+        },
+    }
+)
 CREATE_ADDRESSES = frozenset(
     {
         "azurerm_container_app_job.ontology_evidence_read[0]",
         *{
             f"fabric_workspace_role_assignment.ontology_evidence_{name}[0]"
-            for name in _ROLE_NAMES
-        },
-        *{
-            f"fabric_onelake_data_access_security.ontology_evidence_{name}[0]"
             for name in _ROLE_NAMES
         },
     }
@@ -114,20 +140,21 @@ def _validate_evidence_job(
         )
     ):
         raise EvidencePlanError("evidence Job command or image is not fixed")
-    env_names = {
-        str(row.get("name") or "")
-        for row in container.get("env") or ()
-        if isinstance(row, Mapping)
-    }
+    env_rows = [
+        row for row in container.get("env") or () if isinstance(row, Mapping)
+    ]
+    env_names = {str(row.get("name") or "") for row in env_rows}
     if (
-        "AZURE_CLIENT_ID" not in env_names
-        or "AIOPS_ONTOLOGY_API_TOKEN" in env_names
+        env_names != _EVIDENCE_ENV_NAMES
+        or len(env_rows) != len(_EVIDENCE_ENV_NAMES)
+        or any(not str(row.get("value") or "").strip() for row in env_rows)
         or any(
-            "PUBLISHER" in name or "COORDINATOR" in name
-            for name in env_names
+            row.get("secret_name") or row.get("secretRef") for row in env_rows
         )
     ):
-        raise EvidencePlanError("evidence Job environment widens authority")
+        raise EvidencePlanError(
+            "evidence Job environment is not the exact secret-free read contract"
+        )
 
 
 def _validate_evidence_roles(
@@ -137,7 +164,6 @@ def _validate_evidence_roles(
     production_workspace_id: str,
 ) -> None:
     workspace_ids: set[str] = set()
-    data_workspace_ids: set[str] = set()
     for name in _ROLE_NAMES:
         workspace_address = (
             "fabric_workspace_role_assignment."
@@ -163,60 +189,7 @@ def _validate_evidence_roles(
             )
         workspace_ids.add(workspace_id)
 
-        data_address = (
-            "fabric_onelake_data_access_security."
-            f"ontology_evidence_{name}[0]"
-        )
-        data_role = rows[data_address].get("after")
-        data_role = data_role if isinstance(data_role, Mapping) else {}
-        data_workspace_id = str(data_role.get("workspace_id") or "")
-        if (
-            not data_workspace_id
-            or data_workspace_id == production_workspace_id
-            or not data_role.get("item_id")
-            or data_role.get("role_name") != "Phase13EvidenceRead"
-        ):
-            raise EvidencePlanError(
-                f"{data_address} targets a forbidden workspace or item"
-            )
-        rules = data_role.get("decision_rules")
-        rules = rules if isinstance(rules, list) else []
-        if len(rules) != 1 or not isinstance(rules[0], Mapping):
-            raise EvidencePlanError(f"{data_address} must have one permit rule")
-        permissions = rules[0].get("permission")
-        permissions = permissions if isinstance(permissions, list) else []
-        normalized_permissions = {
-            (
-                str(permission.get("attribute_name") or ""),
-                tuple(permission.get("attribute_value_included_in") or ()),
-            )
-            for permission in permissions
-            if isinstance(permission, Mapping)
-        }
-        members = data_role.get("members")
-        members = members if isinstance(members, Mapping) else {}
-        entra = members.get("microsoft_entra_members")
-        entra = entra if isinstance(entra, list) else []
-        if (
-            rules[0].get("effect") != "Permit"
-            or normalized_permissions != {("Path", ("*",)), ("Action", ("Read",))}
-            or members.get("fabric_item_members") not in (None, [])
-            or entra
-            != [
-                {
-                    "object_id": expected_principal_id,
-                    "object_type": "ManagedIdentity",
-                    "tenant_id": entra[0].get("tenant_id") if entra else None,
-                }
-            ]
-            or not entra[0].get("tenant_id")
-        ):
-            raise EvidencePlanError(
-                f"{data_address} is not exact OneLake Path wildcard Read"
-            )
-        data_workspace_ids.add(data_workspace_id)
-
-    if len(workspace_ids) != 5 or workspace_ids != data_workspace_ids:
+    if len(workspace_ids) != 5:
         raise EvidencePlanError("evidence roles must target five exact workspaces")
 
 
@@ -228,7 +201,7 @@ def validate_targeted_plan(
     expected_identity_id: str,
     production_workspace_id: str,
 ) -> dict[str, object]:
-    """Require 11 creates plus image-only updates to five existing Jobs."""
+    """Require six creates plus image-only updates to five existing Jobs."""
 
     if not _DIGEST.fullmatch(expected_api_digest):
         raise EvidencePlanError("expected API digest is invalid")
@@ -292,6 +265,7 @@ def validate_targeted_plan(
         "delete_count": 0,
         "replace_count": 0,
         "api_digest": expected_api_digest,
+        "external_onelake_role_contract": "ManagedIdentity:Path=*:Action=Read",
     }
 
 
