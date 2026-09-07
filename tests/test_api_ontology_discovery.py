@@ -22,6 +22,11 @@ from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from ontology_discovery.store import OntologyRunStore
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    CoordinatorCommandConsumer,
+)
+from ontology_discovery.runtime import CoordinatorIntakeAdapter
 
 NOW = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
 SUB_A = "11111111-1111-1111-1111-111111111111"
@@ -33,6 +38,7 @@ TOKENS = {
     "operator": "ontology-operator-token",
     "approver": "ontology-approver-token",
     "admin": "ontology-admin-token",
+    "maintainer": "ontology-maintainer-token",
 }
 
 
@@ -86,6 +92,7 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
             subscription_id=subscription_id,
             client_id=CLIENT,
             secret_ref="kv://test/credential",
+            metadata={"environment": "validation"},
         )
 
     run_a, _ = run_store.get_or_create_run(
@@ -189,6 +196,10 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
                     grants=(Grant("admin"),),
                     org_roles=("ontology_steward",),
                 ),
+                TOKENS["maintainer"]: Principal(
+                    "maintainer@example.com",
+                    grants=(Grant("ontology_maintainer", scoped_a),),
+                ),
             }
         ),
         authorizer=Authorizer(),
@@ -206,6 +217,7 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
         "proposal_b": proposal_b,
         "collision_proposal": collision_proposal,
         "rollback_calls": rollback_calls,
+        "tmp_path": tmp_path,
     }
 
 
@@ -651,3 +663,66 @@ def test_default_runtime_enqueues_manual_and_rollback_commands_without_authority
     rebuilt = build_context().ontology_discovery_provider()
     assert rebuilt.command(manual["command_id"]) == manual
     assert rebuilt.command(rollback["command_id"]) == rollback
+
+
+def test_maintenance_command_requires_distinct_authority_and_coordinator_cas(
+    api_fixture: dict[str, Any],
+) -> None:
+    provider = api_fixture["provider"]
+    command_root = api_fixture["tmp_path"] / "maintenance-commands"
+    provider.command_intake = CommandIntakeService(str(command_root))
+    client = api_fixture["client"]
+    payload = {
+        "expected_revision": 0,
+        "reason": "force one full validation reconciliation",
+        "idempotency_key": "maintenance-command-1",
+        "cadence_seconds": 3600,
+    }
+    path = (
+        "/api/v1/ontology-discovery/connections/conn-a/"
+        "maintenance/full-reconciliation-due"
+    )
+
+    assert client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("operator"),
+        json=payload,
+    ).status_code == 403
+    response = client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("maintainer"),
+        json=payload,
+    )
+    assert response.status_code == 200, response.text
+    command = response.json()["data"]
+    assert command["type"] == "mark_full_reconciliation_due"
+    assert command["status"] == "pending"
+    duplicate = client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("maintainer"),
+        json=payload,
+    )
+    assert duplicate.json()["data"] == command
+    assert api_fixture["run_store"].get_reconciliation_control("conn-a") is None
+
+    consumer = CoordinatorCommandConsumer(str(command_root))
+    adapter = CoordinatorIntakeAdapter(
+        registry=api_fixture["context"].onboarding.registry,
+        commands=consumer,
+        run_store=api_fixture["run_store"],
+        source_generation=lambda _connection: "source-next",
+        environment="validation",
+        now=lambda: NOW,
+    )
+    assert adapter.process_one() == {
+        "accepted": 1,
+        "denied": 0,
+        "contended": 0,
+    }
+    control = api_fixture["run_store"].get_reconciliation_control("conn-a")
+    assert control is not None
+    assert control["force_full"] is True
+    assert control["revision"] == 1
