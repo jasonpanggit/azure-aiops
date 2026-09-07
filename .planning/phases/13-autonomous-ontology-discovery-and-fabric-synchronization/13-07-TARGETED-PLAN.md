@@ -1,14 +1,14 @@
 # Plan 13-07 Targeted Deployment Review
 
 **Generated:** 2026-09-06T17:34Z
-**Status:** Reviewed plan only — **do not apply yet**  
-**State source:** canonical local state from the main checkout  
+**Status:** Reviewed plan only — **do not apply yet**
+**State source:** canonical local state from the main checkout
 **Variables:** canonical main `terraform.tfvars`, canonical deployment environment,
 global app image preserved at deployed `azure-mcp-timeout-20260906-1454`,
 currently deployed
 `ontology_discovery_image_tag=phase13-ontology-corr-20260906-172205`, and
-`enable_ontology_curator_agent=true`  
-**Planning mode:** `-refresh=false -lock=false` with explicit targets  
+`enable_ontology_curator_agent=true`
+**Planning mode:** `-refresh=false -lock=false` with explicit targets
 **Current code-only delta:** 0 creates, 1 in-place update, 0 destroys,
 0 output changes
 
