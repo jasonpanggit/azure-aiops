@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDeviations, configurationDrift, complianceSummary } = vi.hoisted(() => ({
+const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDeviations, configurationDrift, complianceSummary, buildComplianceCopilotContext } = vi.hoisted(() => ({
   exposures: vi.fn(),
   gaps: vi.fn(),
   ruleFindings: vi.fn(),
@@ -11,6 +11,7 @@ const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDevia
   securityDeviations: vi.fn(),
   configurationDrift: vi.fn(),
   complianceSummary: vi.fn(),
+  buildComplianceCopilotContext: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
@@ -24,6 +25,10 @@ vi.mock("@/lib/services", () => ({
     configurationDrift,
     summary: complianceSummary,
   },
+}));
+
+vi.mock("@/lib/copilot/page-adapters", () => ({
+  buildComplianceCopilotContext,
 }));
 
 import CompliancePage from "./page";
@@ -45,6 +50,7 @@ function renderPage() {
 
 describe("Architecture Compliance and Security Posture Intelligence", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     window.localStorage.clear();
     topology.mockResolvedValue(envelope({
       topology: {
@@ -120,6 +126,40 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     securityDeviations.mockResolvedValue(envelope([]));
     configurationDrift.mockResolvedValue(envelope([]));
     complianceSummary.mockResolvedValue(envelope({}));
+    buildComplianceCopilotContext.mockReturnValue({
+      requestedScope: {},
+      snapshot: {
+        version: "1",
+        page_kind: "governance",
+        page_id: "compliance-posture",
+        selected_resources: [],
+        filters: {},
+        freshness: [],
+        scope: { declared: {}, authorized: true },
+        evidence: [],
+        question: "Summarize the visible page evidence.",
+        rechecks: [],
+      },
+      starterQuestions: [],
+    });
+  });
+
+  it("passes evaluated violations and governed evidence to the pure adapter", async () => {
+    renderPage();
+
+    await waitFor(() => expect(buildComplianceCopilotContext).toHaveBeenCalled());
+    expect(buildComplianceCopilotContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        scope: {},
+        policyName: "Approved hub-spoke landing-zone baseline",
+        selectedId: "",
+        violations: expect.arrayContaining([
+          expect.objectContaining({ id: "gap-1" }),
+          expect.objectContaining({ id: "rule-1" }),
+        ]),
+        governedDeviations: [],
+      }),
+    );
   });
 
   it("evaluates posture, maps violations to business context, and governs exceptions", async () => {
