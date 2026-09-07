@@ -21,6 +21,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -277,6 +279,15 @@ def _runtime_evidence(config_path: Path) -> dict[str, Any]:
     config_bytes = config_path.read_bytes()
     readiness = probe_production_adapter(config_path)
     ready = readiness.get("ready") is True
+    readiness_checks = {
+        str(check.get("check_id") or ""): check
+        for check in readiness.get("checks") or ()
+        if isinstance(check, Mapping)
+    }
+    driver_ready = (
+        _mapping(readiness_checks.get("microsoft_odbc_driver_18")).get("status")
+        == "ready"
+    )
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],
@@ -299,9 +310,9 @@ def _runtime_evidence(config_path: Path) -> dict[str, Any]:
         "sources": {
             "fabric_sql": {
                 "status": "pass" if ready else "blocked",
-                "adapter": readiness.get("adapter", ""),
+                "adapter": readiness.get("selected_production_adapter", ""),
                 "driver": "ODBC Driver 18 for SQL Server"
-                if readiness.get("driver_ready")
+                if driver_ready
                 else "",
             }
         },
