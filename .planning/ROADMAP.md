@@ -806,11 +806,14 @@ Plans:
 **Goal:** Keep the Fabric ontology current without an open browser or manual Sync click by running durable, incremental discovery on a schedule, using a scoped Microsoft Foundry agent to propose evidence-backed relationships, and publishing only relationships that pass deterministic governance, validation, concurrency, and audit controls.
 **Requirements**: AUTO-ONT-01, AUTO-ONT-02, AUTO-ONT-03, AUTO-ONT-04, AUTO-ONT-05, AUTO-ONT-06, AUTO-ONT-07
 **Depends on:** Phase 10, Phase 12
-**Plans:** 15/21 plans executed
+**Plans:** 15/21 numbered plans executed
+**Targeted review artifacts:** 1 (`13-07-TARGETED-PLAN.md`; review-only and excluded from the 21 numbered-plan denominator)
 
 Plans:
 
-- [x] 13-07-TARGETED-PLAN.md
+Targeted review artifact (not a numbered executable plan):
+
+- [x] 13-07-TARGETED-PLAN.md — Reviewed targeted deployment evidence; excluded from numbered plan accounting
 
 - [x] 13-01-PLAN.md — Fail-fast Phase 10/12 preflight and non-authoritative Wave 0 contract tracer
 - [x] 13-02-PLAN.md — Durable coordinator, run-once CLI, and enqueue-only Manual Sync intake
@@ -827,12 +830,12 @@ Plans:
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
-- [ ] 13-16-PLAN.md — OneLake-backed production coordinator composition and one-connection bounded CLI
-- [ ] 13-17-PLAN.md — Dedicated publisher worker, deterministic Fabric promotion, and fenced rollback
-- [ ] 13-18-PLAN.md — Shared durable API runtime and narrow rollback-command transport
-- [ ] 13-19-PLAN.md — Exact identity infrastructure and targeted immutable API/web/Job deployment
-- [ ] 13-20-PLAN.md — Direct deployed no-click, generation, consumer, stale-writer, and rollback evidence
-- [ ] 13-21-PLAN.md — Live API/UI/RBAC audit and deployed-only final shadow report
+- [ ] 13-16-PLAN.md — Production coordinator, durable full reconciliation, and corrected versioned Foundry bearer transport
+- [ ] 13-17-PLAN.md — Ordered publisher worker, publisher-bound Fabric credential, five-consumer checks, and automatic fenced rollback
+- [ ] 13-18-PLAN.md — Shared read-only API runtime and isolated enqueue-only manual-run/rollback command service
+- [ ] 13-19-PLAN.md — Command/state/publication identity topology, TDD infrastructure, and targeted immutable deployment
+- [ ] 13-20-PLAN.md — Deployed reconciliation, process replacement, curator injection, ordered publication, and rollback evidence
+- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only final shadow report
 
 **Success Criteria** (what must be TRUE):
 
