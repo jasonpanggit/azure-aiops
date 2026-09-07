@@ -70,6 +70,13 @@ for var in ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET ENT
 done
 
 export ARM_SUBSCRIPTION_ID ARM_TENANT_ID ARM_CLIENT_ID ARM_CLIENT_SECRET
+export TF_VAR_subscription_id="${ARM_SUBSCRIPTION_ID}"
+export TF_VAR_tenant_id="${ARM_TENANT_ID}"
+export TF_VAR_client_id="${ARM_CLIENT_ID}"
+export TF_VAR_client_secret="${ARM_CLIENT_SECRET}"
+export TF_VAR_entra_web_client_id="${ENTRA_WEB_CLIENT_ID}"
+export TF_VAR_entra_api_audience="${ENTRA_API_AUDIENCE}"
+export TF_VAR_entra_grants_json="${ENTRA_GRANTS_JSON}"
 
 # The service principal's object ID differs from its application ID, and Fabric
 # capacity administration and Key Vault RBAC both need the object ID.
@@ -78,30 +85,22 @@ if [[ -z "${deployer_object_id}" ]] && command -v az >/dev/null 2>&1; then
   deployer_object_id="$(az ad sp show --id "${ARM_CLIENT_ID}" --query id -o tsv 2>/dev/null || true)"
 fi
 
-tf_vars=(
-  -var "subscription_id=${ARM_SUBSCRIPTION_ID}"
-  -var "tenant_id=${ARM_TENANT_ID}"
-  -var "client_id=${ARM_CLIENT_ID}"
-  -var "client_secret=${ARM_CLIENT_SECRET}"
-  -var "entra_web_client_id=${ENTRA_WEB_CLIENT_ID}"
-  -var "entra_api_audience=${ENTRA_API_AUDIENCE}"
-  -var "entra_grants_json=${ENTRA_GRANTS_JSON}"
-)
+tf_vars=()
 if [[ -n "${APIM_PUBLISHER_EMAIL}" ]]; then
-  tf_vars+=(-var "apim_publisher_email=${APIM_PUBLISHER_EMAIL}")
+  export TF_VAR_apim_publisher_email="${APIM_PUBLISHER_EMAIL}"
 fi
 if [[ -n "${APIM_NAME}" ]]; then
-  tf_vars+=(-var "apim_name=${APIM_NAME}")
+  export TF_VAR_apim_name="${APIM_NAME}"
 fi
 if [[ -n "${FOUNDRY_MODEL_CAPACITY}" ]]; then
-  tf_vars+=(-var "foundry_model_capacity=${FOUNDRY_MODEL_CAPACITY}")
+  export TF_VAR_foundry_model_capacity="${FOUNDRY_MODEL_CAPACITY}"
 fi
-tf_vars+=(-var "agent_orchestration_mode=${AGENT_ORCHESTRATION_MODE:-maf}")
+export TF_VAR_agent_orchestration_mode="${AGENT_ORCHESTRATION_MODE:-maf}"
 if [[ -n "${deployer_object_id}" ]]; then
-  tf_vars+=(-var "deployer_object_id=${deployer_object_id}")
+  export TF_VAR_deployer_object_id="${deployer_object_id}"
 fi
 if [[ -n "${NVD_API_KEY}" ]]; then
-  tf_vars+=(-var "nvd_api_key=${NVD_API_KEY}")
+  export TF_VAR_nvd_api_key="${NVD_API_KEY}"
 fi
 
 command="${1:-plan}"
