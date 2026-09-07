@@ -762,7 +762,9 @@ def _curator_agent_evidence(
     )
     response = transport.request("GET", url, token=token, headers={})
     payload = _json_object(response, "deployed curator")
-    versions = payload.get("value")
+    versions = payload.get("data")
+    if not isinstance(versions, list):
+        versions = payload.get("value")
     if not isinstance(versions, list) or not versions:
         raise AuthorizationEvidenceError("deployed curator has no versions")
 
@@ -784,11 +786,14 @@ def _curator_agent_evidence(
         if not isinstance(tools, list) or len(tools) != 1:
             raise AuthorizationEvidenceError("deployed curator tool allowlist mismatch")
         tool = tools[0]
+        allowed_tools = tool.get("allowed_tools") if isinstance(tool, dict) else None
+        if isinstance(allowed_tools, dict):
+            allowed_tools = allowed_tools.get("tool_names")
         if (
             not isinstance(tool, dict)
             or tool.get("type") != "mcp"
             or tool.get("server_label") != "operations-mcp"
-            or tuple(tool.get("allowed_tools") or ()) != EXPECTED_CURATOR_TOOLS
+            or tuple(allowed_tools or ()) != EXPECTED_CURATOR_TOOLS
         ):
             raise AuthorizationEvidenceError("deployed curator tool allowlist mismatch")
     return _correlation(response)

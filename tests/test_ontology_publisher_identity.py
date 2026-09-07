@@ -740,8 +740,10 @@ def test_curator_structural_evidence_fails_on_writer_role_or_extra_tool() -> Non
             )
             if "/agents/" in url:
                 payload = json.loads(result.body)
-                payload["value"][0]["definition"]["tools"][0]["allowed_tools"].append(
-                    "publish_ontology"
+                payload["data"][0]["definition"]["tools"][0]["allowed_tools"][
+                    "tool_names"
+                ].append(
+                    "publish_ontology",
                 )
                 return HttpResult(
                     200,
