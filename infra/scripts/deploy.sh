@@ -85,7 +85,6 @@ if [[ -z "${deployer_object_id}" ]] && command -v az >/dev/null 2>&1; then
   deployer_object_id="$(az ad sp show --id "${ARM_CLIENT_ID}" --query id -o tsv 2>/dev/null || true)"
 fi
 
-tf_vars=()
 if [[ -n "${APIM_PUBLISHER_EMAIL}" ]]; then
   export TF_VAR_apim_publisher_email="${APIM_PUBLISHER_EMAIL}"
 fi
@@ -165,10 +164,6 @@ artifact_dir="${AIOPS_DEPLOY_ARTIFACT_DIR:-${TMPDIR:-/tmp}/aiops-deploy}"
 capture_apim_snapshot() {
   [[ "${AIOPS_CAPTURE_APIM_SNAPSHOT:-true}" == "true" ]] || return 0
   command -v az >/dev/null 2>&1 || return 0
-  local enabled
-  enabled="$(printf '%s\n' "${tf_vars[@]}" | grep -c 'enable_apim=true' || true)"
-  [[ "${enabled}" -gt 0 ]] || return 0
-
   local rg apim api snapshot_dir
   rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
   apim="${AIOPS_APIM_NAME:-aiops-dev-apim}"
@@ -244,21 +239,21 @@ fi
 
 case "${command}" in
   plan)
-    terraform plan -input=false "${tf_vars[@]}" "$@"
+    terraform plan -input=false "$@"
     ;;
   apply)
     verify_images_exist "$@"
     capture_apim_snapshot
-    terraform apply -input=false "${tf_vars[@]}" "$@"
+    terraform apply -input=false "$@"
     report_running_images
     ;;
   destroy)
-    terraform destroy -input=false "${tf_vars[@]}" "$@"
+    terraform destroy -input=false "$@"
     ;;
   import)
     # Adopts a resource that already exists in Azure/Fabric into state, so a
     # subsequent apply updates it instead of recreating it.
-    terraform import -input=false "${tf_vars[@]}" "$@"
+    terraform import -input=false "$@"
     ;;
   output)
     # No -var needed: outputs are read from state.
