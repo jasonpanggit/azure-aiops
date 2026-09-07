@@ -1017,7 +1017,12 @@ def _serialize_bounded_context(context: Any) -> str:
     for raw_key, value in context.items():
         key = str(raw_key)
         if isinstance(value, list):
-            bounded[key] = []
+            candidate = {**bounded, key: []}
+            if len(
+                json.dumps(candidate, default=str, ensure_ascii=False)
+            ) > MAX_CONTEXT_CHARS:
+                break
+            bounded = candidate
             for item in value:
                 candidate = deepcopy(bounded)
                 candidate[key].append(item)
@@ -1038,6 +1043,8 @@ def _serialize_bounded_context(context: Any) -> str:
         )
         if len(candidate_serialized) <= MAX_CONTEXT_CHARS:
             bounded = candidate
+        else:
+            break
     return json.dumps(bounded, default=str, ensure_ascii=False)
 
 

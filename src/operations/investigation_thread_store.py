@@ -406,21 +406,28 @@ class InvestigationThreadStore:
             return "expired_idle"
         return ""
 
-    def _sweep(self, now: float, *, limit: int = MAX_CLEANUP_PER_PASS) -> int:
-        """Remove expired threads, bounded so a sweep can never stall a turn."""
+    def _sweep(
+        self,
+        now: float,
+        *,
+        limit: int = MAX_CLEANUP_PER_PASS,
+    ) -> tuple[int, int]:
+        """Remove expired threads within a bounded deletion-attempt budget."""
 
         removed = 0
+        attempted = 0
         for thread_id, record in list(self._threads.items()):
-            if removed >= limit:
-                break
             if self._expiry_reason(record, now):
+                if attempted >= limit:
+                    break
+                attempted += 1
                 del self._threads[thread_id]
                 if self._forget_document(
                     thread_id,
                     expected_revision=record.storage_revision,
                 ):
                     removed += 1
-        return removed
+        return removed, attempted
 
     def _sweep_durable(
         self,
@@ -445,9 +452,8 @@ class InvestigationThreadStore:
             return 0
         self._durable_continuation = continuation
         removed = 0
+        attempted = 0
         for name in names:
-            if removed >= max_removals:
-                break
             if not name.startswith("threads/") or not name.endswith(".json"):
                 continue
             thread_id = name.removeprefix("threads/").removesuffix(".json")
@@ -472,6 +478,9 @@ class InvestigationThreadStore:
                 continue
             if not self._expiry_reason(record, now):
                 continue
+            if attempted >= max_removals:
+                break
+            attempted += 1
             self._threads.pop(thread_id, None)
             if self._forget_document(
                 thread_id,
@@ -496,8 +505,8 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             limit = max(0, max_removals)
-            removed = self._sweep(now, limit=limit)
-            remaining = max(0, limit - removed)
+            removed, attempted = self._sweep(now, limit=limit)
+            remaining = max(0, limit - attempted)
             removed += self._sweep_durable(
                 now,
                 max_removals=remaining,
