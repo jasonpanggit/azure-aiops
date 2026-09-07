@@ -189,3 +189,35 @@ of the following:
 Until that new plan is reviewed and implemented, no CLI flag, UI action,
 review decision, configuration field, or synthetic test result can enable a
 pair.
+
+## OneLake data-access role reconciliation
+
+The five `Phase13EvidenceRead` OneLake data-access roles for the evidence
+identity are managed outside Terraform due to the Fabric provider 1.13
+ManagedIdentity round-tripping bug. See
+[docs/onelake-data-access-role-migration.md](onelake-data-access-role-migration.md)
+for the full migration procedure.
+
+### Dry-run (read-only verification)
+
+```bash
+uv run python scripts/reconcile_onelake_data_access_roles.py \
+  --items-json /path/to/evidence-items.json \
+  --object-id <AZURE_MCP_PRINCIPAL_ID> \
+  --tenant-id <TENANT_ID>
+```
+
+### Apply (with ETag preconditions and post-write verification)
+
+```bash
+uv run python scripts/reconcile_onelake_data_access_roles.py \
+  --items-json /path/to/evidence-items.json \
+  --object-id <AZURE_MCP_PRINCIPAL_ID> \
+  --tenant-id <TENANT_ID> \
+  --apply
+```
+
+The script acquires credentials via `DefaultAzureCredential`. No secrets
+appear on the CLI. Each item receives a dry-run comparison before write,
+ETag-guarded PUT, and post-write GET verification. Unrelated roles on the
+same item are preserved in the PUT payload.
