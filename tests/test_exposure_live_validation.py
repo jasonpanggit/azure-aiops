@@ -23,7 +23,6 @@ from fabric.config import (
     FabricRuntimeConfig,
 )
 
-
 ROOT = Path(__file__).parents[1]
 
 

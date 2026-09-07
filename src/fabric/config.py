@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,73 @@ class OntologyRuntimeConfig:
 @dataclass(frozen=True)
 class PipelineToggleRuntimeConfig:
     enabled: bool = False
+
+
+class ExposureRolloutStage(StrEnum):
+    """Ordered deployment stages for each independently controlled surface."""
+
+    OFF = "off"
+    SHADOW = "shadow"
+    CANARY = "canary"
+    ON = "on"
+
+
+@dataclass(frozen=True)
+class ExposureRolloutRuntimeConfig:
+    """Fail-closed, generation-pinned Exposure deployment controls.
+
+    The writer, server reader, web surface, and remediation handoff can move
+    independently through the same stage vocabulary.  Every lane is off until
+    an authorized deployment supplies explicit stages and generation pointers.
+    """
+
+    authorized: bool = False
+    write_stage: ExposureRolloutStage = ExposureRolloutStage.OFF
+    read_stage: ExposureRolloutStage = ExposureRolloutStage.OFF
+    web_stage: ExposureRolloutStage = ExposureRolloutStage.OFF
+    handoff_stage: ExposureRolloutStage = ExposureRolloutStage.OFF
+    write_generation_id: str = ""
+    read_generation_id: str = ""
+    rollback_generation_id: str = ""
+
+    def validate(self) -> None:
+        stages = (
+            self.write_stage,
+            self.read_stage,
+            self.web_stage,
+            self.handoff_stage,
+        )
+        if (
+            any(stage is not ExposureRolloutStage.OFF for stage in stages)
+            and not self.authorized
+        ):
+            raise ValueError(
+                "fabric.exposure.rollout.authorized must be true before promotion"
+            )
+        if (
+            self.write_stage is not ExposureRolloutStage.OFF
+            and not self.write_generation_id
+        ):
+            raise ValueError(
+                "fabric.exposure.rollout.write_generation_id is required "
+                "when the write stage is enabled"
+            )
+        if self.read_stage is not ExposureRolloutStage.OFF:
+            if not self.read_generation_id:
+                raise ValueError(
+                    "fabric.exposure.rollout.read_generation_id is required "
+                    "when the read stage is enabled"
+                )
+            if not self.rollback_generation_id:
+                raise ValueError(
+                    "fabric.exposure.rollout.rollback_generation_id is required "
+                    "when the read stage is enabled"
+                )
+            if self.read_generation_id == self.rollback_generation_id:
+                raise ValueError(
+                    "fabric.exposure.rollout read and rollback generation IDs "
+                    "must be independent"
+                )
 
 
 @dataclass(frozen=True)
@@ -96,6 +164,9 @@ class ExposureRuntimeConfig:
     enabled: bool = False
     adapter: str = "fabric_sql"
     rollback_mode: bool = False
+    rollout: ExposureRolloutRuntimeConfig = field(
+        default_factory=ExposureRolloutRuntimeConfig
+    )
     freshness_threshold_seconds: SourceFreshnessThresholds = field(
         default_factory=SourceFreshnessThresholds
     )
@@ -283,6 +354,35 @@ class FabricRuntimeConfig:
             raise TypeError("fabric.exposure.adapter must be a string")
         if exposure_adapter != "fabric_sql":
             raise ValueError("fabric.exposure.adapter must be fabric_sql")
+        rollout_payload = exposure_payload.get("rollout", {})
+        if not isinstance(rollout_payload, dict):
+            raise TypeError("fabric.exposure.rollout must be a mapping")
+        rollout_authorized = rollout_payload.get("authorized", False)
+        if not isinstance(rollout_authorized, bool):
+            raise TypeError("fabric.exposure.rollout.authorized must be boolean")
+        exposure_rollout = ExposureRolloutRuntimeConfig(
+            authorized=rollout_authorized,
+            write_stage=_exposure_rollout_stage(rollout_payload, "write_stage"),
+            read_stage=_exposure_rollout_stage(rollout_payload, "read_stage"),
+            web_stage=_exposure_rollout_stage(rollout_payload, "web_stage"),
+            handoff_stage=_exposure_rollout_stage(rollout_payload, "handoff_stage"),
+            write_generation_id=_strict_section_string(
+                rollout_payload,
+                "exposure.rollout",
+                "write_generation_id",
+            ),
+            read_generation_id=_strict_section_string(
+                rollout_payload,
+                "exposure.rollout",
+                "read_generation_id",
+            ),
+            rollback_generation_id=_strict_section_string(
+                rollout_payload,
+                "exposure.rollout",
+                "rollback_generation_id",
+            ),
+        )
+        exposure_rollout.validate()
         source_freshness = _source_freshness_thresholds(
             exposure_payload.get("freshness_threshold_seconds", {})
         )
@@ -398,6 +498,7 @@ class FabricRuntimeConfig:
                 enabled=exposure_enabled,
                 adapter=exposure_adapter,
                 rollback_mode=exposure_rollback_mode,
+                rollout=exposure_rollout,
                 freshness_threshold_seconds=source_freshness,
             ),
             ontology=OntologyRuntimeConfig(
@@ -675,6 +776,34 @@ def _strict_section_int(
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"fabric.{section}.{name} must be an integer")
     return value
+
+
+def _strict_section_string(
+    payload: dict[str, object],
+    section: str,
+    name: str,
+    default: str = "",
+) -> str:
+    value = payload.get(name, default)
+    if not isinstance(value, str):
+        raise TypeError(f"fabric.{section}.{name} must be a string")
+    return value.strip()
+
+
+def _exposure_rollout_stage(
+    payload: dict[str, object],
+    name: str,
+) -> ExposureRolloutStage:
+    value = payload.get(name, ExposureRolloutStage.OFF.value)
+    if not isinstance(value, str):
+        raise TypeError(f"fabric.exposure.rollout.{name} must be a string")
+    try:
+        return ExposureRolloutStage(value.strip().casefold())
+    except ValueError as exc:
+        allowed = ", ".join(stage.value for stage in ExposureRolloutStage)
+        raise ValueError(
+            f"fabric.exposure.rollout.{name} must be one of: {allowed}"
+        ) from exc
 
 
 def _source_freshness_thresholds(value: object) -> SourceFreshnessThresholds:

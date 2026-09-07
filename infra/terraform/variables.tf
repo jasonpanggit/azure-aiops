@@ -847,6 +847,74 @@ variable "exposure_alert_max_query_errors" {
   }
 }
 
+variable "exposure_rollout_authorized" {
+  description = "Explicit deployment authorization for any non-off Exposure rollout stage."
+  type        = bool
+  default     = false
+}
+
+variable "exposure_write_stage" {
+  description = "Exposure v2 projection writer stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_write_stage))
+    error_message = "exposure_write_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_read_stage" {
+  description = "Exposure v2 API reader stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_read_stage))
+    error_message = "exposure_read_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_web_stage" {
+  description = "Exposure v2 web surface stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_web_stage))
+    error_message = "exposure_web_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_handoff_stage" {
+  description = "Exposure governed handoff stage: off, shadow, canary, or on."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow", "canary", "on"], lower(var.exposure_handoff_stage))
+    error_message = "exposure_handoff_stage must be off, shadow, canary, or on."
+  }
+}
+
+variable "exposure_write_generation_id" {
+  description = "Candidate generation receiving additive Exposure v2 writes."
+  type        = string
+  default     = ""
+}
+
+variable "exposure_read_generation_id" {
+  description = "Candidate generation selected by the Exposure v2 reader."
+  type        = string
+  default     = ""
+}
+
+variable "exposure_rollback_generation_id" {
+  description = "Retained prior generation selected by non-destructive rollback."
+  type        = string
+  default     = ""
+}
+
 variable "onboarded_subscriptions" {
   description = "List of Azure subscription IDs that have onboarded SPN credentials in AKV"
   type        = list(string)

@@ -390,6 +390,50 @@ resource "azurerm_container_app" "api" {
         secret_name = "cursor-previous"
       }
 
+      # Staged Exposure v2 controls are non-secret deployment metadata.
+      # Every lane defaults off and runtime validation refuses a non-off
+      # stage unless the deployment authorization and immutable generation
+      # pointers are explicit. Rollback changes only the selected pointer.
+      env {
+        name  = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"
+        value = tostring(var.exposure_rollout_authorized)
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_WRITE_STAGE"
+        value = lower(var.exposure_write_stage)
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_READ_STAGE"
+        value = lower(var.exposure_read_stage)
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_WEB_STAGE"
+        value = lower(var.exposure_web_stage)
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_HANDOFF_STAGE"
+        value = lower(var.exposure_handoff_stage)
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_WRITE_GENERATION_ID"
+        value = var.exposure_write_generation_id
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_READ_GENERATION_ID"
+        value = var.exposure_read_generation_id
+      }
+
+      env {
+        name  = "AIOPS_EXPOSURE_ROLLBACK_GENERATION_ID"
+        value = var.exposure_rollback_generation_id
+      }
+
       # Key identifiers are routing metadata, not key material. The rotation
       # script updates these values when it creates a new revision.
       env {
