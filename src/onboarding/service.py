@@ -9,6 +9,7 @@ business logic.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import re
 import threading
@@ -24,6 +25,10 @@ from ontology.subscription_connection import (
     EnvironmentMapping,
     SubscriptionConnection,
     SyncState,
+)
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    scope_receipt,
 )
 from ontology_discovery.store import OntologyRunStore
 from storage.fs import resolve_root
@@ -102,6 +107,7 @@ class SubscriptionOnboardingService:
         secret_writer: SecretWriter | None = None,
         health_evaluator: HealthEvaluator | None = None,
         ontology_run_store: OntologyRunStore | None = None,
+        ontology_command_intake: CommandIntakeService | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
@@ -116,6 +122,7 @@ class SubscriptionOnboardingService:
         self.ontology_run_store = ontology_run_store or OntologyRunStore(
             self.output_dir / "state" / "ontology_discovery_runs.json"
         )
+        self.ontology_command_intake = ontology_command_intake
         self.clock = clock or (lambda: datetime.now(UTC))
         self._reconcile_orphaned_syncs()
 
@@ -571,6 +578,7 @@ class SubscriptionOnboardingService:
         mode: str = "manual",
         source_generation_id: str | None = None,
         requested_by: str = "system",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Record a durable ontology refresh without starting local work.
 
@@ -593,6 +601,58 @@ class SubscriptionOnboardingService:
             or previous.source_version
             or "pending"
         ).strip()
+        if self.ontology_command_intake is not None and mode == "manual":
+            moment = self.clock()
+            command = self.ontology_command_intake.enqueue_manual_run(
+                actor_hash=hashlib.sha256(requested_by.encode()).hexdigest(),
+                effective_scope_hash=scope_receipt(
+                    connection, "ontology.discovery.run"
+                ),
+                connection_id=connection_id,
+                action="ontology.discovery.run",
+                issued_at=moment,
+                expires_at=moment + timedelta(minutes=15),
+                idempotency_key=(
+                    idempotency_key
+                    or hashlib.sha256(
+                        f"{connection_id}|{generation}|{mode}".encode()
+                    ).hexdigest()
+                ),
+                reason="Manual Sync requested",
+            )
+            compatibility_state = SyncState(
+                status="running",
+                last_synced_at=previous.last_synced_at,
+                last_successful_sync_at=previous.last_successful_sync_at,
+                last_failed_at=previous.last_failed_at,
+                run_id=command["command_id"],
+                started_at=command["created_at"],
+                source_version=previous.source_version,
+                record_count=previous.record_count,
+                attempts=previous.attempts,
+                message="manual sync queued",
+                stage="queued",
+                stage_message="manual sync queued",
+                progress_pct=0,
+            )
+            return {
+                "connection_id": connection_id,
+                "run_id": command["command_id"],
+                "status": "running",
+                "mode": mode,
+                "sync_state": compatibility_state.to_dict(),
+                "durable_command": {
+                    key: command.get(key)
+                    for key in (
+                        "command_id",
+                        "type",
+                        "status",
+                        "revision",
+                        "created_at",
+                        "updated_at",
+                    )
+                },
+            }
         run, created = self.ontology_run_store.get_or_create_run(
             connection_id=connection_id,
             source_generation_id=generation,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from api.app import create_app
@@ -222,7 +223,7 @@ def test_manual_publish_and_rollback_survive_every_process_reconstruction(
         idempotency_key="rollback-18",
     )
     assert rollback["status"] == "pending"
-    assert PublisherIntakeAdapter(
+    intake_result = PublisherIntakeAdapter(
         registry=ConnectionRegistry(connection_root),
         commands=PublisherCommandConsumer(command_root),
         dispatches=PublisherDispatchStore(dispatch_root).publisher(),
@@ -232,7 +233,11 @@ def test_manual_publish_and_rollback_survive_every_process_reconstruction(
         ),
         owner_id="publisher-worker-18",
         now=lambda: NOW,
-    ).process_one()["accepted"] == 1
+    ).process_one()
+    rollback_command = CommandIntakeService(command_root).get(
+        rollback["command_id"]
+    )
+    assert intake_result["accepted"] == 1, rollback_command["reason_code"]
     assert _publisher(dispatch_root, publication_root).run_once()["succeeded"] == 1
 
     final = _api(
@@ -245,7 +250,22 @@ def test_manual_publish_and_rollback_survive_every_process_reconstruction(
     assert final.command(rollback["command_id"])["status"] == "completed"
 
 
-def test_default_openapi_exposes_complete_ontology_command_surface() -> None:
+def test_default_openapi_exposes_complete_ontology_command_surface(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "api"))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                "ontology-admin-token": {
+                    "subject": "admin@example.com",
+                    "grants": [{"role": "admin", "scope": {}}],
+                }
+            }
+        ),
+    )
     paths = create_app().openapi()["paths"]
 
     assert "/api/v1/ontology-discovery/runs" in paths

@@ -440,6 +440,7 @@ def build_authenticator():
 
 def _onboarding_service(
     output_dir: str | Path | None = None,
+    command_home: str | None = None,
 ) -> SubscriptionOnboardingService:
     """Build the onboarding service with a real ingestion factory wired in.
 
@@ -462,12 +463,17 @@ def _onboarding_service(
 
         config = dataclasses.replace(config, output_dir=output_dir)
     vault = os.environ.get(ENV_CONNECTION_KEY_VAULT, "").strip()
-    return build_onboarding_service(
+    service = build_onboarding_service(
         config,
         secret_writer=KeyVaultSecretWriter(vault) if vault else None,
         config_path=config_path,
         fabric_config_path=os.environ.get(ENV_FABRIC_CONFIG, "").strip(),
     )
+    if command_home is not None:
+        from ontology_discovery.command_intake import CommandIntakeService
+
+        service.ontology_command_intake = CommandIntakeService(command_home)
+    return service
 
 
 def _connection_dataset_dir(root: str, connection_id: str) -> str:
@@ -3439,7 +3445,10 @@ def _load_eol_review_service() -> Any:
 def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
     ontology_roots = _ontology_api_roots()
-    onboarding = _onboarding_service(ontology_roots["connection"])
+    onboarding = _onboarding_service(
+        ontology_roots["connection"],
+        command_home=ontology_roots["command"],
+    )
     providers = _build_provider_runtime(onboarding)
     # Investigation ledgers are the audit trail for operator decisions, so they
     # are written through to OneLake and survive replica restarts. A local
