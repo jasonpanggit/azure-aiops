@@ -396,6 +396,139 @@ describe("inventory Copilot page adapter", () => {
         && row.data.mutation_authorized === false,
       )).toBe(true);
     });
+
+    it("projects long Compliance identities into stable bounded keys without losing selection", () => {
+      const longIdentity = `peering:${"remote-vnet/".repeat(40)}`;
+      const input = {
+        scope: {},
+        policyName: "Approved landing zone",
+        selectedId: longIdentity,
+        violations: [{
+          id: longIdentity,
+          type: "peering",
+          severity: "high",
+          title: "Unapproved peering",
+          detail: "The peering bypasses the approved hub.",
+          resource: "hub-vnet",
+          application: "Payments",
+          businessService: "Checkout",
+          owner: "Network",
+          affectedTraffic: "Spoke to spoke",
+          vulnerabilityExposure: "Unknown",
+          remediation: "Route through the approved hub.",
+        }],
+        governedDeviations: [],
+        evidence: [],
+        sourceEnvelopes: {},
+      };
+
+      const context = buildComplianceCopilotContext(input);
+      const repeated = buildComplianceCopilotContext(input);
+      const selected = context.selectedEntities[0];
+
+      expect(selected).toMatchObject({
+        type: "domain",
+        namespace: "compliance",
+        kind: "policy_violation",
+      });
+      expect(selected?.type === "domain" ? selected.source_key.length : 0).toBeLessThanOrEqual(256);
+      expect(context.snapshot.filters.selected).toEqual([
+        selected?.type === "domain" ? selected.source_key : "",
+      ]);
+      expect(context.selectedEntities).toEqual(repeated.selectedEntities);
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({ selected: true }),
+          }),
+        ]),
+      );
+    });
+
+    it("marks unavailable page collections incomplete and empty-evidence sources unavailable", () => {
+      const emptyEnvelope = {
+        data: [],
+        evidence: [],
+        scope: {},
+        knowledge_version: "empty",
+        pagination: { offset: 0, limit: 100, total: 0, next_offset: null },
+      };
+      const context = buildOverviewCopilotContext({
+        scope: {},
+        situations: emptyEnvelope,
+        network: null,
+        vulnerabilities: null,
+        connections: null,
+      });
+
+      expect(context.coverage).toEqual({
+        connections: {
+          visible_count: 0,
+          total_count: 0,
+          complete: false,
+          truncated: false,
+        },
+        situations: {
+          visible_count: 0,
+          total_count: 0,
+          complete: true,
+          truncated: false,
+        },
+      });
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "situations", status: "unavailable" }),
+          expect.objectContaining({ source: "connections", status: "unavailable" }),
+        ]),
+      );
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            section: "coverage",
+            status: "unavailable",
+            data: expect.objectContaining({
+              source_key: "connections",
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("trims low-priority evidence deterministically to the snapshot byte limit", () => {
+      const records = Array.from({ length: COPILOT_SNAPSHOT_LIMITS.evidenceRows }, (_, index) => ({
+        identity: `record-${index.toString().padStart(3, "0")}`,
+        namespace: "operations",
+        kind: "situation",
+        source: "situations/visible",
+        priority: index,
+        data: {
+          title: `Situation ${index}`,
+          detail: "x".repeat(900),
+        },
+      }));
+      const input = {
+        ...corePageInput,
+        records,
+        evidence: [],
+      };
+
+      const context = buildOverviewCopilotContext(input);
+      const repeated = buildOverviewCopilotContext(input);
+
+      expect(new TextEncoder().encode(JSON.stringify(context.snapshot)).length)
+        .toBeLessThanOrEqual(COPILOT_SNAPSHOT_LIMITS.snapshotBytes);
+      expect(context.snapshot.evidence.length).toBeLessThan(records.length);
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        repeated.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            section: "coverage",
+          }),
+        ]),
+      );
+    });
   });
 
   it("matches the server bounds exactly", () => {

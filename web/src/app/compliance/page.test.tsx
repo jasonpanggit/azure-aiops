@@ -152,7 +152,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
       expect.objectContaining({
         scope: {},
         policyName: "Approved hub-spoke landing-zone baseline",
-        selectedId: "gap-1",
+        selectedId: null,
         violations: expect.arrayContaining([
           expect.objectContaining({ id: "gap-1" }),
           expect.objectContaining({ id: "rule-1" }),
@@ -170,6 +170,9 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     expect(screen.getAllByText("Any-any NSG rule").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Public PaaS exposure").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Public PaaS exposure/ }));
+    await waitFor(() => expect(buildComplianceCopilotContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedId: "public-sql-1" }),
+    ));
     expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/CVE-2026-0001/).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: "Open remediation" })).toHaveAttribute("href", "/remediation?business_service=Payroll");

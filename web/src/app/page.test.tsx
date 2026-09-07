@@ -39,6 +39,28 @@ const envelope = <T,>(data: T) => ({
   pagination: { offset: 0, limit: 100, total: Array.isArray(data) ? data.length : 1, next_offset: null },
 });
 
+const situation = (id: string, priority: "P1" | "P3", startedAt: string) => ({
+  situation_id: id,
+  resource_id: "",
+  title: id,
+  situation_type: "availability",
+  lifecycle_state: "open",
+  severity: priority === "P1" ? "critical" : "medium",
+  priority,
+  scope: {},
+  owner: "",
+  support_team: "",
+  affected_resource_ids: [],
+  linked_evidence_ids: [],
+  started_at: startedAt,
+  last_observed_at: startedAt,
+  evidence_state: "partial",
+  warnings: [],
+  contradiction_ids: [],
+  unknowns: [],
+  run_id: `run-${id}`,
+});
+
 describe("Overview Copilot adapter integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -86,6 +108,30 @@ describe("Overview Copilot adapter integration", () => {
         data: expect.objectContaining({ internet_exposed_count: 0 }),
       }),
       connections: expect.objectContaining({ data: [] }),
+      visibleSituations: [],
     });
+  });
+
+  it("passes the same ranked situations rendered by the page", async () => {
+    mocks.situations.mockResolvedValue(envelope([
+      situation("p3-raw-first", "P3", "2026-01-03T00:00:00Z"),
+      situation("p1-ranked-first", "P1", "2026-01-01T00:00:00Z"),
+    ]));
+
+    render(
+      <ScopeProvider>
+        <Home />
+      </ScopeProvider>,
+    );
+
+    await waitFor(() => expect(mocks.buildOverviewCopilotContext).toHaveBeenCalled());
+    expect(mocks.buildOverviewCopilotContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        visibleSituations: [
+          expect.objectContaining({ situation_id: "p1-ranked-first" }),
+          expect.objectContaining({ situation_id: "p3-raw-first" }),
+        ],
+      }),
+    );
   });
 });
