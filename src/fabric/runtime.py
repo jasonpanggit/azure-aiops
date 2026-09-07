@@ -7,6 +7,7 @@ from pathlib import Path
 from types import MethodType
 from typing import Any
 
+from intelligence.remediation.plan_repository import PlanRepository
 from ontology.ontology_manager import OntologyManager
 from ontology.ontology_publisher import OntologyPublisher
 from storage.delta_writer import DeltaWriter
@@ -64,6 +65,7 @@ class FabricRuntime:
     workspace: dict
     lakehouse: dict
     service: FabricSyncService
+    remediation_repository: PlanRepository | None = None
     _semantic: Any = field(default=None, init=False, repr=False, compare=False)
     _semantic_version: str = field(default="", init=False, repr=False, compare=False)
     _operations: Any = field(default=None, init=False, repr=False, compare=False)
@@ -381,6 +383,7 @@ class FabricRuntime:
                 max_plans=self.config.remediation.max_plans,
                 max_output_items=self.config.remediation.max_output_items,
                 max_dependencies=self.config.remediation.max_dependencies,
+                repository=self.remediation_repository,
             )
         operations_config = self.config.operations_agent if self.config is not None else None
         agent = OperationsAgent(
@@ -418,6 +421,10 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
             table_schema=config.table_schema,
             local_root=config.local_onelake_root,
         )
+        remediation_repository = _remediation_repository(
+            Path(config.local_onelake_root) / "Files",
+            max_plans=config.remediation.max_plans,
+        )
         service = FabricSyncService(
             source_root=config.source_data_root,
             onelake=onelake,
@@ -428,11 +435,16 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
             ontology_name=config.ontology.ontology_name,
             patch_policies=config.patch_policies,
             lifecycle_catalog=lifecycle_catalog,
-            remediation_decision_reader=lambda: _remediation_decisions(
-                config.local_onelake_root
-            ),
+            remediation_decision_reader=remediation_repository.decisions.list,
+            remediation_plan_reader=remediation_repository.ontology_projection,
         )
-        return FabricRuntime(config, workspace, lakehouse, service)
+        return FabricRuntime(
+            config,
+            workspace,
+            lakehouse,
+            service,
+            remediation_repository,
+        )
 
     credential = build_credential(config.auth)
     client = FabricClient(credential)
@@ -465,6 +477,13 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
             lakehouse_id=str(lakehouse["id"]),
             source_schema=config.table_schema,
         )
+    document_root = (
+        f"abfss://{workspace['id']}@{ONELAKE_HOST}/{lakehouse['id']}/Files"
+    )
+    remediation_repository = _remediation_repository(
+        document_root,
+        max_plans=config.remediation.max_plans,
+    )
     service = FabricSyncService(
         source_root=config.source_data_root,
         onelake=onelake,
@@ -484,12 +503,30 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
         ontology_name=config.ontology.ontology_name,
         patch_policies=config.patch_policies,
         lifecycle_catalog=lifecycle_catalog,
-        remediation_decision_reader=lambda: _remediation_decisions(
-            f"abfss://{workspace['id']}@{ONELAKE_HOST}/{lakehouse['id']}/Files"
-        ),
+        remediation_decision_reader=remediation_repository.decisions.list,
+        remediation_plan_reader=remediation_repository.ontology_projection,
         sql_reader=_build_lakehouse_sql_reader(lakehouse, credential, config),
     )
-    return FabricRuntime(config, workspace, lakehouse, service)
+    return FabricRuntime(
+        config,
+        workspace,
+        lakehouse,
+        service,
+        remediation_repository,
+    )
+
+
+def _remediation_repository(
+    root: Path | str,
+    *,
+    max_plans: int,
+) -> PlanRepository:
+    document_store = OneLakeDocumentStore(str(root))
+    return PlanRepository(
+        max_plans=max_plans,
+        decision_document_store=document_store,
+        plan_document_store=document_store,
+    )
 
 
 def _remediation_decisions(root: Any) -> list[dict[str, Any]]:
