@@ -162,9 +162,21 @@ def _environment(container: Mapping[str, Any]) -> dict[str, str]:
             raise PlanValidationError("container environment name must be explicit")
         if not isinstance(value, str) and row.get("secret_name"):
             continue
+        if value is None:
+            # A URI containing a newly-created Fabric workspace or lakehouse ID
+            # is necessarily unknown before apply. Preserve the distinct env
+            # slot in the complete template hash; live validation replaces it
+            # with the resolved hash after the foundational resources exist.
+            result[name] = f"<known-after-apply:{name}>"
+            continue
         if not isinstance(value, str):
             raise PlanValidationError("all ontology environment values must be explicit")
-        if name in result:
+        if name in result and (
+            name == "AIOPS_CONNECTION_HOME"
+            or name.startswith("AIOPS_ONTOLOGY_")
+            or name == "AIOPS_IDENTITY_CLASS"
+            or name == "AZURE_CLIENT_ID"
+        ):
             raise PlanValidationError(f"duplicate environment variable: {name}")
         result[name] = value
     return result
