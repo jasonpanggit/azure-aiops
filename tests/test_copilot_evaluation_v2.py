@@ -29,11 +29,13 @@ from operations.investigation_thread_store import (
     InvestigationThread,
     InvestigationThreadStore,
     InvestigationThreadTurn,
+    ThreadRevisionConflict,
 )
 from operations.orchestration_contract import (
     CandidatePlan,
     EvidenceSnapshotV2,
     InvestigationRequest,
+    OrchestrationResult,
     SnapshotCoverage,
     SpecialistStep,
     ToolCallCandidate,
@@ -329,6 +331,65 @@ def test_executive_rejects_retained_citation_not_transmitted_to_provider() -> No
     assert len(executive.calls[0]["context"]["retained_evidence"]) == 50
     assert synthesis.status == "degraded"
     assert synthesis.claims == []
+
+
+def test_synthesis_is_skipped_when_specialists_exhaust_wall_clock_budget() -> None:
+    class Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = Clock()
+    executive = RecordingExecutive()
+
+    def executor(name, arguments, *, context, scope):
+        clock.now = 5.0
+        return _executor(name, arguments, context=context, scope=scope)
+
+    service = OrchestrationService(
+        planner=lambda _r: _plan("vulnerability", "patch"),
+        executor=executor,
+        thread_store=InvestigationThreadStore(),
+        clock=clock,
+        executive_agent=executive,
+    )
+
+    turn = service.execute_turn(
+        _request("Give me an executive summary."),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert executive.calls == []
+    assert turn.synthesis.status == "degraded"
+    assert "wall-clock budget" in turn.synthesis.warning
+
+
+def test_synthesis_provider_timeout_is_bounded_to_remaining_budget() -> None:
+    class TimedExecutive(RecordingExecutive):
+        def answer(self, *, question: str, context: Any, **kwargs: Any) -> Any:
+            self.calls.append(
+                {"question": question, "context": context, "kwargs": kwargs}
+            )
+            return super().answer(question=question, context=context)
+
+    executive = TimedExecutive()
+    service = _service(
+        planner=lambda _r: _plan("vulnerability", "patch"),
+        executive_agent=executive,
+    )
+
+    service.execute_turn(
+        _request("Give me an executive summary."),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        max_wall_seconds=0.5,
+    )
+
+    assert 0 < executive.calls[0]["kwargs"]["timeout_seconds"] <= 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +714,134 @@ def test_execute_still_returns_the_canonical_result_only() -> None:
     assert result.thread_revision == 1
     assert result.synthesis
     assert result.synthesis["status"] == "skipped"
+
+
+def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> None:
+    class ConflictThenCommitStore:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.persisted: dict[str, Any] = {}
+
+        def append(self, *_args: Any, **_kwargs: Any) -> InvestigationThread:
+            self.calls += 1
+            if self.calls == 1:
+                raise ThreadRevisionConflict(current_revision=4)
+            self.persisted = _args[3]
+            return InvestigationThread(
+                thread_id="thr-" + "a" * 32,
+                principal_subject="operator-a",
+                scope=Scope({"subscription": ["sub-a"]}),
+                scope_fingerprint="fingerprint",
+                revision=5,
+            )
+
+    store = ConflictThenCommitStore()
+    service = OrchestrationService(thread_store=store)
+    thread = InvestigationThread(
+        thread_id="thr-" + "a" * 32,
+        principal_subject="operator-a",
+        scope=Scope({"subscription": ["sub-a"]}),
+        scope_fingerprint="fingerprint",
+        revision=0,
+    )
+    result = OrchestrationResult(
+        status=STATUS_OK,
+        policy_status="accepted",
+        coverage=SnapshotCoverage(visible_count=0, total_count=0, complete=True),
+        citations=[],
+        thread_id=thread.thread_id,
+        thread_revision=1,
+    )
+
+    reconciled = service._record_turn(
+        thread,
+        principal_subject="operator-a",
+        requested_scope=thread.scope,
+        question="What changed?",
+        result=result,
+    )
+
+    assert reconciled.thread_revision == 5
+    assert store.persisted["thread_revision"] == 5
+    assert store.persisted["uncertainty"] == [
+        "A concurrent turn superseded this thread revision."
+    ]
+
+
+def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> None:
+    class RetainedExecutive:
+        calls: list[dict[str, Any]] = []
+
+        def answer(self, *, question: str, context: Any, **_: Any) -> Any:
+            self.calls.append({"question": question, "context": context})
+            retained_id = next(
+                item["evidence_id"]
+                for item in context["retained_evidence"]
+                if item["evidence_id"].startswith("tool:")
+            )
+            text = json.dumps(
+                {
+                    "findings": [
+                        {
+                            "finding_id": "exec:retained",
+                            "summary": "Prior evidence remains relevant.",
+                            "evidence_refs": [retained_id],
+                            "confidence": "medium",
+                            "freshness": "stale",
+                            "uncertainty": [],
+                            "actionable": False,
+                            "next_check": "Recheck prior evidence.",
+                        }
+                    ]
+                }
+            )
+            return type(
+                "Answer",
+                (),
+                {
+                    "text": text,
+                    "agent_name": EXECUTIVE_SPECIALIST_ID,
+                    "model": "test",
+                    "grounded": True,
+                    "agent_version": "1",
+                },
+            )()
+
+    executive = RetainedExecutive()
+    store = InvestigationThreadStore()
+    service = OrchestrationService(
+        planner=lambda _r: _plan("vulnerability"),
+        executor=_executor,
+        thread_store=store,
+        executive_agent=executive,
+    )
+    first = service.execute(
+        _request("Which vulnerabilities exist?"),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+    second_request = _request("Give me an executive summary.").model_copy(
+        update={"thread_id": first.thread_id}
+    )
+    second = service.execute(
+        second_request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    first_tool_id = next(
+        item.citation_id for item in first.citations if item.citation_id.startswith("tool:")
+    )
+    second_tool_id = next(
+        item.citation_id for item in second.citations
+        if item.citation_id.startswith("tool:") and item.citation_id != first_tool_id
+    )
+    assert first.thread_id in first_tool_id
+    assert first_tool_id != second_tool_id
+    assert first_tool_id in {item.citation_id for item in second.citations}
+    assert second.synthesis["claims"][0]["evidence_refs"] == [first_tool_id]
 
 
 # ---------------------------------------------------------------------------

@@ -987,6 +987,49 @@ def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeyp
     assert data.get("contract_version") == "1"
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_code"),
+    [
+        (ThreadStoreUnavailable(), 503, "provider_unavailable"),
+        (ThreadRevisionConflict(current_revision=3), 409, "conflict"),
+    ],
+)
+def test_investigate_context_maps_canonical_continuity_failures(
+    tmp_path,
+    monkeypatch,
+    failure,
+    expected_status,
+    expected_code,
+):
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.copilot._run_context_via_canonical",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "What firewall gaps exist?",
+                "scope": {"declared": {}},
+                "evidence": [],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["code"] == expected_code
+
+
 def test_multi_agent_canonical_stamps_contract_version(tmp_path, monkeypatch):
     """When canonical orchestration is active, /agents/investigations stamps
     contract_version on new ledger writes."""

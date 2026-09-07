@@ -367,6 +367,19 @@ def test_expired_documents_are_removed_by_bounded_cleanup() -> None:
             store.authorize(thread.thread_id, "operator-a", SUB_A)
 
 
+def test_restart_cleanup_discovers_expired_durable_threads_outside_local_cache() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+
+    clock.advance(ABSOLUTE_TTL_SECONDS + 1)
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 1
+    assert thread_document_name(thread.thread_id) not in documents.documents
+
+
 def test_stale_revision_raises_an_explicit_conflict() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
     thread = store.create("operator-a", SUB_A)
@@ -703,8 +716,8 @@ def test_scope_narrowing_still_redacts_wider_historical_turns() -> None:
 def test_active_legacy_conversation_is_imported_without_mutating_it() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
     legacy_turns = [
-        {"question": "first", "status": "ok"},
-        {"question": "second", "status": "ok"},
+        {"question": "first", "status": "ok", "scope": SUB_A.to_dict()},
+        {"question": "second", "status": "ok", "scope": SUB_A.to_dict()},
     ]
     original = deepcopy(legacy_turns)
 
@@ -715,6 +728,36 @@ def test_active_legacy_conversation_is_imported_without_mutating_it() -> None:
     assert [turn["question"] for turn in history] == ["first", "second"]
     assert all(turn["imported_from"] == "legacy_conversation" for turn in history)
     assert history[-1]["observation_status"] == OBSERVATION_HISTORICAL
+
+
+def test_scope_less_legacy_turn_is_not_relabelled_as_current_authorized_evidence() -> None:
+    store = InvestigationThreadStore(documents=FakeDocuments())
+    legacy_turns = [
+        {
+            "question": "List every tenant resource.",
+            "status": "ok",
+            "tool_results": [{"data": {"secret": "cross-scope"}}],
+            "citations": [{"citation_id": "legacy-wide", "source": "inventory"}],
+        }
+    ]
+    original = deepcopy(legacy_turns)
+
+    thread = store.import_legacy_turns("operator-a", SUB_A, legacy_turns)
+    history = store.history(thread.thread_id, "operator-a", SUB_A)
+
+    assert legacy_turns == original
+    assert history == [
+        {
+            "status": "historical_scope_unverified",
+            "observation_status": OBSERVATION_HISTORICAL,
+            "imported_from": "legacy_conversation",
+            "tool_results": [],
+            "citations": [],
+            "uncertainty": [
+                "Historical content was withheld until its scope can be revalidated."
+            ],
+        }
+    ]
 
 
 def test_legacy_import_is_bounded_and_skips_empty_conversations() -> None:
