@@ -78,10 +78,11 @@ The descriptions above are verbatim from the requirements source. [VERIFIED: .pl
 **Installation:** introduce no new production runtime package in the tracer. Evaluation tooling is isolated in the repository's existing package managers and committed lockfiles:
 
 ```bash
-uv sync --all-extras
+uv sync --extra api --extra fabric-sql --extra test
 cd web && npm ci
 npm ci --prefix evals/ontology-discovery
-uv sync --extra eval --locked
+UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple \
+  uv sync --extra eval --locked
 ```
 
 The project already declares the required Azure, storage, Delta, HTTP, telemetry, validation, and test dependencies. Promptfoo is a pinned npm-only evaluation dependency under `evals/ontology-discovery`; Phoenix and `opentelemetry-sdk` are pinned Python `eval` extras. They are not production runtime dependencies. [VERIFIED: pyproject.toml:6-27] [VERIFIED: AI-SPEC.md:548-599]
@@ -94,11 +95,21 @@ The AI-SPEC requires Promptfoo and self-hosted Arize Phoenix. Direct package ide
 |---|---|---|---|
 | Existing `uv.lock` dependencies | Microsoft package-feed proxy/PyPI | `SUS` heuristic result; already repository-locked [VERIFIED: gsd-tools package-legitimacy check, 2026-09-04] | Retain lock; no Phase 13 package addition |
 | `promptfoo==0.122.2` | npm (`promptfoo`) | `VERIFIED` — MIT, canonical `github.com/promptfoo/promptfoo`, executable `promptfoo`, Node >=22.22.0 [VERIFIED: npm registry metadata, 2026-09-04] | Exact dev pin in `evals/ontology-discovery/package.json` and committed package lock; synthetic/local providers only |
-| `arize-phoenix==20.7.0` | PyPI (`arize-phoenix`) | `VERIFIED` — Elastic-2.0, canonical `github.com/Arize-ai/phoenix`, Python >=3.10,<3.15 [VERIFIED: PyPI JSON metadata, 2026-09-04] | Exact `eval` extra pin and committed `uv.lock`; loopback self-hosted evaluation only |
+| `arize-phoenix==20.4.0` | Canonical PyPI identity; artifacts resolved from trusted Microsoft package proxy `https://packagefeedproxy.microsoft.io/pypi/simple` | `VERIFIED` — Elastic-2.0, canonical `github.com/Arize-ai/phoenix`, Python >=3.10,<3.15. Canonical PyPI confirms `20.7.0`, but direct artifact download fails in this environment with `Socket is not connected`; the trusted proxy mirrors through `20.4.0`, and `UV_INDEX_URL=... uv pip install --dry-run arize-phoenix==20.4.0` resolves 149 packages successfully. [VERIFIED: PyPI metadata and proxy dry-run, 2026-09-07] | Exact newest trusted resolvable `eval` pin and committed `uv.lock`; loopback self-hosted evaluation only; no package substitution |
 | `opentelemetry-sdk==1.44.0` | PyPI (`opentelemetry-sdk`) | `VERIFIED` — Apache-2.0, canonical OpenTelemetry repository, Python >=3.10 [VERIFIED: PyPI JSON metadata, 2026-09-04] | Exact `eval` extra pin and committed `uv.lock`; sanitized evaluator spans only |
 
 **Packages removed due to `SLOP` verdict:** none. [VERIFIED: gsd-tools package-legitimacy check, 2026-09-04]  
 **Packages flagged as suspicious `SUS`:** no new direct evaluation package. If repository dependency/license policy rejects Phoenix during locked installation, execution must halt for a blocking decision and AI-SPEC reconciliation; substituting another tracing tool is not permitted.
+
+**Version reconciliation (2026-09-07):** The earlier `20.7.0` direct pin was
+reconciled to `20.4.0` solely because the approved Microsoft proxy does not yet
+mirror newer Phoenix artifacts and direct `files.pythonhosted.org` downloads
+are unavailable. All uv lock/sync examples for the optional `eval` group use
+the proxy explicitly. Production installs omit the optional group and are unchanged. `tool.uv.conflicts`
+makes `api` and `eval` mutually exclusive because Phoenix's evaluation-only
+pydantic-ai/OpenAI dependency line cannot coexist with the Agent Framework
+OpenAI line. This preserves a single committed universal lock while making an
+accidental combined production/evaluation install fail explicitly.
 
 ## Current Manual Sync Trace
 

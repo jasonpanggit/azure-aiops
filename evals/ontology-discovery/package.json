@@ -1,0 +1,12 @@
+{
+  "name": "azure-aiops-ontology-discovery-evals",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Synthetic-only Promptfoo regression gate for ontology discovery",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "devDependencies": {
+    "promptfoo": "0.122.2"
+  }
+}

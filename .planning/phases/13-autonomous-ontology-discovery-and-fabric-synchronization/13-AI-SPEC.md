@@ -556,9 +556,25 @@ for this structured proposal contract.
 
 **Setup:**
 ```bash
-pip install arize-phoenix opentelemetry-sdk
-npm install --global promptfoo
+UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple \
+  uv sync --extra eval --locked
+npm ci --prefix evals/ontology-discovery
+export PATH="$PWD/evals/ontology-discovery/node_modules/.bin:$PATH"
+export PROMPTFOO_DISABLE_TELEMETRY=1
 ```
+
+The committed evaluation lock pins `arize-phoenix==20.4.0`,
+`opentelemetry-sdk==1.44.0`, and Promptfoo `0.122.2`. Canonical PyPI confirms
+Phoenix `20.7.0` exists, but this environment cannot download from
+`files.pythonhosted.org` (`Socket is not connected`). The trusted Microsoft
+package proxy is reachable and mirrors Phoenix through `20.4.0`; an explicit
+dry-run against that proxy resolved `20.4.0` and its 149-package environment.
+`20.4.0` is therefore the newest trusted resolvable direct pin, not a Phoenix
+substitution. The `eval` extra remains opt-in and does not change production
+dependency installation. uv records `api` and `eval` as conflicting extras
+because Phoenix's evaluation-only pydantic-ai/OpenAI line is incompatible with
+the production Agent Framework OpenAI line; production selects `api`, local
+evaluation selects `eval`, and selecting both fails explicitly.
 
 ```python
 # Local/self-hosted evaluation tracing; never export raw sensitive metadata.
@@ -593,7 +609,9 @@ uv run python scripts/evaluate_ontology_discovery.py \
   --fail-on-threshold
 ```
 
-CI uses recorded/synthetic fixtures and a pinned prompt/model contract. A
+CI uses recorded/synthetic fixtures and a pinned prompt/model contract. Every
+uv lock/sync command selecting the evaluation extra sets
+`UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple`. A
 credentialed scheduled deployment gate runs the same evaluator against the
 deployed Foundry agent, writes a versioned baseline artifact, and never exposes
 secrets or cross-scope production data to a third-party evaluation service.

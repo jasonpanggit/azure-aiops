@@ -18,7 +18,7 @@ updated: 2026-09-06
 | Web | Vitest 2.x via `cd web && npm test -- --run ...` |
 | Infrastructure | Terraform 1.14.8 `fmt -check` + `validate` plus pytest HCL assertions |
 | Prompt regression | Promptfoo 0.122.2 via `npm ci --prefix evals/ontology-discovery`; config validation plus exact no-cache eval |
-| Trace inspection | Arize Phoenix 20.7.0 + OpenTelemetry SDK 1.44.0 via locked `eval` extra; loopback/self-hosted synthetic spans only |
+| Trace inspection | Arize Phoenix 20.4.0 + OpenTelemetry SDK 1.44.0 via locked opt-in `eval` extra and trusted Microsoft package proxy; loopback/self-hosted synthetic spans only |
 | Quick local target | One task-specific test file, normally under 60 seconds |
 | Full gate | Backend, ruff, web tests/typecheck/build, Terraform, synthetic evaluator, credentialed live validator |
 | Watch mode | Forbidden; every command is finite |
@@ -65,7 +65,7 @@ updated: 2026-09-06
 | 13-12-02 | 12 | 9 | AUTO-ONT-01,06 | app wiring | `uv run pytest -q tests/test_api_ontology_discovery.py tests/test_api_ontology_evaluation.py -x` | consumes | pending |
 | 13-13-01 | 13 | 10 | AUTO-ONT-06,07 | web contract | `cd web && npm test -- --run src/app/connections/page.test.tsx && npx tsc --noEmit` | consumes | pending |
 | 13-13-02 | 13 | 10 | AUTO-ONT-01,04,05,06 | web/accessibility | `cd web && npm test -- --run src/app/connections/page.test.tsx && npx tsc --noEmit` | consumes | pending |
-| 13-14-01 | 14 | 11 | AUTO-ONT-03,07 | config/dependency | `uv sync --extra eval --locked && npm ci --prefix evals/ontology-discovery && export PATH="$PWD/evals/ontology-discovery/node_modules/.bin:$PATH" PROMPTFOO_DISABLE_TELEMETRY=1 && promptfoo validate -c evals/ontology-discovery/promptfooconfig.yaml` | consumes | pending |
+| 13-14-01 | 14 | 11 | AUTO-ONT-03,07 | config/dependency | `UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple uv sync --extra eval --locked && npm ci --prefix evals/ontology-discovery && export PATH="$PWD/evals/ontology-discovery/node_modules/.bin:$PATH" PROMPTFOO_DISABLE_TELEMETRY=1 && promptfoo validate -c evals/ontology-discovery/promptfooconfig.yaml` | consumes | pending |
 | 13-14-02 | 14 | 11 | AUTO-ONT-03,04,06,07 | Promptfoo/snapshot | `uv run pytest -q tests/test_ontology_discovery_evals.py -x && export PATH="$PWD/evals/ontology-discovery/node_modules/.bin:$PATH" PROMPTFOO_DISABLE_TELEMETRY=1 && promptfoo validate -c evals/ontology-discovery/promptfooconfig.yaml && promptfoo eval -c evals/ontology-discovery/promptfooconfig.yaml --no-cache && uv run python scripts/evaluate_ontology_discovery.py --synthetic-only --dataset tests/fixtures/ontology_discovery/reference.jsonl --fail-on-threshold` | consumes | pending |
 | 13-14-03 | 14 | 11 | AUTO-ONT-06,07 | Phoenix/security | `uv run pytest -q tests/test_ontology_trace_redaction.py tests/test_ontology_discovery_evals.py -x && uv run --extra eval python scripts/inspect_ontology_traces.py --launch-local --dataset tests/fixtures/ontology_discovery/reference.jsonl --fail-on-redaction` | consumes | pending |
 | 13-15-01 | 15 | 12 | AUTO-ONT-01,07 | alert/Terraform | `uv run pytest -q tests/test_ontology_discovery_alerts.py && terraform -chdir=infra/terraform fmt -check && terraform -chdir=infra/terraform validate && uv run python scripts/validate_ontology_discovery_live.py --alert-smoke --synthetic-only --fail-on-missing-evidence` | consumes | pending |
