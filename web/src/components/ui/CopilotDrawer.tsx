@@ -38,8 +38,12 @@ interface ChatTurn {
   fallbackReason?: string;
   uncertainty?: string[];
   coverage?: CanonicalCopilotResult["coverage"];
-  citations?: CanonicalCopilotCitation[];
+  citations?: ServerSuppliedCitation[];
 }
+
+type ServerSuppliedCitation = CanonicalCopilotCitation & {
+  observation_status?: unknown;
+};
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
   ok: "success",
@@ -89,7 +93,8 @@ const INERT_THREAD_CONTINUITY: ThreadContinuityContextValue = {
   thread: null,
   requiresServerRevalidation: false,
   resetReason: null,
-  acceptServerState: () => false,
+  generation: 0,
+  acceptServerState: () => true,
   resetContinuity: () => undefined,
 };
 
@@ -121,11 +126,12 @@ function isCanonicalSnapshot(
   return snapshot?.version === "2";
 }
 
-function serverEvidenceState(status: string): {
+function serverEvidenceState(observationStatus: unknown): {
   label: string;
   tone: "success" | "warning" | "info";
 } | null {
-  switch (status.trim().toLowerCase()) {
+  if (typeof observationStatus !== "string") return null;
+  switch (observationStatus.trim().toLowerCase()) {
     case "historical":
     case "historical_scope_restricted":
       return { label: "Historical evidence", tone: "warning" };
@@ -139,6 +145,17 @@ function serverEvidenceState(status: string): {
   }
 }
 
+function ServerEvidenceStateBadge({
+  observationStatus,
+}: {
+  observationStatus: unknown;
+}) {
+  const state = serverEvidenceState(observationStatus);
+  return state
+    ? <StatusBadge label={state.label} tone={state.tone} compact />
+    : null;
+}
+
 export function CopilotDrawer({
   open,
   onClose,
@@ -148,7 +165,8 @@ export function CopilotDrawer({
   requestedScope,
 }: CopilotDrawerProps) {
   const { scope } = useScope();
-  const threadContinuity = useOptionalThreadContinuity() ?? INERT_THREAD_CONTINUITY;
+  const providedThreadContinuity = useOptionalThreadContinuity();
+  const threadContinuity = providedThreadContinuity ?? INERT_THREAD_CONTINUITY;
   const effectiveRequestedScope = requestedScope ?? scope;
   const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
   const contextFingerprint = stableJson({
@@ -168,8 +186,13 @@ export function CopilotDrawer({
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
   const activeRequestFingerprint = useRef<string | null>(null);
+  const liveContinuityGeneration = useRef(threadContinuity.generation);
+  const appliedContinuityGeneration = useRef(threadContinuity.generation);
   const panelRef = useRef<HTMLDivElement>(null);
   const resizing = useRef(false);
+  if (liveContinuityGeneration.current !== threadContinuity.generation) {
+    liveContinuityGeneration.current = threadContinuity.generation;
+  }
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -181,6 +204,12 @@ export function CopilotDrawer({
     }
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
+
+  useEffect(() => () => {
+    requestGeneration.current += 1;
+    requestInFlight.current = false;
+    activeRequestFingerprint.current = null;
+  }, []);
 
   useEffect(() => {
     function onPointerMove(event: PointerEvent) {
@@ -214,6 +243,26 @@ export function CopilotDrawer({
     setStage("idle");
   }, [contextFingerprint]);
 
+  useEffect(() => {
+    if (
+      appliedContinuityGeneration.current
+      === threadContinuity.generation
+    ) {
+      return;
+    }
+    appliedContinuityGeneration.current = threadContinuity.generation;
+    requestGeneration.current += 1;
+    requestInFlight.current = false;
+    activeRequestFingerprint.current = null;
+    setTurns([]);
+    setTranscriptFingerprint(contextFingerprint);
+    setQuestion("");
+    setLastSnapshot(null);
+    setLastQuestion("");
+    setLoading(false);
+    setStage("idle");
+  }, [contextFingerprint, threadContinuity.generation]);
+
   async function ask(
     value: string,
     tool?: string,
@@ -229,10 +278,12 @@ export function CopilotDrawer({
     setTranscriptFingerprint(contextFingerprint);
     const submittedContextFingerprint = contextFingerprint;
     const submittedGeneration = requestGeneration.current;
+    const submittedContinuityGeneration = liveContinuityGeneration.current;
     activeRequestFingerprint.current = submittedContextFingerprint;
     const requestIsCurrent = () => (
       requestGeneration.current === submittedGeneration
       && contextFingerprintRef.current === submittedContextFingerprint
+      && liveContinuityGeneration.current === submittedContinuityGeneration
     );
     setLastQuestion(nextQuestion);
     try {
@@ -261,10 +312,15 @@ export function CopilotDrawer({
           );
         if (!requestIsCurrent()) return;
         const result = envelope.data;
-        threadContinuity.acceptServerState({
-          threadId: result.thread_id,
-          threadRevision: result.thread_revision,
-        });
+        if (!threadContinuity.acceptServerState(
+          {
+            threadId: result.thread_id,
+            threadRevision: result.thread_revision,
+          },
+          submittedContinuityGeneration,
+        )) {
+          return;
+        }
         setTurns((current) => [
           ...current,
           {
@@ -348,6 +404,7 @@ export function CopilotDrawer({
       );
       if (isThreadReset) {
         threadContinuity.resetContinuity("not_found");
+        if (providedThreadContinuity) return;
       }
       setTurns((current) => [
         ...current,
@@ -446,6 +503,11 @@ export function CopilotDrawer({
             {!visibleLoading && visibleStage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
             {!visibleLoading && visibleStage === "error" && "The request failed. Retry the same bounded page snapshot."}
           </div>
+          {providedThreadContinuity?.resetReason === "not_found" && (
+            <p className="copilot-fallback-note" role="alert">
+              {THREAD_RESET_MESSAGE}
+            </p>
+          )}
           {visibleTurns.map((turn, index) => (
             <div className="copilot-turn" key={`${turn.question}-${index}`}>
               <div className="copilot-question"><span>You</span><p>{turn.question}</p></div>
@@ -524,13 +586,9 @@ export function CopilotDrawer({
                             <li key={citation.citation_id}>
                               <code>{citation.citation_id}</code>
                               <span>{citation.source}</span>
-                              {serverEvidenceState(citation.status) && (
-                                <StatusBadge
-                                  label={serverEvidenceState(citation.status)!.label}
-                                  tone={serverEvidenceState(citation.status)!.tone}
-                                  compact
-                                />
-                              )}
+                              <ServerEvidenceStateBadge
+                                observationStatus={citation.observation_status}
+                              />
                             </li>
                           ))}
                         </ul>

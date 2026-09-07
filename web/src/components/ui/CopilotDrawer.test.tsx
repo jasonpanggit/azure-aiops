@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   COPILOT_THREAD_STORAGE_KEY,
   ThreadContinuityProvider,
+  useThreadContinuity,
 } from "@/lib/copilot/thread-context";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
@@ -33,15 +34,93 @@ const snapshot = {
   rechecks: [],
 };
 
+class DrawerTestLockManager {
+  private readonly held = new Set<string>();
+
+  request(
+    name: string,
+    _options: LockOptions,
+    callback: (lock: Lock | null) => unknown,
+  ): Promise<unknown> {
+    if (this.held.has(name)) {
+      return Promise.resolve(callback(null));
+    }
+    this.held.add(name);
+    return Promise.resolve(callback({
+      name,
+      mode: "exclusive",
+    } as Lock)).finally(() => {
+      this.held.delete(name);
+    });
+  }
+}
+
+function RootContinuityMarker() {
+  const continuity = useThreadContinuity();
+  return (
+    <output aria-label="root continuity">
+      {continuity.thread?.threadId ?? "none"}
+    </output>
+  );
+}
+
 function TestProviders({ children }: { children: ReactNode }) {
   return (
     <ScopeProvider>
-      <ThreadContinuityProvider>{children}</ThreadContinuityProvider>
+      <ThreadContinuityProvider>
+        <RootContinuityMarker />
+        {children}
+      </ThreadContinuityProvider>
     </ScopeProvider>
   );
 }
 
+function SessionEndControl({ children }: { children: ReactNode }) {
+  const continuity = useThreadContinuity();
+  return (
+    <>
+      <output aria-label="active continuity">
+        {continuity.thread?.threadId ?? "none"}
+      </output>
+      <output aria-label="continuity reset reason">
+        {continuity.resetReason ?? "none"}
+      </output>
+      <button
+        type="button"
+        onClick={() => continuity.resetContinuity("session_end")}
+      >
+        End session
+      </button>
+      {children}
+    </>
+  );
+}
+
 describe("CopilotDrawer", () => {
+  beforeEach(() => {
+    const lockManager = new DrawerTestLockManager();
+    vi.stubGlobal("navigator", Object.create(
+      globalThis.navigator,
+      { locks: { configurable: true, value: lockManager } },
+    ));
+    vi.stubGlobal("crypto", {
+      subtle: {
+        digest: async (_algorithm: string, value: BufferSource) => {
+          const input = new Uint8Array(value as ArrayBuffer);
+          const output = new Uint8Array(32);
+          input.forEach((byte, index) => {
+            output[index % output.length] ^= byte;
+          });
+          return output.buffer;
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   function canonicalSnapshot(tab: "os" | "software" | "azure") {
     return {
       version: "2" as const,
@@ -311,17 +390,25 @@ describe("CopilotDrawer", () => {
           {
             ...result.data.citations[0],
             citation_id: "server:historical",
-            status: "historical",
+            status: "ok",
+            observation_status: "historical",
           },
           {
             ...result.data.citations[0],
             citation_id: "server:revalidated",
-            status: "revalidated",
+            status: "ok",
+            observation_status: "revalidated",
           },
           {
             ...result.data.citations[0],
             citation_id: "server:current",
-            status: "current",
+            status: "ok",
+            observation_status: "current",
+          },
+          {
+            ...result.data.citations[0],
+            citation_id: "server:outcome-only",
+            status: "historical",
           },
         ],
       },
@@ -354,6 +441,8 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("server:historical")).toBeInTheDocument();
     expect(screen.getByText("server:revalidated")).toBeInTheDocument();
     expect(screen.getByText("server:current")).toBeInTheDocument();
+    expect(screen.getByText("server:outcome-only")).toBeInTheDocument();
+    expect(screen.getAllByText("Historical evidence")).toHaveLength(1);
   });
 
   it.each([
@@ -389,6 +478,11 @@ describe("CopilotDrawer", () => {
           />
         </TestProviders>,
       );
+      await waitFor(() => {
+        expect(screen.getByLabelText("root continuity")).toHaveTextContent(
+          "thr-55555555555555555555555555555555",
+        );
+      });
       fireEvent.click(screen.getByRole("button", { name: /^Continue investigation/ }));
 
       expect(await screen.findByText(
@@ -404,6 +498,251 @@ describe("CopilotDrawer", () => {
       );
     },
   );
+
+  it("discards a response that resolves after the session ends", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const threadId = "thr-88888888888888888888888888888888";
+    window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+      thread_id: threadId,
+      thread_revision: 2,
+    }));
+    let resolveRequest:
+      | ((value: ReturnType<typeof canonicalResult>) => void)
+      | undefined;
+    investigateCanonical.mockReturnValue(new Promise((resolve) => {
+      resolveRequest = resolve;
+    }));
+
+    render(
+      <TestProviders>
+        <SessionEndControl>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Inventory"
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={canonicalSnapshot("os")}
+            starterQuestions={[{ label: "Continue before logout" }]}
+          />
+        </SessionEndControl>
+      </TestProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("active continuity")).toHaveTextContent(threadId);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Continue before logout/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({ thread_id: threadId }),
+      { subscription: ["sub-a"] },
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "End session" }));
+    expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+
+    await act(async () => {
+      resolveRequest?.(
+        canonicalResult(
+          "thr-99999999999999999999999999999999",
+          "server:after-logout",
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Gathering the visible page evidence/)).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("server:after-logout")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("active continuity")).toHaveTextContent("none");
+    expect(screen.getByLabelText("continuity reset reason")).toHaveTextContent("session_end");
+    expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+  });
+
+  it("ignores a late thread 404 without overwriting the session-end reset", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const threadId = "thr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+      thread_id: threadId,
+      thread_revision: 3,
+    }));
+    let rejectRequest: ((reason: unknown) => void) | undefined;
+    investigateCanonical.mockReturnValue(new Promise((_resolve, reject) => {
+      rejectRequest = reject;
+    }));
+
+    render(
+      <TestProviders>
+        <SessionEndControl>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Inventory"
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={canonicalSnapshot("os")}
+            starterQuestions={[{ label: "Continue before rejection" }]}
+          />
+        </SessionEndControl>
+      </TestProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("active continuity")).toHaveTextContent(threadId);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Continue before rejection/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "End session" }));
+
+    await act(async () => {
+      rejectRequest?.(new ApiError(
+        404,
+        "not_found",
+        "Thread belonged to another principal",
+        { field: "thread_id", reason: "mismatch" },
+      ));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("continuity reset reason")).toHaveTextContent("session_end");
+    expect(screen.queryByText(/another principal/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(
+      "This investigation is no longer available. Start a new investigation to continue.",
+    )).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+  });
+
+  it("redacts a late legacy response after the session ends", async () => {
+    investigateContext.mockReset();
+    let resolveLegacy: ((value: {
+      data: {
+        findings: Array<{
+          finding_id: string;
+          status: "verified";
+          summary: string;
+          check_id: string;
+          evidence_refs: string[];
+          next_check: string;
+        }>;
+        tool_calls: [];
+        synthesis_mode: "deterministic";
+        warnings: [];
+      };
+      evidence: [];
+      warnings: [];
+    }) => void) | undefined;
+    investigateContext.mockReturnValue(new Promise((resolve) => {
+      resolveLegacy = resolve;
+    }));
+
+    render(
+      <TestProviders>
+        <SessionEndControl>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Network"
+            snapshot={snapshot}
+            starterQuestions={[{ label: "Run legacy request" }]}
+          />
+        </SessionEndControl>
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Run legacy request/ }));
+    await waitFor(() => expect(investigateContext).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "End session" }));
+
+    await act(async () => {
+      resolveLegacy?.({
+        data: {
+          findings: [{
+            finding_id: "late-legacy",
+            status: "verified",
+            summary: "Late legacy finding",
+            check_id: "LEGACY-1",
+            evidence_refs: ["legacy:evidence"],
+            next_check: "Recheck",
+          }],
+          tool_calls: [],
+          synthesis_mode: "deterministic",
+          warnings: [],
+        },
+        evidence: [],
+        warnings: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("Late legacy finding")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("continuity reset reason")).toHaveTextContent("session_end");
+    expect(screen.getByText(/Answers stay scoped/)).toBeInTheDocument();
+  });
+
+  it("prevents an unmounted drawer response from replacing the next page thread", async () => {
+    investigateCanonical.mockReset();
+    window.sessionStorage.clear();
+    const firstThread = "thr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const secondThread = "thr-cccccccccccccccccccccccccccccccc";
+    let resolveFirst:
+      | ((value: ReturnType<typeof canonicalResult>) => void)
+      | undefined;
+    investigateCanonical
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveFirst = resolve;
+      }))
+      .mockResolvedValueOnce(
+        canonicalResult(secondThread, "server:page-b"),
+      );
+
+    function NavigationHarness({ page }: { page: "a" | "b" }) {
+      const continuity = useThreadContinuity();
+      return (
+        <>
+          <output aria-label="navigation continuity">
+            {continuity.thread?.threadId ?? "none"}
+          </output>
+          <CopilotDrawer
+            key={page}
+            open
+            onClose={vi.fn()}
+            contextLabel={`Page ${page.toUpperCase()}`}
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={canonicalSnapshot(page === "a" ? "os" : "software")}
+            starterQuestions={[{
+              label: page === "a" ? "Ask from page A" : "Ask from page B",
+            }]}
+          />
+        </>
+      );
+    }
+
+    const view = render(
+      <TestProviders><NavigationHarness page="a" /></TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Ask from page A/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <TestProviders><NavigationHarness page="b" /></TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Ask from page B/ }));
+    expect(await screen.findByText("server:page-b")).toBeInTheDocument();
+    expect(screen.getByLabelText("navigation continuity")).toHaveTextContent(secondThread);
+
+    await act(async () => {
+      resolveFirst?.(canonicalResult(firstThread, "server:late-page-a"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("navigation continuity")).toHaveTextContent(secondThread);
+    expect(screen.getByText("server:page-b")).toBeInTheDocument();
+    expect(screen.queryByText("server:late-page-a")).not.toBeInTheDocument();
+    expect(JSON.parse(
+      window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)!,
+    )).toEqual({
+      thread_id: secondThread,
+      thread_revision: 1,
+    });
+  });
 
   it("keeps deterministic current-page evidence visible when optional narration is unavailable", async () => {
     investigateCanonical.mockClear();
@@ -432,7 +771,8 @@ describe("CopilotDrawer", () => {
         citations: [{
           ...result.data.citations[0],
           citation_id: "server:current-page",
-          status: "current",
+          status: "ok",
+          observation_status: "current",
         }],
       },
     });
@@ -516,6 +856,9 @@ describe("CopilotDrawer", () => {
     });
 
     render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
+    await waitFor(() => {
+      expect(screen.getByLabelText("root continuity")).toHaveTextContent(threadId);
+    });
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).toMatchObject({ thread_id: threadId });
@@ -587,6 +930,9 @@ describe("CopilotDrawer", () => {
         <CopilotDrawer {...props} />
       </TestProviders>,
     );
+    await waitFor(() => {
+      expect(screen.getByLabelText("root continuity")).toHaveTextContent(expiredThread);
+    });
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     expect(await screen.findByText(
       "This investigation is no longer available. Start a new investigation to continue.",
@@ -594,7 +940,7 @@ describe("CopilotDrawer", () => {
     expect(screen.queryByText("Investigation thread not found")).not.toBeInTheDocument();
     expect(window.sessionStorage).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
     expect(window.sessionStorage).toHaveLength(1);

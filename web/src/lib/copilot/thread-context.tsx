@@ -18,6 +18,7 @@ import { useScope } from "@/lib/scope-context";
 export const COPILOT_THREAD_STORAGE_KEY = "aiops.copilot.thread";
 
 const OPAQUE_THREAD_PATTERN = /^thr-[a-f0-9]{32}$/;
+const CONTINUITY_LOCK_PREFIX = "aiops.copilot.thread-ownership.";
 
 /** A server-issued continuity handle. It contains no conversation or authority. */
 export interface ThreadContinuity {
@@ -33,7 +34,12 @@ export interface ThreadContinuityContextValue {
   thread: ThreadContinuity | null;
   requiresServerRevalidation: boolean;
   resetReason: ThreadResetReason | null;
-  acceptServerState: (thread: ThreadContinuity) => boolean;
+  /** Increments whenever the current browser session discards continuity. */
+  generation: number;
+  acceptServerState: (
+    thread: ThreadContinuity,
+    expectedGeneration?: number,
+  ) => boolean;
   resetContinuity: (reason?: ThreadResetReason) => void;
 }
 
@@ -51,6 +57,7 @@ interface ProviderState {
   thread: ThreadContinuity | null;
   requiresServerRevalidation: boolean;
   resetReason: ThreadResetReason | null;
+  generation: number;
 }
 
 interface StoredThread {
@@ -59,6 +66,7 @@ interface StoredThread {
 }
 
 const ThreadContext = createContext<ThreadContinuityContextValue | null>(null);
+const pendingStoredThreads = new WeakMap<Storage, ThreadContinuity>();
 
 function sessionStorageForThisTab(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -117,6 +125,21 @@ function parseStoredThread(storage: Storage | null): ThreadContinuity | null {
   }
 }
 
+function takeStoredThread(storage: Storage | null): ThreadContinuity | null {
+  if (!storage) return null;
+  const pending = pendingStoredThreads.get(storage);
+  if (pending) return pending;
+  const restored = parseStoredThread(storage);
+  if (!restored) return null;
+  removeStoredThread(storage);
+  pendingStoredThreads.set(storage, restored);
+  return restored;
+}
+
+function clearPendingStoredThread(storage: Storage | null): void {
+  if (storage) pendingStoredThreads.delete(storage);
+}
+
 function persistThread(storage: Storage | null, thread: ThreadContinuity): void {
   if (!storage) return;
   const record: StoredThread = {
@@ -139,6 +162,24 @@ function normalizedScopeFingerprint(scope: Record<string, string[]>): string {
   );
 }
 
+function canCoordinateTabOwnership(): boolean {
+  return (
+    typeof navigator !== "undefined"
+    && typeof navigator.locks?.request === "function"
+    && typeof globalThis.crypto?.subtle?.digest === "function"
+  );
+}
+
+async function continuityLockName(threadId: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(threadId),
+  );
+  const ownershipKey = Array.from(new Uint8Array(digest), (value) =>
+    value.toString(16).padStart(2, "0")).join("");
+  return `${CONTINUITY_LOCK_PREFIX}${ownershipKey}`;
+}
+
 /**
  * Carries only a server-issued opaque thread ID and revision across route
  * remounts in this browser tab. Stored state is never treated as proof of
@@ -153,34 +194,64 @@ export function ThreadContinuityProvider({
   const storage = suppliedStorage ?? sessionStorageForThisTab();
   const restoredThread = useRef<ThreadContinuity | null | undefined>(undefined);
   if (restoredThread.current === undefined) {
-    restoredThread.current = parseStoredThread(storage) ?? null;
+    restoredThread.current = takeStoredThread(storage);
   }
+  const pendingRestore = useRef<ThreadContinuity | null>(
+    restoredThread.current ?? null,
+  );
   const [state, setState] = useState<ProviderState>(() => ({
-    thread: restoredThread.current ?? null,
-    requiresServerRevalidation: Boolean(restoredThread.current),
+    thread: null,
+    requiresServerRevalidation: false,
     resetReason: null,
+    generation: 0,
   }));
   const stateRef = useRef(state);
   const scopeFingerprint = normalizedScopeFingerprint(scope);
   const previousScopeFingerprint = useRef(scopeFingerprint);
+  const ownershipAttempt = useRef(0);
+  const heldOwnership = useRef<{
+    threadId: string;
+    release: () => void;
+  } | null>(null);
 
   const replaceState = useCallback((next: ProviderState) => {
     stateRef.current = next;
     setState(next);
   }, []);
 
+  const releaseOwnership = useCallback(() => {
+    ownershipAttempt.current += 1;
+    const held = heldOwnership.current;
+    heldOwnership.current = null;
+    held?.release();
+  }, []);
+
   const resetContinuity = useCallback((
     reason: ThreadResetReason = "manual",
   ) => {
+    pendingRestore.current = null;
+    clearPendingStoredThread(storage);
+    releaseOwnership();
     removeStoredThread(storage);
+    const generation = stateRef.current.generation + 1;
     replaceState({
       thread: null,
       requiresServerRevalidation: false,
       resetReason: reason,
+      generation,
     });
-  }, [replaceState, storage]);
+  }, [releaseOwnership, replaceState, storage]);
 
-  const acceptServerState = useCallback((thread: ThreadContinuity): boolean => {
+  const acceptServerState = useCallback((
+    thread: ThreadContinuity,
+    expectedGeneration?: number,
+  ): boolean => {
+    if (
+      expectedGeneration !== undefined
+      && expectedGeneration !== stateRef.current.generation
+    ) {
+      return false;
+    }
     if (
       !OPAQUE_THREAD_PATTERN.test(thread.threadId)
       || !Number.isSafeInteger(thread.threadRevision)
@@ -197,14 +268,122 @@ export function ThreadContinuityProvider({
     ) {
       return false;
     }
-    persistThread(storage, thread);
+    pendingRestore.current = null;
+    clearPendingStoredThread(storage);
+    if (heldOwnership.current?.threadId !== thread.threadId) {
+      releaseOwnership();
+      removeStoredThread(storage);
+    } else {
+      persistThread(storage, thread);
+    }
     replaceState({
       thread,
       requiresServerRevalidation: false,
       resetReason: null,
+      generation: stateRef.current.generation,
     });
     return true;
-  }, [replaceState, resetContinuity, storage]);
+  }, [releaseOwnership, replaceState, resetContinuity, storage]);
+
+  const acquireOwnership = useCallback((
+    thread: ThreadContinuity,
+    restoring: boolean,
+  ) => {
+    if (!canCoordinateTabOwnership()) {
+      if (restoring && pendingRestore.current === thread) {
+        pendingRestore.current = null;
+        clearPendingStoredThread(storage);
+        removeStoredThread(storage);
+        replaceState({
+          thread: null,
+          requiresServerRevalidation: false,
+          resetReason: null,
+          generation: stateRef.current.generation + 1,
+        });
+      } else {
+        removeStoredThread(storage);
+      }
+      return;
+    }
+    if (heldOwnership.current?.threadId === thread.threadId) return;
+
+    releaseOwnership();
+    const attempt = ownershipAttempt.current;
+    void continuityLockName(thread.threadId).then(async (lockName) => {
+      if (attempt !== ownershipAttempt.current) return;
+      await navigator.locks.request(
+        lockName,
+        { mode: "exclusive", ifAvailable: true },
+        async (lock) => {
+          if (attempt !== ownershipAttempt.current) return;
+          if (!lock) {
+            if (
+              pendingRestore.current === thread
+              || stateRef.current.thread?.threadId === thread.threadId
+            ) {
+              pendingRestore.current = null;
+              clearPendingStoredThread(storage);
+              removeStoredThread(storage);
+              replaceState({
+                thread: null,
+                requiresServerRevalidation: false,
+                resetReason: null,
+                generation: stateRef.current.generation + 1,
+              });
+            }
+            return;
+          }
+
+          let releaseLock: (() => void) | undefined;
+          const lockLifetime = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+          });
+          heldOwnership.current = {
+            threadId: thread.threadId,
+            release: () => releaseLock?.(),
+          };
+          if (pendingRestore.current === thread) {
+            pendingRestore.current = null;
+            clearPendingStoredThread(storage);
+            persistThread(storage, thread);
+            replaceState({
+              ...stateRef.current,
+              thread,
+              requiresServerRevalidation: true,
+            });
+          } else if (
+            stateRef.current.thread?.threadId === thread.threadId
+          ) {
+            persistThread(storage, stateRef.current.thread);
+          }
+          await lockLifetime;
+        },
+      );
+    }).catch(() => {
+      if (attempt !== ownershipAttempt.current) return;
+      removeStoredThread(storage);
+      if (pendingRestore.current === thread) {
+        pendingRestore.current = null;
+        clearPendingStoredThread(storage);
+        replaceState({
+          thread: null,
+          requiresServerRevalidation: false,
+          resetReason: null,
+          generation: stateRef.current.generation + 1,
+        });
+      }
+    });
+  }, [releaseOwnership, replaceState, storage]);
+
+  useEffect(() => {
+    const candidate = state.thread ?? pendingRestore.current;
+    if (!candidate) return;
+    acquireOwnership(candidate, pendingRestore.current === candidate);
+  }, [acquireOwnership, state.thread]);
+
+  useEffect(() => () => {
+    releaseOwnership();
+  }, [releaseOwnership]);
 
   useEffect(() => {
     if (previousScopeFingerprint.current === scopeFingerprint) return;
@@ -238,6 +417,7 @@ export function ThreadContinuityProvider({
     thread: state.thread,
     requiresServerRevalidation: state.requiresServerRevalidation,
     resetReason: state.resetReason,
+    generation: state.generation,
     acceptServerState,
     resetContinuity,
   }), [acceptServerState, resetContinuity, state]);
