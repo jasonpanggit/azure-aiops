@@ -459,7 +459,7 @@ function boundedSourceKey(value: string): string {
 
 function boundedCoreSourceKey(value: string): string {
   const sourceKey = value.trim();
-  if (Array.from(sourceKey).length <= 256) return boundedSourceKey(sourceKey);
+  if (Array.from(sourceKey).length <= 160) return boundedSourceKey(sourceKey);
   if (/[\0\r\n]/.test(sourceKey)) {
     throw new Error("source key contains an invalid control character");
   }
@@ -1102,6 +1102,18 @@ function isCanonicalAzureResourceId(value: string | undefined): value is string 
   );
 }
 
+function coreRecordSourceKey(record: CoreCopilotRecord): string {
+  const identity = String(record.identity ?? "").trim();
+  if (identity) return boundedCoreSourceKey(identity);
+  return `anonymous:${sha256(stableJson([
+    record.namespace,
+    record.kind,
+    record.source,
+    record.resourceId ?? "",
+    record.data,
+  ]))}`;
+}
+
 function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
   if (isCanonicalAzureResourceId(record.resourceId)) {
     return {
@@ -1113,7 +1125,7 @@ function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
     type: "domain",
     namespace: boundedString("entity namespace", record.namespace, 1, 64),
     kind: boundedString("entity kind", record.kind, 1, 64),
-    source_key: boundedCoreSourceKey(record.identity),
+    source_key: coreRecordSourceKey(record),
   };
 }
 
@@ -1179,7 +1191,7 @@ function normalizeCoverage(
 function coreEvidenceRow(record: CoreCopilotRecord) {
   const source = boundedString("evidence source", record.source, 1, 128);
   const entity = coreRecordEntity(record);
-  const sourceKey = boundedCoreSourceKey(record.identity);
+  const sourceKey = coreRecordSourceKey(record);
   const claimType = boundedString("claim type", record.kind, 1, 64);
   const data = {
     ...record.data,
@@ -1455,9 +1467,9 @@ function envelopeSourceStatus(
     : "unavailable";
   const observedAt = evidence.reduce(
     (latest, item) => item.timestamp > latest ? item.timestamp : latest,
-    envelope.live_observed_at ?? "unknown",
+    envelope.live_observed_at ?? "",
   );
-  return { source, observedAt, status };
+  return { source, observedAt: observedAt || "unknown", status };
 }
 
 function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterInput {
@@ -1799,7 +1811,9 @@ function complianceCoreInput(
     scope: input.scope,
     filters: {
       policy: [input.policyName],
-      ...(input.selectedId ? { selected: [input.selectedId] } : {}),
+      ...(input.selectedId
+        ? { selected: [boundedCoreSourceKey(input.selectedId)] }
+        : {}),
     },
     sort: { severity: "desc" },
     records,
