@@ -471,16 +471,49 @@ def test_ledger_store_configuration_rejects_adapter_without_thread_cas() -> None
         configure_ledger_store(LedgerOnlyDocuments())
 
 
-def test_history_returns_fresh_state_after_one_persistence_conflict() -> None:
+def test_history_retries_scope_narrowing_after_one_persistence_conflict() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)
-    thread = store.create("operator-a", SUB_A)
-    store.append(thread.thread_id, "operator-a", SUB_A, _turn())
+    thread = store.create("operator-a", BROAD)
+    store.append(
+        thread.thread_id,
+        "operator-a",
+        BROAD,
+        {
+            "status": "ok",
+            "tool_results": [{"data": {"subscription": "sub-b", "secret": "b-only"}}],
+        },
+    )
     documents.conflict_writes = 1
 
     history = store.history(thread.thread_id, "operator-a", SUB_A)
 
-    assert [item["snapshot_id"] for item in history] == ["snap-one"]
+    assert history[0]["status"] == "historical_scope_restricted"
+    assert "b-only" not in str(history)
+    persisted = documents.documents[thread_document_name(thread.thread_id)]
+    assert persisted["scope"] == SUB_A.to_dict()
+    assert persisted["turns"][0]["observation_status"] == OBSERVATION_HISTORICAL
+
+    restarted = InvestigationThreadStore(documents=documents)
+    with pytest.raises(ThreadNotFound):
+        restarted.history(thread.thread_id, "operator-a", BROAD)
+    assert "b-only" not in str(
+        restarted.history(thread.thread_id, "operator-a", SUB_A)
+    )
+
+
+def test_history_fails_closed_after_two_scope_narrowing_conflicts() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", BROAD)
+    store.append(thread.thread_id, "operator-a", BROAD, _turn())
+    before = deepcopy(documents.documents[thread_document_name(thread.thread_id)])
+    documents.conflict_writes = 2
+
+    with pytest.raises(ThreadRevisionConflict):
+        store.history(thread.thread_id, "operator-a", SUB_A)
+
+    assert documents.documents[thread_document_name(thread.thread_id)] == before
 
 
 def test_authorize_fails_closed_after_sustained_touch_contention() -> None:
