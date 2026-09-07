@@ -1,0 +1,380 @@
+"""Fenced, deterministic publication of immutable ontology generations."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from ontology.ontology_validator import (
+    OntologyPublicationValidationReport,
+    OntologyValidator,
+)
+from storage.datasets import (
+    AuthoritativeDatasetPublisher,
+    GenerationPointerConditions,
+    GenerationPointerSnapshot,
+)
+from storage.onelake_documents import DocumentConflictError
+
+APPROVED_PUBLICATION_CHECKPOINTS = frozenset(
+    {"approve-pointer-cutover", "approve-publisher-rbac"}
+)
+
+
+class PublicationSafetyError(RuntimeError):
+    """Fail-closed refusal to make a candidate reader-visible."""
+
+
+@dataclass(frozen=True)
+class OntologyGenerationCandidate:
+    """Complete deterministic candidate and its immutable lineage."""
+
+    generation_id: str
+    source_generation: str
+    entities: tuple[dict[str, Any], ...]
+    relationships: tuple[dict[str, Any], ...]
+    proposal_lineage: tuple[str, ...]
+    decision_lineage: tuple[str, ...]
+    policy_version: str
+    schema_version: str
+
+
+class OntologyGenerationPublisher:
+    """Stage, audit, promote, and roll back through one fenced pointer."""
+
+    def __init__(
+        self,
+        storage: AuthoritativeDatasetPublisher,
+        *,
+        validator: OntologyValidator,
+        approved_publisher_identity: str,
+    ) -> None:
+        self._storage = storage
+        self._validator = validator
+        self._approved_publisher_identity = str(
+            approved_publisher_identity
+        ).strip()
+        if (
+            not self._approved_publisher_identity
+            or storage.publisher_identity != self._approved_publisher_identity
+        ):
+            raise PermissionError("publisher adapter identity is not approved")
+
+    def publish(
+        self,
+        candidate: OntologyGenerationCandidate,
+        *,
+        publisher_identity: str,
+        checkpoint_ids: Iterable[str],
+        pointer_conditions: GenerationPointerConditions,
+        owner_id: str,
+        fence: int,
+        consumer_compatibility: Mapping[str, bool],
+        cancellation_check: Callable[[], bool],
+        lease_guard: Callable[[], None],
+    ) -> GenerationPointerSnapshot:
+        self._authorize(publisher_identity, checkpoint_ids)
+        self._guard_runtime(cancellation_check, lease_guard)
+        self._assert_pointer(pointer_conditions)
+        validation = self._validate(candidate, consumer_compatibility)
+        if validation.model_derived_relationships:
+            raise PublicationSafetyError(
+                "model-derived relationships are forbidden in Phase 13 shadow publication"
+            )
+        if (
+            not validation.consumers_complete
+            or not validation.consumers_compatible
+        ):
+            raise PublicationSafetyError(
+                "complete consumer compatibility evidence is required"
+            )
+        if not validation.passed:
+            raise PublicationSafetyError("complete generation validation failed")
+
+        staged = self._stage_payload(
+            candidate,
+            validation=validation,
+            owner_id=owner_id,
+            fence=fence,
+            consumer_compatibility=consumer_compatibility,
+        )
+        try:
+            self._storage.stage_generation(
+                candidate.generation_id,
+                manifest=staged["manifest"],
+                entities=staged["entities"],
+                relationships=staged["relationships"],
+                lineage=staged["lineage"],
+                validation=staged["validation"],
+                compatibility=staged["compatibility"],
+            )
+        except DocumentConflictError as exc:
+            raise PublicationSafetyError(
+                f"generation {candidate.generation_id} is immutable"
+            ) from exc
+
+        audit_intent = {
+            "event": "ontology_generation_promotion",
+            "outcome": "promotion_authorized",
+            "generation_id": candidate.generation_id,
+            "source_generation": candidate.source_generation,
+            "publisher_identity": self._approved_publisher_identity,
+            "owner_id": owner_id,
+            "fence": fence,
+            "checkpoint_ids": sorted(APPROVED_PUBLICATION_CHECKPOINTS),
+            "content_hash": staged["manifest"]["content_hash"],
+        }
+        try:
+            self._storage.persist_generation_audit(
+                candidate.generation_id,
+                audit_intent,
+            )
+        except Exception as exc:
+            raise PublicationSafetyError(
+                "publication audit could not be persisted"
+            ) from exc
+
+        # Recheck every mutable safety fact after staging/audit and immediately
+        # before the one consequential storage CAS.
+        self._guard_runtime(cancellation_check, lease_guard)
+        self._assert_pointer(pointer_conditions)
+        second_validation = self._validate(candidate, consumer_compatibility)
+        if not second_validation.passed:
+            raise PublicationSafetyError(
+                "complete validation changed before promotion"
+            )
+        self._verify_staged(candidate.generation_id, staged)
+        try:
+            promoted = self._storage.conditional_promote(
+                generation_id=candidate.generation_id,
+                source_generation=candidate.source_generation,
+                owner_id=owner_id,
+                fence=fence,
+                conditions=pointer_conditions,
+            )
+        except DocumentConflictError as exc:
+            raise PublicationSafetyError(
+                "stale writer lost the active pointer CAS"
+            ) from exc
+        self._storage.persist_generation_receipt(
+            candidate.generation_id,
+            {
+                **audit_intent,
+                "outcome": "promoted",
+                "pointer_etag": promoted.etag,
+            },
+        )
+        return promoted
+
+    def rollback(
+        self,
+        *,
+        target_generation_id: str,
+        source_generation: str,
+        publisher_identity: str,
+        checkpoint_ids: Iterable[str],
+        pointer_conditions: GenerationPointerConditions,
+        owner_id: str,
+        fence: int,
+        cancellation_check: Callable[[], bool],
+        lease_guard: Callable[[], None],
+    ) -> GenerationPointerSnapshot:
+        self._authorize(publisher_identity, checkpoint_ids)
+        self._guard_runtime(cancellation_check, lease_guard)
+        self._assert_pointer(pointer_conditions)
+        try:
+            target = self._storage.read_generation(target_generation_id)
+        except (FileNotFoundError, TypeError, ValueError) as exc:
+            raise PublicationSafetyError(
+                "rollback target is not a complete immutable generation"
+            ) from exc
+        manifest = target["manifest"]
+        if (
+            manifest.get("complete") is not True
+            or manifest.get("source_generation") != source_generation
+            or target["validation"].get("passed") is not True
+            or target["compatibility"].get("all_consumers_compatible") is not True
+            or not target.get("audit")
+        ):
+            raise PublicationSafetyError(
+                "rollback target failed validation, audit, or compatibility checks"
+            )
+        audit = {
+            "event": "ontology_generation_rollback",
+            "outcome": "rollback_authorized",
+            "target_generation_id": target_generation_id,
+            "source_generation": source_generation,
+            "publisher_identity": self._approved_publisher_identity,
+            "owner_id": owner_id,
+            "fence": fence,
+            "checkpoint_ids": sorted(APPROVED_PUBLICATION_CHECKPOINTS),
+        }
+        try:
+            self._storage.persist_rollback_audit(
+                target_generation_id=target_generation_id,
+                owner_id=owner_id,
+                fence=fence,
+                audit=audit,
+            )
+        except Exception as exc:
+            raise PublicationSafetyError("rollback audit could not be persisted") from exc
+        self._guard_runtime(cancellation_check, lease_guard)
+        self._assert_pointer(pointer_conditions)
+        try:
+            return self._storage.conditional_promote(
+                generation_id=target_generation_id,
+                source_generation=source_generation,
+                owner_id=owner_id,
+                fence=fence,
+                conditions=pointer_conditions,
+            )
+        except DocumentConflictError as exc:
+            raise PublicationSafetyError(
+                "stale writer lost the rollback pointer CAS"
+            ) from exc
+
+    def _authorize(
+        self,
+        publisher_identity: str,
+        checkpoint_ids: Iterable[str],
+    ) -> None:
+        if str(publisher_identity).strip() != self._approved_publisher_identity:
+            raise PublicationSafetyError("publisher identity is not approved")
+        supplied = frozenset(str(value).strip() for value in checkpoint_ids)
+        if not APPROVED_PUBLICATION_CHECKPOINTS.issubset(supplied):
+            raise PublicationSafetyError(
+                "approved pointer and publisher checkpoints are required"
+            )
+
+    @staticmethod
+    def _guard_runtime(
+        cancellation_check: Callable[[], bool],
+        lease_guard: Callable[[], None],
+    ) -> None:
+        if cancellation_check():
+            raise PublicationSafetyError("publication was cancelled")
+        try:
+            lease_guard()
+        except Exception as exc:
+            raise PublicationSafetyError("publisher lease was lost") from exc
+
+    def _assert_pointer(
+        self,
+        conditions: GenerationPointerConditions,
+    ) -> None:
+        try:
+            self._storage.assert_pointer_conditions(conditions)
+        except DocumentConflictError as exc:
+            raise PublicationSafetyError(
+                "stale writer no longer matches the active pointer"
+            ) from exc
+
+    def _validate(
+        self,
+        candidate: OntologyGenerationCandidate,
+        consumer_compatibility: Mapping[str, bool],
+    ) -> OntologyPublicationValidationReport:
+        return self._validator.validate_publication(
+            entities=candidate.entities,
+            relationships=candidate.relationships,
+            source_generation=candidate.source_generation,
+            proposal_lineage=candidate.proposal_lineage,
+            decision_lineage=candidate.decision_lineage,
+            consumer_compatibility=consumer_compatibility,
+        )
+
+    @staticmethod
+    def _stage_payload(
+        candidate: OntologyGenerationCandidate,
+        *,
+        validation: OntologyPublicationValidationReport,
+        owner_id: str,
+        fence: int,
+        consumer_compatibility: Mapping[str, bool],
+    ) -> dict[str, Any]:
+        entities = [dict(row) for row in candidate.entities]
+        relationships = [dict(row) for row in candidate.relationships]
+        entity_hash = _content_hash(entities)
+        relationship_hash = _content_hash(relationships)
+        lineage = {
+            "proposal_ids": list(candidate.proposal_lineage),
+            "decision_ids": list(candidate.decision_lineage),
+        }
+        compatibility = {
+            "families": dict(sorted(consumer_compatibility.items())),
+            "all_consumers_compatible": all(consumer_compatibility.values()),
+            "alias_version": "ontology-generation-alias/v1",
+        }
+        identity = {
+            "generation_id": candidate.generation_id,
+            "source_generation": candidate.source_generation,
+            "entity_hash": entity_hash,
+            "relationship_hash": relationship_hash,
+            "lineage": lineage,
+            "validation": validation.to_dict(),
+            "compatibility": compatibility,
+            "owner_id": owner_id,
+            "fence": fence,
+            "policy_version": candidate.policy_version,
+            "schema_version": candidate.schema_version,
+        }
+        manifest = {
+            **identity,
+            "content_hash": _content_hash(identity),
+            "complete": True,
+        }
+        return {
+            "manifest": manifest,
+            "entities": entities,
+            "relationships": relationships,
+            "lineage": lineage,
+            "validation": validation.to_dict(),
+            "compatibility": compatibility,
+        }
+
+    def _verify_staged(
+        self,
+        generation_id: str,
+        expected: Mapping[str, Any],
+    ) -> None:
+        try:
+            staged = self._storage.read_generation(generation_id)
+        except (FileNotFoundError, TypeError, ValueError) as exc:
+            raise PublicationSafetyError("staged generation is partial") from exc
+        for key in (
+            "manifest",
+            "entities",
+            "relationships",
+            "lineage",
+            "validation",
+            "compatibility",
+        ):
+            if staged.get(key) != expected[key]:
+                raise PublicationSafetyError(
+                    f"staged generation {key} changed before promotion"
+                )
+        if not staged.get("audit"):
+            raise PublicationSafetyError(
+                "staged generation is unaudited and cannot be promoted"
+            )
+
+
+def _content_hash(value: object) -> str:
+    body = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    return hashlib.sha256(body).hexdigest()
+
+
+__all__ = [
+    "APPROVED_PUBLICATION_CHECKPOINTS",
+    "OntologyGenerationCandidate",
+    "OntologyGenerationPublisher",
+    "PublicationSafetyError",
+]

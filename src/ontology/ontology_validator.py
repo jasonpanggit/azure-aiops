@@ -33,6 +33,28 @@ class OntologyValidationReport:
         }
 
 
+@dataclass(frozen=True)
+class OntologyPublicationValidationReport:
+    """Complete graph, authority, lineage, and consumer validation result."""
+
+    passed: bool
+    graph: OntologyValidationReport
+    model_derived_relationships: int
+    lineage_complete: bool
+    consumers_complete: bool
+    consumers_compatible: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "graph": self.graph.to_dict(),
+            "model_derived_relationships": self.model_derived_relationships,
+            "lineage_complete": self.lineage_complete,
+            "consumers_complete": self.consumers_complete,
+            "consumers_compatible": self.consumers_compatible,
+        }
+
+
 class OntologyValidator:
     """Fail-closed structural validation for synchronized ontology graphs."""
 
@@ -70,6 +92,9 @@ class OntologyValidator:
         "lifecycle_status",
         "valid_from",
         "ontology_version",
+    )
+    REQUIRED_CONSUMER_FAMILIES = frozenset(
+        {"api", "fabric", "agent", "export", "semantic"}
     )
 
     def __init__(
@@ -264,6 +289,59 @@ class OntologyValidator:
             self_relationships=self_links,
             invalid_entities=invalid_entities,
             invalid_relationships=invalid_relationships,
+        )
+
+    def validate_publication(
+        self,
+        *,
+        entities: Iterable[dict[str, Any]],
+        relationships: Iterable[dict[str, Any]],
+        source_generation: str,
+        proposal_lineage: Iterable[str],
+        decision_lineage: Iterable[str],
+        consumer_compatibility: Mapping[str, bool],
+    ) -> OntologyPublicationValidationReport:
+        """Validate every input that can make a generation authoritative."""
+
+        entity_rows = list(entities)
+        relationship_rows = list(relationships)
+        graph = self.validate(entity_rows, relationship_rows)
+        model_derived = sum(
+            1
+            for row in relationship_rows
+            if str(row.get("source") or "").strip().casefold()
+            in {"model", "ai", "llm"}
+            or row.get("model_derived") is True
+        )
+        proposals = tuple(proposal_lineage)
+        decisions = tuple(decision_lineage)
+        lineage_complete = bool(str(source_generation).strip()) and all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (*proposals, *decisions)
+        )
+        consumer_keys = set(consumer_compatibility)
+        consumers_complete = (
+            consumer_keys == self.REQUIRED_CONSUMER_FAMILIES
+            and all(
+                isinstance(value, bool)
+                for value in consumer_compatibility.values()
+            )
+        )
+        consumers_compatible = consumers_complete and all(
+            consumer_compatibility.values()
+        )
+        return OntologyPublicationValidationReport(
+            passed=(
+                graph.passed
+                and model_derived == 0
+                and lineage_complete
+                and consumers_compatible
+            ),
+            graph=graph,
+            model_derived_relationships=model_derived,
+            lineage_complete=lineage_complete,
+            consumers_complete=consumers_complete,
+            consumers_compatible=consumers_compatible,
         )
 
 

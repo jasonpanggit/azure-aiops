@@ -154,7 +154,13 @@ def test_stage_is_complete_immutable_and_promoted_only_after_audit(tmp_path):
     assert staged["audit"]["outcome"] == "promoted"
 
     with pytest.raises(PublicationSafetyError, match="immutable"):
-        _publish(publisher, _candidate())
+        _publish(
+            publisher,
+            _candidate(),
+            conditions=GenerationPointerConditions.from_snapshot(result),
+            owner_id="writer-2",
+            fence=2,
+        )
 
 
 def test_shadow_model_edge_is_rejected_before_pointer_visibility(tmp_path):

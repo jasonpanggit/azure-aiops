@@ -230,6 +230,17 @@ class OneLakeDocumentStore:
         """Create an immutable JSON record, failing if it already exists."""
 
         body = _document_body(payload)
+        etag = self._create_bytes_only(name, body)
+        return DocumentSnapshot(payload=dict(payload), etag=etag)
+
+    def create_text_only(self, name: str, content: str) -> str:
+        """Create immutable UTF-8 text and return its service concurrency token."""
+
+        if not isinstance(content, str):
+            raise TypeError("immutable text content must be a string")
+        return self._create_bytes_only(name, content.encode("utf-8"))
+
+    def _create_bytes_only(self, name: str, body: bytes) -> str:
         with self._lock:
             path = self._path(name)
             if self.is_remote:
@@ -266,7 +277,7 @@ class OneLakeDocumentStore:
                         handle.flush()
                         os.fsync(handle.fileno())
                     etag = _local_etag(body)
-        return DocumentSnapshot(payload=dict(payload), etag=etag)
+        return etag
 
     def replace_if_match(
         self,

@@ -164,6 +164,133 @@ class AuthoritativeDatasetPublisher:
         )
         return GenerationPointerSnapshot(pointer=pointer, etag=snapshot.etag)
 
+    def assert_pointer_conditions(
+        self,
+        conditions: GenerationPointerConditions,
+    ) -> GenerationPointerSnapshot:
+        current = self.read_pointer()
+        if not _pointer_matches(current, conditions):
+            raise DocumentConflictError(
+                "active pointer owner, fence, source, generation, or ETag changed"
+            )
+        return current
+
+    def generation_exists(self, generation_id: str) -> bool:
+        generation = _safe_generation_id(generation_id)
+        return self._documents.read_snapshot(
+            f"generations/{generation}/manifest.json"
+        ).exists
+
+    def stage_generation(
+        self,
+        generation_id: str,
+        *,
+        manifest: dict[str, Any],
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+        lineage: dict[str, Any],
+        validation: dict[str, Any],
+        compatibility: dict[str, Any],
+    ) -> None:
+        """Create one complete immutable generation, publishing its manifest last."""
+
+        generation = _safe_generation_id(generation_id)
+        if self.generation_exists(generation):
+            raise DocumentConflictError(
+                f"generation {generation} is immutable and already exists"
+            )
+        base = f"generations/{generation}"
+        artifacts = (
+            ("entities.json", {"records": entities}),
+            ("relationships.json", {"records": relationships}),
+            ("lineage.json", lineage),
+            ("validation.json", validation),
+            ("compatibility.json", compatibility),
+        )
+        for name, payload in artifacts:
+            self._documents.create_only(f"{base}/{name}", payload)
+        self._documents.create_text_only(
+            f"{base}/ontology_entities.jsonl",
+            _json_lines(entities),
+        )
+        self._documents.create_text_only(
+            f"{base}/ontology_relationships.jsonl",
+            _json_lines(relationships),
+        )
+        # The manifest is the completeness marker and is deliberately last.
+        self._documents.create_only(f"{base}/manifest.json", manifest)
+
+    def persist_generation_audit(
+        self,
+        generation_id: str,
+        audit: dict[str, Any],
+    ) -> None:
+        generation = _safe_generation_id(generation_id)
+        if not self.generation_exists(generation):
+            raise FileNotFoundError(f"generation {generation} is not complete")
+        self._documents.create_only(
+            f"generations/{generation}/audit-intent.json",
+            audit,
+        )
+
+    def persist_generation_receipt(
+        self,
+        generation_id: str,
+        receipt: dict[str, Any],
+    ) -> None:
+        generation = _safe_generation_id(generation_id)
+        self._documents.create_only(
+            f"generations/{generation}/audit-result.json",
+            receipt,
+        )
+
+    def persist_rollback_audit(
+        self,
+        *,
+        target_generation_id: str,
+        owner_id: str,
+        fence: int,
+        audit: dict[str, Any],
+    ) -> None:
+        generation = _safe_generation_id(target_generation_id)
+        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:16]
+        self._documents.create_only(
+            f"publication-audits/rollback-{fence}-{owner_hash}-{generation}.json",
+            audit,
+        )
+
+    def read_generation(self, generation_id: str) -> dict[str, Any]:
+        generation = _safe_generation_id(generation_id)
+        base = f"generations/{generation}"
+
+        def required(name: str) -> dict[str, Any]:
+            snapshot = self._documents.read_snapshot(f"{base}/{name}.json")
+            if not snapshot.exists:
+                raise FileNotFoundError(
+                    f"generation {generation} missing {name}.json"
+                )
+            return snapshot.payload
+
+        entities = required("entities").get("records")
+        relationships = required("relationships").get("records")
+        if not isinstance(entities, list) or not isinstance(relationships, list):
+            raise TypeError(f"generation {generation} record artifacts are invalid")
+        receipt = self._documents.read_snapshot(f"{base}/audit-result.json")
+        intent = self._documents.read_snapshot(f"{base}/audit-intent.json")
+        return {
+            "manifest": required("manifest"),
+            "entities": entities,
+            "relationships": relationships,
+            "lineage": required("lineage"),
+            "validation": required("validation"),
+            "compatibility": required("compatibility"),
+            "audit": (
+                receipt.payload
+                if receipt.exists
+                else intent.payload if intent.exists else None
+            ),
+        }
+
     def conditional_promote(
         self,
         *,
@@ -179,11 +306,7 @@ class AuthoritativeDatasetPublisher:
         if not source or not owner or fence < 1:
             raise ValueError("source generation, owner, and positive fence are required")
 
-        current = self.read_pointer()
-        if not _pointer_matches(current, conditions):
-            raise DocumentConflictError(
-                "active pointer owner, fence, source, generation, or ETag changed"
-            )
+        current = self.assert_pointer_conditions(conditions)
         if current.pointer is not None and fence <= current.pointer.fence:
             raise DocumentConflictError("promotion fence is not monotonic")
 
@@ -370,7 +493,10 @@ class DatasetStore:
             with self.fs.open(path, "rt") as handle:
                 return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
 
-        path = (self.current / name).with_suffix(".jsonl")
+        generation = self.current_generation()
+        if generation is None:
+            return []
+        path = (Path(generation) / name).with_suffix(".jsonl")
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -382,6 +508,21 @@ class DatasetStore:
         should follow ``self.current`` (the symlink) directly.
         """
         if not self.is_remote:
+            pointer = Path(self.pointer_path)
+            if pointer.exists():
+                try:
+                    payload = json.loads(pointer.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    return None
+                name = str(
+                    payload.get("active_generation")
+                    or payload.get("generation")
+                    or ""
+                ).strip()
+                if not name:
+                    return None
+                candidate = self.generations / _safe_generation_id(name)
+                return str(candidate) if candidate.exists() else None
             if not self.current.exists():
                 return None
             return str(self.current.resolve())
@@ -608,6 +749,13 @@ def _safe_generation_id(value: object) -> str:
     ):
         raise ValueError("generation ID must be one safe path segment")
     return text
+
+
+def _json_lines(rows: list[dict[str, Any]]) -> str:
+    return "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+        for row in rows
+    )
 
 
 def _pointer_matches(
