@@ -34,8 +34,7 @@ from operations.investigation_thread_store import (
     legacy_binding_document_name,
     thread_document_name,
 )
-from storage.onelake_documents import OneLakeDocumentStore
-from storage.onelake_documents import DocumentConflictError
+from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 
 class FakeDocuments:
