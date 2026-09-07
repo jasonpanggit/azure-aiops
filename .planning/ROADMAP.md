@@ -806,7 +806,7 @@ Plans:
 **Goal:** Keep the Fabric ontology current without an open browser or manual Sync click by running durable, incremental discovery on a schedule, using a scoped Microsoft Foundry agent to propose evidence-backed relationships, and publishing only relationships that pass deterministic governance, validation, concurrency, and audit controls.
 **Requirements**: AUTO-ONT-01, AUTO-ONT-02, AUTO-ONT-03, AUTO-ONT-04, AUTO-ONT-05, AUTO-ONT-06, AUTO-ONT-07
 **Depends on:** Phase 10, Phase 12
-**Plans:** 15/15 plans executed
+**Plans:** 15/21 plans executed
 
 Plans:
 
@@ -827,6 +827,12 @@ Plans:
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
+- [ ] 13-16-PLAN.md — OneLake-backed production coordinator composition and one-connection bounded CLI
+- [ ] 13-17-PLAN.md — Dedicated publisher worker, deterministic Fabric promotion, and fenced rollback
+- [ ] 13-18-PLAN.md — Shared durable API runtime and narrow rollback-command transport
+- [ ] 13-19-PLAN.md — Exact identity infrastructure and targeted immutable API/web/Job deployment
+- [ ] 13-20-PLAN.md — Direct deployed no-click, generation, consumer, stale-writer, and rollback evidence
+- [ ] 13-21-PLAN.md — Live API/UI/RBAC audit and deployed-only final shadow report
 
 **Success Criteria** (what must be TRUE):
 

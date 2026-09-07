@@ -70,6 +70,18 @@ updated: 2026-09-07
 | 13-14-03 | 14 | 11 | AUTO-ONT-06,07 | Phoenix/security | `UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple uv run --extra eval --extra test pytest -q tests/test_ontology_trace_redaction.py tests/test_ontology_discovery_evals.py -x && UV_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple uv run --extra eval python scripts/inspect_ontology_traces.py --launch-local --dataset tests/fixtures/ontology_discovery/reference.jsonl --fail-on-redaction` | consumes | passed |
 | 13-15-01 | 15 | 12 | AUTO-ONT-01,07 | alert/Terraform | `uv run pytest -q tests/test_ontology_discovery_alerts.py && terraform -chdir=infra/terraform fmt -check && terraform -chdir=infra/terraform validate && uv run python scripts/validate_ontology_discovery_live.py --alert-smoke --synthetic-only --fail-on-missing-evidence` | consumes | pending |
 | 13-15-02 | 15 | 12 | AUTO-ONT-01..07 | deployed shadow E2E | `uv run pytest -q tests/test_ontology_discovery_evals.py tests/test_ontology_discovery_alerts.py && uv run python scripts/validate_ontology_discovery_live.py --shadow --assert-authoritative-model-edge-count-zero --assert-release-status blocked-or-pending --fail-on-threshold --fail-on-missing-evidence` | consumes | pending |
+| 13-16-01 | 16 | 13 | AUTO-ONT-01,02,03,04,06,07 | production tracer/CAS | `uv run pytest -q tests/test_ontology_discovery_runtime.py tests/test_ontology_discovery_store.py tests/test_ontology_discovery_incremental.py tests/test_ontology_curator_agent.py tests/test_ontology_proposal_policy.py -x` | consumes | pending |
+| 13-16-02 | 16 | 13 | AUTO-ONT-01,06,07 | CLI/config/restart | `uv run pytest -q tests/test_ontology_discovery_runtime.py tests/test_ontology_discovery_coordinator.py tests/test_subscription_onboarding.py -k 'ontology or sync or restart or duplicate or fail_closed' -x` | consumes | pending |
+| 13-17-01 | 17 | 14 | AUTO-ONT-05,06,07 | publisher E2E/restart | `uv run pytest -q tests/test_ontology_publisher_runtime.py tests/test_ontology_generation_publication.py tests/test_fabric_sync_service.py tests/test_ontology_generation_consumers.py -x` | consumes | pending |
+| 13-17-02 | 17 | 14 | AUTO-ONT-05,06,07 | rollback/identity/fault | `uv run pytest -q tests/test_ontology_publisher_runtime.py tests/test_ontology_generation_publication.py -k 'rollback or identity or restart or duplicate or stale' -x` | consumes | pending |
+| 13-18-01 | 18 | 15 | AUTO-ONT-01,05,06 | API rollback tracer | `uv run pytest -q tests/test_api_ontology_discovery.py tests/test_api_ontology_evaluation.py tests/test_ontology_publisher_runtime.py -x` | consumes | pending |
+| 13-18-02 | 18 | 15 | AUTO-ONT-01,04,05,06,07 | OpenAPI/UI/restart | `uv run pytest -q tests/test_api_ontology_discovery.py tests/test_api_ontology_evaluation.py tests/test_subscription_onboarding.py -k 'ontology or sync or openapi or restart or rollback' -x && cd web && npm test -- --run src/app/connections/page.test.tsx && npx tsc --noEmit` | consumes | pending |
+| 13-19-01 | 19 | 16 | AUTO-ONT-01,03,05,06,07 | Terraform/identity tracer | `uv run pytest -q tests/test_ontology_discovery_job_infra.py tests/test_ontology_publisher_identity.py tests/test_ontology_curator_infra.py -x && terraform -chdir=infra/terraform fmt -check && terraform -chdir=infra/terraform validate` | consumes | pending |
+| 13-19-02 | 19 | 16 | AUTO-ONT-01,05,06,07 | targeted deployment | `uv run pytest -q tests/test_ontology_deployment_plan.py tests/test_ontology_discovery_job_infra.py tests/test_ontology_publisher_identity.py -x && uv run python scripts/validate_ontology_deployment_plan.py --evidence .planning/eval/ontology-gap-deployment.json --require-applied --fail-on-unexpected-change` | consumes | pending |
+| 13-20-01 | 20 | 17 | AUTO-ONT-01,02,03,04,06,07 | deployed schedule/checkpoints | `uv run pytest -q tests/test_ontology_discovery_live_evidence.py tests/test_ontology_discovery_evals.py -x && uv run python scripts/validate_ontology_discovery_live.py --shadow --collect-deployed-lifecycle --output .planning/eval/ontology-deployed-lifecycle.json --fail-on-local-substitution --fail-on-missing-evidence` | consumes | pending |
+| 13-20-02 | 20 | 17 | AUTO-ONT-04,05,06,07 | deployed generation/rollback | `uv run pytest -q tests/test_ontology_discovery_live_evidence.py -k 'edges or promotion or consumer or stale or rollback or provenance' -x && uv run python scripts/validate_ontology_discovery_live.py --shadow --evidence .planning/eval/ontology-deployed-lifecycle.json --assert-authoritative-model-edge-count-zero --assert-deployed-old-new-old --assert-five-live-consumers --fail-on-local-substitution --fail-on-missing-evidence` | consumes | pending |
+| 13-21-01 | 21 | 18 | AUTO-ONT-01,04,05,06,07 | deployed API/UI | `uv run pytest -q tests/test_ontology_discovery_live_evidence.py -k 'openapi or api or ui or playwright or provenance' -x && cd web && npx playwright test e2e/ontology-automation-live.spec.ts` | consumes | pending |
+| 13-21-02 | 21 | 18 | AUTO-ONT-01..07 | deployed-only closeout | `uv run pytest -q tests/test_ontology_publisher_identity.py tests/test_ontology_discovery_live_evidence.py tests/test_ontology_discovery_evals.py -x && uv run python scripts/validate_ontology_publisher_rbac.py --non-production --fail-on-missing-evidence && uv run python scripts/validate_ontology_discovery_live.py --shadow --evidence .planning/eval/ontology-deployed-lifecycle.json --assert-authoritative-model-edge-count-zero --assert-release-status blocked-or-pending --assert-deployed-old-new-old --assert-five-live-consumers --fail-on-local-substitution --fail-on-threshold --fail-on-missing-evidence` | consumes | pending |
 
 ## Wave 0 Requirements
 
@@ -93,6 +105,11 @@ updated: 2026-09-07
 - [x] `evals/ontology-discovery/promptfooconfig.yaml`
 - [x] `tests/test_ontology_trace_redaction.py`
 - [ ] `tests/test_ontology_discovery_alerts.py`
+- [ ] `tests/test_ontology_discovery_runtime.py`
+- [ ] `tests/test_ontology_publisher_runtime.py`
+- [ ] `tests/test_ontology_deployment_plan.py`
+- [ ] `tests/test_ontology_discovery_live_evidence.py`
+- [ ] `web/e2e/ontology-automation-live.spec.ts`
 
 ## Manual / Deployment Verification
 
@@ -106,7 +123,7 @@ updated: 2026-09-07
 
 ## Validation Sign-Off
 
-- [x] One row exists for every actual task (35/35).
+- [x] One row exists for every actual and planned task (47/47).
 - [x] Every code-producing task has a finite `<automated>` gate or consumes Wave 0.
 - [x] Checkpoint-only tasks are backed by completed automated evidence and contain no implementation.
 - [x] No watch-mode flags are present.
