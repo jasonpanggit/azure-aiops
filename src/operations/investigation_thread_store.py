@@ -294,6 +294,13 @@ class InvestigationThreadStore:
 
     # -- persistence ------------------------------------------------------
 
+    def _read_document(self, name: str) -> dict[str, Any]:
+        if self.documents is None:
+            return {}
+        strict_read = getattr(self.documents, "read_or_raise", None)
+        reader = strict_read if callable(strict_read) else self.documents.read
+        return reader(name)
+
     def _persist(self, record: InvestigationThread) -> None:
         """Write through to configured storage or fail the turn closed."""
 
@@ -336,7 +343,7 @@ class InvestigationThreadStore:
             if callable(delete):
                 delete(name)
                 return
-            current = int(self.documents.read(name).get("revision") or 0)
+            current = int(self._read_document(name).get("revision") or 0)
             self.documents.write(
                 name,
                 {"revision": current + 1, "deleted": True},
@@ -351,7 +358,7 @@ class InvestigationThreadStore:
         if self.documents is None:
             return None
         try:
-            payload = self.documents.read(thread_document_name(thread_id))
+            payload = self._read_document(thread_document_name(thread_id))
         except Exception:
             _LOGGER.warning("failed to read investigation thread", exc_info=True)
             raise ThreadStoreUnavailable() from None
@@ -632,7 +639,7 @@ class InvestigationThreadStore:
             return None
         name = legacy_binding_document_name(session_id, principal_subject)
         try:
-            document = self.documents.read(name)
+            document = self._read_document(name)
         except Exception:
             _LOGGER.warning("failed to read legacy thread binding", exc_info=True)
             raise ThreadStoreUnavailable() from None
@@ -654,7 +661,7 @@ class InvestigationThreadStore:
             return
         name = legacy_binding_document_name(session_id, principal_subject)
         try:
-            current = int(self.documents.read(name).get("revision") or 0)
+            current = int(self._read_document(name).get("revision") or 0)
             if not current:
                 return
             self.documents.write(
@@ -681,7 +688,7 @@ class InvestigationThreadStore:
             return thread_id
         name = legacy_binding_document_name(session_id, principal_subject)
         try:
-            existing_document = self.documents.read(name)
+            existing_document = self._read_document(name)
             existing = str(existing_document.get("thread_id") or "")
             if existing.startswith("thr-"):
                 return existing

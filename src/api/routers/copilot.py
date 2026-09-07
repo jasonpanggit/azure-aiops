@@ -1163,6 +1163,11 @@ def history(session_id: str, context: Context, scope: ReadScope, principal: Curr
             ErrorCode.PROVIDER_UNAVAILABLE,
             "Investigation continuity is temporarily unavailable",
         ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     return envelope({"session_id": session_id, "turns": turns}, scope=scope.to_dict())
 
 

@@ -648,21 +648,24 @@ class OrchestrationService:
             return synthesis
 
         stage_started = self.clock() if self.telemetry is not None else 0.0
+        synthesis_input = executive_synthesis_input(
+            findings,
+            retained_evidence=retained_evidence,
+        )
         evidence_refs = {
-            ref for finding in findings for ref in finding["evidence_refs"]
+            ref
+            for finding in synthesis_input["findings"]
+            for ref in finding["evidence_refs"]
         }
         evidence_refs.update(
             str(item.get("evidence_id") or "")
-            for item in retained_evidence
+            for item in synthesis_input["retained_evidence"]
             if item.get("evidence_id")
         )
         try:
             answer = self.executive_agent.answer(
                 question=question,
-                context=executive_synthesis_input(
-                    findings,
-                    retained_evidence=retained_evidence,
-                ),
+                context=synthesis_input,
             )
             claims = validate_executive_synthesis(
                 getattr(answer, "text", ""),

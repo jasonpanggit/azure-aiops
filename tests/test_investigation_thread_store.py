@@ -34,6 +34,7 @@ from operations.investigation_thread_store import (
     legacy_binding_document_name,
     thread_document_name,
 )
+from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_documents import DocumentConflictError
 
 
@@ -203,6 +204,24 @@ def test_continuity_prefers_strict_read_when_adapter_suppresses_errors() -> None
 
     with pytest.raises(ThreadStoreUnavailable):
         store.authorize(thread.thread_id, "operator-a", SUB_A)
+    with pytest.raises(ThreadStoreUnavailable):
+        store.resolve_legacy_binding("legacy-session", "operator-a")
+
+
+def test_onelake_malformed_documents_are_unavailable_not_missing(tmp_path) -> None:
+    documents = OneLakeDocumentStore(tmp_path)
+    thread_name = thread_document_name("thr-corrupt")
+    binding_name = legacy_binding_document_name("legacy-session", "operator-a")
+    for name in (thread_name, binding_name):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{malformed", encoding="utf-8")
+        assert documents.read(name) == {}
+
+    store = InvestigationThreadStore(documents=documents)
+
+    with pytest.raises(ThreadStoreUnavailable):
+        store.authorize("thr-corrupt", "operator-a", SUB_A)
     with pytest.raises(ThreadStoreUnavailable):
         store.resolve_legacy_binding("legacy-session", "operator-a")
 
