@@ -514,3 +514,152 @@ def test_runtime_builder_passes_only_publisher_identity_to_fabric(
         mode="managed_identity",
         managed_identity_client_id="publisher-client-id",
     )
+
+
+def test_failed_post_check_automatically_restores_predecessor_with_newer_fence(
+    tmp_path,
+):
+    dispatch_root, storage, baseline_worker = _worker(tmp_path, [])
+    coordinator = PublisherDispatchStore(dispatch_root).coordinator()
+    coordinator.create_publish(
+        run_id="ODR-BASE",
+        connection_id="connection-a",
+        source_generation_id="source-base",
+        candidate={**_candidate(), "generation_id": "ontology-base"},
+        now=NOW,
+    )
+    assert baseline_worker.run_once(now=NOW)["succeeded"] == 1
+    predecessor = storage.read_pointer()
+    coordinator.create_publish(
+        run_id="ODR-FAULT",
+        connection_id="connection-a",
+        source_generation_id="source-fault",
+        candidate={**_candidate(), "generation_id": "ontology-fault"},
+        now=NOW,
+    )
+
+    def fail_semantic(stage: str, _generation_id: str):
+        return {
+            family: not (stage == "post" and family == "semantic")
+            for family in CONSUMERS
+        }
+
+    failed_worker = PublisherWorker(
+        dispatches=PublisherDispatchStore(dispatch_root).publisher(),
+        publisher=baseline_worker._publisher,
+        publisher_identity="publisher-uai",
+        owner_id="publisher-worker-17",
+        fence_allocator=baseline_worker._fences,
+        materialize=lambda candidate: {
+            "status": "completed",
+            "generation_id": candidate.generation_id,
+        },
+        consumer_check=fail_semantic,
+        now=lambda: NOW,
+    )
+
+    result = failed_worker.run_once(now=NOW)
+
+    assert result == {"selected": 1, "succeeded": 0, "failed": 1, "contended": 0}
+    restored = storage.read_pointer()
+    assert restored.pointer.active_generation == "ontology-base"
+    assert restored.pointer.prior_generation == "ontology-fault"
+    assert restored.pointer.fence > predecessor.pointer.fence
+    durable = PublisherDispatchStore(dispatch_root).publisher().get_publish(
+        PublisherDispatchStore(dispatch_root).coordinator().list_publish()[-1][
+            "dispatch_id"
+        ]
+    )
+    assert durable["status"] == "failed"
+    assert durable["reason_code"] == "post_check_failed_rolled_back"
+    assert durable["receipts"][-1]["step"] == "automatic_rollback"
+
+
+SCENARIOS = (
+    "partial_stage",
+    "persisted_validation",
+    "staged_compatibility",
+    "fabric_materialization",
+    "final_precondition",
+    "cas_contention",
+    "post_api",
+    "post_fabric",
+    "post_agent",
+    "post_export",
+    "post_semantic",
+    "process_restart",
+    "rollback_failure",
+)
+
+
+@pytest.mark.parametrize(
+    "seed",
+    range(100),
+    ids=lambda seed: f"seed-{seed:02d}-{SCENARIOS[seed % len(SCENARIOS)]}",
+)
+def test_deterministic_fault_trials_preserve_one_complete_visible_generation(
+    tmp_path, seed
+):
+    scenario = SCENARIOS[seed % len(SCENARIOS)]
+    dispatch_root, storage, baseline_worker = _worker(tmp_path, [])
+    coordinator = PublisherDispatchStore(dispatch_root).coordinator()
+    coordinator.create_publish(
+        run_id=f"ODR-BASE-{seed}",
+        connection_id="connection-a",
+        source_generation_id=f"source-base-{seed}",
+        candidate={**_candidate(), "generation_id": f"ontology-base-{seed}"},
+        now=NOW,
+    )
+    assert baseline_worker.run_once(now=NOW)["succeeded"] == 1
+    coordinator.create_publish(
+        run_id=f"ODR-NEXT-{seed}",
+        connection_id="connection-a",
+        source_generation_id=f"source-next-{seed}",
+        candidate={**_candidate(), "generation_id": f"ontology-next-{seed}"},
+        now=NOW,
+    )
+
+    def check(stage: str, _generation_id: str):
+        failed_family = scenario.removeprefix("post_")
+        return {
+            family: not (
+                (scenario == "staged_compatibility" and stage == "staged")
+                or (scenario.startswith("post_") and stage == "post" and family == failed_family)
+            )
+            for family in CONSUMERS
+        }
+
+    def materialize(candidate):
+        if scenario in {
+            "partial_stage",
+            "persisted_validation",
+            "fabric_materialization",
+            "final_precondition",
+            "cas_contention",
+            "rollback_failure",
+        }:
+            raise RuntimeError(scenario)
+        return {"status": "completed", "generation_id": candidate.generation_id}
+
+    worker = PublisherWorker(
+        dispatches=PublisherDispatchStore(dispatch_root).publisher(),
+        publisher=baseline_worker._publisher,
+        publisher_identity="publisher-uai",
+        owner_id="publisher-worker-17",
+        fence_allocator=baseline_worker._fences,
+        materialize=materialize,
+        consumer_check=check,
+        now=lambda: NOW,
+    )
+    outcome = worker.run_once(now=NOW)
+    if scenario == "process_restart" and outcome["succeeded"] == 0:
+        _, _, worker = _worker(tmp_path, [])
+        worker.run_once(now=NOW)
+
+    pointer = storage.read_pointer()
+    visible = storage.read_generation(pointer.pointer.active_generation)
+    assert visible["manifest"]["complete"] is True, (seed, scenario)
+    assert visible["validation"]["passed"] is True, (seed, scenario)
+    assert all(
+        row.get("source") != "model" for row in visible["relationships"]
+    ), (seed, scenario)
