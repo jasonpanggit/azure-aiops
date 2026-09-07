@@ -269,8 +269,8 @@ def test_repeated_retained_snapshot_ids_are_qualified_per_turn() -> None:
         turns=[
             InvestigationThreadTurn(
                 scope=Scope({"subscription": ["sub-a"]}),
+                recorded_at=1.0,
                 payload={
-                    "thread_revision": revision,
                     "citations": [
                         {
                             "citation_id": "snapshot:coverage",
@@ -280,9 +280,9 @@ def test_repeated_retained_snapshot_ids_are_qualified_per_turn() -> None:
                     ],
                 },
             )
-            for revision, source, status in (
-                (1, "page_snapshot:inventory:coverage", "partial"),
-                (2, "page_snapshot:vulnerability:coverage", "ok"),
+            for source, status in (
+                ("page_snapshot:inventory:coverage", "partial"),
+                ("page_snapshot:vulnerability:coverage", "ok"),
             )
         ],
     )
@@ -826,7 +826,7 @@ def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> N
             retained_id = next(
                 item["evidence_id"]
                 for item in context["retained_evidence"]
-                if item["evidence_id"].startswith("tool:")
+                if item["evidence_id"].startswith("retained:")
             )
             text = json.dumps(
                 {
@@ -887,10 +887,16 @@ def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> N
         item.citation_id for item in second.citations
         if item.citation_id.startswith("tool:") and item.citation_id != first_tool_id
     )
+    retained_id = next(
+        item.citation_id
+        for item in second.citations
+        if item.citation_id.startswith("retained:")
+    )
     assert first.thread_id in first_tool_id
     assert first_tool_id != second_tool_id
-    assert first_tool_id in {item.citation_id for item in second.citations}
-    assert second.synthesis["claims"][0]["evidence_refs"] == [first_tool_id]
+    assert first_tool_id not in {item.citation_id for item in second.citations}
+    assert first.thread_id in retained_id
+    assert second.synthesis["claims"][0]["evidence_refs"] == [retained_id]
 
 
 # ---------------------------------------------------------------------------

@@ -1147,7 +1147,7 @@ def investigate_canonical(
     result_data["citations"] = [
         citation
         for citation in result_data["citations"]
-        if citation["citation_id"].startswith("tool:")
+        if citation["citation_id"].startswith(("tool:", "retained:"))
     ]
     return envelope(
         result_data,

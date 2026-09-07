@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -619,12 +620,43 @@ class OrchestrationService:
         for turn in thread.turns:
             if not scope_within(turn.scope, current_scope):
                 continue
-            for citation in turn.payload.get("citations") or []:
+            turn_revision = int(turn.payload.get("thread_revision") or 0)
+            turn_identity = (
+                f"rev-{turn_revision}"
+                if turn_revision > 0
+                else "turn-"
+                + uuid.uuid5(
+                    uuid.NAMESPACE_OID,
+                    (
+                        f"{thread.thread_id}:{turn.recorded_at}:"
+                        + json.dumps(
+                            turn.payload,
+                            default=str,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    ),
+                ).hex
+            )
+            for citation_index, citation in enumerate(
+                turn.payload.get("citations") or []
+            ):
                 if not isinstance(citation, Mapping):
                     continue
+                original_id = str(citation.get("citation_id") or "")
+                if not original_id:
+                    continue
+                citation_token = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    original_id,
+                ).hex[:16]
                 retained.append(
                     {
-                        "evidence_id": str(citation.get("citation_id") or ""),
+                        "evidence_id": (
+                            f"retained:{thread.thread_id}:{turn_identity}:"
+                            f"citation-{citation_index}:{citation_token}"
+                        ),
+                        "original_evidence_id": original_id,
                         "source": str(citation.get("source") or ""),
                         "status": str(citation.get("status") or ""),
                         "observation_status": OBSERVATION_HISTORICAL,
