@@ -45,6 +45,20 @@ def test_large_executive_context_is_transmitted_as_bounded_valid_json() -> None:
     }
 
 
+def test_many_list_valued_context_keys_remain_within_prompt_limit() -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="network-agent",
+    )
+    context = {f"field-{index}": [] for index in range(4_000)}
+
+    prompt = agent.build_prompt("Summarize.", context)
+    serialized = prompt.split("PAGE CONTEXT (JSON):\n", 1)[1]
+
+    assert len(serialized) <= 24_000
+    assert json.loads(serialized)["_truncation"] == "(truncated)"
+
+
 def test_rest_agent_honors_per_call_timeout_override(monkeypatch) -> None:
     captured: dict[str, object] = {}
     agent = FoundryPromptAgent(

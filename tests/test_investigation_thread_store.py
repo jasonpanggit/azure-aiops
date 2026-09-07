@@ -441,6 +441,29 @@ def test_cleanup_does_not_delete_a_thread_touched_by_another_replica() -> None:
     assert thread_document_name(thread.thread_id) in documents.documents
 
 
+def test_cleanup_bounds_failed_delete_attempts() -> None:
+    class FailingDeleteDocuments(FakeDocuments):
+        delete_attempts = 0
+
+        def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+            self.delete_attempts += 1
+            raise RuntimeError("storage unavailable")
+
+    clock = FakeClock()
+    documents = FailingDeleteDocuments()
+    store = InvestigationThreadStore(
+        documents=documents,
+        clock=clock,
+        max_threads=200,
+    )
+    for _ in range(200):
+        store.create("operator-a", SUB_A)
+    clock.advance(ABSOLUTE_TTL_SECONDS + 1)
+
+    assert store.cleanup(max_removals=1) == 0
+    assert documents.delete_attempts == 1
+
+
 def test_stale_revision_raises_an_explicit_conflict() -> None:
     store = InvestigationThreadStore(documents=FakeDocuments())
     thread = store.create("operator-a", SUB_A)
