@@ -108,7 +108,7 @@ describe("Overview Copilot adapter integration", () => {
         data: expect.objectContaining({ internet_exposed_count: 0 }),
       }),
       connections: expect.objectContaining({ data: [] }),
-      visibleSituations: [],
+      visibleSituationIds: [],
     });
   });
 
@@ -127,10 +127,7 @@ describe("Overview Copilot adapter integration", () => {
     await waitFor(() => expect(mocks.buildOverviewCopilotContext).toHaveBeenCalled());
     expect(mocks.buildOverviewCopilotContext).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        visibleSituations: [
-          expect.objectContaining({ situation_id: "p1-ranked-first" }),
-          expect.objectContaining({ situation_id: "p3-raw-first" }),
-        ],
+        visibleSituationIds: ["p1-ranked-first", "p3-raw-first"],
       }),
     );
   });

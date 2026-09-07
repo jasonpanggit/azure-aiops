@@ -406,7 +406,7 @@ export default function CompliancePage() {
   const complianceCopilot = buildComplianceCopilotContext({
     scope,
     policyName: policy.name,
-    selectedId: selected?.id ?? null,
+    selectedId: selectedId || null,
     violations,
     governedDeviations: openGovernedDeviations,
     evidence,

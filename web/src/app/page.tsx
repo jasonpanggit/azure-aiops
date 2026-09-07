@@ -100,6 +100,7 @@ export default function Home() {
     network: state.network,
     vulnerabilities: state.vulnerabilities,
     connections: state.connections,
+    visibleSituationIds: situations.map((situation) => situation.id),
   });
 
   return (

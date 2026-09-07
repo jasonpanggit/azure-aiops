@@ -457,6 +457,28 @@ function boundedSourceKey(value: string): string {
   return sourceKey;
 }
 
+function boundedCoreSourceKey(value: string): string {
+  const sourceKey = value.trim();
+  if (Array.from(sourceKey).length <= 256) return boundedSourceKey(sourceKey);
+  if (/[\0\r\n]/.test(sourceKey)) {
+    throw new Error("source key contains an invalid control character");
+  }
+  return `sha256:${sha256(asciiJson(sourceKey))}`;
+}
+
+function boundedFilterValue(name: string, value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${name} must contain between 1 and 160 characters`);
+  }
+  if (/[\0\r\n]/.test(normalized)) {
+    throw new Error(`${name} contains an invalid control character`);
+  }
+  return Array.from(normalized).length <= 160
+    ? normalized
+    : `sha256:${sha256(asciiJson(normalized))}`;
+}
+
 function boundedSelectorText(
   field: string,
   value: unknown,
@@ -861,6 +883,7 @@ export interface CoreCopilotCoverageInput {
   visibleCount: number;
   totalCount: number;
   truncated?: boolean;
+  available?: boolean;
 }
 
 /** Source observation used to retain freshness independently from row order. */
@@ -912,6 +935,7 @@ export interface CoreCopilotContext {
 export interface OverviewCopilotPageInput {
   scope: ScopeSelection;
   situations?: Envelope<DurableSituation[]> | null;
+  visibleSituationIds?: string[];
   network?: Envelope<NetworkSummary> | null;
   vulnerabilities?: Envelope<VulnerabilitySummary> | null;
   connections?: Envelope<SubscriptionConnection[]> | null;
@@ -1089,7 +1113,7 @@ function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
     type: "domain",
     namespace: boundedString("entity namespace", record.namespace, 1, 64),
     kind: boundedString("entity kind", record.kind, 1, 64),
-    source_key: boundedSourceKey(record.identity),
+    source_key: boundedCoreSourceKey(record.identity),
   };
 }
 
@@ -1108,7 +1132,7 @@ function normalizeFilters(
       boundedString("filter name", key, 1, 64),
       Array.from(new Set(
         values
-          .map((value) => boundedString(`filter ${key}`, value, 1, 160))
+          .map((value) => boundedFilterValue(`filter ${key}`, value))
           .filter(Boolean),
       )).sort(compareCodePoints),
     ] as const)
@@ -1144,7 +1168,7 @@ function normalizeCoverage(
         return [key, {
           visible_count: item.visibleCount,
           total_count: item.totalCount,
-          complete: item.visibleCount === item.totalCount,
+          complete: item.available !== false && item.visibleCount === item.totalCount,
           truncated: item.truncated ?? item.visibleCount < item.totalCount,
         }] as const;
       })
@@ -1155,7 +1179,7 @@ function normalizeCoverage(
 function coreEvidenceRow(record: CoreCopilotRecord) {
   const source = boundedString("evidence source", record.source, 1, 128);
   const entity = coreRecordEntity(record);
-  const sourceKey = boundedSourceKey(record.identity);
+  const sourceKey = boundedCoreSourceKey(record.identity);
   const claimType = boundedString("claim type", record.kind, 1, 64);
   const data = {
     ...record.data,
@@ -1195,7 +1219,7 @@ function sourceEvidenceRow(item: EvidenceItem) {
   const canonicalResource = isCanonicalAzureResourceId(item.resource_id ?? undefined)
     ? canonicalResourceId(item.resource_id!)
     : undefined;
-  const sourceKey = boundedSourceKey(
+  const sourceKey = boundedCoreSourceKey(
     canonicalResource ?? `${item.source_engine}:${item.source_table}`,
   );
   const entity: CopilotEntityRef = canonicalResource
@@ -1253,7 +1277,11 @@ function coverageEvidenceRows(coverage: Record<string, CoreCopilotCoverage>) {
         claimType: "coverage",
       }),
       section: "coverage",
-      status: "ok" as const,
+      status: (
+        !value.complete && value.visible_count === 0 && value.total_count === 0
+          ? "unavailable"
+          : "ok"
+      ) as CopilotSnapshotStatus,
       observed_at: undefined,
       data: {
         entity,
@@ -1329,33 +1357,56 @@ function buildCoreCopilotContext(
   ].sort((left, right) =>
     left.priority - right.priority
     || compareCodePoints(left.row.evidence_id, right.row.evidence_id));
-  const retainedCandidates = candidates.slice(
+  const candidateEvidence = new Map<string, ReturnType<typeof coreEvidenceRow>["row"]>();
+  const retainedCandidateIds: string[] = [];
+  const candidateLimit = Math.max(
     0,
-    Math.max(0, COPILOT_SNAPSHOT_LIMITS.evidenceRows - coverageRows.length),
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows - coverageRows.length,
   );
-  const evidenceById = new Map<string, (typeof retainedCandidates)[number]["row"]>();
-  for (const candidate of retainedCandidates) {
-    const existing = evidenceById.get(candidate.row.evidence_id);
+  for (const candidate of candidates) {
+    const existing = candidateEvidence.get(candidate.row.evidence_id);
     if (!existing || (candidate.row.observed_at ?? "") > (existing.observed_at ?? "")) {
-      evidenceById.set(candidate.row.evidence_id, candidate.row);
+      candidateEvidence.set(candidate.row.evidence_id, candidate.row);
+    }
+    if (!existing && retainedCandidateIds.length < candidateLimit) {
+      retainedCandidateIds.push(candidate.row.evidence_id);
     }
   }
-  for (const row of coverageRows) evidenceById.set(row.evidence_id, row);
-  const evidence = Array.from(evidenceById.values())
-    .sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id))
-    .slice(0, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
   const freshness = normalizedFreshness(input.sourceStatuses);
   assertBound("freshness records", freshness.length, COPILOT_SNAPSHOT_LIMITS.freshnessRecords);
 
-  const snapshot = services.buildCopilotSnapshot({
-    pageKind: config.pageKind,
-    pageId: config.pageId,
-    scope: input.scope,
-    filters: normalizeFilters(input.filters, input.sort),
-    selectedResources,
-    evidence,
-    freshness,
-  });
+  const buildSnapshot = () => {
+    const evidence = [
+      ...retainedCandidateIds.flatMap((id) => {
+        const row = candidateEvidence.get(id);
+        return row ? [row] : [];
+      }),
+      ...coverageRows,
+    ].sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
+    return services.buildCopilotSnapshot({
+      pageKind: config.pageKind,
+      pageId: config.pageId,
+      scope: input.scope,
+      filters: normalizeFilters(input.filters, input.sort),
+      selectedResources,
+      evidence,
+      freshness,
+    });
+  };
+  let snapshot = buildSnapshot();
+  while (
+    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot)
+      > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+    && retainedCandidateIds.length > 0
+  ) {
+    retainedCandidateIds.pop();
+    snapshot = buildSnapshot();
+  }
+  assertBound(
+    "snapshot",
+    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot),
+    COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+  );
 
   return {
     disposition: "integrated",
@@ -1392,15 +1443,16 @@ function envelopeSourceStatus(
 ): CoreCopilotSourceStatus {
   if (!envelope) return { source, observedAt: "unknown", status: "unavailable" };
   const evidence = envelope.evidence ?? [];
-  const status = evidence.reduce<CopilotFreshnessStatusV2>(
-    (current, item) => {
-      const candidate = evidenceFreshness(item.freshness);
-      return FRESHNESS_WARNING_PRIORITY[candidate] > FRESHNESS_WARNING_PRIORITY[current]
+  const reportedStatuses = Object.values(envelope.source_status ?? {}).map(freshnessStatus);
+  const statuses = evidence.length
+    ? evidence.map((item) => evidenceFreshness(item.freshness))
+    : reportedStatuses;
+  const status = statuses.length
+    ? statuses.reduce((current, candidate) =>
+      FRESHNESS_WARNING_PRIORITY[candidate] > FRESHNESS_WARNING_PRIORITY[current]
         ? candidate
-        : current;
-    },
-    "fresh",
-  );
+        : current)
+    : "unavailable";
   const observedAt = evidence.reduce(
     (latest, item) => item.timestamp > latest ? item.timestamp : latest,
     envelope.live_observed_at ?? "unknown",
@@ -1409,7 +1461,16 @@ function envelopeSourceStatus(
 }
 
 function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterInput {
-  const situations = input.situations?.data ?? [];
+  const loadedSituations = input.situations?.data ?? [];
+  const situationsById = new Map(
+    loadedSituations.map((situation) => [situation.situation_id, situation]),
+  );
+  const situations = input.visibleSituationIds
+    ? input.visibleSituationIds.flatMap((id) => {
+      const situation = situationsById.get(id);
+      return situation ? [situation] : [];
+    })
+    : loadedSituations;
   const connections = input.connections?.data ?? [];
   const records: CoreCopilotRecord[] = [
     ...situations.slice(0, 50).map((situation, index) => ({
@@ -1490,12 +1551,14 @@ function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterI
         visibleCount: Math.min(situations.length, 50),
         totalCount: envelopeTotal(input.situations),
         truncated: situations.length > 50 || envelopeTotal(input.situations) > 50,
+        available: Boolean(input.situations),
       },
       {
         key: "connections",
         visibleCount: Math.min(connections.length, 25),
         totalCount: envelopeTotal(input.connections),
         truncated: connections.length > 25 || envelopeTotal(input.connections) > 25,
+        available: Boolean(input.connections),
       },
     ],
     sourceStatuses: [
@@ -1512,6 +1575,7 @@ function collectionCoverage(
   visibleCount: number,
   totalCount: number,
   coverage?: CollectionCoverage,
+  available = true,
 ): CoreCopilotCoverageInput {
   const total = coverage?.total ?? totalCount;
   return {
@@ -1519,6 +1583,7 @@ function collectionCoverage(
     visibleCount,
     totalCount: Math.max(visibleCount, total),
     truncated: coverage?.truncated ?? visibleCount < total,
+    available,
   };
 }
 
@@ -1609,12 +1674,19 @@ function networkCoreInput(input: NetworkCopilotPageInput): CoreCopilotAdapterInp
       ...(input.bypass?.evidence ?? []),
     ],
     coverage: [
-      collectionCoverage("gaps", gaps.length, gapTotal, input.gaps?.data.coverage),
+      collectionCoverage(
+        "gaps",
+        gaps.length,
+        gapTotal,
+        input.gaps?.data.coverage,
+        Boolean(input.gaps),
+      ),
       collectionCoverage(
         "rule_findings",
         findings.length,
         findingTotal,
         input.findings?.data.coverage,
+        Boolean(input.findings),
       ),
     ],
     sourceStatuses: [
@@ -1663,6 +1735,16 @@ function networkGapRecord(
 function complianceCoreInput(
   input: ComplianceCopilotPageInput,
 ): CoreCopilotAdapterInput {
+  const violationSources = [
+    "topology",
+    "network_gaps",
+    "network_rule_findings",
+    "vulnerability_exposure",
+  ];
+  const deviationSources = ["policy_deviations", "security_deviations"];
+  const sourcesAvailable = (sources: string[]) =>
+    !input.sourceEnvelopes
+    || sources.every((source) => Boolean(input.sourceEnvelopes?.[source]));
   const records: CoreCopilotRecord[] = [
     ...input.violations.map((violation) => ({
       identity: violation.id,
@@ -1727,11 +1809,13 @@ function complianceCoreInput(
         key: "violations",
         visibleCount: input.violations.length,
         totalCount: input.violations.length,
+        available: sourcesAvailable(violationSources),
       },
       {
         key: "governed_deviations",
         visibleCount: input.governedDeviations.length,
         totalCount: input.governedDeviations.length,
+        available: sourcesAvailable(deviationSources),
       },
     ],
     sourceStatuses: Object.entries(input.sourceEnvelopes ?? {})
