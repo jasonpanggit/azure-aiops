@@ -830,12 +830,12 @@ Targeted review artifact (not a numbered executable plan):
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
-- [ ] 13-16-PLAN.md — Reauthorizing coordinator intake, dedicated publish-dispatch storage, durable full reconciliation, and corrected Foundry transport
-- [ ] 13-17-PLAN.md — Publish-dispatch consumer, reauthorizing rollback intake, publisher-bound Fabric credential, ordered publication, and fenced rollback
-- [ ] 13-18-PLAN.md — Three-root read-only API, guarded maintenance intake, and reconstructed manual/publish/rollback topology tests
-- [ ] 13-19-PLAN.md — API root deployment, command/dispatch/state/publication RBAC, exact worker identities, and immutable targeted rollout
-- [ ] 13-20-PLAN.md — Bounded live maintenance, full-then-incremental, real ARG fixture/inventory/curator, command topology, publication, rollback, and cleanup drill
-- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only C-14/C-15/C-16 shadow closeout
+- [ ] 13-16-PLAN.md — Exact coordinator root/capability matrix, reauthorizing intake, dispatch-only store, durable full reconciliation, and corrected Foundry transport
+- [ ] 13-17-PLAN.md — Exact publisher root/capability matrix, guarded publisher-only validation drill, ordered publication, and fenced rollback
+- [ ] 13-18-PLAN.md — Four-root read-only API, guarded maintenance intake, and reconstructed manual/publish/rollback topology tests
+- [ ] 13-19-PLAN.md — Exact process RBAC/env matrix, explicit dispatch deployment allowlist, isolated drill workspace, and immutable targeted rollout
+- [ ] 13-20-PLAN.md — Three isolated live credential contexts plus bounded maintenance, ARG, replacement, guarded stale-writer/rollback, and cleanup drills
+- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only matrix/allowlist/credential/drill shadow closeout
 
 **Success Criteria** (what must be TRUE):
 
@@ -843,6 +843,6 @@ Targeted review artifact (not a numbered executable plan):
 2. Incremental discovery packages only added, changed, retired, unresolved, or stale entities and relationships for evaluation, while periodic full reconciliation proves that incremental state has not drifted from authoritative inventory and Azure evidence.
 3. A code-first Foundry prompt agent receives only scope-filtered, read-only evidence and approved ontology vocabulary, emits structured relationship proposals with citations and calibrated confidence, and cannot write authoritative Fabric ontology tables directly.
 4. Every proposal is content-addressed, deduplicated, schema-checked, endpoint-resolved, scope-checked, vocabulary-checked, contradiction-checked, and recorded in an auditable lifecycle; a hard server-side shadow gate keeps all model-derived edges out of authoritative candidates until a separately audited predicate/type-pair release is enabled.
-5. A separate least-privilege publisher validates the complete candidate generation, uses service-enforced CAS and fenced single-writer/version preconditions, preserves retirement and rollback lineage, and promotes only after every API, Fabric, agent, export, and semantic consumer passes before/after/rollback compatibility checks.
+5. API, coordinator, and publisher match one exact connection/command/state/dispatch/publication root-capability matrix; the coordinator has no publication authority, `PublisherDispatchStore` uses only the dispatch root, and the separate least-privilege publisher validates, fences, promotes, checks all five consumers, and rolls back under its own identity. A default-off publisher-only validation drill may deterministically pause pre-CAS or fail one allowlisted post-check only in the isolated non-production validation workspace, with drill ID, expiry, audit, one-shot use, and cleanup.
 6. Pending relationships, proposal decisions, run checkpoints, leases, publication attempts, failures, metrics, and versioned EvaluationSnapshot records are durable across restarts; stale or timed-out runs cannot continue writing over a newer successful generation, and stale evaluation evidence cannot authorize release.
-7. Offline and live evaluations demonstrate no-click refresh, exact batch/token/deadline bounds, idempotent reruns, tenant/subscription isolation, prompt-injection resistance, publisher separation, exact production alerts, relationship precision/recall thresholds, safe degradation, consumer cutover, rollback, and complete operator-visible audit history.
+7. Offline and live evaluations demonstrate no-click refresh, exact batch/token/deadline bounds, idempotent reruns, tenant/subscription isolation, prompt-injection resistance, publisher separation, explicit dispatch deployment-address coverage, three isolated least-privilege live service-principal contexts with no credential bleed, exact production alerts, relationship precision/recall thresholds, safe degradation, guarded stale-writer/rollback drills, consumer cutover, and complete sanitized operator-visible audit history.
