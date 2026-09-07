@@ -17,6 +17,8 @@ from scripts.validate_ontology_discovery_live import (
     assert_stage_transition,
     build_job_start_command,
     evaluate_lifecycle_evidence,
+    evaluate_publication_evidence,
+    expand_role_actions,
     isolated_azure_environment,
     job_template_hash,
     load_plan19_deployment_contract,
@@ -106,12 +108,61 @@ def _complete_lifecycle() -> dict[str, object]:
         "drain": {
             "status": "PASS",
             "connection_root_matches": True,
+            "connection_root_hash": "sha256:" + "0" * 64,
             "registry_provider_class": "ConnectionRegistry",
+            "registry_provider_module": "onboarding.registry",
+            "registry_store_class": "OneLakeRegistryStore",
             "normal_selection": True,
             "normal_reauthorization": True,
-            "processed_per_pass": [1, 1, 1],
+            "processed_per_pass": [1, 1, 1, 1],
             "prepared_record_hashes": records,
             "terminal_record_hashes": records,
+            "selection_receipts": [
+                {
+                    "record_hash": records[0],
+                    "epoch_hash": "sha256:" + "b" * 64,
+                    "snapshot_hash": "sha256:" + "4" * 64,
+                    "cursor_before": 0,
+                    "cursor_after": 1,
+                    "attempt": 1,
+                    "outcome": "duplicate",
+                    "authorization_hash": "sha256:" + "5" * 64,
+                    "process_hash": "sha256:" + "e" * 64,
+                },
+                {
+                    "record_hash": records[1],
+                    "epoch_hash": "sha256:" + "b" * 64,
+                    "snapshot_hash": "sha256:" + "4" * 64,
+                    "cursor_before": 1,
+                    "cursor_after": 2,
+                    "attempt": 1,
+                    "outcome": "retrying",
+                    "authorization_hash": "sha256:" + "6" * 64,
+                    "process_hash": "sha256:" + "e" * 64,
+                },
+                {
+                    "record_hash": records[2],
+                    "epoch_hash": "sha256:" + "b" * 64,
+                    "snapshot_hash": "sha256:" + "4" * 64,
+                    "cursor_before": 2,
+                    "cursor_after": 0,
+                    "attempt": 1,
+                    "outcome": "succeeded",
+                    "authorization_hash": "sha256:" + "7" * 64,
+                    "process_hash": "sha256:" + "f" * 64,
+                },
+                {
+                    "record_hash": records[1],
+                    "epoch_hash": "sha256:" + "b" * 64,
+                    "snapshot_hash": "sha256:" + "4" * 64,
+                    "cursor_before": 0,
+                    "cursor_after": 2,
+                    "attempt": 2,
+                    "outcome": "exhausted_failure",
+                    "authorization_hash": "sha256:" + "6" * 64,
+                    "process_hash": "sha256:" + "f" * 64,
+                },
+            ],
             "retry_rotated": True,
             "later_member_progress": True,
             "process_hashes": ["sha256:" + "e" * 64, "sha256:" + "f" * 64],
@@ -123,6 +174,12 @@ def _complete_lifecycle() -> dict[str, object]:
             "status": "PASS",
             "terraform_tag_hash_matches": True,
             "lineage": ["terraform", "arg", "inventory", "evidence", "curator"],
+            "resource_hash": "sha256:" + "a" * 64,
+            "scope_hash": "sha256:" + "d" * 64,
+            "tag_hashes": {
+                source: "sha256:" + "7" * 64
+                for source in ("terraform", "arg", "inventory", "evidence", "curator")
+            },
             "curator_source_class": "OntologyCurator",
             "tools": list(EXPECTED_CURATOR_TOOLS),
             "scope_unchanged": True,
@@ -144,6 +201,8 @@ def _complete_lifecycle() -> dict[str, object]:
             "active_prepared_epochs": 0,
             "retained_receipts": ["prepare", "cleanup", "sweep"],
             "audit_immutable": True,
+            "independent_observer": "evidence",
+            "tag_hash_unchanged": True,
         },
         "maintenance": {
             "general_operator_denied": True,
@@ -332,6 +391,29 @@ def test_validation_registry_eligible_set_restart_and_no_injection_contracts() -
         assert report["status"] == "FAIL"
         assert code in report["missing_evidence"]
 
+    wrong_provider = json.loads(json.dumps(evidence))
+    wrong_provider["drain"]["registry_store_class"] = "FixtureRegistryStore"
+    report = evaluate_lifecycle_evidence(wrong_provider)
+    assert "production_registry_path" in report["missing_evidence"]
+
+
+def test_three_record_drain_proves_starvation_free_retry_rotation() -> None:
+    evidence = _complete_lifecycle()
+    assert evaluate_lifecycle_evidence(evidence)["status"] == "PASS"
+
+    no_later_progress = json.loads(json.dumps(evidence))
+    retry = no_later_progress["drain"]["selection_receipts"].pop()
+    no_later_progress["drain"]["selection_receipts"].insert(2, retry)
+    report = evaluate_lifecycle_evidence(no_later_progress)
+    assert "starvation_free_selection_order" in report["missing_evidence"]
+
+    mixed_epoch = json.loads(json.dumps(evidence))
+    mixed_epoch["drain"]["selection_receipts"][2]["epoch_hash"] = (
+        "sha256:" + "9" * 64
+    )
+    report = evaluate_lifecycle_evidence(mixed_epoch)
+    assert "restart_lineage" in report["missing_evidence"]
+
 
 def test_injection_tag_requires_real_provenance_exact_tools_and_zero_edges() -> None:
     evidence = _complete_lifecycle()
@@ -352,6 +434,11 @@ def test_injection_tag_requires_real_provenance_exact_tools_and_zero_edges() -> 
     report = evaluate_lifecycle_evidence(changed)
     assert "zero_authoritative_model_edges" in report["missing_evidence"]
 
+    changed = json.loads(json.dumps(evidence))
+    changed["injection"]["tag_hashes"]["inventory"] = "sha256:" + "8" * 64
+    report = evaluate_lifecycle_evidence(changed)
+    assert "exact_tag_lineage" in report["missing_evidence"]
+
 
 def test_cleanup_requires_fence_exact_set_empty_registry_and_retained_audit() -> None:
     evidence = _complete_lifecycle()
@@ -368,6 +455,11 @@ def test_cleanup_requires_fence_exact_set_empty_registry_and_retained_audit() ->
         report = evaluate_lifecycle_evidence(changed)
         assert report["status"] == "FAIL"
         assert code in report["missing_evidence"]
+
+    changed = json.loads(json.dumps(evidence))
+    changed["cleanup"]["independent_observer"] = "deployer"
+    report = evaluate_lifecycle_evidence(changed)
+    assert "independent_empty_registry_observation" in report["missing_evidence"]
 
 
 def test_job_start_authority_and_maintenance_are_fail_closed() -> None:
@@ -496,3 +588,98 @@ def test_parser_exposes_only_finite_deployed_stages_and_assertions() -> None:
     assert args.assert_no_job_overrides is True
     assert args.assert_fixture_registry_empty is True
     assert args.fail_on_local_substitution is True
+
+
+def test_role_expansion_rejects_wildcards_and_job_actions_outside_deployer() -> None:
+    roles = [
+        {
+            "role": "Reader",
+            "actions": ["Microsoft.Resources/subscriptions/resourceGroups/read"],
+            "not_actions": [],
+        },
+        {
+            "role": "Fabric reader",
+            "actions": ["Microsoft.Fabric/workspaces/read"],
+            "not_actions": [],
+        },
+    ]
+    expanded = expand_role_actions(roles)
+    assert expanded["wildcard"] is False
+    assert expanded["job_start"] is False
+    assert expanded["mutation"] is False
+
+    expanded = expand_role_actions(
+        [{"role": "Owner", "actions": ["*"], "not_actions": []}]
+    )
+    assert expanded["wildcard"] is True
+    assert expanded["job_start"] is True
+    assert expanded["mutation"] is True
+
+
+def test_publication_requires_real_topology_drills_rollback_and_consumers() -> None:
+    evidence = _complete_lifecycle()
+    publication = {
+        "release_status": "BLOCKED/PENDING",
+        "templates": evidence["templates"],
+        "credentials": evidence["credentials"],
+        "command_topology": [
+            "api_intake",
+            "coordinator_claim",
+            "coordinator_reauthorization",
+            "publish_dispatch",
+            "publisher_claim",
+            "publisher_status",
+            "api_reload",
+        ],
+        "process_hashes": {
+            "api": "sha256:" + "1" * 64,
+            "coordinator": "sha256:" + "2" * 64,
+            "publisher": "sha256:" + "3" * 64,
+            "api_reload": "sha256:" + "4" * 64,
+        },
+        "receipts": {
+            name: True
+            for name in (
+                "immutable_stage",
+                "validation",
+                "five_consumer_compatibility",
+                "fabric_materialization",
+                "final_precondition",
+                "pointer_cas",
+                "post_check",
+            )
+        },
+        "stale_writer": {
+            "pre_cas_pause": True,
+            "stale_fence_rejected": True,
+            "stale_etag_rejected": True,
+            "one_shot_consumed": True,
+            "cleaned": True,
+        },
+        "rollback": {
+            "allowlisted_post_check_failure": True,
+            "automatic": True,
+            "order": ["old", "new", "old"],
+            "one_shot_consumed": True,
+            "cleaned": True,
+        },
+        "consumers": {
+            name: "PASS"
+            for name in ("api", "fabric", "agent", "export", "semantic")
+        },
+        "final": {
+            "fixture_registry_empty": True,
+            "fixture_audit_retained": True,
+            "terraform_tag_unchanged": True,
+            "runtime_job_start_grants": [],
+            "authoritative_model_edges": 0,
+            "local_substitution": False,
+        },
+    }
+    assert evaluate_publication_evidence(publication)["status"] == "PASS"
+
+    changed = json.loads(json.dumps(publication))
+    changed["rollback"]["order"] = ["old", "new"]
+    report = evaluate_publication_evidence(changed)
+    assert report["status"] == "FAIL"
+    assert "old_new_old" in report["missing_evidence"]
