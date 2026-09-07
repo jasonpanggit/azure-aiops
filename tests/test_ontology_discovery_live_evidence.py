@@ -8,15 +8,20 @@ import pytest
 
 from scripts.validate_ontology_discovery_live import (
     DEPLOYED_LIFECYCLE_SEQUENCE,
+    DEPLOYED_STAGES,
     EXPECTED_CURATOR_TOOLS,
+    FIXED_JOB_NAMES,
     EvidenceError,
     _parser,
     assert_fixed_template,
+    assert_stage_transition,
     build_job_start_command,
     evaluate_lifecycle_evidence,
     isolated_azure_environment,
     job_template_hash,
+    load_plan19_deployment_contract,
     load_resume_checkpoint,
+    sanitize_deployed_evidence,
     validate_azure_contexts,
     write_resume_checkpoint,
 )
@@ -62,8 +67,19 @@ def _complete_lifecycle() -> dict[str, object]:
             "contexts_distinct": True,
             "modes": {"deployer": "0700", "evidence": "0700"},
             "ambient_credentials_removed": True,
+            "identity_hashes": {
+                "deployer": "sha256:" + "8" * 64,
+                "evidence": "sha256:" + "9" * 64,
+            },
             "deployer_actions": ["job_read", "job_start", "job_execution_read"],
             "evidence_actions": ["arg_read", "fabric_read", "onelake_read"],
+            "evidence_denied_actions": [
+                "job_execution_read",
+                "job_read",
+                "job_start",
+                "job_stop",
+                "mutation",
+            ],
             "runtime_job_start_grants": [],
         },
         "templates": {
@@ -208,6 +224,64 @@ def test_job_start_command_has_no_override_surface() -> None:
             "--replica-completion-count",
         }
     )
+    with pytest.raises(EvidenceError, match="fixed deployed Job"):
+        build_job_start_command(
+            resource_group="opaque-group",
+            job_name="caller-selected-job",
+        )
+
+
+def test_fixed_job_registry_matches_deployed_plan19_templates() -> None:
+    assert FIXED_JOB_NAMES == {
+        "coordinator": "aiops-dev-ontology-discovery",
+        "publisher": "aiops-dev-ontology-publisher",
+        "rbac_validator": "aiops-dev-ontology-rbac-check",
+        "ontology_fixture_prepare": "ontology-fixture-prepare",
+        "ontology_fixture_cleanup": "ontology-fixture-cleanup",
+    }
+
+
+def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
+    tmp_path: Path,
+) -> None:
+    hashes = {
+        logical: f"sha256:{index:064x}"
+        for index, logical in enumerate(FIXED_JOB_NAMES, start=1)
+    }
+    deployment = {
+        "schema_version": "ontology-gap-deployment.v1",
+        "status": "applied",
+        "live": {
+            "applied": True,
+            "no_runtime_job_start_grants": True,
+            "deployment_principal_fixture_access": True,
+            "template_hashes_before": hashes,
+            "template_hashes_after": hashes,
+            "root_hashes": {
+                "AIOPS_CONNECTION_HOME": "sha256:" + "a" * 64,
+                "AIOPS_ONTOLOGY_COMMAND_HOME": "sha256:" + "b" * 64,
+                "AIOPS_ONTOLOGY_STATE_HOME": "sha256:" + "c" * 64,
+                "AIOPS_ONTOLOGY_PUBLICATION_HOME": "sha256:" + "d" * 64,
+            },
+            "coordinator_tag_hash": "sha256:" + "e" * 64,
+        },
+    }
+    path = tmp_path / "deployment.json"
+    path.write_text(json.dumps(deployment), encoding="utf-8")
+
+    contract = load_plan19_deployment_contract(path)
+    assert contract.status == "applied"
+    assert contract.template_hashes == hashes
+    assert contract.validation_connection_root_hash == "sha256:" + "a" * 64
+    assert contract.coordinator_tag_hash == "sha256:" + "e" * 64
+
+    drifted = json.loads(json.dumps(deployment))
+    drifted["live"]["template_hashes_after"]["publisher"] = (
+        "sha256:" + "f" * 64
+    )
+    path.write_text(json.dumps(drifted), encoding="utf-8")
+    with pytest.raises(EvidenceError, match="Plan 19"):
+        load_plan19_deployment_contract(path)
 
 
 def test_credential_contexts_are_distinct_private_and_non_bleeding(
@@ -314,6 +388,20 @@ def test_job_start_authority_and_maintenance_are_fail_closed() -> None:
     assert "no_runtime_job_start_grants" in report["missing_evidence"]
     assert "general_maintenance_denied" in report["missing_evidence"]
 
+    same_identity = _complete_lifecycle()
+    same_identity["credentials"]["identity_hashes"]["evidence"] = (
+        same_identity["credentials"]["identity_hashes"]["deployer"]
+    )
+    report = evaluate_lifecycle_evidence(same_identity)
+    assert "distinct_azure_identities" in report["missing_evidence"]
+
+    evidence_can_start = _complete_lifecycle()
+    evidence_can_start["credentials"]["evidence_denied_actions"].remove(
+        "job_start"
+    )
+    report = evaluate_lifecycle_evidence(evidence_can_start)
+    assert "evidence_has_no_job_authority" in report["missing_evidence"]
+
 
 def test_resume_checkpoint_has_finite_stages_and_opaque_step_keys(
     tmp_path: Path,
@@ -343,6 +431,46 @@ def test_resume_checkpoint_has_finite_stages_and_opaque_step_keys(
             completed_steps=(),
             evidence_refs=(),
         )
+
+
+def test_stage_state_machine_is_finite_ordered_and_idempotent() -> None:
+    assert DEPLOYED_STAGES == (
+        "preflight",
+        "lifecycle",
+        "publication",
+        "finalize",
+    )
+    assert_stage_transition((), "preflight")
+    assert_stage_transition(("preflight",), "preflight")
+    assert_stage_transition(("preflight",), "lifecycle")
+    assert_stage_transition(
+        ("preflight", "lifecycle", "publication"),
+        "finalize",
+    )
+    with pytest.raises(EvidenceError, match="stage transition"):
+        assert_stage_transition((), "lifecycle")
+    with pytest.raises(EvidenceError, match="stage transition"):
+        assert_stage_transition(("preflight",), "publication")
+
+
+def test_deployed_evidence_sanitizer_rejects_raw_operational_values() -> None:
+    safe = {
+        "identity_hash": "sha256:" + "a" * 64,
+        "tag_hash": "sha256:" + "b" * 64,
+        "record_count": 3,
+        "status": "PASS",
+    }
+    assert sanitize_deployed_evidence(safe) == safe
+    for key, value in (
+        ("access_token", "secret"),
+        ("raw_error", "boom"),
+        ("resource_id", "/subscriptions/raw"),
+        ("tag_value", "instruction=raw"),
+        ("command", "az containerapp job start"),
+        ("fixture_path", "abfss://raw"),
+    ):
+        with pytest.raises(EvidenceError, match="unsafe deployed evidence"):
+            sanitize_deployed_evidence({key: value})
 
 
 def test_parser_exposes_only_finite_deployed_stages_and_assertions() -> None:
