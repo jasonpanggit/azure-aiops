@@ -393,6 +393,39 @@ _PRIVATE_ENDPOINT_TARGETS = (
     *sorted(PAAS_ENTITY_TYPES),
 )
 
+# RelationshipBuilder derives tag, Advisor, Defender, cost, and Situation
+# edges from the concrete entity it resolves at runtime. Keep the validator's
+# vocabulary aligned with every resource-like type that those bounded loops
+# can target; otherwise valid PaaS/network rows pass normalization but fail
+# the strict pre-publication vocabulary gate.
+_TAGGABLE_ASSETS = (
+    "Resource",
+    "VirtualMachine",
+    "ArcServer",
+    "KubernetesCluster",
+    *sorted(PAAS_ENTITY_TYPES),
+)
+_RESOURCE_TARGETS = tuple(
+    sorted(
+        {
+            *_TAGGABLE_ASSETS,
+            "Subscription",
+            "ManagedIdentity",
+            "VNet",
+            "Subnet",
+            "NetworkInterface",
+            "NetworkSecurityGroup",
+            "RouteTable",
+            "AzureFirewall",
+            "FirewallPolicy",
+            "PrivateEndpoint",
+            "PrivateDnsZone",
+            "NetworkGateway",
+            "LoadBalancer",
+        }
+    )
+)
+
 ONTOLOGY_RELATIONSHIP_TYPES = (
     ("Tenant", "owns", "Subscription"),
     ("ManagementGroup", "contains", "Subscription"),
@@ -445,13 +478,7 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("Incident", "hasProbableCause", "RootCause"),
     *(
         ("Situation", "affects", asset)
-        for asset in (
-            "Resource",
-            "VirtualMachine",
-            "ArcServer",
-            "KubernetesCluster",
-            *sorted(PAAS_ENTITY_TYPES),
-        )
+        for asset in _RESOURCE_TARGETS
     ),
     ("Tenant", "owns", "SubscriptionConnection"),
     ("Subscription", "contains", "SubscriptionConnection"),
@@ -469,20 +496,20 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
             *sorted(PAAS_ENTITY_TYPES),
         )
     ),
-    *((asset, "member_of", "Application") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *(("Application", "hosted_on", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *((asset, "belongs_to", "BusinessService") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *((asset, "provides", "Service") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *((asset, "owned_by", "Owner") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *(("AdvisorRecommendation", "affects", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *(("Resource", "incurs_cost", "CostActual"), ("VirtualMachine", "incurs_cost", "CostActual"), ("ArcServer", "incurs_cost", "CostActual"), ("KubernetesCluster", "incurs_cost", "CostActual")),
+    *((asset, "member_of", "Application") for asset in _TAGGABLE_ASSETS),
+    *(("Application", "hosted_on", asset) for asset in _TAGGABLE_ASSETS),
+    *((asset, "belongs_to", "BusinessService") for asset in _TAGGABLE_ASSETS),
+    *((asset, "provides", "Service") for asset in _TAGGABLE_ASSETS),
+    *((asset, "owned_by", "Owner") for asset in _TAGGABLE_ASSETS),
+    *(("AdvisorRecommendation", "affects", asset) for asset in _RESOURCE_TARGETS),
+    *((asset, "incurs_cost", "CostActual") for asset in _RESOURCE_TARGETS),
     *(("PatchAssessment", "evaluates", asset) for asset in ("VirtualMachine", "ArcServer")),
     *((asset, "assessedBy", "PatchAssessment") for asset in ("VirtualMachine", "ArcServer")),
     *(("PatchInstallation", "records_installation_for", asset) for asset in ("VirtualMachine", "ArcServer")),
-    *(("AdvisorRecommendation", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *(("DefenderAssessment", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *(("DefenderVulnerabilityFinding", "impacts", asset) for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
-    *((asset, "hasVulnerability", "DefenderVulnerabilityFinding") for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")),
+    *(("AdvisorRecommendation", "impacts", asset) for asset in _RESOURCE_TARGETS),
+    *(("DefenderAssessment", "impacts", asset) for asset in _RESOURCE_TARGETS),
+    *(("DefenderVulnerabilityFinding", "impacts", asset) for asset in _RESOURCE_TARGETS),
+    *((asset, "hasVulnerability", "DefenderVulnerabilityFinding") for asset in _RESOURCE_TARGETS),
     ("DefenderVulnerabilityFinding", "derivedFrom", "DefenderAssessment"),
     ("ContainerImageExposure", "impacts", "Resource"),
     ("Resource", "hasImageExposure", "ContainerImageExposure"),
@@ -534,12 +561,13 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ),
     *(
         (asset, "hasNetworkInterface", "NetworkInterface")
-        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+        for asset in _RESOURCE_TARGETS
     ),
     *(
         ("LoadBalancer", "loadBalances", asset)
-        for asset in ("Resource", "VirtualMachine", "ArcServer", "KubernetesCluster")
+        for asset in _RESOURCE_TARGETS
     ),
+    ("Resource", "hosts", "LoadBalancer"),
     # Observed traffic (VNet flow logs / Traffic Analytics). Unlike every
     # relationship above, this one is *behavioral* rather than structural: it
     # records that traffic matching a rule was actually seen on the wire, so
