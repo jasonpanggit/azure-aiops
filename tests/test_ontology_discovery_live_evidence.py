@@ -89,15 +89,7 @@ def _complete_lifecycle() -> dict[str, object]:
                 "after": f"sha256:{index:064x}",
                 "override_fields": [],
             }
-            for index, name in enumerate(
-                (
-                    "ontology_fixture_prepare",
-                    "coordinator",
-                    "publisher",
-                    "ontology_fixture_cleanup",
-                ),
-                start=1,
-            )
+            for index, name in enumerate(FIXED_JOB_NAMES, start=1)
         },
         "prepare": {
             "status": "PASS",

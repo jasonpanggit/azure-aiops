@@ -80,6 +80,13 @@ EXPECTED_CURATOR_TOOLS = (
     "search_relationship_history",
 )
 DEPLOYED_STAGES = ("preflight", "lifecycle", "publication", "finalize")
+FIXED_JOB_NAMES = {
+    "coordinator": "aiops-dev-ontology-discovery",
+    "publisher": "aiops-dev-ontology-publisher",
+    "rbac_validator": "aiops-dev-ontology-rbac-check",
+    "ontology_fixture_prepare": "ontology-fixture-prepare",
+    "ontology_fixture_cleanup": "ontology-fixture-cleanup",
+}
 DEPLOYED_LIFECYCLE_SEQUENCE = (
     "preflight",
     "prepare",
@@ -100,13 +107,17 @@ EXPECTED_DEPLOYER_ACTIONS = frozenset(
 EXPECTED_EVIDENCE_ACTIONS = frozenset(
     {"arg_read", "fabric_read", "onelake_read"}
 )
-EXPECTED_TAG_LINEAGE = ("terraform", "arg", "inventory", "evidence", "curator")
-REQUIRED_JOB_TEMPLATES = (
-    "ontology_fixture_prepare",
-    "coordinator",
-    "publisher",
-    "ontology_fixture_cleanup",
+EXPECTED_EVIDENCE_DENIALS = frozenset(
+    {
+        "job_execution_read",
+        "job_read",
+        "job_start",
+        "job_stop",
+        "mutation",
+    }
 )
+EXPECTED_TAG_LINEAGE = ("terraform", "arg", "inventory", "evidence", "curator")
+REQUIRED_JOB_TEMPLATES = tuple(FIXED_JOB_NAMES)
 AZURE_AMBIENT_CREDENTIAL_KEYS = frozenset(
     {
         "AZURE_CLIENT_CERTIFICATE_PATH",
@@ -172,6 +183,34 @@ SENSITIVE_KEYS = {
     "tenant_id",
     "workspace_id",
 }
+DEPLOYMENT_EVIDENCE = (
+    ROOT / ".planning" / "eval" / "ontology-gap-deployment.json"
+)
+_RAW_DEPLOYED_EVIDENCE_KEYS = frozenset(
+    {
+        "access_token",
+        "args",
+        "command",
+        "commands",
+        "env",
+        "error",
+        "fixture_path",
+        "object_id",
+        "path",
+        "principal_id",
+        "prompt",
+        "raw_error",
+        "resource_id",
+        "root",
+        "secret",
+        "subscription_id",
+        "tag_value",
+        "tenant_id",
+        "token",
+        "uri",
+        "url",
+    }
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -188,6 +227,16 @@ class AzureContexts:
 
     deployer: Path
     evidence: Path
+
+
+@dataclass(frozen=True)
+class Plan19DeploymentContract:
+    """Closed subset of the applied deployment evidence needed by Plan 20."""
+
+    status: str
+    template_hashes: Mapping[str, str]
+    validation_connection_root_hash: str
+    coordinator_tag_hash: str
 
 
 @dataclass(frozen=True)
@@ -612,6 +661,8 @@ def build_job_start_command(
 
     if not resource_group.strip() or not job_name.strip():
         raise EvidenceError("resource group and Job name are required")
+    if job_name not in FIXED_JOB_NAMES.values():
+        raise EvidenceError("Job start must name an exact fixed deployed Job")
     return [
         "az",
         "containerapp",
@@ -714,6 +765,121 @@ def _require_hash(value: object) -> bool:
     return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
 
 
+def load_plan19_deployment_contract(
+    path: Path = DEPLOYMENT_EVIDENCE,
+) -> Plan19DeploymentContract:
+    """Load only stable, hash-only facts from the applied Plan 19 evidence."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvidenceError("Plan 19 deployment evidence is unavailable") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "applied":
+        raise EvidenceError("Plan 19 deployment evidence is not applied")
+    live = payload.get("live")
+    if not isinstance(live, Mapping):
+        raise EvidenceError("Plan 19 live deployment evidence is missing")
+    if (
+        live.get("applied") is not True
+        or live.get("no_runtime_job_start_grants") is not True
+        or live.get("deployment_principal_fixture_access") is not True
+    ):
+        raise EvidenceError("Plan 19 deployment boundary is not proven")
+    before = live.get("template_hashes_before")
+    after = live.get("template_hashes_after")
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        raise EvidenceError("Plan 19 template hashes are missing")
+    expected_names = set(FIXED_JOB_NAMES)
+    if set(before) != expected_names or set(after) != expected_names:
+        raise EvidenceError("Plan 19 fixed Job registry is not exact")
+    template_hashes = {name: str(before[name]) for name in FIXED_JOB_NAMES}
+    if (
+        before != after
+        or any(not _require_hash(value) for value in template_hashes.values())
+    ):
+        raise EvidenceError("Plan 19 saved Job template hashes are unstable")
+    roots = live.get("root_hashes")
+    if not isinstance(roots, Mapping):
+        raise EvidenceError("Plan 19 root hashes are missing")
+    required_roots = {
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_STATE_HOME",
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME",
+    }
+    if not required_roots.issubset(roots) or any(
+        not _require_hash(roots.get(name)) for name in required_roots
+    ):
+        raise EvidenceError("Plan 19 root hashes are incomplete")
+    tag_hash = live.get("coordinator_tag_hash")
+    if not _require_hash(tag_hash):
+        raise EvidenceError("Plan 19 coordinator tag hash is missing")
+    return Plan19DeploymentContract(
+        status="applied",
+        template_hashes=template_hashes,
+        validation_connection_root_hash=str(
+            roots["AIOPS_CONNECTION_HOME"]
+        ),
+        coordinator_tag_hash=str(tag_hash),
+    )
+
+
+def assert_stage_transition(
+    completed_stages: Sequence[str],
+    requested_stage: str,
+) -> None:
+    """Reject skipped, reordered, duplicated, or unbounded stage execution."""
+
+    completed = tuple(completed_stages)
+    if (
+        requested_stage not in DEPLOYED_STAGES
+        or completed != DEPLOYED_STAGES[: len(completed)]
+        or len(completed) > len(DEPLOYED_STAGES)
+    ):
+        raise EvidenceError("invalid deployed stage transition")
+    next_stage = (
+        DEPLOYED_STAGES[len(completed)]
+        if len(completed) < len(DEPLOYED_STAGES)
+        else DEPLOYED_STAGES[-1]
+    )
+    idempotent_stage = completed[-1] if completed else None
+    if requested_stage not in {next_stage, idempotent_stage}:
+        raise EvidenceError("invalid deployed stage transition")
+
+
+def sanitize_deployed_evidence(value: object, *, key: str = "") -> object:
+    """Reject raw operational values from retained Plan 20 artifacts."""
+
+    normalized_key = key.casefold()
+    if (
+        normalized_key in _RAW_DEPLOYED_EVIDENCE_KEYS
+        and value not in (None, "")
+        and not _require_hash(value)
+    ):
+        raise EvidenceError(
+            f"unsafe deployed evidence field rejected: {normalized_key}"
+        )
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): sanitize_deployed_evidence(
+                item_value,
+                key=str(item_key),
+            )
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_deployed_evidence(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_deployed_evidence(item, key=key) for item in value]
+    if isinstance(value, str) and (
+        "Bearer " in value
+        or "client_secret" in value.casefold()
+        or "access_token" in value.casefold()
+    ):
+        raise EvidenceError("unsafe deployed evidence string rejected")
+    return value
+
+
 def write_resume_checkpoint(
     path: Path,
     *,
@@ -806,6 +972,16 @@ def evaluate_lifecycle_evidence(
         credentials.get("ambient_credentials_removed") is True,
         "no_ambient_credentials",
     )
+    identities = credentials.get("identity_hashes")
+    identities = identities if isinstance(identities, Mapping) else {}
+    deployer_identity = identities.get("deployer")
+    evidence_identity = identities.get("evidence")
+    require(
+        _require_hash(deployer_identity)
+        and _require_hash(evidence_identity)
+        and deployer_identity != evidence_identity,
+        "distinct_azure_identities",
+    )
     require(
         set(credentials.get("deployer_actions") or ())
         == EXPECTED_DEPLOYER_ACTIONS,
@@ -815,6 +991,11 @@ def evaluate_lifecycle_evidence(
         set(credentials.get("evidence_actions") or ())
         == EXPECTED_EVIDENCE_ACTIONS,
         "evidence_read_only",
+    )
+    require(
+        set(credentials.get("evidence_denied_actions") or ())
+        == EXPECTED_EVIDENCE_DENIALS,
+        "evidence_has_no_job_authority",
     )
     require(
         not credentials.get("runtime_job_start_grants"),
