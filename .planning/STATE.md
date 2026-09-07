@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: Blocked in 13-20 preflight at Fabric ManagedIdentity OneLake Read role reconciliation
-last_updated: "2026-09-07T16:54:27.851Z"
+stopped_at: 13-20 local evidence deviation complete; cloud gate frozen for Exposure 03.1-19
+last_updated: "2026-09-07T16:59:34.500Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -320,8 +320,8 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Session
 
-**Last session:** 2026-09-07T16:54:27.833Z
-**Stopped at:** Blocked in 13-20 preflight at Fabric ManagedIdentity OneLake Read role reconciliation
+**Last session:** 2026-09-07T16:59:34.481Z
+**Stopped at:** 13-20 local evidence deviation complete; cloud gate frozen for Exposure 03.1-19
 **Resume file:** .planning/eval/ontology-deployed-lifecycle.checkpoint.json
 
 ## Accumulated Context
@@ -342,3 +342,4 @@ current_phase_name: Exposure Reliability and Scale
 
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
 - Phase 13 Plan 20 blocked: Fabric provider 1.13.0 cannot round-trip OneLake Data Access Security Microsoft Entra ManagedIdentity members (object_type omitted; null fabric_item_members normalized to empty set). Evidence Job was not created; do not broaden to Contributor or continue Plan 21.
+- Cloud operations frozen for Phase 13 Plan 20 while Exposure Plan 03.1-19 owns the shared deployment/job lane; no build, push, Terraform plan/apply, or ACA Job start/stop until explicit release.

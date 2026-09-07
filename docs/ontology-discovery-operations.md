@@ -180,6 +180,12 @@ gate, do not change the member to `ServicePrincipal`, ignore drift, replace
 only after the provider/API safely preserves `ManagedIdentity` with
 `Path=["*"]`, `Action=["Read"]`.
 
+Cloud operations are additionally frozen while Exposure Plan 03.1-19 owns the
+shared deployment and Job-control lane. Until the owner explicitly releases
+that lane, Plan 20 work is local-only: code, tests, documentation, and commits.
+Do not build or push images, generate or apply Terraform plans, or start/stop
+any ACA Job.
+
 ## Credentialed validation
 
 ### Prerequisites

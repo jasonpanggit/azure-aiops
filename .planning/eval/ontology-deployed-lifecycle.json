@@ -1,6 +1,8 @@
 {
   "activation_interface_present": false,
   "blocker": "fabric_provider_managed_identity_member_round_trip_inconsistent",
+  "cloud_operations_frozen": true,
+  "cloud_lane_owner": "exposure-plan-03.1-19",
   "deployment": {
     "api_digest": "sha256:b6241ebc3227fbd577f5f8121bd89d212292a74265f6e180bba63fd81bbb1d20",
     "create_count": 11,
