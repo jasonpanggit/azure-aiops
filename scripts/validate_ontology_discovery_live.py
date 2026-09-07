@@ -2417,6 +2417,35 @@ def _shadow(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     return report_path, sanitize_shadow_report(report)  # type: ignore[return-value]
 
 
+def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
+    """Enter the deployed state machine without falling back to legacy shadow.
+
+    Context validation intentionally happens before target discovery, token
+    acquisition, Terraform reads, or any Job call.  This keeps missing or
+    ambient credentials a true precondition gate rather than an invitation to
+    reuse the operator's default Azure CLI session.
+    """
+
+    report_path = args.output
+    if report_path is None:
+        raise ConfigurationError("--output is required for deployed stages")
+    if args.resume_file is None:
+        raise ConfigurationError("--resume-file is required for deployed stages")
+    if args.environment != "validation":
+        raise ConfigurationError(
+            "deployed stages require --environment validation"
+        )
+    contexts = validate_azure_contexts()
+    # Loading the applied contract is the last local-only gate. Cloud reads and
+    # all Job actions belong to the stage implementation and must never happen
+    # through the legacy ambient-credential shadow collector.
+    load_plan19_deployment_contract()
+    raise EvidenceError(
+        "deployed stage requires Task 2 live preconditions after isolated "
+        f"context validation ({contexts.deployer.name}, {contexts.evidence.name})"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.alert_smoke:
@@ -2427,16 +2456,32 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.fail_on_missing_evidence and report["status"] != "PASS")
     if args.synthetic_only:
         _parser().error("--synthetic-only is valid only with --alert-smoke")
+    deployed = args.stage is not None
     try:
-        report_path, report = _shadow(args)
+        report_path, report = (
+            _deployed_stage(args) if deployed else _shadow(args)
+        )
     except (ConfigurationError, EvidenceError, OSError, subprocess.SubprocessError) as exc:
-        report_path = args.report or (
-            DEFAULT_REPORT_DIR
-            / f"ontology-discovery-shadow-{datetime.now(UTC).date().isoformat()}.json"
+        report_path = (
+            args.output
+            if deployed and args.output is not None
+            else args.report
+            or (
+                DEFAULT_REPORT_DIR
+                / f"ontology-discovery-shadow-{datetime.now(UTC).date().isoformat()}.json"
+            )
         )
         report = {
-            "schema_version": "ontology-discovery-shadow-validation.v1",
-            "mode": "credentialed-shadow",
+            "schema_version": (
+                "ontology-deployed-lifecycle-validation.v1"
+                if deployed
+                else "ontology-discovery-shadow-validation.v1"
+            ),
+            "mode": (
+                "deployed-fixed-template"
+                if deployed
+                else "credentialed-shadow"
+            ),
             "sanitized": True,
             "status": "FAIL",
             "release_status": "BLOCKED/PENDING",
