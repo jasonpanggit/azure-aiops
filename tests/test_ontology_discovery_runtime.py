@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+import asyncio
+import inspect
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from onboarding.registry import ConnectionRegistry
+from ontology.subscription_connection import SubscriptionConnection
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    CoordinatorCommandConsumer,
+    scope_receipt,
+)
+from ontology_discovery.dispatch_store import PublisherDispatchStore
+from ontology_discovery.runtime import (
+    CoordinatorIntakeAdapter,
+    EligibleConnectionScheduler,
+    ProductionRuntimeConfig,
+    validate_capability_roots,
+)
+from ontology_discovery.store import OntologyRunStore
+
+NOW = datetime(2026, 9, 7, 6, 30, tzinfo=UTC)
+
+
+EXPECTED_CAPABILITY_MATRIX = {
+    "api": {
+        "connection": {"read"},
+        "command": {"create", "read", "status"},
+        "state": {"read"},
+        "dispatch": set(),
+        "publication": {"read"},
+    },
+    "coordinator": {
+        "connection": {"read"},
+        "command": {"claim_manual", "claim_maintenance", "status"},
+        "state": {"read", "write"},
+        "dispatch": {"create_publish", "read_publish"},
+        "publication": set(),
+    },
+    "publisher": {
+        "connection": {"read"},
+        "command": {"claim_rollback", "status"},
+        "state": set(),
+        "dispatch": {
+            "claim_publish",
+            "claim_rollback",
+            "status",
+            "create_rollback",
+        },
+        "publication": {"read", "write", "stage", "pointer"},
+    },
+}
+
+
+def _connection(connection_id: str, *, active: bool = True) -> SubscriptionConnection:
+    return SubscriptionConnection(
+        connection_id=connection_id,
+        name=connection_id,
+        tenant_id="tenant-a",
+        subscription_id=f"subscription-{connection_id}",
+        is_active=active,
+        metadata={"environment": "production"},
+    )
+
+
+def _registry(root, *connection_ids: str) -> ConnectionRegistry:
+    registry = ConnectionRegistry(str(root))
+    for connection_id in connection_ids:
+        registry.add(_connection(connection_id))
+    return registry
+
+
+def test_capability_roots_are_explicit_distinct_and_dispatch_only(tmp_path):
+    roots = {
+        "connection_home": str(tmp_path / "connections"),
+        "command_home": str(tmp_path / "commands"),
+        "state_home": str(tmp_path / "state"),
+        "dispatch_home": str(tmp_path / "dispatch"),
+    }
+
+    assert validate_capability_roots(**roots) == roots
+    with pytest.raises(ValueError, match="distinct"):
+        validate_capability_roots(**{**roots, "dispatch_home": roots["state_home"]})
+
+    signature = inspect.signature(PublisherDispatchStore)
+    assert set(signature.parameters) == {"dispatch_root"}
+    with pytest.raises(TypeError):
+        PublisherDispatchStore(state_root=roots["state_home"])  # type: ignore[call-arg]
+
+
+def test_manual_intake_reauthorizes_current_scope_before_creating_run(tmp_path):
+    registry = _registry(tmp_path / "connections", "connection-a")
+    commands = CommandIntakeService(str(tmp_path / "commands"))
+    command = commands.enqueue_manual_run(
+        actor_hash="actor-hash",
+        connection_id="connection-a",
+        action="ontology.discovery.run",
+        effective_scope_hash=scope_receipt(
+            registry.get("connection-a"), "ontology.discovery.run"
+        ),
+        issued_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        idempotency_key="manual-1",
+        reason="operator requested refresh",
+    )
+
+    run_store = OntologyRunStore(tmp_path / "state" / "runs.json")
+    adapter = CoordinatorIntakeAdapter(
+        registry=registry,
+        commands=CoordinatorCommandConsumer(str(tmp_path / "commands")),
+        run_store=run_store,
+        source_generation=lambda connection: f"source-{connection.connection_id}",
+        now=lambda: NOW,
+    )
+
+    result = adapter.process_one()
+
+    assert result == {"accepted": 1, "denied": 0, "contended": 0}
+    durable = CommandIntakeService(str(tmp_path / "commands")).get(command["command_id"])
+    assert durable["status"] == "completed"
+    assert durable["authorization_audit"]["outcome"] == "authorized"
+    runs = OntologyRunStore(tmp_path / "state" / "runs.json").list_runs()
+    assert len(runs) == 1
+    assert runs[0]["connection_id"] == "connection-a"
+    assert runs[0]["trigger"] == "manual"
+
+
+def test_stale_scope_receipt_fails_closed_without_authoritative_state(tmp_path):
+    registry = _registry(tmp_path / "connections", "connection-a")
+    commands = CommandIntakeService(str(tmp_path / "commands"))
+    command = commands.enqueue_manual_run(
+        actor_hash="actor-hash",
+        connection_id="connection-a",
+        action="ontology.discovery.run",
+        effective_scope_hash="stale-scope",
+        issued_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        idempotency_key="manual-denied",
+        reason="stale request",
+    )
+    run_store = OntologyRunStore(tmp_path / "state" / "runs.json")
+    dispatches = PublisherDispatchStore(str(tmp_path / "dispatch"))
+    adapter = CoordinatorIntakeAdapter(
+        registry=registry,
+        commands=CoordinatorCommandConsumer(str(tmp_path / "commands")),
+        run_store=run_store,
+        source_generation=lambda connection: f"source-{connection.connection_id}",
+        now=lambda: NOW,
+    )
+
+    result = adapter.process_one()
+
+    assert result == {"accepted": 0, "denied": 1, "contended": 0}
+    durable = commands.get(command["command_id"])
+    assert durable["status"] == "denied"
+    assert durable["reason_code"] == "scope_receipt_mismatch"
+    assert run_store.list_runs() == []
+    assert dispatches.coordinator().list_publish() == []
+
+
+def test_publish_dispatch_is_content_addressed_and_restart_durable(tmp_path):
+    dispatch_root = str(tmp_path / "dispatch")
+    coordinator = PublisherDispatchStore(dispatch_root).coordinator()
+    first, created = coordinator.create_publish(
+        run_id="ODR-1",
+        connection_id="connection-a",
+        source_generation_id="source-a",
+        candidate={
+            "generation_id": "ontology-a",
+            "entities": [],
+            "relationships": [],
+            "proposal_lineage": [],
+            "decision_lineage": [],
+            "policy_version": "policy-v1",
+            "schema_version": "schema-v1",
+        },
+        now=NOW,
+    )
+    duplicate, duplicate_created = PublisherDispatchStore(
+        dispatch_root
+    ).coordinator().create_publish(
+        run_id="ODR-1",
+        connection_id="connection-a",
+        source_generation_id="source-a",
+        candidate=first["candidate"],
+        now=NOW,
+    )
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate["dispatch_id"] == first["dispatch_id"]
+    assert PublisherDispatchStore(dispatch_root).coordinator().list_publish() == [
+        first
+    ]
+
+
+def test_eligible_epoch_rotates_retrying_head_and_survives_every_restart(tmp_path):
+    registry = _registry(
+        tmp_path / "connections",
+        "connection-a",
+        "connection-b",
+        "connection-c",
+        "connection-d",
+    )
+    state_path = tmp_path / "state" / "runs.json"
+    attempts: dict[str, int] = {}
+    selected: list[str] = []
+
+    async def process(connection, _run):
+        selected.append(connection.connection_id)
+        attempts[connection.connection_id] = attempts.get(connection.connection_id, 0) + 1
+        if connection.connection_id == "connection-a":
+            raise RuntimeError("retryable")
+        return {"status": "succeeded", "dispatch_id": f"dispatch-{connection.connection_id}"}
+
+    for pass_index in range(8):
+        scheduler = EligibleConnectionScheduler(
+            registry=ConnectionRegistry(str(tmp_path / "connections")),
+            run_store=OntologyRunStore(
+                state_path,
+                max_attempts=2,
+                retry_base_seconds=1,
+            ),
+            processor=process,
+            source_generation=lambda connection: f"source-{connection.connection_id}",
+            owner=f"worker-{pass_index}",
+            now=lambda index=pass_index: NOW + timedelta(seconds=index * 2),
+        )
+        result = asyncio.run(scheduler.run_once(limit=1))
+        assert result["processed"] <= 1
+        if result["epoch_drained"]:
+            break
+
+    epoch = OntologyRunStore(state_path).active_or_latest_epoch()
+    assert selected[:4] == [
+        "connection-a",
+        "connection-b",
+        "connection-c",
+        "connection-d",
+    ]
+    assert epoch["status"] == "drained"
+    assert epoch["members"]["connection-a"]["outcome"] == "exhausted_failure"
+    assert {
+        epoch["members"][connection_id]["outcome"]
+        for connection_id in ("connection-b", "connection-c", "connection-d")
+    } == {"succeeded"}
+    assert len(epoch["member_order"]) == len(set(epoch["member_order"])) == 4
+
+
+def test_production_config_requires_all_roots_and_agent_version(monkeypatch):
+    environment = {
+        "AIOPS_RUNTIME_MODE": "production",
+        "AIOPS_CONNECTION_HOME": "abfss://state@onelake.dfs.fabric.microsoft.com/lh/Files/connections",
+        "AIOPS_ONTOLOGY_COMMAND_HOME": "abfss://state@onelake.dfs.fabric.microsoft.com/lh/Files/commands",
+        "AIOPS_ONTOLOGY_STATE_HOME": "abfss://state@onelake.dfs.fabric.microsoft.com/lh/Files/state",
+        "AIOPS_ONTOLOGY_DISPATCH_HOME": "abfss://state@onelake.dfs.fabric.microsoft.com/lh/Files/dispatch",
+        "FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/p",
+        "FOUNDRY_ONTOLOGY_AGENT_NAME": "ontology-curator",
+        "FOUNDRY_ONTOLOGY_AGENT_VERSION": "7",
+        "AIOPS_CONFIG_PATH": "config.yaml",
+    }
+    config = ProductionRuntimeConfig.from_environ(environment)
+    assert config.agent_version == "7"
+    assert isinstance(config.connection_home, str)
+
+    for required in (
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_STATE_HOME",
+        "AIOPS_ONTOLOGY_DISPATCH_HOME",
+        "FOUNDRY_ONTOLOGY_AGENT_VERSION",
+    ):
+        invalid = dict(environment)
+        invalid[required] = ""
+        with pytest.raises(ValueError, match=required):
+            ProductionRuntimeConfig.from_environ(invalid)
+
+    invalid = dict(environment)
+    invalid["AIOPS_ONTOLOGY_PUBLICATION_HOME"] = "abfss://forbidden"
+    with pytest.raises(ValueError, match="publication"):
+        ProductionRuntimeConfig.from_environ(invalid)
