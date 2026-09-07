@@ -36,6 +36,7 @@ from ontology_discovery.store import (
 from ..dependencies import (
     ApprovePrincipal,
     Context,
+    MaintainOntologyPrincipal,
     OperatePrincipal,
     Page,
     ReadScope,
@@ -44,12 +45,18 @@ from ..dependencies import (
 from ..errors import ApiError, ErrorCode, scrub
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 from ..models import (
+    OntologyMaintenanceRequest,
     OntologyProposalReviewRequest,
     OntologyRollbackRequest,
     OntologyRunMutationRequest,
     OntologyRunNowRequest,
 )
-from ..rbac import ACTION_APPROVE, ACTION_OPERATE, Principal
+from ..rbac import (
+    ACTION_APPROVE,
+    ACTION_MAINTAIN_ONTOLOGY,
+    ACTION_OPERATE,
+    Principal,
+)
 from ..scope import Scope
 
 router = APIRouter(
@@ -435,6 +442,55 @@ class OntologyDiscoveryApi:
                 idempotency_key=idempotency_key,
             )
         )
+
+    def request_full_reconciliation(
+        self,
+        connection_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+        cadence_seconds: int | None,
+    ) -> dict[str, Any]:
+        if self.command_intake is None:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Ontology maintenance command intake is unavailable",
+            )
+        detail = self.connection(connection_id)
+        environment = str(detail.get("environment") or "").strip().casefold()
+        if not environment or environment == "production":
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Full reconciliation maintenance is non-production only",
+                {"reason": "non_production_environment_required"},
+            )
+        control = self.run_store.get_reconciliation_control(connection_id)
+        current_revision = int((control or {}).get("revision") or 0)
+        if current_revision != expected_revision:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "The reconciliation cadence changed; refresh before acting",
+                {"current_revision": current_revision},
+            )
+        connection = self._command_connection(connection_id)
+        moment = self._clock()
+        command = self.command_intake.enqueue_mark_full_reconciliation_due(
+            actor_hash=_opaque_hash(actor),
+            effective_scope_hash=scope_receipt(
+                connection, "ontology.discovery.maintenance"
+            ),
+            connection_id=connection_id,
+            action="ontology.discovery.maintenance",
+            issued_at=moment,
+            expires_at=moment + timedelta(minutes=15),
+            idempotency_key=idempotency_key,
+            reason=reason,
+            expected_cadence_revision=current_revision,
+            cadence_seconds=cadence_seconds,
+        )
+        return self._project_command(command)
 
     def evaluation(self, connection: Mapping[str, Any]) -> dict[str, Any]:
         if self.evaluation_store is None:
@@ -1041,6 +1097,33 @@ def rollback_generation(
             ErrorCode.NOT_FOUND,
             "No rollback-eligible ontology generation matches this scope",
         )
+    return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
+
+
+@router.post(
+    "/connections/{connection_id}/maintenance/full-reconciliation-due",
+    summary="Request a non-production full ontology reconciliation",
+)
+def request_full_reconciliation(
+    connection_id: str,
+    payload: OntologyMaintenanceRequest,
+    context: Context,
+    requested: RequestedScope,
+    principal: MaintainOntologyPrincipal,
+) -> dict[str, Any]:
+    scope = context.authorizer.effective_scope(
+        principal, ACTION_MAINTAIN_ONTOLOGY, requested
+    )
+    service = _provider(context)
+    _connection(service, connection_id, scope)
+    result = service.request_full_reconciliation(
+        connection_id,
+        expected_revision=payload.expected_revision,
+        actor=principal.subject,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+        cadence_seconds=payload.cadence_seconds,
+    )
     return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
 
 

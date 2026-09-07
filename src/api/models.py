@@ -202,6 +202,15 @@ class OntologyRollbackRequest(ApiModel):
     idempotency_key: str = Field(min_length=1, max_length=160)
 
 
+class OntologyMaintenanceRequest(ApiModel):
+    """Request one coordinator-authorized non-production full reconciliation."""
+
+    expected_revision: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=512)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    cadence_seconds: int | None = Field(default=None, ge=60, le=2_592_000)
+
+
 class ScopeModel(ApiModel):
     """Cross-subscription scope selector."""
 

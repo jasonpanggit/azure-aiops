@@ -27,17 +27,31 @@ from .scope import GRANTABLE_DIMENSIONS, Scope
 ROLE_READER = "reader"
 ROLE_OPERATOR = "operator"
 ROLE_APPROVER = "approver"
+ROLE_ONTOLOGY_MAINTAINER = "ontology_maintainer"
 ROLE_ADMIN = "admin"
 
-ROLES: tuple[str, ...] = (ROLE_READER, ROLE_OPERATOR, ROLE_APPROVER, ROLE_ADMIN)
+ROLES: tuple[str, ...] = (
+    ROLE_READER,
+    ROLE_OPERATOR,
+    ROLE_APPROVER,
+    ROLE_ONTOLOGY_MAINTAINER,
+    ROLE_ADMIN,
+)
 
 # Actions the API gates on.
 ACTION_READ = "read"
 ACTION_OPERATE = "operate"
 ACTION_APPROVE = "approve"
+ACTION_MAINTAIN_ONTOLOGY = "maintain_ontology"
 ACTION_WRITE = "write"
 
-ACTIONS: tuple[str, ...] = (ACTION_READ, ACTION_OPERATE, ACTION_APPROVE, ACTION_WRITE)
+ACTIONS: tuple[str, ...] = (
+    ACTION_READ,
+    ACTION_OPERATE,
+    ACTION_APPROVE,
+    ACTION_MAINTAIN_ONTOLOGY,
+    ACTION_WRITE,
+)
 
 # Which roles satisfy which action.
 _ACTION_ROLES: dict[str, frozenset[str]] = {
@@ -51,6 +65,7 @@ _ACTION_ROLES: dict[str, frozenset[str]] = {
     # split that lets approve-only and operate-only principals be expressed
     # and enforced independently (REVIEW recommendation 4 / CR-04).
     ACTION_APPROVE: frozenset({ROLE_APPROVER, ROLE_ADMIN}),
+    ACTION_MAINTAIN_ONTOLOGY: frozenset({ROLE_ONTOLOGY_MAINTAINER}),
     # Write = create/update/disable a connection, mutate the registry.
     ACTION_WRITE: frozenset({ROLE_ADMIN}),
 }

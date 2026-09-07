@@ -98,6 +98,16 @@ class CommandIntakeService:
             "reason": reason,
         }
         if command_type == MARK_FULL_RECONCILIATION_DUE:
+            revision = values.get("expected_cadence_revision")
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 0
+            ):
+                raise ValueError(
+                    "expected_cadence_revision must be a non-negative integer"
+                )
+            envelope["expected_cadence_revision"] = revision
             cadence = values.get("cadence_seconds")
             if cadence is not None and (
                 isinstance(cadence, bool) or not 60 <= int(cadence) <= 2_592_000
@@ -405,6 +415,7 @@ def _immutable(row: Mapping[str, Any]) -> dict[str, Any]:
             "action",
             "idempotency_key",
             "reason",
+            "expected_cadence_revision",
             "cadence_seconds",
             "target_generation_id",
             "observed_active_generation",

@@ -943,6 +943,7 @@ class OntologyRunStore:
         reason: str,
         cadence_seconds: int | None,
         now: datetime,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Persist an idempotent authorized maintenance request and audit."""
 
@@ -977,6 +978,13 @@ class OntologyRunStore:
                     connection, cadence or 86400, moment
                 )
                 state["reconciliation_controls"].append(control)
+            if (
+                expected_revision is not None
+                and int(control["revision"]) != expected_revision
+            ):
+                raise RunClaimConflict(
+                    "reconciliation_control_revision_conflict", control
+                )
             prior_revision = control["revision"]
             if cadence is not None:
                 control["cadence_seconds"] = cadence

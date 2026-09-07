@@ -21,12 +21,12 @@ from api.runtime import _ontology_api_roots, build_context
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
-from ontology_discovery.store import OntologyRunStore
 from ontology_discovery.command_intake import (
     CommandIntakeService,
     CoordinatorCommandConsumer,
 )
 from ontology_discovery.runtime import CoordinatorIntakeAdapter
+from ontology_discovery.store import OntologyRunStore
 
 NOW = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
 SUB_A = "11111111-1111-1111-1111-111111111111"

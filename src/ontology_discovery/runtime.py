@@ -209,6 +209,9 @@ class CoordinatorIntakeAdapter:
                     actor_hash=claimed["actor_hash"],
                     reason=claimed["reason"],
                     cadence_seconds=claimed.get("cadence_seconds"),
+                    expected_revision=int(
+                        claimed["expected_cadence_revision"]
+                    ),
                     now=moment,
                 )
             else:  # Defensive: the typed consumer should never return rollback.
