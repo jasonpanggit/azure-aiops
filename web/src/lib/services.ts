@@ -1270,8 +1270,15 @@ export const vulnerabilityApi = {
     if (q) query.set("q", q);
     return apiRequest<CveDetail[]>("/cves", { query });
   },
-  cve: (id: string, scope: ScopeSelection = {}) =>
-    apiRequest<CveDetail>(`/cves/${encodeURIComponent(id)}`, { query: scopeToSearchParams(scope) }),
+  cve: (
+    id: string,
+    scope: ScopeSelection = {},
+    options: { signal?: AbortSignal } = {},
+  ) =>
+    apiRequest<CveDetail>(`/cves/${encodeURIComponent(id)}`, {
+      query: scopeToSearchParams(scope),
+      signal: options.signal,
+    }),
   riskExceptions: (scope: ScopeSelection = {}) =>
     apiRequest<RiskException[]>("/vulnerabilities/risk-exceptions", {
       query: scopeToSearchParams(scope),
@@ -1282,9 +1289,14 @@ export const vulnerabilityApi = {
     apiRequest<void>(`/vulnerabilities/risk-exceptions/${encodeURIComponent(exceptionId)}`, { method: "DELETE" }),
   slaCompliance: (scope: ScopeSelection = {}) =>
     apiRequest<SlaComplianceReport>("/vulnerabilities/sla-compliance", { query: scopeToSearchParams(scope) }),
-  attackPath: (cveId: string, scope: ScopeSelection = {}) =>
+  attackPath: (
+    cveId: string,
+    scope: ScopeSelection = {},
+    options: { signal?: AbortSignal } = {},
+  ) =>
     apiRequest<AttackPathGraph>(`/cves/${encodeURIComponent(cveId)}/attack-path`, {
       query: scopeToSearchParams(scope),
+      signal: options.signal,
     }),
 };
 
@@ -1374,8 +1386,15 @@ export const multiAgentApi = {
 };
 
 export const kbApi = {
-  detail: (kbId: string, scope: ScopeSelection = {}) =>
-    apiRequest<KbDetail>(`/kbs/${encodeURIComponent(kbId)}`, { query: scopeToSearchParams(scope) }),
+  detail: (
+    kbId: string,
+    scope: ScopeSelection = {},
+    options: { signal?: AbortSignal } = {},
+  ) =>
+    apiRequest<KbDetail>(`/kbs/${encodeURIComponent(kbId)}`, {
+      query: scopeToSearchParams(scope),
+      signal: options.signal,
+    }),
 };
 
 // ---------------------------------------------------------------------------

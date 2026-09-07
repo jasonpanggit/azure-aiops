@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from fastapi.testclient import TestClient
 from test_api_copilot_investigation import HEADERS, _context
@@ -900,3 +903,1561 @@ def test_canonical_route_never_promotes_browser_observations_to_authority(
     assert "inventory:os:stable" not in {
         citation["citation_id"] for citation in data["citations"]
     }
+
+
+# ---------------------------------------------------------------------------
+# Plan 11-03 Task 2: Thin canonical compatibility adapters for legacy routes
+# ---------------------------------------------------------------------------
+
+
+def test_investigate_canonical_mode_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /copilot/investigate stamps
+    contract_version on the response so consumers can distinguish the
+    canonical result from the legacy wire shape."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_investigate_canonical_preserves_legacy_wire_fields(tmp_path, monkeypatch):
+    """Canonical mode must preserve the question, tool_calls, fact_status, and
+    warnings fields so existing clients do not break."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "question" in data
+    assert "tool_calls" in data
+    assert "fact_status" in data
+    assert data["contract_version"] == "1"
+
+
+def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /copilot/investigate-context
+    stamps contract_version on the ledger."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "What firewall gaps exist?",
+                "scope": {"declared": {}},
+                "evidence": [{
+                    "evidence_id": "route-1",
+                    "section": "route",
+                    "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-1",
+                    "data": {"finding": "Default route bypasses firewall"},
+                }],
+                "selected_resources": [],
+                "freshness": [],
+                "rechecks": [],
+            }
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_multi_agent_canonical_stamps_contract_version(tmp_path, monkeypatch):
+    """When canonical orchestration is active, /agents/investigations stamps
+    contract_version on new ledger writes."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+def test_old_ledger_read_projected_with_defaults(tmp_path):
+    """Persisted old ledgers without contract_version are readable via
+    project_legacy_ledger without bulk rewrite."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    old_ledger = {
+        "ledger_id": "mai-abc123def456",
+        "objective": "Old investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": []},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+    }
+
+    projected = project_legacy_ledger(old_ledger)
+
+    assert projected["contract_version"] == "1"
+    assert projected["ledger_id"] == "mai-abc123def456"
+    # Original is not mutated
+    assert "contract_version" not in old_ledger
+
+
+def test_multi_agent_old_ledger_readable_via_get(tmp_path, monkeypatch):
+    """GET /agents/investigations/{id} projects old ledgers on read."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    from operations.autonomous_investigation import ledger_store
+
+    store = ledger_store()
+    old_ledger = {
+        "ledger_id": "mai-oldledger001",
+        "objective": "Old network investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": []},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+        "warnings": [],
+    }
+    store.add(old_ledger)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/agents/investigations/mai-oldledger001?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Code-review findings CR-01 through CR-04
+# ---------------------------------------------------------------------------
+
+
+def test_action_on_old_ledger_projects_version_in_canonical_mode(
+    tmp_path, monkeypatch
+):
+    """CR-02: POST /agents/investigations/{id}/actions must project
+    record_decision output through project_legacy_ledger in canonical mode."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    from operations.autonomous_investigation import ledger_store as get_store
+
+    store = get_store()
+    old_ledger = {
+        "ledger_id": "mai-oldaction001",
+        "objective": "Old investigation",
+        "scope": {"subscription": ["sub-a"]},
+        "created_by": "admin@example.com",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+        "status": "synthesized",
+        "selected_agents": [],
+        "agent_runs": [],
+        "reconciliation": {},
+        "synthesis": {},
+        "human_controls": {"available_actions": ["accept_finding"]},
+        "decisions": [],
+        "approvals": [],
+        "outcome": "",
+        "stop_reason": "",
+        "evaluation": {},
+        "warnings": [],
+    }
+    store.add(old_ledger)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations/mai-oldaction001/actions?subscription=sub-a",
+        json={"action": "accept_finding", "payload": {}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1", (
+        "Action on old unversioned ledger must include contract_version"
+    )
+
+
+def test_project_legacy_ledger_always_returns_shallow_copy():
+    """CR-03: project_legacy_ledger must return a new dict even when the
+    ledger already carries a truthy contract_version, to avoid mutable
+    store aliases."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    versioned = {
+        "ledger_id": "mai-copy001",
+        "contract_version": "1",
+        "decisions": [],
+    }
+    projected = project_legacy_ledger(versioned)
+
+    assert projected is not versioned, (
+        "Must return a shallow copy, not the original dict"
+    )
+    assert projected["contract_version"] == "1"
+    assert projected["ledger_id"] == "mai-copy001"
+
+
+def test_project_legacy_ledger_mutation_does_not_reach_original():
+    """CR-03: Mutating the projected dict must not alter the persisted
+    original — mutable store aliases are forbidden."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    original = {
+        "ledger_id": "mai-mut001",
+        "contract_version": "1",
+        "status": "synthesized",
+    }
+    snapshot = dict(original)
+    projected = project_legacy_ledger(original)
+    projected["status"] = "tampered"
+
+    assert original == snapshot, (
+        "Mutations on projected must not propagate to the original"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Review fix: canonical mode must invoke OrchestrationService, not legacy
+# planners (acceptance violations V1 and V2)
+# ---------------------------------------------------------------------------
+
+
+def test_investigate_canonical_invokes_service_not_legacy_planner(
+    tmp_path, monkeypatch
+):
+    """V1: In canonical mode /copilot/investigate must route through
+    OrchestrationService.execute and must NOT call run_investigation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        from operations.investigation import Investigation
+
+        return Investigation(
+            question="q", calls=(), answer=None,
+            fact_status="empty", warnings=(),
+        )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls, (
+        "Legacy run_investigation must not be called in canonical mode"
+    )
+    assert service_calls, (
+        "OrchestrationService.execute must be invoked in canonical mode"
+    )
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+    assert data.get("question") == "Show inventory resources"
+    assert "fact_status" in data
+    assert "tool_calls" in data
+    assert "thread_id" in data
+
+
+def test_investigate_non_canonical_preserves_legacy_planner(
+    tmp_path, monkeypatch
+):
+    """V1 preserve: /copilot/investigate must still use run_investigation
+    when canonical mode is not enabled."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    import operations.investigation as _inv_mod
+
+    _orig_run = _inv_mod.run_investigation
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return _orig_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Show inventory resources", "session_id": ""},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert legacy_calls, (
+        "Legacy run_investigation must be called in non-canonical mode"
+    )
+    assert not service_calls, (
+        "OrchestrationService.execute must not be called in non-canonical mode"
+    )
+
+
+def test_multi_agent_canonical_invokes_service_not_legacy_loop(
+    tmp_path, monkeypatch
+):
+    """V2: In canonical mode POST /agents/investigations must route through
+    OrchestrationService.execute and must NOT call run_autonomous_investigation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return {
+            "contract_version": "1",
+            "ledger_id": "mai-fake001",
+            "objective": args[0] if args else "obj",
+            "scope": {}, "created_by": "", "created_at": "",
+            "updated_at": "", "status": "synthesized",
+            "selected_agents": [], "agent_runs": [],
+            "reconciliation": {}, "synthesis": {},
+            "human_controls": {"available_actions": []},
+            "decisions": [], "approvals": [], "outcome": "",
+            "stop_reason": "", "evaluation": {}, "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        "api.routers.multi_agent.run_autonomous_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls, (
+        "Legacy run_autonomous_investigation must not be called in canonical mode"
+    )
+    assert service_calls, (
+        "OrchestrationService.execute must be invoked in canonical mode"
+    )
+    data = response.json()["data"]
+    assert data.get("contract_version") == "1"
+    assert "ledger_id" in data
+    assert data["objective"] == "Investigate inventory health"
+    assert data.get("scope") == {"subscription": ["sub-a"]}
+    assert "thread_id" in data
+
+
+def test_multi_agent_non_canonical_preserves_legacy_loop(
+    tmp_path, monkeypatch
+):
+    """V2 preserve: POST /agents/investigations must still use
+    run_autonomous_investigation when canonical mode is not enabled."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+
+    legacy_calls: list[object] = []
+    service_calls: list[object] = []
+
+    import operations.autonomous_investigation as _auto_mod
+
+    _orig_run = _auto_mod.run_autonomous_investigation
+
+    def _spy_legacy(*args, **kwargs):
+        legacy_calls.append(True)
+        return _orig_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "api.routers.multi_agent.run_autonomous_investigation", _spy_legacy
+    )
+
+    _orig_execute = OrchestrationService.execute
+
+    def _spy_execute(self, *args, **kwargs):
+        service_calls.append(True)
+        return _orig_execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _spy_execute)
+
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Investigate inventory health", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert legacy_calls, (
+        "Legacy run_autonomous_investigation must be called in non-canonical mode"
+    )
+    assert not service_calls, (
+        "OrchestrationService.execute must not be called in non-canonical mode"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER A: context canonical fidelity — page kind, evidence, and ledger
+# ---------------------------------------------------------------------------
+
+
+def test_context_canonical_supported_page_translates_evidence_and_kind(
+    tmp_path, monkeypatch
+):
+    """BLOCKER-A: When a page kind IS in the canonical contract,
+    _run_context_via_canonical must translate the ACTUAL page kind, submitted
+    evidence, freshness, and selected resources into the canonical request;
+    select specialists through the canonical loop (not hardcoded inventory);
+    and project a complete legacy ledger preserving canonical findings,
+    citations, status, and warnings."""
+    from types import SimpleNamespace
+
+    from operations.orchestration_contract import Citation, SnapshotCoverage
+
+    captured_requests: list[object] = []
+
+    # Build a controlled OrchestrationResult via the real dataclass
+    from operations.orchestration_contract import OrchestrationResult
+
+    fake_result = OrchestrationResult(
+        status="ok",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["connections_health"],
+        selected_tools=["connections_status"],
+        tool_results=[
+            {
+                "call_id": "0:0:connections_health:connections_status",
+                "specialist_id": "connections_health",
+                "tool": "connections_status",
+                "status": "ok",
+                "data": {"connections": [{"id": "conn-1", "status": "healthy"}]},
+                "warning": "",
+                "evidence": [],
+            }
+        ],
+        uncertainty=["visible subset is incomplete"],
+        coverage=SnapshotCoverage(visible_count=2, total_count=5, complete=False),
+        citations=[
+            Citation(
+                citation_id="conn-ev-1",
+                source="connections-panel",
+                status="ok",
+                observed_at="2026-09-01T00:00:00Z",
+            )
+        ],
+        thread_id="thr-" + "a" * 32,
+        thread_revision=1,
+    )
+
+    def _capture_execute(self, request, **kwargs):
+        captured_requests.append(request)
+        return fake_result
+
+    monkeypatch.setattr(OrchestrationService, "execute", _capture_execute)
+
+    # Duck-typed snapshot with canonical-supported page_kind="connections"
+    evidence_row = SimpleNamespace(
+        evidence_id="conn-ev-1",
+        resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/connections/c1",
+        section="connection",
+        data={"status": "connected"},
+        status="ok",
+        observed_at="2026-09-01T00:00:00Z",
+    )
+    freshness_rec = SimpleNamespace(
+        source="connections",
+        observed_at="2026-09-01T00:00:00Z",
+        status="fresh",
+    )
+    selected_res = SimpleNamespace(
+        resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/connections/c1",
+        resource_type="Microsoft.Network/connections",
+    )
+    snapshot = SimpleNamespace(
+        page_kind="connections",
+        page_id="connections-panel",
+        question="What is the connection health status?",
+        evidence=[evidence_row],
+        freshness=[freshness_rec],
+        selected_resources=[selected_res],
+    )
+    scope = SimpleNamespace(to_dict=lambda: {"subscription": ["sub-a"]})
+
+    from api.routers.copilot import _run_context_via_canonical
+
+    ledger = _run_context_via_canonical(
+        snapshot,
+        context=_context(tmp_path, None),
+        scope=scope,
+        principal_subject="test@example.com",
+    )
+
+    # --- Canonical request must carry the ACTUAL page kind ---
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    assert req.snapshot.page_kind == "connections", (
+        "Canonical snapshot must use the real page_kind, not hardcoded 'inventory'"
+    )
+
+    # --- Submitted evidence must be translated into canonical snapshot ---
+    assert len(req.snapshot.evidence) >= 1, (
+        "Submitted evidence rows must be translated into canonical snapshot evidence"
+    )
+    assert req.snapshot.evidence[0].evidence_id == "conn-ev-1"
+    assert req.snapshot.evidence[0].resource_id == selected_res.resource_id
+
+    # --- Legacy ledger must preserve canonical results ---
+    assert ledger["page_kind"] == "connections"
+    assert ledger["contract_version"] == "1"
+    assert ledger["orchestration"]["selected_ids"] == ["connections_health"]
+
+    # Tool calls must preserve canonical data (not strip it)
+    assert len(ledger["tool_calls"]) == 1
+    assert ledger["tool_calls"][0]["tool"] == "connections_status"
+    assert ledger["tool_calls"][0]["status"] == "ok"
+    assert ledger["tool_calls"][0].get("data"), (
+        "Canonical tool data must be preserved in legacy projection"
+    )
+
+    # Findings must be populated from canonical results (not empty [])
+    assert ledger.get("findings"), (
+        "Findings must be projected from canonical tool results"
+    )
+
+    # Citations must be projected
+    assert ledger.get("citations"), (
+        "Canonical citations must be projected into legacy ledger"
+    )
+
+    # Synthesis must include canonical status
+    assert ledger["synthesis"].get("status") == "ok", (
+        "Synthesis must include canonical result status"
+    )
+
+    # Warnings must reflect canonical uncertainty
+    assert "visible subset is incomplete" in ledger["warnings"]
+    assert ledger.get("thread_id", "").startswith("thr-")
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER B: deep-copy audit immutability for project_legacy_ledger
+# ---------------------------------------------------------------------------
+
+
+def test_project_legacy_ledger_deep_copy_nested_mutation_isolation():
+    """BLOCKER-B: project_legacy_ledger must deep-copy so nested mutations to
+    decisions, approvals, agent_runs, synthesis, and human_controls in the
+    projected copy never affect the original store record."""
+    import json
+
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    original = {
+        "ledger_id": "mai-deepcopy001",
+        "contract_version": "1",
+        "status": "synthesized",
+        "decisions": [{"action": "approve", "by": "admin"}],
+        "approvals": [{"role": "operator", "approved": True}],
+        "agent_runs": [{"agent_id": "inv", "tool_calls": [{"tool": "t1"}]}],
+        "synthesis": {"mode": "canonical", "narration": "all good"},
+        "human_controls": {
+            "available_actions": ["approve_plan", "stop_investigation"]
+        },
+    }
+    snapshot = json.loads(json.dumps(original))
+
+    projected = project_legacy_ledger(original)
+
+    # Mutate every nested structure in the projected copy
+    projected["decisions"].append({"action": "reject", "by": "attacker"})
+    projected["approvals"][0]["approved"] = False
+    projected["agent_runs"][0]["tool_calls"].append({"tool": "injected"})
+    projected["synthesis"]["narration"] = "tampered"
+    projected["human_controls"]["available_actions"].append("escalate")
+
+    # Original must be entirely unchanged
+    assert original == snapshot, (
+        "Deep nested mutations on projected copy must never propagate to original"
+    )
+
+
+def test_project_legacy_ledger_preserves_explicit_falsy_contract_version():
+    """BLOCKER-B: An explicit falsy contract_version key (empty string) must
+    be preserved by project_legacy_ledger, not overwritten with default."""
+    from operations.autonomous_investigation import project_legacy_ledger
+
+    ledger = {
+        "ledger_id": "mai-falsy001",
+        "contract_version": "",
+        "status": "synthesized",
+    }
+    projected = project_legacy_ledger(ledger)
+
+    assert projected["contract_version"] == "", (
+        "Explicit falsy contract_version must be preserved"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER C: Terraform mode validation includes canonical
+# ---------------------------------------------------------------------------
+
+
+def test_terraform_orchestration_mode_includes_canonical():
+    """BLOCKER-C: The Terraform agent_orchestration_mode variable must accept
+    'canonical' (runtime support via MODE_CANONICAL) and must NOT accept
+    'shadow' (no runtime support)."""
+    import re
+    from pathlib import Path
+
+    tf = Path("infra/terraform/variables.tf").read_text()
+    # Extract the contains() validation for agent_orchestration_mode
+    match = re.search(
+        r'variable\s+"agent_orchestration_mode".*?'
+        r'condition\s*=\s*contains\(\[(.*?)\]',
+        tf,
+        re.DOTALL,
+    )
+    assert match, "agent_orchestration_mode validation block not found"
+    allowed_modes = match.group(1)
+    assert '"canonical"' in allowed_modes, (
+        "canonical must be an allowed orchestration mode in Terraform"
+    )
+    assert '"shadow"' not in allowed_modes, (
+        "shadow must NOT be allowed — no runtime support exists"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Final comprehensive-review regressions
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_contract_accepts_public_context_page_kinds():
+    """Every public v1 PageSnapshot kind must have a real canonical identity."""
+    for page_kind in (
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    ):
+        snapshot = EvidenceSnapshotV2(
+            page_kind=page_kind,
+            page_id=f"{page_kind}-page",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+        )
+        assert snapshot.page_kind == page_kind
+
+
+def test_context_canonical_network_preserves_page_evidence_and_results(
+    tmp_path, monkeypatch
+):
+    """A valid network snapshot must stay network throughout canonical routing."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    captured_requests: list[InvestigationRequest] = []
+    legacy_calls: list[object] = []
+
+    def _legacy(*_args, **_kwargs):
+        legacy_calls.append(True)
+        raise AssertionError("network is a canonical-supported page")
+
+    def _execute(self, request, **_kwargs):
+        captured_requests.append(request)
+        return OrchestrationResult(
+            status="ok",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            selected_specialists=["network"],
+            selected_tools=["traffic_flow"],
+            tool_results=[
+                {
+                    "call_id": "0:0:network:traffic_flow",
+                    "specialist_id": "network",
+                    "tool": "traffic_flow",
+                    "arguments": {"source": "uat", "destination": "prod"},
+                    "status": "ok",
+                    "data": {"nodes": [{"id": "vnet-a"}]},
+                    "evidence": [
+                        {
+                            "source_engine": "azure-resource-graph",
+                            "source_table": "resources",
+                            "timestamp": "2026-09-01T00:00:00Z",
+                            "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                            "confidence": "high",
+                        }
+                    ],
+                    "warning": "",
+                }
+            ],
+            uncertainty=[],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+            citations=[
+                Citation(
+                    citation_id="network:route-1",
+                    source="network-route-table",
+                    status="ok",
+                    resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-a",
+                )
+            ],
+            thread_id="thr-" + "b" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.run_context_investigation",
+        _legacy,
+    )
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/copilot/investigate-context?subscription=sub-a",
+        headers=HEADERS,
+        json={
+            "snapshot": {
+                "version": "1",
+                "page_kind": "network",
+                "page_id": "topology",
+                "question": "Show network topology",
+                "scope": {"declared": {"subscription": ["sub-a"]}},
+                "evidence": [
+                    {
+                        "evidence_id": "network:route-1",
+                        "section": "route",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-a",
+                        "data": {"next_hop": "firewall"},
+                        "status": "ok",
+                        "observed_at": "2026-09-01T00:00:00Z",
+                    }
+                ],
+                "selected_resources": [],
+                "freshness": [
+                    {
+                        "source": "network",
+                        "observed_at": "2026-09-01T00:00:00Z",
+                        "status": "fresh",
+                    }
+                ],
+                "rechecks": [],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert not legacy_calls
+    assert captured_requests[0].snapshot.page_kind == "network"
+    assert captured_requests[0].snapshot.evidence[0].evidence_id == "network:route-1"
+    data = response.json()["data"]
+    assert data["selected_agents"][0]["id"] == "network"
+    assert data["agent_runs"][0]["tool_calls"][0]["call_id"].startswith("0:0:network")
+    assert data["findings"][0]["data"]["nodes"][0]["id"] == "vnet-a"
+    assert data["citations"][0]["citation_id"] == "network:route-1"
+    assert data["synthesis"]["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_page_kind"),
+    [
+        ("Can UAT reach PROD through the firewall?", "network"),
+        ("Which CVEs expose production?", "vulnerability"),
+        ("Summarize incident INC-42", "incident"),
+    ],
+)
+def test_execute_from_question_routes_domain_intent(
+    question, expected_page_kind, monkeypatch
+):
+    """Question-only canonical requests must not masquerade as inventory."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "c" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        question,
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == expected_page_kind
+
+
+def test_investigate_canonical_session_continuity_and_stale_hint(
+    tmp_path, monkeypatch
+):
+    """Legacy session IDs map to scoped canonical threads before hint validation."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    legacy_calls: list[object] = []
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation",
+        lambda *_args, **_kwargs: legacy_calls.append(True),
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    body = {
+        "question": "Can UAT reach PROD?",
+        "session_id": "legacy-session-routing",
+        "tool": "retired_legacy_tool",
+        "tool_arguments": {},
+    }
+    first = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+    second = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert not legacy_calls
+    assert first.json()["data"]["thread_id"] == second.json()["data"]["thread_id"]
+    assert second.json()["data"]["thread_revision"] == 2
+
+    history_response = client.get(
+        "/api/v1/copilot/history/legacy-session-routing?subscription=sub-a",
+        headers=HEADERS,
+    )
+    assert history_response.status_code == 200
+    assert len(history_response.json()["data"]["turns"]) == 2
+
+
+def test_multi_agent_canonical_projection_retains_complete_results(
+    tmp_path, monkeypatch
+):
+    """The compatibility ledger must retain canonical evidence and findings."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="partial",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["network"],
+        selected_tools=["traffic_flow"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:traffic_flow",
+                "specialist_id": "network",
+                "tool": "traffic_flow",
+                "arguments": {"source": "uat", "destination": "prod"},
+                "status": "ok",
+                "data": {"nodes": [{"id": "vnet-a"}]},
+                "evidence": [
+                    {
+                        "source_engine": "azure-resource-graph",
+                        "source_table": "resources",
+                        "timestamp": "2026-09-01T00:00:00Z",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                        "confidence": "high",
+                    }
+                ],
+                "warning": "",
+            }
+        ],
+        uncertainty=["visible subset is incomplete"],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=False,
+        ),
+        citations=[
+            Citation(
+                citation_id="tool:0:0:network:traffic_flow:0",
+                source="azure-resource-graph:resources",
+                status="ok",
+            )
+        ],
+        thread_id="thr-" + "d" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Can UAT reach PROD?"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["selected_agents"][0]["id"] == "network"
+    assert data["agent_runs"][0]["agent_id"] == "network"
+    assert data["agent_runs"][0]["agent_name"] == "Network Agent"
+    assert data["agent_runs"][0]["findings"]
+    assert data["agent_runs"][0]["evidence"]
+    assert data["agent_runs"][0]["hidden_reasoning_exposed"] is False
+    assert data["tool_calls"][0]["call_id"] == "0:0:network:traffic_flow"
+    assert data["tool_calls"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
+    assert data["tool_calls"][0]["data"]["nodes"][0]["id"] == "vnet-a"
+    assert data["tool_calls"][0]["evidence"][0]["source_engine"] == "azure-resource-graph"
+    assert data["findings"][0]["citation_ids"] == [
+        "tool:0:0:network:traffic_flow:0"
+    ]
+    assert data["citations"][0]["citation_id"].startswith("tool:")
+    assert data["synthesis"]["policy_status"] == "fallback"
+    assert data["synthesis"]["fallback_reason"] == "planner_unavailable"
+    assert data["synthesis"]["status"] == "partial"
+    assert data["synthesis"]["uncertainty"] == ["visible subset is incomplete"]
+    assert set(data["reconciliation"]) >= {
+        "conflicts",
+        "stale_evidence",
+        "missing_providers",
+        "unsupported_conclusions",
+        "evidence_count",
+        "reconciled_confidence",
+    }
+    assert set(data["synthesis"]) >= {
+        "summary",
+        "recommended_plan",
+        "required_decision",
+        "unresolved_questions",
+        "confidence",
+        "narration",
+        "narrated_by",
+        "llm_calls",
+    }
+    assert set(data["evaluation"]) == {
+        "groundedness",
+        "scope_isolation",
+        "tool_correctness",
+        "convergence",
+        "latency_ms",
+        "cost",
+    }
+
+
+def test_projected_store_ledger_nested_mutations_do_not_touch_store():
+    """A projected store object must be deeply isolated from persisted audit state."""
+    from operations.autonomous_investigation import ledger_store, project_legacy_ledger
+
+    store = ledger_store()
+    ledger_id = "mai-deep-store-001"
+    original = {
+        "ledger_id": ledger_id,
+        "created_by": "admin@example.com",
+        "decisions": [{"action": "accept"}],
+        "approvals": [{"approved": True}],
+        "agent_runs": [{"tool_calls": [{"tool": "network_topology"}]}],
+        "synthesis": {"status": "ok"},
+        "human_controls": {"available_actions": ["stop_investigation"]},
+    }
+    store.add(original)
+
+    projected = project_legacy_ledger(
+        store.get(ledger_id, "admin@example.com")
+    )
+    projected["decisions"][0]["action"] = "tampered"
+    projected["approvals"][0]["approved"] = False
+    projected["agent_runs"][0]["tool_calls"][0]["tool"] = "mutated"
+    projected["synthesis"]["status"] = "denied"
+    projected["human_controls"]["available_actions"].append("execute")
+
+    persisted = store.get(ledger_id, "admin@example.com")
+    assert persisted["decisions"][0]["action"] == "accept"
+    assert persisted["approvals"][0]["approved"] is True
+    assert persisted["agent_runs"][0]["tool_calls"][0]["tool"] == "network_topology"
+    assert persisted["synthesis"]["status"] == "ok"
+    assert persisted["human_controls"]["available_actions"] == [
+        "stop_investigation"
+    ]
+
+
+def test_multi_agent_projection_marks_unexecuted_specialist_not_started(
+    tmp_path, monkeypatch
+):
+    """A selected specialist with no attempted calls must never report success."""
+    from operations.orchestration_contract import OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="partial",
+        policy_status="fallback",
+        fallback_reason="planner_unavailable",
+        selected_specialists=["network", "incident"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "status": "ok",
+                "data": {"nodes": []},
+                "evidence": [],
+                "warning": "",
+            }
+        ],
+        uncertainty=["orchestration wall-clock budget exhausted"],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=False,
+        ),
+        citations=[],
+        thread_id="thr-" + "e" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Correlate network and incident state"},
+    )
+
+    assert response.status_code == 200
+    runs = {
+        run["agent_id"]: run
+        for run in response.json()["data"]["agent_runs"]
+    }
+    assert runs["network"]["status"] == "ok"
+    assert runs["incident"]["status"] == "not_started"
+    assert runs["incident"]["tool_calls"] == []
+
+
+def test_multi_agent_read_and_action_reauthorize_stored_scope(
+    tmp_path, monkeypatch
+):
+    """Ledger reads and decisions must fail closed after scope loss."""
+    from operations.autonomous_investigation import ledger_store
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    ledger_id = "mai-scope-bound-001"
+    ledger_store().add(
+        {
+            "ledger_id": ledger_id,
+            "created_by": "admin@example.com",
+            "scope": {"subscription": ["sub-a", "sub-b"]},
+            "decisions": [],
+            "approvals": [],
+            "agent_runs": [
+                {
+                    "agent_id": "network",
+                    "tool_calls": [
+                        {
+                            "data": {"subscription": "sub-b"},
+                            "evidence": [
+                                {
+                                    "resource_id": "/subscriptions/sub-b/resourceGroups/rg-b"
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "synthesis": {"status": "ok"},
+            "human_controls": {"available_actions": ["accept_finding"]},
+            "warnings": [],
+        }
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    read = client.get(
+        f"/api/v1/agents/investigations/{ledger_id}?subscription=sub-a",
+        headers=HEADERS,
+    )
+    action = client.post(
+        f"/api/v1/agents/investigations/{ledger_id}/actions?subscription=sub-a",
+        headers=HEADERS,
+        json={"action": "accept_finding", "payload": {}},
+    )
+
+    assert read.status_code == 404
+    assert action.status_code == 404
+    persisted = ledger_store().get(ledger_id, "admin@example.com")
+    assert persisted["decisions"] == []
+    assert (
+        persisted["agent_runs"][0]["tool_calls"][0]["evidence"][0]["resource_id"]
+        == "/subscriptions/sub-b/resourceGroups/rg-b"
+    )
+
+
+def test_canonical_history_retains_question_and_validated_tool_arguments(
+    tmp_path, monkeypatch
+):
+    """History retains only policy-validated arguments from executed calls."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+    body = {
+        "question": "Can UAT reach PROD?",
+        "session_id": "traffic-session-history",
+        "tool": "traffic_flow",
+        "tool_arguments": {"source": "uat", "destination": "prod"},
+    }
+
+    response = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+    history_response = client.get(
+        "/api/v1/copilot/history/traffic-session-history?subscription=sub-a",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["tool_calls"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
+    turns = history_response.json()["data"]["turns"]
+    assert turns[0]["question"] == "Can UAT reach PROD?"
+    assert turns[0]["tool_results"][0]["arguments"] == {
+        "source": "uat",
+        "destination": "prod",
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_page_kind"),
+    [
+        ("Which servers are vulnerable?", "vulnerability"),
+        ("Summarize vulnerabilities by severity", "vulnerability"),
+        ("Which route can reach production?", "network"),
+    ],
+)
+def test_question_route_handles_stable_aliases(
+    question, expected_page_kind, monkeypatch
+):
+    """Common inflections must resolve to their domain instead of incident."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "f" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        question,
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == expected_page_kind
+
+
+def test_unmatched_question_returns_explicit_unsupported_without_tool_io(
+    monkeypatch,
+):
+    """An unmatched question must not inherit the incident page fallback."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, *_args, **_kwargs: calls.append(name),
+    )
+
+    result = execute_from_question(
+        "Please explain this view",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "unsupported_intent"
+    assert result.selected_specialists == []
+    assert calls == []
+
+
+def test_ownership_question_without_subject_is_explicitly_unavailable(
+    monkeypatch,
+):
+    """Required-argument governance tools must never execute with empty args."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, *_args, **_kwargs: calls.append(name),
+    )
+
+    result = execute_from_question(
+        "Who has ownership of this resource?",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "missing_required_arguments"
+    assert result.selected_specialists == []
+    assert result.citations[0].source == "page_snapshot:governance:coverage"
+    assert calls == []
+
+
+def test_empty_required_argument_hint_is_unavailable_without_fallback_io(
+    monkeypatch,
+):
+    """Invalid hints must not fall through to an unrelated specialist tool."""
+    from operations.orchestration_service import execute_from_question
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)),
+    )
+
+    result = execute_from_question(
+        "Who has ownership of this resource?",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+        hint_tool="business_service_context",
+        hint_arguments={},
+    )
+
+    assert result.status == "unavailable"
+    assert result.fallback_reason == "missing_required_arguments"
+    assert result.selected_specialists == []
+    assert result.selected_tools == []
+    assert calls == []
+
+
+def test_incident_terms_take_precedence_over_embedded_network_markers(
+    monkeypatch,
+):
+    """The word breach must not match the network reach marker."""
+    from operations.orchestration_contract import OrchestrationResult
+    from operations.orchestration_service import execute_from_question
+
+    captured: list[InvestigationRequest] = []
+
+    def _execute(self, request, **_kwargs):
+        captured.append(request)
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="planner_unavailable",
+            coverage=request.snapshot.coverage,
+            thread_id="thr-" + "a" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr(OrchestrationService, "execute", _execute)
+    execute_from_question(
+        "Investigate the security breach incident",
+        scope=Scope({"subscription": ["sub-a"]}),
+        context=object(),
+        principal_subject="operator@example.com",
+    )
+
+    assert captured[0].snapshot.page_kind == "incident"
+
+
+def test_inventory_canonical_endpoint_rejects_non_inventory_snapshot(
+    tmp_path,
+):
+    """The inventory-specific canonical route must reject other page kinds."""
+    body = _canonical_body()
+    body["snapshot"]["page_kind"] = "network"
+    body["snapshot"]["page_id"] = "network"
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+
+
+def test_concurrent_first_legacy_session_turns_share_one_thread(monkeypatch):
+    """Concurrent first turns must both remain reachable from session history."""
+    from operations.orchestration_service import (
+        execute_from_question,
+        legacy_session_history,
+    )
+
+    barrier = threading.Barrier(2)
+    original_execute = OrchestrationService.execute
+
+    def _synchronized_execute(self, request, **kwargs):
+        barrier.wait(timeout=5)
+        return original_execute(self, request, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", _synchronized_execute)
+    monkeypatch.setattr(
+        "operations.orchestration_service.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+    session_id = "concurrent-first-turns"
+
+    def _run(question):
+        return execute_from_question(
+            question,
+            scope=Scope({"subscription": ["sub-a"]}),
+            context=object(),
+            principal_subject="operator@example.com",
+            session_id=session_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                _run,
+                ("Show network topology", "Summarize network traffic"),
+            )
+        )
+
+    history = legacy_session_history(
+        session_id,
+        principal_subject="operator@example.com",
+        scope=Scope({"subscription": ["sub-a"]}),
+    )
+    assert results[0].thread_id == results[1].thread_id
+    assert {turn["question"] for turn in history} == {
+        "Show network topology",
+        "Summarize network traffic",
+    }
+
+
+def test_multi_agent_canonical_propagates_requested_timeout(
+    tmp_path, monkeypatch
+):
+    """The public timeout remains authoritative in canonical mode."""
+    from operations.orchestration_contract import OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    captured: list[float] = []
+
+    def _execute(*_args, **kwargs):
+        captured.append(kwargs["max_wall_seconds"])
+        return OrchestrationResult(
+            status="unavailable",
+            policy_status="fallback",
+            fallback_reason="unsupported_intent",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+            thread_id="thr-" + "b" * 32,
+            thread_revision=1,
+        )
+
+    monkeypatch.setattr("api.routers.multi_agent.execute_from_question", _execute)
+    client = TestClient(create_app(_context(tmp_path, None)))
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Explain current state", "timeout_seconds": 1.5},
+    )
+
+    assert response.status_code == 200
+    assert captured == [1.5]
+
+
+def test_multi_agent_reconciliation_counts_only_observed_evidence(
+    tmp_path, monkeypatch
+):
+    """Coverage citations must not inflate evidence-backed finding counts."""
+    from operations.orchestration_contract import Citation, OrchestrationResult
+
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    result = OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        selected_specialists=["network"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "arguments": {},
+                "status": "ok",
+                "data": {"nodes": []},
+                "evidence": [],
+                "warning": "",
+            }
+        ],
+        coverage=SnapshotCoverage(
+            visible_count=0,
+            total_count=0,
+            complete=True,
+        ),
+        citations=[
+            Citation(
+                citation_id="snapshot:coverage",
+                source="page_snapshot:network:coverage",
+                status="empty",
+            )
+        ],
+        thread_id="thr-" + "c" * 32,
+        thread_revision=1,
+    )
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: result,
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    response = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={"objective": "Show network topology"},
+    )
+    data = response.json()["data"]
+
+    assert response.status_code == 200
+    assert data["reconciliation"]["evidence_count"] == 0
+    assert data["reconciliation"]["reconciled_confidence"] == "unknown"
+    assert data["findings"][0]["unsupported"] is True
+    assert data["reconciliation"]["unsupported_conclusions"] == [
+        data["findings"][0]
+    ]
+    assert data["evaluation"]["convergence"] == "converged_with_open_questions"
+    assert data["synthesis"]["summary"].startswith(
+        "Canonical investigation produced 0 evidence-backed"
+    )

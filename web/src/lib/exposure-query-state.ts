@@ -106,6 +106,19 @@ export interface ExposureRestartState {
   generation: string;
 }
 
+export const EXPOSURE_DETAIL_ORIGINS = [
+  "/exposure/defender-posture",
+  "/exposure/patch-priorities",
+] as const;
+
+export type ExposureDetailOrigin = (typeof EXPOSURE_DETAIL_ORIGINS)[number];
+
+export interface ExposureDetailContext {
+  origin: ExposureDetailOrigin;
+  row: string;
+  scroll: number | null;
+}
+
 type ReadonlyScope = Partial<
   Record<ScopeDimension, readonly string[]>
 >;
@@ -233,6 +246,83 @@ function pageSizeValue(value: string | null): ExposureQueryState["pageSize"] {
 function cursorValue(value: string | null): string | null {
   const cursor = safeString(value, { maxLength: MAX_CURSOR_LENGTH });
   return cursor || null;
+}
+
+function detailOrigin(value: string | null): ExposureDetailOrigin {
+  return EXPOSURE_DETAIL_ORIGINS.includes(value as ExposureDetailOrigin)
+    ? (value as ExposureDetailOrigin)
+    : "/exposure/patch-priorities";
+}
+
+function detailRow(value: string | null): string {
+  return safeString(value, {
+    maxLength: MAX_TARGET_LENGTH,
+    pattern: /^[^\u0000-\u001f\u007f?#&=<>]+$/,
+  });
+}
+
+function detailScroll(value: string | null): number | null {
+  if (!value || !/^\d{1,8}$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 10_000_000
+    ? parsed
+    : null;
+}
+
+/** Presentation-only detail context. It never changes the authorized scope. */
+export function parseExposureDetailContext(
+  params: URLSearchParams,
+): ExposureDetailContext {
+  return {
+    origin: detailOrigin(params.get("origin")),
+    row: detailRow(params.get("row")),
+    scroll: detailScroll(params.get("scroll")),
+  };
+}
+
+function detailContextParams(
+  state: ExposureQueryState,
+  context: ExposureDetailContext,
+): URLSearchParams {
+  const detailState: ExposureQueryState = {
+    ...state,
+    cursor: null,
+    cursorHistory: [],
+    page: 1,
+  };
+  const params = encodeExposureQueryState(detailState);
+  params.set("origin", context.origin);
+  if (context.row) params.set("row", context.row);
+  if (context.scroll !== null) params.set("scroll", String(context.scroll));
+  return params;
+}
+
+export function exposureDetailHref(
+  kind: "cves" | "kbs",
+  id: string,
+  state: ExposureQueryState,
+  context: ExposureDetailContext,
+): string {
+  const params = detailContextParams(state, context);
+  return `/exposure/${kind}/${encodeURIComponent(id)}?${params.toString()}`;
+}
+
+export function exposureDetailReturnHref(
+  state: ExposureQueryState,
+  context: ExposureDetailContext,
+): string {
+  const params = detailContextParams(state, context);
+  params.delete("origin");
+  const suffix = params.toString();
+  return suffix ? `${context.origin}?${suffix}` : context.origin;
+}
+
+export function exposureDetailParentLabel(
+  origin: ExposureDetailOrigin,
+): "Defender posture" | "Patch priorities" {
+  return origin === "/exposure/defender-posture"
+    ? "Defender posture"
+    : "Patch priorities";
 }
 
 export function parseExposureQueryState(

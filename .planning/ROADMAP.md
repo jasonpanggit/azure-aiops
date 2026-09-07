@@ -105,7 +105,7 @@ Plans:
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 21/25 plans executed
+**Plans:** 23/25 plans executed
 
 Plans:
 
@@ -130,8 +130,8 @@ Plans:
 - [x] 03.1-24-PLAN.md — Extend and test the actual shared PageHeader, MetricCard, TablePagination, and governed risk dialog
 - [x] 03.1-16-PLAN.md — Deliver trustworthy Defender sections and explicit safe deep links
 - [x] 03.1-17-PLAN.md — Deliver governed Patch/remediation handoffs with responsive accessibility
-- [ ] 03.1-22-PLAN.md — Correct ordinary navigation and wire every lean Overview section state
-- [ ] 03.1-25-PLAN.md — Wire complete independent states, context continuity, and governed risk feedback into existing CVE/KB `[id]` routes
+- [x] 03.1-22-PLAN.md — Correct ordinary navigation and wire every lean Overview section state
+- [x] 03.1-25-PLAN.md — Wire complete independent states, context continuity, and governed risk feedback into existing CVE/KB `[id]` routes
 - [ ] 03.1-19-PLAN.md — Benchmark, canary, rollback-test, live-validate, and produce the Phase 4 handoff
 - [ ] 03.1-20-PLAN.md — Human-approve authenticated Exposure behavior and Phase 4 evidence
 

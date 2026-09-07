@@ -77,9 +77,18 @@ function RetryButton({
 }
 
 function coverageCopy(state: ExposureSectionPresentation): string {
-  const { represented, total, excluded } = state.metadata;
+  const { loaded, represented, expected, total, excluded } = state.metadata;
   const parts: string[] = [];
-  if (represented !== undefined) parts.push(`${represented.toLocaleString("en-US")} represented`);
+  if (represented !== undefined && expected !== undefined) {
+    parts.push(
+      `${represented.toLocaleString("en-US")} of ${expected.toLocaleString(
+        "en-US",
+      )} connections represented`,
+    );
+  } else if (represented !== undefined) {
+    parts.push(`${represented.toLocaleString("en-US")} represented`);
+  }
+  if (loaded !== undefined) parts.push(`${loaded.toLocaleString("en-US")} loaded`);
   if (total !== undefined) parts.push(`${total.toLocaleString("en-US")} total`);
   if (excluded !== undefined) parts.push(`${excluded.toLocaleString("en-US")} excluded`);
   return parts.join(" · ");

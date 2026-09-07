@@ -1,36 +1,62 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 
-const EXPOSURE_TABS = [
-  { href: "/exposure", label: "Overview", exact: true },
-  { href: "/exposure/defender-posture", label: "Defender posture", exact: false },
-  { href: "/exposure/patch-priorities", label: "Patch priorities", exact: false },
+const EXPOSURE_VIEWS = [
+  { href: "/exposure", label: "Overview" },
+  { href: "/exposure/defender-posture", label: "Defender posture" },
+  { href: "/exposure/patch-priorities", label: "Patch priorities" },
 ] as const;
+
+type ExposureView = (typeof EXPOSURE_VIEWS)[number]["href"];
+
+const DETAIL_PARENTS = new Set<ExposureView>([
+  "/exposure/defender-posture",
+  "/exposure/patch-priorities",
+]);
+
+function selectedView(pathname: string, origin: string | null): ExposureView {
+  if (pathname === "/exposure") return "/exposure";
+  if (pathname.startsWith("/exposure/defender-posture")) {
+    return "/exposure/defender-posture";
+  }
+  if (pathname.startsWith("/exposure/patch-priorities")) {
+    return "/exposure/patch-priorities";
+  }
+  if (
+    pathname.startsWith("/exposure/cves/") ||
+    pathname.startsWith("/exposure/kbs/")
+  ) {
+    return DETAIL_PARENTS.has(origin as ExposureView)
+      ? (origin as ExposureView)
+      : "/exposure/patch-priorities";
+  }
+  return "/exposure/patch-priorities";
+}
 
 /** Layout wrapper for exposure routes. Renders shared sub-navigation across the split exposure pages. */
 export default function ExposureLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
+  const searchParams = useSearchParams();
+  const activeView = selectedView(pathname, searchParams.get("origin"));
 
   return (
     <>
-      <div role="tablist" aria-label="Exposure views" className="tab-list">
-        {EXPOSURE_TABS.map((item) => {
-          const isActive = item.exact ? pathname === item.href : pathname?.startsWith(item.href);
+      <nav aria-label="Exposure views" className="tab-list">
+        {EXPOSURE_VIEWS.map((item) => {
+          const isActive = activeView === item.href;
           return (
             <Link
               key={item.href}
               href={item.href}
-              role="tab"
-              aria-selected={isActive}
-              tabIndex={isActive ? 0 : -1}
+              aria-current={isActive ? "page" : undefined}
             >
               {item.label}
             </Link>
           );
         })}
-      </div>
+      </nav>
       {children}
     </>
   );

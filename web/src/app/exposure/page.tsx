@@ -1,76 +1,420 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+
+import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
-import { PatchInventory } from "@/components/exposure/PatchInventory";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
-import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
-import { PageHeader } from "@/components/ui/PageHeader";
+import {
+  PageHeader,
+  type AggregateCompleteness,
+  type EvidenceFreshness,
+  type PageHeaderCompleteness,
+} from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
-import { useApi } from "@/hooks/useApi";
+import {
+  type ExposureSectionResult,
+  type ExposureSectionStatus,
+  useExposureSection,
+} from "@/hooks/useExposureSection";
+import {
+  DEFAULT_EXPOSURE_SORT,
+  exposureQueryKey,
+  exposureRetentionKey,
+  type ExposureQueryState,
+} from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, vulnerabilityApi } from "@/lib/services";
+import {
+  buildCopilotSnapshot,
+  copilotEvidenceRows,
+  vulnerabilityApi,
+} from "@/lib/services";
+import type {
+  Envelope,
+  ExposureCommonContract,
+  ExposureCursorPagination,
+} from "@/lib/types";
+
+interface OverviewSectionData<T> {
+  value: T;
+  loaded_count: number;
+  total_count: number;
+  contract: ExposureCommonContract;
+}
+
+interface OverviewSectionLike {
+  status: ExposureSectionStatus;
+  data: OverviewSectionData<unknown> | null;
+  envelope: Envelope<OverviewSectionData<unknown>, ExposureCursorPagination> | null;
+  metadata: ExposureSectionResult<unknown>["metadata"];
+}
+
+function finiteCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function loadedCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  return value === null || value === undefined ? 0 : 1;
+}
+
+async function overviewSectionEnvelope<T>(
+  queryState: ExposureQueryState,
+  signal: AbortSignal,
+  loadValue: () => Promise<Envelope<T>>,
+): Promise<Envelope<OverviewSectionData<T>, ExposureCursorPagination>> {
+  const [common, source] = await Promise.all([
+    vulnerabilityApi.exposureOverview(queryState, { signal }),
+    loadValue(),
+  ]);
+  const loaded = loadedCount(source.data);
+  const sourceTotal = finiteCount(source.pagination?.total) ?? loaded;
+
+  return {
+    ...common,
+    data: {
+      value: source.data,
+      loaded_count: loaded,
+      total_count: sourceTotal,
+      contract: common.data.contract,
+    },
+    evidence: [...common.evidence, ...source.evidence],
+    warnings: [...(common.warnings ?? []), ...(source.warnings ?? [])],
+    pagination: {
+      limit: queryState.pageSize,
+      total: sourceTotal,
+      next_cursor: null,
+    },
+  };
+}
+
+function useOverviewSection<T>(
+  sectionId: string,
+  queryState: ExposureQueryState,
+  loadValue: () => Promise<Envelope<T>>,
+): ExposureSectionResult<OverviewSectionData<T>> {
+  return useExposureSection<OverviewSectionData<T>>({
+    queryKey: `${exposureQueryKey(queryState)}|overview-section=${sectionId}`,
+    retentionKey: `${exposureRetentionKey(
+      queryState,
+    )}|overview-section=${sectionId}`,
+    load: ({ signal }) =>
+      overviewSectionEnvelope(queryState, signal, loadValue),
+    isEmpty: (data) => data.loaded_count === 0,
+  });
+}
+
+function withLocalMetadata<T>(
+  section: ExposureSectionResult<OverviewSectionData<T>>,
+): ExposureSectionResult<OverviewSectionData<T>> {
+  const completeness = section.data?.contract.completeness;
+  return {
+    ...section,
+    metadata: {
+      ...section.metadata,
+      loaded: section.data?.loaded_count ?? section.metadata.loaded,
+      represented:
+        finiteCount(completeness?.represented_connections) ??
+        section.metadata.represented,
+      expected:
+        finiteCount(completeness?.expected_connections) ??
+        section.metadata.expected,
+      total: section.data?.total_count ?? section.metadata.total,
+    },
+  };
+}
+
+function pageCompleteness(
+  sections: OverviewSectionLike[],
+): PageHeaderCompleteness {
+  const usable = sections.filter((section) => section.data !== null);
+  let state: AggregateCompleteness;
+  if (usable.length === 0) {
+    state = "unavailable";
+  } else if (
+    sections.some(
+      (section) =>
+        section.status === "unavailable" ||
+        section.status === "partial" ||
+        section.status === "loading",
+    )
+  ) {
+    state = "partial";
+  } else if (sections.some((section) => section.status === "stale")) {
+    state = "stale";
+  } else {
+    state = "complete";
+  }
+
+  const freshness: EvidenceFreshness = sections.some(
+    (section) => section.status === "stale",
+  )
+    ? "stale"
+    : sections.every(
+          (section) =>
+            section.status === "current" ||
+            section.status === "healthy-empty",
+        )
+      ? "current"
+      : "unknown";
+  const completeness = usable[0]?.data?.contract.completeness;
+
+  return {
+    state,
+    freshness,
+    representedConnections: finiteCount(
+      completeness?.represented_connections,
+    ),
+    expectedConnections: finiteCount(completeness?.expected_connections),
+    representedCount:
+      finiteCount(completeness?.represented) ??
+      finiteCount(completeness?.represented_count),
+    totalCount:
+      finiteCount(completeness?.total) ??
+      finiteCount(completeness?.total_count),
+    excludedCount:
+      finiteCount(completeness?.excluded) ??
+      finiteCount(completeness?.excluded_count),
+    excludedReasons: completeness?.excluded_reasons ?? [],
+  };
+}
+
+function sectionCompleteness(
+  status: ExposureSectionStatus,
+): "complete" | "partial" | "stale" | "unavailable" {
+  if (status === "current" || status === "healthy-empty") return "complete";
+  if (status === "loading") return "unavailable";
+  return status;
+}
+
+function sectionEvidenceCopy(section: OverviewSectionLike): string {
+  const metadata = section.metadata;
+  const details: string[] = [section.status];
+  if (metadata.freshnessSourceFamily) {
+    details.push(`source family ${metadata.freshnessSourceFamily}`);
+  }
+  if (metadata.freshnessThresholdSeconds !== undefined) {
+    details.push(
+      `freshness threshold ${metadata.freshnessThresholdSeconds.toLocaleString(
+        "en-US",
+      )} seconds`,
+    );
+  }
+  if (metadata.observedAt) details.push(`observed ${metadata.observedAt}`);
+  if (
+    metadata.represented !== undefined &&
+    metadata.expected !== undefined
+  ) {
+    details.push(
+      `${metadata.represented.toLocaleString(
+        "en-US",
+      )} of ${metadata.expected.toLocaleString("en-US")} connections represented`,
+    );
+  }
+  if (metadata.loaded !== undefined) {
+    details.push(`${metadata.loaded.toLocaleString("en-US")} loaded`);
+  }
+  if (metadata.total !== undefined) {
+    details.push(`${metadata.total.toLocaleString("en-US")} total`);
+  }
+  if (metadata.excluded !== undefined) {
+    details.push(`${metadata.excluded.toLocaleString("en-US")} excluded`);
+  }
+  details.push(...metadata.excludedReasons);
+  return details.join(" · ");
+}
+
+function countCopy(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "—"
+    : value.toLocaleString("en-US");
+}
+
+function countTone(
+  value: number | null | undefined,
+  alertTone: "critical" | "warning",
+): "default" | "critical" | "warning" | "success" {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "default";
+  }
+  return value > 0 ? alertTone : "success";
+}
+
+function OverviewSection<T>({
+  title,
+  description,
+  sourceName,
+  itemLabel,
+  section,
+  action,
+  children,
+}: {
+  title: string;
+  description: string;
+  sourceName: string;
+  itemLabel: string;
+  section: ExposureSectionResult<OverviewSectionData<T>>;
+  action?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <section className="card queue-card">
+      <div className="card-header">
+        <div>
+          <h2>{title}</h2>
+          <p>{description}</p>
+        </div>
+        {action}
+      </div>
+      <div className="card-body">
+        <SourceSectionState
+          sourceName={sourceName}
+          itemLabel={itemLabel}
+          state={section}
+        >
+          {children}
+        </SourceSectionState>
+      </div>
+    </section>
+  );
+}
 
 /**
- * Exposure overview / landing page. This is deliberately a lean summary —
- * headline KPIs, the highest-value action, and pointers into the two
- * dedicated detail views (Defender posture, Patch priorities), which own the
- * full tables, filters, and pagination for their respective signal families.
- * Duplicating those tables here would defeat the purpose of the page split.
+ * Exposure landing page. Every decision summary owns its request lifecycle;
+ * full operational queues remain on their dedicated routes.
  */
 export default function ExposurePage() {
   const { scope } = useScope();
   const [copilotOpen, setCopilotOpen] = useState(false);
-
-  const summary = useApi(() => vulnerabilityApi.summary(scope), [scope]);
-  const authoritativeExposures = useApi(
-    () => vulnerabilityApi.authoritativeExposures(scope),
+  const queryState = useMemo<ExposureQueryState>(
+    () => ({
+      scope,
+      filters: {},
+      sort: DEFAULT_EXPOSURE_SORT,
+      pageSize: 50,
+      cursor: null,
+      cursorHistory: [],
+      page: 1,
+      target: "",
+      drawer: "",
+      generation: "",
+    }),
     [scope],
   );
-  const patches = useApi(() => vulnerabilityApi.patchPriorities(scope, {}), [scope]);
-  const servers = useApi(() => vulnerabilityApi.assetExposures(scope, {}), [scope]);
-  const defenderOverview = useApi(() => vulnerabilityApi.defenderOverview(scope), [scope]);
-  const sla = useApi(() => vulnerabilityApi.slaCompliance(scope), [scope]);
-  const riskExceptions = useApi(() => vulnerabilityApi.riskExceptions(scope), [scope]);
 
-  const bestPatch = patches.data?.data[0];
-  const serverInventoryCounts = useMemo(() => {
-    return (servers.data?.data ?? []).reduce<Record<string, number>>((counts, server) => {
-      counts[server.inventory_kind] = (counts[server.inventory_kind] ?? 0) + 1;
-      return counts;
-    }, {});
-  }, [servers.data]);
-  const serverInventorySummary = Object.entries(serverInventoryCounts)
-    .map(([kind, count]) => `${kind}: ${count}`)
+  const summary = withLocalMetadata(
+    useOverviewSection("summary", queryState, () =>
+      vulnerabilityApi.summary(scope),
+    ),
+  );
+  const patches = withLocalMetadata(
+    useOverviewSection("patch-priority-preview", queryState, () =>
+      vulnerabilityApi.patchPriorities(scope, {}),
+    ),
+  );
+  const assets = withLocalMetadata(
+    useOverviewSection("asset-counts", queryState, () =>
+      vulnerabilityApi.assetExposures(scope, {}),
+    ),
+  );
+  const defender = withLocalMetadata(
+    useOverviewSection("defender-overview", queryState, () =>
+      vulnerabilityApi.defenderOverview(scope),
+    ),
+  );
+  const sla = withLocalMetadata(
+    useOverviewSection("sla", queryState, () =>
+      vulnerabilityApi.slaCompliance(scope),
+    ),
+  );
+  const riskExceptions = withLocalMetadata(
+    useOverviewSection("risk-exceptions", queryState, () =>
+      vulnerabilityApi.riskExceptions(scope),
+    ),
+  );
+
+  const summaryValue = summary.data?.value;
+  const patchRows = useMemo(
+    () => patches.data?.value ?? [],
+    [patches.data],
+  );
+  const bestPatch = patchRows[0];
+  const assetRows = useMemo(
+    () => assets.data?.value ?? [],
+    [assets.data],
+  );
+  const defenderValue = defender.data?.value;
+  const slaValue = sla.data?.value;
+  const exceptionRows = useMemo(
+    () => riskExceptions.data?.value ?? [],
+    [riskExceptions.data],
+  );
+  const assetCounts = useMemo(
+    () =>
+      assetRows.reduce<Record<string, number>>((counts, asset) => {
+        counts[asset.inventory_kind] = (counts[asset.inventory_kind] ?? 0) + 1;
+        return counts;
+      }, {}),
+    [assetRows],
+  );
+  const assetSummary = Object.entries(assetCounts)
+    .map(([kind, count]) => `${kind}: ${count.toLocaleString("en-US")}`)
     .join(" · ");
-
   const expiringExceptionCount = useMemo(() => {
+    if (!riskExceptions.data) return null;
     const cutoff = Date.now() + 7 * 24 * 60 * 60 * 1000;
-    let count = 0;
-    for (const exception of riskExceptions.data?.data ?? []) {
-      if (!exception.expires_at) continue;
+    return exceptionRows.reduce((count, exception) => {
+      if (!exception.expires_at) return count;
       const expiresAt = Date.parse(exception.expires_at);
-      if (!Number.isNaN(expiresAt) && expiresAt <= cutoff) count += 1;
-    }
-    return count;
-  }, [riskExceptions.data]);
+      return !Number.isNaN(expiresAt) && expiresAt <= cutoff
+        ? count + 1
+        : count;
+    }, 0);
+  }, [exceptionRows, riskExceptions.data]);
 
-  // Named per-source so a single failing call doesn't block rendering of
-  // sections whose own data loaded successfully.
-  const sourceErrors = [
-    { label: "Summary", error: summary.error },
-    { label: "Authoritative exposure findings", error: authoritativeExposures.error },
-    { label: "Patch priorities", error: patches.error },
-    { label: "Asset exposures", error: servers.error },
-    { label: "Defender secure score", error: defenderOverview.error },
-    { label: "SLA compliance", error: sla.error },
-    { label: "Risk exceptions", error: riskExceptions.error },
-  ].filter((entry): entry is { label: string; error: Error } => entry.error != null);
-  const fatalError = summary.error ?? servers.error;
-  const loading = summary.loading || patches.loading || servers.loading || defenderOverview.loading || sla.loading;
+  const sections = [
+    summary,
+    patches,
+    assets,
+    defender,
+    sla,
+    riskExceptions,
+  ] as unknown as OverviewSectionLike[];
+  const aggregate = pageCompleteness(sections);
+  const allUnavailable = sections.every(
+    (section) => section.status === "unavailable",
+  );
+  const evidence = sections.flatMap(
+    (section) => section.envelope?.evidence ?? [],
+  );
+  const warnings = sections.flatMap(
+    (section) => section.envelope?.warnings ?? [],
+  );
+  const sourceStatus = Object.fromEntries(
+    [
+      ["Summary", summary],
+      ["Patch priority preview", patches],
+      ["Asset counts", assets],
+      ["Defender overview", defender],
+      ["SLA", sla],
+      ["Risk exceptions", riskExceptions],
+    ].map(([label, section]) => [
+      label,
+      sectionEvidenceCopy(section as unknown as OverviewSectionLike),
+    ]),
+  );
+  const defenderCoverage = defenderValue?.coverage
+    ? Object.values(defenderValue.coverage)
+    : [];
+  const availableDefenderSources = defenderCoverage.length
+    ? defenderCoverage.filter((state) => state.availability === "available")
+        .length
+    : null;
 
   return (
     <div className="page-container">
@@ -78,317 +422,308 @@ export default function ExposurePage() {
         eyebrow="Exposure management"
         title="Which exposure should be reduced first?"
         description="Prioritize Defender for Cloud exposure across servers, containers, databases, storage, applications, and the rest of the discovered subscription inventory."
-        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about exposure" />}
+        completeness={aggregate}
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about exposure"
+          />
+        }
         metadata={
           <>
-            <span>{summary.data?.data.affected_business_service_count ?? 0} affected business services</span>
-            <span>{summary.data?.data.affected_asset_count ?? 0} affected assets</span>
-            <span>{summary.data?.data.defender_observed_asset_count ?? 0} Defender-observed vulnerable assets</span>
-            <span>{serverInventorySummary || "Subscription inventory grouped by resource type"}</span>
+            <span>
+              {countCopy(summaryValue?.affected_business_service_count)} affected
+              business services
+            </span>
+            <span>
+              {countCopy(summaryValue?.affected_asset_count)} affected assets
+            </span>
+            <span>
+              {countCopy(summaryValue?.defender_observed_asset_count)}{" "}
+              Defender-observed vulnerable assets
+            </span>
+            <span>
+              {assetSummary || "Subscription inventory grouping unavailable"}
+            </span>
             <span>Patch recommendations are advisory</span>
           </>
         }
       />
 
       <EvidenceBar
-        evidence={[
-          ...(summary.data?.evidence ?? []),
-          ...(authoritativeExposures.data?.evidence ?? []),
-          ...(patches.data?.evidence ?? []),
-          ...(servers.data?.evidence ?? []),
-          ...(defenderOverview.data?.evidence ?? []),
-          ...(sla.data?.evidence ?? []),
-        ]}
-        knowledgeVersion={summary.data?.knowledge_version}
-        warnings={[
-          ...(summary.data?.warnings ?? []),
-          ...(authoritativeExposures.data?.warnings ?? []),
-          ...(patches.data?.warnings ?? []),
-          ...(servers.data?.warnings ?? []),
-          ...(defenderOverview.data?.warnings ?? []),
-          ...(sla.data?.warnings ?? []),
-        ]}
-        fallbackTimestamp={summary.data?.data.freshness}
+        evidence={evidence}
+        aggregateState={aggregate}
+        knowledgeVersion={
+          sections.find((section) => section.envelope?.knowledge_version)
+            ?.envelope?.knowledge_version
+        }
+        warnings={warnings}
+        fallbackTimestamp={sections.find(
+          (section) => section.metadata.observedAt,
+        )?.metadata.observedAt}
+        sourceStatus={sourceStatus}
       />
 
-      {fatalError ? (
+      {allUnavailable && (
         <StatePanel
           title="Exposure intelligence is unavailable"
-          message={`${fatalError.message}. The workbench will not treat missing vulnerability data as an all-clear state.`}
+          message="No usable authorized Exposure partition remains. Retry the affected source sections; missing evidence is not treated as an all-clear state."
           tone="error"
         />
-      ) : loading ? (
-        <StatePanel
-          title="Ranking vulnerability exposure"
-          message="Combining KB patch state, CVE intelligence, network reachability, and business service criticality."
-          tone="loading"
-        />
-      ) : (
-        <>
-          {sourceErrors.length > 0 && (
-            <StatePanel
-              title="Some exposure sources are degraded"
-              message={`${sourceErrors.map((entry) => `${entry.label}: ${entry.error.message}`).join(" · ")}. Sections below reflect only the sources that loaded.`}
-              tone="error"
-            />
-          )}
+      )}
 
+      <div className="exposure-landing-sections">
+        <OverviewSection
+          title="Exposure summary"
+          description="Scoped vulnerability and reachability totals for the authorized environment."
+          sourceName="Exposure summary"
+          itemLabel="summary"
+          section={summary}
+        >
           <div className="metric-grid exposure-metrics">
             <MetricCard
               label="Critical CVEs"
-              value={summary.data?.data.critical_count ?? "—"}
-              detail={`${summary.data?.data.cve_count ?? 0} CVEs observed in the current scope`}
-              tone={(summary.data?.data.critical_count ?? 0) > 0 ? "critical" : "success"}
+              value={summaryValue?.critical_count}
+              detail={
+                summaryValue?.cve_count === undefined
+                  ? "CVE total unavailable"
+                  : `${summaryValue.cve_count.toLocaleString(
+                      "en-US",
+                    )} CVEs observed in the current scope`
+              }
+              tone={countTone(summaryValue?.critical_count, "critical")}
+              completeness={sectionCompleteness(summary.status)}
             />
             <MetricCard
               label="Internet exposed"
-              value={summary.data?.data.internet_exposed_count ?? "—"}
+              value={summaryValue?.internet_exposed_count}
               detail="Findings with an observed Internet-reachable path"
-              tone={(summary.data?.data.internet_exposed_count ?? 0) > 0 ? "critical" : "success"}
+              tone={countTone(
+                summaryValue?.internet_exposed_count,
+                "critical",
+              )}
+              completeness={sectionCompleteness(summary.status)}
             />
+          </div>
+        </OverviewSection>
+
+        <OverviewSection
+          title="Asset counts"
+          description="Affected resources grouped from the scoped subscription inventory."
+          sourceName="Exposure asset counts"
+          itemLabel="assets"
+          section={assets}
+        >
+          <div className="metric-grid exposure-metrics">
             <MetricCard
               label="Exposed inventory"
-              value={servers.data?.pagination?.total ?? servers.data?.data.length ?? "—"}
-              detail={serverInventorySummary || "Affected resources across the subscription inventory"}
-              tone={(summary.data?.data.reachable_server_count ?? 0) > 0 ? "warning" : "success"}
+              value={assets.data?.total_count}
+              detail={
+                assetSummary ||
+                "Affected resource type counts are unavailable for this scope"
+              }
+              tone={countTone(summaryValue?.reachable_server_count, "warning")}
+              completeness={sectionCompleteness(assets.status)}
             />
+          </div>
+        </OverviewSection>
+
+        <OverviewSection
+          title="Patch priority preview"
+          description="The highest-value advisory action; the complete queue remains on Patch priorities."
+          sourceName="Patch priority preview"
+          itemLabel="patch priorities"
+          section={patches}
+          action={
+            <Link className="button" href="/exposure/patch-priorities">
+              Open Patch priorities →
+            </Link>
+          }
+        >
+          <div className="metric-grid exposure-metrics">
             <MetricCard
               label="Highest-value patch"
-              value={bestPatch?.kb_id ?? "—"}
+              value={bestPatch?.kb_id}
               detail={
                 bestPatch
-                  ? `${Math.round(bestPatch.expected_risk_reduction)} expected risk reduction across ${bestPatch.affected_business_service_count} services`
-                  : "No patch priority available"
+                  ? `Risk reduction score ${bestPatch.expected_risk_reduction.toLocaleString(
+                      "en-US",
+                    )}/100 across ${bestPatch.affected_business_service_count.toLocaleString(
+                      "en-US",
+                    )} business services`
+                  : "Patch priority is unavailable"
               }
-              tone={bestPatch ? "success" : "default"}
+              tone="default"
+              completeness={sectionCompleteness(patches.status)}
+              action={
+                bestPatch ? (
+                  <Link
+                    href={`/exposure/kbs/${encodeURIComponent(
+                      bestPatch.kb_id,
+                    )}`}
+                  >
+                    Open {bestPatch.kb_id} details
+                  </Link>
+                ) : undefined
+              }
             />
           </div>
+        </OverviewSection>
 
-          <section className="card dashboard-visual-card exposure-signal-card">
-            <div className="card-header">
-              <div>
-                <h2>Exposure profile</h2>
-                <p>Prioritization signals across the authorized environment.</p>
-              </div>
-              <span className="visual-card-kicker">Decision view</span>
-            </div>
-            <div className="card-body">
-              <OperationsSignalChart
-                signals={[
-                  { label: "Critical CVEs", value: summary.data?.data.critical_count ?? 0, tone: "critical" },
-                  { label: "Internet exposed", value: summary.data?.data.internet_exposed_count ?? 0, tone: "critical" },
-                  { label: "Reachable assets", value: summary.data?.data.reachable_server_count ?? 0, tone: "warning" },
-                  { label: "Affected services", value: summary.data?.data.affected_business_service_count ?? 0, tone: "info" },
-                ]}
-              />
-            </div>
-          </section>
-
-          <section className="card queue-card">
-            <div className="card-header">
-              <div>
-                <h2>Authoritative exposure findings</h2>
-                <p>
-                  Scoped identities from the persisted Exposure generation, with
-                  source coverage kept visible.
-                </p>
-              </div>
-            </div>
-            <div className="card-body">
-              {authoritativeExposures.loading ? (
-                <StatePanel
-                  title="Loading authoritative exposure findings"
-                  message="Reading the current governed Exposure generation."
-                  tone="loading"
-                />
-              ) : authoritativeExposures.error ? (
-                <StatePanel
-                  title="Authoritative exposure findings are unavailable"
-                  message={`${authoritativeExposures.error.message}. Other exposure sections remain usable.`}
-                  tone="error"
-                />
-              ) : authoritativeExposures.data ? (
-                <>
-                  <div className="detail-grid">
-                    <div>
-                      <span>Generation</span>
-                      <strong>
-                        Generation{" "}
-                        {authoritativeExposures.data.data.read_model_generation_id}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Coverage</span>
-                      <strong>
-                        {authoritativeExposures.data.data.completeness.state
-                          .slice(0, 1)
-                          .toUpperCase()}
-                        {authoritativeExposures.data.data.completeness.state.slice(1)}
-                        {" · "}
-                        {
-                          authoritativeExposures.data.data.completeness
-                            .represented_connections
-                        }{" "}
-                        of{" "}
-                        {
-                          authoritativeExposures.data.data.completeness
-                            .expected_connections
-                        }{" "}
-                        connections
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Loaded findings</span>
-                      <strong>
-                        {authoritativeExposures.data.data.returned_count} of{" "}
-                        {authoritativeExposures.data.data.total_count}
-                      </strong>
-                    </div>
-                  </div>
-                  <div className="chip-row" aria-label="Exposure source attribution">
-                    {authoritativeExposures.data.data.source_attribution.map(
-                      (source) => (
-                        <span
-                          className="chip"
-                          key={source.source_family}
-                        >
-                          {source.source_family === "aum" ? "AUM" : "Defender"}{" "}
-                          {source.finding_count} findings
-                        </span>
-                      ),
-                    )}
-                  </div>
-                  <ul className="evidence-list">
-                    {authoritativeExposures.data.data.findings.map((finding) => (
-                      <li key={finding.exposure_id}>
-                        <strong>{finding.exposure_id}</strong>
-                        <span>
-                          {finding.weakness_id} ·{" "}
-                          {finding.source_families
-                            .map((source) =>
-                              source === "aum" ? "AUM" : "Defender",
-                            )
-                            .join(" + ")}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <StatePanel
-                  title="No authoritative exposure findings"
-                  message="The current scoped generation contains no findings."
-                  tone="empty"
-                />
+        <OverviewSection
+          title="Defender overview"
+          description="Alerts, attack paths, recommendations, and source coverage from Defender for Cloud."
+          sourceName="Defender overview"
+          itemLabel="posture signals"
+          section={defender}
+          action={
+            <Link className="button" href="/exposure/defender-posture">
+              Open Defender posture →
+            </Link>
+          }
+        >
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Active alerts"
+              value={defenderValue?.active_alert_count}
+              detail={
+                defenderValue?.critical_alert_count === undefined
+                  ? "Critical alert count unavailable"
+                  : `${defenderValue.critical_alert_count.toLocaleString(
+                      "en-US",
+                    )} critical alerts`
+              }
+              tone={countTone(
+                defenderValue?.critical_alert_count,
+                "critical",
               )}
-            </div>
-          </section>
-
-          {bestPatch && (
-            <section className="best-action-card">
-              <div className="best-action-rank">01</div>
-              <div>
-                <span>Highest risk reduction per patch</span>
-                <h2>{bestPatch.kb_id}</h2>
-                <p>{bestPatch.recommended_action}</p>
-              </div>
-              <div className="best-action-facts">
-                <div>
-                  <strong>{bestPatch.cve_ids.length}</strong>
-                  <span>CVEs removed</span>
-                </div>
-                <div>
-                  <strong>{bestPatch.reachable_server_count}</strong>
-                  <span>Reachable servers</span>
-                </div>
-                <div>
-                  <strong>{bestPatch.affected_business_service_count}</strong>
-                  <span>Business services</span>
-                </div>
-              </div>
-              <Link className="button button-primary" href={`/exposure/kbs/${encodeURIComponent(bestPatch.kb_id)}`}>
-                Open KB details
-              </Link>
-            </section>
-          )}
-
-          <div className="exposure-landing-sections">
-            <Link href="/exposure/defender-posture" className="card queue-card exposure-summary-link">
-              <div className="card-header">
-                <div>
-                  <h2>Defender posture →</h2>
-                  <p>Active alerts, attack paths, secure-score controls, and unhealthy recommendations across enabled Defender plans.</p>
-                </div>
-              </div>
-              <div className="card-body">
-                <div className="metric-grid exposure-metrics">
-                  <MetricCard
-                    label="Active alerts"
-                    value={defenderOverview.data?.data.active_alert_count ?? "—"}
-                    detail={`${defenderOverview.data?.data.critical_alert_count ?? 0} critical alerts`}
-                    tone={(defenderOverview.data?.data.critical_alert_count ?? 0) > 0 ? "critical" : "warning"}
-                  />
-                  <MetricCard
-                    label="Attack paths"
-                    value={defenderOverview.data?.data.attack_path_count ?? "—"}
-                    detail="Exploitable routes reported by Defender CSPM"
-                    tone={(defenderOverview.data?.data.attack_path_count ?? 0) > 0 ? "critical" : "success"}
-                  />
-                  <MetricCard
-                    label="Defender recommendations"
-                    value={summary.data?.data.defender_posture_count ?? summary.data?.data.defender_recommendation_count ?? "—"}
-                    detail="Unhealthy recommendations across protected resource families"
-                    tone={(summary.data?.data.defender_posture_count ?? summary.data?.data.defender_recommendation_count ?? 0) > 0 ? "warning" : "success"}
-                  />
-                  <MetricCard
-                    label="Signal coverage"
-                    value={`${Object.values(defenderOverview.data?.data.coverage ?? {}).filter((state) => state.availability === "available").length}/4`}
-                    detail="Unavailable sources remain unknown, never healthy"
-                    tone={Object.values(defenderOverview.data?.data.coverage ?? {}).some((state) => state.availability !== "available") ? "warning" : "success"}
-                  />
-                </div>
-              </div>
-            </Link>
-
-            <Link href="/exposure/patch-priorities" className="card queue-card exposure-summary-link">
-              <div className="card-header">
-                <div>
-                  <h2>Patch priorities →</h2>
-                  <p>SLA compliance, the patch/CVE inventory, and active risk exceptions.</p>
-                </div>
-              </div>
-              <div className="card-body">
-                <div className="metric-grid exposure-metrics">
-                  <MetricCard
-                    label="Overall compliance"
-                    value={
-                      sla.data?.data?.overall_compliance_rate == null
-                        ? "—"
-                        : `${Math.round(sla.data.data.overall_compliance_rate * 100)}%`
-                    }
-                    detail={sla.data?.data ? `${sla.data.data.compliant_count} of ${sla.data.data.tracked_count} tracked findings within SLA` : "SLA data unavailable"}
-                    tone={(sla.data?.data?.overdue_count ?? 0) > 0 ? "warning" : "success"}
-                  />
-                  <MetricCard
-                    label="Overdue findings"
-                    value={sla.data?.data?.overdue_count ?? "—"}
-                    detail={sla.data?.data ? `${sla.data.data.open_count} total open findings` : "SLA data unavailable"}
-                    tone={(sla.data?.data?.overdue_count ?? 0) > 0 ? "critical" : "success"}
-                  />
-                  <MetricCard
-                    label="Active risk exceptions"
-                    value={riskExceptions.data?.data?.length ?? "—"}
-                    detail={expiringExceptionCount > 0 ? `${expiringExceptionCount} expiring within 7 days` : "None expiring soon"}
-                    tone={expiringExceptionCount > 0 ? "warning" : "default"}
-                  />
-                </div>
-              </div>
-            </Link>
+              completeness={sectionCompleteness(defender.status)}
+            />
+            <MetricCard
+              label="Attack paths"
+              value={defenderValue?.attack_path_count}
+              detail="Exploitable routes reported by Defender CSPM"
+              tone={countTone(defenderValue?.attack_path_count, "critical")}
+              completeness={sectionCompleteness(defender.status)}
+            />
+            <MetricCard
+              label="Defender recommendations"
+              value={
+                defenderValue?.unhealthy_recommendation_count ??
+                summaryValue?.defender_posture_count ??
+                summaryValue?.defender_recommendation_count
+              }
+              detail="Unhealthy recommendations across protected resource families"
+              tone={countTone(
+                defenderValue?.unhealthy_recommendation_count ??
+                  summaryValue?.defender_posture_count ??
+                  summaryValue?.defender_recommendation_count,
+                "warning",
+              )}
+              completeness={sectionCompleteness(defender.status)}
+            />
+            <MetricCard
+              label="Signal coverage"
+              value={
+                availableDefenderSources === null
+                  ? null
+                  : `${availableDefenderSources}/${defenderCoverage.length}`
+              }
+              detail="Unavailable sources remain unknown, never healthy"
+              tone={
+                availableDefenderSources === null
+                  ? "default"
+                  : availableDefenderSources === defenderCoverage.length
+                    ? "success"
+                    : "warning"
+              }
+              completeness={sectionCompleteness(defender.status)}
+            />
           </div>
+        </OverviewSection>
 
-          <PatchInventory scope={scope} />
-        </>
-      )}
+        <OverviewSection
+          title="SLA status"
+          description="Tracked finding compliance without classifying unknown first detection as overdue."
+          sourceName="Exposure SLA"
+          itemLabel="SLA reports"
+          section={sla}
+          action={
+            <Link className="button" href="/exposure/patch-priorities">
+              Review Patch priorities →
+            </Link>
+          }
+        >
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Overall compliance"
+              value={
+                slaValue?.overall_compliance_rate === null ||
+                slaValue?.overall_compliance_rate === undefined
+                  ? null
+                  : `${(slaValue.overall_compliance_rate * 100).toFixed(1)}%`
+              }
+              detail={
+                slaValue
+                  ? `${slaValue.compliant_count.toLocaleString(
+                      "en-US",
+                    )} of ${slaValue.tracked_count.toLocaleString(
+                      "en-US",
+                    )} tracked findings within SLA`
+                  : "SLA data unavailable"
+              }
+              tone={countTone(slaValue?.overdue_count, "warning")}
+              completeness={sectionCompleteness(sla.status)}
+            />
+            <MetricCard
+              label="Overdue findings"
+              value={slaValue?.overdue_count}
+              detail={
+                slaValue
+                  ? `${slaValue.open_count.toLocaleString(
+                      "en-US",
+                    )} total open findings`
+                  : "SLA data unavailable"
+              }
+              tone={countTone(slaValue?.overdue_count, "critical")}
+              completeness={sectionCompleteness(sla.status)}
+            />
+          </div>
+        </OverviewSection>
+
+        <OverviewSection
+          title="Risk exceptions"
+          description="Active governed exceptions and near-term expirations in the authorized scope."
+          sourceName="Risk exceptions"
+          itemLabel="risk exceptions"
+          section={riskExceptions}
+          action={
+            <Link className="button" href="/exposure/patch-priorities">
+              Review risk exceptions →
+            </Link>
+          }
+        >
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Active risk exceptions"
+              value={
+                riskExceptions.data ? riskExceptions.data.total_count : null
+              }
+              detail={
+                expiringExceptionCount === null
+                  ? "Expiration evidence unavailable"
+                  : expiringExceptionCount > 0
+                    ? `${expiringExceptionCount.toLocaleString(
+                        "en-US",
+                      )} expiring within 7 days`
+                    : "None expiring within 7 days"
+              }
+              tone={countTone(expiringExceptionCount, "warning")}
+              completeness={sectionCompleteness(riskExceptions.status)}
+            />
+          </div>
+        </OverviewSection>
+      </div>
 
       <CopilotDrawer
         open={copilotOpen}
@@ -399,21 +734,35 @@ export default function ExposurePage() {
           pageId: "exposure",
           scope,
           filters: {},
-          evidence: copilotEvidenceRows("vulnerability", [
-            ...(summary.data?.evidence ?? []),
-            ...(authoritativeExposures.data?.evidence ?? []),
-            ...(patches.data?.evidence ?? []),
-            ...(servers.data?.evidence ?? []),
-          ], [
-            ...(authoritativeExposures.data?.data.findings ?? []),
-            ...(patches.data?.data ?? []),
-            ...(servers.data?.data ?? []),
-          ]),
+          evidence: copilotEvidenceRows(
+            "vulnerability",
+            evidence,
+            [
+              ...(summaryValue ? [summaryValue] : []),
+              ...patchRows,
+              ...assetRows,
+              ...(defenderValue ? [defenderValue] : []),
+              ...(slaValue ? [slaValue] : []),
+              ...exceptionRows,
+            ],
+          ),
         })}
         starterQuestions={[
-          { label: "Which CVEs affect our highest-risk service?", tool: "cve_exposure", toolArguments: {} },
-          { label: "What should be patched first?", tool: "cve_exposure", toolArguments: {} },
-          { label: "Which Defender plans have the most open recommendations?", tool: "cve_exposure", toolArguments: {} },
+          {
+            label: "Which CVEs affect our highest-risk service?",
+            tool: "cve_exposure",
+            toolArguments: {},
+          },
+          {
+            label: "What should be patched first?",
+            tool: "cve_exposure",
+            toolArguments: {},
+          },
+          {
+            label: "Which Defender plans have the most open recommendations?",
+            tool: "cve_exposure",
+            toolArguments: {},
+          },
         ]}
       />
     </div>

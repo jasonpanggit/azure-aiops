@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -12,19 +15,31 @@ from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
+    ThreadNotFound,
     investigation_thread_store,
 )
+from operations.maf_orchestrator import (
+    build_deterministic_fallback,
+    select_specialists_for_turn,
+)
+from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
     Citation,
+    EvidenceSnapshotV2,
     InvestigationRequest,
     OrchestrationResult,
+    SnapshotCoverage,
     SpecialistStep,
     ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
-from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.specialist_manifest import (
+    PageMapping,
+    SpecialistDefinition,
+    load_specialist_manifest,
+)
 from operations.tools import (
     STATUS_DENIED,
     STATUS_EMPTY,
@@ -36,6 +51,57 @@ from operations.tools import (
 
 Planner = Callable[[InvestigationRequest], CandidatePlan | Mapping[str, Any]]
 Executor = Callable[..., ToolResult]
+_MAX_LEGACY_SESSIONS = 2_000
+_legacy_session_lock = threading.Lock()
+_legacy_session_threads: OrderedDict[tuple[str, str], str] = OrderedDict()
+_STABLE_QUESTION_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "incident",
+        "incident",
+        (
+            r"\bincident(?:s)?\b",
+            r"\boutage(?:s)?\b",
+            r"\balert(?:s)?\b",
+            r"\broot cause\b",
+            r"\btimeline\b",
+        ),
+    ),
+    (
+        "vulnerability",
+        "vulnerability",
+        (
+            r"\bcve(?:s)?\b",
+            r"\bvulnerab\w*\b",
+            r"\bexploit\w*\b",
+            r"\bexposure\b",
+            r"\battack path\b",
+        ),
+    ),
+    (
+        "governance",
+        "governance",
+        (
+            r"\bowner(?:s|ship)?\b",
+            r"\bgovernance\b",
+            r"\bapprov\w*\b",
+            r"\bpolicy\b",
+            r"\bcompliance\b",
+        ),
+    ),
+    (
+        "network",
+        "network",
+        (
+            r"\bnetwork\b",
+            r"\btraffic\b",
+            r"\bfirewall\b",
+            r"\bnsg\b",
+            r"\broute(?:s|d|ing)?\b",
+            r"\breach(?:able|ability)?\b",
+            r"\btopology\b",
+        ),
+    ),
+)
 
 
 class PlannerUnavailableError(RuntimeError):
@@ -57,25 +123,122 @@ def _default_executor(
 
 
 def _fallback_candidate(request: InvestigationRequest) -> CandidatePlan:
-    citation_ids = [item.evidence_id for item in request.snapshot.evidence]
-    if not citation_ids:
-        citation_ids = [COVERAGE_CITATION_ID]
-    return CandidatePlan(
-        steps=[
-            SpecialistStep(
-                specialist_id=INVENTORY_DATA_HEALTH_ID,
-                tool_calls=[
-                    ToolCallCandidate(
-                        tool="inventory_resources",
-                        arguments={},
-                        citation_ids=citation_ids,
-                    )
-                ],
-            )
-        ],
-        estimated_tokens=0,
-        max_wall_seconds=5,
+    """Construct a keyword-selected deterministic fallback.
+
+    Delegates to ``build_deterministic_fallback`` so the same keyword
+    selection and page-constraint logic produces a candidate that passes
+    the identical policy validator applied to model-proposed plans.
+    """
+    return build_deterministic_fallback(request, load_specialist_manifest())
+
+
+def _preferred_page_kind(specialist: SpecialistDefinition) -> PageMapping:
+    """Return the stable primary page mapping for a selected specialist."""
+
+    return specialist.page_mappings[0]
+
+
+def _question_route(
+    question: str,
+    *,
+    hint_tool: str,
+) -> tuple[PageMapping, SpecialistDefinition | None]:
+    """Resolve a question or tool hint to one manifest-backed page identity."""
+
+    manifest = load_specialist_manifest()
+    if hint_tool:
+        for specialist in manifest.specialists:
+            if hint_tool in specialist.operations_mcp_tools:
+                return _preferred_page_kind(specialist), specialist
+
+    lowered = question.casefold()
+    for page_kind, specialist_id, patterns in _STABLE_QUESTION_ROUTES:
+        if any(re.search(pattern, lowered) for pattern in patterns):
+            return page_kind, manifest.require(specialist_id)
+
+    catalog = tuple(
+        type(
+            "_CatalogEntry",
+            (),
+            {"id": specialist.id, "keywords": specialist.intent_examples},
+        )()
+        for specialist in manifest.specialists
     )
+    decision = select_specialists_for_turn(
+        page_kind="investigate",
+        question=question,
+        page_specialists=manifest.page_mapping_projection(),
+        catalog=catalog,
+        limit=1,
+    )
+    if decision.selected_ids and decision.strategy != "page_fallback":
+        specialist = manifest.require(decision.selected_ids[0])
+        return _preferred_page_kind(specialist), specialist
+    return "copilot", None
+
+
+def _legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+) -> str | None:
+    if not session_id:
+        return None
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        thread_id = _legacy_session_threads.get(key)
+        if thread_id is not None:
+            _legacy_session_threads.move_to_end(key)
+        return thread_id
+
+
+def _legacy_session_thread_for_execution(
+    session_id: str,
+    principal_subject: str,
+    scope: Scope,
+) -> str | None:
+    """Atomically bind a first legacy turn to one canonical thread."""
+
+    if not session_id:
+        return None
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        thread_id = _legacy_session_threads.get(key)
+        if thread_id is None:
+            thread_id = investigation_thread_store().create(
+                principal_subject,
+                scope,
+            ).thread_id
+            _legacy_session_threads[key] = thread_id
+            while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
+                _legacy_session_threads.popitem(last=False)
+        else:
+            _legacy_session_threads.move_to_end(key)
+        return thread_id
+
+
+def _remember_legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+    thread_id: str,
+) -> None:
+    if not session_id:
+        return
+    key = (principal_subject, session_id)
+    with _legacy_session_lock:
+        _legacy_session_threads[key] = thread_id
+        _legacy_session_threads.move_to_end(key)
+        while len(_legacy_session_threads) > _MAX_LEGACY_SESSIONS:
+            _legacy_session_threads.popitem(last=False)
+
+
+def _forget_legacy_session_thread(
+    session_id: str,
+    principal_subject: str,
+) -> None:
+    if not session_id:
+        return
+    with _legacy_session_lock:
+        _legacy_session_threads.pop((principal_subject, session_id), None)
 
 
 class OrchestrationService:
@@ -103,6 +266,7 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        max_wall_seconds: float | None = None,
     ) -> OrchestrationResult:
         """Execute one canonical request after all authorization gates pass."""
 
@@ -121,10 +285,13 @@ class OrchestrationService:
             request,
             effective_scope,
         )
-        deadline = started + min(
+        wall_seconds = min(
             candidate.max_wall_seconds,
             self.policy.limits.max_wall_seconds,
         )
+        if max_wall_seconds is not None:
+            wall_seconds = min(wall_seconds, max(0.0, max_wall_seconds))
+        deadline = started + wall_seconds
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
@@ -156,6 +323,7 @@ class OrchestrationService:
                         "call_id": call_id,
                         "specialist_id": step.specialist_id,
                         "tool": call.tool,
+                        "arguments": dict(call.arguments),
                         **result.to_dict(),
                     }
                 )
@@ -206,7 +374,50 @@ class OrchestrationService:
             thread.thread_id,
             principal_subject,
             requested_scope,
-            result.model_dump(mode="json"),
+            {
+                "question": request.question,
+                **result.model_dump(mode="json"),
+            },
+        )
+        return result.model_copy(update={"thread_revision": updated.revision})
+
+    def unsupported(
+        self,
+        request: InvestigationRequest,
+        *,
+        principal_subject: str,
+        effective_scope: Scope,
+        reason: str = "unsupported_intent",
+    ) -> OrchestrationResult:
+        """Persist an explicitly unsupported no-I/O turn."""
+
+        requested_scope = self.policy.validate_request(request, effective_scope)
+        if request.thread_id:
+            thread = self.thread_store.authorize(
+                request.thread_id,
+                principal_subject,
+                requested_scope,
+            )
+        else:
+            thread = self.thread_store.create(principal_subject, requested_scope)
+        result = OrchestrationResult(
+            status=STATUS_UNAVAILABLE,
+            policy_status="fallback",
+            fallback_reason=reason,
+            uncertainty=["No supported specialist intent matched the question."],
+            coverage=request.snapshot.coverage,
+            citations=self._snapshot_citations(request),
+            thread_id=thread.thread_id,
+            thread_revision=thread.revision + 1,
+        )
+        updated = self.thread_store.append(
+            thread.thread_id,
+            principal_subject,
+            requested_scope,
+            {
+                "question": request.question,
+                **result.model_dump(mode="json"),
+            },
         )
         return result.model_copy(update={"thread_revision": updated.revision})
 
@@ -352,8 +563,202 @@ class OrchestrationService:
         return STATUS_OK
 
 
+def execute_from_question(
+    question: str,
+    *,
+    scope: Scope,
+    context: Any,
+    principal_subject: str,
+    session_id: str = "",
+    hint_tool: str = "",
+    hint_arguments: Mapping[str, Any] | None = None,
+    max_wall_seconds: float | None = None,
+) -> OrchestrationResult:
+    """Canonical orchestration adapter for question-only legacy routes.
+
+    Intent and optional hints select a real manifest page identity before
+    deterministic policy validates the candidate. Legacy session IDs map to
+    opaque, principal-scoped canonical threads and never become authority.
+    """
+
+    def _safe_executor(
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        context: Any,
+        scope: Scope,
+    ) -> ToolResult:
+        try:
+            return call_tool(name, arguments, context=context, scope=scope)
+        except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="Tool unavailable in canonical question mode",
+            )
+
+    page_kind, hinted_specialist = _question_route(
+        question,
+        hint_tool=hint_tool,
+    )
+    request = InvestigationRequest(
+        question=question,
+        requested_scope=scope.to_dict(),
+        thread_id=_legacy_session_thread_for_execution(
+            session_id,
+            principal_subject,
+            scope,
+        ),
+        snapshot=EvidenceSnapshotV2(
+            page_kind=page_kind,
+            page_id="copilot",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+        ),
+    )
+    planner: Planner | None = None
+    validated_hint_arguments: dict[str, Any] | None = None
+    invalid_hint_reason = ""
+    if hint_tool and hinted_specialist is not None:
+        specialist_id = hinted_specialist.id
+        try:
+            validated_hint_arguments, _ = validate_tool_arguments(
+                hint_tool,
+                dict(hint_arguments or {}),
+            )
+        except ValueError:
+            invalid_hint_reason = (
+                "missing_required_arguments"
+                if not hint_arguments
+                else "invalid_hint_arguments"
+            )
+
+        def _hint_planner(_request: InvestigationRequest) -> CandidatePlan:
+            return CandidatePlan(
+                steps=[
+                    SpecialistStep(
+                        specialist_id=specialist_id,
+                        tool_calls=[
+                            ToolCallCandidate(
+                                tool=hint_tool,
+                                arguments=validated_hint_arguments or {},
+                                citation_ids=[COVERAGE_CITATION_ID],
+                            )
+                        ],
+                    )
+                ],
+                estimated_tokens=0,
+                max_wall_seconds=5,
+                mutation_intent=False,
+            )
+
+        planner = _hint_planner
+
+    service = OrchestrationService(planner=planner, executor=_safe_executor)
+
+    def _supports_empty_arguments(specialist: SpecialistDefinition) -> bool:
+        for tool in specialist.operations_mcp_tools:
+            try:
+                validate_tool_arguments(tool, {})
+            except ValueError:
+                continue
+            return True
+        return False
+
+    def _execute(active_request: InvestigationRequest) -> OrchestrationResult:
+        if invalid_hint_reason:
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason=invalid_hint_reason,
+            )
+        if hinted_specialist is None and (not hint_tool or page_kind == "copilot"):
+            reason = "unsupported_tool_hint" if hint_tool else "unsupported_intent"
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason=reason,
+            )
+        if (
+            not hint_tool
+            and hinted_specialist is not None
+            and not _supports_empty_arguments(hinted_specialist)
+        ):
+            return service.unsupported(
+                active_request,
+                principal_subject=principal_subject,
+                effective_scope=scope,
+                reason="missing_required_arguments",
+            )
+        return service.execute(
+            active_request,
+            context=context,
+            principal_subject=principal_subject,
+            effective_scope=scope,
+            max_wall_seconds=max_wall_seconds,
+        )
+
+    try:
+        result = _execute(request)
+    except ThreadNotFound:
+        _forget_legacy_session_thread(session_id, principal_subject)
+        result = _execute(
+            request.model_copy(
+                update={
+                    "thread_id": _legacy_session_thread_for_execution(
+                        session_id,
+                        principal_subject,
+                        scope,
+                    )
+                }
+            )
+        )
+        result = result.model_copy(
+            update={
+                "uncertainty": [
+                    *result.uncertainty,
+                    "Legacy session continuity was reset after reauthorization.",
+                ]
+            }
+        )
+    _remember_legacy_session_thread(
+        session_id,
+        principal_subject,
+        result.thread_id,
+    )
+    return result
+
+
+def legacy_session_history(
+    session_id: str,
+    *,
+    principal_subject: str,
+    scope: Scope,
+) -> list[dict[str, Any]]:
+    """Read canonical turns associated with a principal-owned legacy session."""
+
+    thread_id = _legacy_session_thread(session_id, principal_subject)
+    if thread_id is None:
+        return []
+    try:
+        return investigation_thread_store().history(
+            thread_id,
+            principal_subject,
+            scope,
+        )
+    except ThreadNotFound:
+        _forget_legacy_session_thread(session_id, principal_subject)
+        return []
+
+
 __all__ = [
     "OrchestrationService",
     "PlannerTimeoutError",
     "PlannerUnavailableError",
+    "execute_from_question",
+    "legacy_session_history",
 ]
