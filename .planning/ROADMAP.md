@@ -830,16 +830,16 @@ Targeted review artifact (not a numbered executable plan):
 - [x] 13-13-PLAN.md — Approved `/connections` ontology automation and evaluation UI
 - [x] 13-14-PLAN.md — Pinned Promptfoo evaluation and sanitized self-hosted Phoenix trace inspection
 - [x] 13-15-PLAN.md — Exact alerts, durable shadow metrics, authoritative exclusion, and blocked release evidence
-- [ ] 13-16-PLAN.md — Exact coordinator root/capability matrix, reauthorizing intake, dispatch-only store, durable full reconciliation, and corrected Foundry transport
+- [ ] 13-16-PLAN.md — Exact coordinator matrix, durable starvation-free one-connection-per-pass eligible-set draining, reauthorizing intake, dispatch-only store, full reconciliation, and corrected Foundry transport
 - [ ] 13-17-PLAN.md — Exact publisher root/capability matrix, guarded publisher-only validation drill, ordered publication, and fenced rollback
 - [ ] 13-18-PLAN.md — Four-root read-only API, guarded maintenance intake, and reconstructed manual/publish/rollback topology tests
 - [ ] 13-19-PLAN.md — Exact process RBAC/env matrix, explicit dispatch deployment allowlist, isolated drill workspace, and immutable targeted rollout
-- [ ] 13-20-PLAN.md — Three isolated live credential contexts plus bounded maintenance, ARG, replacement, guarded stale-writer/rollback, and cleanup drills
-- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only matrix/allowlist/credential/drill shadow closeout
+- [ ] 13-20-PLAN.md — Three isolated live credential contexts plus deployed multi-connection drain, bounded maintenance, ARG, replacement, guarded stale-writer/rollback, and cleanup drills
+- [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only fairness/matrix/allowlist/credential/drill shadow closeout
 
 **Success Criteria** (what must be TRUE):
 
-1. A durable scheduled coordinator refreshes every eligible connection without an open browser, survives process restarts, prevents overlapping writers, supports bounded retry/backoff, and retains the existing manual Sync action as an audited run-now/recovery control.
+1. A durable scheduled coordinator refreshes every eligible connection without an open browser: each pass processes at most one connection, while a restart-safe eligible-set epoch and durable round-robin cursor skip terminal/duplicate work, rotate bounded retries behind later members, and drain every snapshotted connection to an exact terminal result or explicit closed exclusion. It prevents overlapping writers and retains the existing manual Sync action as an audited run-now/recovery control.
 2. Incremental discovery packages only added, changed, retired, unresolved, or stale entities and relationships for evaluation, while periodic full reconciliation proves that incremental state has not drifted from authoritative inventory and Azure evidence.
 3. A code-first Foundry prompt agent receives only scope-filtered, read-only evidence and approved ontology vocabulary, emits structured relationship proposals with citations and calibrated confidence, and cannot write authoritative Fabric ontology tables directly.
 4. Every proposal is content-addressed, deduplicated, schema-checked, endpoint-resolved, scope-checked, vocabulary-checked, contradiction-checked, and recorded in an auditable lifecycle; a hard server-side shadow gate keeps all model-derived edges out of authoritative candidates until a separately audited predicate/type-pair release is enabled.
