@@ -102,14 +102,16 @@ def test_read_treats_onelake_http_response_error_as_missing(tmp_path):
     assert store.read("state/registry.json") == {}
 
 
-def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
+def test_remote_initial_write_uses_native_create_append_flush_not_upload(tmp_path):
     """adlfs routes writes through the classic Blob API (staged-block upload
-    or upload_blob), both of which OneLake rejects. The remote write path
-    must instead call the native DFS client's upload_data()."""
+    or upload_blob), while OneLake rejects ``upload_data(overwrite=False)``
+    after its create step. Initial writes must use explicit DFS
+    create/append/flush operations with an If-None-Match guard."""
     store = OneLakeDocumentStore(tmp_path)
     store.is_remote = True
 
     written: dict[str, bytes] = {}
+    calls: list[str] = []
 
     class _FakeFileClient:
         def get_file_properties(self):
@@ -117,15 +119,24 @@ def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
 
             raise ResourceNotFoundError("not found")
 
-        def download_file(self):
-            from azure.core.exceptions import ResourceNotFoundError
+        def create_file(self, *, if_none_match):
+            assert if_none_match == "*"
+            calls.append("create")
+            return {"etag": '"created"'}
 
-            raise ResourceNotFoundError("not found")
-
-        def upload_data(self, data, *, overwrite, length, **conditions):
-            assert overwrite is False
-            assert conditions == {}
+        def append_data(self, data, *, offset, length):
+            assert offset == 0
+            assert length == len(data)
+            calls.append("append")
             written["state/registry.json"] = data
+
+        def flush_data(self, offset):
+            assert offset == len(written["state/registry.json"])
+            calls.append("flush")
+            return {"etag": '"flushed"'}
+
+        def upload_data(self, *_args, **_kwargs):
+            raise AssertionError("initial OneLake write must not use upload_data")
 
     class _FakeFsClient:
         def get_file_client(self, path):
@@ -139,6 +150,7 @@ def test_remote_write_uses_datalake_upload_data_not_adlfs(tmp_path):
     [(path, data)] = written.items()
     assert path == "state/registry.json"
     assert json.loads(data.decode("utf-8")) == {"revision": 1, "items": ["a"]}
+    assert calls == ["create", "append", "flush"]
 
 
 def test_remote_conditional_write_rejects_a_replica_that_lost_the_race(

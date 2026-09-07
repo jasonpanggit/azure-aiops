@@ -34,7 +34,7 @@ import json
 import os
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +80,34 @@ def _document_body(payload: dict[str, Any]) -> bytes:
 
 def _local_etag(body: bytes) -> str:
     return f'"sha256:{hashlib.sha256(body).hexdigest()}"'
+
+
+def _create_remote_bytes(file_client: Any, body: bytes, *, name: str) -> str:
+    """Create one OneLake file without the SDK's unsupported upload shortcut.
+
+    On OneLake, ``upload_data(overwrite=False)`` creates the path and then
+    receives ``PathNotFound`` from its append request.  Explicit DFS
+    create/append/flush calls work and preserve create-only semantics through
+    ``If-None-Match: *``.
+    """
+
+    try:
+        created = file_client.create_file(if_none_match="*")
+    except (ResourceExistsError, ResourceModifiedError) as exc:
+        raise DocumentConflictError(f"Document {name} already exists") from exc
+    try:
+        file_client.append_data(body, offset=0, length=len(body))
+        flushed = file_client.flush_data(len(body))
+    except Exception:
+        # The guarded create belongs to this writer. Remove an incomplete file
+        # so a retry cannot mistake a zero-byte artifact for durable state.
+        with suppress(Exception):
+            file_client.delete_file()
+        raise
+    etag = str((flushed or {}).get("etag") or (created or {}).get("etag") or "")
+    if not etag:
+        etag = str(file_client.get_file_properties().etag)
+    return etag
 
 
 @contextmanager
@@ -245,19 +273,7 @@ class OneLakeDocumentStore:
             path = self._path(name)
             if self.is_remote:
                 file_client = self._client().get_file_client(path)
-                try:
-                    result = file_client.upload_data(
-                        body,
-                        overwrite=False,
-                        length=len(body),
-                    )
-                except (ResourceExistsError, ResourceModifiedError) as exc:
-                    raise DocumentConflictError(
-                        f"Document {name} already exists"
-                    ) from exc
-                etag = str((result or {}).get("etag") or "")
-                if not etag:
-                    etag = str(file_client.get_file_properties().etag)
+                etag = _create_remote_bytes(file_client, body, name=name)
             else:
                 local_path = Path(path)
                 with _interprocess_lock(local_path):
@@ -427,11 +443,7 @@ class OneLakeDocumentStore:
                             match_condition=MatchConditions.IfNotModified,
                         )
                     else:
-                        file_client.upload_data(
-                            data,
-                            overwrite=False,
-                            length=len(data),
-                        )
+                        _create_remote_bytes(file_client, data, name=name)
                 except (ResourceExistsError, ResourceModifiedError) as exc:
                     raise DocumentConflictError(
                         f"Document {name} changed during update; reload and retry"

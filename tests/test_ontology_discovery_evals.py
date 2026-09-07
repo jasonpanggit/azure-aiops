@@ -20,10 +20,12 @@ from scripts.evaluate_ontology_discovery import (
 )
 from scripts.validate_ontology_discovery_live import (
     ConfigurationError,
-    _parser as live_validation_parser,
     evaluate_shadow_evidence,
     resolve_deployment_targets,
     sanitize_shadow_report,
+)
+from scripts.validate_ontology_discovery_live import (
+    _parser as live_validation_parser,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -378,6 +380,9 @@ def test_shadow_targets_prefer_explicit_state_over_production_fabric_config(
             "AIOPS_ONTOLOGY_STATE_LAKEHOUSE_ID": "phase13-lakehouse",
             "AIOPS_ONTOLOGY_RBAC_WORKSPACE_ID": "rbac-workspace",
             "AIOPS_ONTOLOGY_RBAC_LAKEHOUSE_ID": "rbac-lakehouse",
+            "AIOPS_ONTOLOGY_RESOURCE_GROUP": "aiops-test-rg",
+            "AIOPS_ONTOLOGY_JOB_NAME": "aiops-test-ontology-discovery",
+            "AIOPS_ONTOLOGY_RUNTIME_SELECTION": "prompt-agent",
             "FOUNDRY_PROJECT_ENDPOINT": (
                 "https://example.services.ai.azure.com/api/projects/p"
             ),
@@ -480,6 +485,7 @@ def test_shadow_report_rejects_pair_activation_and_sanitizes_resource_ids() -> N
         {
             "workspace_id": "phase13-workspace",
             "lakehouse_id": "phase13-lakehouse",
+            "rbac_workspace_id": "rbac-workspace",
             "subscription_id": "subscription-a",
             "nested": {"principal_id": "principal-a", "status": "PASS"},
         }
@@ -487,6 +493,7 @@ def test_shadow_report_rejects_pair_activation_and_sanitizes_resource_ids() -> N
     rendered = json.dumps(sanitized, sort_keys=True)
     assert "phase13-workspace" not in rendered
     assert "phase13-lakehouse" not in rendered
+    assert "rbac-workspace" not in rendered
     assert "subscription-a" not in rendered
     assert "principal-a" not in rendered
     assert sanitized["nested"]["status"] == "PASS"
