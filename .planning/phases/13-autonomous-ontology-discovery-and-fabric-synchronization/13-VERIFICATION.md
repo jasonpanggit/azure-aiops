@@ -73,10 +73,10 @@ using a scoped Microsoft Foundry agent to propose evidence-backed
 relationships, and publishing only relationships that pass deterministic
 governance, validation, concurrency, and audit controls.
 
-**Verified:** 2026-09-07T04:20:09Z  
-**Status:** `gaps_found`  
+**Verified:** 2026-09-07T04:20:09Z
+**Status:** `gaps_found`
 **Verdict:** **FAILED — component implementations are substantial, but the
-production composition and deployed end-to-end data flow do not exist.**  
+production composition and deployed end-to-end data flow do not exist.**
 **Re-verification:** No — initial verification.
 
 ## Executive Finding
@@ -278,5 +278,5 @@ are added, the phase goal is not achieved.
 
 ---
 
-_Verified: 2026-09-07T04:20:09Z_  
+_Verified: 2026-09-07T04:20:09Z_
 _Verifier: the agent (gsd-verifier)_
