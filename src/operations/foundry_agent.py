@@ -961,7 +961,7 @@ def _serialize_bounded_context(context: Any) -> str:
     if not isinstance(context, Mapping):
         return json.dumps({"truncated": True}, ensure_ascii=False)
 
-    bounded: dict[str, Any] = {}
+    bounded: dict[str, Any] = {"_truncation": "(truncated)"}
     for raw_key, value in context.items():
         key = str(raw_key)
         if isinstance(value, list):
