@@ -9,6 +9,7 @@ from scripts.collect_ontology_evidence import (
     build_closed_record,
     decode_identity_claims,
     sanitize_closed_record,
+    summarize_lifecycle_documents,
 )
 
 
@@ -113,4 +114,150 @@ def test_closed_record_requires_exact_managed_identity_hashes() -> None:
                 "onelake": ["Read"],
                 "denied": ["job_start", "mutation"],
             },
+        )
+
+
+def test_lifecycle_documents_reduce_to_closed_hashes_counts_and_states() -> None:
+    fixture = {
+        "revision": 4,
+        "drills": [
+            {
+                "drill_id": "raw-drill-id",
+                "drill_hash": "raw-server-hash",
+                "owner_hash": "raw-owner-hash",
+                "fence": 7,
+                "status": "prepared",
+                "connection_ids": [
+                    "ontology-fixture-a-head-change",
+                    "ontology-fixture-a-retry-rotation",
+                    "ontology-fixture-a-later-restart",
+                ],
+                "epoch_id": "ODE-RAW",
+                "prepared_at": "2026-09-07T00:00:00+00:00",
+                "expires_at": "2026-09-07T02:00:00+00:00",
+                "receipts": [{"event": "prepared", "at": "raw-time"}],
+            }
+        ],
+    }
+    registry = {
+        "revision": 9,
+        "connections": [
+            {
+                "connection_id": f"ontology-fixture-a-{role}",
+                "metadata": {"fixture_role": role},
+            }
+            for role in ("head-change", "retry-rotation", "later-restart")
+        ],
+    }
+    state = {
+        "revision": 12,
+        "eligible_epochs": [
+            {
+                "epoch_id": "ODE-RAW",
+                "status": "active",
+                "cursor": 2,
+                "member_order": [
+                    "ontology-fixture-a-head-change",
+                    "ontology-fixture-a-retry-rotation",
+                    "ontology-fixture-a-later-restart",
+                ],
+                "members": {
+                    "ontology-fixture-a-head-change": {
+                        "outcome": "duplicate",
+                        "attempt_count": 1,
+                        "reason_code": "logical_run_already_completed",
+                        "updated_at": "raw-time",
+                    },
+                    "ontology-fixture-a-retry-rotation": {
+                        "outcome": "pending",
+                        "attempt_count": 1,
+                        "reason_code": "run_claim_contended",
+                        "updated_at": "raw-time",
+                    },
+                    "ontology-fixture-a-later-restart": {
+                        "outcome": "succeeded",
+                        "attempt_count": 1,
+                        "reason_code": "publisher_dispatch_created",
+                        "updated_at": "raw-time",
+                    },
+                },
+            }
+        ],
+    }
+
+    facts = summarize_lifecycle_documents(
+        fixture=fixture,
+        registry=registry,
+        state=state,
+    )
+
+    assert facts["fixture"]["active_drill_count"] == 1
+    assert facts["fixture"]["record_count"] == 3
+    assert facts["fixture"]["ttl_bounded"] is True
+    assert facts["registry"]["active_fixture_count"] == 3
+    assert facts["epoch"]["active_epoch_count"] == 1
+    assert facts["epoch"]["cursor"] == 2
+    assert [row["outcome"] for row in facts["epoch"]["members"]] == [
+        "duplicate",
+        "pending",
+        "succeeded",
+    ]
+    rendered = json.dumps(facts, sort_keys=True)
+    for raw in (
+        "raw-drill-id",
+        "raw-server-hash",
+        "raw-owner-hash",
+        "ODE-RAW",
+        "ontology-fixture-a-head-change",
+        "raw-time",
+    ):
+        assert raw not in rendered
+
+
+def test_closed_record_accepts_only_sanitized_lifecycle_facts() -> None:
+    identity = {
+        "client_id_hash": "sha256:" + "1" * 64,
+        "object_id_hash": "sha256:" + "2" * 64,
+        "managed_identity_resource_hash": "sha256:" + "3" * 64,
+        "entra_signature_hash": "sha256:" + "4" * 64,
+    }
+    observations = {
+        name: {"count": 1, "hashes": ["sha256:" + char * 64]}
+        for name, char in zip(
+            ("arg", "fabric", "onelake", "api"),
+            ("5", "6", "7", "8"),
+            strict=True,
+        )
+    }
+    facts = {
+        "fixture": {
+            "active_drill_count": 0,
+            "record_hashes": [],
+            "status": "cleaned",
+        }
+    }
+    record = build_closed_record(
+        identity=identity,
+        observations=observations,
+        capabilities={
+            "azure": ["read"],
+            "fabric": ["Viewer"],
+            "onelake": ["Read"],
+            "denied": ["job_start", "mutation"],
+        },
+        facts=facts,
+    )
+    assert record["facts"] == facts
+
+    with pytest.raises(EvidenceCollectionError, match="sensitive"):
+        build_closed_record(
+            identity=identity,
+            observations=observations,
+            capabilities={
+                "azure": ["read"],
+                "fabric": ["Viewer"],
+                "onelake": ["Read"],
+                "denied": ["job_start", "mutation"],
+            },
+            facts={"fixture": {"path": "Files/raw"}},
         )
