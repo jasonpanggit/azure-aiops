@@ -26,7 +26,6 @@ from operations.investigation_thread_store import (
     MAX_TURNS,
     OBSERVATION_CURRENT,
     OBSERVATION_HISTORICAL,
-    THREAD_INDEX_DOCUMENT,
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
@@ -47,6 +46,7 @@ class FakeDocuments:
         self.fail_reads = False
         self.conflict_writes = 0
         self.deleted: list[str] = []
+        self.list_calls: list[tuple[str, int, str | None]] = []
 
     def read(self, name: str) -> dict[str, Any]:
         if self.fail_reads:
@@ -75,7 +75,24 @@ class FakeDocuments:
             raise DocumentConflictError("revision conflict")
         self.documents[name] = deepcopy(payload)
 
-    def delete(self, name: str) -> None:
+    def list_names(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        self.list_calls.append((prefix, limit, continuation))
+        names = sorted(name for name in self.documents if name.startswith(prefix))
+        offset = int(continuation or 0)
+        page = names[offset : offset + limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(names) else None
+
+    def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+        current = int(self.documents.get(name, {}).get("revision") or 0)
+        if expected_revision is not None and current != expected_revision:
+            raise DocumentConflictError("revision conflict")
         self.deleted.append(name)
         self.documents.pop(name, None)
 
@@ -367,13 +384,7 @@ def test_expired_documents_are_removed_by_bounded_cleanup() -> None:
     assert removed == 2
     assert len(documents.deleted) == 2
     assert store.cleanup(max_removals=100) == 3
-    assert documents.documents == {
-        THREAD_INDEX_DOCUMENT: {
-            "schema_version": "1",
-            "revision": documents.documents[THREAD_INDEX_DOCUMENT]["revision"],
-            "thread_ids": [],
-        }
-    }
+    assert documents.documents == {}
     for thread in threads:
         with pytest.raises(ThreadNotFound):
             store.authorize(thread.thread_id, "operator-a", SUB_A)
@@ -384,12 +395,50 @@ def test_restart_cleanup_discovers_expired_durable_threads_outside_local_cache()
     documents = FakeDocuments()
     first = InvestigationThreadStore(documents=documents, clock=clock)
     thread = first.create("operator-a", SUB_A)
+    prior_list_calls = len(documents.list_calls)
 
     clock.advance(ABSOLUTE_TTL_SECONDS + 1)
     restarted = InvestigationThreadStore(documents=documents, clock=clock)
 
     assert restarted.cleanup(max_removals=1) == 1
     assert thread_document_name(thread.thread_id) not in documents.documents
+    assert documents.list_calls[prior_list_calls:] == [("threads", 64, None)]
+
+
+def test_restart_cleanup_removes_idle_expired_durable_threads() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+
+    clock.advance(IDLE_TTL_SECONDS + 1)
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 1
+    assert thread_document_name(thread.thread_id) not in documents.documents
+
+
+def test_cleanup_does_not_delete_a_thread_touched_by_another_replica() -> None:
+    class RacingDocuments(FakeDocuments):
+        race = True
+
+        def delete(self, name: str, *, expected_revision: int | None = None) -> None:
+            if self.race:
+                self.race = False
+                self.documents[name]["revision"] += 1
+                self.documents[name]["last_seen"] += IDLE_TTL_SECONDS
+            super().delete(name, expected_revision=expected_revision)
+
+    clock = FakeClock()
+    documents = RacingDocuments()
+    first = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = first.create("operator-a", SUB_A)
+    clock.advance(IDLE_TTL_SECONDS + 1)
+
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+
+    assert restarted.cleanup(max_removals=1) == 0
+    assert thread_document_name(thread.thread_id) in documents.documents
 
 
 def test_stale_revision_raises_an_explicit_conflict() -> None:
@@ -494,6 +543,21 @@ def test_ledger_store_configuration_rejects_adapter_without_thread_cas() -> None
 
     with pytest.raises(TypeError, match="thread compare-and-swap"):
         configure_ledger_store(LedgerOnlyDocuments())
+
+
+def test_ledger_store_configuration_requires_bounded_cleanup_capabilities() -> None:
+    class CasOnlyDocuments:
+        def write(
+            self,
+            name: str,
+            payload: dict[str, Any],
+            *,
+            expected_revision: int,
+        ) -> None:
+            return None
+
+    with pytest.raises(TypeError, match="bounded thread listing and deletion"):
+        configure_ledger_store(CasOnlyDocuments())
 
 
 def test_history_retries_scope_narrowing_after_one_persistence_conflict() -> None:

@@ -29,6 +29,8 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -90,6 +92,34 @@ DEFAULT_CIRCUIT_BREAKER_RESET_SECONDS = 60.0
 # HTTP status codes worth retrying: request-rate/backpressure and transient
 # upstream failures. 4xx client errors (bad prompt, auth) are not retried.
 _RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+_FOUNDRY_CALL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="foundry-call",
+)
+
+
+def _set_response_socket_timeout(response: Any, timeout: float) -> None:
+    """Narrow the active HTTP socket timeout as the wall-clock budget shrinks."""
+
+    socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    if socket is not None:
+        socket.settimeout(max(0.001, timeout))
+
+
+def _read_response_until(response: Any, *, deadline: float) -> bytes:
+    """Read one available chunk at a time without letting drip traffic reset expiry."""
+
+    chunks: list[bytes] = []
+    read_chunk = getattr(response, "read1", None) or response.read
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Foundry response exceeded its time budget")
+        _set_response_socket_timeout(response, remaining)
+        chunk = read_chunk(64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
 
 
 class FoundryAgentError(RuntimeError):
@@ -557,6 +587,12 @@ class FoundryPromptAgent:
         *,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        timeout = (
+            self.timeout_seconds
+            if timeout_seconds is None
+            else min(self.timeout_seconds, max(0.001, timeout_seconds))
+        )
+        deadline = time.monotonic() + timeout
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -567,15 +603,18 @@ class FoundryPromptAgent:
             method="POST",
         )
         try:
-            timeout = (
-                self.timeout_seconds
-                if timeout_seconds is None
-                else min(self.timeout_seconds, max(0.001, timeout_seconds))
-            )
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                body = response.read().decode("utf-8")
+                body = _read_response_until(response, deadline=deadline).decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            try:
+                detail = _read_response_until(
+                    exc,
+                    deadline=deadline,
+                ).decode("utf-8", errors="replace")[:500]
+            except TimeoutError as timeout_exc:
+                raise _RetryableFoundryError(
+                    "Foundry agent request exceeded its time budget"
+                ) from timeout_exc
             if exc.code in _RETRYABLE_HTTP_STATUS:
                 raise _RetryableFoundryError(
                     f"Foundry agent request failed with HTTP {exc.code}: {detail}"
@@ -583,7 +622,11 @@ class FoundryPromptAgent:
             raise FoundryAgentError(
                 f"Foundry agent request failed with HTTP {exc.code}: {detail}"
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            raise _RetryableFoundryError(
+                "Foundry agent request exceeded its time budget"
+            ) from exc
+        except urllib.error.URLError as exc:
             raise _RetryableFoundryError("Foundry agent endpoint is unreachable") from exc
         try:
             parsed = json.loads(body or "{}")
@@ -684,12 +727,21 @@ class FoundryPromptAgent:
         if timeout_seconds is None:
             response = self._post("/openai/v1/responses", payload, versioned=False)
         else:
-            response = self._post(
+            budget = max(0.001, timeout_seconds)
+            future = _FOUNDRY_CALL_EXECUTOR.submit(
+                self._post,
                 "/openai/v1/responses",
                 payload,
                 versioned=False,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=budget,
             )
+            try:
+                response = future.result(timeout=budget)
+            except FutureTimeoutError as exc:
+                future.cancel()
+                raise FoundryAgentError(
+                    "Foundry agent request exceeded its time budget"
+                ) from exc
         text = _extract_text(response)
         if not text:
             raise FoundryAgentError("Foundry agent returned an empty answer")

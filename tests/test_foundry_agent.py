@@ -1,8 +1,12 @@
 import json
+import time
+
+import pytest
 
 from operations.foundry_agent import (
     SPECIALIST_IDS,
     AgentAnswer,
+    FoundryAgentError,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
@@ -62,6 +66,65 @@ def test_rest_agent_honors_per_call_timeout_override(monkeypatch) -> None:
     )
 
     assert captured["timeout_seconds"] == 0.25
+
+
+def test_rest_agent_enforces_end_to_end_call_deadline(monkeypatch) -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        timeout_seconds=60,
+    )
+
+    def slow_post(path, payload, *, versioned=True, timeout_seconds=None):
+        time.sleep(0.25)
+        return {"output_text": "Late response", "model": "test"}
+
+    monkeypatch.setattr(agent, "_post", slow_post)
+    started = time.monotonic()
+
+    with pytest.raises(FoundryAgentError, match="exceeded its time budget"):
+        agent.answer(
+            question="Summarize.",
+            context={"findings": []},
+            timeout_seconds=0.02,
+        )
+
+    assert time.monotonic() - started < 0.15
+
+
+def test_rest_agent_deadline_is_not_reset_by_slow_response_chunks(monkeypatch) -> None:
+    class SlowResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read1(self, size):
+            time.sleep(0.01)
+            return b" "
+
+    monkeypatch.setattr(
+        "operations.foundry_agent.urllib.request.urlopen",
+        lambda request, timeout: SlowResponse(),
+    )
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="executive-agent",
+        timeout_seconds=60,
+        max_retries=0,
+    )
+    monkeypatch.setattr(agent._tokens, "token", lambda: "test-token")
+    started = time.monotonic()
+
+    with pytest.raises(FoundryAgentError, match="exceeded its time budget"):
+        agent.answer(
+            question="Summarize.",
+            context={"findings": []},
+            timeout_seconds=0.04,
+        )
+
+    assert time.monotonic() - started < 0.15
 
 
 def test_specialist_catalog_has_independent_names_and_versions(monkeypatch) -> None:
