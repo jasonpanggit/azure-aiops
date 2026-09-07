@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
-from opentelemetry.sdk.trace.export import SpanExportResult, SpanExporter
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from scripts.evaluate_ontology_discovery import emit_sanitized_lifecycle_spans
 from scripts.inspect_ontology_traces import (
@@ -161,6 +161,7 @@ def test_phoenix_launch_is_loopback_local_and_strips_credentials(
     assert environment["PHOENIX_PORT"] == "6006"
     assert environment["PHOENIX_WORKING_DIR"] == str(tmp_path)
     assert environment["PHOENIX_PROJECT_NAME"] == "ontology-discovery-synthetic"
+    assert environment["PHOENIX_AGENTS_DISABLE_BASH"] == "true"
     assert "PHOENIX_API_KEY" not in environment
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in environment
     assert "AZURE_CLIENT_SECRET" not in environment

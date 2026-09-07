@@ -17,6 +17,7 @@ from collections import namedtuple
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 TRUSTED_DATASET = (
@@ -44,6 +45,16 @@ AGENT_VERSION = "ontology-curator-v1"
 AGENT_HASH = "d76f968e7ab50a36b2c4108561c8235610ff8ea86e0471c20c168a4468341e44"
 POLICY_VERSION = "proposal-policy-v1"
 POLICY_HASH = "ee5843e73878ed94bf40865070c6e83ea0d4a478944847e45d978ba8c792a229"
+TRACE_PROJECT = "ontology-discovery-synthetic"
+LIFECYCLE_SPANS = (
+    "ontology.coordinator",
+    "ontology.evidence",
+    "ontology.foundry",
+    "ontology.policy",
+    "ontology.review",
+    "ontology.publication",
+    "ontology.rollback",
+)
 
 
 EvaluationResult = namedtuple(
@@ -342,6 +353,102 @@ def evaluate_dataset(
     )
 
 
+def emit_sanitized_lifecycle_spans(
+    dataset: str | Path,
+    *,
+    exporter: object | None = None,
+    endpoint: str | None = None,
+    project_name: str = TRACE_PROJECT,
+) -> int:
+    """Emit one bounded, content-free synthetic lifecycle trace."""
+
+    if (exporter is None) == (endpoint is None):
+        raise ValueError("provide exactly one exporter or loopback endpoint")
+    cases = load_dataset(dataset)
+    if any(
+        not _required_text(case, "scope").startswith("synthetic/") for case in cases
+    ):
+        raise ValueError("trace export rejected a non-synthetic scope")
+
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    if endpoint is not None:
+        _require_loopback_http(endpoint)
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        exporter = OTLPSpanExporter(
+            endpoint=f"{endpoint.rstrip('/')}/v1/traces",
+            headers={},
+            timeout=10,
+        )
+    assert exporter is not None
+    dataset_hash = hashlib.sha256(Path(dataset).read_bytes()).hexdigest()
+    run_hash = dataset_hash[:32]
+    accepted_cases = [
+        case
+        for case in cases
+        if not str(_required_mapping(case, "expected").get("error") or "")
+    ]
+    if not accepted_cases:
+        raise ValueError("trace export requires at least one accepted synthetic case")
+    source_hash = _opaque_hash(
+        "|".join(
+            sorted(
+                _required_text(case, "source_generation") for case in accepted_cases
+            )
+        )
+    )
+    attributes: dict[str, bool | int | float | str] = {
+        "ontology.run_hash": run_hash,
+        "ontology.batch_hash": _opaque_hash(f"{run_hash}:batch"),
+        "ontology.proposal_hash": _opaque_hash(f"{run_hash}:proposal"),
+        "ontology.source_generation_hash": source_hash,
+        "ontology.synthetic": True,
+        "ontology.lifecycle_status": "completed",
+        "ontology.policy_decision": "shadow_only",
+        "ontology.release_status": "BLOCKED/PENDING",
+        "ontology.publication_status": "blocked",
+        "ontology.rollback_status": "retained",
+        "ontology.entity_count": max(
+            _integer(_required_mapping(case, "input"), "entity_count")
+            for case in accepted_cases
+        ),
+        "ontology.candidate_pair_count": max(
+            _integer(_required_mapping(case, "input"), "candidate_pair_count")
+            for case in accepted_cases
+        ),
+        "ontology.evidence_count": max(
+            _integer(_required_mapping(case, "input"), "evidence_count")
+            for case in accepted_cases
+        ),
+        "ontology.model_input_tokens": MAX_INPUT_TOKENS,
+        "ontology.model_output_tokens": MAX_OUTPUT_TOKENS,
+        "ontology.attempt_ms": 30_000.0,
+    }
+    provider = TracerProvider(
+        resource=Resource.create(
+            {
+                "service.name": "ontology-discovery-evaluator",
+                "openinference.project.name": project_name,
+            }
+        )
+    )
+    provider.add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[arg-type]
+    tracer = provider.get_tracer("ontology-discovery-evaluator", "1.0.0")
+    with tracer.start_as_current_span(LIFECYCLE_SPANS[0]) as root_span:
+        root_span.set_attributes(attributes)
+        for name in LIFECYCLE_SPANS[1:]:
+            with tracer.start_as_current_span(name) as span:
+                span.set_attributes(attributes)
+    provider.force_flush(timeout_millis=10_000)
+    provider.shutdown()
+    return len(LIFECYCLE_SPANS)
+
+
 def _evaluate_case(case: Mapping[str, object]) -> _CaseResult:
     scenario_id = _required_text(case, "scenario_id")
     categories = _string_set(case.get("categories"))
@@ -496,6 +603,25 @@ def _normalized_fixture_hash(case: Mapping[str, object]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _opaque_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()[:32]
+
+
+def _require_loopback_http(endpoint: str) -> None:
+    parsed = urlparse(endpoint)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username
+        or parsed.password
+        or not parsed.port
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("trace endpoint must be credential-free loopback HTTP")
+
+
 def _safe_failure_code(value: str) -> str:
     normalized = "".join(
         character if character.isalnum() or character in "._:-" else "_"
@@ -534,6 +660,14 @@ def _parser() -> argparse.ArgumentParser:
         default=ROOT / "dist" / "ontology-evaluation",
     )
     parser.add_argument("--fail-on-threshold", action="store_true")
+    parser.add_argument(
+        "--otlp-endpoint",
+        help=(
+            "Optional credential-free loopback Phoenix endpoint, "
+            "for example http://127.0.0.1:6006"
+        ),
+    )
+    parser.add_argument("--trace-project", default=TRACE_PROJECT)
     return parser
 
 
@@ -543,6 +677,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = evaluate_dataset(
             args.dataset,
             output_root=args.output_root,
+        )
+        emitted_spans = (
+            emit_sanitized_lifecycle_spans(
+                args.dataset,
+                endpoint=args.otlp_endpoint,
+                project_name=args.trace_project,
+            )
+            if args.otlp_endpoint
+            else 0
         )
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"passed": False, "error": str(exc)}, sort_keys=True))
@@ -555,6 +698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "snapshot_id": result.snapshot.snapshot_id,
                 "report": str(result.report_path),
                 "critical_failures": list(result.snapshot.critical_failures),
+                "emitted_spans": emitted_spans,
             },
             sort_keys=True,
         )
