@@ -37,7 +37,7 @@ from .curator import OntologyCurator
 from .dispatch_store import CoordinatorDispatchView, PublisherDispatchStore
 from .incremental import classify_incremental, normalize_graph_state
 from .policy import ProposalPolicy
-from .store import RUN_SUCCEEDED, OntologyRunStore
+from .store import RUN_FAILED, RUN_SUCCEEDED, OntologyRunStore, RunClaimConflict
 
 _ALLOWED_RUNTIME_MODES = frozenset({"production", "validation"})
 _FORBIDDEN_COORDINATOR_ENV = frozenset(
@@ -358,11 +358,50 @@ class EligibleConnectionScheduler:
             counts["duplicates"] = 1
             counts["epoch_drained"] = updated["status"] == "drained"
             return counts
+        if not created and run["status"] == RUN_FAILED:
+            updated = self.run_store.record_epoch_outcome(
+                epoch["epoch_id"],
+                connection_id,
+                outcome="exhausted_failure",
+                reason_code="logical_run_attempts_exhausted",
+                now=moment,
+            )
+            counts["failed"] = 1
+            counts["epoch_drained"] = updated["status"] == "drained"
+            return counts
         try:
-            result = await self.processor(connection, run)
+            claimed = self.run_store.claim(
+                run["run_id"],
+                expected_revision=run["revision"],
+                owner=self.owner,
+                lease_seconds=60,
+                now=moment,
+            )
+        except RunClaimConflict:
+            updated = self.run_store.record_epoch_outcome(
+                epoch["epoch_id"],
+                connection_id,
+                outcome="pending",
+                reason_code="run_claim_contended",
+                next_attempt_at=moment + timedelta(seconds=1),
+                now=moment,
+            )
+            counts["retrying"] = 1
+            counts["epoch_drained"] = updated["status"] == "drained"
+            return counts
+        try:
+            result = await self.processor(connection, claimed)
         except Exception as exc:  # noqa: BLE001 - one member cannot abort the epoch
-            attempt = int(member["attempt_count"]) + 1
-            exhausted = attempt >= self.run_store.max_attempts
+            failed_run = self.run_store.fail(
+                claimed["run_id"],
+                expected_revision=claimed["revision"],
+                owner=self.owner,
+                fencing_token=claimed["fencing_token"],
+                failure_class="connection_processing_failed",
+                message=exc.__class__.__name__,
+                now=moment,
+            )
+            exhausted = failed_run["status"] == RUN_FAILED
             updated = self.run_store.record_epoch_outcome(
                 epoch["epoch_id"],
                 connection_id,
@@ -372,12 +411,7 @@ class EligibleConnectionScheduler:
                     None
                     if exhausted
                     else moment
-                    + timedelta(
-                        seconds=min(
-                            self.run_store.retry_max_seconds,
-                            self.run_store.retry_base_seconds * (2 ** (attempt - 1)),
-                        )
-                    )
+                    + timedelta(seconds=self.run_store.retry_base_seconds)
                 ),
                 now=moment,
             )
@@ -385,11 +419,24 @@ class EligibleConnectionScheduler:
             counts["epoch_drained"] = updated["status"] == "drained"
             del exc  # Raw provider errors never enter closed scheduler output.
             return counts
+        completed = self.run_store.succeed(
+            claimed["run_id"],
+            expected_revision=claimed["revision"],
+            owner=self.owner,
+            fencing_token=claimed["fencing_token"],
+            checkpoint="publisher_dispatch_created",
+            payload={
+                key: result[key]
+                for key in ("status", "dispatch_id")
+                if key in result
+            },
+            now=moment,
+        )
         updated = self.run_store.record_epoch_outcome(
             epoch["epoch_id"],
             connection_id,
             outcome="succeeded",
-            reason_code=str(result.get("status") or "succeeded")[:96],
+            reason_code=str(completed["checkpoint"]["name"])[:96],
             now=moment,
         )
         counts["processed"] = 1
