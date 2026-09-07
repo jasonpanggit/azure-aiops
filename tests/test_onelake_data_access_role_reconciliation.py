@@ -12,14 +12,11 @@ Covers:
 from __future__ import annotations
 
 import copy
-import json
-from collections.abc import Mapping
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-# The module under test — will be created in the next commit.
 from scripts.reconcile_onelake_data_access_roles import (
     EVIDENCE_ROLE_NAME,
     MAX_RETRIES,
@@ -30,7 +27,6 @@ from scripts.reconcile_onelake_data_access_roles import (
     reconcile_item_roles,
     verify_roles_match,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

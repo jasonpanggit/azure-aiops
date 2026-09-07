@@ -33,9 +33,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 logger = logging.getLogger(__name__)

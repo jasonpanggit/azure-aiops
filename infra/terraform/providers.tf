@@ -67,8 +67,8 @@ provider "fabric" {
   tenant_id     = var.tenant_id
   client_id     = var.client_id
   client_secret = var.client_secret
-  # OneLake data-access roles are still a provider preview surface. This is
-  # enabled only so the five explicit Phase 13 read roles below can be
-  # managed; it does not opt any existing resource into broader access.
-  preview = true
+  # OneLake data-access roles are now managed outside Terraform by
+  # scripts/reconcile_onelake_data_access_roles.py via the Fabric REST API,
+  # due to the Fabric provider 1.13 ManagedIdentity round-tripping bug.
+  # The preview flag is no longer needed.
 }
