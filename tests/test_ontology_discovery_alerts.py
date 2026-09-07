@@ -176,7 +176,8 @@ def test_terraform_defines_actioned_rule_for_every_catalog_entry() -> None:
     assert "for_each = local.alerting_enabled ? local.ontology_discovery_alert_rules : {}" in terraform
     assert "action_groups = [local.alert_action_group_id]" in terraform
     assert 'Name == "ontology.discovery.alert.signal"' in terraform
-    assert "tostring(Properties.rule) == each.key" in terraform
+    assert 'tostring(Properties.rule) == "${each.key}"' in terraform
+    assert "== each.key" not in terraform
     assert "ontology-operations" in terraform
     for rule_id, (
         tier,
