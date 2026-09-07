@@ -99,7 +99,7 @@ Requirements for the controlled Azure pilot.
 - [x] **AUTO-ONT-01**: A durable, browser-independent scheduler discovers due connection work, prevents concurrent publication for the same scope, resumes safely after restart, and exposes bounded retry, timeout, cancellation, and run-now controls.
 - [ ] **AUTO-ONT-02**: Incremental discovery identifies added, changed, retired, unresolved, and stale ontology inputs from authoritative inventory and operational evidence, while scheduled full reconciliation detects drift.
 - [ ] **AUTO-ONT-03**: A versioned Microsoft Foundry ontology agent receives only scope-filtered read-only evidence and the approved ontology contract, and returns structured, cited relationship proposals without direct authoritative Fabric write access.
-- [ ] **AUTO-ONT-04**: Relationship proposals have deterministic identity, provenance, confidence, evidence, lifecycle, and review state; promotion enforces known endpoints, approved predicates and type pairs, scope, contradiction checks, and explicit human-review or allowlisted auto-accept policy.
+- [x] **AUTO-ONT-04**: Relationship proposals have deterministic identity, provenance, confidence, evidence, lifecycle, and review state; promotion enforces known endpoints, approved predicates and type pairs, scope, contradiction checks, and explicit human-review or allowlisted auto-accept policy.
 - [x] **AUTO-ONT-05**: The ontology publisher uses a dedicated least-privilege identity, fenced single-writer/version preconditions, fail-closed validation, immutable generation lineage, and atomic promotion with rollback to a prior valid generation.
 - [x] **AUTO-ONT-06**: Pending edges, run checkpoints, leases, proposal decisions, publication attempts, failures, and ontology quality metrics persist across restarts and remain visible through scope-enforced operational APIs and UI.
 - [x] **AUTO-ONT-07**: Offline and deployed evaluations enforce tenant isolation, prompt-injection resistance, relationship precision and recall, citation and freshness requirements, idempotency, bounded cost and latency, failure recovery, and audit completeness.
@@ -212,7 +212,7 @@ Traceability is populated during roadmap creation.
 | AUTO-ONT-01 | Phase 13 | Complete |
 | AUTO-ONT-02 | Phase 13 | Pending |
 | AUTO-ONT-03 | Phase 13 | Pending |
-| AUTO-ONT-04 | Phase 13 | Pending |
+| AUTO-ONT-04 | Phase 13 | Complete |
 | AUTO-ONT-05 | Phase 13 | Complete |
 | AUTO-ONT-06 | Phase 13 | Complete |
 | AUTO-ONT-07 | Phase 13 | Complete |
