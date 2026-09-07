@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   COPILOT_THREAD_STORAGE_KEY,
@@ -31,6 +32,14 @@ const snapshot = {
   question: "default",
   rechecks: [],
 };
+
+function TestProviders({ children }: { children: ReactNode }) {
+  return (
+    <ScopeProvider>
+      <ThreadContinuityProvider>{children}</ThreadContinuityProvider>
+    </ScopeProvider>
+  );
+}
 
 describe("CopilotDrawer", () => {
   function canonicalSnapshot(tab: "os" | "software" | "azure") {
@@ -111,9 +120,9 @@ describe("CopilotDrawer", () => {
       warnings: [],
     });
     render(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer open onClose={vi.fn()} contextLabel="Network" snapshot={snapshot} starterQuestions={[]} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is wrong?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
@@ -135,9 +144,9 @@ describe("CopilotDrawer", () => {
       warnings: [warning],
     });
     render(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer open onClose={vi.fn()} contextLabel="Network" snapshot={snapshot} starterQuestions={[]} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is wrong?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
@@ -177,9 +186,9 @@ describe("CopilotDrawer", () => {
       warnings: [],
     });
     render(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer open onClose={vi.fn()} contextLabel="Network" snapshot={snapshot} starterQuestions={[]} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Can UAT reach PROD?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
@@ -233,7 +242,7 @@ describe("CopilotDrawer", () => {
     };
 
     render(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer
           open
           onClose={vi.fn()}
@@ -247,7 +256,7 @@ describe("CopilotDrawer", () => {
             toolArguments: {},
           }]}
         />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
 
@@ -291,25 +300,23 @@ describe("CopilotDrawer", () => {
     });
 
     render(
-      <ScopeProvider>
-        <ThreadContinuityProvider>
-          <CopilotDrawer
-            open
-            onClose={vi.fn()}
-            contextLabel="Inventory"
-            requestedScope={{ subscription: ["sub-a"] }}
-            snapshot={{
-              ...canonicalSnapshot("os"),
-              freshness: [{
-                source: "inventory/os_observations",
-                observed_at: "2026-08-25T10:00:00Z",
-                status: "stale" as const,
-              }],
-            }}
-            starterQuestions={[{ label: "Review carried evidence" }]}
-          />
-        </ThreadContinuityProvider>
-      </ScopeProvider>,
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={{
+            ...canonicalSnapshot("os"),
+            freshness: [{
+              source: "inventory/os_observations",
+              observed_at: "2026-08-25T10:00:00Z",
+              status: "stale" as const,
+            }],
+          }}
+          starterQuestions={[{ label: "Review carried evidence" }]}
+        />
+      </TestProviders>,
     );
     fireEvent.click(screen.getByRole("button", { name: /^Review carried evidence/ }));
 
@@ -343,18 +350,16 @@ describe("CopilotDrawer", () => {
       ));
 
       render(
-        <ScopeProvider>
-          <ThreadContinuityProvider>
-            <CopilotDrawer
-              open
-              onClose={vi.fn()}
-              contextLabel="Inventory"
-              requestedScope={{ subscription: ["sub-a"] }}
-              snapshot={canonicalSnapshot("os")}
-              starterQuestions={[{ label: "Continue investigation" }]}
-            />
-          </ThreadContinuityProvider>
-        </ScopeProvider>,
+        <TestProviders>
+          <CopilotDrawer
+            open
+            onClose={vi.fn()}
+            contextLabel="Inventory"
+            requestedScope={{ subscription: ["sub-a"] }}
+            snapshot={canonicalSnapshot("os")}
+            starterQuestions={[{ label: "Continue investigation" }]}
+          />
+        </TestProviders>,
       );
       fireEvent.click(screen.getByRole("button", { name: /^Continue investigation/ }));
 
@@ -405,18 +410,16 @@ describe("CopilotDrawer", () => {
     });
 
     render(
-      <ScopeProvider>
-        <ThreadContinuityProvider>
-          <CopilotDrawer
-            open
-            onClose={vi.fn()}
-            contextLabel="Inventory"
-            requestedScope={{ subscription: ["sub-a"] }}
-            snapshot={canonicalSnapshot("azure")}
-            starterQuestions={[{ label: "Review current evidence" }]}
-          />
-        </ThreadContinuityProvider>
-      </ScopeProvider>,
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={canonicalSnapshot("azure")}
+          starterQuestions={[{ label: "Review current evidence" }]}
+        />
+      </TestProviders>,
     );
     fireEvent.click(screen.getByRole("button", { name: /^Review current evidence/ }));
 
@@ -471,17 +474,20 @@ describe("CopilotDrawer", () => {
       starterQuestions: [{ label: "Review inventory health" }],
     };
 
-    const first = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    const first = render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
     first.unmount();
 
     expect(window.sessionStorage).toHaveLength(1);
     const storedKey = window.sessionStorage.key(0);
-    expect(storedKey).toMatch(/^aiops\.copilot\.thread\.inventory\./);
-    expect(window.sessionStorage.getItem(storedKey!)).toBe(threadId);
+    expect(storedKey).toBe(COPILOT_THREAD_STORAGE_KEY);
+    expect(JSON.parse(window.sessionStorage.getItem(storedKey!)!)).toEqual({
+      thread_id: threadId,
+      thread_revision: 1,
+    });
 
-    render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).toMatchObject({ thread_id: threadId });
@@ -515,7 +521,7 @@ describe("CopilotDrawer", () => {
         citations: [],
       },
     });
-    const seeded = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    const seeded = render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
     await waitFor(() => expect(window.sessionStorage).toHaveLength(1));
     seeded.unmount();
@@ -549,22 +555,30 @@ describe("CopilotDrawer", () => {
       });
 
     render(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer {...props} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
-    expect(await screen.findByText("Investigation thread not found")).toBeInTheDocument();
+    expect(await screen.findByText(
+      "This investigation is no longer available. Start a new investigation to continue.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText("Investigation thread not found")).not.toBeInTheDocument();
     expect(window.sessionStorage).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
     expect(window.sessionStorage).toHaveLength(1);
-    expect(window.sessionStorage.getItem(window.sessionStorage.key(0)!)).toBe(replacementThread);
+    expect(JSON.parse(
+      window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)!,
+    )).toEqual({
+      thread_id: replacementThread,
+      thread_revision: 1,
+    });
   });
 
-  it("redacts transcript and thread when scope narrows", async () => {
+  it("redacts the transcript and revalidates the retained thread when scope narrows", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
     investigateCanonical.mockResolvedValue(
@@ -578,27 +592,34 @@ describe("CopilotDrawer", () => {
       snapshot: canonicalSnapshot("os"),
       starterQuestions: [{ label: "Review inventory" }],
     };
-    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    const view = render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
 
     fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
     expect(await screen.findByText("server:wide")).toBeInTheDocument();
     expect(window.sessionStorage).toHaveLength(1);
 
     view.rerender(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer
           {...props}
           requestedScope={{ subscription: ["sub-a"] }}
         />
-      </ScopeProvider>,
+      </TestProviders>,
     );
 
     expect(screen.queryByText("server:wide")).not.toBeInTheDocument();
-    await waitFor(() => expect(window.sessionStorage).toHaveLength(0));
+    expect(window.sessionStorage).toHaveLength(1);
     expect(screen.getByText(/Answers stay scoped/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
+    expect(investigateCanonical.mock.calls[1][0]).toMatchObject({
+      requested_scope: { subscription: ["sub-a"] },
+      thread_id: "thr-11111111111111111111111111111111",
+    });
   });
 
-  it("redacts transcript and thread when the inventory tab changes", async () => {
+  it("redacts the transcript but retains continuity when the page context changes", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
     investigateCanonical.mockResolvedValue(
@@ -612,19 +633,26 @@ describe("CopilotDrawer", () => {
       snapshot: canonicalSnapshot("os"),
       starterQuestions: [{ label: "Review inventory" }],
     };
-    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    const view = render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
 
     fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
     expect(await screen.findByText("server:os")).toBeInTheDocument();
 
     view.rerender(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer {...props} snapshot={canonicalSnapshot("software")} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
 
     expect(screen.queryByText("server:os")).not.toBeInTheDocument();
-    await waitFor(() => expect(window.sessionStorage).toHaveLength(0));
+    expect(window.sessionStorage).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
+    expect(investigateCanonical.mock.calls[1][0]).toMatchObject({
+      thread_id: "thr-22222222222222222222222222222222",
+      snapshot: canonicalSnapshot("software"),
+    });
   });
 
   it("ignores an in-flight response from the previous context", async () => {
@@ -642,14 +670,14 @@ describe("CopilotDrawer", () => {
       snapshot: canonicalSnapshot("os"),
       starterQuestions: [{ label: "Review inventory" }],
     };
-    const view = render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    const view = render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
 
     fireEvent.click(screen.getByRole("button", { name: /Review inventory/ }));
     expect(screen.getByText(/Gathering the visible page evidence/)).toBeInTheDocument();
     view.rerender(
-      <ScopeProvider>
+      <TestProviders>
         <CopilotDrawer {...props} snapshot={canonicalSnapshot("azure")} />
-      </ScopeProvider>,
+      </TestProviders>,
     );
     resolveRequest?.(
       canonicalResult("thr-33333333333333333333333333333333", "server:stale"),
@@ -674,7 +702,7 @@ describe("CopilotDrawer", () => {
       snapshot: canonicalSnapshot("os"),
       starterQuestions: [{ label: "Review inventory" }],
     };
-    render(<ScopeProvider><CopilotDrawer {...props} /></ScopeProvider>);
+    render(<TestProviders><CopilotDrawer {...props} /></TestProviders>);
 
     const starter = screen.getByRole("button", { name: /Review inventory/ });
     fireEvent.click(starter);

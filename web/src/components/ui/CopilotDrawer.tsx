@@ -5,6 +5,7 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { useThreadContinuity } from "@/lib/copilot/thread-context";
 import { useScope } from "@/lib/scope-context";
 import { copilotApi } from "@/lib/services";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
@@ -80,6 +81,7 @@ export interface CopilotDrawerProps {
 const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
+const THREAD_RESET_MESSAGE = "This investigation is no longer available. Start a new investigation to continue.";
 
 function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
   return Array.from(new Set(
@@ -89,9 +91,6 @@ function uniqueWarnings(...groups: Array<string[] | undefined>): string[] {
       .filter(Boolean),
   ));
 }
-
-const THREAD_STORAGE_PREFIX = "aiops.copilot.thread.";
-const OPAQUE_THREAD_PATTERN = /^thr-[a-f0-9]{32}$/;
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
@@ -106,64 +105,28 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function stableToken(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
 function isCanonicalSnapshot(
   snapshot: CopilotDrawerProps["snapshot"],
 ): snapshot is CopilotEvidenceSnapshotV2 {
   return snapshot?.version === "2";
 }
 
-function threadStorageKey(pageKind: string, contextFingerprint: string): string {
-  return `${THREAD_STORAGE_PREFIX}${pageKind}.${stableToken(contextFingerprint)}`;
-}
-
-function readStoredThread(
-  pageKind: string | undefined,
-  contextFingerprint: string,
-): string | null {
-  if (!pageKind || typeof window === "undefined") return null;
-  const value = window.sessionStorage.getItem(
-    threadStorageKey(pageKind, contextFingerprint),
-  );
-  return value && OPAQUE_THREAD_PATTERN.test(value) ? value : null;
-}
-
-function storeThread(
-  pageKind: string,
-  contextFingerprint: string,
-  threadId: string,
-): void {
-  if (typeof window === "undefined" || !OPAQUE_THREAD_PATTERN.test(threadId)) return;
-  window.sessionStorage.setItem(
-    threadStorageKey(pageKind, contextFingerprint),
-    threadId,
-  );
-}
-
-function clearStoredThread(pageKind: string, contextFingerprint: string): void {
-  if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(threadStorageKey(pageKind, contextFingerprint));
-}
-
-function pruneStoredThreads(pageKind: string, contextFingerprint: string): void {
-  if (typeof window === "undefined") return;
-  const retainedKey = threadStorageKey(pageKind, contextFingerprint);
-  const prefix = `${THREAD_STORAGE_PREFIX}${pageKind}.`;
-  const staleKeys = Array.from(
-    { length: window.sessionStorage.length },
-    (_, index) => window.sessionStorage.key(index),
-  ).filter((key): key is string => Boolean(
-    key && key.startsWith(prefix) && key !== retainedKey,
-  ));
-  staleKeys.forEach((key) => window.sessionStorage.removeItem(key));
+function serverEvidenceState(status: string): {
+  label: string;
+  tone: "success" | "warning" | "info";
+} | null {
+  switch (status.trim().toLowerCase()) {
+    case "historical":
+    case "historical_scope_restricted":
+      return { label: "Historical evidence", tone: "warning" };
+    case "revalidated":
+    case "rechecked":
+      return { label: "Revalidated evidence", tone: "success" };
+    case "current":
+      return { label: "Current evidence", tone: "info" };
+    default:
+      return null;
+  }
 }
 
 export function CopilotDrawer({
@@ -175,6 +138,7 @@ export function CopilotDrawer({
   requestedScope,
 }: CopilotDrawerProps) {
   const { scope } = useScope();
+  const threadContinuity = useThreadContinuity();
   const effectiveRequestedScope = requestedScope ?? scope;
   const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
   const contextFingerprint = stableJson({
@@ -190,11 +154,7 @@ export function CopilotDrawer({
   const [lastQuestion, setLastQuestion] = useState("");
   const [width, setWidth] = useState(MIN_WIDTH);
   const sessionId = useRef(`drawer-${Math.random().toString(36).slice(2)}-${Date.now()}`);
-  const canonicalThreadId = useRef(
-    readStoredThread(canonicalSnapshot?.page_kind, contextFingerprint),
-  );
   const contextFingerprintRef = useRef(contextFingerprint);
-  const canonicalPageKindRef = useRef(canonicalSnapshot?.page_kind);
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
   const activeRequestFingerprint = useRef<string | null>(null);
@@ -230,23 +190,9 @@ export function CopilotDrawer({
   }, []);
 
   useEffect(() => {
-    if (canonicalSnapshot?.page_kind) {
-      pruneStoredThreads(canonicalSnapshot.page_kind, contextFingerprint);
-    }
     if (contextFingerprintRef.current === contextFingerprint) return;
-    if (canonicalPageKindRef.current) {
-      clearStoredThread(
-        canonicalPageKindRef.current,
-        contextFingerprintRef.current,
-      );
-    }
     requestGeneration.current += 1;
     contextFingerprintRef.current = contextFingerprint;
-    canonicalPageKindRef.current = canonicalSnapshot?.page_kind;
-    canonicalThreadId.current = readStoredThread(
-      canonicalSnapshot?.page_kind,
-      contextFingerprint,
-    );
     requestInFlight.current = false;
     activeRequestFingerprint.current = null;
     setTurns([]);
@@ -256,7 +202,7 @@ export function CopilotDrawer({
     setLastQuestion("");
     setLoading(false);
     setStage("idle");
-  }, [canonicalSnapshot?.page_kind, contextFingerprint]);
+  }, [contextFingerprint]);
 
   async function ask(
     value: string,
@@ -288,7 +234,9 @@ export function CopilotDrawer({
               question: nextQuestion,
               requested_scope: effectiveRequestedScope,
               snapshot: canonicalSnapshot,
-              ...(canonicalThreadId.current ? { thread_id: canonicalThreadId.current } : {}),
+              ...(threadContinuity.thread
+                ? { thread_id: threadContinuity.thread.threadId }
+                : {}),
               ...(specialistId && tool
                 ? {
                     hint: {
@@ -303,12 +251,10 @@ export function CopilotDrawer({
           );
         if (!requestIsCurrent()) return;
         const result = envelope.data;
-        canonicalThreadId.current = result.thread_id;
-        storeThread(
-          canonicalSnapshot.page_kind,
-          submittedContextFingerprint,
-          result.thread_id,
-        );
+        threadContinuity.acceptServerState({
+          threadId: result.thread_id,
+          threadRevision: result.thread_revision,
+        });
         setTurns((current) => [
           ...current,
           {
@@ -383,22 +329,26 @@ export function CopilotDrawer({
       setStage(synthesisMode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
     } catch (reason) {
       if (!requestIsCurrent()) return;
-      if (
+      const isThreadReset = (
         canonicalSnapshot
         && reason instanceof ApiError
         && reason.status === 404
         && reason.code === "not_found"
         && reason.details?.field === "thread_id"
-      ) {
-        canonicalThreadId.current = null;
-        clearStoredThread(
-          canonicalSnapshot.page_kind,
-          submittedContextFingerprint,
-        );
+      );
+      if (isThreadReset) {
+        threadContinuity.resetContinuity("not_found");
       }
       setTurns((current) => [
         ...current,
-        { question: nextQuestion, error: reason instanceof Error ? reason.message : "Copilot could not answer this request." },
+        {
+          question: nextQuestion,
+          error: isThreadReset
+            ? THREAD_RESET_MESSAGE
+            : reason instanceof Error
+              ? reason.message
+              : "Copilot could not answer this request.",
+        },
       ]);
       setStage("error");
     } finally {
@@ -564,6 +514,13 @@ export function CopilotDrawer({
                             <li key={citation.citation_id}>
                               <code>{citation.citation_id}</code>
                               <span>{citation.source}</span>
+                              {serverEvidenceState(citation.status) && (
+                                <StatusBadge
+                                  label={serverEvidenceState(citation.status)!.label}
+                                  tone={serverEvidenceState(citation.status)!.tone}
+                                  compact
+                                />
+                              )}
                             </li>
                           ))}
                         </ul>
