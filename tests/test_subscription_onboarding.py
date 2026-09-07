@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -1084,57 +1085,9 @@ def test_sync_async_rejects_unknown_mode_immediately(tmp_path: Path) -> None:
         service.sync_async("prod-core", mode="bogus")
 
 
-def test_api_publish_runner_completes_ontology_and_fabric_steps(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    inventory = {"status": "completed", "combined_manifest": {"runId": "inventory-run"}}
-    combined = {"status": "published", "source_runs": ["discovery-run"]}
-    publication = SimpleNamespace(
-        run_id="fabric-run",
-        source_run_id="discovery-run",
-        status="succeeded",
-        tables=("silver_entities", "silver_relationships"),
-    )
-    calls: list[tuple[str, object]] = []
+def test_api_runtime_has_no_process_local_authoritative_publisher() -> None:
+    source = inspect.getsource(onboarding_runtime.build_onboarding_service)
 
-    monkeypatch.setattr(
-        "api.inventory_orchestration.run_inventory_refresh_all_connections",
-        lambda *args, **kwargs: inventory,
-    )
-    monkeypatch.setattr(
-        "fabric.config.FabricRuntimeConfig.load",
-        lambda path: SimpleNamespace(source_data_root="/tmp/fabric-source"),
-    )
-    monkeypatch.setattr(
-        "onboarding.activation.publish_combined_snapshot",
-        lambda service, connection_ids, target_root: (
-            calls.append(("ontology", (connection_ids, target_root))) or combined
-        ),
-    )
-    monkeypatch.setattr(
-        "fabric.runtime.build_runtime",
-        lambda config: SimpleNamespace(
-            service=SimpleNamespace(
-                sync=lambda: (
-                    calls.append(("fabric", config.source_data_root)) or publication
-                )
-            )
-        ),
-    )
-
-    result = onboarding_runtime._InventoryRefreshRunner(
-        "connector.yaml",
-        "fabric.yaml",
-        SimpleNamespace(),
-        "connection-1",
-    ).run()
-
-    assert result["combined_snapshot"] == combined
-    assert result["fabric_publication"]["tables"] == [
-        "silver_entities",
-        "silver_relationships",
-    ]
-    assert calls == [
-        ("ontology", (["connection-1"], "/tmp/fabric-source")),
-        ("fabric", "/tmp/fabric-source"),
-    ]
+    assert not hasattr(onboarding_runtime, "_InventoryRefreshRunner")
+    assert "publish_factory" not in source
+    assert "FabricSyncService" not in source

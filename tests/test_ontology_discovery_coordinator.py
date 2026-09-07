@@ -365,7 +365,8 @@ def test_publisher_denial_is_durable_and_preserves_active_generation(tmp_path):
     assert result["failed"] == 1
     durable = store.get(run["run_id"])
     assert durable["status"] == "failed"
-    assert durable["failure_class"] == "publisher_denied"
+    assert durable["failure_class"] == "attempts_exhausted"
+    assert "publisher identity denied" in durable["message"]
     assert durable["checkpoint"] == {
         "name": "publication_denied",
         "payload": {
