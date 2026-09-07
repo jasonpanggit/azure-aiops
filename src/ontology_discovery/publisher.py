@@ -29,6 +29,19 @@ class PublicationSafetyError(RuntimeError):
     """Fail-closed refusal to make a candidate reader-visible."""
 
 
+class PostCheckRollbackError(PublicationSafetyError):
+    """Post-CAS verification failed and rollback was attempted."""
+
+    def __init__(self, *, rollback_succeeded: bool) -> None:
+        self.rollback_succeeded = rollback_succeeded
+        reason = (
+            "post_check_failed_rolled_back"
+            if rollback_succeeded
+            else "critical_rollback_failed"
+        )
+        super().__init__(reason)
+
+
 @dataclass(frozen=True)
 class OntologyGenerationCandidate:
     """Complete deterministic candidate and its immutable lineage."""
@@ -89,6 +102,8 @@ class OntologyGenerationPublisher:
         ]
         | None = None,
         step_recorder: Callable[[str, Mapping[str, Any]], None] | None = None,
+        pre_cas_hook: Callable[[], None] | None = None,
+        rollback_fence_allocator: Callable[[], int] | None = None,
     ) -> GenerationPointerSnapshot:
         self._authorize(publisher_identity, checkpoint_ids)
         self._guard_runtime(cancellation_check, lease_guard)
@@ -204,6 +219,8 @@ class OntologyGenerationPublisher:
                 "complete validation changed before promotion"
             )
         self._verify_staged(candidate.generation_id, staged)
+        if pre_cas_hook is not None:
+            pre_cas_hook()
         _record(step_recorder, "final_preconditions", {
             "generation_id": candidate.generation_id,
             "expected_etag": pointer_conditions.etag or "",
@@ -236,7 +253,18 @@ class OntologyGenerationPublisher:
             "families": post_checks,
         })
         if not all(post_checks.values()):
-            raise PublicationSafetyError("post-CAS consumer verification failed")
+            self._automatic_rollback(
+                promoted=promoted,
+                predecessor=pointer_conditions.active_generation,
+                publisher_identity=publisher_identity,
+                owner_id=owner_id,
+                rollback_fence_allocator=rollback_fence_allocator,
+                post_consumer_check=post_consumer_check,
+                step_recorder=step_recorder,
+                failed_checks=post_checks,
+                cancellation_check=cancellation_check,
+                lease_guard=lease_guard,
+            )
         self._storage.persist_generation_receipt(
             candidate.generation_id,
             {
@@ -246,6 +274,91 @@ class OntologyGenerationPublisher:
             },
         )
         return promoted
+
+    def _automatic_rollback(
+        self,
+        *,
+        promoted: GenerationPointerSnapshot,
+        predecessor: str | None,
+        publisher_identity: str,
+        owner_id: str,
+        rollback_fence_allocator: Callable[[], int] | None,
+        post_consumer_check: Callable[[str], Mapping[str, bool]] | None,
+        step_recorder: Callable[[str, Mapping[str, Any]], None] | None,
+        failed_checks: Mapping[str, bool],
+        cancellation_check: Callable[[], bool],
+        lease_guard: Callable[[], None],
+    ) -> None:
+        if predecessor is None or rollback_fence_allocator is None:
+            _record(
+                step_recorder,
+                "automatic_rollback",
+                {
+                    "status": "critical_rollback_failed",
+                    "failed_consumer_hash": _content_hash(failed_checks),
+                },
+            )
+            raise PostCheckRollbackError(rollback_succeeded=False)
+        try:
+            target = self._storage.read_generation(predecessor)
+            rollback_fence = int(rollback_fence_allocator())
+            restored = self.rollback(
+                target_generation_id=predecessor,
+                source_generation=str(target["manifest"]["source_generation"]),
+                publisher_identity=publisher_identity,
+                checkpoint_ids=APPROVED_PUBLICATION_CHECKPOINTS,
+                pointer_conditions=GenerationPointerConditions.from_snapshot(
+                    promoted
+                ),
+                owner_id=owner_id,
+                fence=rollback_fence,
+                cancellation_check=cancellation_check,
+                lease_guard=lease_guard,
+            )
+            restored_checks = _consumer_results(
+                post_consumer_check(predecessor)
+                if post_consumer_check is not None
+                else {family: True for family in CONSUMER_FAMILIES}
+            )
+            if not all(restored_checks.values()):
+                raise PublicationSafetyError(
+                    "restored generation consumer verification failed"
+                )
+            _record(
+                step_recorder,
+                "automatic_rollback",
+                {
+                    "status": "post_check_failed_rolled_back",
+                    "failed_generation": promoted.pointer.active_generation
+                    if promoted.pointer
+                    else "",
+                    "restored_generation": predecessor,
+                    "original_fence": promoted.pointer.fence
+                    if promoted.pointer
+                    else 0,
+                    "rollback_fence": rollback_fence,
+                    "pointer_etag": restored.etag or "",
+                    "failed_consumer_hash": _content_hash(failed_checks),
+                    "restored_consumer_hash": _content_hash(restored_checks),
+                },
+            )
+        except PostCheckRollbackError:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError):
+            _record(
+                step_recorder,
+                "automatic_rollback",
+                {
+                    "status": "critical_rollback_failed",
+                    "failed_generation": promoted.pointer.active_generation
+                    if promoted.pointer
+                    else "",
+                    "restored_generation": predecessor,
+                    "failed_consumer_hash": _content_hash(failed_checks),
+                },
+            )
+            raise PostCheckRollbackError(rollback_succeeded=False) from None
+        raise PostCheckRollbackError(rollback_succeeded=True)
 
     def rollback(
         self,
@@ -488,5 +601,6 @@ __all__ = [
     "CONSUMER_FAMILIES",
     "OntologyGenerationCandidate",
     "OntologyGenerationPublisher",
+    "PostCheckRollbackError",
     "PublicationSafetyError",
 ]

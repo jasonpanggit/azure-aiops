@@ -21,6 +21,7 @@ from storage.onelake_documents import OneLakeDocumentStore
 
 from .command_intake import PublisherCommandConsumer
 from .dispatch_store import PublisherDispatchStore
+from .drill_control import DrillControlConfig, PublisherDrillControl
 from .publisher import CONSUMER_FAMILIES, OntologyGenerationPublisher
 from .publisher_worker import PublisherIntakeAdapter, PublisherWorker
 
@@ -42,6 +43,11 @@ class PublisherRuntimeConfig:
     publisher_client_id: str
     runtime_mode: str
     capabilities: Mapping[str, frozenset[str]]
+    drill_enabled: bool = False
+    drill_root: str = ""
+    environment: str = ""
+    drill_connection_environment: str = ""
+    drill_workspace_environment: str = ""
 
     @classmethod
     def from_env(
@@ -84,6 +90,18 @@ class PublisherRuntimeConfig:
             publisher_client_id=publisher_id,
             runtime_mode=mode,
             capabilities=PUBLISHER_CAPABILITIES,
+            drill_enabled=str(
+                values.get("AIOPS_ONTOLOGY_DRILL_ENABLED") or ""
+            ).casefold()
+            in {"1", "true", "yes"},
+            drill_root=str(values.get("AIOPS_ONTOLOGY_DRILL_HOME") or "").strip(),
+            environment=str(values.get("AIOPS_ENVIRONMENT") or "").strip(),
+            drill_connection_environment=str(
+                values.get("AIOPS_DRILL_CONNECTION_ENVIRONMENT") or ""
+            ).strip(),
+            drill_workspace_environment=str(
+                values.get("AIOPS_DRILL_WORKSPACE_ENVIRONMENT") or ""
+            ).strip(),
         )
 
 
@@ -153,6 +171,22 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
         ),
         consumer_check=check,
         now=now,
+        drill_control=(
+            PublisherDrillControl(
+                DrillControlConfig(
+                    enabled=True,
+                    environment=config.environment,
+                    connection_environment=config.drill_connection_environment,
+                    workspace_environment=config.drill_workspace_environment,
+                    publisher_client_id=config.publisher_client_id,
+                    azure_client_id=config.publisher_client_id,
+                    drill_root=config.drill_root,
+                    protected_roots=tuple(config.roots.values()),
+                )
+            )
+            if config.drill_enabled
+            else None
+        ),
     )
     intake = PublisherIntakeAdapter(
         registry=ConnectionRegistry(config.roots["connection"]),

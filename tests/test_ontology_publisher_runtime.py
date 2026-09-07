@@ -538,9 +538,13 @@ def test_failed_post_check_automatically_restores_predecessor_with_newer_fence(
         now=NOW,
     )
 
-    def fail_semantic(stage: str, _generation_id: str):
+    def fail_semantic(stage: str, generation_id: str):
         return {
-            family: not (stage == "post" and family == "semantic")
+            family: not (
+                stage == "post"
+                and generation_id == "ontology-fault"
+                and family == "semantic"
+            )
             for family in CONSUMERS
         }
 
@@ -619,12 +623,17 @@ def test_deterministic_fault_trials_preserve_one_complete_visible_generation(
         now=NOW,
     )
 
-    def check(stage: str, _generation_id: str):
+    def check(stage: str, generation_id: str):
         failed_family = scenario.removeprefix("post_")
         return {
             family: not (
                 (scenario == "staged_compatibility" and stage == "staged")
-                or (scenario.startswith("post_") and stage == "post" and family == failed_family)
+                or (
+                    scenario.startswith("post_")
+                    and stage == "post"
+                    and generation_id == f"ontology-next-{seed}"
+                    and family == failed_family
+                )
             )
             for family in CONSUMERS
         }

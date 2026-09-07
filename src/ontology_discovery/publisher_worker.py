@@ -18,11 +18,13 @@ from .command_intake import (
     scope_receipt,
 )
 from .dispatch_store import DispatchConflict, PublisherDispatchView
+from .drill_control import PublisherDrillControl
 from .publisher import (
     APPROVED_PUBLICATION_CHECKPOINTS,
     CONSUMER_FAMILIES,
     OntologyGenerationCandidate,
     OntologyGenerationPublisher,
+    PostCheckRollbackError,
     PublicationSafetyError,
 )
 
@@ -41,6 +43,7 @@ class PublisherWorker:
         materialize: Callable[[OntologyGenerationCandidate], Mapping[str, Any]],
         consumer_check: Callable[[str, str], Mapping[str, bool]],
         now: Callable[[], datetime],
+        drill_control: PublisherDrillControl | None = None,
     ) -> None:
         self._dispatches = dispatches
         self._publisher = publisher
@@ -50,6 +53,7 @@ class PublisherWorker:
         self._materialize = materialize
         self._consumer_check = consumer_check
         self._now = now
+        self._drill = drill_control
 
     def run_once(
         self, now: datetime | None = None, *, limit: int = 1
@@ -75,12 +79,13 @@ class PublisherWorker:
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 current = self._dispatches.get_publish(claimed["dispatch_id"])
                 if current is not None and current["status"] == "claimed":
+                    retryable = not isinstance(exc, PostCheckRollbackError)
                     self._dispatches.fail_publish(
                         claimed["dispatch_id"],
                         expected_revision=int(current["revision"]),
                         owner=self._owner_id,
                         reason_code=_closed_reason(exc),
-                        retryable=True,
+                        retryable=retryable,
                         receipt={
                             "failure_class": _closed_reason(exc),
                             "command_hash": claimed["content_hash"],
@@ -184,6 +189,19 @@ class PublisherWorker:
             )
             revision[0] = int(updated["revision"])
 
+        def checked(stage: str, generation_id: str) -> Mapping[str, bool]:
+            values = dict(self._consumer_check(stage, generation_id))
+            if self._drill is not None and stage == "post":
+                for family in CONSUMER_FAMILIES:
+                    if self._drill.fail_post_check(
+                        command_hash=str(claimed["content_hash"]),
+                        family=family,
+                        now=moment,
+                    ):
+                        values[family] = False
+                        break
+            return values
+
         promoted = self._publisher.publish(
             candidate,
             publisher_identity=self._publisher_identity,
@@ -195,13 +213,25 @@ class PublisherWorker:
             cancellation_check=lambda: False,
             lease_guard=lease_guard,
             materialize_generation=self._materialize,
-            staged_consumer_check=lambda generation_id: self._consumer_check(
+            staged_consumer_check=lambda generation_id: checked(
                 "staged", generation_id
             ),
-            post_consumer_check=lambda generation_id: self._consumer_check(
+            post_consumer_check=lambda generation_id: checked(
                 "post", generation_id
             ),
             step_recorder=record,
+            pre_cas_hook=(
+                None
+                if self._drill is None
+                else lambda: self._drill.before_cas(
+                    command_hash=str(claimed["content_hash"]),
+                    now=moment,
+                )
+            ),
+            rollback_fence_allocator=lambda: self._fences.allocate(
+                scope=str(claimed["connection_id"]),
+                owner_id=self._owner_id,
+            ).value,
         )
         row = current()
         self._dispatches.complete_publish(
@@ -439,6 +469,8 @@ def _candidate_from_dispatch(row: Mapping[str, Any]) -> OntologyGenerationCandid
 
 
 def _closed_reason(exc: Exception) -> str:
+    if isinstance(exc, PostCheckRollbackError):
+        return str(exc)
     if isinstance(exc, DispatchConflict):
         return "dispatch_conflict"
     if isinstance(exc, PublicationSafetyError):
