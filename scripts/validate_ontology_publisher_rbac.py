@@ -431,6 +431,12 @@ def _config_from_terraform_state(
     if not isinstance(project_identity, list) or len(project_identity) != 1:
         raise ValidationBlocked("Foundry project identity is unavailable in state")
     triggers = curator.get("triggers_replace")
+    if (
+        isinstance(triggers, dict)
+        and set(triggers) == {"value", "type"}
+        and isinstance(triggers.get("value"), dict)
+    ):
+        triggers = triggers["value"]
     if not isinstance(triggers, dict):
         raise ValidationBlocked("curator deployment metadata is unavailable in state")
 

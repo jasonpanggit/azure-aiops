@@ -440,8 +440,10 @@ def test_deployer_control_plane_audit_never_calls_onelake() -> None:
     }
 
 
+@pytest.mark.parametrize("raw_dynamic_value", [False, True])
 def test_control_plane_config_is_resolved_from_deployed_terraform_state(
     tmp_path: Path,
+    raw_dynamic_value: bool,
 ) -> None:
     config = _config()
     resources = []
@@ -494,17 +496,24 @@ def test_control_plane_config_is_resolved_from_deployed_terraform_state(
         "ontology_rbac_validation",
         {"id": config["lakehouse_id"]},
     )
+    trigger_values = {
+        "endpoint": config["foundry_project_endpoint"],
+        "agent_name": config["curator_agent_name"],
+        "model": config["curator_model"],
+        "instructions": config["curator_prompt_sha256"],
+    }
+    triggers_replace = (
+        {
+            "value": trigger_values,
+            "type": ["object", {name: "string" for name in trigger_values}],
+        }
+        if raw_dynamic_value
+        else trigger_values
+    )
     add(
         "terraform_data",
         "foundry_ontology_curator_agent",
-        {
-            "triggers_replace": {
-                "endpoint": config["foundry_project_endpoint"],
-                "agent_name": config["curator_agent_name"],
-                "model": config["curator_model"],
-                "instructions": config["curator_prompt_sha256"],
-            }
-        },
+        {"triggers_replace": triggers_replace},
     )
     state_path = tmp_path / "terraform.tfstate"
     state_path.write_text(json.dumps({"resources": resources}), encoding="utf-8")
