@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from storage.datasets import DatasetStore, GenerationPointerConditions
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 
@@ -279,3 +280,129 @@ def test_concurrent_read_does_not_observe_partial_write(tmp_path):
         {"revision": 1, "connections": ["demo"]},
         {"revision": 2, "connections": ["demo", "second"]},
     )
+
+
+def test_create_only_document_is_immutable_across_store_instances(tmp_path):
+    first = OneLakeDocumentStore(tmp_path)
+    second = OneLakeDocumentStore(tmp_path)
+
+    created = first.create_only(
+        "ontology/generations/generation-1/manifest.json",
+        {"generation_id": "generation-1"},
+    )
+
+    assert created.payload == {"generation_id": "generation-1"}
+    assert created.etag
+    with pytest.raises(DocumentConflictError, match="already exists"):
+        second.create_only(
+            "ontology/generations/generation-1/manifest.json",
+            {"generation_id": "replacement"},
+        )
+
+
+def test_independent_clients_cannot_both_replace_one_predecessor_etag(tmp_path):
+    creator = OneLakeDocumentStore(tmp_path)
+    creator.create_only("ontology/current.json", {"generation": "generation-1"})
+
+    first = OneLakeDocumentStore(tmp_path)
+    second = OneLakeDocumentStore(tmp_path)
+    first_read = first.read_snapshot("ontology/current.json")
+    second_read = second.read_snapshot("ontology/current.json")
+    assert first_read.etag == second_read.etag
+
+    first.replace_if_match(
+        "ontology/current.json",
+        {"generation": "generation-2"},
+        expected_etag=first_read.etag,
+    )
+    with pytest.raises(DocumentConflictError, match="ETag"):
+        second.replace_if_match(
+            "ontology/current.json",
+            {"generation": "stale-generation"},
+            expected_etag=second_read.etag,
+        )
+
+    assert creator.read("ontology/current.json") == {"generation": "generation-2"}
+
+
+def test_only_approved_publisher_can_open_authoritative_adapter(tmp_path):
+    store = DatasetStore(tmp_path)
+
+    with pytest.raises(PermissionError, match="approved publisher"):
+        store.authoritative_publisher(
+            publisher_identity="api-runtime",
+            approved_publisher_identity="ontology-publisher",
+        )
+
+    adapter = store.authoritative_publisher(
+        publisher_identity="ontology-publisher",
+        approved_publisher_identity="ontology-publisher",
+    )
+    assert adapter.publisher_identity == "ontology-publisher"
+
+
+def test_pointer_transition_checks_owner_fence_source_active_and_etag(tmp_path):
+    adapter = DatasetStore(tmp_path).authoritative_publisher(
+        publisher_identity="ontology-publisher",
+        approved_publisher_identity="ontology-publisher",
+    )
+    initial = adapter.read_pointer()
+    assert initial.pointer is None
+
+    promoted = adapter.conditional_promote(
+        generation_id="generation-1",
+        source_generation="source-1",
+        owner_id="writer-1",
+        fence=1,
+        conditions=GenerationPointerConditions.initial(),
+    )
+    predecessor = promoted.pointer
+    assert predecessor is not None
+
+    conditions = GenerationPointerConditions.from_snapshot(promoted)
+    winner = adapter.conditional_promote(
+        generation_id="generation-2",
+        source_generation="source-2",
+        owner_id="writer-2",
+        fence=2,
+        conditions=conditions,
+    )
+    assert winner.pointer is not None
+    assert winner.pointer.active_generation == "generation-2"
+    assert winner.pointer.prior_generation == "generation-1"
+
+    stale_attempts = (
+        conditions,
+        GenerationPointerConditions(
+            etag=winner.etag,
+            owner_id="wrong-owner",
+            fence=predecessor.fence,
+            source_generation=predecessor.source_generation,
+            active_generation=predecessor.active_generation,
+        ),
+        GenerationPointerConditions(
+            etag=winner.etag,
+            owner_id=winner.pointer.owner_id,
+            fence=winner.pointer.fence,
+            source_generation="wrong-source",
+            active_generation=winner.pointer.active_generation,
+        ),
+        GenerationPointerConditions(
+            etag=winner.etag,
+            owner_id=winner.pointer.owner_id,
+            fence=winner.pointer.fence,
+            source_generation=winner.pointer.source_generation,
+            active_generation="wrong-active",
+        ),
+    )
+    for stale in stale_attempts:
+        with pytest.raises(DocumentConflictError):
+            adapter.conditional_promote(
+                generation_id="generation-stale",
+                source_generation="source-stale",
+                owner_id="writer-stale",
+                fence=3,
+                conditions=stale,
+            )
+
+    assert adapter.read_pointer().pointer == winner.pointer
