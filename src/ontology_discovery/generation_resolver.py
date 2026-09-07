@@ -8,6 +8,7 @@ that captured generation, even if promotion or rollback happens concurrently.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -200,7 +201,12 @@ class GenerationResolver:
 
     def _pointer_payload(self) -> dict[str, Any]:
         if not getattr(self.store, "is_remote", False):
-            return {}
+            pointer_path = getattr(self.store, "pointer_path", None)
+            if pointer_path is None or not Path(pointer_path).exists():
+                # Legacy local DatasetStore generations use only the atomic
+                # ``current`` symlink and therefore have no pointer metadata.
+                return {}
+            return self._read_json(str(pointer_path))
         path = str(self.store.pointer_path)
         if not self.store.fs.exists(path):
             raise LookupError("Ontology generation pointer is missing")
@@ -216,6 +222,14 @@ class GenerationResolver:
             etag = info.get("etag") or info.get("ETag")
             if etag:
                 return str(etag).strip('"')
+        else:
+            pointer_path = getattr(self.store, "pointer_path", None)
+            if pointer_path is not None and Path(pointer_path).exists():
+                try:
+                    body = Path(pointer_path).read_bytes()
+                except OSError:
+                    return ""
+                return hashlib.sha256(body).hexdigest()
         return str(pointer.get("etag") or pointer.get("pointer_etag") or "")
 
     def _generation_path(self, name: str) -> str:
