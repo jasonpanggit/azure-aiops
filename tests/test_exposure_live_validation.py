@@ -415,7 +415,7 @@ def test_alerts_can_reuse_existing_action_group_without_email_receivers() -> Non
         'count               = local.create_alert_action_group ? 1 : 0'
         in alerting
     )
-    assert alerting.count("count                = local.alerting_enabled ? 1 : 0") == 9
+    assert alerting.count("local.alerting_enabled ? 1 : 0") == 11
     assert alerting.count("skip_query_validation = true") == 8
     assert "[local.alert_action_group_id]" in alerting
     assert "action_group_id = local.alert_action_group_id" in alerting
