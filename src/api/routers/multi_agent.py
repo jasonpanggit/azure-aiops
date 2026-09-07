@@ -16,6 +16,10 @@ from operations.autonomous_investigation import (
     project_legacy_ledger,
     run_autonomous_investigation,
 )
+from operations.investigation_thread_store import (
+    ThreadRevisionConflict,
+    ThreadStoreUnavailable,
+)
 from operations.maf_orchestrator import canonical_orchestration_enabled
 from operations.orchestration_service import execute_from_question
 
@@ -103,13 +107,24 @@ def _create_investigation_canonical(
     """
     objective = payload.objective.strip()
     started = time.monotonic()
-    result = execute_from_question(
-        objective,
-        scope=scope,
-        context=context,
-        principal_subject=principal.subject,
-        max_wall_seconds=payload.timeout_seconds,
-    )
+    try:
+        result = execute_from_question(
+            objective,
+            scope=scope,
+            context=context,
+            principal_subject=principal.subject,
+            max_wall_seconds=payload.timeout_seconds,
+        )
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation continuity is temporarily unavailable",
+        ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     now = datetime.now(UTC).isoformat(timespec="seconds")
     catalog_by_id = {
         str(agent.get("id") or ""): agent
@@ -274,6 +289,7 @@ def _create_investigation_canonical(
             "fallback_reason": result.fallback_reason,
             "coverage": result.coverage.model_dump(mode="json"),
             "uncertainty": list(result.uncertainty),
+            "executive": result.synthesis,
             "summary": (
                 f"Canonical investigation produced {evidence_backed_count} "
                 "evidence-backed finding(s)."

@@ -33,7 +33,11 @@ from operations.investigation import (
     run_investigation,
     tool_catalog,
 )
-from operations.investigation_thread_store import ThreadNotFound
+from operations.investigation_thread_store import (
+    ThreadNotFound,
+    ThreadRevisionConflict,
+    ThreadStoreUnavailable,
+)
 from operations.maf_orchestrator import canonical_orchestration_enabled
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
@@ -574,15 +578,26 @@ def _investigate_via_canonical(
     contract.  Session continuity uses the canonical thread, not the legacy
     ``ConversationStore``.
     """
-    result = execute_from_question(
-        question,
-        scope=scope,
-        context=context,
-        principal_subject=principal.subject,
-        session_id=session_id,
-        hint_tool=hint_tool,
-        hint_arguments=hint_arguments,
-    )
+    try:
+        result = execute_from_question(
+            question,
+            scope=scope,
+            context=context,
+            principal_subject=principal.subject,
+            session_id=session_id,
+            hint_tool=hint_tool,
+            hint_arguments=hint_arguments,
+        )
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation continuity is temporarily unavailable",
+        ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     duration_ms = (time.monotonic() - started) * 1000.0
     if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
         logger.warning(
@@ -617,6 +632,7 @@ def _investigate_via_canonical(
         "contract_version": result.contract_version,
         "thread_id": result.thread_id,
         "thread_revision": result.thread_revision,
+        "synthesis": result.synthesis,
         "policy_status": result.policy_status,
         "fallback_reason": result.fallback_reason,
         "coverage": result.coverage.model_dump(mode="json"),
@@ -924,6 +940,7 @@ def _run_context_via_canonical(
             "fallback_reason": result.fallback_reason,
             "coverage": result.coverage.model_dump(mode="json"),
             "uncertainty": list(result.uncertainty),
+            "executive": result.synthesis,
         },
         "citations": citations,
         "warnings": list(result.uncertainty),
@@ -1098,6 +1115,16 @@ def investigate_canonical(
             str(exc),
             details={"field": "requested_scope", "reason": exc.code},
         ) from exc
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation continuity is temporarily unavailable",
+        ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     except ThreadNotFound as exc:
         raise ApiError(
             ErrorCode.NOT_FOUND,
@@ -1121,15 +1148,26 @@ def investigate_canonical(
 @router.get("/copilot/history/{session_id}", summary="Bounded conversation history")
 def history(session_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
     """Prior turns for one caller's session -- never visible to another principal."""
-    turns = (
-        legacy_session_history(
-            session_id,
-            principal_subject=principal.subject,
-            scope=scope,
+    try:
+        turns = (
+            legacy_session_history(
+                session_id,
+                principal_subject=principal.subject,
+                scope=scope,
+            )
+            if canonical_orchestration_enabled()
+            else conversation_store().history(session_id, principal.subject)
         )
-        if canonical_orchestration_enabled()
-        else conversation_store().history(session_id, principal.subject)
-    )
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation continuity is temporarily unavailable",
+        ) from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Investigation thread changed; retry the request",
+        ) from exc
     return envelope({"session_id": session_id, "turns": turns}, scope=scope.to_dict())
 
 
