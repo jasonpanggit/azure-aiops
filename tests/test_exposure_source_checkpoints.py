@@ -332,6 +332,21 @@ def test_query_catalog_declares_semantic_families_independently_of_tables() -> N
     )
 
 
+def test_every_query_catalog_family_has_a_governed_freshness_bucket() -> None:
+    from fabric.config import freshness_source_family
+    from onboarding.query_catalog import QueryCatalog
+
+    for spec in QueryCatalog().build(None):
+        family = spec.source_family or spec.name
+        assert freshness_source_family(family) in {
+            "aum",
+            "defender",
+            "images",
+            "workloads",
+            "enrichment",
+        }
+
+
 def test_live_and_persisted_aum_share_canonical_normalization() -> None:
     from intelligence.vulnerability.acquisition import (
         AcquisitionSuccess,
