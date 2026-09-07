@@ -151,7 +151,7 @@ export function ThreadContinuityProvider({
 }: ThreadContinuityProviderProps) {
   const { scope } = useScope();
   const storage = suppliedStorage ?? sessionStorageForThisTab();
-  const restoredThread = useRef<ThreadContinuity | undefined>(undefined);
+  const restoredThread = useRef<ThreadContinuity | null | undefined>(undefined);
   if (restoredThread.current === undefined) {
     restoredThread.current = parseStoredThread(storage) ?? null;
   }
