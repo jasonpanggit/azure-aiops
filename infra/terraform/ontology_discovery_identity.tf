@@ -53,6 +53,18 @@ resource "fabric_workspace_role_assignment" "ontology_coordinator_state" {
   }
 }
 
+resource "fabric_workspace_role_assignment" "ontology_state_api" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+  role         = "Viewer"
+
+  principal = {
+    id   = azurerm_user_assigned_identity.apps.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
 # Authorization canaries run in a second disposable non-production boundary.
 resource "fabric_workspace" "ontology_rbac_validation" {
   count = var.enable_fabric ? 1 : 0
