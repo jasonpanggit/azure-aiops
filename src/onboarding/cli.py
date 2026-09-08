@@ -174,6 +174,7 @@ def _add_metadata_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def cli_command(args: argparse.Namespace) -> int:
+    """Dispatch one CLI action while preserving its documented output streams."""
     action = getattr(args, "azure_graph_action", None)
     if action == "sync":
         manifest = IngestionService(ConnectorConfig.load(args.config)).run()
