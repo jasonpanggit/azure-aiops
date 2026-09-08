@@ -2954,10 +2954,10 @@ def _run_lifecycle(
 
     # Start fixture prepare job
     prepare_result = _az_json(
-        build_job_start_command(
+        _validated_job_start_args(
             resource_group=rg,
             job_name=FIXED_JOB_NAMES["ontology_fixture_prepare"],
-        )[1:],  # strip leading "az"
+        ),
         azure_config_dir=contexts.deployer,
         timeout=args.max_wait_seconds,
     )
@@ -3001,10 +3001,10 @@ def _run_lifecycle(
 
     # Start fixture cleanup job
     cleanup_result = _az_json(
-        build_job_start_command(
+        _validated_job_start_args(
             resource_group=rg,
             job_name=FIXED_JOB_NAMES["ontology_fixture_cleanup"],
-        )[1:],
+        ),
         azure_config_dir=contexts.deployer,
         timeout=args.max_wait_seconds,
     )
@@ -3038,6 +3038,17 @@ def _run_lifecycle(
         "injection_tag": tag_evidence,
         "cleanup": cleanup_evidence,
     }
+
+
+def _validated_job_start_args(
+    *,
+    resource_group: str,
+    job_name: str,
+) -> list[str]:
+    """Validate a Job name through the safety check and return _az_json args."""
+
+    build_job_start_command(resource_group=resource_group, job_name=job_name)
+    return ["containerapp", "job", "start", "-n", job_name, "-g", resource_group]
 
 
 def _wait_for_job_completion(
@@ -3121,10 +3132,10 @@ def _run_coordinator_drain(
 
     # Start coordinator
     result = _az_json(
-        build_job_start_command(
+        _validated_job_start_args(
             resource_group=rg,
             job_name=FIXED_JOB_NAMES["coordinator"],
-        )[1:],
+        ),
         azure_config_dir=contexts.deployer,
         timeout=max_wait,
     )
@@ -3211,10 +3222,10 @@ def _run_publication(
 
     # Start publisher for publication drill
     result = _az_json(
-        build_job_start_command(
+        _validated_job_start_args(
             resource_group=rg,
             job_name=FIXED_JOB_NAMES["publisher"],
-        )[1:],
+        ),
         azure_config_dir=contexts.deployer,
         timeout=args.max_wait_seconds,
     )
