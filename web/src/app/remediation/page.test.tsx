@@ -37,6 +37,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
   operationsApi: { remediationPlans },
   remediationApi: {
     approve,

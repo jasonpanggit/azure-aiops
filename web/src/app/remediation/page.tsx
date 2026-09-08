@@ -9,11 +9,14 @@ import {
   type RiskExceptionRecordRequest,
   type RiskExceptionRecordResult,
 } from "@/components/exposure/RiskExceptionDialog";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { buildRemediationCopilotContext } from "@/lib/copilot/page-adapters";
 import { useApi } from "@/hooks/useApi";
 import { relativeTime, titleize } from "@/lib/format";
 import {
@@ -548,6 +551,7 @@ function RemediationContent() {
   const [handoffSubmitting, setHandoffSubmitting] = useState(false);
   const [handoffResult, setHandoffResult] = useState("");
   const [handoffError, setHandoffError] = useState("");
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const riskInvokerRef = useRef<HTMLButtonElement>(null);
   const requestId = useRef(0);
 
@@ -862,6 +866,80 @@ function RemediationContent() {
   );
   const pageError = plans.error && planRows.length === 0 ? plans.error : null;
 
+  // Read-only Copilot context over the current governed workflow projection.
+  // Approval and execution stay bound to the existing server endpoints; this
+  // only powers explanation and a governed handoff (D-10).
+  const remediationCopilot = useMemo(
+    () =>
+      buildRemediationCopilotContext({
+        scope: effectiveScope,
+        selectedPlan: workflow
+          ? {
+              plan_id: workflow.plan.plan_id,
+              action_id: workflow.action.action_id,
+              action_version: workflow.plan.action_version,
+              title: workflow.plan.title,
+              status: workflow.plan.status,
+              family: workflow.action.family,
+              resource_id: resourceId(workflow.plan),
+              resource_name: resourceName(workflow.plan),
+              snapshot_hash: workflow.preview?.execution_snapshot?.snapshot_hash,
+            }
+          : null,
+        eligibility: workflow
+          ? {
+              plan_executable: workflow.plan.executable,
+              plan_ineligibility_reason: workflow.plan.ineligibility_reason,
+              can_operate: workflow.action.can_operate,
+              operate_ineligible_reason: workflow.action.operate_ineligible_reason,
+              can_approve: workflow.approval.can_approve,
+              approve_ineligible_reason: workflow.approval.approve_ineligible_reason,
+              approval_current: workflow.approval.current,
+              approval_status: workflow.approval.status,
+              has_executable_preview: Boolean(workflow.preview?.execution_snapshot),
+              recommended_step: workflow.recommended_step,
+            }
+          : null,
+        requirements: (workflow?.approval.requirements ?? []).map((requirement) => ({
+          policy_id: requirement.policy_id,
+          role: requirement.role,
+          stage: requirement.stage,
+          satisfied: requirement.satisfied,
+          unmet_reason: requirement.unmet_reason,
+        })),
+        execution: workflow?.execution
+          ? {
+              execution_id: workflow.execution.execution_id,
+              status: workflow.execution.status,
+              retryable: workflow.execution.retryable,
+              cancellable: workflow.execution.cancellable,
+              supersedable: Boolean(workflow.execution.supersedable),
+              remaining_attempts: workflow.execution.remaining_attempts,
+            }
+          : null,
+        evidence: plans.data?.evidence ?? [],
+        historicalEvidence: [],
+        coverage: {
+          visiblePlanCount: planRows.length,
+          totalPlanCount: plans.data?.pagination?.total ?? planRows.length,
+        },
+        sourceStatuses: [
+          {
+            source: "plans",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: plans.data?.data.generated_at,
+          },
+          ...(workflow?.degradation ?? []).map((entry) => ({
+            source: entry.source,
+            availability: entry.availability,
+            freshness: entry.freshness,
+          })),
+        ],
+      }),
+    [effectiveScope, workflow, plans.data, planRows],
+  );
+
   const createContainerReview = async (reason: string) => {
     if (!handoffCase || handoffSubmitting) return;
     setHandoffSubmitting(true);
@@ -959,6 +1037,12 @@ function RemediationContent() {
         eyebrow="Governed remediation"
         title="Fix safely, one step at a time"
         description="Select a governed fix, review its impact, approve the exact snapshot, run it once, and verify the provider outcome."
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about remediation"
+          />
+        }
         metadata={
           <>
             <span>Allowlisted actions only</span>
@@ -1528,6 +1612,15 @@ function RemediationContent() {
           }}
         />
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel={workflow?.plan.title ?? "Remediation"}
+        requestedScope={remediationCopilot.requestedScope}
+        snapshot={remediationCopilot.snapshot}
+        starterQuestions={remediationCopilot.starterQuestions}
+      />
     </div>
   );
 }
