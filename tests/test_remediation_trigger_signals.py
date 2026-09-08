@@ -20,7 +20,11 @@ from intelligence.remediation.remediation_opportunity_engine import (
 )
 
 CATALOG_PATH = (
-    Path(__file__).resolve().parent / "fixtures" / "governed_remediation_catalog.json"
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "fabric"
+    / "catalogs"
+    / "governed_remediation_catalog.v1.json"
 )
 
 

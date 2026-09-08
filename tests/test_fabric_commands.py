@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import pytest
 
 from fabric.commands import FabricCommandService
+from storage.delta_writer import DeltaWriter
+from storage.onelake_writer import OneLakeWriter
 
 
 @dataclass
@@ -65,6 +67,24 @@ def test_validate_command_returns_quality_reports() -> None:
     result = FabricCommandService(FakeSync()).execute("Validate inventory data")
 
     assert result["passed"]
+
+
+def test_publish_catalog_command_is_idempotent(tmp_path) -> None:
+    sync = FakeSync()
+    sync.onelake = OneLakeWriter(
+        "workspace", "lakehouse", local_root=tmp_path / "lakehouse"
+    )
+    sync.delta = DeltaWriter()
+    commands = FabricCommandService(sync)
+
+    first = commands.execute("Publish governed remediation catalog")
+    second = commands.execute("Publish governed remediation catalog")
+
+    assert first["action_count"] == 6
+    assert first["policy_count"] == 4
+    assert first["changed"] is True
+    assert second["content_digest"] == first["content_digest"]
+    assert second["changed"] is False
 
 
 def test_unknown_fabric_command_is_rejected() -> None:

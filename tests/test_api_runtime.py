@@ -6,6 +6,7 @@ import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +27,7 @@ from api.runtime import (
     _defender_configuration_adapter,
     _execution_verifier,
     _exposure_generation_window,
+    _fabric_remediation_planner,
     _hybrid_network_cache,
     _hybrid_remediation_cache,
     _load_fabric_iq_adapter,
@@ -169,6 +171,7 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
+    assert providers.specs["remediation"].required is True
     for name in (
         "semantic",
         "semantic_graph",
@@ -190,6 +193,46 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
         "network-policy",
         11,
     )
+
+
+def test_fabric_remediation_provider_rejects_empty_governed_catalog() -> None:
+    planner = SimpleNamespace(
+        opportunities=SimpleNamespace(catalog=[]),
+        generator=SimpleNamespace(
+            approval_engine=SimpleNamespace(policies=[])
+        ),
+    )
+    runtime = SimpleNamespace(
+        operations_agent=lambda: SimpleNamespace(remediation_planner=planner)
+    )
+
+    with pytest.raises(RuntimeError, match="Governed remediation catalog is empty"):
+        _fabric_remediation_planner(runtime)
+
+
+def test_disabled_fabric_remediation_is_not_required(
+    monkeypatch, tmp_path
+) -> None:
+    import api.runtime as runtime_module
+
+    config = tmp_path / "fabric.yaml"
+    config.write_text(
+        """
+fabric:
+  auth:
+    mode: managed_identity
+  workspace_id: test-workspace
+  lakehouse_id: test-lakehouse
+  remediation: false
+"""
+    )
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config))
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+
+    providers = _build_provider_runtime(object())
+
+    assert providers.specs["remediation"].configured is False
+    assert providers.specs["remediation"].required is False
 
 
 def test_managed_network_provider_analyzes_ingested_flow_observations(

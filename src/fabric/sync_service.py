@@ -40,13 +40,12 @@ from storage.partitioning import PartitioningPolicy
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
-    GRANULAR_EXPOSURE_MAX_ENTITIES,
-    GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
     ONTOLOGY_ENTITY_TYPES,
     ONTOLOGY_RELATIONSHIP_TYPES,
     GranularExposureOntologyMapper,
     InventoryDatasetMapper,
     exposure_gold_products_from_datasets,
+    filter_legacy_granular_exposure_graph,
     ontology_entity_table,
     ontology_relationship_table,
     remediation_decision_ontology_rows,
@@ -1737,6 +1736,30 @@ class FabricSyncService:
                 raise TypeError(f"Invalid governed remediation {field}")
             return value
 
+        action_rows = read("silver", "remediation_action_catalog")
+        policy_rows = read("silver", "remediation_approval_policies")
+        if bool(action_rows) != bool(policy_rows):
+            raise RuntimeError(
+                "Governed remediation catalog publication is incomplete: "
+                "action and approval-policy tables must be published together"
+            )
+        if action_rows:
+            action_versions = {
+                str(row.get("change_version") or "") for row in action_rows
+            }
+            policy_versions = {
+                str(row.get("change_version") or "") for row in policy_rows
+            }
+            if (
+                len(action_versions) != 1
+                or len(policy_versions) != 1
+                or action_versions != policy_versions
+                or "" in action_versions
+            ):
+                raise RuntimeError(
+                    "Governed remediation catalog publication has mixed generations"
+                )
+
         catalog = [
             {
                 "action_id": str(row.get("action_id") or ""),
@@ -1751,7 +1774,7 @@ class FabricSyncService:
                 "deployment_stages": parsed(row, "deployment_stages_json", list),
                 "effectiveness": parsed(row, "effectiveness_json", dict),
             }
-            for row in read("silver", "remediation_action_catalog")
+            for row in action_rows
         ]
         policies = [
             {
@@ -1770,7 +1793,7 @@ class FabricSyncService:
                     parsed(row, "role_ids_json", dict) if row.get("role_ids_json") else {}
                 ),
             }
-            for row in read("silver", "remediation_approval_policies")
+            for row in policy_rows
         ]
         return {
             "inventory": read("bronze", "resources"),
@@ -1792,11 +1815,13 @@ class FabricSyncService:
             if self.delta.version(relationship_uri) is not None
             else []
         )
-        result = OntologyGraphSynchronizer(
-            OntologyValidator(),
-            max_entities=GRANULAR_EXPOSURE_MAX_ENTITIES,
-            max_relationships=GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
-        ).synchronize(
+        previous_entities, previous_relationships = (
+            filter_legacy_granular_exposure_graph(
+                previous_entities,
+                previous_relationships,
+            )
+        )
+        result = OntologyGraphSynchronizer(OntologyValidator()).synchronize(
             datasets["ontology_entities"],
             datasets["ontology_relationships"],
             previous_entities=previous_entities,

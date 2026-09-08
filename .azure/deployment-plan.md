@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Validated
+Status: Ready for Validation
 
 ## Objective
 
@@ -32,6 +32,14 @@ confidence and graph observation labels; and rename the inspection-bypass metric
 to the finding population it actually counts. This is an API/web image-only
 rollout. No infrastructure, sizing, RBAC, APIM, secret, or region change is in
 scope.
+
+Current repair: deploy the final Network summary semantics correction. Remove the
+page-level ordinary-pagination warning while preserving per-tab range/pagination;
+contract an intentionally omitted summary Route node into a direct
+RouteTable-to-AzureFirewall next-hop edge; and make exhaustive badge-loader
+coverage authoritative for drawer clean state so 83/83 does not remain
+unconfirmed solely because the visible list is paged. API/web image update only;
+no infrastructure, sizing, RBAC, APIM, or secret changes.
 
 Current follow-up: make the Network specialist answer the operator's actual
 question instead of emitting a findings-only JSON inventory, deduplicate
@@ -65,6 +73,18 @@ target before enabling authoritative publication. No model-derived relationship
 may enter the authoritative ontology in this deployment; shadow mode remains
 mandatory. Do not replace APIM, the Foundry account/project, Fabric workspace,
 or existing Container Apps.
+
+Current repair: deploy the compliance-to-remediation fix and make governed
+remediation catalog publication deployment-owned. Commit only the remediation
+catalog/bootstrap files, publish an immutable shared image tag, and update the
+existing API/web Container Apps in place. After Terraform apply, the repository
+deployment wrapper must publish the packaged versioned catalog through the
+authenticated application CLI before revision verification. The remediation
+provider is required for readiness when enabled, so an absent, one-sided, or
+mixed catalog generation must fail closed rather than serve an empty page as
+healthy. No new infrastructure, resource deletion/replacement, RBAC expansion,
+APIM change, Fabric workspace/lakehouse change, region change, or capacity
+change is in scope.
 
 ## Workspace
 
@@ -156,6 +176,29 @@ or existing Container Apps.
 
 ## Validation Proof
 
+- 2026-09-08: Final Network summary semantics passed 159 backend tests, 199 web
+  tests, 3 Chromium scenarios, TypeScript, ESLint, changed-path Ruff, Next.js
+  production build, Python source/wheel build, and revert/reapply causality
+  checks. The fixes are committed at `65c0f8bed` and `548b88080`; concurrent
+  uncommitted remediation/Fabric/Exposure work is excluded because ACR builds
+  from committed HEAD.
+
+- 2026-09-08: Governed remediation catalog deployment preparation passed the
+  full Python suite, changed-path Ruff, `git diff --check`, `bash -n
+  infra/scripts/deploy.sh`, Python compile, Next.js production build, and wheel
+  inspection proving `fabric/catalogs/governed_remediation_catalog.v1.json` is
+  packaged. The official Terraform preflight passed installation,
+  authentication/subscription selection, init, validate, state access, and
+  template checks; its bare plan omitted this repository's secret-backed
+  variables. The canonical `AIOPS_ENV_FILE=web/.env.local
+  ./infra/scripts/deploy.sh plan` path supplied those variables successfully.
+  The unrestricted plan was rejected because it contained six unrelated
+  Fabric role additions and unrelated ontology-job updates. A targeted
+  `azurerm_container_app.api`/`azurerm_container_app.web` plan completed with
+  zero mutating resources at the currently deployed tag, zero destruction, and
+  no Terraform/RBAC source changes. Deployment remains constrained to those
+  two existing Container Apps plus the post-apply authenticated catalog
+  publication command.
 - 2026-09-08: Network message-semantics remediation passed 8/8 focused backend
   boundary tests, 43/43 focused frontend tests, 275/275 adjacent backend tests,
   59/59 applicable frontend import-graph tests, TypeScript, changed-path Ruff,

@@ -81,38 +81,45 @@ Example:
 
 Malformed JSON, unknown policy conditions, duplicate identities, invalid thresholds, incomplete rollback metadata, or invalid effectiveness percentages fail closed.
 
-## Governed catalog and seeding
+## Governed catalog publication
 
 The governed remediation catalog and approval policies live at
-`tests/fixtures/governed_remediation_catalog.json` in this repository. That
-file is the single source of truth for what actions the planner can propose;
+`src/fabric/catalogs/governed_remediation_catalog.v1.json` in this repository.
+The versioned file is packaged with the application and is the single source
+of truth for what actions the planner can propose;
 `remediation_planning_snapshot()` in `src/fabric/sync_service.py` reads only
 `silver/remediation_action_catalog` and `silver/remediation_approval_policies`
 from the lakehouse, so nothing is proposed anywhere until this content is
-seeded.
+published.
 
-Seed it into a lakehouse with:
+Production publication is deployment-owned. A successful
+`infra/scripts/deploy.sh apply` invokes the application CLI after Terraform
+has provisioned the target and before deployed-revision verification:
 
 ```bash
-.venv/bin/python scripts/seed_remediation_catalog.py --target <lakehouse-root-or-table-uri>
+.venv/bin/aiops-inventory fabric \
+  "Publish governed remediation catalog" \
+  --config fabric.config.yaml
 ```
 
-`--target` is required; the seeder refuses to run without an explicit target
-so it can never write to a default or production location by accident. Add
-`--dry-run` to see a summary of what would be written without writing
-anything, and `--catalog <path>` to seed from a different governed catalog
-file. The seeder validates the catalog through the real
-`RemediationOpportunityEngine` and `ApprovalEngine` before writing anything,
-and exits non-zero without writing if the content is invalid. It writes both
-tables in overwrite mode keyed on `action_id`/`policy_id`, so running it
-repeatedly against the same target converges on the same rows rather than
-accumulating duplicates.
+The CLI resolves the authenticated workspace and lakehouse from the Fabric
+runtime configuration. It validates the catalog through the real
+`RemediationOpportunityEngine` and `ApprovalEngine`, writes both tables
+idempotently, and gives both tables the same content digest. The read path
+rejects missing, one-sided, or mixed catalog generations, while the API marks
+the required remediation provider unavailable when the catalog is empty.
+Consequently, an unconfigured deployment fails readiness instead of serving
+an apparently healthy but empty remediation page.
 
-**Seeding a catalog action grants it no execution authority.** The seeder
+`scripts/seed_remediation_catalog.py` remains only as a local-development and
+break-glass compatibility wrapper. It accepts an explicit local lakehouse
+root and cannot authenticate to or select a production Fabric workspace.
+
+**Publishing a catalog action grants it no execution authority.** Publication
 only writes declarative, human-reviewed description text into governed
-configuration tables; it performs no cloud calls, spawns no process, and
-nothing in this repository reads a seeded action as permission to run
-anything. Execution remains gated behind the existing approval workflow.
+configuration tables. Nothing in this repository reads a published action as
+permission to run anything. Execution remains gated behind the existing
+approval workflow.
 
 ### What evidence triggers each seeded action, and what approval it requires
 
