@@ -36,22 +36,26 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams.current,
 }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  operationsApi: { remediationPlans },
-  remediationApi: {
-    approve,
-    cancel,
-    createExposureHandoff,
-    execute,
-    execution,
-    exposureHandoffs,
-    retry,
-    supersede,
-    workflow,
-  },
-  vulnerabilityApi: { acceptRisk },
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+    isCanonicalAzureResourceId: actual.isCanonicalAzureResourceId,
+    operationsApi: { remediationPlans },
+    remediationApi: {
+      approve,
+      cancel,
+      createExposureHandoff,
+      execute,
+      execution,
+      exposureHandoffs,
+      retry,
+      supersede,
+      workflow,
+    },
+    vulnerabilityApi: { acceptRisk },
+  };
+});
 
 import RemediationPage from "./page";
 import { usePollingBackoff } from "./polling";
@@ -59,6 +63,7 @@ import { ApiError } from "@/lib/types";
 
 const TARGET = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-payroll";
 const OTHER_TARGET = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-other";
+const PRIVATE_ENDPOINT_TARGET = "/subscriptions/sub-1/resourceGroups/rg-network/providers/Microsoft.Network/privateEndpoints/cosmos-pe";
 
 const envelope = <T,>(data: T) => ({
   data,
@@ -332,6 +337,163 @@ describe("Governed remediation workflow", () => {
       { subscription: ["sub-1"] },
       [],
     ));
+  });
+
+  it("renders a bounded compliance finding as manual review when no generated plan matches", async () => {
+    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
+    searchParams.current = new URLSearchParams({
+      resource_key: PRIVATE_ENDPOINT_TARGET,
+      review_source: "compliance",
+      finding_type: "missing_private_endpoint",
+      finding_severity: "high",
+      finding_title: "Private endpoint network policy gap",
+      recommendation: "Review private endpoint subnet policy and DNS linkage.",
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Compliance finding review" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Private endpoint network policy gap")).toBeInTheDocument();
+    expect(screen.getByText(PRIVATE_ENDPOINT_TARGET)).toBeInTheDocument();
+    expect(screen.getByText("High")).toBeInTheDocument();
+    expect(
+      screen.getByText("Review private endpoint subnet policy and DNS linkage."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Manual review only")).toBeInTheDocument();
+    expect(
+      screen.getByText(/No executable network action has been generated/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record decision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Run/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Remediation workflow" })).not.toBeInTheDocument();
+    expect(screen.getByText("From Compliance")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to compliance" })).toHaveAttribute("href", "/compliance");
+    expect(workflow).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("accepts compliance review text at the exact query bounds", async () => {
+    const title = "T".repeat(200);
+    const recommendation = "R".repeat(1_000);
+    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
+    searchParams.current = new URLSearchParams({
+      resource_key: PRIVATE_ENDPOINT_TARGET,
+      review_source: "compliance",
+      finding_type: "missing_private_endpoint",
+      finding_severity: "high",
+      finding_title: title,
+      recommendation,
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Compliance finding review" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.getByText(recommendation)).toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+  });
+
+  it("does not expose an unrelated executable plan for the same compliance resource", async () => {
+    remediationPlans.mockResolvedValueOnce(envelope({
+      plans: [{
+        plan_id: "unrelated-patch-plan",
+        action_version: "version-1",
+        action_id: "controlled-patch-recovery",
+        title: "Install an unrelated operating system patch",
+        status: "Draft",
+        resource: { id: PRIVATE_ENDPOINT_TARGET, name: "cosmos-pe" },
+      }],
+    }));
+    searchParams.current = new URLSearchParams({
+      resource_key: PRIVATE_ENDPOINT_TARGET,
+      review_source: "compliance",
+      finding_type: "missing_owner",
+      finding_severity: "medium",
+      finding_title: "Missing accountable owner",
+      recommendation: "Assign a network owner.",
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Compliance finding review" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Install an unrelated operating system patch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Remediation workflow" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve|Run/ })).not.toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an over-limit title", "T".repeat(201), "Review the private endpoint."],
+    ["an over-limit recommendation", "Private endpoint policy gap", "R".repeat(1_001)],
+    ["an incomplete finding", "Private endpoint policy gap", ""],
+  ])("rejects %s instead of presenting untrusted review context", async (_case, title, recommendation) => {
+    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
+    searchParams.current = new URLSearchParams({
+      resource_key: PRIVATE_ENDPOINT_TARGET,
+      review_source: "compliance",
+      finding_type: "missing_private_endpoint",
+      finding_severity: "high",
+      finding_title: title,
+      recommendation,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("No fix for this resource")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Compliance finding review" }),
+    ).not.toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "a legacy resource alias",
+      (params: URLSearchParams) => {
+        params.delete("resource_key");
+        params.set("resource", PRIVATE_ENDPOINT_TARGET);
+      },
+    ],
+    [
+      "an extra query field",
+      (params: URLSearchParams) => params.set("evidence", "arbitrary"),
+    ],
+    [
+      "a duplicate allowlisted field",
+      (params: URLSearchParams) => params.append("recommendation", "Second value"),
+    ],
+  ])("rejects compliance review context with %s", async (_case, mutate) => {
+    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
+    const params = new URLSearchParams({
+      resource_key: PRIVATE_ENDPOINT_TARGET,
+      review_source: "compliance",
+      finding_type: "missing_private_endpoint",
+      finding_severity: "high",
+      finding_title: "Private endpoint policy gap",
+      recommendation: "Review the private endpoint.",
+    });
+    mutate(params);
+    searchParams.current = params;
+
+    renderPage();
+
+    expect(await screen.findByText("No fix for this resource")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Compliance finding review" }),
+    ).not.toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
   });
 
   it("lets an operator narrow approval to a chosen subset of available patches", async () => {

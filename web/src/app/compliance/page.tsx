@@ -70,6 +70,8 @@ interface Violation {
 
 const POLICY_KEY = "aiops.architecture-policy.v1";
 const EXCEPTION_KEY = "aiops.architecture-exceptions.v1";
+const COMPLIANCE_REVIEW_TITLE_MAX = 200;
+const COMPLIANCE_REVIEW_RECOMMENDATION_MAX = 1_000;
 
 const DEFAULT_POLICY: DesignPolicy = {
   name: "Approved hub-spoke landing-zone baseline",
@@ -333,9 +335,24 @@ function attachVulnerabilityContext(violations: Violation[], exposures: Vulnerab
  * key would filter the plan list down to nothing.
  */
 function remediationHref(violation: Violation): string {
-  return isCanonicalAzureResourceId(violation.resource)
-    ? `/remediation?resource_key=${encodeURIComponent(violation.resource)}`
-    : "/remediation";
+  if (!isCanonicalAzureResourceId(violation.resource)) return "/remediation";
+
+  const params = new URLSearchParams({ resource_key: violation.resource });
+  const title = violation.title.trim();
+  const recommendation = violation.remediation.trim();
+  if (
+    title
+    && title.length <= COMPLIANCE_REVIEW_TITLE_MAX
+    && recommendation
+    && recommendation.length <= COMPLIANCE_REVIEW_RECOMMENDATION_MAX
+  ) {
+    params.set("review_source", "compliance");
+    params.set("finding_type", violation.type);
+    params.set("finding_severity", violation.severity);
+    params.set("finding_title", title);
+    params.set("recommendation", recommendation);
+  }
+  return `/remediation?${params.toString()}`;
 }
 
 function remediationFor(type: ViolationType): string {

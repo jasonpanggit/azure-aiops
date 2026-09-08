@@ -26,6 +26,7 @@ import {
 import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import {
+  isCanonicalAzureResourceId,
   operationsApi,
   remediationApi,
   vulnerabilityApi,
@@ -48,6 +49,130 @@ import { usePollingBackoff } from "./polling";
 
 import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./blockers";
 import type { WorkflowStep } from "./blockers";
+
+const COMPLIANCE_FINDING_TYPES = new Set([
+  "firewall_bypass",
+  "missing_udr",
+  "unapproved_peering",
+  "dev_uat_to_prod",
+  "any_any_rule",
+  "public_paas_exposure",
+  "missing_private_endpoint",
+  "dns_gap",
+  "missing_owner",
+  "logging_gap",
+] as const);
+const COMPLIANCE_FINDING_SEVERITIES = new Set(["critical", "high", "medium", "low"] as const);
+const COMPLIANCE_REVIEW_RESOURCE_MAX = 2_048;
+const COMPLIANCE_REVIEW_TITLE_MAX = 200;
+const COMPLIANCE_REVIEW_RECOMMENDATION_MAX = 1_000;
+const COMPLIANCE_REVIEW_QUERY_KEYS = [
+  "resource_key",
+  "review_source",
+  "finding_type",
+  "finding_severity",
+  "finding_title",
+  "recommendation",
+] as const;
+
+type ComplianceFindingType = typeof COMPLIANCE_FINDING_TYPES extends Set<infer Value> ? Value : never;
+type ComplianceFindingSeverity = typeof COMPLIANCE_FINDING_SEVERITIES extends Set<infer Value> ? Value : never;
+
+interface ComplianceFindingReview {
+  resource: string;
+  type: ComplianceFindingType;
+  severity: ComplianceFindingSeverity;
+  title: string;
+  recommendation: string;
+}
+
+function ComplianceFindingReviewPanel({ review }: { review: ComplianceFindingReview }) {
+  return (
+    <section className="card remediation-workflow-selection">
+      <div className="card-header">
+        <div>
+          <h2>Compliance finding review</h2>
+          <p>{review.title}</p>
+        </div>
+        <StatusBadge label="Manual review only" tone="warning" compact />
+      </div>
+      <div className="card-body">
+        <dl className="compliance-fact-list">
+          <dt>Resource</dt>
+          <dd>{review.resource}</dd>
+          <dt>Finding type</dt>
+          <dd>{titleize(review.type)}</dd>
+          <dt>Severity</dt>
+          <dd>{titleize(review.severity)}</dd>
+          <dt>Recommendation</dt>
+          <dd>{review.recommendation}</dd>
+        </dl>
+        <p>
+          No executable network action has been generated for this compliance finding.
+          Route the recommendation through the governed network-owner review process.
+        </p>
+        <Link className="button" href="/remediation">Show all fixes in scope</Link>
+      </div>
+    </section>
+  );
+}
+
+function boundedQueryValue(
+  searchParams: { get(name: string): string | null },
+  name: string,
+  maxLength: number,
+): string | null {
+  const value = searchParams.get(name)?.trim() ?? "";
+  return value && value.length <= maxLength ? value : null;
+}
+
+function complianceFindingReview(
+  searchParams: Pick<URLSearchParams, "get" | "getAll" | "keys">,
+): ComplianceFindingReview | null {
+  const keys = Array.from(searchParams.keys());
+  if (
+    keys.length !== COMPLIANCE_REVIEW_QUERY_KEYS.length
+    || keys.some((key) => !COMPLIANCE_REVIEW_QUERY_KEYS.includes(
+      key as typeof COMPLIANCE_REVIEW_QUERY_KEYS[number],
+    ))
+    || COMPLIANCE_REVIEW_QUERY_KEYS.some((key) => searchParams.getAll(key).length !== 1)
+  ) return null;
+  if (searchParams.get("review_source") !== "compliance") return null;
+  const requestedResource = boundedQueryValue(
+    searchParams,
+    "resource_key",
+    COMPLIANCE_REVIEW_RESOURCE_MAX,
+  );
+  if (
+    !requestedResource
+    || !isCanonicalAzureResourceId(requestedResource)
+  ) return null;
+
+  const type = boundedQueryValue(searchParams, "finding_type", 64);
+  const severity = boundedQueryValue(searchParams, "finding_severity", 16);
+  const title = boundedQueryValue(searchParams, "finding_title", COMPLIANCE_REVIEW_TITLE_MAX);
+  const recommendation = boundedQueryValue(
+    searchParams,
+    "recommendation",
+    COMPLIANCE_REVIEW_RECOMMENDATION_MAX,
+  );
+  if (
+    !type
+    || !COMPLIANCE_FINDING_TYPES.has(type as ComplianceFindingType)
+    || !severity
+    || !COMPLIANCE_FINDING_SEVERITIES.has(severity as ComplianceFindingSeverity)
+    || !title
+    || !recommendation
+  ) return null;
+
+  return {
+    resource: requestedResource,
+    type: type as ComplianceFindingType,
+    severity: severity as ComplianceFindingSeverity,
+    title,
+    recommendation,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -493,6 +618,7 @@ function RemediationContent() {
   const fromGeneration = searchParams.get("generation") ?? "";
   const requestedHandoff = searchParams.get("handoff") ?? "";
   const requestedReturnFocus = searchParams.get("return_focus") ?? "";
+  const complianceReview = complianceFindingReview(searchParams);
   const effectiveScope = useMemo<ScopeSelection>(() => {
     const scoped: ScopeSelection = { ...scope };
     const subscriptions = searchParams.getAll("subscription").filter(Boolean);
@@ -590,9 +716,15 @@ function RemediationContent() {
       ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
     });
   }, [planRows, query]);
-  const selectedPlan = planRows.find((plan) => plan.plan_id === selectedPlanId) ?? null;
+  const selectedPlan = complianceReview
+    ? null
+    : planRows.find((plan) => plan.plan_id === selectedPlanId) ?? null;
 
   useEffect(() => {
+    if (complianceReview) {
+      setSelectedPlanId("");
+      return;
+    }
     if (!planRows.length) {
       setSelectedPlanId("");
       return;
@@ -600,7 +732,7 @@ function RemediationContent() {
     if (selectedPlanId && planRows.some((plan) => plan.plan_id === selectedPlanId)) return;
     const contextual = planRows.find((plan) => resourceMatches(plan, requestedResource));
     setSelectedPlanId((contextual ?? planRows[0]).plan_id);
-  }, [planRows, requestedResource, selectedPlanId]);
+  }, [complianceReview, planRows, requestedResource, selectedPlanId]);
 
   useEffect(() => {
     if (!selectedPlanId) {
@@ -1060,7 +1192,7 @@ function RemediationContent() {
       {(requestedResource || fromCve || fromKb || fromIncident) && (
         <div className="callout remediation-handoff remediation-handoff-context">
           <div>
-            <strong>From Exposure</strong>
+            <strong>{complianceReview ? "From Compliance" : "From Exposure"}</strong>
             <span>
               Scoped handoff:
               {requestedResource ? ` ${requestedResource}` : ""}
@@ -1076,7 +1208,10 @@ function RemediationContent() {
               <span> Return focus: {requestedReturnFocus}.</span>
             )}
             <p>
-              Nothing executes from Exposure. The server revalidates targets,
+              {complianceReview
+                ? "Nothing executes from this compliance handoff."
+                : "Nothing executes from Exposure."}
+              {" "}The server revalidates targets,
               evidence, approval, and operator eligibility immediately before
               the governed transition.
             </p>
@@ -1092,40 +1227,42 @@ function RemediationContent() {
                 Record risk exception
               </button>
             )}
-            <Link className="button button-quiet" href={returnTo}>
-              Back to exposure
+            <Link className="button button-quiet" href={complianceReview ? "/compliance" : returnTo}>
+              {complianceReview ? "Back to compliance" : "Back to exposure"}
             </Link>
           </div>
         </div>
       )}
 
-      <nav className="remediation-workflow-steps" aria-label="Remediation workflow">
-        {WORKFLOW_STEPS.map((step) => {
-          const projected = workflow?.steps.find((item) => item.id === step.id)?.status;
-          const status = step.id === "select" ? "complete" : projected ?? "pending";
-          const stepBlockers = (workflow?.blockers ?? []).filter((row) => row.step === step.id);
-          const blockedSeverityStyle = status === "blocked"
-            ? {
-                color: stepBlockers.some((row) => (row.severity ?? BLOCKER_VOCABULARY[row.code]?.severity) === "critical")
-                  ? "var(--color-critical)"
-                  : "var(--color-warning)",
-              }
-            : undefined;
-          return (
-            <button
-              type="button"
-              key={step.id}
-              className={activeStep === step.id ? "remediation-workflow-step-active" : ""}
-              onClick={() => setActiveStep(step.id)}
-              disabled={step.id !== "select" && !selectedPlan}
-            >
-              <span>{WORKFLOW_STEPS.findIndex((item) => item.id === step.id) + 1}</span>
-              <strong>{step.label}</strong>
-              <small style={blockedSeverityStyle}>{titleize(status)}</small>
-            </button>
-          );
-        })}
-      </nav>
+      {!complianceReview && (
+        <nav className="remediation-workflow-steps" aria-label="Remediation workflow">
+          {WORKFLOW_STEPS.map((step) => {
+            const projected = workflow?.steps.find((item) => item.id === step.id)?.status;
+            const status = step.id === "select" ? "complete" : projected ?? "pending";
+            const stepBlockers = (workflow?.blockers ?? []).filter((row) => row.step === step.id);
+            const blockedSeverityStyle = status === "blocked"
+              ? {
+                  color: stepBlockers.some((row) => (row.severity ?? BLOCKER_VOCABULARY[row.code]?.severity) === "critical")
+                    ? "var(--color-critical)"
+                    : "var(--color-warning)",
+                }
+              : undefined;
+            return (
+              <button
+                type="button"
+                key={step.id}
+                className={activeStep === step.id ? "remediation-workflow-step-active" : ""}
+                onClick={() => setActiveStep(step.id)}
+                disabled={step.id !== "select" && !selectedPlan}
+              >
+                <span>{WORKFLOW_STEPS.findIndex((item) => item.id === step.id) + 1}</span>
+                <strong>{step.label}</strong>
+                <small style={blockedSeverityStyle}>{titleize(status)}</small>
+              </button>
+            );
+          })}
+        </nav>
+      )}
 
       {workflow && workflow.blockers.length > 0 && (
         <WorkflowBlockers blockers={workflow.blockers} activeStep={activeStep} />
@@ -1135,6 +1272,8 @@ function RemediationContent() {
         <StatePanel title="Remediation plans unavailable" message={pageError.message} tone="error" />
       ) : plans.loading ? (
         <StatePanel title="Loading governed fixes" message="Reading scoped, evidence-backed plans." tone="loading" />
+      ) : complianceReview ? (
+        <ComplianceFindingReviewPanel review={complianceReview} />
       ) : (
         <div className="remediation-workflow-layout">
           <aside className="card remediation-workflow-selection">

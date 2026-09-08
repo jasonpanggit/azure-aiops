@@ -44,6 +44,8 @@ const envelope = <T,>(data: T) => ({
   knowledge_version: "graph-1",
 });
 
+const PRIVATE_ENDPOINT_TARGET = "/subscriptions/sub-1/resourceGroups/rg-network/providers/Microsoft.Network/privateEndpoints/cosmos-pe";
+
 function renderPage() {
   return render(
     <ScopeProvider>
@@ -164,6 +166,79 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
         governedDeviations: [],
       }),
     );
+  });
+
+  it("hands a canonical network finding to remediation as bounded review context", async () => {
+    gaps.mockResolvedValue(envelope({
+      gaps: [{
+        gap_id: "gap-private-endpoint-policy",
+        category: "private endpoint",
+        severity: "high",
+        title: "Private endpoint network policy gap",
+        detail: "The selected private endpoint requires a network-owner review.",
+        resource_id: PRIVATE_ENDPOINT_TARGET,
+        resource_name: "cosmos-pe",
+        resource_type: "microsoft.network/privateendpoints",
+        evidence: { arbitrary: "must not cross the URL boundary" },
+        recommendation: "Review private endpoint subnet policy and DNS linkage.",
+        basis: "Observed private endpoint configuration",
+        connection_id: "prod",
+        subscription_id: "sub-1",
+        environment: "prod",
+      }],
+      intended_design_declared: true,
+      summary: {},
+    }));
+
+    renderPage();
+
+    const href = (await screen.findByRole("link", { name: "Open remediation" })).getAttribute("href");
+    const handoff = new URL(href ?? "", "https://aiops.invalid");
+    expect(handoff.pathname).toBe("/remediation");
+    expect(handoff.searchParams.get("resource_key")).toBe(PRIVATE_ENDPOINT_TARGET);
+    expect(handoff.searchParams.get("review_source")).toBe("compliance");
+    expect(handoff.searchParams.get("finding_type")).toBe("missing_private_endpoint");
+    expect(handoff.searchParams.get("finding_severity")).toBe("high");
+    expect(handoff.searchParams.get("finding_title")).toBe("Private endpoint network policy gap");
+    expect(handoff.searchParams.get("recommendation")).toBe("Review private endpoint subnet policy and DNS linkage.");
+    expect(Array.from(handoff.searchParams.keys()).sort()).toEqual([
+      "finding_severity",
+      "finding_title",
+      "finding_type",
+      "recommendation",
+      "resource_key",
+      "review_source",
+    ]);
+  });
+
+  it("fails closed to a resource-only handoff when review text exceeds its bound", async () => {
+    gaps.mockResolvedValue(envelope({
+      gaps: [{
+        gap_id: "gap-private-endpoint-policy",
+        category: "private endpoint",
+        severity: "high",
+        title: "T".repeat(201),
+        detail: "The selected private endpoint requires a network-owner review.",
+        resource_id: PRIVATE_ENDPOINT_TARGET,
+        resource_name: "cosmos-pe",
+        resource_type: "microsoft.network/privateendpoints",
+        evidence: {},
+        recommendation: "Review private endpoint subnet policy and DNS linkage.",
+        basis: "Observed private endpoint configuration",
+        connection_id: "prod",
+        subscription_id: "sub-1",
+        environment: "prod",
+      }],
+      intended_design_declared: true,
+      summary: {},
+    }));
+
+    renderPage();
+
+    const href = (await screen.findByRole("link", { name: "Open remediation" })).getAttribute("href");
+    const handoff = new URL(href ?? "", "https://aiops.invalid");
+    expect(handoff.searchParams.get("resource_key")).toBe(PRIVATE_ENDPOINT_TARGET);
+    expect(Array.from(handoff.searchParams.keys())).toEqual(["resource_key"]);
   });
 
   it("evaluates posture, maps violations to business context, and governs exceptions", async () => {
