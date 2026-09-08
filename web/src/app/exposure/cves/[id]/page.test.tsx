@@ -318,7 +318,9 @@ describe("CVE detail", () => {
     renderPage();
 
     const region = await screen.findByRole("region", { name: "Attack path section" });
-    expect(within(region).getByText(/Showing last successful Attack path data/)).toBeInTheDocument();
+    expect(
+      await within(region).findByText(/Showing last successful Attack path data/),
+    ).toBeInTheDocument();
     api.attackPath.mockRejectedValueOnce(new Error("Defender graph refresh unavailable"));
     await user.click(within(region).getByRole("button", { name: "Retry Attack path" }));
     expect(
