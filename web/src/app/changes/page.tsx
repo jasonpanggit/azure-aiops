@@ -1,12 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
+import { buildChangesCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { operationsApi } from "@/lib/services";
@@ -23,6 +27,7 @@ function sourceLink(event: IncidentTimelineEvent): string | null {
 /** Correlated change stream extracted from active Situation timelines. */
 export default function ChangesPage() {
   const { scope } = useScope();
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const incidents = useApi(() => operationsApi.incidents(scope), [scope]);
   const changes = (incidents.data?.data.incidents ?? [])
     .flatMap((entry) =>
@@ -32,6 +37,27 @@ export default function ChangesPage() {
     )
     .sort((left, right) => Date.parse(right.event.timestamp) - Date.parse(left.event.timestamp));
 
+  // Read-only contextual Copilot over the already-loaded correlation stream.
+  // Correlation is advisory and never causal; no mutation authority (D-03, D-08, D-10).
+  const changesCopilot = buildChangesCopilotContext({
+    scope,
+    changes: changes.map(({ event, incident, services }) => ({
+      event_id: event.event_id,
+      incident_id: incident.incident_id,
+      incident_title: incident.title,
+      event_type: event.event_type,
+      summary: event.summary,
+      source: event.source,
+      timestamp: event.timestamp,
+      business_services: services,
+    })),
+    loadedCount: changes.length,
+    totalCount: changes.length,
+    available: !incidents.error && Boolean(incidents.data),
+    freshness: incidents.error || !incidents.data ? "unavailable" : "fresh",
+    evidence: incidents.data?.evidence ?? [],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
@@ -39,7 +65,15 @@ export default function ChangesPage() {
         title="What changed near active situations?"
         description="Review source events in temporal proximity to authorized situations. Proximity is a correlation signal, not a causal conclusion."
         metadata={<><span>{changes.length} correlated changes</span><span>Correlation is not confirmation</span></>}
-        actions={<Link className="button button-secondary" href="/changes/predeploy">Assess a proposed change</Link>}
+        actions={
+          <>
+            <CopilotDrawerButton
+              onClick={() => setCopilotOpen(true)}
+              label="Ask Copilot about changes"
+            />
+            <Link className="button button-secondary" href="/changes/predeploy">Assess a proposed change</Link>
+          </>
+        }
       />
       <EvidenceBar evidence={incidents.data?.evidence} knowledgeVersion={incidents.data?.knowledge_version} warnings={incidents.data?.warnings} />
       {incidents.error ? (
@@ -79,6 +113,15 @@ export default function ChangesPage() {
           </div>
         </div>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Change intelligence"
+        requestedScope={changesCopilot.requestedScope}
+        snapshot={changesCopilot.snapshot}
+        starterQuestions={changesCopilot.starterQuestions}
+      />
     </div>
   );
 }

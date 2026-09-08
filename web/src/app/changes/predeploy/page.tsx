@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 
 import BlastRadiusGraph from "@/components/predeploy/BlastRadiusGraph";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -13,6 +15,7 @@ import type { StatusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
+import { buildPredeployCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { predeployApi } from "@/lib/services";
@@ -60,6 +63,7 @@ export default function PreDeploymentPage() {
   const [result, setResult] = useState<Envelope<ChangeAssessment> | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const evidence = useMemo(() => result?.data.risk?.evidence ?? [], [result]);
   const { filteredRows: filteredEvidence, filters: evidenceFilters, resetFilters: resetEvidenceFilters } = useColumnFilters(evidence, [
@@ -125,6 +129,62 @@ export default function PreDeploymentPage() {
   const blast = assessment?.blast_radius;
   const rows = history.data?.data.assessments ?? [];
 
+  // Read-only contextual Copilot over the loaded assessment. Simulation, risk,
+  // and CAB verdicts are predicted, never observed; nothing here deploys or
+  // approves — governed remediation stays a separate workflow (D-03, D-06, D-10).
+  const predeployCopilot = buildPredeployCopilotContext({
+    scope,
+    change: assessment
+      ? {
+          change_id: assessment.change.change_id,
+          title: assessment.change.title,
+          author: assessment.change.author,
+          source: assessment.change.source,
+          target_environment: assessment.change.target_environment,
+          resource_change_count: assessment.change.effective_change_count,
+        }
+      : null,
+    simulation: assessment?.simulation
+      ? {
+          highest_severity: assessment.simulation.highest_severity,
+          simulated_domains: assessment.simulation.simulated_domains,
+          by_severity: assessment.simulation.by_severity,
+          effect_count: assessment.simulation.effects.length,
+          confirmed_outcome: assessment.simulation.confirmed_outcome,
+        }
+      : null,
+    risk: risk
+      ? {
+          score: risk.score,
+          level: risk.level,
+          confidence: risk.confidence,
+          confirmed_cause: risk.confirmed_cause,
+        }
+      : null,
+    cab: cab
+      ? {
+          verdict: cab.verdict,
+          risk_level: cab.risk_level,
+          required_approvals: cab.required_approvals,
+          confirmed_cause: cab.confirmed_cause,
+        }
+      : null,
+    impactedResources: impactedResources.map((resource) => ({
+      resource_id: resource.resource_id,
+      resource_name: resource.name,
+      business_service: resource.business_service,
+      environment: resource.environment,
+      relationship: resource.depth === 0 ? "directly_changed" : resource.relationship,
+    })),
+    impactedTotalCount: blast?.total_impacted_count ?? impactedResources.length,
+    impactedTruncated: blast?.truncated,
+    available: Boolean(assessment),
+    freshness: assessment ? "fresh" : "unavailable",
+    observedAt: assessment?.assessed_at,
+    unknowns: risk?.unknowns,
+    evidence: result?.evidence ?? [],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
@@ -136,6 +196,12 @@ export default function PreDeploymentPage() {
             <span>{rows.length} recent assessments</span>
             <span>Assessed from declared configuration, not observed behaviour</span>
           </>
+        }
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about this assessment"
+          />
         }
       />
 
@@ -550,6 +616,15 @@ export default function PreDeploymentPage() {
           )}
         </div>
       </section>
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Pre-deployment assessment"
+        requestedScope={predeployCopilot.requestedScope}
+        snapshot={predeployCopilot.snapshot}
+        starterQuestions={predeployCopilot.starterQuestions}
+      />
     </div>
   );
 }

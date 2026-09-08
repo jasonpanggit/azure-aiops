@@ -1449,6 +1449,102 @@ export interface PatchPrioritiesCopilotPageInput {
   sourceStatuses?: PatchPrioritySourceStatus[];
 }
 
+/** A correlated change event projected from the incident timeline. */
+export interface ChangeCorrelationObservation {
+  event_id: string;
+  incident_id?: string;
+  incident_title?: string;
+  event_type?: string;
+  summary?: string;
+  source?: string;
+  timestamp?: string;
+  business_services?: string[];
+}
+
+/** Source availability/freshness carried independently of row order. */
+export interface ChangesSourceStatus {
+  source: string;
+  freshness?: string;
+  observedAt?: string;
+  availability?: string;
+}
+
+/** Already-loaded change-correlation stream and evaluated page state. */
+export interface ChangesCopilotPageInput {
+  scope: ScopeSelection;
+  changes: ChangeCorrelationObservation[];
+  loadedCount: number;
+  totalCount: number;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  selectedId?: string | null;
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+  sourceStatuses?: ChangesSourceStatus[];
+}
+
+/** Proposed-change identity fields the predeploy adapter cites. */
+export interface PredeployChangeFields {
+  change_id?: string;
+  title?: string;
+  author?: string;
+  source?: string;
+  target_environment?: string;
+  resource_change_count?: number;
+}
+
+/** Predicted simulation fields (never an observed outcome). */
+export interface PredeploySimulationFields {
+  highest_severity?: string;
+  simulated_domains: string[];
+  by_severity: Record<string, number>;
+  effect_count: number;
+  confirmed_outcome: boolean;
+}
+
+/** Predicted risk fields (never a confirmed cause). */
+export interface PredeployRiskFields {
+  score: number;
+  level: string;
+  confidence: string;
+  confirmed_cause: boolean;
+}
+
+/** CAB recommendation fields the predeploy adapter cites. */
+export interface PredeployCabFields {
+  verdict: string;
+  risk_level: string;
+  required_approvals: string[];
+  confirmed_cause: boolean;
+}
+
+/** An impacted-resource row projected before adapter typing. */
+export interface PredeployImpactObservation {
+  resource_id?: string;
+  resource_name?: string;
+  business_service?: string;
+  environment?: string;
+  relationship?: string;
+}
+
+/** Already-loaded predeploy assessment sections consumed by the adapter. */
+export interface PredeployCopilotPageInput {
+  scope: ScopeSelection;
+  change?: PredeployChangeFields | null;
+  simulation?: PredeploySimulationFields | null;
+  risk?: PredeployRiskFields | null;
+  cab?: PredeployCabFields | null;
+  impactedResources: PredeployImpactObservation[];
+  impactedTotalCount: number;
+  impactedTruncated?: boolean;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  unknowns?: string[];
+  evidence: EvidenceItem[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -1641,6 +1737,50 @@ const PATCH_PRIORITIES_STARTERS: CoreCopilotStarterQuestion[] = [
   },
   {
     label: "What is the safest governed remediation path?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+];
+
+// Cross-domain change hints. Correlation is advisory and never causal; none of
+// these tools deploy, approve, or execute anything (D-03, D-06, D-08, D-10).
+const CHANGES_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "What changed near active situations?",
+    specialistId: "incident",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "Which incidents correlate with recent changes?",
+    specialistId: "incident",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "What is the safest way to remediate this change's impact?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+];
+
+const PREDEPLOY_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Explain the predicted risk of this change.",
+    specialistId: "incident",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "Which impacted services carry vulnerability exposure?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "What governed remediation would this change require?",
     specialistId: "remediation",
     tool: "remediation_opportunities",
     toolArguments: {},
@@ -2996,6 +3136,184 @@ function patchPrioritiesCoreInput(
   };
 }
 
+function changesCoreInput(input: ChangesCopilotPageInput): CoreCopilotAdapterInput {
+  const selectedId = input.selectedId ?? null;
+  const records: CoreCopilotRecord[] = input.changes.slice(0, 50).map((change, index) => ({
+    identity: change.event_id,
+    namespace: "change",
+    kind: "change_correlation",
+    source: "changes/incident-timeline",
+    observedAt: change.timestamp,
+    selected: selectedId != null && change.event_id === selectedId,
+    priority: index,
+    data: {
+      event_id: change.event_id,
+      incident_id: change.incident_id,
+      incident_title: change.incident_title,
+      event_type: change.event_type,
+      summary: change.summary,
+      change_source: change.source,
+      business_services: change.business_services,
+      // Temporal proximity is a correlation signal, never a causal conclusion.
+      correlation_basis: "temporal_proximity",
+      confirmed: false,
+    },
+  }));
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
+    ? input.sourceStatuses.map((status) => ({
+      source: status.source,
+      observedAt: status.observedAt,
+      status: status.availability === "unavailable"
+        ? "unavailable"
+        : freshnessStatus(status.freshness ?? "unknown"),
+    }))
+    : [{
+      source: "changes",
+      observedAt: input.observedAt,
+      status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    }];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["changes"] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "changes",
+        visibleCount: input.loadedCount,
+        totalCount: Math.max(input.loadedCount, input.totalCount),
+        truncated: input.loadedCount < input.totalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
+function predeployCoreInput(input: PredeployCopilotPageInput): CoreCopilotAdapterInput {
+  const change = input.change ?? null;
+  const simulation = input.simulation ?? null;
+  const risk = input.risk ?? null;
+  const cab = input.cab ?? null;
+  const records: CoreCopilotRecord[] = [
+    ...(change ? [{
+      identity: change.change_id ?? "proposed-change",
+      namespace: "change",
+      kind: "proposed_change",
+      source: "predeploy/change",
+      observedAt: input.observedAt,
+      selected: true,
+      priority: 0,
+      data: {
+        title: change.title,
+        author: change.author,
+        change_source: change.source,
+        target_environment: change.target_environment,
+        resource_change_count: change.resource_change_count,
+      },
+    }] : []),
+    ...(simulation ? [{
+      identity: "change-simulation",
+      namespace: "change",
+      kind: "change_simulation",
+      source: "predeploy/simulation",
+      observedAt: input.observedAt,
+      priority: 5,
+      data: {
+        highest_severity: simulation.highest_severity,
+        simulated_domains: simulation.simulated_domains,
+        by_severity: simulation.by_severity,
+        effect_count: simulation.effect_count,
+        // Simulated effects are predicted, never observed outcomes.
+        confirmed_outcome: simulation.confirmed_outcome,
+        predicted: true,
+        observed: false,
+      },
+    }] : []),
+    ...(risk ? [{
+      identity: "change-risk",
+      namespace: "change",
+      kind: "change_risk",
+      source: "predeploy/risk",
+      observedAt: input.observedAt,
+      priority: 6,
+      data: {
+        score: risk.score,
+        level: risk.level,
+        confidence: risk.confidence,
+        // Risk is a prediction, never a confirmed cause.
+        confirmed_cause: risk.confirmed_cause,
+        predicted: true,
+        observed: false,
+      },
+    }] : []),
+    ...(cab ? [{
+      identity: "cab-recommendation",
+      namespace: "change",
+      kind: "cab_recommendation",
+      source: "predeploy/cab",
+      observedAt: input.observedAt,
+      priority: 7,
+      data: {
+        verdict: cab.verdict,
+        risk_level: cab.risk_level,
+        required_approvals: cab.required_approvals,
+        confirmed_cause: cab.confirmed_cause,
+        predicted: true,
+        observed: false,
+      },
+    }] : []),
+    ...input.impactedResources.slice(0, 50).map((resource, index) => ({
+      identity: resource.resource_id ?? `impacted-${index}`,
+      namespace: "change",
+      kind: "impacted_resource",
+      source: "predeploy/impacted-resources",
+      resourceId: resource.resource_id,
+      name: resource.resource_name,
+      observedAt: input.observedAt,
+      priority: 20 + index,
+      data: {
+        resource_name: resource.resource_name,
+        business_service: resource.business_service,
+        environment: resource.environment,
+        relationship: resource.relationship,
+        // Predicted blast radius, not a confirmed impact.
+        predicted: true,
+        observed: false,
+      },
+    })),
+  ];
+  const sourceStatuses: CoreCopilotSourceStatus[] = [
+    {
+      source: "assessment",
+      observedAt: input.observedAt,
+      status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    },
+  ];
+  return {
+    scope: input.scope,
+    filters: {
+      view: ["predeploy"],
+      ...(change?.target_environment
+        ? { target_environment: [change.target_environment] }
+        : {}),
+    },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "impacted_resources",
+        visibleCount: input.impactedResources.length,
+        totalCount: Math.max(input.impactedResources.length, input.impactedTotalCount),
+        truncated: input.impactedTruncated
+          ?? input.impactedResources.length < input.impactedTotalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
 function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.situations.slice(0, 50).map((situation, index) => ({
     identity: situation.situation_id,
@@ -3272,6 +3590,28 @@ export function buildPatchPrioritiesCopilotContext(
     { pageKind: "vulnerability", pageId: "patch-priorities" },
     isCoreCopilotInput(input) ? input : patchPrioritiesCoreInput(input),
     PATCH_PRIORITIES_STARTERS,
+  );
+}
+
+/** Builds the typed change-correlation context from the loaded change stream. */
+export function buildChangesCopilotContext(
+  input: CoreCopilotAdapterInput | ChangesCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "incident", pageId: "changes" },
+    isCoreCopilotInput(input) ? input : changesCoreInput(input),
+    CHANGES_STARTERS,
+  );
+}
+
+/** Builds the typed predeploy assessment context from the loaded evaluation. */
+export function buildPredeployCopilotContext(
+  input: CoreCopilotAdapterInput | PredeployCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "governance", pageId: "predeploy" },
+    isCoreCopilotInput(input) ? input : predeployCoreInput(input),
+    PREDEPLOY_STARTERS,
   );
 }
 
