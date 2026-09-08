@@ -5,6 +5,7 @@ import io
 import json
 import logging
 from pathlib import Path
+from threading import Lock
 
 import pytest
 from test_incremental_sync import _source_snapshot
@@ -22,6 +23,7 @@ from fabric.sync_service import (
     _observation_rows_at_or_before,
 )
 from fabric_pipelines.vulnerability_pipeline import (
+    EXPOSURE_GOLD_GENERATIONS_TABLE,
     EXPOSURE_GOLD_POINTER_DOCUMENT,
     EXPOSURE_GOLD_TABLES,
 )
@@ -241,27 +243,127 @@ def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> Non
 
 def test_successful_publication_hooks_follow_exact_side_effect_order(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trace: list[str] = []
+    normal_table_writes: list[str] = []
+    gold_table_writes: list[str] = []
+    trace_lock = Lock()
     service = _service(tmp_path)
     pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    original_delta_write = service.delta.write
+    original_register = service._register_fabric_assets
+    original_catalog_write = service.onelake.write_json
+    original_publish = service._publish_ontology
+    original_stage = sync_module.ExposureGoldFabricPublisher.stage
+    original_state = service._write_state
+    original_shortcuts = service._create_shortcuts
+    original_activate = sync_module.ExposureGoldFabricPublisher.activate
+    registrations = 0
+    catalogs = 0
+    gold_tables = {
+        *EXPOSURE_GOLD_TABLES,
+        EXPOSURE_GOLD_GENERATIONS_TABLE,
+    }
+    non_publication_tables = {
+        "metadata_ingestion_state",
+        "metadata_quality_reports",
+    }
+
+    def record(entry: str) -> None:
+        with trace_lock:
+            trace.append(entry)
+
+    def record_write(category: str, table_name: str) -> None:
+        with trace_lock:
+            trace.append(category)
+            if category == "gold_write":
+                gold_table_writes.append(table_name)
+            else:
+                normal_table_writes.append(table_name)
+
+    def delta_write(uri, rows, **kwargs):
+        table_name = Path(str(uri)).name
+        if table_name in gold_tables:
+            record_write("gold_write", table_name)
+        elif table_name not in non_publication_tables:
+            record_write("normal_write", table_name)
+        return original_delta_write(uri, rows, **kwargs)
+
+    def register(tables):
+        nonlocal registrations
+        registrations += 1
+        record(
+            "first_registration"
+            if registrations == 1
+            else "second_registration"
+        )
+        return original_register(tables)
+
+    def write_json(path, payload):
+        nonlocal catalogs
+        if path == "ontology/metadata/catalog.json":
+            catalogs += 1
+            record("normal_catalog" if catalogs == 1 else "gold_catalog")
+        return original_catalog_write(path, payload)
+
+    def publish(datasets):
+        record("ontology_publication")
+        return original_publish(datasets)
+
+    def stage(publisher, *args, **kwargs):
+        record("gold_stage")
+        return original_stage(publisher, *args, **kwargs)
+
+    def write_state(row):
+        if row.get("status") == "completed":
+            record("completed_state")
+        return original_state(row)
+
+    def shortcuts():
+        record("shortcut_finalization")
+        return original_shortcuts()
+
+    def activate(publisher, stage_result):
+        record("pointer_activation")
+        return original_activate(publisher, stage_result)
+
+    monkeypatch.setattr(service.delta, "write", delta_write)
+    monkeypatch.setattr(service, "_register_fabric_assets", register)
+    monkeypatch.setattr(service.onelake, "write_json", write_json)
+    monkeypatch.setattr(service, "_publish_ontology", publish)
+    monkeypatch.setattr(sync_module.ExposureGoldFabricPublisher, "stage", stage)
+    monkeypatch.setattr(service, "_write_state", write_state)
+    monkeypatch.setattr(service, "_create_shortcuts", shortcuts)
+    monkeypatch.setattr(
+        sync_module.ExposureGoldFabricPublisher,
+        "activate",
+        activate,
+    )
 
     result = service.sync(exposure_pointer_store=pointer_store)
 
-    normal_write_count = len(result.tables) - len(EXPOSURE_GOLD_TABLES) - 1
+    assert set(normal_table_writes) == set(result.tables) - gold_tables
+    assert gold_table_writes == [
+        *EXPOSURE_GOLD_TABLES,
+        EXPOSURE_GOLD_GENERATIONS_TABLE,
+    ]
     assert trace == [
-        *(["normal_write"] * normal_write_count),
+        *(["normal_write"] * len(normal_table_writes)),
         "first_registration",
         "normal_catalog",
         "ontology_publication",
         "gold_stage",
-        *(["gold_write"] * (len(EXPOSURE_GOLD_TABLES) + 1)),
+        *(["gold_write"] * len(gold_tables)),
         "second_registration",
         "gold_catalog",
         "completed_state",
         "shortcut_finalization",
         "pointer_activation",
     ]
+    assert trace.count("pointer_activation") == 1
+    assert trace[-1] == "pointer_activation"
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
 
 
 @pytest.mark.parametrize(
