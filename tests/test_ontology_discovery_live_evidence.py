@@ -1199,7 +1199,8 @@ def test_deployed_stage_fails_before_legacy_shadow_or_cloud_action(
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["mode"] == "deployed-fixed-template"
     assert report["status"] == "FAIL"
-    assert report["missing_evidence"] == ["EvidenceError"]
+    assert report["missing_evidence"] == ["evidence_precondition"]
+    assert report["closed_reason"] == "evidence_precondition"
     assert report["blocker_code"] == "evidence_precondition"
     assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" not in json.dumps(report)
 
