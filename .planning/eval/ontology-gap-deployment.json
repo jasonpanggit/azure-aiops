@@ -10,11 +10,11 @@
     "deployment_principal_fixture_access": true,
     "image_digests": {
       "api": "sha256:8c2ff509670daf392f1eae8f7b0105f9469243bd704c1a38bb5bf70b114e8ecd",
-      "coordinator": "sha256:e727a9c44ff9618fe68cb70581daba17c2bd02c386fe1c4942ee2b8679b483c0",
-      "ontology_fixture_cleanup": "sha256:e727a9c44ff9618fe68cb70581daba17c2bd02c386fe1c4942ee2b8679b483c0",
-      "ontology_fixture_prepare": "sha256:e727a9c44ff9618fe68cb70581daba17c2bd02c386fe1c4942ee2b8679b483c0",
-      "publisher": "sha256:e727a9c44ff9618fe68cb70581daba17c2bd02c386fe1c4942ee2b8679b483c0",
-      "rbac_validator": "sha256:e727a9c44ff9618fe68cb70581daba17c2bd02c386fe1c4942ee2b8679b483c0",
+      "coordinator": "sha256:cd7ec45397081fb42f4012a5b17f95afd7c8fa45cb87123b0b7a6d7a4acdda73",
+      "ontology_fixture_cleanup": "sha256:cd7ec45397081fb42f4012a5b17f95afd7c8fa45cb87123b0b7a6d7a4acdda73",
+      "ontology_fixture_prepare": "sha256:cd7ec45397081fb42f4012a5b17f95afd7c8fa45cb87123b0b7a6d7a4acdda73",
+      "publisher": "sha256:cd7ec45397081fb42f4012a5b17f95afd7c8fa45cb87123b0b7a6d7a4acdda73",
+      "rbac_validator": "sha256:cd7ec45397081fb42f4012a5b17f95afd7c8fa45cb87123b0b7a6d7a4acdda73",
       "web": "sha256:bde3d582c0d96ee3f69ab89690cf5ba8a2d498e1a6fc4a567e09a95063eca84f"
     },
     "no_runtime_job_start_grants": true,
@@ -36,18 +36,18 @@
       "publisher": "sha256:d189b5d37d13ee0ab508b5278a44ab7f5211165f3f00992044b8506391615cab"
     },
     "template_hashes_after": {
-      "coordinator": "sha256:5262a595b2f30cfa06124d7c893421f161e1076196aabe81fcc0308167ccd0e3",
-      "ontology_fixture_cleanup": "sha256:fbb28b1ee5e5d730fadae435a0b17a46748189ff8efdb8d1bcc0e8ce41355b3c",
-      "ontology_fixture_prepare": "sha256:8c7ea0fa7741fba37c5e4b4abd11b99823b7239e4dfad21ff59e1d5e265a1963",
-      "publisher": "sha256:8a5066d0caacdd995e63f6d563f0a0f36dd2c8e0a441d8c3f6c915b3c1e55863",
-      "rbac_validator": "sha256:0b52aa48575095e7740de89e91d67ddd4f71797dc16fdc50ad06eabd32a521d9"
+      "coordinator": "sha256:f942466bf6f699271623aeccbd5f2b838e21701d5e834e464b4a86ee2c30c4da",
+      "ontology_fixture_cleanup": "sha256:562f0cb5545c00bb8d96f0b9f97008be7d6d461d10921fa88b383ede48f19e21",
+      "ontology_fixture_prepare": "sha256:f38277d1065e2b84fa8a77e542132694310a61495c7d97e001e6ef399fc41e5c",
+      "publisher": "sha256:19cdfb839dc6a59a1ad465e585c2edb5322b6626fc5977f7d9cc6d155e1b1d66",
+      "rbac_validator": "sha256:b480843235ab354c6e3070defcc18bc7b36d9e915ef2903b47dc676affca5e87"
     },
     "template_hashes_before": {
-      "coordinator": "sha256:5262a595b2f30cfa06124d7c893421f161e1076196aabe81fcc0308167ccd0e3",
-      "ontology_fixture_cleanup": "sha256:fbb28b1ee5e5d730fadae435a0b17a46748189ff8efdb8d1bcc0e8ce41355b3c",
-      "ontology_fixture_prepare": "sha256:8c7ea0fa7741fba37c5e4b4abd11b99823b7239e4dfad21ff59e1d5e265a1963",
-      "publisher": "sha256:8a5066d0caacdd995e63f6d563f0a0f36dd2c8e0a441d8c3f6c915b3c1e55863",
-      "rbac_validator": "sha256:0b52aa48575095e7740de89e91d67ddd4f71797dc16fdc50ad06eabd32a521d9"
+      "coordinator": "sha256:f942466bf6f699271623aeccbd5f2b838e21701d5e834e464b4a86ee2c30c4da",
+      "ontology_fixture_cleanup": "sha256:562f0cb5545c00bb8d96f0b9f97008be7d6d461d10921fa88b383ede48f19e21",
+      "ontology_fixture_prepare": "sha256:f38277d1065e2b84fa8a77e542132694310a61495c7d97e001e6ef399fc41e5c",
+      "publisher": "sha256:19cdfb839dc6a59a1ad465e585c2edb5322b6626fc5977f7d9cc6d155e1b1d66",
+      "rbac_validator": "sha256:b480843235ab354c6e3070defcc18bc7b36d9e915ef2903b47dc676affca5e87"
     }
   },
   "plans": {

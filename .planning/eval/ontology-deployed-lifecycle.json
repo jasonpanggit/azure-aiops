@@ -1,0 +1,123 @@
+{
+  "activation_interface_present": false,
+  "completed_stages": [
+    "preflight"
+  ],
+  "environment": "validation",
+  "mode": "deployed-fixed-template",
+  "release_status": "BLOCKED/PENDING",
+  "sanitized": true,
+  "schema_version": "ontology-deployed-lifecycle-validation.v1",
+  "stages": {
+    "preflight": {
+      "contract_hash": "sha256:0f8b47de18165a6f1640da18f1552a7e0dabb68d69bad1b9c5bd73397c642770",
+      "credentials": {
+        "ambient_credentials_removed": true,
+        "deployer_actions": [
+          "job_execution_read",
+          "job_read",
+          "job_start"
+        ],
+        "evidence_actions": [
+          "arg_read",
+          "fabric_read",
+          "onelake_read"
+        ],
+        "evidence_denied_actions": [
+          "job_execution_read",
+          "job_read",
+          "job_start",
+          "job_stop",
+          "mutation"
+        ],
+        "evidence_source": "fixed_job",
+        "identity_hashes": {
+          "deployer": "sha256:bae915ba778b804aec132a847cd56f7b946c4fa68649db6bd1a01b02b5dac403",
+          "evidence": "sha256:381797b1275729bc750901d698b5d6b12eca738e4fe80188711610fad8eb9672"
+        },
+        "local_context_count": 1,
+        "modes": {
+          "deployer": "0700"
+        },
+        "runtime_job_start_grants": []
+      },
+      "evidence_job": {
+        "attached_identity_count": 1,
+        "entra_bound_record_hash": "sha256:126f6fc8e88b9d5a093807fdb1579a9f53d93f746f760344a41ff3dc24452bc9",
+        "expected_identity_hash": "sha256:381797b1275729bc750901d698b5d6b12eca738e4fe80188711610fad8eb9672",
+        "expected_template_hash": "sha256:248ba82b7ed4de32f05af2a59c6a3272f0bbe2768389f19595e4bae2398ed606",
+        "identity_hash": "sha256:381797b1275729bc750901d698b5d6b12eca738e4fe80188711610fad8eb9672",
+        "job_control_actions": [],
+        "mutation_actions": [],
+        "onelake_actions": [
+          "Read",
+          "Read",
+          "Read",
+          "Read",
+          "Read"
+        ],
+        "onelake_paths": [
+          "*",
+          "*",
+          "*",
+          "*",
+          "*"
+        ],
+        "overrides": [],
+        "production_workspace_access": false,
+        "record_hash": "sha256:8febd8c72a0c269c93add91c8537392df5bc32bddeef5580a71572db4d1b9ee5",
+        "template_hash": "sha256:248ba82b7ed4de32f05af2a59c6a3272f0bbe2768389f19595e4bae2398ed606",
+        "template_unchanged": true,
+        "trigger": "Manual",
+        "workspace_roles": [
+          "Viewer",
+          "Viewer",
+          "Viewer",
+          "Viewer",
+          "Viewer"
+        ]
+      },
+      "release_status": "BLOCKED/PENDING",
+      "status": "PASS",
+      "templates": {
+        "coordinator": {
+          "after": "sha256:f942466bf6f699271623aeccbd5f2b838e21701d5e834e464b4a86ee2c30c4da",
+          "before": "sha256:f942466bf6f699271623aeccbd5f2b838e21701d5e834e464b4a86ee2c30c4da",
+          "expected": "sha256:f942466bf6f699271623aeccbd5f2b838e21701d5e834e464b4a86ee2c30c4da",
+          "override_fields": []
+        },
+        "evidence": {
+          "after": "sha256:248ba82b7ed4de32f05af2a59c6a3272f0bbe2768389f19595e4bae2398ed606",
+          "before": "sha256:248ba82b7ed4de32f05af2a59c6a3272f0bbe2768389f19595e4bae2398ed606",
+          "expected": "sha256:248ba82b7ed4de32f05af2a59c6a3272f0bbe2768389f19595e4bae2398ed606",
+          "override_fields": []
+        },
+        "ontology_fixture_cleanup": {
+          "after": "sha256:562f0cb5545c00bb8d96f0b9f97008be7d6d461d10921fa88b383ede48f19e21",
+          "before": "sha256:562f0cb5545c00bb8d96f0b9f97008be7d6d461d10921fa88b383ede48f19e21",
+          "expected": "sha256:562f0cb5545c00bb8d96f0b9f97008be7d6d461d10921fa88b383ede48f19e21",
+          "override_fields": []
+        },
+        "ontology_fixture_prepare": {
+          "after": "sha256:f38277d1065e2b84fa8a77e542132694310a61495c7d97e001e6ef399fc41e5c",
+          "before": "sha256:f38277d1065e2b84fa8a77e542132694310a61495c7d97e001e6ef399fc41e5c",
+          "expected": "sha256:f38277d1065e2b84fa8a77e542132694310a61495c7d97e001e6ef399fc41e5c",
+          "override_fields": []
+        },
+        "publisher": {
+          "after": "sha256:19cdfb839dc6a59a1ad465e585c2edb5322b6626fc5977f7d9cc6d155e1b1d66",
+          "before": "sha256:19cdfb839dc6a59a1ad465e585c2edb5322b6626fc5977f7d9cc6d155e1b1d66",
+          "expected": "sha256:19cdfb839dc6a59a1ad465e585c2edb5322b6626fc5977f7d9cc6d155e1b1d66",
+          "override_fields": []
+        },
+        "rbac_validator": {
+          "after": "sha256:b480843235ab354c6e3070defcc18bc7b36d9e915ef2903b47dc676affca5e87",
+          "before": "sha256:b480843235ab354c6e3070defcc18bc7b36d9e915ef2903b47dc676affca5e87",
+          "expected": "sha256:b480843235ab354c6e3070defcc18bc7b36d9e915ef2903b47dc676affca5e87",
+          "override_fields": []
+        }
+      }
+    }
+  },
+  "status": "PASS"
+}

@@ -348,6 +348,13 @@ def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
             },
             "coordinator_tag_hash": "sha256:" + "e" * 64,
         },
+        "plans": {
+            "validation": {
+                "root_hashes": {
+                    "coordinator_connection": "sha256:" + "f" * 64,
+                }
+            }
+        },
     }
     path = tmp_path / "deployment.json"
     path.write_text(json.dumps(deployment), encoding="utf-8")
@@ -355,7 +362,7 @@ def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
     contract = load_plan19_deployment_contract(path)
     assert contract.status == "applied"
     assert contract.template_hashes == hashes
-    assert contract.validation_connection_root_hash == "sha256:" + "a" * 64
+    assert contract.validation_connection_root_hash == "sha256:" + "f" * 64
     assert contract.coordinator_tag_hash == "sha256:" + "e" * 64
 
     drifted = json.loads(json.dumps(deployment))
@@ -995,6 +1002,10 @@ def test_fixed_job_execution_fetches_starts_waits_and_reads_logs_without_overrid
 
     monkeypatch.setattr(
         "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        fake_az,
+    )
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_text",
         fake_az,
     )
     result = run_fixed_job(

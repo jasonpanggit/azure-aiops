@@ -614,6 +614,35 @@ def _run_isolated_az_json(
         ) from exc
 
 
+def _run_isolated_az_text(
+    command: Sequence[str],
+    *,
+    azure_config_dir: Path,
+    timeout: int = 120,
+) -> str:
+    argv = list(command)
+    if not argv or argv[0] != "az":
+        raise EvidenceError("isolated Azure command must use the Azure CLI")
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=isolated_azure_environment(azure_config_dir),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EvidenceError("isolated Azure evidence command timed out") from exc
+    if completed.returncode != 0:
+        raise EvidenceError(
+            "isolated Azure evidence command failed "
+            f"(exit {completed.returncode})"
+        )
+    return completed.stdout
+
+
 def _run_contract(
     name: str,
     command: Sequence[str],
@@ -876,7 +905,7 @@ def _fetch_job_logs(
 ) -> object:
     """Read bounded JSON logs for one completed execution."""
 
-    return _run_isolated_az_json(
+    return _run_isolated_az_text(
         [
             "az",
             "containerapp",
@@ -1157,12 +1186,27 @@ def load_plan19_deployment_contract(
     tag_hash = live.get("coordinator_tag_hash")
     if not _require_hash(tag_hash):
         raise EvidenceError("Plan 19 coordinator tag hash is missing")
+    plans = payload.get("plans")
+    plans = plans if isinstance(plans, Mapping) else {}
+    validation_plan = plans.get("validation")
+    validation_plan = (
+        validation_plan if isinstance(validation_plan, Mapping) else {}
+    )
+    validation_roots = validation_plan.get("root_hashes")
+    validation_roots = (
+        validation_roots if isinstance(validation_roots, Mapping) else {}
+    )
+    validation_connection_root_hash = validation_roots.get(
+        "coordinator_connection"
+    )
+    if not _require_hash(validation_connection_root_hash):
+        raise EvidenceError(
+            "Plan 19 validation connection root hash is missing"
+        )
     return Plan19DeploymentContract(
         status="applied",
         template_hashes=template_hashes,
-        validation_connection_root_hash=str(
-            roots["AIOPS_CONNECTION_HOME"]
-        ),
+        validation_connection_root_hash=str(validation_connection_root_hash),
         coordinator_tag_hash=str(tag_hash),
     )
 
