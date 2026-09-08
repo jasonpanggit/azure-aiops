@@ -1870,8 +1870,10 @@ def remediation_decision_ontology_rows(
         relationships.append(
             _remediation_ontology_relationship(
                 plan_id,
+                "RemediationPlan",
                 "hasApprovalDecision",
                 decision_id,
+                "ApprovalDecision",
                 ingestion_run_id,
                 str(decision.get("decided_at") or timestamp),
                 payload={"decision": decision.get("decision", "")},
@@ -1901,8 +1903,10 @@ def remediation_plan_ontology_rows(
         relationships.append(
             _remediation_ontology_relationship(
                 str(row.get("subject_id") or ""),
+                str(row.get("subject_type") or ""),
                 str(row.get("relationship_type") or ""),
                 str(row.get("object_id") or ""),
+                str(row.get("object_type") or ""),
                 ingestion_run_id,
                 timestamp,
                 payload={
@@ -1910,7 +1914,6 @@ def remediation_plan_ontology_rows(
                     "confidence": float(row.get("confidence") or compute_confidence("inventory")),
                     "source": str(row.get("source") or "remediation-plan"),
                 },
-                object_type=str(row.get("object_type") or _remediation_object_type(str(row.get("relationship_type") or ""))),
                 confidence=float(row.get("confidence") or compute_confidence("inventory")),
                 source=str(row.get("source") or "remediation-plan"),
             )
@@ -2788,13 +2791,14 @@ def _remediation_ontology_entity(
 
 def _remediation_ontology_relationship(
     subject_id: str,
+    subject_type: str,
     predicate: str,
     object_id: str,
+    object_type: str,
     run_id: str,
     timestamp: str,
     *,
     payload: dict[str, Any],
-    object_type: str = "ApprovalDecision",
     confidence: float = 1.0,
     source: str = "remediation-decision-store",
 ) -> dict[str, Any]:
@@ -2809,7 +2813,7 @@ def _remediation_ontology_relationship(
         "change_version": _version(payload),
         "ingestion_run_id": run_id,
         "subject_id": subject_id,
-        "subject_type": "RemediationPlan",
+        "subject_type": subject_type,
         "predicate": predicate,
         "object_id": object_id,
         "object_type": object_type,
@@ -2822,24 +2826,6 @@ def _remediation_ontology_relationship(
         "retired_at": "",
         "ontology_version": "1",
     }
-
-
-def _remediation_object_type(predicate: str) -> str:
-    return {
-        "hasApprovalDecision": "ApprovalDecision",
-        "addressesFinding": "DefenderAssessment",
-        "addressesAlert": "SecurityAlert",
-        "breaksAttackPath": "AttackPath",
-        "improvesControl": "SecureScoreControl",
-        "requiresApproval": "ApprovalRequirement",
-        "hasStep": "ExecutionStep",
-        "hasRollbackPlan": "RollbackPlan",
-        "hasSimulation": "SimulationResult",
-        "mitigatesRisk": "RiskAssessment",
-        "protectsService": "BusinessService",
-    }.get(predicate, "ApprovalDecision")
-
-
 def _version(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 

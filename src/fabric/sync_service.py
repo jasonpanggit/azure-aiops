@@ -411,22 +411,32 @@ class FabricSyncService:
                 )
                 datasets["metadata_lifecycle_catalog"] = catalog_rows
                 datasets["ontology_entities"].extend(catalog_entities)
-            if self.remediation_decision_reader is not None:
-                decision_entities, decision_relationships = remediation_decision_ontology_rows(
-                    list(self.remediation_decision_reader()),
-                    run_id,
-                    started_at,
-                )
-                datasets["ontology_entities"].extend(decision_entities)
-                datasets["ontology_relationships"].extend(decision_relationships)
+            decision_entities: list[dict[str, Any]] = []
+            decision_relationships: list[dict[str, Any]] = []
+            plan_entities: list[dict[str, Any]] = []
+            plan_relationships: list[dict[str, Any]] = []
             if self.remediation_plan_reader is not None:
                 plan_entities, plan_relationships = remediation_plan_ontology_rows(
-                    self.remediation_plan_reader(),
+                    self.remediation_plan_reader(datasets["ontology_entities"]),
                     run_id,
                     started_at,
                 )
-                datasets["ontology_entities"].extend(plan_entities)
-                datasets["ontology_relationships"].extend(plan_relationships)
+            if self.remediation_decision_reader is not None:
+                decision_entities, decision_relationships = (
+                    remediation_decision_ontology_rows(
+                        list(self.remediation_decision_reader()),
+                        run_id,
+                        started_at,
+                    )
+                )
+            _extend_unique_ontology_rows(
+                datasets["ontology_entities"],
+                [*plan_entities, *decision_entities],
+            )
+            _extend_unique_ontology_rows(
+                datasets["ontology_relationships"],
+                [*decision_relationships, *plan_relationships],
+            )
             change_pipeline_result = change_pipeline.run(
                 freshness=started_at,
                 **self._change_pipeline_snapshot(),
@@ -2472,6 +2482,25 @@ def _hash_json(value: Any) -> str:
     import hashlib
 
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _extend_unique_ontology_rows(
+    target: list[dict[str, Any]],
+    additions: list[dict[str, Any]],
+) -> None:
+    known_ids = {
+        str(row.get("resource_id") or "").strip().casefold()
+        for row in target
+    }
+    for row in additions:
+        resource_id = str(row.get("resource_id") or "").strip().casefold()
+        if not resource_id:
+            target.append(row)
+            continue
+        if resource_id in known_ids:
+            continue
+        target.append(row)
+        known_ids.add(resource_id)
 
 
 def _dedupe_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

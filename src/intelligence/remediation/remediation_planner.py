@@ -122,6 +122,16 @@ class RemediationPlanner:
             clock=self.clock,
         )
 
+    @property
+    def defender_correlator(self) -> Any:
+        """Return the Defender correlator used by plan generation."""
+        return self.generator.defender_correlator
+
+    @defender_correlator.setter
+    def defender_correlator(self, correlator: Any) -> None:
+        """Route production correlator injection to the plan generator."""
+        self.generator.defender_correlator = correlator
+
     @classmethod
     def from_snapshot(cls, **snapshot):
         return cls(**snapshot)
