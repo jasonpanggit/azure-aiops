@@ -40,6 +40,8 @@ from storage.partitioning import PartitioningPolicy
 
 from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
+    GRANULAR_EXPOSURE_MAX_ENTITIES,
+    GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
     ONTOLOGY_ENTITY_TYPES,
     ONTOLOGY_RELATIONSHIP_TYPES,
     GranularExposureOntologyMapper,
@@ -1790,7 +1792,11 @@ class FabricSyncService:
             if self.delta.version(relationship_uri) is not None
             else []
         )
-        result = OntologyGraphSynchronizer(OntologyValidator()).synchronize(
+        result = OntologyGraphSynchronizer(
+            OntologyValidator(),
+            max_entities=GRANULAR_EXPOSURE_MAX_ENTITIES,
+            max_relationships=GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
+        ).synchronize(
             datasets["ontology_entities"],
             datasets["ontology_relationships"],
             previous_entities=previous_entities,
