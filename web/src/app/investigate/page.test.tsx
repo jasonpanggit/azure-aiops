@@ -16,7 +16,7 @@ const {
   exposures,
   cve,
   attackPath,
-  investigate,
+  askCanonicalInvestigation,
 } = vi.hoisted(() => ({
   businessService: vi.fn(),
   risk: vi.fn(),
@@ -31,7 +31,7 @@ const {
   exposures: vi.fn(),
   cve: vi.fn(),
   attackPath: vi.fn(),
-  investigate: vi.fn(),
+  askCanonicalInvestigation: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -47,13 +47,21 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
   ),
 }));
 
-vi.mock("@/lib/services", () => ({
-  contextApi: { businessService, risk, impact, application: vi.fn(), environment: vi.fn(), subscriptionConnectionContext: vi.fn() },
-  operationsApi: { incidents, incident, remediationPlans },
-  networkApi: { topology, gaps, ruleFindings },
-  vulnerabilityApi: { summary, exposures, cve, attackPath },
-  copilotApi: { investigate },
-}));
+// Keep the real presentation converter and root-session constant so this test
+// exercises the shared canonical semantics, overriding only the network calls.
+vi.mock("@/lib/services", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/services")>();
+  return {
+    ...actual,
+    contextApi: { businessService, risk, impact, application: vi.fn(), environment: vi.fn(), subscriptionConnectionContext: vi.fn() },
+    operationsApi: { incidents, incident, remediationPlans },
+    networkApi: { topology, gaps, ruleFindings },
+    vulnerabilityApi: { summary, exposures, cve, attackPath },
+    askCanonicalInvestigation,
+  };
+});
+
+import { ROOT_COPILOT_SESSION } from "@/lib/services";
 
 import InvestigationWorkspacePage from "./page";
 
@@ -162,12 +170,32 @@ describe("Executive Investigation Workspace", () => {
     incident.mockResolvedValue(envelope({ finding: {}, read_only: true, freshness: "2026-01-01T10:00:00Z" }));
     cve.mockResolvedValue(envelope({}));
     attackPath.mockResolvedValue(envelope({ cve_id: "CVE-2026-0001", nodes: [], edges: [], reachable_server_count: 1, internet_exposed: true }));
-    investigate.mockResolvedValue(envelope({
+    askCanonicalInvestigation.mockResolvedValue(envelope({
       question: "why",
-      tool_calls: [],
-      answer: { text: "Payments is at risk because CVE-2026-0001 is reachable; approve patch plan-1.", agent_name: "ops", model: "test", grounded: true },
+      tool_calls: [
+        { tool: "vulnerability_exposure", arguments: {}, status: "ok", data: { cve_id: "CVE-2026-0001" }, evidence: [], warning: "" },
+      ],
+      answer: null,
       fact_status: "ok",
-      warnings: [],
+      warnings: ["Visible subset is incomplete; widen scope for full coverage."],
+      contract_version: "1",
+      thread_id: `thr-${"a".repeat(32)}`,
+      thread_revision: 1,
+      policy_status: "fallback",
+      fallback_reason: "planner_unavailable",
+      coverage: { visible_count: 1, total_count: 2, complete: false },
+      citations: [
+        { citation_id: "tool:0:vulnerability:1", source: "azure-resource-graph", status: "ok", observed_at: "2026-01-01T10:00:00Z", resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1" },
+      ],
+      synthesis: {
+        status: "synthesized",
+        reason: "multi_domain",
+        domain_count: 2,
+        claims: [
+          { finding_id: "f1", summary: "Payments is at risk because CVE-2026-0001 is reachable; approve patch plan-1.", evidence_refs: ["tool:0:vulnerability:1"], confidence: "high", freshness: "fresh", uncertainty: [] },
+        ],
+        warning: "",
+      },
     }));
   });
 
@@ -182,7 +210,22 @@ describe("Executive Investigation Workspace", () => {
     expect(screen.getByText("Patch payment servers")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+
+    // Canonical synthesis narration is rendered as the conclusion.
     expect(await screen.findByText(/approve patch plan-1/i)).toBeInTheDocument();
+
+    // The shared canonical helper is used with the root thread session so every
+    // dedicated surface shares one authorized, principal-scoped thread.
+    expect(askCanonicalInvestigation).toHaveBeenCalledWith(
+      expect.stringContaining("Summarize the investigation"),
+      expect.anything(),
+      expect.objectContaining({ sessionId: ROOT_COPILOT_SESSION }),
+    );
+
+    // Canonical degradation, citations, and uncertainty render consistently.
+    expect(screen.getByLabelText("Investigation degradation")).toHaveTextContent(/deterministic|narration was not produced/i);
+    expect(screen.getByLabelText("Investigation citations")).toHaveTextContent("azure-resource-graph");
+    expect(screen.getByLabelText("Investigation uncertainty")).toHaveTextContent(/visible subset is incomplete/i);
 
     fireEvent.click(screen.getByRole("button", { name: "Save view locally" }));
     await waitFor(() => expect(window.localStorage.getItem("aiops.investigations.v1")).toContain("BusinessService: Payments"));
