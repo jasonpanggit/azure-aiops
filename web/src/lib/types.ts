@@ -368,6 +368,16 @@ export interface TwinExport {
   snapshot: TwinSnapshot;
 }
 
+export interface AgentDeploymentStatus {
+  id?: string;
+  name?: string;
+  version?: string;
+  model?: string;
+  /** "ready" when a Foundry agent is configured for this specialist, else "unavailable". */
+  status: "ready" | "unavailable" | string;
+  configured: boolean;
+}
+
 export interface AutonomousAgent {
   id: string;
   name: string;
@@ -375,6 +385,12 @@ export interface AutonomousAgent {
   tools: string[];
   keywords: string[];
   depends_on: string[];
+  /**
+   * Manifest-backed deployment status from the API catalog. Absent only on
+   * legacy payloads; the UI renders configured/unavailable from this field so
+   * no local specialist list can drift from the manifest (D-05).
+   */
+  foundry?: AgentDeploymentStatus;
 }
 
 export interface AgentToolCall {
