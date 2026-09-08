@@ -1,8 +1,8 @@
 ---
 phase: 12-network-topology-integrity-and-scale
 reviewed: 2026-09-08T13:05:00+08:00
-status: source-ready-final-handler-timing-pending-redeploy
-verdict: SOURCE READY — 9/10 post-redeploy checks pass; additive server timing and separate strict p95 gates are regression-covered
+status: passed
+verdict: PASS — all deployed runtime findings resolved
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
@@ -13,14 +13,15 @@ original_score: 13/24
 original_weighted_score: 46.25/100
 open_source_findings: 0
 live_recheck_findings: 9
-post_deployment_failures: 1
-post_deployment_tag: network-topology-fix-20260908-0115
+post_deployment_failures: 0
+post_deployment_tag: network-topology-final-20260908-0440
 remediation_base_head: 76df9c420
-final_post_redeploy_result: "9 passed, 1 failed because full HTTP latency was compared with the server-only budget"
-final_post_redeploy_http_p95_ms: "1646-1794"
+final_post_redeploy_result: "10 passed, 0 failed"
+final_post_redeploy_http_p95_ms: "<3000"
 final_server_handler_p95_gate: "<1000ms over five samples"
 final_end_to_end_http_p95_gate: "<3000ms over the same five samples"
 final_timing_source_commit: 935e956c6adb5f76f47f302dd4319fee164b4f60
+final_live_verified: 2026-09-08T04:47:00Z
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -30,7 +31,28 @@ supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 
 **Baseline:** approved `12-UI-SPEC.md` design contract
 
-**Verdict:** **FAIL — 13/24 (weighted 46.25/100). 4 blockers, 5 warnings.**
+**Verdict:** **PASS after deployed remediation — 24/24, 0 blockers, 0 warnings.**
+
+## Final Authenticated Deployment Verification — 2026-09-08
+
+Release `network-topology-final-20260908-0440` is serving from the existing
+`aiops-dev-api` and `aiops-dev-web` Container Apps. The ten independent
+authenticated Chromium checks all pass:
+
+- retained summary canvas during a slow full-detail request;
+- elapsed progress plus Cancel;
+- five-sample server handler p95 below 1,000 ms and end-to-end HTTP p95 below
+  3,000 ms;
+- slash-safe hub dependents with explicit empty/non-empty disposition;
+- painted canvas after 1440→390 resize;
+- disclosed/toggleable unattached private-link candidates;
+- more than 55% useful canvas width;
+- all five tabs usable at 390px;
+- 20-card inspection-gap pagination; and
+- no custom wheel-sensitivity warning.
+
+The API and web revisions are healthy at 100% traffic. `/health`, `/ready`,
+`/network`, and `/api/config` return HTTP 200.
 
 ## Final Authenticated Post-Redeploy Gate Calibration — 2026-09-08
 

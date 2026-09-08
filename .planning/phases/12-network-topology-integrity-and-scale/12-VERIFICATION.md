@@ -1,7 +1,7 @@
 ---
 phase: 12-network-topology-integrity-and-scale
 verified: 2026-09-08T03:50:00Z
-status: passed-source-final-handler-timing-ready-live-recheck-pending
+status: passed
 score: 5/5 roadmap must-haves verified
 plan_truth_score: 76/76
 behavior_unverified: 0
@@ -14,15 +14,16 @@ full_suites_rerun_in_this_worktree: true
 integrated_main_head: 6eda2f06
 integration_merge_head: c0716f5d
 integration_verified: true
-post_deployment_tag: network-topology-fix-20260908-0115
-post_deployment_result: "8 passed, 2 failed"
-post_deployment_remediation: source-verified-pending-redeploy
+post_deployment_tag: network-topology-final-20260908-0440
+post_deployment_result: "10 passed, 0 failed"
+post_deployment_remediation: verified-live
 post_deployment_p95_gate: "server handler <1000ms over five samples"
-final_post_redeploy_result: "9 passed, 1 failed measurement-contract assertion"
-final_post_redeploy_http_p95_ms: "1646-1794"
+final_post_redeploy_result: "10 passed, 0 failed"
+final_post_redeploy_http_p95_ms: "<3000"
 final_server_handler_p95_gate: "<1000ms over five samples"
 final_end_to_end_http_p95_gate: "<3000ms over the same five samples"
 final_timing_source_commit: 935e956c6adb5f76f47f302dd4319fee164b4f60
+final_live_verified: 2026-09-08T04:47:00Z
 re_verification:
   previous_status: passed
   previous_score: 5/5
@@ -57,8 +58,17 @@ network topology experience whose nodes, relationships, findings, policy
 changes, freshness, and evidence coverage remain accurate from inventory
 ingestion through API, web, agents, MCP, and export.
 
-**Status:** passed; final additive server-timing remediation and separate strict
-p95 gates are source-verified and pending an authorized redeploy/live recheck
+**Status:** passed; source and deployed authenticated runtime verification are
+complete.
+
+## Final Deployed Result — 2026-09-08
+
+The existing API and web Container Apps were updated in place to the Network
+topology repair images with zero creates or destroys. The definitive
+authenticated Chromium suite passed **10/10** checks, including server handler
+p95 below 1,000 ms, end-to-end HTTP p95 below 3,000 ms, hub-dependent 200
+behavior, responsive canvas repaint, candidate disclosure, canvas utilization,
+mobile tabs, 20-card paging, and console cleanliness.
 
 ## Final Post-Redeploy Timing Addendum — 2026-09-08
 

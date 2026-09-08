@@ -13,6 +13,17 @@ all eight specialist clients in the API provider runtime, selecting the page's
 specialist for narration, and deduplicating safe fallback warnings in the web UI.
 APIM must be updated in place and must not be destroyed or replaced.
 
+Current repair: deploy the Network topology live-runtime remediation. Preserve the
+populated summary canvas during detail changes; bound/cancel slow full-detail
+requests; fix slash-safe hub-dependent lookup and honest zero-dependent responses;
+cache network provider results from completion time; hide unattached private-link
+candidates by default behind an explicit disclosed toggle; improve connected-node
+layout and canvas fit on resize; contain mobile tabs; reduce card-list page size to
+20; and remove unsupported Cytoscape wheel sensitivity. This is an API/web
+image-only rollout using the existing Container Apps, ACR, identities, APIM, and
+Terraform state. No infrastructure, RBAC, secret, region, capacity, or resource
+replacement is in scope.
+
 Current follow-up: make the Network specialist answer the operator's actual
 question instead of emitting a findings-only JSON inventory, deduplicate
 equivalent deterministic evidence, and suppress repeated finding cards when a
@@ -135,6 +146,41 @@ or existing Container Apps.
   production Fabric items remain untouched.
 
 ## Validation Proof
+
+- 2026-09-08: Network topology live-runtime repair completed locally. Focused
+  backend tests passed (150), focused web tests passed (189), full backend and
+  web suites passed (web: 578), real-Chromium local Playwright acceptance passed
+  10 tests with one deployment-gated live test skipped, and TypeScript, ESLint,
+  changed-path Ruff, and the Next.js production build passed. The remaining
+  validation is Azure plan review plus deployed authenticated Playwright against
+  the existing `aiops-dev` API/web Container Apps. The deployment must remain
+  image-only with zero infrastructure creates, deletes, replacements, RBAC
+  changes, or APIM changes.
+- 2026-09-08: Azure deployment validation rerun for the Network repair.
+  The official Terraform preflight passed Terraform/Azure CLI installation,
+  subscription selection/authentication, init, fmt, validate, state access, and
+  template-variable checks; its bare plan failed only because this repository
+  requires secret-backed variables. The canonical repository wrapper was then
+  used with those variables. The unrestricted plan was rejected because it
+  exposed four unrelated Fabric role-assignment deletions and a provider preview
+  error. A targeted recovery plan for `azurerm_container_app.api` and
+  `azurerm_container_app.web`, with digest overrides cleared, passed with exactly
+  **0 additions, 2 in-place image changes, and 0 destructions**. No Terraform or
+  RBAC file changed. `python3 -m compileall -q src` and `cd web && npm run build`
+  passed. Target subscription:
+  `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`), location `australiaeast`.
+- 2026-09-08: Final Network remediation deployment completed. API revision
+  `aiops-dev-api--0000258` serves
+  `aiops-api:network-topology-final-20260908-0440`; web revision
+  `aiops-dev-web--0000208` serves
+  `aiops-web:network-topology-fix2-20260908-0320`. Both are healthy at 100%
+  traffic; API `/health` and `/ready` and web `/network` return HTTP 200.
+  The definitive authenticated Chromium suite passed **10/10** in 47.4 seconds,
+  including retained canvas/cancel, server handler p95 <1,000 ms, end-to-end
+  HTTP p95 <3,000 ms, hub-dependent 200 behavior, responsive repaint,
+  candidate disclosure, >55% canvas utilization, mobile tab containment,
+  20-card gap pagination, and console cleanliness.
 
 - 2026-09-05: Built and pushed immutable release
   `remediation-final-20260905-0035`; unchanged `azure-mcp` content was retagged

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   expect,
   test,
@@ -15,6 +16,8 @@ import {
 } from "../src/lib/network-topology-latency";
 
 const liveEnabled = process.env.AIOPS_LIVE_NETWORK_E2E === "1";
+const liveSessionStoragePath =
+  process.env.PLAYWRIGHT_SESSION_STORAGE_STATE;
 const FULL_DETAIL_GUARD_NODES = 1_500;
 const FULL_DETAIL_GUARD_BUILD_MS = 3_000;
 
@@ -166,8 +169,18 @@ test.describe("deployed Phase 12 network topology acceptance", () => {
     "Set AIOPS_LIVE_NETWORK_E2E=1 with PLAYWRIGHT_BASE_URL and PLAYWRIGHT_STORAGE_STATE after deployment.",
   );
 
-  test.beforeEach(() => {
+  test.beforeEach(async ({ page }) => {
     test.setTimeout(240_000);
+    if (liveSessionStoragePath) {
+      const sessionState = JSON.parse(
+        readFileSync(liveSessionStoragePath, "utf8"),
+      ) as Record<string, string>;
+      await page.addInitScript((state) => {
+        for (const [key, value] of Object.entries(state)) {
+          window.sessionStorage.setItem(key, value);
+        }
+      }, sessionState);
+    }
   });
 
   test("[Finding 1] retains the summary canvas while full detail loads", async ({

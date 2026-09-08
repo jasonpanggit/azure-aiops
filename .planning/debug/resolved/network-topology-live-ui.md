@@ -2,7 +2,7 @@
 status: resolved
 trigger: "Troubleshoot and fix all findings and errors from the authenticated Playwright review of the deployed /network experience."
 created: 2026-09-08T01:10:00+08:00
-updated: 2026-09-08T13:18:00+08:00
+updated: 2026-09-08T04:47:00Z
 reopened: 2026-09-08T11:13:42.686+08:00
 reopened_final_gate: 2026-09-08T12:03:28.076+08:00
 ---
@@ -59,10 +59,10 @@ reopened_final_gate: 2026-09-08T12:03:28.076+08:00
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed: the final live failure is caused by applying the server-only <1,000 ms topology budget to full client-to-Azure elapsed time when the route exposes no post-serialization handler duration."
-test: "Reconcile final docs and debug history against the verified source diff, then stage only session-owned paths plus only the latency hunks from the overlapping deployed Playwright file."
-expecting: "Met: the resolved record and authoritative Phase 12 evidence state 9/10 deployed, preserve server <1,000 ms, add HTTP <3,000 ms, and do not claim the undeployed handler header has passed live."
-next_action: "Archive this record, append the final timing-contract knowledge-base entry, stage only session-owned changes with patch-level staging for deployed Playwright, and commit without deploying or pushing."
+hypothesis: "Confirmed and fixed: request-time provider I/O, slash-unsafe hub routing, topology UI state/layout defects, and the server-vs-network timing ambiguity caused the deployed failures."
+test: "Deploy the final API/web images and execute the ten independent authenticated Chromium checks."
+expecting: "Met: all ten deployed checks pass, including server handler p95 <1,000 ms and HTTP p95 <3,000 ms."
+next_action: "None. Deployment and authenticated live verification are complete."
 known_pattern_candidate: "none — MemPalace is unavailable and the durable knowledge base has no two-token match for ProviderRuntime.get request-thread I/O or slash-losing hub routes."
 candidate_causes:
   - "code: the topology endpoint does not publish route analysis-plus-serialization timing, and the deployed test uses only browser-observed HTTP duration"
@@ -414,6 +414,11 @@ reasoning_checkpoint:
   checked: "Authoritative Phase 12 UI review/verification updates and concurrent repository state."
   found: "Both records now preserve the historical 8/10 and 14,397 ms evidence, add the final 9/10 result with HTTP p95 1,646-1,794 ms and hub 200, define strict server <1,000 ms plus HTTP <3,000 ms gates over the same five samples, and state that live header verification remains pending because this session does not deploy. Concurrent HEAD advanced only through an infra sizing commit and origin advanced independently; the session did not merge, deploy, push, or inspect Terraform state."
   implication: "Documentation is truthful and scoped. Commit only the handler timing source/tests, latency contract, exact Playwright latency hunks, two authoritative Phase 12 records, resolved debug record, and final KB entry."
+
+- timestamp: 2026-09-08T04:47:00Z
+  checked: "Final Azure Container Apps rollout and authenticated Playwright acceptance."
+  found: "API image network-topology-final-20260908-0440 and web image network-topology-fix2-20260908-0320 are healthy. The ten deployed Chromium checks passed in 47.4 seconds, including the independent handler/HTTP p95 budgets and hub-dependent 200 response."
+  implication: "All original findings, follow-up review findings, and deployed residual failures are resolved."
 
 ## Eliminated
 
