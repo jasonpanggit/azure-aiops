@@ -12,9 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy uv.lock and pyproject.toml to install dependencies
 COPY uv.lock pyproject.toml ./
 
-# Install uv and dependencies (use bash for process substitution)
+# Install the MCP runtime dependencies explicitly. `api` and `eval` are
+# intentionally conflicting extras, so `--all-extras` can silently fall back
+# to the base dependency set and omit FastAPI/Uvicorn.
 RUN pip install --no-cache-dir uv && \
-    bash -c "uv pip install --system -r <(uv pip compile pyproject.toml --all-extras 2>/dev/null || uv pip compile pyproject.toml)"
+    bash -c "uv pip install --system -r <(uv pip compile pyproject.toml --extra api)"
 
 # Final stage
 FROM python:3.12-slim
