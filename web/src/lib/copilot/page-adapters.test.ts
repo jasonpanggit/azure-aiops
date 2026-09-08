@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChangesCopilotContext,
   buildComplianceCopilotContext,
   buildCveDetailCopilotContext,
   buildDefenderPostureCopilotContext,
@@ -9,6 +10,7 @@ import {
   buildNetworkCopilotContext,
   buildOverviewCopilotContext,
   buildPatchPrioritiesCopilotContext,
+  buildPredeployCopilotContext,
   buildRemediationCopilotContext,
   buildSituationsCopilotContext,
   canonicalEvidenceStableId,
@@ -1673,6 +1675,255 @@ describe("inventory Copilot page adapter", () => {
       expect(context.starterQuestions.every((starter) =>
         ["vulnerability", "remediation"].includes(starter.specialistId)
         && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+  });
+
+  describe("changes and predeploy Copilot page adapters", () => {
+    type CoreContext = ReturnType<typeof buildChangesCopilotContext>;
+    const rowByClaim = (ctx: CoreContext, claim: string) =>
+      ctx.snapshot.evidence.filter((row) => row.data.claim_type === claim);
+
+    const changesInput = {
+      scope: { subscription: ["sub-a"] },
+      changes: [
+        {
+          event_id: "evt-1",
+          incident_id: "inc-1",
+          incident_title: "Payment latency spike",
+          event_type: "deployment_change",
+          summary: "Deployed ledger v42",
+          source: "github",
+          timestamp: "2026-09-07T10:00:00Z",
+          business_services: ["Payments"],
+        },
+        {
+          event_id: "evt-2",
+          incident_id: "inc-2",
+          incident_title: "DNS flap",
+          event_type: "config_change",
+          summary: "Updated firewall rule",
+          source: "terraform",
+          timestamp: "2026-09-07T09:00:00Z",
+          business_services: ["Networking"],
+        },
+      ],
+      loadedCount: 2,
+      totalCount: 6,
+      available: true,
+      freshness: "fresh" as const,
+      observedAt: "2026-09-07T10:00:00Z",
+      selectedId: "evt-1",
+      filters: { event_type: ["change"], page: ["1"] },
+      evidence: [
+        {
+          source_engine: "Situations",
+          source_table: "incident_timeline",
+          timestamp: "2026-09-07T10:00:00Z",
+          confidence: "medium" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+      sourceStatuses: [
+        { source: "changes", freshness: "fresh", observedAt: "2026-09-07T10:00:00Z" },
+      ],
+    };
+
+    it("binds correlated change identities, proximity basis, coverage, and cross-domain hints", () => {
+      const context = buildChangesCopilotContext(changesInput);
+      const reordered = buildChangesCopilotContext({
+        ...changesInput,
+        changes: [...changesInput.changes].reverse(),
+      });
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "incident",
+        page_id: "changes",
+      });
+      // Change correlation is a stable domain identity.
+      const selectedChange = rowByClaim(context, "change_correlation").find(
+        (row) => row.data.event_id === "evt-1",
+      );
+      expect(selectedChange?.data).toMatchObject({
+        entity: {
+          type: "domain",
+          namespace: "change",
+          kind: "change_correlation",
+          source_key: "evt-1",
+        },
+        incident_id: "inc-1",
+        event_type: "deployment_change",
+        // Correlation is not causation: proximity only, never confirmed.
+        correlation_basis: "temporal_proximity",
+        confirmed: false,
+        actionable: false,
+        mutation_authorized: false,
+      });
+      expect(context.coverage.changes).toMatchObject({
+        visible_count: 2,
+        total_count: 6,
+        complete: false,
+        truncated: true,
+      });
+      expect(context.uncertainty).toEqual(
+        expect.arrayContaining(["changes coverage is truncated"]),
+      );
+      // Deterministic identities regardless of input order.
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        reordered.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      // Cross-domain starters: change list can select change plus
+      // incident/remediation specialists, and none mutate state.
+      const specialists = new Set(context.starterQuestions.map((s) => s.specialistId));
+      expect(specialists.has("incident")).toBe(true);
+      expect(specialists.has("remediation")).toBe(true);
+      expect(context.starterQuestions.every((starter) =>
+        ["incident", "remediation", "vulnerability"].includes(starter.specialistId)
+        && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    const predeployInput = {
+      scope: { subscription: ["sub-a"] },
+      change: {
+        change_id: "chg-1",
+        title: "Scale payments API",
+        author: "release-bot",
+        source: "terraform_plan",
+        target_environment: "prod",
+        resource_change_count: 3,
+      },
+      simulation: {
+        highest_severity: "high",
+        simulated_domains: ["compute", "network"],
+        by_severity: { high: 1, medium: 2 },
+        effect_count: 3,
+        confirmed_outcome: false,
+      },
+      risk: {
+        score: 68,
+        level: "elevated",
+        confidence: "medium",
+        confirmed_cause: false,
+      },
+      cab: {
+        verdict: "review_required",
+        risk_level: "elevated",
+        required_approvals: ["Change Manager"],
+        confirmed_cause: false,
+      },
+      impactedResources: [
+        {
+          resource_id:
+            "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+          resource_name: "vm-1",
+          business_service: "Payments",
+          environment: "prod",
+          relationship: "depends_on",
+        },
+      ],
+      impactedTotalCount: 5,
+      impactedTruncated: true,
+      available: true,
+      freshness: "fresh" as const,
+      observedAt: "2026-09-07T10:00:00Z",
+      unknowns: ["Downstream DNS effect not simulated"],
+      evidence: [
+        {
+          source_engine: "Assessment",
+          source_table: "change_assessment",
+          timestamp: "2026-09-07T10:00:00Z",
+          confidence: "medium" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+    };
+
+    it("carries predeploy simulation/risk/CAB as predicted, never observed, with impacted-resource coverage", () => {
+      const context = buildPredeployCopilotContext(predeployInput);
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "governance",
+        page_id: "predeploy",
+      });
+      // Proposed change is the selected domain identity.
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "domain",
+          namespace: "change",
+          kind: "proposed_change",
+          source_key: "chg-1",
+        },
+      ]);
+      // Simulation/risk/CAB are explicitly predicted, not observed outcomes.
+      const simulation = rowByClaim(context, "change_simulation")[0]?.data;
+      expect(simulation).toMatchObject({
+        highest_severity: "high",
+        confirmed_outcome: false,
+        predicted: true,
+        observed: false,
+        actionable: false,
+        mutation_authorized: false,
+      });
+      const risk = rowByClaim(context, "change_risk")[0]?.data;
+      expect(risk).toMatchObject({ score: 68, confirmed_cause: false, predicted: true, observed: false });
+      const cab = rowByClaim(context, "cab_recommendation")[0]?.data;
+      expect(cab).toMatchObject({
+        verdict: "review_required",
+        confirmed_cause: false,
+        predicted: true,
+        observed: false,
+      });
+      // Impacted resource is a canonical ARM identity.
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              claim_type: "impacted_resource",
+              entity: {
+                type: "azure",
+                resource_id:
+                  "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+              },
+            }),
+          }),
+        ]),
+      );
+      expect(context.coverage.impacted_resources).toMatchObject({
+        visible_count: 1,
+        total_count: 5,
+        complete: false,
+        truncated: true,
+      });
+      expect(context.uncertainty).toEqual(
+        expect.arrayContaining(["impacted_resources coverage is truncated"]),
+      );
+      // Cross-domain hints reach incident/remediation specialists; none mutate.
+      const specialists = new Set(context.starterQuestions.map((s) => s.specialistId));
+      expect(specialists.has("remediation")).toBe(true);
+      expect(context.starterQuestions.every((starter) =>
+        !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    it("keeps a bounded predeploy context before any assessment is submitted", () => {
+      const context = buildPredeployCopilotContext({
+        ...predeployInput,
+        change: null,
+        simulation: null,
+        risk: null,
+        cab: null,
+        impactedResources: [],
+        impactedTotalCount: 0,
+        impactedTruncated: false,
+        available: false,
+        freshness: "unavailable" as const,
+      });
+      expect(context.snapshot.page_id).toBe("predeploy");
+      expect(rowByClaim(context, "proposed_change")).toHaveLength(0);
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
