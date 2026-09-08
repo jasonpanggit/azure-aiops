@@ -55,6 +55,15 @@ IDENTITY_HASH_KEYS = {
     "entra_signature_hash",
 }
 OBSERVATION_NAMES = {"arg", "fabric", "onelake", "api"}
+FAILURE_CODES = frozenset(
+    {
+        "identity_binding",
+        "arg_read",
+        "fabric_read",
+        "onelake_read",
+        "api_read",
+    }
+)
 FORBIDDEN_OUTPUT_KEYS = {
     "access_token",
     "args",
@@ -601,16 +610,34 @@ def collect() -> dict[str, object]:
         management_token = _token(credential, MANAGEMENT_SCOPE)
         identity = decode_identity_claims(management_token)
         if identity["object_id_hash"] != _hash(env["AIOPS_EVIDENCE_OBJECT_ID"]):
-            raise EvidenceCollectionError("live identity does not match fixed Job identity")
-        onelake_observation, facts = _collect_onelake(env, credential)
-        observations = {
-            "arg": _collect_arg(env, management_token),
-            "fabric": _collect_fabric(env, _token(credential, FABRIC_SCOPE)),
-            "onelake": onelake_observation,
-            "api": _collect_api(
+            raise EvidenceCollectionError("identity_binding")
+        try:
+            onelake_observation, facts = _collect_onelake(env, credential)
+        except EvidenceCollectionError as exc:
+            raise EvidenceCollectionError("onelake_read") from exc
+        try:
+            arg_observation = _collect_arg(env, management_token)
+        except EvidenceCollectionError as exc:
+            raise EvidenceCollectionError("arg_read") from exc
+        try:
+            fabric_observation = _collect_fabric(
+                env,
+                _token(credential, FABRIC_SCOPE),
+            )
+        except EvidenceCollectionError as exc:
+            raise EvidenceCollectionError("fabric_read") from exc
+        try:
+            api_observation = _collect_api(
                 env,
                 _token(credential, env["AIOPS_EVIDENCE_API_SCOPE"]),
-            ),
+            )
+        except EvidenceCollectionError as exc:
+            raise EvidenceCollectionError("api_read") from exc
+        observations = {
+            "arg": arg_observation,
+            "fabric": fabric_observation,
+            "onelake": onelake_observation,
+            "api": api_observation,
         }
         return build_closed_record(
             identity=identity,
@@ -635,12 +662,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         record = collect()
     except EvidenceCollectionError as exc:
+        reason_code = (
+            str(exc)
+            if str(exc) in FAILURE_CODES
+            else "evidence_contract"
+        )
         record = {
             "schema_version": "ontology-evidence-read.v1",
             "mode": "fixed-read-only",
             "sanitized": True,
             "status": "FAIL",
-            "reason_hash": _hash(type(exc).__name__),
+            "reason_code": reason_code,
+            "reason_hash": _hash(
+                {"type": type(exc).__name__, "code": reason_code}
+            ),
         }
         print(json.dumps(record, sort_keys=True, separators=(",", ":")))
         return 1

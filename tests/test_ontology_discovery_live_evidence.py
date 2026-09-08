@@ -618,6 +618,12 @@ def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> 
     ]
 
     assert extract_evidence_job_record(logs) == record
+    aca_line = (
+        '{"TimeStamp":"2026-09-08T00:00:00Z","Log":"F '
+        + json.dumps(record, separators=(",", ":"))
+        + '"}'
+    )
+    assert extract_evidence_job_record(aca_line) == record
     with pytest.raises(EvidenceError, match="exactly one"):
         extract_evidence_job_record(
             [*logs, {"Log_s": json.dumps(record, separators=(",", ":"))}]

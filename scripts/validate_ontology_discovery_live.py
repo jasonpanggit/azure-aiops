@@ -1330,19 +1330,23 @@ def extract_evidence_job_record(logs: object) -> dict[str, object]:
     """Extract exactly one closed collector record from ACA Job logs."""
 
     matches: list[dict[str, object]] = []
+    decoder = json.JSONDecoder()
     for line in _log_strings(logs):
         candidate = line.strip()
-        if not candidate.startswith("{") or not candidate.endswith("}"):
-            continue
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if (
-            isinstance(payload, dict)
-            and payload.get("schema_version") == "ontology-evidence-read.v1"
-        ):
-            matches.append(payload)
+        for index, character in enumerate(candidate):
+            if character != "{":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(candidate[index:])
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("schema_version")
+                == "ontology-evidence-read.v1"
+            ):
+                matches.append(payload)
+                break
     if len(matches) != 1:
         raise EvidenceError(
             "evidence Job logs must contain exactly one closed console record"
