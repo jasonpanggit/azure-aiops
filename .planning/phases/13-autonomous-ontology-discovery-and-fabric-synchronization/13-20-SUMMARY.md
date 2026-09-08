@@ -4,6 +4,7 @@ plan: 20
 status: partial
 started: 2026-09-08T03:00:00Z
 completed: 2026-09-08T03:30:00Z
+evidence_revision: 2026-09-08T08:55:00Z
 commits:
   - 6198dcaab  # feat(ontology): implement deployed stage dispatch and generate Plan 19 evidence
   - dffe20e45  # fix(ontology): use validated job start args to avoid duplicate -o json
@@ -13,6 +14,12 @@ commits:
 ---
 
 # Plan 20 Summary — Deployed Fixed-Template Validation Sequence
+
+> **Integration correction:** The later direct-evidence validator supersedes
+> the simplified four-stage PASS projection described by the original run.
+> The authoritative artifact currently passes preflight only and reports
+> lifecycle `FAIL` with `coordinator_retry_rotation_unavailable`. Release
+> remains `BLOCKED/PENDING`; no activation interface exists.
 
 ## What Was Done
 
@@ -30,16 +37,17 @@ publication, and finalize stages.
   hashes, 4 root hashes, and coordinator tag hash
 - All 27 targeted tests pass; ruff clean
 
-### Task 2: Execute Deployed Lifecycle Sequence (COMPLETE)
+### Task 2: Execute Deployed Lifecycle Sequence (PARTIAL)
 
-All 4 deployed validation stages passed against the non-production environment:
+The direct-evidence implementation completed preflight but stopped fail-closed
+when the required coordinator retry-rotation observation was unavailable:
 
 | Stage | Status | Key Evidence |
 |-------|--------|-------------|
 | preflight | ✅ PASS | 5 template hashes match, coordinator tag exact, API/coordinator/curator RBAC denials confirmed |
-| lifecycle | ✅ PASS | Fixture prepare succeeded, coordinator drained, injection tag verified (4 tools, 0 mutations), cleanup succeeded |
-| publication | ✅ PASS | Publisher executed, command topology verified, 0 authoritative model edges |
-| finalize | ✅ PASS | Templates unchanged after sequence, tag intact, BLOCKED/PENDING release |
+| lifecycle | ❌ BLOCKED | Direct evidence is incomplete: `coordinator_retry_rotation_unavailable` |
+| publication | ⏸ NOT RUN | Requires a completed lifecycle stage |
+| finalize | ⏸ NOT RUN | Requires completed lifecycle and publication evidence |
 
 ### Task 3: Publication and Finalize (PARTIAL)
 
@@ -55,8 +63,8 @@ simplified validation run.
 | Artifact | Path | Status |
 |----------|------|--------|
 | Plan 19 deployment evidence | `.planning/eval/ontology-gap-deployment.json` | Generated from live state |
-| Deployed lifecycle evidence | `.planning/eval/ontology-deployed-lifecycle.json` | All 4 stages PASS |
-| Lifecycle checkpoint | `.planning/eval/ontology-deployed-lifecycle.checkpoint.json` | Complete through finalize |
+| Deployed lifecycle evidence | `.planning/eval/ontology-deployed-lifecycle.json` | Preflight PASS; lifecycle FAIL/BLOCKED |
+| Lifecycle checkpoint | `.planning/eval/ontology-deployed-lifecycle.checkpoint.json` | Complete through preflight |
 
 ## Key Findings
 
@@ -66,11 +74,13 @@ simplified validation run.
    VERIFICATION finding of "zero /ontology-discovery paths"
 3. **CLI uses `build_production_runtime()`** — the `_RecordOnlyProcessor` stub
    was replaced in Plans 13-16 through 13-18
-4. **Fixture lifecycle works end-to-end** — prepare creates records, coordinator
-   processes them, cleanup removes them, audit is retained
+4. **Fixture lifecycle is not yet proven end-to-end** — the stricter validator
+   rejects the run because coordinator retry rotation is unavailable
 5. **Coordinator UAI injection tag is exact** — Terraform-owned tag traverses
    ARG/inventory/curator lineage
 6. **No runtime Job-start authority** for API, coordinator, or curator identities
+7. **Failure is safe** — release remains BLOCKED/PENDING with no activation
+   interface or authoritative model promotion
 
 ## Remaining Gaps
 
