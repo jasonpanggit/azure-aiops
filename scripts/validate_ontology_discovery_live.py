@@ -133,6 +133,16 @@ EXPECTED_COMMAND_TOPOLOGY = (
     "publisher_status",
     "api_reload",
 )
+EVIDENCE_FACT_NAMES = frozenset(
+    {
+        "fixture",
+        "registry",
+        "epoch",
+        "preflight",
+        "lifecycle",
+        "publication",
+    }
+)
 REQUIRED_JOB_TEMPLATES = tuple(FIXED_JOB_NAMES)
 AZURE_AMBIENT_CREDENTIAL_KEYS = frozenset(
     {
@@ -560,6 +570,45 @@ def _run_json(command: Sequence[str], *, timeout: int = 120) -> Any:
         raise EvidenceError("evidence command returned invalid JSON") from exc
 
 
+def _run_isolated_az_json(
+    command: Sequence[str],
+    *,
+    azure_config_dir: Path,
+    timeout: int = 120,
+    env: Mapping[str, str] | None = None,
+) -> Any:
+    """Run one Azure CLI JSON operation in the deployer's private CLI home."""
+
+    argv = list(command)
+    if not argv or argv[0] != "az":
+        raise EvidenceError("isolated Azure command must use the Azure CLI")
+    if timeout <= 0:
+        raise EvidenceError("isolated Azure command timeout must be positive")
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=isolated_azure_environment(azure_config_dir, env),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EvidenceError("isolated Azure evidence command timed out") from exc
+    if completed.returncode != 0:
+        raise EvidenceError(
+            "isolated Azure evidence command failed "
+            f"(exit {completed.returncode})"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise EvidenceError(
+            "isolated Azure evidence command returned invalid JSON"
+        ) from exc
+
+
 def _run_contract(
     name: str,
     command: Sequence[str],
@@ -697,6 +746,213 @@ def build_job_start_command(
     ]
 
 
+def fetch_live_job(
+    *,
+    resource_group: str,
+    job_name: str,
+    azure_config_dir: Path,
+) -> dict[str, object]:
+    """Read one exact deployed Job through the isolated deployer context."""
+
+    if job_name not in FIXED_JOB_NAMES.values():
+        raise EvidenceError("Job read must name an exact fixed deployed Job")
+    payload = _run_isolated_az_json(
+        [
+            "az",
+            "containerapp",
+            "job",
+            "show",
+            "--resource-group",
+            resource_group,
+            "--name",
+            job_name,
+            "-o",
+            "json",
+        ],
+        azure_config_dir=azure_config_dir,
+    )
+    if not isinstance(payload, dict):
+        raise EvidenceError("live Job read did not return an object")
+    return payload
+
+
+def _job_container_name(job: Mapping[str, object]) -> str:
+    properties = job.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    template = properties.get("template")
+    template = template if isinstance(template, Mapping) else {}
+    containers = template.get("containers")
+    containers = containers if isinstance(containers, list) else []
+    if len(containers) != 1 or not isinstance(containers[0], Mapping):
+        raise EvidenceError("fixed Job must contain exactly one container")
+    name = str(containers[0].get("name") or "").strip()
+    if not name:
+        raise EvidenceError("fixed Job container name is unavailable")
+    return name
+
+
+def _execution_name(payload: object) -> str:
+    if not isinstance(payload, Mapping):
+        raise EvidenceError("Job start did not return an execution object")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        identifier = str(payload.get("id") or "").strip()
+        name = identifier.rsplit("/", 1)[-1] if identifier else ""
+    if not name:
+        raise EvidenceError("Job start did not return an execution identity")
+    return name
+
+
+def wait_for_job_execution(
+    *,
+    resource_group: str,
+    job_name: str,
+    execution_name: str,
+    azure_config_dir: Path,
+    max_wait_seconds: int,
+) -> dict[str, object]:
+    """Wait finitely for one named execution and reject unknown terminal state."""
+
+    if max_wait_seconds <= 0 or max_wait_seconds > 3600:
+        raise EvidenceError("Job wait deadline must be between 1 and 3600 seconds")
+    deadline = time.monotonic() + max_wait_seconds
+    while True:
+        payload = _run_isolated_az_json(
+            [
+                "az",
+                "containerapp",
+                "job",
+                "execution",
+                "list",
+                "--resource-group",
+                resource_group,
+                "--name",
+                job_name,
+                "-o",
+                "json",
+            ],
+            azure_config_dir=azure_config_dir,
+        )
+        rows = payload if isinstance(payload, list) else []
+        execution = next(
+            (
+                row
+                for row in rows
+                if isinstance(row, Mapping)
+                and str(row.get("name") or "") == execution_name
+            ),
+            None,
+        )
+        if execution is not None:
+            properties = execution.get("properties")
+            properties = (
+                properties if isinstance(properties, Mapping) else {}
+            )
+            status = str(
+                properties.get("status") or execution.get("status") or ""
+            ).casefold()
+            if status in {"succeeded", "completed"}:
+                return dict(execution)
+            if status in {"failed", "stopped", "degraded"}:
+                raise EvidenceError("fixed Job execution failed")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise EvidenceError("fixed Job execution did not complete in time")
+        time.sleep(min(2.0, remaining))
+
+
+def _fetch_job_logs(
+    *,
+    resource_group: str,
+    job_name: str,
+    execution_name: str,
+    container_name: str,
+    azure_config_dir: Path,
+) -> object:
+    """Read bounded JSON logs for one completed execution."""
+
+    return _run_isolated_az_json(
+        [
+            "az",
+            "containerapp",
+            "job",
+            "logs",
+            "show",
+            "--resource-group",
+            resource_group,
+            "--name",
+            job_name,
+            "--execution",
+            execution_name,
+            "--container",
+            container_name,
+            "--tail",
+            "300",
+            "--format",
+            "json",
+            "-o",
+            "json",
+        ],
+        azure_config_dir=azure_config_dir,
+    )
+
+
+def run_fixed_job(
+    *,
+    resource_group: str,
+    job_name: str,
+    expected_template_hash: str,
+    azure_config_dir: Path,
+    max_wait_seconds: int,
+) -> dict[str, object]:
+    """Start one saved Job template, wait, read logs, and prove no drift."""
+
+    before = fetch_live_job(
+        resource_group=resource_group,
+        job_name=job_name,
+        azure_config_dir=azure_config_dir,
+    )
+    assert_fixed_template(expected_template_hash, before, before)
+    start_payload = _run_isolated_az_json(
+        build_job_start_command(
+            resource_group=resource_group,
+            job_name=job_name,
+        ),
+        azure_config_dir=azure_config_dir,
+    )
+    execution_name = _execution_name(start_payload)
+    wait_for_job_execution(
+        resource_group=resource_group,
+        job_name=job_name,
+        execution_name=execution_name,
+        azure_config_dir=azure_config_dir,
+        max_wait_seconds=max_wait_seconds,
+    )
+    logs = _fetch_job_logs(
+        resource_group=resource_group,
+        job_name=job_name,
+        execution_name=execution_name,
+        container_name=_job_container_name(before),
+        azure_config_dir=azure_config_dir,
+    )
+    after = fetch_live_job(
+        resource_group=resource_group,
+        job_name=job_name,
+        azure_config_dir=azure_config_dir,
+    )
+    assert_fixed_template(expected_template_hash, before, after)
+    return {
+        "execution_hash": _full_opaque(execution_name),
+        "logs": logs,
+        "template": {
+            "before": job_template_hash(before),
+            "expected": expected_template_hash,
+            "after": job_template_hash(after),
+            "override_fields": [],
+        },
+    }
+
+
 def _template_projection(job: Mapping[str, object]) -> dict[str, object]:
     properties = job.get("properties")
     properties = properties if isinstance(properties, Mapping) else {}
@@ -757,10 +1013,67 @@ def _template_projection(job: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def job_template_hash(job: Mapping[str, object]) -> str:
-    """Hash every execution-relevant saved-template field."""
+def _plan19_template_projection(
+    job: Mapping[str, object],
+) -> dict[str, object]:
+    """Match the canonical live template projection retained by Plan 19."""
 
-    return _full_opaque(_template_projection(job))
+    properties = job.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    configuration = properties.get("configuration")
+    configuration = (
+        configuration if isinstance(configuration, Mapping) else {}
+    )
+    template = properties.get("template")
+    template = template if isinstance(template, Mapping) else {}
+    containers = template.get("containers")
+    containers = containers if isinstance(containers, list) else []
+    projected_containers: list[dict[str, object]] = []
+    for container in containers:
+        if not isinstance(container, Mapping):
+            continue
+        env_rows = container.get("env")
+        env_rows = env_rows if isinstance(env_rows, list) else []
+        environment = {
+            str(row.get("name") or ""): str(row.get("value") or "")
+            for row in env_rows
+            if isinstance(row, Mapping)
+        }
+        resources = container.get("resources")
+        resources = resources if isinstance(resources, Mapping) else {}
+        projected_containers.append(
+            {
+                "name": container.get("name"),
+                "image": container.get("image"),
+                "command": list(container.get("command") or ()),
+                "args": list(container.get("args") or ()),
+                "environment": dict(sorted(environment.items())),
+                "cpu": resources.get("cpu"),
+                "memory": resources.get("memory"),
+            }
+        )
+    identity = job.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    assigned = identity.get("userAssignedIdentities")
+    assigned = assigned if isinstance(assigned, Mapping) else {}
+    return {
+        "name": job.get("name"),
+        "identity_type": identity.get("type"),
+        "identity_count": len(assigned),
+        "trigger_type": configuration.get("triggerType"),
+        "replica_timeout": configuration.get("replicaTimeout"),
+        "replica_retry_limit": configuration.get("replicaRetryLimit"),
+        "manual_trigger": configuration.get("manualTriggerConfig"),
+        "schedule_trigger": configuration.get("scheduleTriggerConfig"),
+        "event_trigger": configuration.get("eventTriggerConfig"),
+        "containers": projected_containers,
+    }
+
+
+def job_template_hash(job: Mapping[str, object]) -> str:
+    """Hash the exact execution-relevant projection retained by Plan 19."""
+
+    return _full_opaque(_plan19_template_projection(job))
 
 
 def assert_fixed_template(
@@ -958,9 +1271,13 @@ def validate_evidence_job_record(
             raise EvidenceError("evidence Job observation is not closed")
     facts = sanitized.get("facts")
     facts = facts if isinstance(facts, Mapping) else {}
-    if set(facts) != {"fixture", "registry", "epoch"} or any(
+    if (
+        not {"fixture", "registry", "epoch"}.issubset(facts)
+        or not set(facts).issubset(EVIDENCE_FACT_NAMES)
+        or any(
         not isinstance(facts.get(name), Mapping)
         for name in ("fixture", "registry", "epoch")
+        )
     ):
         raise EvidenceError("evidence Job lifecycle facts are incomplete")
 
@@ -1178,6 +1495,101 @@ def load_resume_checkpoint(path: Path) -> dict[str, object]:
     ):
         raise EvidenceError("resume checkpoint failed its closed schema")
     return payload
+
+
+def _completed_checkpoint_stages(path: Path) -> tuple[str, ...]:
+    if not path.exists():
+        return ()
+    checkpoint = load_resume_checkpoint(path)
+    checkpoint_stage = str(checkpoint["stage"])
+    step_keys = set(checkpoint["completed_step_keys"])
+    completed = tuple(
+        stage
+        for stage in DEPLOYED_STAGES
+        if _full_opaque({"stage": checkpoint_stage, "step": stage}) in step_keys
+    )
+    if completed != DEPLOYED_STAGES[: len(completed)]:
+        raise EvidenceError("resume checkpoint stage order is invalid")
+    return completed
+
+
+def merge_resume_checkpoint(
+    path: Path,
+    *,
+    requested_stage: str,
+    evidence_ref: str,
+) -> tuple[str, ...]:
+    """Append one finite stage while retaining only opaque checkpoint values."""
+
+    completed = _completed_checkpoint_stages(path)
+    assert_stage_transition(completed, requested_stage)
+    if requested_stage not in completed:
+        completed = (*completed, requested_stage)
+    existing_refs: list[str] = []
+    if path.exists():
+        existing = load_resume_checkpoint(path)
+        existing_refs = [
+            str(value) for value in existing.get("evidence_refs", ())
+        ]
+    refs = list(dict.fromkeys([*existing_refs, evidence_ref]))
+    write_resume_checkpoint(
+        path,
+        stage=requested_stage,
+        completed_steps=completed,
+        evidence_refs=refs,
+    )
+    return completed
+
+
+def _load_deployed_artifact(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {
+            "schema_version": "ontology-deployed-lifecycle-validation.v1",
+            "mode": "deployed-fixed-template",
+            "sanitized": True,
+            "environment": "validation",
+            "completed_stages": [],
+            "stages": {},
+            "status": "PENDING",
+            "release_status": "BLOCKED/PENDING",
+            "activation_interface_present": False,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvidenceError("deployed stage artifact is unavailable or invalid") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version")
+        != "ontology-deployed-lifecycle-validation.v1"
+        or payload.get("mode") != "deployed-fixed-template"
+        or payload.get("sanitized") is not True
+        or payload.get("environment") != "validation"
+        or not isinstance(payload.get("completed_stages"), list)
+        or not isinstance(payload.get("stages"), Mapping)
+    ):
+        raise EvidenceError("deployed stage artifact failed its closed schema")
+    sanitize_deployed_evidence(payload)
+    return payload
+
+
+def persist_deployed_stage_artifact(
+    path: Path,
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    """Atomically persist only the closed deployed-stage evidence schema."""
+
+    sanitized = sanitize_deployed_evidence(artifact)
+    if not isinstance(sanitized, dict):
+        raise EvidenceError("deployed stage artifact is not an object")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(sanitized, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+    return sanitized
 
 
 def evaluate_lifecycle_evidence(
@@ -2687,14 +3099,615 @@ def _shadow(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     return report_path, sanitize_shadow_report(report)  # type: ignore[return-value]
 
 
-def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
-    """Enter the deployed state machine without falling back to legacy shadow.
+def _deployed_resource_group(
+    env: Mapping[str, str] | None = None,
+) -> str:
+    environment = os.environ if env is None else env
+    value = str(environment.get("AIOPS_ONTOLOGY_RESOURCE_GROUP") or "").strip()
+    if not value:
+        raise EvidenceError("deployed ontology resource group is required")
+    return value
 
-    Context validation intentionally happens before target discovery, token
-    acquisition, Terraform reads, or any Job call.  This keeps missing or
-    ambient credentials a true precondition gate rather than an invitation to
-    reuse the operator's default Azure CLI session.
-    """
+
+def _expected_template_hash(
+    templates: Mapping[str, object],
+    logical_name: str,
+) -> str:
+    row = templates.get(logical_name)
+    row = row if isinstance(row, Mapping) else {}
+    expected = row.get("expected")
+    if not _require_hash(expected):
+        raise EvidenceError("fixed Job template evidence is incomplete")
+    return str(expected)
+
+
+def _assert_exact_evidence_job_template(
+    job: Mapping[str, object],
+) -> tuple[str, str]:
+    projection = _template_projection(job)
+    containers = projection.get("containers")
+    containers = containers if isinstance(containers, list) else []
+    if len(containers) != 1 or not isinstance(containers[0], Mapping):
+        raise EvidenceError("evidence Job template is not exact")
+    container = containers[0]
+    env_rows = container.get("env")
+    env_rows = env_rows if isinstance(env_rows, list) else []
+    env_names = {
+        str(row.get("name") or "")
+        for row in env_rows
+        if isinstance(row, Mapping)
+    }
+    expected_env_names = {
+        "AZURE_CLIENT_ID",
+        "AIOPS_EVIDENCE_OBJECT_ID",
+        "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
+        "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
+        *{
+            f"AIOPS_EVIDENCE_{name}_{suffix}"
+            for name in (
+                "STATE",
+                "COMMAND",
+                "DISPATCH",
+                "PUBLICATION",
+                "VALIDATION",
+            )
+            for suffix in ("WORKSPACE_ID", "LAKEHOUSE_ID")
+        },
+    }
+    identity = projection.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    identity_keys = identity.get("user_assigned_identity_keys")
+    identity_keys = identity_keys if isinstance(identity_keys, list) else []
+    if (
+        container.get("command")
+        != ["python", "/app/scripts/collect_ontology_evidence.py"]
+        or container.get("args") != ["--emit-console-record"]
+        or env_names != expected_env_names
+        or len(env_rows) != len(expected_env_names)
+        or projection.get("trigger_type") != "Manual"
+        or projection.get("retry_limit") != 0
+        or projection.get("parallelism") != 1
+        or projection.get("completion_count") != 1
+        or identity.get("type") != "UserAssigned"
+        or len(identity_keys) != 1
+    ):
+        raise EvidenceError("evidence Job template is not exact")
+    return str(identity_keys[0]), job_template_hash(job)
+
+
+def _read_identity_principal_hash(
+    *,
+    identity_resource: str,
+    azure_config_dir: Path,
+) -> str:
+    payload = _run_isolated_az_json(
+        ["az", "identity", "show", "--ids", identity_resource, "-o", "json"],
+        azure_config_dir=azure_config_dir,
+    )
+    payload = payload if isinstance(payload, Mapping) else {}
+    principal = payload.get("principalId")
+    if not principal:
+        raise EvidenceError("evidence Job principal is unavailable")
+    return _full_opaque(principal)
+
+
+def _read_deployer_identity_hash(*, azure_config_dir: Path) -> str:
+    payload = _run_isolated_az_json(
+        ["az", "account", "show", "-o", "json"],
+        azure_config_dir=azure_config_dir,
+    )
+    payload = payload if isinstance(payload, Mapping) else {}
+    user = payload.get("user")
+    user = user if isinstance(user, Mapping) else {}
+    identity = user.get("name") or payload.get("tenantId")
+    if not identity:
+        raise EvidenceError("deployment principal identity is unavailable")
+    return _full_opaque(identity)
+
+
+def _fixed_template_inventory(
+    *,
+    resource_group: str,
+    contexts: AzureContexts,
+    contract: Plan19DeploymentContract,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+    jobs: dict[str, dict[str, object]] = {}
+    templates: dict[str, dict[str, object]] = {}
+    for logical_name, job_name in FIXED_JOB_NAMES.items():
+        job = fetch_live_job(
+            resource_group=resource_group,
+            job_name=job_name,
+            azure_config_dir=contexts.deployer,
+        )
+        observed_hash = job_template_hash(job)
+        expected_hash = (
+            contract.template_hashes.get(logical_name)
+            if logical_name != "evidence"
+            else observed_hash
+        )
+        if not _require_hash(expected_hash):
+            raise EvidenceError("Plan 19 fixed Job template is unavailable")
+        assert_fixed_template(str(expected_hash), job, job)
+        if logical_name == "evidence":
+            _, exact_hash = _assert_exact_evidence_job_template(job)
+            if exact_hash != expected_hash:
+                raise EvidenceError("evidence Job template hash is unstable")
+        jobs[logical_name] = job
+        templates[logical_name] = {
+            "before": observed_hash,
+            "expected": str(expected_hash),
+            "after": observed_hash,
+            "override_fields": [],
+        }
+    return jobs, templates
+
+
+def _refresh_fixed_templates(
+    *,
+    resource_group: str,
+    contexts: AzureContexts,
+    templates: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    refreshed: dict[str, dict[str, object]] = {}
+    for logical_name, job_name in FIXED_JOB_NAMES.items():
+        expected_hash = _expected_template_hash(templates, logical_name)
+        job = fetch_live_job(
+            resource_group=resource_group,
+            job_name=job_name,
+            azure_config_dir=contexts.deployer,
+        )
+        assert_fixed_template(expected_hash, job, job)
+        if logical_name == "evidence":
+            _assert_exact_evidence_job_template(job)
+        row = templates.get(logical_name)
+        row = row if isinstance(row, Mapping) else {}
+        refreshed[logical_name] = {
+            "before": row.get("before"),
+            "expected": expected_hash,
+            "after": job_template_hash(job),
+            "override_fields": [],
+        }
+    return refreshed
+
+
+def _run_evidence_snapshot(
+    *,
+    args: argparse.Namespace,
+    contexts: AzureContexts,
+    resource_group: str,
+    expected_template_hash: str,
+    expected_identity_hash: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    execution = run_fixed_job(
+        resource_group=resource_group,
+        job_name=FIXED_JOB_NAMES["evidence"],
+        expected_template_hash=expected_template_hash,
+        azure_config_dir=contexts.deployer,
+        max_wait_seconds=args.max_wait_seconds,
+    )
+    record = extract_evidence_job_record(execution["logs"])
+    validated = validate_evidence_job_record(
+        record,
+        expected_object_id_hash=expected_identity_hash,
+    )
+    return record, {
+        **validated,
+        "execution_hash": execution["execution_hash"],
+        "template": execution["template"],
+    }
+
+
+def _direct_stage_fact(
+    record: Mapping[str, object],
+    name: str,
+) -> dict[str, object]:
+    facts = record.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    value = facts.get(name)
+    if not isinstance(value, Mapping):
+        raise EvidenceError(f"direct deployed {name} evidence is unavailable")
+    sanitized = sanitize_deployed_evidence(value)
+    if not isinstance(sanitized, dict):
+        raise EvidenceError(f"direct deployed {name} evidence is invalid")
+    return sanitized
+
+
+def _assert_runtime_job_start_denials(
+    role_definitions: object,
+) -> None:
+    definitions = (
+        role_definitions if isinstance(role_definitions, Mapping) else {}
+    )
+    if set(definitions) != {"api", "coordinator", "publisher", "curator", "evidence"}:
+        raise EvidenceError("runtime Job-start role evidence is incomplete")
+    for identity_class, rows in definitions.items():
+        if not isinstance(rows, list) or any(
+            not isinstance(row, Mapping) for row in rows
+        ):
+            raise EvidenceError("runtime Job-start role evidence is invalid")
+        expanded = expand_role_actions(rows)
+        if expanded["wildcard"] or expanded["job_start"]:
+            raise EvidenceError("runtime identity has Job-start authority")
+        if identity_class == "evidence" and expanded["mutation"]:
+            raise EvidenceError("evidence identity has mutation authority")
+
+
+def _run_preflight_stage(
+    args: argparse.Namespace,
+    contexts: AzureContexts,
+    contract: Plan19DeploymentContract,
+    _artifact: Mapping[str, object],
+) -> dict[str, object]:
+    resource_group = _deployed_resource_group()
+    jobs, templates = _fixed_template_inventory(
+        resource_group=resource_group,
+        contexts=contexts,
+        contract=contract,
+    )
+    identity_resource, evidence_template_hash = (
+        _assert_exact_evidence_job_template(jobs["evidence"])
+    )
+    expected_identity_hash = _read_identity_principal_hash(
+        identity_resource=identity_resource,
+        azure_config_dir=contexts.deployer,
+    )
+    deployer_identity_hash = _read_deployer_identity_hash(
+        azure_config_dir=contexts.deployer
+    )
+    if deployer_identity_hash == expected_identity_hash:
+        raise EvidenceError("deployment and evidence identities must be distinct")
+    record, execution = _run_evidence_snapshot(
+        args=args,
+        contexts=contexts,
+        resource_group=resource_group,
+        expected_template_hash=evidence_template_hash,
+        expected_identity_hash=expected_identity_hash,
+    )
+    facts = _direct_stage_fact(record, "preflight")
+    if (
+        facts.get("validation_connection_root_hash")
+        != contract.validation_connection_root_hash
+        or facts.get("coordinator_tag_hash") != contract.coordinator_tag_hash
+        or facts.get("runtime_job_start_grants") != []
+    ):
+        raise EvidenceError("Plan 19 live boundary no longer matches")
+    _assert_runtime_job_start_denials(facts.get("runtime_role_definitions"))
+    role_snapshot = facts.get("evidence_role_snapshot")
+    if not isinstance(role_snapshot, Mapping):
+        raise EvidenceError("evidence Job role boundary is unavailable")
+    evidence_job = validate_evidence_job_boundary(
+        before=jobs["evidence"],
+        after=fetch_live_job(
+            resource_group=resource_group,
+            job_name=FIXED_JOB_NAMES["evidence"],
+            azure_config_dir=contexts.deployer,
+        ),
+        expected_template_hash=evidence_template_hash,
+        expected_identity_resource_hash=_full_opaque(identity_resource),
+        expected_principal_hash=expected_identity_hash,
+        role_snapshot=role_snapshot,
+    )
+    evidence_job.update(
+        {
+            "record_hash": execution["record_hash"],
+            "entra_bound_record_hash": execution["entra_bound_record_hash"],
+        }
+    )
+    templates = _refresh_fixed_templates(
+        resource_group=resource_group,
+        contexts=contexts,
+        templates=templates,
+    )
+    return {
+        "status": "PASS",
+        "credentials": {
+            "local_context_count": 1,
+            "modes": {"deployer": "0700"},
+            "ambient_credentials_removed": True,
+            "identity_hashes": {
+                "deployer": deployer_identity_hash,
+                "evidence": expected_identity_hash,
+            },
+            "evidence_source": "fixed_job",
+            "deployer_actions": sorted(EXPECTED_DEPLOYER_ACTIONS),
+            "evidence_actions": sorted(EXPECTED_EVIDENCE_ACTIONS),
+            "evidence_denied_actions": sorted(EXPECTED_EVIDENCE_DENIALS),
+            "runtime_job_start_grants": [],
+        },
+        "evidence_job": evidence_job,
+        "templates": templates,
+        "contract_hash": _full_opaque(asdict(contract)),
+        "release_status": "BLOCKED/PENDING",
+    }
+
+
+def _preflight_stage_data(artifact: Mapping[str, object]) -> dict[str, object]:
+    stages = artifact.get("stages")
+    stages = stages if isinstance(stages, Mapping) else {}
+    preflight = stages.get("preflight")
+    if not isinstance(preflight, Mapping) or preflight.get("status") != "PASS":
+        raise EvidenceError("closed preflight evidence is required")
+    return dict(preflight)
+
+
+def _fixture_counts(record: Mapping[str, object]) -> tuple[int, int, int]:
+    facts = record.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    fixture = facts.get("fixture")
+    fixture = fixture if isinstance(fixture, Mapping) else {}
+    registry = facts.get("registry")
+    registry = registry if isinstance(registry, Mapping) else {}
+    epoch = facts.get("epoch")
+    epoch = epoch if isinstance(epoch, Mapping) else {}
+    return (
+        int(fixture.get("active_drill_count") or 0),
+        int(registry.get("active_fixture_count") or 0),
+        int(epoch.get("active_epoch_count") or 0),
+    )
+
+
+def _epoch_is_drained(record: Mapping[str, object]) -> bool:
+    facts = record.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    epoch = facts.get("epoch")
+    epoch = epoch if isinstance(epoch, Mapping) else {}
+    members = epoch.get("members")
+    members = members if isinstance(members, list) else []
+    terminal = {"succeeded", "duplicate", "exhausted_failure", "excluded"}
+    return len(members) == 3 and all(
+        isinstance(row, Mapping) and row.get("outcome") in terminal
+        for row in members
+    )
+
+
+def _run_lifecycle_stage(
+    args: argparse.Namespace,
+    contexts: AzureContexts,
+    _contract: Plan19DeploymentContract,
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    preflight = _preflight_stage_data(artifact)
+    templates = preflight.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    evidence_job = preflight.get("evidence_job")
+    evidence_job = evidence_job if isinstance(evidence_job, Mapping) else {}
+    expected_identity_hash = str(evidence_job.get("identity_hash") or "")
+    if not _require_hash(expected_identity_hash):
+        raise EvidenceError("closed evidence Job identity is unavailable")
+    resource_group = _deployed_resource_group()
+
+    def evidence_snapshot() -> dict[str, object]:
+        record, _ = _run_evidence_snapshot(
+            args=args,
+            contexts=contexts,
+            resource_group=resource_group,
+            expected_template_hash=_expected_template_hash(
+                templates, "evidence"
+            ),
+            expected_identity_hash=expected_identity_hash,
+        )
+        return record
+
+    observed = evidence_snapshot()
+    active_drills, active_records, _ = _fixture_counts(observed)
+    if active_drills > 1:
+        raise EvidenceError("multiple active fixture drills prevent safe resume")
+    if active_drills == 0:
+        run_fixed_job(
+            resource_group=resource_group,
+            job_name=FIXED_JOB_NAMES["ontology_fixture_prepare"],
+            expected_template_hash=_expected_template_hash(
+                templates, "ontology_fixture_prepare"
+            ),
+            azure_config_dir=contexts.deployer,
+            max_wait_seconds=args.max_wait_seconds,
+        )
+        observed = evidence_snapshot()
+        active_drills, active_records, _ = _fixture_counts(observed)
+    if active_drills != 1 or active_records != 3:
+        raise EvidenceError("fixed prepare did not leave exactly three records")
+
+    for _ in range(8):
+        if _epoch_is_drained(observed):
+            break
+        run_fixed_job(
+            resource_group=resource_group,
+            job_name=FIXED_JOB_NAMES["coordinator"],
+            expected_template_hash=_expected_template_hash(
+                templates, "coordinator"
+            ),
+            azure_config_dir=contexts.deployer,
+            max_wait_seconds=args.max_wait_seconds,
+        )
+        observed = evidence_snapshot()
+    if not _epoch_is_drained(observed):
+        raise EvidenceError("three-record coordinator drain did not converge")
+
+    run_fixed_job(
+        resource_group=resource_group,
+        job_name=FIXED_JOB_NAMES["ontology_fixture_cleanup"],
+        expected_template_hash=_expected_template_hash(
+            templates, "ontology_fixture_cleanup"
+        ),
+        azure_config_dir=contexts.deployer,
+        max_wait_seconds=args.max_wait_seconds,
+    )
+    observed = evidence_snapshot()
+    active_drills, active_records, active_epochs = _fixture_counts(observed)
+    if (active_drills, active_records, active_epochs) != (0, 0, 0):
+        raise EvidenceError("fixed cleanup left active fixture state")
+
+    lifecycle = _direct_stage_fact(observed, "lifecycle")
+    lifecycle["sequence"] = list(DEPLOYED_LIFECYCLE_SEQUENCE)
+    lifecycle["environment"] = "validation"
+    lifecycle["credentials"] = preflight.get("credentials")
+    lifecycle["evidence_job"] = preflight.get("evidence_job")
+    lifecycle["templates"] = _refresh_fixed_templates(
+        resource_group=resource_group,
+        contexts=contexts,
+        templates=templates,
+    )
+    evaluation = evaluate_lifecycle_evidence(lifecycle)
+    if evaluation["status"] != "PASS":
+        raise EvidenceError("deployed lifecycle evidence evaluation failed")
+    return {
+        "status": "PASS",
+        "evidence": lifecycle,
+        "evaluation": evaluation,
+        "release_status": "BLOCKED/PENDING",
+    }
+
+
+def _run_publication_stage(
+    args: argparse.Namespace,
+    contexts: AzureContexts,
+    _contract: Plan19DeploymentContract,
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    preflight = _preflight_stage_data(artifact)
+    templates = preflight.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    evidence_job = preflight.get("evidence_job")
+    evidence_job = evidence_job if isinstance(evidence_job, Mapping) else {}
+    expected_identity_hash = str(evidence_job.get("identity_hash") or "")
+    if not _require_hash(expected_identity_hash):
+        raise EvidenceError("closed evidence Job identity is unavailable")
+    resource_group = _deployed_resource_group()
+    publication: dict[str, object] | None = None
+    for _ in range(4):
+        for logical_name in ("coordinator", "publisher"):
+            run_fixed_job(
+                resource_group=resource_group,
+                job_name=FIXED_JOB_NAMES[logical_name],
+                expected_template_hash=_expected_template_hash(
+                    templates, logical_name
+                ),
+                azure_config_dir=contexts.deployer,
+                max_wait_seconds=args.max_wait_seconds,
+            )
+        record, _ = _run_evidence_snapshot(
+            args=args,
+            contexts=contexts,
+            resource_group=resource_group,
+            expected_template_hash=_expected_template_hash(
+                templates, "evidence"
+            ),
+            expected_identity_hash=expected_identity_hash,
+        )
+        try:
+            candidate = _direct_stage_fact(record, "publication")
+        except EvidenceError:
+            continue
+        candidate["templates"] = _refresh_fixed_templates(
+            resource_group=resource_group,
+            contexts=contexts,
+            templates=templates,
+        )
+        candidate["credentials"] = preflight.get("credentials")
+        if evaluate_publication_evidence(candidate)["status"] == "PASS":
+            publication = candidate
+            break
+    if publication is None:
+        raise EvidenceError("deployed publication evidence did not converge")
+    evaluation = evaluate_publication_evidence(publication)
+    return {
+        "status": "PASS",
+        "evidence": publication,
+        "evaluation": evaluation,
+        "release_status": "BLOCKED/PENDING",
+    }
+
+
+def _run_finalize_stage(
+    args: argparse.Namespace,
+    contexts: AzureContexts,
+    contract: Plan19DeploymentContract,
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    stages = artifact.get("stages")
+    stages = stages if isinstance(stages, Mapping) else {}
+    lifecycle = stages.get("lifecycle")
+    lifecycle = lifecycle if isinstance(lifecycle, Mapping) else {}
+    publication = stages.get("publication")
+    publication = publication if isinstance(publication, Mapping) else {}
+    lifecycle_evidence = lifecycle.get("evidence")
+    publication_evidence = publication.get("evidence")
+    if not isinstance(lifecycle_evidence, Mapping) or not isinstance(
+        publication_evidence, Mapping
+    ):
+        raise EvidenceError("prior deployed stage evidence is unavailable")
+    lifecycle_evaluation = evaluate_lifecycle_evidence(lifecycle_evidence)
+    publication_evaluation = evaluate_publication_evidence(publication_evidence)
+    if (
+        lifecycle_evaluation["status"] != "PASS"
+        or publication_evaluation["status"] != "PASS"
+    ):
+        raise EvidenceError("prior deployed stage evidence no longer passes")
+    refreshed_preflight = _run_preflight_stage(
+        args, contexts, contract, artifact
+    )
+    injection = lifecycle_evidence.get("injection")
+    injection = injection if isinstance(injection, Mapping) else {}
+    edges = injection.get("authoritative_model_edges")
+    edges = edges if isinstance(edges, Mapping) else {}
+    publication_final = publication_evidence.get("final")
+    publication_final = (
+        publication_final if isinstance(publication_final, Mapping) else {}
+    )
+    if (
+        any(
+            edges.get(name) != 0
+            for name in ("candidate", "stage", "active", "consumer")
+        )
+        or publication_final.get("authoritative_model_edges") != 0
+        or lifecycle_evidence.get("release_status") != "BLOCKED/PENDING"
+        or publication_evidence.get("release_status") != "BLOCKED/PENDING"
+    ):
+        raise EvidenceError("final model-edge or release boundary is not closed")
+    return {
+        "status": "PASS",
+        "preflight_revalidated": refreshed_preflight["status"] == "PASS",
+        "lifecycle_revalidated": True,
+        "publication_revalidated": True,
+        "authoritative_model_edges": 0,
+        "release_status": "BLOCKED/PENDING",
+    }
+
+
+def _deployed_failure_report(
+    *,
+    stage: str | None,
+    exc: BaseException,
+) -> dict[str, object]:
+    if isinstance(exc, ConfigurationError):
+        blocker_code = "configuration_precondition"
+    elif isinstance(exc, EvidenceError):
+        blocker_code = "evidence_precondition"
+    elif isinstance(exc, subprocess.SubprocessError):
+        blocker_code = "subprocess_failure"
+    else:
+        blocker_code = "io_failure"
+    return {
+        "schema_version": "ontology-deployed-lifecycle-validation.v1",
+        "mode": "deployed-fixed-template",
+        "sanitized": True,
+        "stage": stage,
+        "status": "FAIL",
+        "release_status": "BLOCKED/PENDING",
+        "missing_evidence": [type(exc).__name__],
+        "blocker": "deployed evidence unavailable",
+        "blocker_code": blocker_code,
+        "reason_hash": _full_opaque(
+            {"type": type(exc).__name__, "message": str(exc)}
+        ),
+        "activation_interface_present": False,
+    }
+
+
+def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
+    """Execute one ordered, idempotent deployed evidence stage."""
 
     report_path = args.output
     if report_path is None:
@@ -2706,14 +3719,52 @@ def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
             "deployed stages require --environment validation"
         )
     contexts = validate_azure_contexts()
-    # Loading the applied contract is the last local-only gate. Cloud reads and
-    # all Job actions belong to the stage implementation and must never happen
-    # through the legacy ambient-credential shadow collector.
-    load_plan19_deployment_contract()
-    raise EvidenceError(
-        "deployed stage requires Task 2 live preconditions after isolated "
-        f"context validation ({contexts.deployer.name}, {contexts.evidence.name})"
+    contract = load_plan19_deployment_contract()
+    artifact = _load_deployed_artifact(report_path)
+    completed = _completed_checkpoint_stages(args.resume_file)
+    assert_stage_transition(completed, str(args.stage))
+    artifact_completed = tuple(artifact.get("completed_stages") or ())
+    if artifact_completed != completed:
+        raise EvidenceError("checkpoint and stage artifact disagree")
+    if args.stage in completed:
+        return report_path, artifact
+
+    runners = {
+        "preflight": _run_preflight_stage,
+        "lifecycle": _run_lifecycle_stage,
+        "publication": _run_publication_stage,
+        "finalize": _run_finalize_stage,
+    }
+    stage_report = runners[str(args.stage)](
+        args,
+        contexts,
+        contract,
+        artifact,
     )
+    sanitized_stage = sanitize_deployed_evidence(stage_report)
+    if not isinstance(sanitized_stage, Mapping):
+        raise EvidenceError("deployed stage result is not an object")
+    if sanitized_stage.get("status") != "PASS":
+        raise EvidenceError("deployed stage did not pass")
+    stages = artifact.get("stages")
+    stages = dict(stages) if isinstance(stages, Mapping) else {}
+    stages[str(args.stage)] = dict(sanitized_stage)
+    completed = (*completed, str(args.stage))
+    updated = {
+        **artifact,
+        "completed_stages": list(completed),
+        "stages": stages,
+        "status": "PASS",
+        "release_status": "BLOCKED/PENDING",
+    }
+    updated.pop("last_failure", None)
+    persisted = persist_deployed_stage_artifact(report_path, updated)
+    merge_resume_checkpoint(
+        args.resume_file,
+        requested_stage=str(args.stage),
+        evidence_ref=_full_opaque(sanitized_stage),
+    )
+    return report_path, persisted
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2741,24 +3792,35 @@ def main(argv: list[str] | None = None) -> int:
                 / f"ontology-discovery-shadow-{datetime.now(UTC).date().isoformat()}.json"
             )
         )
-        report = {
-            "schema_version": (
-                "ontology-deployed-lifecycle-validation.v1"
-                if deployed
-                else "ontology-discovery-shadow-validation.v1"
-            ),
-            "mode": (
-                "deployed-fixed-template"
-                if deployed
-                else "credentialed-shadow"
-            ),
-            "sanitized": True,
-            "status": "FAIL",
-            "release_status": "BLOCKED/PENDING",
-            "missing_evidence": [type(exc).__name__],
-            "blocker": str(exc),
-            "activation_interface_present": False,
-        }
+        if deployed:
+            failure = _deployed_failure_report(stage=args.stage, exc=exc)
+            prior: dict[str, object] = {}
+            if report_path.exists():
+                try:
+                    prior = _load_deployed_artifact(report_path)
+                except EvidenceError:
+                    prior = {}
+            if prior:
+                report = {
+                    **prior,
+                    "status": "FAIL",
+                    "last_failure": failure,
+                }
+            else:
+                report = failure
+        else:
+            report = {
+                "schema_version": "ontology-discovery-shadow-validation.v1",
+                "mode": "credentialed-shadow",
+                "sanitized": True,
+                "status": "FAIL",
+                "release_status": "BLOCKED/PENDING",
+                "missing_evidence": [type(exc).__name__],
+                "blocker": str(exc),
+                "activation_interface_present": False,
+            }
+        if deployed:
+            report = sanitize_deployed_evidence(report)  # type: ignore[assignment]
     _write_report(report_path, report)
     should_fail = (
         args.fail_on_missing_evidence
