@@ -572,9 +572,12 @@ _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
 
 # Scoped network requests bypass the persisted snapshot and query ARG live, so
-# without a cache every page load costs a round trip. Keyed by root *and*
-# subscription set, since rows fetched for one scope must never serve another.
-_HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
+# without a cache every page interaction costs a round trip. Keep a completed
+# observation for a five-minute operator workflow: live ARG can take longer
+# than 30 seconds, and expiring it between Summary, Full detail, and drawer
+# interactions recreates that cost on every click. The observed timestamp
+# remains in the response so this bounded staleness is explicit.
+_HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
 _hybrid_network_cache: dict[
     tuple[str, tuple[str, ...]],
     tuple[float, tuple[list[dict], str, int]],

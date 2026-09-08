@@ -20,6 +20,7 @@ from api.auth import (
 from api.exposure_query import ExposureQueryUnavailableError
 from api.providers import STALE, ProviderRuntime, ProviderSpec
 from api.runtime import (
+    _HYBRID_NETWORK_CACHE_TTL_SECONDS,
     _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
     _defender_configuration_adapter,
     _execution_verifier,
@@ -558,9 +559,10 @@ def test_hybrid_network_cache_starts_ttl_after_slow_arg_query(
     )
 
     context.hybrid_network_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
-    clock[0] = 1_050.0
+    clock[0] = 1_200.0
     context.hybrid_network_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
 
+    assert _HYBRID_NETWORK_CACHE_TTL_SECONDS >= 300
     assert query_calls == 1
 
 
