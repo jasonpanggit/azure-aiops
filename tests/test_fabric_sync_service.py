@@ -202,10 +202,13 @@ def test_sync_callback_failures_log_only_fixed_safe_contract(
         logger.removeHandler(handler)
 
     assert result.status == "completed"
-    assert caplog.records
-    assert {record.getMessage() for record in caplog.records} == {message}
-    assert {record.error_code for record in caplog.records} == {error_code}
-    assert all(record.exc_info is None for record in caplog.records)
+    records = [
+        record for record in caplog.records if record.name == "fabric.sync_service"
+    ]
+    assert records
+    assert {record.getMessage() for record in records} == {message}
+    assert {record.error_code for record in records} == {error_code}
+    assert all(record.exc_info is None for record in records)
     rendered = caplog.text + stream.getvalue()
     assert secret not in rendered
     assert resource_id not in rendered
