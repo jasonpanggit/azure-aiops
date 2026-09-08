@@ -281,8 +281,11 @@ def temporal_products_from_legacy(
 ) -> ExposureTemporalProjection:
     """Build additive temporal products while legacy products remain intact."""
 
+    inputs = temporal_inputs_from_legacy(datasets)
+    for row in inputs:
+        row["source_generation"] = generation_id
     return build_temporal_projection(
-        temporal_inputs_from_legacy(datasets),
+        inputs,
         generation_id=generation_id,
         ingested_at=ingested_at,
         run_at=ingested_at,
@@ -724,6 +727,32 @@ class GranularExposureOntologyMapper:
         default_factory=lambda: OntologyGraphSynchronizer(OntologyValidator())
     )
 
+    def build_rows(
+        self,
+        datasets: Mapping[str, list[dict[str, Any]]],
+        *,
+        ontology_generation_id: str,
+        allow_empty: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build unsynchronized granular rows for a shared graph transaction."""
+        logical_images = datasets.get("silver_container_logical_images", ())
+        observations = datasets.get(
+            "silver_container_vulnerability_observations",
+            (),
+        )
+        if allow_empty and not logical_images and not observations:
+            return [], []
+        source_rows = _granular_exposure_ontology_source_rows(datasets)
+        entities = self.entity_builder.build(
+            source_rows,
+            ontology_generation_id,
+        )
+        relationships = self.relationship_builder.build(
+            entities,
+            ontology_generation_id,
+        )
+        return entities, relationships
+
     def project(
         self,
         datasets: Mapping[str, list[dict[str, Any]]],
@@ -737,14 +766,9 @@ class GranularExposureOntologyMapper:
             or not ontology_generation_id.strip()
         ):
             raise ValueError("Ontology generation id must be a non-empty string")
-        source_rows = _granular_exposure_ontology_source_rows(datasets)
-        entities = self.entity_builder.build(
-            source_rows,
-            ontology_generation_id,
-        )
-        relationships = self.relationship_builder.build(
-            entities,
-            ontology_generation_id,
+        entities, relationships = self.build_rows(
+            datasets,
+            ontology_generation_id=ontology_generation_id,
         )
         return self.synchronizer.synchronize(
             entities,
@@ -825,10 +849,9 @@ def _granular_exposure_ontology_source_rows(
     checkpoints = indexed["metadata_workload_source_checkpoints"]
     digest_pattern = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-    if not logical_images or not observations:
+    if not logical_images:
         raise ValueError(
-            "Granular Exposure ontology requires logical image and "
-            "vulnerability observation rows"
+            "Granular Exposure ontology requires logical image rows"
         )
 
     logical_entity_ids: dict[str, str] = {}

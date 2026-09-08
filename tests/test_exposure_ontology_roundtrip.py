@@ -216,6 +216,22 @@ def fabric_products(*, completeness: str = "complete") -> dict[str, list[dict]]:
     }
 
 
+def test_granular_mapper_accepts_images_without_vulnerability_observations() -> None:
+    products = fabric_products()
+    products["silver_container_vulnerability_observations"] = []
+
+    entities, relationships = GranularExposureOntologyMapper().build_rows(
+        products,
+        ontology_generation_id="ontology-generation-7",
+        allow_empty=True,
+    )
+
+    assert {"LogicalImage", "ImageDigest", "WorkloadDeployment"} <= {
+        row["entity_type"] for row in entities
+    }
+    assert relationships
+
+
 def test_granular_fabric_ontology_fabric_round_trip_is_lossless_and_idempotent() -> None:
     products = fabric_products()
     mapper = GranularExposureOntologyMapper()

@@ -13,8 +13,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fabric_pipelines import change_pipeline, incident_pipeline, predictive_pipeline
+from fabric_pipelines import (
+    change_pipeline,
+    incident_pipeline,
+    predictive_pipeline,
+)
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
+from fabric_pipelines.vulnerability_pipeline import (
+    EXPOSURE_GOLD_TABLES,
+    ExposureGoldFabricPublisher,
+    materialize_container_exposure_tables,
+    materialize_temporal_exposure_tables,
+)
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.publication_manifest import PublicationManifestStore
@@ -24,6 +34,7 @@ from ontology_discovery.publisher import (
     PublicationSafetyError,
 )
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
 
@@ -31,11 +42,14 @@ from .data_quality import DataQualityValidator, QualityReport
 from .dataset_mapper import (
     ONTOLOGY_ENTITY_TYPES,
     ONTOLOGY_RELATIONSHIP_TYPES,
+    GranularExposureOntologyMapper,
     InventoryDatasetMapper,
+    exposure_gold_products_from_datasets,
     ontology_entity_table,
     ontology_relationship_table,
     remediation_decision_ontology_rows,
     remediation_plan_ontology_rows,
+    temporal_products_from_legacy,
 )
 from .lakehouse_manager import LakehouseManager
 from .schema_registry import schema_for
@@ -208,6 +222,7 @@ class FabricSyncService:
         "silver_server_inventory",
     })
     _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset({
+        "silver_exposure_observations",
         "silver_container_vulnerability_observations",
         "silver_workload_observations",
     })
@@ -217,6 +232,15 @@ class FabricSyncService:
         "silver_container_registries",
         "silver_workload_deployments",
         "metadata_workload_source_checkpoints",
+    })
+    _EXPOSURE_SNAPSHOT_WRITE_TABLES: frozenset[str] = frozenset({
+        "gold_exposure_current",
+        "gold_container_exposure_current",
+        "gold_container_exposure_coverage",
+    })
+    _DERIVED_EXPOSURE_TABLES: frozenset[str] = frozenset({
+        "silver_exposure_observations",
+        *_EXPOSURE_SNAPSHOT_WRITE_TABLES,
     })
 
     def __init__(
@@ -301,6 +325,7 @@ class FabricSyncService:
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
         progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
+        exposure_pointer_store: OneLakeDocumentStore | None = None,
     ) -> FabricSyncResult:
         with self.onelake.sync_lock():
             return self._sync_locked(
@@ -308,6 +333,7 @@ class FabricSyncService:
                 raise_on_quality_failure=raise_on_quality_failure,
                 requested_scope=requested_scope,
                 progress_callback=progress_callback,
+                exposure_pointer_store=exposure_pointer_store,
             )
 
     def _sync_locked(
@@ -317,6 +343,7 @@ class FabricSyncService:
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
         progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
+        exposure_pointer_store: OneLakeDocumentStore | None = None,
     ) -> FabricSyncResult:
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
@@ -325,6 +352,11 @@ class FabricSyncService:
         source_run_id = str(manifest.get("runId") or replay_source_run_id or "unknown")
         replay = bool(replay_source_run_id)
         started_at = _utc_now()
+        source_projected_at = str(
+            manifest.get("completedAt")
+            or manifest.get("startedAt")
+            or started_at
+        )
         self.onelake.ensure_standard_structure()
         self._write_state(
             _state_row(
@@ -342,6 +374,9 @@ class FabricSyncService:
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
+        exposure_gold_datasets: dict[str, list[dict[str, Any]]] | None = None
+        exposure_gold_publisher: ExposureGoldFabricPublisher | None = None
+        exposure_gold_stage = None
         data_committed = False
         try:
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
@@ -362,6 +397,54 @@ class FabricSyncService:
                 datasets["metadata_source_status"].extend(partition_status)
             datasets.update(self._load_workload_products(snapshot))
             self._validate_workload_products(datasets)
+            if exposure_pointer_store is not None:
+                observation_uri = self.onelake.table_uri(
+                    "silver",
+                    "exposure_observations",
+                )
+                persisted_observations = (
+                    self.delta.read(observation_uri)
+                    if self.delta.version(observation_uri) is not None
+                    else []
+                )
+                existing_observations = _observation_rows_at_or_before(
+                    persisted_observations,
+                    projected_at=source_projected_at,
+                )
+                temporal = materialize_temporal_exposure_tables(
+                    temporal_products_from_legacy(
+                        datasets,
+                        generation_id=source_run_id,
+                        ingested_at=source_projected_at,
+                    ),
+                    existing_rows=existing_observations,
+                    known_observation_rows=persisted_observations,
+                )
+                datasets.update(temporal.write_tables())
+                datasets.update(
+                    materialize_container_exposure_tables(
+                        datasets,
+                        projected_at=source_projected_at,
+                        source_generation=source_run_id,
+                    )
+                )
+                granular_entities, granular_relationships = (
+                    GranularExposureOntologyMapper().build_rows(
+                        datasets,
+                        ontology_generation_id=source_run_id,
+                        allow_empty=True,
+                    )
+                )
+                datasets["ontology_entities"].extend(granular_entities)
+                datasets["ontology_relationships"].extend(
+                    granular_relationships
+                )
+                exposure_gold_datasets = {
+                    **datasets,
+                    "silver_exposure_observations": [
+                        dict(row) for row in temporal.all_observation_rows
+                    ],
+                }
             if self.topology_enabled:
                 self._extend_with_topology_tables(
                     datasets,
@@ -464,16 +547,30 @@ class FabricSyncService:
             )
             reports = self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
-            self._write_quality_report(run_id, source_run_id, reports, started_at)
+            self._write_quality_report(
+                run_id,
+                source_run_id,
+                reports,
+                started_at,
+            )
             source_status_rows = [
                 *datasets.get("metadata_source_status", []),
                 *_table_source_status_rows(
-                    datasets,
+                    {
+                        name: rows
+                        for name, rows in datasets.items()
+                        if name not in self._DERIVED_EXPOSURE_TABLES
+                    },
                     run_id,
                     started_at,
                     requested_scope=requested_scope,
                 ),
             ]
+            datasets["metadata_source_status"] = source_status_rows
+            if exposure_gold_datasets is not None:
+                exposure_gold_datasets["metadata_source_status"] = [
+                    dict(row) for row in source_status_rows
+                ]
             if source_status_rows:
                 table_uri = self.onelake.table_uri("metadata", "source_status")
                 before_version = self.delta.version(table_uri)
@@ -485,7 +582,6 @@ class FabricSyncService:
                     schema=schema_for("metadata_source_status"),
                 )
                 table_results["metadata_source_status"] = result
-                datasets["metadata_source_status"] = source_status_rows
                 if result.version != before_version:
                     written_versions["metadata_source_status"] = (table_uri, before_version)
                 self.metrics.record_table("metadata_source_status", result)
@@ -559,6 +655,13 @@ class FabricSyncService:
                 sum(bool(rows) for _, rows in publish_items),
                 len(datasets) - len(publish_items),
             )
+            gold_table_count = (
+                len(EXPOSURE_GOLD_TABLES) + 1
+                if exposure_gold_datasets is not None
+                and exposure_pointer_store is not None
+                else 0
+            )
+            total_publish_tables = len(publish_items) + gold_table_count
             with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
                 futures = [
                     executor.submit(write_table, item) for item in publish_items
@@ -580,7 +683,7 @@ class FabricSyncService:
                             progress_callback(
                                 FabricTableWriteProgress(
                                     completed_tables=completed_tables,
-                                    total_tables=len(publish_items),
+                                    total_tables=total_publish_tables,
                                     table_name=table_name,
                                     result=result,
                                 )
@@ -594,13 +697,88 @@ class FabricSyncService:
                 if write_error is not None:
                     raise write_error
 
-            catalog = _catalog_metadata(datasets, table_results, run_id, source_run_id)
+            catalog = _catalog_metadata(
+                datasets,
+                table_results,
+                run_id,
+                source_run_id,
+            )
             self._register_fabric_assets(set(table_results))
             if self.topology_enabled:
-                self._write_topology_manifest(run_id=run_id, observed_at=started_at)
+                self._write_topology_manifest(
+                    run_id=run_id,
+                    observed_at=started_at,
+                )
             self.onelake.write_json("ontology/metadata/catalog.json", catalog)
             data_committed = True
             self._publish_ontology(datasets)
+            if (
+                exposure_gold_datasets is not None
+                and exposure_pointer_store is not None
+            ):
+                sample_table_uri = self.onelake.table_uri(
+                    "gold",
+                    "exposure_facts",
+                )
+                table_root: Path | str = (
+                    str(sample_table_uri).rsplit("/", 1)[0]
+                    if "://" in str(sample_table_uri)
+                    else Path(str(sample_table_uri)).parent
+                )
+                gold_generation_id = _exposure_gold_generation_id(
+                    source_run_id,
+                    exposure_gold_datasets,
+                )
+                gold_tables = exposure_gold_products_from_datasets(
+                    exposure_gold_datasets,
+                    generation_id=gold_generation_id,
+                    projected_at=source_projected_at,
+                )
+                exposure_gold_publisher = ExposureGoldFabricPublisher(
+                    table_root=table_root,
+                    delta_writer=self.delta,
+                    pointer_store=exposure_pointer_store,
+                )
+                exposure_gold_stage = exposure_gold_publisher.stage(
+                    exposure_gold_datasets,
+                    generation_id=gold_generation_id,
+                    projected_at=source_projected_at,
+                    published_at=started_at,
+                )
+                datasets.update(gold_tables)
+                for table_name, result in exposure_gold_stage.table_writes.items():
+                    table_results[table_name] = result
+                    completed_tables += 1
+                    self.metrics.record_table(table_name, result)
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(
+                                FabricTableWriteProgress(
+                                    completed_tables=completed_tables,
+                                    total_tables=total_publish_tables,
+                                    table_name=table_name,
+                                    result=result,
+                                )
+                            )
+                        except Exception:
+                            _LOGGER.debug(
+                                "Fabric table progress callback failed for %s",
+                                table_name,
+                                exc_info=True,
+                            )
+
+                self._register_fabric_assets(
+                    set(exposure_gold_stage.table_writes)
+                )
+                self.onelake.write_json(
+                    "ontology/metadata/catalog.json",
+                    _catalog_metadata(
+                        datasets,
+                        table_results,
+                        run_id,
+                        source_run_id,
+                    ),
+                )
             completed = _state_row(
                 run_id,
                 source_run_id,
@@ -615,6 +793,11 @@ class FabricSyncService:
             )
             self._write_state(completed)
             self._create_shortcuts()
+            if (
+                exposure_gold_publisher is not None
+                and exposure_gold_stage is not None
+            ):
+                exposure_gold_publisher.activate(exposure_gold_stage)
             self.metrics.record_ontology(
                 ontology_health, self.clock() - ontology_started
             )
@@ -1807,6 +1990,8 @@ class FabricSyncService:
             return DeltaWriteMode.MERGE
         if table_name in self._SNAPSHOT_MERGE_WRITE_TABLES:
             return DeltaWriteMode.SNAPSHOT_MERGE
+        if table_name in self._EXPOSURE_SNAPSHOT_WRITE_TABLES:
+            return DeltaWriteMode.SNAPSHOT_MERGE
         return DeltaWriteMode.OVERWRITE
 
     def _load_workload_products(
@@ -2254,6 +2439,103 @@ def _catalog_metadata(
             }
             for table, rows in sorted(datasets.items())
         ],
+    }
+
+
+def _observation_rows_at_or_before(
+    rows: list[dict[str, Any]],
+    *,
+    projected_at: str,
+) -> list[dict[str, Any]]:
+    """Return only history visible to the immutable source generation."""
+    return [
+        dict(row)
+        for row in rows
+        if str(row.get("ingested_at") or "") <= projected_at
+    ]
+
+
+def _exposure_gold_generation_id(
+    source_run_id: str,
+    datasets: Mapping[str, list[dict[str, Any]]],
+) -> str:
+    """Bind Gold identity to every deterministic projection input."""
+    source_coordinates = {
+        (
+            str(row.get("connection_id") or "").casefold(),
+            str(row.get("source_family") or "").casefold(),
+        )
+        for table_name in (
+            "silver_exposure_observations",
+            "silver_container_vulnerability_observations",
+        )
+        for row in datasets.get(table_name, ())
+        if str(row.get("source_family") or "").strip()
+    }
+    input_tables = (
+        "gold_exposure_current",
+        "silver_exposure_observations",
+        "gold_container_exposure_current",
+        "silver_container_vulnerability_observations",
+        "metadata_source_status",
+        "silver_exposure_enrichment",
+        "silver_defender_secure_scores",
+    )
+    snapshot = {
+        table_name: sorted(
+            (
+                _stable_exposure_input_row(
+                    row,
+                    table_name=table_name,
+                )
+                for row in datasets.get(table_name, ())
+                if table_name != "metadata_source_status"
+                or (
+                    (
+                        str(row.get("connection_id") or "").casefold(),
+                        str(row.get("source_family") or "").casefold(),
+                    )
+                    in source_coordinates
+                )
+            ),
+            key=_hash_json,
+        )
+        for table_name in input_tables
+    }
+    return "exposure-gold-" + _hash_json(
+        {
+            "source_run_id": source_run_id,
+            "projection_inputs": snapshot,
+        }
+    )[:24]
+
+
+def _stable_exposure_input_row(
+    row: Mapping[str, Any],
+    *,
+    table_name: str = "",
+) -> dict[str, Any]:
+    volatile = {
+        "change_version",
+        "ingestion_run_id",
+        "projection_generation_id",
+        "published_at",
+        "run_id",
+        "run_at",
+    }
+    if table_name == "metadata_source_status":
+        volatile.update(
+            {
+                "ingested_at",
+                "observed_at",
+                "timestamp",
+                "watermark",
+            }
+        )
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in volatile
     }
 
 
