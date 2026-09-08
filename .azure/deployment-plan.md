@@ -893,3 +893,63 @@ change is in scope.
 - Existing API/web Container Apps, APIM, Foundry account/project, production
   Fabric workspace/lakehouse/roles, and global API/web image outputs were
   unchanged.
+
+## Current Release Plan (2026-09-08)
+
+- Source revision: current release branch based on
+  `ac556cc26f435694944d5aa22580cc047a03c010` (`origin/main`), plus the
+  compliance-page test-contract correction required by that revision.
+- Build four immutable `linux/amd64` images from the committed source archive:
+  `aiops-api`, `aiops-web`, `mcp-server`, and `azure-mcp`.
+- Preserve the existing `aiops-dev` environment in subscription
+  `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, tenant
+  `ffc83107-fcc0-4d2e-8798-d582da36505e`, region `australiaeast`.
+- Use the canonical local Terraform state and its gitignored `terraform.tfvars`;
+  do not synthesize, replace, or silently migrate state in another worktree.
+- Produce a saved, refreshed Terraform plan after the image build. Reject the
+  release if the plan contains any destroy, replacement, unrelated resource
+  change, privilege broadening, or unexpected drift.
+- The expected Phase 13 authorization delta is the additive
+  `fabric_workspace_role_assignment.ontology_state_api[0]`, granting the API
+  managed identity only Fabric Workspace `Viewer` on the ontology state
+  workspace. No API write, publication, Job-start, Member, Contributor, or
+  Admin authority may be added.
+- Apply only the reviewed saved plan. Do not start or stop Phase 13 Jobs during
+  infrastructure deployment.
+- Verify all Container Apps serve the immutable release tag, revisions and
+  replicas are healthy, `/health` and `/ready` succeed, the web application
+  loads over HTTPS, and the API identity's live Fabric role is exactly Viewer.
+- Run authenticated deployed API/UI and Playwright validation after the role
+  assignment is live. Keep Phase 13 release state `BLOCKED/PENDING` and
+  authoritative model-edge count zero until every remaining Plan 21 gate passes.
+
+### Current Release Safety Gates
+
+- Dirty worktrees are excluded from this release and remain untouched.
+- Stale clean Phase 13 branches are not merged because they predate the merged
+  REST-role reconciliation and contain superseded blocker/freeze variants.
+- Build and deployment credentials remain in the existing gitignored
+  environment file and process environment; no secret is passed on a command
+  line or committed.
+- Deployment stops before apply if canonical Terraform state is unavailable.
+- Online validation records only sanitized evidence and deletes ephemeral
+  browser authentication state after Playwright completes.
+
+### Current Release Validation Proof
+
+- 2026-09-08: `uv run python -m ruff check src tests` passed.
+- 2026-09-08: `uv run python -m pytest` passed: 3,842 passed, 1 skipped.
+- 2026-09-08: `cd web && npm run lint` passed.
+- 2026-09-08: `cd web && npm test -- --run` passed: 593 tests.
+- 2026-09-08: `cd web && npm run build` passed.
+- 2026-09-08: `terraform -chdir=infra/terraform fmt -check -recursive` and
+  `terraform -chdir=infra/terraform validate` passed.
+- Azure context was confirmed as subscription
+  `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, tenant
+  `ffc83107-fcc0-4d2e-8798-d582da36505e`, resource group `aiops-dev-rg`,
+  Container Apps environment `aiops-dev-cae`, and region `australiaeast`.
+- The Terraform recipe preflight remains blocked at `plan` and `state list`
+  because this isolated worktree does not contain the canonical local state,
+  gitignored `terraform.tfvars`, or deployment environment file. Validation
+  must remain incomplete and deployment must not start until those canonical
+  artifacts are supplied without using a dirty worktree.
