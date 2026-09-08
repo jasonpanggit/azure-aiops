@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,13 +13,16 @@ from scripts.validate_ontology_discovery_live import (
     EXPECTED_CURATOR_TOOLS,
     FIXED_JOB_NAMES,
     EvidenceError,
+    Plan19DeploymentContract,
     _full_opaque,
     _parser,
+    _run_isolated_az_json,
     assert_fixed_template,
     assert_stage_transition,
     build_job_start_command,
     evaluate_lifecycle_evidence,
     evaluate_publication_evidence,
+    fetch_live_job,
     expand_role_actions,
     extract_evidence_job_record,
     isolated_azure_environment,
@@ -26,6 +30,8 @@ from scripts.validate_ontology_discovery_live import (
     load_plan19_deployment_contract,
     load_resume_checkpoint,
     main,
+    merge_resume_checkpoint,
+    run_fixed_job,
     sanitize_deployed_evidence,
     validate_azure_contexts,
     validate_evidence_job_boundary,
@@ -911,4 +917,286 @@ def test_deployed_stage_fails_before_legacy_shadow_or_cloud_action(
     assert report["mode"] == "deployed-fixed-template"
     assert report["status"] == "FAIL"
     assert report["missing_evidence"] == ["EvidenceError"]
-    assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" in report["blocker"]
+    assert report["blocker_code"] == "evidence_precondition"
+    assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" not in json.dumps(report)
+
+
+def test_isolated_az_json_never_uses_ambient_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    azure_home = tmp_path / "azure"
+    azure_home.mkdir(mode=0o700)
+    os.chmod(azure_home, 0o700)
+    observed: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["command"] = command
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, '{"name":"fixed"}', "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = _run_isolated_az_json(
+        ["az", "account", "show", "-o", "json"],
+        azure_config_dir=azure_home,
+        env={
+            "PATH": "/usr/bin",
+            "AZURE_CONFIG_DIR": "/ambient",
+            "AZURE_CLIENT_SECRET": "must-not-bleed",
+            "ARM_CLIENT_SECRET": "must-not-bleed",
+        },
+    )
+
+    assert result == {"name": "fixed"}
+    isolated = observed["env"]
+    assert isinstance(isolated, dict)
+    assert isolated["AZURE_CONFIG_DIR"] == str(azure_home.resolve())
+    assert isolated["PATH"] == "/usr/bin"
+    assert "AZURE_CLIENT_SECRET" not in isolated
+    assert "ARM_CLIENT_SECRET" not in isolated
+
+
+def test_fixed_job_execution_fetches_starts_waits_and_reads_logs_without_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    job = _template()
+    expected_hash = job_template_hash(job)
+    container = job["properties"]["template"]["containers"][0]
+    container["name"] = "ontology"
+
+    def fake_az(
+        command: list[str],
+        **_: object,
+    ) -> object:
+        calls.append(command)
+        joined = " ".join(command)
+        if " job show " in f" {joined} ":
+            return job
+        if " job start " in f" {joined} ":
+            return {"name": "execution-raw-id"}
+        if " job execution list " in f" {joined} ":
+            return [
+                {
+                    "name": "execution-raw-id",
+                    "properties": {"status": "Succeeded"},
+                }
+            ]
+        if " job logs show " in f" {joined} ":
+            return [{"Log_s": '{"status":"PASS","count":3}'}]
+        raise AssertionError(command)
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        fake_az,
+    )
+    result = run_fixed_job(
+        resource_group="opaque-group",
+        job_name="ontology-fixture-prepare",
+        expected_template_hash=expected_hash,
+        azure_config_dir=tmp_path,
+        max_wait_seconds=10,
+    )
+
+    starts = [command for command in calls if command[2:4] == ["job", "start"]]
+    assert starts == [
+        [
+            "az",
+            "containerapp",
+            "job",
+            "start",
+            "--resource-group",
+            "opaque-group",
+            "--name",
+            "ontology-fixture-prepare",
+            "-o",
+            "json",
+        ]
+    ]
+    assert result["template"]["before"] == expected_hash
+    assert result["template"]["after"] == expected_hash
+    assert result["template"]["override_fields"] == []
+    assert result["execution_hash"] == _full_opaque("execution-raw-id")
+    assert result["logs"] == [{"Log_s": '{"status":"PASS","count":3}'}]
+
+
+def test_fetch_live_job_uses_only_isolated_deployer_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[list[str], Path]] = []
+
+    def fake_az(
+        command: list[str],
+        *,
+        azure_config_dir: Path,
+        **_: object,
+    ) -> object:
+        seen.append((command, azure_config_dir))
+        return _template()
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        fake_az,
+    )
+    assert fetch_live_job(
+        resource_group="opaque-group",
+        job_name="ontology-fixture-prepare",
+        azure_config_dir=tmp_path,
+    ) == _template()
+    assert seen == [
+        (
+            [
+                "az",
+                "containerapp",
+                "job",
+                "show",
+                "--resource-group",
+                "opaque-group",
+                "--name",
+                "ontology-fixture-prepare",
+                "-o",
+                "json",
+            ],
+            tmp_path,
+        )
+    ]
+
+
+def test_deployed_stage_dispatch_is_ordered_resumable_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "artifact.json"
+    checkpoint = tmp_path / "checkpoint.json"
+    deployer = tmp_path / "deployer"
+    deployer.mkdir(mode=0o700)
+    os.chmod(deployer, 0o700)
+    monkeypatch.setenv("AIOPS_DEPLOYER_AZURE_CONFIG_DIR", str(deployer))
+    monkeypatch.delenv("AIOPS_EVIDENCE_AZURE_CONFIG_DIR", raising=False)
+    hashes = {
+        name: f"sha256:{index:064x}"
+        for index, name in enumerate(FIXED_JOB_NAMES, start=1)
+        if name != "evidence"
+    }
+    contract = Plan19DeploymentContract(
+        status="applied",
+        template_hashes=hashes,
+        validation_connection_root_hash="sha256:" + "a" * 64,
+        coordinator_tag_hash="sha256:" + "b" * 64,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live.load_plan19_deployment_contract",
+        lambda: contract,
+    )
+
+    def stage_result(name: str) -> dict[str, object]:
+        calls.append(name)
+        if name == "lifecycle":
+            return {
+                "status": "PASS",
+                "evidence": _complete_lifecycle(),
+                "evaluation": {"status": "PASS"},
+            }
+        if name == "publication":
+            return {
+                "status": "PASS",
+                "evidence": {"release_status": "BLOCKED/PENDING"},
+                "evaluation": {"status": "PASS"},
+            }
+        return {"status": "PASS", "release_status": "BLOCKED/PENDING"}
+
+    for stage in DEPLOYED_STAGES:
+        monkeypatch.setattr(
+            f"scripts.validate_ontology_discovery_live._run_{stage}_stage",
+            lambda *_, _stage=stage, **__: stage_result(_stage),
+        )
+
+    def argv(stage: str) -> list[str]:
+        return [
+            "--stage",
+            stage,
+            "--environment",
+            "validation",
+            "--shadow",
+            "--resume-file",
+            str(checkpoint),
+            "--output",
+            str(output),
+            "--fail-on-missing-evidence",
+        ]
+
+    assert main(argv("preflight")) == 0
+    assert main(argv("preflight")) == 0
+    assert calls == ["preflight"]
+    with pytest.raises(EvidenceError, match="stage transition"):
+        merge_resume_checkpoint(
+            checkpoint,
+            requested_stage="publication",
+            evidence_ref="sha256:" + "c" * 64,
+        )
+    assert main(argv("lifecycle")) == 0
+    assert main(argv("publication")) == 0
+    assert main(argv("finalize")) == 0
+    assert calls == list(DEPLOYED_STAGES)
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert artifact["completed_stages"] == list(DEPLOYED_STAGES)
+    assert artifact["status"] == "PASS"
+    assert load_resume_checkpoint(checkpoint)["completed_step_count"] == 4
+
+
+def test_deployed_stage_failure_artifact_never_retains_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "artifact.json"
+    checkpoint = tmp_path / "checkpoint.json"
+    deployer = tmp_path / "deployer"
+    deployer.mkdir(mode=0o700)
+    os.chmod(deployer, 0o700)
+    monkeypatch.setenv("AIOPS_DEPLOYER_AZURE_CONFIG_DIR", str(deployer))
+    monkeypatch.delenv("AIOPS_EVIDENCE_AZURE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live.load_plan19_deployment_contract",
+        lambda: Plan19DeploymentContract(
+            status="applied",
+            template_hashes={},
+            validation_connection_root_hash="sha256:" + "a" * 64,
+            coordinator_tag_hash="sha256:" + "b" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_preflight_stage",
+        lambda *_, **__: (_ for _ in ()).throw(
+            EvidenceError(
+                "Bearer super-secret /subscriptions/raw command=az containerapp"
+            )
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "--stage",
+                "preflight",
+                "--environment",
+                "validation",
+                "--shadow",
+                "--resume-file",
+                str(checkpoint),
+                "--output",
+                str(output),
+                "--fail-on-missing-evidence",
+            ]
+        )
+        == 1
+    )
+    rendered = output.read_text(encoding="utf-8")
+    assert "super-secret" not in rendered
+    assert "/subscriptions/raw" not in rendered
+    report = json.loads(rendered)
+    assert report["blocker_code"] == "evidence_precondition"
+    assert report["status"] == "FAIL"
