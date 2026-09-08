@@ -394,9 +394,16 @@ def _source_partition_row(
         or row.get("resourceId")
         or hashlib.sha256(payload_json.encode()).hexdigest()
     ).strip().casefold()
+    # Some ARG tables (e.g. resourcechanges, subassessments) legitimately
+    # return multiple distinct rows sharing the same `id` -- one row per
+    # event/finding for that resource, not one row per resource. Folding the
+    # full payload hash into the key lets those coexist while still catching
+    # genuine duplicates (identical id + identical payload), which is what
+    # an unstable ARG page ordering (missing `order by`) can produce.
+    payload_hash = hashlib.sha256(payload_json.encode()).hexdigest()
     row_key = hashlib.sha256(
         json.dumps(
-            [outcome.query_name, source_id],
+            [outcome.query_name, source_id, payload_hash],
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
