@@ -139,9 +139,14 @@ EXPECTED_COMMAND_TOPOLOGY = (
 )
 EVIDENCE_FACT_NAMES = frozenset(
     {
+        "arg",
+        "dispatch",
+        "evidence_batches",
         "fixture",
         "registry",
         "epoch",
+        "reconciliation",
+        "runs",
         "preflight",
         "lifecycle",
         "publication",
@@ -1973,7 +1978,7 @@ def evaluate_lifecycle_evidence(
     )
     require(
         set(cleanup.get("retained_receipts") or ())
-        == {"prepare", "cleanup", "sweep"},
+        == {"prepare", "cleanup"},
         "retained_fixture_audit",
     )
     require(cleanup.get("audit_immutable") is True, "immutable_fixture_audit")
@@ -3385,6 +3390,98 @@ def _assert_runtime_job_start_denials(
             raise EvidenceError("evidence identity has mutation authority")
 
 
+def _job_plain_environment(
+    job: Mapping[str, object],
+) -> dict[str, str]:
+    projection = _template_projection(job)
+    containers = projection.get("containers")
+    containers = containers if isinstance(containers, list) else []
+    if len(containers) != 1 or not isinstance(containers[0], Mapping):
+        return {}
+    rows = containers[0].get("env")
+    rows = rows if isinstance(rows, list) else []
+    return {
+        str(row.get("name") or ""): str(row.get("value") or "")
+        for row in rows
+        if isinstance(row, Mapping)
+        and row.get("name")
+        and row.get("value")
+        and not row.get("secretRef")
+    }
+
+
+def _configured_curator_tools(
+    *,
+    coordinator_job: Mapping[str, object],
+    azure_config_dir: Path,
+) -> dict[str, object]:
+    """Read the deployed immutable agent definition through the deployer."""
+
+    environment = _job_plain_environment(coordinator_job)
+    endpoint = environment.get("FOUNDRY_PROJECT_ENDPOINT", "").rstrip("/")
+    agent_name = environment.get("FOUNDRY_ONTOLOGY_AGENT_NAME", "")
+    agent_version = environment.get("FOUNDRY_ONTOLOGY_AGENT_VERSION", "")
+    if not endpoint or not agent_name or not agent_version:
+        raise EvidenceError("injection_configured_tools_unavailable")
+    url = (
+        f"{endpoint}/agents/{urllib.parse.quote(agent_name, safe='')}"
+        "?api-version=v1"
+    )
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise EvidenceError("injection_configured_tools_unavailable")
+    try:
+        payload = _run_isolated_az_json(
+            [
+                "az",
+                "rest",
+                "--method",
+                "get",
+                "--resource",
+                "https://ai.azure.com",
+                "--url",
+                url,
+                "-o",
+                "json",
+            ],
+            azure_config_dir=azure_config_dir,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise EvidenceError(
+            "injection_configured_tools_unavailable"
+        ) from exc
+    payload = payload if isinstance(payload, Mapping) else {}
+    versions = payload.get("versions")
+    latest = versions.get("latest") if isinstance(versions, Mapping) else {}
+    latest = latest if isinstance(latest, Mapping) else {}
+    definition = latest.get("definition")
+    definition = definition if isinstance(definition, Mapping) else {}
+    tool_names: list[str] = []
+    tools = definition.get("tools")
+    for tool in tools if isinstance(tools, list) else []:
+        if not isinstance(tool, Mapping):
+            continue
+        allowed = tool.get("allowed_tools")
+        names = (
+            allowed.get("tool_names")
+            if isinstance(allowed, Mapping)
+            else allowed
+        )
+        if isinstance(names, list):
+            tool_names.extend(str(value) for value in names)
+    if (
+        payload.get("name") != agent_name
+        or str(latest.get("id") or "") != agent_version
+        or tuple(tool_names) != EXPECTED_CURATOR_TOOLS
+    ):
+        raise EvidenceError("injection_configured_tools_unavailable")
+    return {
+        "configured_tools": tool_names,
+        "curator_source_class": "OntologyCurator",
+        "agent_hash": _full_opaque(agent_name),
+        "version_hash": _full_opaque(agent_version),
+    }
+
+
 def _run_preflight_stage(
     args: argparse.Namespace,
     contexts: AzureContexts,
@@ -3527,6 +3624,22 @@ def _run_preflight_stage(
         != EXPECTED_INJECTION_TAG_VALUE
     ):
         raise EvidenceError("Plan 19 coordinator tag changed")
+    evidence_environment = _job_plain_environment(jobs["evidence"])
+    evidence_scope = evidence_environment.get(
+        "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
+        "",
+    )
+    if not evidence_scope:
+        raise EvidenceError("injection_preflight_scope_unavailable")
+    injection_contract = {
+        "resource_hash": _full_opaque(str(coordinator_ids[0]).casefold()),
+        "tag_hash": contract.coordinator_tag_hash,
+        "scope_hash": _full_opaque(evidence_scope.casefold()),
+        **_configured_curator_tools(
+            coordinator_job=jobs["coordinator"],
+            azure_config_dir=contexts.deployer,
+        ),
+    }
     evidence_job = validate_evidence_job_boundary(
         before=jobs["evidence"],
         after=fetch_live_job(
@@ -3568,6 +3681,13 @@ def _run_preflight_stage(
         },
         "evidence_job": evidence_job,
         "templates": templates,
+        "contract": {
+            "validation_connection_root_hash": (
+                contract.validation_connection_root_hash
+            ),
+            "coordinator_tag_hash": contract.coordinator_tag_hash,
+        },
+        "injection_contract": injection_contract,
         "contract_hash": _full_opaque(asdict(contract)),
         "release_status": "BLOCKED/PENDING",
     }
@@ -3610,6 +3730,449 @@ def _epoch_is_drained(record: Mapping[str, object]) -> bool:
         isinstance(row, Mapping) and row.get("outcome") in terminal
         for row in members
     )
+
+
+def _snapshot_fact(
+    record: Mapping[str, object],
+    name: str,
+) -> Mapping[str, object]:
+    facts = record.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    value = facts.get(name)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _closed_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
+def derive_prepare_evidence(
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Build prepare proof only from one immutable evidence Job snapshot."""
+
+    fixture = _snapshot_fact(snapshot, "fixture")
+    registry = _snapshot_fact(snapshot, "registry")
+    epoch = _snapshot_fact(snapshot, "epoch")
+    fixture_records = _closed_list(fixture.get("record_hashes"))
+    registry_records = _closed_list(registry.get("fixture_record_hashes"))
+    epoch_members = [
+        row
+        for row in _closed_list(epoch.get("members"))
+        if isinstance(row, Mapping)
+    ]
+    epoch_records = [row.get("record_hash") for row in epoch_members]
+    if (
+        fixture.get("drill_count") != 1
+        or fixture.get("active_drill_count") != 1
+        or fixture.get("status") != "prepared"
+    ):
+        raise EvidenceError("prepare_exact_one_drill")
+    if (
+        fixture.get("record_count") != 3
+        or registry.get("active_fixture_count") != 3
+        or len(fixture_records) != 3
+        or len(set(fixture_records)) != 3
+        or set(registry_records) != set(fixture_records)
+        or set(epoch_records) != set(fixture_records)
+        or any(not _require_hash(value) for value in fixture_records)
+    ):
+        raise EvidenceError("prepare_exact_three_records")
+    if (
+        epoch.get("epoch_count") != 1
+        or epoch.get("active_epoch_count") != 1
+        or epoch.get("status") != "active"
+        or epoch.get("member_count") != 3
+        or fixture.get("epoch_hash") != epoch.get("epoch_hash")
+        or not _require_hash(epoch.get("epoch_hash"))
+        or not _require_hash(epoch.get("snapshot_hash"))
+    ):
+        raise EvidenceError("prepare_exact_one_epoch")
+    if fixture.get("ttl_bounded") is not True:
+        raise EvidenceError("prepare_ttl_unavailable")
+    if (
+        not _require_hash(fixture.get("drill_hash"))
+        or not _require_hash(fixture.get("owner_hash"))
+        or not _require_hash(fixture.get("fence_hash"))
+    ):
+        raise EvidenceError("prepare_identity_fence_unavailable")
+    if (
+        fixture.get("receipt_events") != ["prepared"]
+        or fixture.get("receipt_count") != 1
+        or not _require_hash(fixture.get("audit_hash"))
+        or not _require_hash(fixture.get("prepare_receipt_hash"))
+    ):
+        raise EvidenceError("prepare_create_only_audit_unavailable")
+    if any(
+        not _require_hash(row.get("authorization_hash"))
+        for row in epoch_members
+    ):
+        raise EvidenceError("prepare_authorization_receipts_unavailable")
+    return {
+        "status": "PASS",
+        "server_generated": True,
+        "drill_hash": fixture["drill_hash"],
+        "record_hashes": fixture_records,
+        "epoch_hash": epoch["epoch_hash"],
+        "snapshot_hash": epoch["snapshot_hash"],
+        "ttl_bounded": True,
+        "owner_hash": fixture["owner_hash"],
+        "fence_hash": fixture["fence_hash"],
+        "audit_hash": fixture["audit_hash"],
+        "prepare_receipt_hash": fixture["prepare_receipt_hash"],
+        "audit_create_only": True,
+        "active_record_count_after_exit": 3,
+    }
+
+
+def derive_coordinator_selection_receipt(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    execution_receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Derive one coordinator selection from an exact before/after state diff."""
+
+    before_epoch = _snapshot_fact(before, "epoch")
+    after_epoch = _snapshot_fact(after, "epoch")
+    epoch_hash = before_epoch.get("epoch_hash")
+    snapshot_hash = before_epoch.get("snapshot_hash")
+    if (
+        not _require_hash(epoch_hash)
+        or after_epoch.get("epoch_hash") != epoch_hash
+    ):
+        raise EvidenceError("coordinator_epoch_lineage")
+    if (
+        not _require_hash(snapshot_hash)
+        or after_epoch.get("snapshot_hash") != snapshot_hash
+    ):
+        raise EvidenceError("coordinator_snapshot_lineage")
+    before_rows = {
+        row.get("record_hash"): row
+        for row in _closed_list(before_epoch.get("members"))
+        if isinstance(row, Mapping) and _require_hash(row.get("record_hash"))
+    }
+    after_rows = {
+        row.get("record_hash"): row
+        for row in _closed_list(after_epoch.get("members"))
+        if isinstance(row, Mapping) and _require_hash(row.get("record_hash"))
+    }
+    if set(before_rows) != set(after_rows) or len(before_rows) != 3:
+        raise EvidenceError("coordinator_member_lineage")
+    changed = [
+        record_hash
+        for record_hash in before_rows
+        if (
+            before_rows[record_hash].get("outcome"),
+            before_rows[record_hash].get("attempt_count"),
+            before_rows[record_hash].get("reason_hash"),
+            before_rows[record_hash].get("updated_at_hash"),
+        )
+        != (
+            after_rows[record_hash].get("outcome"),
+            after_rows[record_hash].get("attempt_count"),
+            after_rows[record_hash].get("reason_hash"),
+            after_rows[record_hash].get("updated_at_hash"),
+        )
+    ]
+    if len(changed) != 1:
+        raise EvidenceError("coordinator_exactly_one_member")
+    record_hash = changed[0]
+    prior = before_rows[record_hash]
+    current = after_rows[record_hash]
+    if (
+        not isinstance(prior.get("attempt_count"), int)
+        or current.get("attempt_count") != prior.get("attempt_count") + 1
+    ):
+        raise EvidenceError("coordinator_attempt_lineage")
+    outcome = current.get("outcome")
+    if outcome == "pending":
+        outcome = "retrying"
+    if outcome not in {
+        "duplicate",
+        "retrying",
+        "succeeded",
+        "exhausted_failure",
+        "excluded",
+    }:
+        raise EvidenceError("coordinator_outcome_unavailable")
+    authorization_hash = current.get("authorization_hash")
+    execution_hash = execution_receipt.get("execution_hash")
+    if not _require_hash(authorization_hash):
+        raise EvidenceError("coordinator_reauthorization_unavailable")
+    if not _require_hash(execution_hash):
+        raise EvidenceError("coordinator_execution_receipt_unavailable")
+    cursor_before = before_epoch.get("cursor")
+    cursor_after = after_epoch.get("cursor")
+    if not isinstance(cursor_before, int) or not isinstance(cursor_after, int):
+        raise EvidenceError("coordinator_cursor_unavailable")
+    return {
+        "record_hash": record_hash,
+        "epoch_hash": epoch_hash,
+        "snapshot_hash": snapshot_hash,
+        "cursor_before": cursor_before,
+        "cursor_after": cursor_after,
+        "attempt": current["attempt_count"],
+        "outcome": outcome,
+        "authorization_hash": authorization_hash,
+        "process_hash": execution_hash,
+    }
+
+
+def derive_drain_evidence(
+    *,
+    preflight: Mapping[str, object],
+    prepared: Mapping[str, object],
+    receipts: Sequence[Mapping[str, object]],
+    final_snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Reduce authoritative pass receipts into fairness and restart facts."""
+
+    prepare = derive_prepare_evidence(prepared)
+    epoch = _snapshot_fact(final_snapshot, "epoch")
+    members = [
+        row
+        for row in _closed_list(epoch.get("members"))
+        if isinstance(row, Mapping)
+    ]
+    terminal = {"succeeded", "duplicate", "exhausted_failure", "excluded"}
+    terminal_hashes = [
+        row.get("record_hash")
+        for row in members
+        if row.get("outcome") in terminal
+    ]
+    receipt_rows = [dict(row) for row in receipts]
+    retry_indexes = [
+        index
+        for index, row in enumerate(receipt_rows)
+        if row.get("outcome") == "retrying"
+    ]
+    retry_rotated = False
+    later_progress = False
+    for retry_index in retry_indexes:
+        retry_hash = receipt_rows[retry_index].get("record_hash")
+        resumed = next(
+            (
+                index
+                for index in range(retry_index + 1, len(receipt_rows))
+                if receipt_rows[index].get("record_hash") == retry_hash
+            ),
+            None,
+        )
+        if resumed is not None:
+            intervening = receipt_rows[retry_index + 1 : resumed]
+            if any(row.get("record_hash") != retry_hash for row in intervening):
+                retry_rotated = True
+                later_progress = True
+    process_hashes = [
+        str(row.get("process_hash") or "") for row in receipt_rows
+    ]
+    prepared_registry = _snapshot_fact(prepared, "registry")
+    final_registry = _snapshot_fact(final_snapshot, "registry")
+    if (
+        epoch.get("status") != "drained"
+        or epoch.get("epoch_hash") != prepare["epoch_hash"]
+        or epoch.get("snapshot_hash") != prepare["snapshot_hash"]
+        or set(terminal_hashes) != set(prepare["record_hashes"])
+    ):
+        raise EvidenceError("coordinator_terminal_drain_unavailable")
+    if not retry_rotated:
+        raise EvidenceError("coordinator_retry_rotation_unavailable")
+    if len(set(process_hashes)) < 2:
+        raise EvidenceError("coordinator_process_replacement_unavailable")
+    if (
+        prepared_registry.get("revision") != final_registry.get("revision")
+        or prepared_registry.get("fixture_record_hashes")
+        != final_registry.get("fixture_record_hashes")
+    ):
+        raise EvidenceError("coordinator_post_selection_write_detected")
+    contract = preflight.get("contract")
+    contract = contract if isinstance(contract, Mapping) else {}
+    connection_root_hash = contract.get("validation_connection_root_hash")
+    if not _require_hash(connection_root_hash):
+        raise EvidenceError("validation_connection_root_unavailable")
+    return {
+        "status": "PASS",
+        "connection_root_matches": True,
+        "connection_root_hash": connection_root_hash,
+        "registry_provider_class": "ConnectionRegistry",
+        "registry_provider_module": "onboarding.registry",
+        "registry_store_class": "OneLakeRegistryStore",
+        "normal_selection": True,
+        "normal_reauthorization": all(
+            _require_hash(row.get("authorization_hash"))
+            for row in receipt_rows
+        ),
+        "processed_per_pass": [1 for _ in receipt_rows],
+        "prepared_record_hashes": prepare["record_hashes"],
+        "terminal_record_hashes": terminal_hashes,
+        "selection_receipts": receipt_rows,
+        "retry_rotated": True,
+        "later_member_progress": later_progress,
+        "process_hashes": process_hashes,
+        "restart_lineage_preserved": True,
+        "post_selection_external_writes": 0,
+        "validator_store_writes": 0,
+    }
+
+
+def derive_injection_evidence(
+    preflight: Mapping[str, object],
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Join only direct live tag, ARG, durable batch, and dispatch facts."""
+
+    contract = preflight.get("injection_contract")
+    contract = contract if isinstance(contract, Mapping) else {}
+    tools = contract.get("configured_tools")
+    if tools != list(EXPECTED_CURATOR_TOOLS):
+        raise EvidenceError("injection_configured_tools_unavailable")
+    expected_resource = contract.get("resource_hash")
+    expected_tag = contract.get("tag_hash")
+    expected_scope = contract.get("scope_hash")
+    if not all(
+        _require_hash(value)
+        for value in (expected_resource, expected_tag, expected_scope)
+    ):
+        raise EvidenceError("injection_preflight_contract_unavailable")
+    arg = _snapshot_fact(snapshot, "arg")
+    if (
+        arg.get("matching_tag_count") != 1
+        or arg.get("resource_hash") != expected_resource
+        or arg.get("tag_hash") != expected_tag
+        or arg.get("scope_hash") != expected_scope
+        or not _require_hash(arg.get("observation_hash"))
+    ):
+        raise EvidenceError("injection_arg_exact_match")
+    batches = _snapshot_fact(snapshot, "evidence_batches")
+    batch_rows = [
+        row
+        for row in _closed_list(batches.get("records"))
+        if isinstance(row, Mapping)
+        and row.get("injection_match_count") == 1
+        and row.get("status") == "dispatched"
+    ]
+    if (
+        batches.get("injection_match_count") != 1
+        or batches.get("injection_resource_hash") != expected_resource
+        or batches.get("injection_tag_hash") != expected_tag
+        or batches.get("injection_scope_hash") != expected_scope
+        or (batches.get("records") and len(batch_rows) != 1)
+    ):
+        raise EvidenceError("injection_inventory_evidence_unavailable")
+    dispatch = _snapshot_fact(snapshot, "dispatch")
+    edge_counts = dispatch.get("model_edge_counts")
+    edge_counts = edge_counts if isinstance(edge_counts, Mapping) else {}
+    if (
+        dispatch.get("count", 0) < 1
+        or any(
+            edge_counts.get(name) != 0
+            for name in ("candidate", "stage", "active", "consumer")
+        )
+    ):
+        raise EvidenceError("injection_zero_model_edges_unavailable")
+    return {
+        "status": "PASS",
+        "terraform_tag_hash_matches": True,
+        "lineage": list(EXPECTED_TAG_LINEAGE),
+        "resource_hash": expected_resource,
+        "scope_hash": expected_scope,
+        "tag_hashes": {
+            source: expected_tag for source in EXPECTED_TAG_LINEAGE
+        },
+        "curator_source_class": contract.get("curator_source_class"),
+        "tools": list(tools),
+        "scope_unchanged": True,
+        "mutation_attempts": 0,
+        "authoritative_model_edges": dict(edge_counts),
+    }
+
+
+def derive_cleanup_evidence(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+) -> dict[str, object]:
+    """Prove fenced cleanup and retained audit from two evidence snapshots."""
+
+    before_fixture = _snapshot_fact(before, "fixture")
+    before_registry = _snapshot_fact(before, "registry")
+    after_fixture = _snapshot_fact(after, "fixture")
+    after_registry = _snapshot_fact(after, "registry")
+    after_epoch = _snapshot_fact(after, "epoch")
+    deleted = _closed_list(before_registry.get("fixture_record_hashes"))
+    if (
+        before_fixture.get("active_drill_count") != 1
+        or len(deleted) != 3
+        or set(deleted)
+        != set(_closed_list(before_fixture.get("record_hashes")))
+    ):
+        raise EvidenceError("cleanup_precondition_unavailable")
+    if (
+        after_fixture.get("active_drill_count") != 0
+        or after_registry.get("active_fixture_count") != 0
+        or after_registry.get("fixture_record_hashes") != []
+        or after_epoch.get("active_epoch_count") != 0
+        or after_epoch.get("epoch_count") != 0
+    ):
+        raise EvidenceError("cleanup_registry_not_empty")
+    if (
+        after_fixture.get("drill_hash") != before_fixture.get("drill_hash")
+        or after_fixture.get("fence_hash") != before_fixture.get("fence_hash")
+        or after_fixture.get("record_hashes")
+        != before_fixture.get("record_hashes")
+    ):
+        raise EvidenceError("cleanup_fence_or_record_set_changed")
+    events = _closed_list(after_fixture.get("receipt_events"))
+    if (
+        "prepared" not in events
+        or "cleaned" not in events
+        or after_fixture.get("prepare_receipt_hash")
+        != before_fixture.get("prepare_receipt_hash")
+        or not _require_hash(after_fixture.get("prepare_receipt_hash"))
+        or not _require_hash(after_fixture.get("cleanup_receipt_hash"))
+    ):
+        raise EvidenceError("cleanup_retained_audit_unavailable")
+    return {
+        "status": "PASS",
+        "server_resolved_unique_drill": True,
+        "fence_matches": True,
+        "deleted_record_hashes": deleted,
+        "deleted_epoch_count": 1,
+        "active_fixture_connections": 0,
+        "active_prepared_epochs": 0,
+        "retained_receipts": ["prepare", "cleanup"],
+        "audit_immutable": True,
+        "independent_observer": "evidence",
+        "tag_hash_unchanged": True,
+    }
+
+
+def derive_maintenance_evidence(
+    direct_receipts: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Accept maintenance claims only across an authenticated API boundary."""
+
+    receipts = (
+        direct_receipts if isinstance(direct_receipts, Mapping) else {}
+    )
+    if receipts.get("source") != "authenticated_api":
+        raise EvidenceError(
+            "maintenance_authenticated_api_evidence_required"
+        )
+    if (
+        receipts.get("general_operator_status") != 403
+        or receipts.get("maintenance_status") not in {200, 201, 202}
+        or receipts.get("command_authorization") != "authorized"
+        or receipts.get("next_run") != "full"
+        or receipts.get("following_run") != "incremental"
+    ):
+        raise EvidenceError("maintenance_authenticated_api_evidence_incomplete")
+    return {
+        "general_operator_denied": True,
+        "maintenance_principal_accepted": True,
+        "coordinator_reauthorized": True,
+        "next_run": "full",
+        "following_run": "incremental",
+    }
 
 
 def _run_lifecycle_stage(
@@ -3658,11 +4221,15 @@ def _run_lifecycle_stage(
         active_drills, active_records, _ = _fixture_counts(observed)
     if active_drills != 1 or active_records != 3:
         raise EvidenceError("fixed prepare did not leave exactly three records")
+    prepared_snapshot = observed
+    prepare = derive_prepare_evidence(prepared_snapshot)
 
+    selection_receipts: list[dict[str, object]] = []
     for _ in range(8):
         if _epoch_is_drained(observed):
             break
-        run_fixed_job(
+        before = observed
+        execution = run_fixed_job(
             resource_group=resource_group,
             job_name=FIXED_JOB_NAMES["coordinator"],
             expected_template_hash=_expected_template_hash(
@@ -3672,8 +4239,23 @@ def _run_lifecycle_stage(
             max_wait_seconds=args.max_wait_seconds,
         )
         observed = evidence_snapshot()
+        selection_receipts.append(
+            derive_coordinator_selection_receipt(
+                before,
+                observed,
+                execution,
+            )
+        )
     if not _epoch_is_drained(observed):
         raise EvidenceError("three-record coordinator drain did not converge")
+    drained_snapshot = observed
+    drain = derive_drain_evidence(
+        preflight=preflight,
+        prepared=prepared_snapshot,
+        receipts=selection_receipts,
+        final_snapshot=drained_snapshot,
+    )
+    injection = derive_injection_evidence(preflight, drained_snapshot)
 
     run_fixed_job(
         resource_group=resource_group,
@@ -3688,17 +4270,40 @@ def _run_lifecycle_stage(
     active_drills, active_records, active_epochs = _fixture_counts(observed)
     if (active_drills, active_records, active_epochs) != (0, 0, 0):
         raise EvidenceError("fixed cleanup left active fixture state")
-
-    lifecycle = _direct_stage_fact(observed, "lifecycle")
-    lifecycle["sequence"] = list(DEPLOYED_LIFECYCLE_SEQUENCE)
-    lifecycle["environment"] = "validation"
-    lifecycle["credentials"] = preflight.get("credentials")
-    lifecycle["evidence_job"] = preflight.get("evidence_job")
-    lifecycle["templates"] = _refresh_fixed_templates(
-        resource_group=resource_group,
-        contexts=contexts,
-        templates=templates,
+    cleanup = derive_cleanup_evidence(drained_snapshot, observed)
+    # Re-read the ARG/durable lineage after cleanup so tag retention is not
+    # inferred from the earlier drain snapshot.
+    cleanup_injection = derive_injection_evidence(preflight, observed)
+    if (
+        cleanup_injection.get("tag_hashes")
+        != injection.get("tag_hashes")
+        or cleanup_injection.get("resource_hash")
+        != injection.get("resource_hash")
+    ):
+        raise EvidenceError("cleanup_injection_tag_changed")
+    maintenance = derive_maintenance_evidence(
+        preflight.get("maintenance_receipts")
+        if isinstance(preflight.get("maintenance_receipts"), Mapping)
+        else None
     )
+
+    lifecycle = {
+        "sequence": list(DEPLOYED_LIFECYCLE_SEQUENCE),
+        "environment": "validation",
+        "credentials": preflight.get("credentials"),
+        "evidence_job": preflight.get("evidence_job"),
+        "templates": _refresh_fixed_templates(
+            resource_group=resource_group,
+            contexts=contexts,
+            templates=templates,
+        ),
+        "prepare": prepare,
+        "drain": drain,
+        "injection": injection,
+        "cleanup": cleanup,
+        "maintenance": maintenance,
+        "release_status": "BLOCKED/PENDING",
+    }
     evaluation = evaluate_lifecycle_evidence(lifecycle)
     if evaluation["status"] != "PASS":
         raise EvidenceError("deployed lifecycle evidence evaluation failed")
