@@ -24,6 +24,15 @@ image-only rollout using the existing Container Apps, ACR, identities, APIM, and
 Terraform state. No infrastructure, RBAC, secret, region, capacity, or resource
 replacement is in scope.
 
+Current repair: deploy the Network message-semantics correction. Remove duplicate
+pagination warnings from the global provenance banner while retaining the
+contextual incomplete-results callout; distinguish relationship endpoints excluded
+by scope from endpoints missing or not projected; qualify topology evidence
+confidence and graph observation labels; and rename the inspection-bypass metric
+to the finding population it actually counts. This is an API/web image-only
+rollout. No infrastructure, sizing, RBAC, APIM, secret, or region change is in
+scope.
+
 Current follow-up: make the Network specialist answer the operator's actual
 question instead of emitting a findings-only JSON inventory, deduplicate
 equivalent deterministic evidence, and suppress repeated finding cards when a
@@ -146,6 +155,29 @@ or existing Container Apps.
   production Fabric items remain untouched.
 
 ## Validation Proof
+
+- 2026-09-08: Network message-semantics remediation passed 8/8 focused backend
+  boundary tests, 43/43 focused frontend tests, 275/275 adjacent backend tests,
+  59/59 applicable frontend import-graph tests, TypeScript, changed-path Ruff,
+  ESLint, and `git diff --check`. Revert/reapply testing proved the regressions
+  fail without the implementation and pass with it. One unrelated full-web
+  failure belongs to concurrently modified Compliance/services code and is
+  excluded from this image build because ACR archives committed HEAD only.
+- 2026-09-08: Message-semantics deployment validation completed for tag
+  `network-messages-20260908-1425`. The targeted Terraform plan contains
+  exactly **0 additions, 2 in-place API/web image updates, and 0 destructions**,
+  with API sizing pinned to the current 2 vCPU / 4Gi. Python compile and the
+  Next.js production build passed. No Terraform or RBAC file changed.
+- 2026-09-08: Deployed `network-messages-20260908-1425` to API revision
+  `aiops-dev-api--0000261` and web revision `aiops-dev-web--0000209`, both
+  healthy and serving the new tag. Terraform applied **0 additions, 2 in-place
+  image updates, and 0 destructions**. API `/health` and `/ready` and web
+  `/network` returned HTTP 200. Authenticated Playwright confirmed the global
+  provenance banner no longer repeats pagination warnings; the contextual
+  incomplete-results callout remains; confidence is labeled
+  `Topology evidence · high confidence`; relationship loss says
+  `missing or not projected in this topology`; and the metric reads
+  `Inspection bypass findings` with subnet-route/public-IP detail.
 
 - 2026-09-08: Network topology live-runtime repair completed locally. Focused
   backend tests passed (150), focused web tests passed (189), full backend and
