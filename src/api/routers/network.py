@@ -10,10 +10,12 @@ network problems" -- a dangerous default for a security-facing view.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from time import perf_counter_ns
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Request, Response
+from fastapi.routing import APIRoute
 
 from network.design import (
     NetworkDesignPolicy,
@@ -36,7 +38,43 @@ from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 
-router = APIRouter(prefix="/api/v1/network", tags=["network"])
+HANDLER_TIMING_HEADER = "X-AIOPS-Handler-Ms"
+_HANDLER_STARTED_STATE = "_aiops_network_topology_started_ns"
+
+
+def _add_handler_timing_header(response: Response, started_ns: int) -> None:
+    """Publish analysis + serialized-response time for the topology route."""
+    elapsed_ms = max(0, perf_counter_ns() - started_ns) / 1_000_000
+    response.headers[HANDLER_TIMING_HEADER] = f"{elapsed_ms:.3f}"
+
+
+class _NetworkRoute(APIRoute):
+    """Add timing only when an endpoint opts in after dependencies resolve."""
+
+    def get_route_handler(
+        self,
+    ) -> Callable[[Request], Awaitable[Response]]:
+        route_handler = super().get_route_handler()
+
+        async def timed_route_handler(request: Request) -> Response:
+            response = await route_handler(request)
+            started_ns = getattr(
+                request.state,
+                _HANDLER_STARTED_STATE,
+                None,
+            )
+            if started_ns is not None:
+                _add_handler_timing_header(response, started_ns)
+            return response
+
+        return timed_route_handler
+
+
+router = APIRouter(
+    prefix="/api/v1/network",
+    tags=["network"],
+    route_class=_NetworkRoute,
+)
 
 SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
@@ -94,7 +132,10 @@ def network_topology(
     context: Context,
     scope: ReadScope,
     detail: Annotated[TopologyDetail, Query()] = "full",
+    request: Request = None,
 ) -> dict[str, Any]:
+    if request is not None:
+        setattr(request.state, _HANDLER_STARTED_STATE, perf_counter_ns())
     service = _service(context, scope)
     analysis = service.analyze()
     topology = analysis.topology.to_dict(detail=detail)
