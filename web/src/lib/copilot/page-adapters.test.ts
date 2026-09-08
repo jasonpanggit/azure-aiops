@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildChangesCopilotContext,
   buildComplianceCopilotContext,
+  buildConnectionsCopilotContext,
   buildCveDetailCopilotContext,
   buildDefenderPostureCopilotContext,
   buildExposureCopilotContext,
+  buildFabricMedallionCopilotContext,
+  buildGovernanceCopilotContext,
   buildInventoryCopilotContext,
   buildKbDetailCopilotContext,
   buildNetworkCopilotContext,
@@ -2388,5 +2391,364 @@ describe("inventory Copilot page adapter", () => {
         totalCount: 1,
       }),
     ).toThrow(/resource selector/i);
+  });
+});
+
+describe("connections, Fabric medallion, and governance Copilot page adapters", () => {
+  type CoreContext = ReturnType<typeof buildConnectionsCopilotContext>;
+  const rowByClaim = (ctx: CoreContext, claim: string) =>
+    ctx.snapshot.evidence.filter((row) => row.data.claim_type === claim);
+
+  const connectionsInput = {
+    scope: { subscription: ["sub-a"] },
+    connections: [
+      {
+        connection_id: "prod",
+        name: "Production",
+        subscription_id: "00000000-0000-0000-0000-000000000001",
+        business_service: "Payments",
+        environment: "prod",
+        criticality: "critical",
+        health_status: "healthy",
+        sync_status: "succeeded",
+        sync_record_count: 12700,
+        last_successful_sync_at: "2026-09-07T10:00:00Z",
+        is_active: true,
+      },
+      {
+        connection_id: "staging",
+        name: "Staging",
+        subscription_id: "00000000-0000-0000-0000-000000000002",
+        business_service: "Payments",
+        environment: "staging",
+        criticality: "standard",
+        health_status: "degraded",
+        sync_status: "failed",
+        sync_record_count: 0,
+        last_successful_sync_at: null,
+        is_active: true,
+      },
+    ],
+    loadedCount: 2,
+    totalCount: 5,
+    available: true,
+    freshness: "fresh" as const,
+    observedAt: "2026-09-07T10:00:00Z",
+    selectedConnectionId: "prod",
+    filters: { view: ["subscriptions"], page: ["1"] },
+    evidence: [
+      {
+        source_engine: "Connections",
+        source_table: "subscription_connections",
+        timestamp: "2026-09-07T10:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds connection source identities, capacity, deployment-blocked state, coverage, and inventory hints", () => {
+    const context = buildConnectionsCopilotContext(connectionsInput);
+    const reordered = buildConnectionsCopilotContext({
+      ...connectionsInput,
+      connections: [...connectionsInput.connections].reverse(),
+    });
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "resource",
+      page_id: "connections",
+    });
+    // Each connection is a stable non-ARM source identity, never leaked into a
+    // scope-validated Azure resource field.
+    const selected = rowByClaim(context, "subscription_connection").find(
+      (row) => row.data.connection_id === "prod",
+    );
+    expect(selected?.resource_id).toBeUndefined();
+    expect(selected?.data).toMatchObject({
+      entity: {
+        type: "domain",
+        namespace: "connection",
+        kind: "subscription_connection",
+        source_key: "prod",
+      },
+      health_status: "healthy",
+      sync_status: "succeeded",
+      record_count: 12700,
+      deployment_blocked: false,
+      selected: true,
+      actionable: false,
+      mutation_authorized: false,
+    });
+    // A failed sync is a distinct deployment-blocked state.
+    const blocked = rowByClaim(context, "subscription_connection").find(
+      (row) => row.data.connection_id === "staging",
+    );
+    expect(blocked?.data.deployment_blocked).toBe(true);
+    expect(context.coverage.connections).toMatchObject({
+      visible_count: 2,
+      total_count: 5,
+      complete: false,
+      truncated: true,
+    });
+    // Deterministic identities regardless of input order.
+    expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+      reordered.snapshot.evidence.map((row) => row.evidence_id),
+    );
+    // Inventory & Data Health hints stay exact manifest IDs and never mutate.
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "inventory_data_health"
+      && starter.tool === "inventory_resources")).toBe(true);
+    expect(context.snapshot.evidence.every((row) =>
+      row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+  });
+
+  it("distinguishes a healthy-empty connection registry from an unavailable one", () => {
+    const healthyEmpty = buildConnectionsCopilotContext({
+      ...connectionsInput,
+      connections: [],
+      loadedCount: 0,
+      totalCount: 0,
+      selectedConnectionId: null,
+      available: true,
+      freshness: "fresh" as const,
+    });
+    expect(healthyEmpty.coverage.connections).toMatchObject({
+      visible_count: 0,
+      total_count: 0,
+      complete: true,
+      truncated: false,
+    });
+    expect(healthyEmpty.uncertainty).not.toEqual(
+      expect.arrayContaining(["connections freshness is unavailable"]),
+    );
+
+    const unavailable = buildConnectionsCopilotContext({
+      ...connectionsInput,
+      connections: [],
+      loadedCount: 0,
+      totalCount: 0,
+      selectedConnectionId: null,
+      available: false,
+      freshness: "unavailable" as const,
+    });
+    expect(unavailable.coverage.connections.complete).toBe(false);
+    expect(unavailable.uncertainty).toEqual(
+      expect.arrayContaining(["connections freshness is unavailable"]),
+    );
+  });
+
+  const fabricInput = {
+    scope: { subscription: ["sub-a"] },
+    subscriptionId: "00000000-0000-0000-0000-000000000001",
+    layers: [
+      { layer: "bronze" as const, healthy: 4, total: 4 },
+      { layer: "silver" as const, healthy: 2, total: 3 },
+      { layer: "gold" as const, healthy: 0, total: 0 },
+    ],
+    manifest: [
+      {
+        projection_name: "inventory_gold",
+        disposition: "active",
+        compatibility_version: "v2",
+        subscription_id: "00000000-0000-0000-0000-000000000001",
+      },
+    ],
+    manifestTotalCount: 3,
+    governance: {
+      ownership_gap_count: 2,
+      tag_gap_count: 1,
+      referential_integrity_blockers: 0,
+    },
+    capacity: { status: "active", state: "Active", capacity_name: "cap-1" },
+    semanticReadiness: { status: "ready" },
+    dataAgentReadiness: { status: "not_configured", configured: false },
+    lineageRef: "fabric://lineage/inventory",
+    available: true,
+    deploymentBlocked: false,
+    freshness: "partial" as const,
+    observedAt: "2026-09-07T09:30:00Z",
+    evidence: [
+      {
+        source_engine: "Fabric",
+        source_table: "medallion_health",
+        timestamp: "2026-09-07T09:30:00Z",
+        confidence: "medium" as const,
+        freshness: "aging" as const,
+      },
+    ],
+    sourceStatuses: [
+      { source: "fabric_medallion", freshness: "partial", observedAt: "2026-09-07T09:30:00Z" },
+    ],
+  };
+
+  it("binds medallion layer, manifest, governance, and readiness evidence with partial freshness", () => {
+    const context = buildFabricMedallionCopilotContext(fabricInput);
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "resource",
+      page_id: "fabric-medallion",
+    });
+    const silver = rowByClaim(context, "medallion_layer").find(
+      (row) => row.data.layer === "silver",
+    );
+    expect(silver?.data).toMatchObject({
+      entity: { type: "domain", namespace: "fabric", kind: "medallion_layer", source_key: "silver" },
+      healthy: 2,
+      total: 3,
+      actionable: false,
+      mutation_authorized: false,
+    });
+    // Gold layer is healthy-empty (0/0), never an outage.
+    const gold = rowByClaim(context, "medallion_layer").find((row) => row.data.layer === "gold");
+    expect(gold?.data).toMatchObject({ healthy: 0, total: 0 });
+    expect(rowByClaim(context, "fabric_manifest").length).toBe(1);
+    expect(rowByClaim(context, "fabric_governance")[0]?.data).toMatchObject({
+      ownership_gap_count: 2,
+      tag_gap_count: 1,
+      referential_integrity_blockers: 0,
+    });
+    expect(rowByClaim(context, "fabric_capacity")[0]?.data).toMatchObject({
+      status: "active",
+      data_agent_configured: false,
+    });
+    expect(context.coverage.manifest).toMatchObject({
+      visible_count: 1,
+      total_count: 3,
+      truncated: true,
+    });
+    // Partial freshness is surfaced as uncertainty, not hidden.
+    expect(context.uncertainty).toEqual(
+      expect.arrayContaining(["fabric_medallion freshness is partial"]),
+    );
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "inventory_data_health"
+      && starter.tool === "inventory_resources")).toBe(true);
+  });
+
+  it("keeps deployment-blocked capacity distinct from an unavailable Fabric provider", () => {
+    const blocked = buildFabricMedallionCopilotContext({
+      ...fabricInput,
+      layers: [
+        { layer: "bronze" as const, healthy: 0, total: 0 },
+        { layer: "silver" as const, healthy: 0, total: 0 },
+        { layer: "gold" as const, healthy: 0, total: 0 },
+      ],
+      capacity: { status: "paused", state: "Paused", capacity_name: "cap-1" },
+      deploymentBlocked: true,
+      available: true,
+      freshness: "fresh" as const,
+      sourceStatuses: [
+        { source: "fabric_medallion", availability: "blocked", freshness: "unknown" },
+      ],
+    });
+    expect(blocked.uncertainty).toEqual(
+      expect.arrayContaining(["fabric_medallion is deployment-blocked"]),
+    );
+    expect(rowByClaim(blocked, "fabric_capacity")[0]?.data.deployment_blocked).toBe(true);
+
+    const unavailable = buildFabricMedallionCopilotContext({
+      ...fabricInput,
+      layers: [],
+      manifest: [],
+      manifestTotalCount: 0,
+      governance: null,
+      capacity: null,
+      semanticReadiness: null,
+      dataAgentReadiness: null,
+      available: false,
+      deploymentBlocked: false,
+      freshness: "unavailable" as const,
+      sourceStatuses: [
+        { source: "fabric_medallion", availability: "unavailable", freshness: "unknown" },
+      ],
+    });
+    expect(unavailable.uncertainty).toEqual(
+      expect.arrayContaining(["fabric_medallion freshness is unavailable"]),
+    );
+    expect(unavailable.uncertainty).not.toEqual(
+      expect.arrayContaining(["fabric_medallion is deployment-blocked"]),
+    );
+  });
+
+  const governanceInput = {
+    scope: { subscription: ["sub-a"] },
+    roles: [
+      { role_id: "operator", name: "Operator", permissions: ["read"] },
+      { role_id: "admin", name: "Administrator", permissions: ["admin", "read"] },
+    ],
+    rolesTotalCount: 4,
+    policies: [
+      { section: "onboarding_policy", setting_count: 3 },
+      { section: "retention_policy", setting_count: 2 },
+    ],
+    accessReviewAudiences: ["security", "finance"],
+    auditExportKinds: ["identity", "exposure"],
+    settingsAvailable: true,
+    audiencesAvailable: true,
+    kindsAvailable: true,
+    freshness: "fresh" as const,
+    observedAt: "2026-09-07T10:00:00Z",
+    evidence: [
+      {
+        source_engine: "Governance",
+        source_table: "enterprise_settings",
+        timestamp: "2026-09-07T10:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds governance roles, policies, audiences, and export kinds with bounded totals", () => {
+    const context = buildGovernanceCopilotContext(governanceInput);
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "governance",
+      page_id: "governance",
+    });
+    const adminRole = rowByClaim(context, "governance_role").find(
+      (row) => row.data.role_id === "admin",
+    );
+    expect(adminRole?.data).toMatchObject({
+      entity: { type: "domain", namespace: "governance", kind: "governance_role", source_key: "admin" },
+      privileged: true,
+      actionable: false,
+      mutation_authorized: false,
+    });
+    expect(rowByClaim(context, "governance_policy").length).toBe(2);
+    // Access-review audiences are the identity-collaboration evidence.
+    expect(rowByClaim(context, "access_review_audience").length).toBe(2);
+    expect(rowByClaim(context, "audit_export_kind").length).toBe(2);
+    expect(context.coverage.roles).toMatchObject({
+      visible_count: 2,
+      total_count: 4,
+      truncated: true,
+    });
+    // Governance starters stay within the governance specialist and never mutate.
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "governance"
+      && ["business_service_context", "application_context", "risk_context", "impact_context"].includes(starter.tool ?? "")
+      && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+  });
+
+  it("treats settings, audiences, and export kinds as independent optional sources", () => {
+    const context = buildGovernanceCopilotContext({
+      ...governanceInput,
+      accessReviewAudiences: [],
+      auditExportKinds: [],
+      audiencesAvailable: false,
+      kindsAvailable: false,
+    });
+    // Settings remain usable even when review/export enrichment is unavailable.
+    expect(rowByClaim(context, "governance_role").length).toBe(2);
+    expect(context.uncertainty).toEqual(
+      expect.arrayContaining([
+        "access_reviews freshness is unavailable",
+        "audit_exports freshness is unavailable",
+      ]),
+    );
+    expect(context.uncertainty).not.toEqual(
+      expect.arrayContaining(["settings freshness is unavailable"]),
+    );
   });
 });
