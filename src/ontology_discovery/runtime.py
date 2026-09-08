@@ -744,6 +744,8 @@ class ValidationFixtureLifecycle:
         state_home: str,
         environment: str,
         owner_id: str,
+        tenant_id: str,
+        subscription_id: str,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         if environment.strip().casefold() != "validation":
@@ -763,6 +765,11 @@ class ValidationFixtureLifecycle:
         self.owner_hash = hashlib.sha256(
             _required(owner_id, "owner_id").encode()
         ).hexdigest()
+        self.tenant_id = _required(tenant_id, "tenant_id")
+        self.subscription_id = _required(
+            subscription_id,
+            "subscription_id",
+        )
         self.now = now or (lambda: datetime.now(UTC))
 
     def prepare(self) -> dict[str, Any]:
@@ -789,12 +796,15 @@ class ValidationFixtureLifecycle:
                 SubscriptionConnection(
                     connection_id=connection_id,
                     name=f"Ontology validation fixture {index}",
-                    tenant_id=str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, f"{drill_id}:tenant")
-                    ),
-                    subscription_id=str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_URL, f"{drill_id}:subscription:{index}"
+                    tenant_id=self.tenant_id,
+                    subscription_id=(
+                        self.subscription_id
+                        if index == 1
+                        else str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"{drill_id}:subscription:{index}",
+                            )
                         )
                     ),
                     metadata={
@@ -930,6 +940,14 @@ def _fixture_lifecycle_from_env() -> ValidationFixtureLifecycle:
             "AIOPS_ONTOLOGY_ENVIRONMENT",
         ),
         owner_id=_required(os.environ.get("AZURE_CLIENT_ID"), "AZURE_CLIENT_ID"),
+        tenant_id=_required(
+            os.environ.get("AIOPS_ONTOLOGY_FIXTURE_TENANT_ID"),
+            "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID",
+        ),
+        subscription_id=_required(
+            os.environ.get("AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID"),
+            "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID",
+        ),
     )
 
 
