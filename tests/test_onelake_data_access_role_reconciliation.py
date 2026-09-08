@@ -28,6 +28,7 @@ from scripts.reconcile_onelake_data_access_roles import (
     parse_contract,
     reconcile_all_evidence_items,
     reconcile_item_roles,
+    reconcile_workspace_viewer,
     verify_roles_match,
 )
 
@@ -349,6 +350,71 @@ class TestReconcileItemRolesETag:
         assert put_call.kwargs.get("headers", {}).get("If-Match") == '"v42"'
 
 
+def test_workspace_viewer_is_created_and_verified_without_broadening() -> None:
+    client = MagicMock()
+    missing = MagicMock()
+    missing.json.return_value = {"value": []}
+    missing.raise_for_status = MagicMock()
+    created = MagicMock(status_code=201)
+    verified = MagicMock()
+    verified.json.return_value = {
+        "value": [
+            {
+                "principal": {
+                    "id": OBJECT_ID,
+                    "type": "ServicePrincipal",
+                },
+                "role": "Viewer",
+            }
+        ]
+    }
+    verified.raise_for_status = MagicMock()
+    client.get.side_effect = [missing, verified]
+    client.post.return_value = created
+
+    result = reconcile_workspace_viewer(
+        client=client,
+        workspace_id=WORKSPACE_ID,
+        object_id=OBJECT_ID,
+        dry_run=False,
+    )
+
+    assert result["verified"] is True
+    assert client.post.call_args.kwargs["json"] == {
+        "principal": {"id": OBJECT_ID, "type": "ServicePrincipal"},
+        "role": "Viewer",
+    }
+
+
+def test_workspace_viewer_rejects_existing_broader_role() -> None:
+    client = MagicMock()
+    response = MagicMock()
+    response.json.return_value = {
+        "value": [
+            {
+                "principal": {
+                    "id": OBJECT_ID,
+                    "type": "ServicePrincipal",
+                },
+                "role": "Contributor",
+            }
+        ]
+    }
+    response.raise_for_status = MagicMock()
+    client.get.return_value = response
+
+    with pytest.raises(
+        DataAccessRoleReconciliationError,
+        match="non-Viewer",
+    ):
+        reconcile_workspace_viewer(
+            client=client,
+            workspace_id=WORKSPACE_ID,
+            object_id=OBJECT_ID,
+            dry_run=False,
+        )
+
+
 class TestReconcileItemRolesDryRun:
     def test_dry_run_does_not_put(self) -> None:
         existing = [copy.deepcopy(UNRELATED_ROLE)]
@@ -606,47 +672,8 @@ def test_batch_uses_in_memory_bearer_token() -> None:
             "scripts.reconcile_onelake_data_access_roles.reconcile_item_roles",
             return_value={"verified": True},
         ),
-    ):
-        results = reconcile_all_evidence_items(
-            items=items,
-            object_id=OBJECT_ID,
-            tenant_id=TENANT_ID,
-            token_provider=lambda: "in-memory-token",
-            dry_run=False,
-        )
-
-    assert len(results) == 5
-    assert client_factory.call_args.kwargs["headers"] == {
-        "Authorization": "Bearer in-memory-token"
-    }
-
-
-def test_batch_uses_in_memory_bearer_and_requires_five_isolated_targets() -> None:
-    items = [
-        (
-            name,
-            f"00000000-0000-0000-0000-00000000000{index}",
-            f"10000000-0000-0000-0000-00000000000{index}",
-        )
-        for index, name in enumerate(
-            (
-                "ontology_discovery_state",
-                "ontology_command",
-                "ontology_dispatch",
-                "ontology_publication",
-                "ontology_rbac_validation",
-            ),
-            start=1,
-        )
-    ]
-    fake_client = MagicMock()
-    context = MagicMock()
-    context.__enter__.return_value = fake_client
-
-    with (
-        patch("httpx.Client", return_value=context) as client_factory,
         patch(
-            "scripts.reconcile_onelake_data_access_roles.reconcile_item_roles",
+            "scripts.reconcile_onelake_data_access_roles.reconcile_workspace_viewer",
             return_value={"verified": True},
         ),
     ):

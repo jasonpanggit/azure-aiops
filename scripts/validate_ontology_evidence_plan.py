@@ -11,13 +11,6 @@ from pathlib import Path
 from typing import Any
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_ROLE_NAMES = (
-    "ontology_discovery_state",
-    "ontology_command",
-    "ontology_dispatch",
-    "ontology_publication",
-    "ontology_rbac_validation",
-)
 _EVIDENCE_ENV_NAMES = frozenset(
     {
         "AZURE_CLIENT_ID",
@@ -51,10 +44,6 @@ _EVIDENCE_ENV_NAMES = frozenset(
 CREATE_ADDRESSES = frozenset(
     {
         "azurerm_container_app_job.ontology_evidence_read[0]",
-        *{
-            f"fabric_workspace_role_assignment.ontology_evidence_{name}[0]"
-            for name in _ROLE_NAMES
-        },
     }
 )
 UPDATE_ADDRESSES = frozenset(
@@ -157,42 +146,6 @@ def _validate_evidence_job(
         )
 
 
-def _validate_evidence_roles(
-    rows: Mapping[str, Mapping[str, Any]],
-    *,
-    expected_principal_id: str,
-    production_workspace_id: str,
-) -> None:
-    workspace_ids: set[str] = set()
-    for name in _ROLE_NAMES:
-        workspace_address = (
-            "fabric_workspace_role_assignment."
-            f"ontology_evidence_{name}[0]"
-        )
-        workspace = rows[workspace_address].get("after")
-        workspace = workspace if isinstance(workspace, Mapping) else {}
-        principal = workspace.get("principal")
-        principal = principal if isinstance(principal, Mapping) else {}
-        workspace_id = str(workspace.get("workspace_id") or "")
-        if (
-            workspace.get("role") != "Viewer"
-            or not workspace_id
-            or workspace_id == production_workspace_id
-            or principal
-            != {
-                "id": expected_principal_id,
-                "type": "ServicePrincipal",
-            }
-        ):
-            raise EvidencePlanError(
-                f"{workspace_address} is not exact read-only metadata access"
-            )
-        workspace_ids.add(workspace_id)
-
-    if len(workspace_ids) != 5:
-        raise EvidencePlanError("evidence roles must target five exact workspaces")
-
-
 def validate_targeted_plan(
     plan: Mapping[str, Any],
     *,
@@ -244,22 +197,27 @@ def validate_targeted_plan(
             f"(unexpected={unexpected}, missing={missing}, "
             f"contract_missing={missing_contract}, invalid={invalid_contract})"
         )
-    if changes["azurerm_container_app_job.ontology_evidence_read[0]"] != (
-        "create",
-    ):
-        raise EvidencePlanError("evidence Job must be create-only")
+    evidence_address = "azurerm_container_app_job.ontology_evidence_read[0]"
+    evidence_actions = changes[evidence_address]
+    if evidence_actions not in {("create",), ("update",)}:
+        raise EvidencePlanError(
+            "evidence Job must be created or updated in place"
+        )
     _validate_evidence_job(
-        rows["azurerm_container_app_job.ontology_evidence_read[0]"].get(
-            "after", {}
-        ),
+        rows[evidence_address].get("after", {}),
         expected_api_digest=expected_api_digest,
         expected_identity_id=expected_identity_id,
     )
-    _validate_evidence_roles(
-        all_rows,
-        expected_principal_id=expected_principal_id,
-        production_workspace_id=production_workspace_id,
-    )
+    if evidence_actions == ("update",):
+        paths = _changed_paths(
+            rows[evidence_address].get("before"),
+            rows[evidence_address].get("after"),
+        )
+        if paths != {"template[0].container[0].image"}:
+            raise EvidencePlanError(
+                "evidence Job update must be image-only; "
+                f"changed={sorted(paths)}"
+            )
     for address in UPDATE_ADDRESSES:
         if changes[address] != ("update",):
             raise EvidencePlanError(f"{address} must be an in-place update")
@@ -285,11 +243,22 @@ def validate_targeted_plan(
             for address, actions in changes.items()
             if actions == ("create",)
         ),
-        "update_addresses": sorted(UPDATE_ADDRESSES),
+        "update_addresses": sorted(
+            [
+                *UPDATE_ADDRESSES,
+                *(
+                    [evidence_address]
+                    if evidence_actions == ("update",)
+                    else []
+                ),
+            ]
+        ),
         "delete_count": 0,
         "replace_count": 0,
         "api_digest": expected_api_digest,
-        "external_onelake_role_contract": "ManagedIdentity:Path=*:Action=Read",
+        "external_role_contract": (
+            "Workspace=Viewer;ManagedIdentity:Path=*:Action=Read"
+        ),
     }
 
 

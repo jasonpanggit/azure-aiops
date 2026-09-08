@@ -128,34 +128,9 @@ def test_targeted_plan_accepts_only_evidence_resources_and_phase13_images() -> N
     assert result["replace_count"] == 0
     assert result["create_addresses"] == sorted(CREATE_ADDRESSES)
     assert result["update_addresses"] == sorted(UPDATE_ADDRESSES)
-    assert result["external_onelake_role_contract"] == (
-        "ManagedIdentity:Path=*:Action=Read"
+    assert result["external_role_contract"] == (
+        "Workspace=Viewer;ManagedIdentity:Path=*:Action=Read"
     )
-
-
-def test_targeted_plan_accepts_existing_noop_viewer_roles() -> None:
-    plan = _plan()
-    for row in plan["resource_changes"]:
-        if (
-            row["address"].startswith("fabric_workspace_role_assignment.")
-            and not row["address"].endswith(
-                "ontology_evidence_ontology_rbac_validation[0]"
-            )
-        ):
-            row["change"]["actions"] = ["no-op"]
-            row["change"]["before"] = row["change"]["after"]
-
-    result = _validate(plan)
-
-    assert result["delete_count"] == 0
-    assert result["replace_count"] == 0
-    assert result["create_addresses"] == [
-        "azurerm_container_app_job.ontology_evidence_read[0]",
-        (
-            "fabric_workspace_role_assignment."
-            "ontology_evidence_ontology_rbac_validation[0]"
-        ),
-    ]
 
 
 @pytest.mark.parametrize(
@@ -203,34 +178,6 @@ def test_targeted_plan_requires_all_exact_resources() -> None:
 
     with pytest.raises(EvidencePlanError, match="exact"):
         _validate(missing)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("role", "Contributor"),
-        ("workspace_id", PRODUCTION_WORKSPACE_ID),
-        ("principal.id", "wrong-principal"),
-    ],
-)
-def test_targeted_plan_rejects_role_broadening_and_wrong_identity(
-    field: str,
-    value: str,
-) -> None:
-    plan = _plan()
-    row = next(
-        change
-        for change in plan["resource_changes"]
-        if change["address"].startswith("fabric_workspace_role_assignment.")
-    )
-    after = row["change"]["after"]
-    if field == "principal.id":
-        after["principal"]["id"] = value
-    else:
-        after[field] = value
-
-    with pytest.raises(EvidencePlanError):
-        _validate(plan)
 
 
 def test_targeted_plan_rejects_provider_managed_onelake_role() -> None:

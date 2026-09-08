@@ -347,6 +347,116 @@ def verify_roles_match(
         )
 
 
+def reconcile_workspace_viewer(
+    *,
+    client: Any,
+    workspace_id: str,
+    object_id: str,
+    dry_run: bool,
+) -> dict[str, object]:
+    """Ensure one exact Viewer assignment without altering broader roles."""
+
+    url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/roleAssignments"
+    response = client.get(url)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("value") if isinstance(payload, Mapping) else None
+    if not isinstance(rows, list):
+        raise DataAccessRoleReconciliationError(
+            "workspace role response is invalid"
+        )
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, Mapping)
+        and isinstance(row.get("principal"), Mapping)
+        and str(row["principal"].get("id") or "").casefold()
+        == object_id.casefold()
+    ]
+    if len(matches) > 1:
+        raise DataAccessRoleReconciliationError(
+            "duplicate workspace assignments are forbidden"
+        )
+    if matches:
+        assignment = matches[0]
+        principal = assignment.get("principal")
+        principal = principal if isinstance(principal, Mapping) else {}
+        if (
+            assignment.get("role") != "Viewer"
+            or principal.get("type") != "ServicePrincipal"
+        ):
+            raise DataAccessRoleReconciliationError(
+                "evidence principal has a non-Viewer workspace role"
+            )
+        return {
+            "already_converged": True,
+            "would_change": False,
+            "verified": True,
+        }
+    if dry_run:
+        return {
+            "already_converged": False,
+            "would_change": True,
+            "verified": False,
+        }
+
+    created: Any | None = None
+    for attempt in range(MAX_RETRIES + 1):
+        created = client.post(
+            url,
+            json={
+                "principal": {
+                    "id": object_id,
+                    "type": "ServicePrincipal",
+                },
+                "role": "Viewer",
+            },
+        )
+        if created.status_code != 429:
+            break
+        if attempt == MAX_RETRIES:
+            raise DataAccessRoleReconciliationError(
+                "workspace Viewer assignment exhausted retries"
+            )
+        time.sleep(RETRY_BASE_DELAY * (2**attempt))
+    if created is None or created.status_code not in {200, 201}:
+        status = created.status_code if created is not None else 0
+        raise DataAccessRoleReconciliationError(
+            f"workspace Viewer assignment failed with HTTP {status}"
+        )
+    verified = client.get(url)
+    verified.raise_for_status()
+    verified_payload = verified.json()
+    verified_rows = (
+        verified_payload.get("value")
+        if isinstance(verified_payload, Mapping)
+        else None
+    )
+    if not isinstance(verified_rows, list):
+        raise DataAccessRoleReconciliationError(
+            "workspace role verification is invalid"
+        )
+    exact = [
+        row
+        for row in verified_rows
+        if isinstance(row, Mapping)
+        and row.get("role") == "Viewer"
+        and isinstance(row.get("principal"), Mapping)
+        and row["principal"].get("type") == "ServicePrincipal"
+        and str(row["principal"].get("id") or "").casefold()
+        == object_id.casefold()
+    ]
+    if len(exact) != 1:
+        raise VerificationDriftError(
+            "workspace Viewer assignment did not converge"
+        )
+    return {
+        "already_converged": False,
+        "would_change": True,
+        "verified": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Core reconciliation
 # ---------------------------------------------------------------------------
@@ -594,6 +704,12 @@ def reconcile_all_evidence_items(
                 logical_name,
                 dry_run,
             )
+            workspace_result = reconcile_workspace_viewer(
+                client=client,
+                workspace_id=workspace_id,
+                object_id=object_id,
+                dry_run=dry_run,
+            )
             result = reconcile_item_roles(
                 client=client,
                 workspace_id=workspace_id,
@@ -604,6 +720,7 @@ def reconcile_all_evidence_items(
                 verified_principal_type=verified_principal_type,
             )
             result["logical_name"] = logical_name
+            result["workspace_viewer"] = workspace_result
             results.append(result)
             logger.info(
                 "%s: %s",

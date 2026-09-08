@@ -250,9 +250,8 @@ def test_evidence_job_is_fixed_manual_only_and_uses_only_azure_mcp_identity() ->
     assert "Microsoft.App/jobs/start/action" not in job
 
 
-def test_evidence_identity_has_exact_viewer_roles_and_rest_read_contract() -> None:
+def test_evidence_identity_roles_use_only_rest_reconciliation() -> None:
     terraform = IDENTITY_TF.read_text(encoding="utf-8")
-    providers = PROVIDERS_TF.read_text(encoding="utf-8")
     outputs = OUTPUTS_TF.read_text(encoding="utf-8")
     reconciler = ROLE_RECONCILER.read_text(encoding="utf-8")
     exact_roots = (
@@ -263,43 +262,14 @@ def test_evidence_identity_has_exact_viewer_roles_and_rest_read_contract() -> No
         "ontology_rbac_validation",
     )
 
-    assert "preview = true" in providers
     for root in exact_roots:
-        viewer = _resource(
-            terraform,
-            "fabric_workspace_role_assignment",
-            f"ontology_evidence_{root}",
-        )
-        assert 'role         = "Viewer"' in viewer
-        assert f"fabric_workspace.{root}[0].id" in viewer
-        assert (
-            "azurerm_user_assigned_identity.azure_mcp.principal_id"
-            in viewer
-        )
-        assert "Contributor" not in viewer
-        assert "Member" not in viewer
-        assert "Admin" not in viewer
-
         assert f"workspace_id = fabric_workspace.{root}[0].id" in outputs
         assert f"item_id      = fabric_lakehouse.{root}[0].id" in outputs
 
-    evidence_resources = [
-        block
-        for block in terraform.split('\nresource "')
-        if block.startswith(
-            'fabric_workspace_role_assignment" "ontology_evidence_'
-        )
-    ]
-    assert len(evidence_resources) == 5
-    joined = "\n".join(evidence_resources)
-    assert "fabric_workspace.ops" not in joined
-    assert "fabric_lakehouse.context_graph" not in joined
-    assert "azurerm_user_assigned_identity.apps" not in joined
-    assert "ontology_coordinator" not in joined
-    assert "ontology_publisher" not in joined
-    assert "Contributor" not in joined
-    assert "Member" not in joined
-    assert "Admin" not in joined
+    assert (
+        'resource "fabric_workspace_role_assignment" "ontology_evidence_'
+        not in terraform
+    )
     assert (
         'resource "fabric_onelake_data_access_security" "ontology_evidence_'
         not in terraform
@@ -309,6 +279,7 @@ def test_evidence_identity_has_exact_viewer_roles_and_rest_read_contract() -> No
     assert '"attributeValueIncludedIn": ["*"]' in reconciler
     assert '"attributeName": "Action"' in reconciler
     assert '"attributeValueIncludedIn": ["Read"]' in reconciler
+    assert '"role": "Viewer"' in reconciler
     assert '"ReadWrite"' not in reconciler
 
 
