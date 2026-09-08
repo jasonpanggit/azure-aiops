@@ -27,6 +27,7 @@ from api.runtime import (
     _defender_configuration_adapter,
     _execution_verifier,
     _exposure_generation_window,
+    _fabric_remediation_catalog,
     _fabric_remediation_planner,
     _hybrid_network_cache,
     _hybrid_remediation_cache,
@@ -171,13 +172,15 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
-    assert providers.specs["remediation"].required is True
+    assert providers.specs["remediation_catalog"].required is True
+    assert providers.specs["remediation"].required is False
     for name in (
         "semantic",
         "semantic_graph",
         "vulnerability",
         "exposure_query",
         "incidents",
+        "remediation_catalog",
         "remediation",
         "change",
     ):
@@ -233,6 +236,38 @@ def test_fabric_remediation_provider_accepts_complete_governed_catalog(
     assert _fabric_remediation_planner(runtime) is planner
 
 
+def test_fabric_remediation_catalog_readiness_is_lightweight() -> None:
+    runtime = SimpleNamespace(
+        service=SimpleNamespace(
+            remediation_planning_snapshot=lambda: {
+                "inventory": [],
+                "action_catalog": [{"action_id": "action"}],
+                "approval_policies": [{"policy_id": "policy"}],
+            }
+        )
+    )
+
+    assert _fabric_remediation_catalog(runtime) == {
+        "action_count": 1,
+        "policy_count": 1,
+    }
+
+
+def test_fabric_remediation_catalog_readiness_rejects_empty_tables() -> None:
+    runtime = SimpleNamespace(
+        service=SimpleNamespace(
+            remediation_planning_snapshot=lambda: {
+                "inventory": [],
+                "action_catalog": [],
+                "approval_policies": [],
+            }
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="Governed remediation catalog is empty"):
+        _fabric_remediation_catalog(runtime)
+
+
 def test_disabled_fabric_remediation_is_not_required(
     monkeypatch, tmp_path
 ) -> None:
@@ -256,6 +291,8 @@ fabric:
 
     assert providers.specs["remediation"].configured is False
     assert providers.specs["remediation"].required is False
+    assert providers.specs["remediation_catalog"].configured is False
+    assert providers.specs["remediation_catalog"].required is False
 
 
 def test_managed_network_provider_analyzes_ingested_flow_observations(
