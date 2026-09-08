@@ -24,12 +24,17 @@ const mocks = vi.hoisted(() => ({
   policy: vi.fn(),
   updatePolicy: vi.fn(),
   previewPolicy: vi.fn(),
+  buildNetworkCopilotContext: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
   networkApi: mocks,
   buildCopilotSnapshot: vi.fn((value) => value),
   copilotEvidenceRows: vi.fn(() => []),
+}));
+
+vi.mock("@/lib/copilot/page-adapters", () => ({
+  buildNetworkCopilotContext: mocks.buildNetworkCopilotContext,
 }));
 
 vi.mock("@/components/ui/CopilotDrawer", () => ({
@@ -168,6 +173,42 @@ describe("Network page honest totals and server pagination", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     primeSuccessfulLoaders();
+    mocks.buildNetworkCopilotContext.mockReturnValue({
+      requestedScope: {},
+      snapshot: {
+        version: "1",
+        page_kind: "network",
+        page_id: "network-topology",
+        selected_resources: [],
+        filters: {},
+        freshness: [],
+        scope: { declared: {}, authorized: true },
+        evidence: [],
+        question: "Summarize the visible page evidence.",
+        rechecks: [],
+      },
+      starterQuestions: [],
+    });
+  });
+
+  it("passes loaded topology collections and active pagination to the pure adapter", async () => {
+    renderPage();
+
+    await waitFor(() => expect(mocks.buildNetworkCopilotContext).toHaveBeenCalled());
+    expect(mocks.buildNetworkCopilotContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        scope: {},
+        tab: "flow",
+        gapOffset: 0,
+        gapLimit: 100,
+        findingOffset: 0,
+        findingLimit: 100,
+        topology: expect.objectContaining({ data: expect.any(Object) }),
+        gaps: expect.objectContaining({ data: expect.any(Object) }),
+        findings: expect.objectContaining({ data: expect.any(Object) }),
+        bypass: expect.objectContaining({ data: expect.any(Object) }),
+      }),
+    );
   });
 
   describe("Network page topology detail requests", () => {

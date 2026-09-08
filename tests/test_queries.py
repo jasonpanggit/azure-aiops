@@ -54,6 +54,25 @@ def test_query_catalog_contains_required_arg_tables() -> None:
         assert resource_type in by_name[name].query.lower()
 
 
+def test_generic_defender_query_excludes_dedicated_signal_families() -> None:
+    specs = QueryCatalog().build(datetime(2026, 8, 1, tzinfo=UTC))
+    by_name = {spec.name: spec for spec in specs}
+
+    generic_query = by_name["defender"].query.casefold()
+    assert "type !in~" in generic_query
+    for name in (
+        "defender_assessments",
+        "defender_subassessments",
+        "defender_alerts",
+        "defender_attack_paths",
+        "defender_secure_scores",
+        "defender_secure_score_controls",
+    ):
+        dedicated_type = by_name[name].query.casefold().split("type =~ ", maxsplit=1)[1]
+        dedicated_type = dedicated_type.split(" ", maxsplit=1)[0]
+        assert dedicated_type in generic_query
+
+
 def test_query_catalog_includes_every_network_resource_family() -> None:
     specs = QueryCatalog().build(datetime(2026, 8, 1, tzinfo=UTC))
     by_name = {spec.name: spec for spec in specs}

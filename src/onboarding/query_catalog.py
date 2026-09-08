@@ -44,13 +44,6 @@ class QueryCatalog:
                 True,
             ),
             QuerySpec(
-                "monitor",
-                "InsightsMetrics",
-                "InsightsMetrics | project id, name, type, subscriptionId, resourceId, "
-                "timestamp, properties",
-                False,
-            ),
-            QuerySpec(
                 "service_health",
                 "HealthResources",
                 "HealthResources | project id, name, type, subscriptionId, properties",
@@ -60,13 +53,23 @@ class QueryCatalog:
                 "defender",
                 "SecurityResources",
                 "SecurityResources | where type startswith 'microsoft.security/' "
+                "| where type !in~ ("
+                "'microsoft.security/assessments', "
+                "'microsoft.security/assessments/subassessments', "
+                "'microsoft.security/locations/alerts', "
+                "'microsoft.security/attackpaths', "
+                "'microsoft.security/securescores', "
+                "'microsoft.security/securescores/securescorecontrols') "
+                "| extend resourceId=tostring(properties.resourceDetails.Id) "
                 "| project id, name, type, subscriptionId, resourceId, properties",
                 False,
             ),
             QuerySpec(
                 "policy",
                 "PolicyResources",
-                "PolicyResources | project id, name, type, subscriptionId, resourceId, properties",
+                "PolicyResources "
+                "| extend resourceId=tostring(properties.resourceId) "
+                "| project id, name, type, subscriptionId, resourceId, properties",
                 False,
             ),
             QuerySpec(

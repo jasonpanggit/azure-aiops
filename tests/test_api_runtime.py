@@ -17,11 +17,16 @@ from api.auth import (
     HeaderPrincipalAuthenticator,
     StaticTokenAuthenticator,
 )
-from api.providers import STALE, ProviderRuntime, ProviderSpec
+from api.exposure_query import ExposureQueryUnavailableError
+from api.providers import STALE, ProviderRuntime, ProviderSpec, ProviderValue
 from api.runtime import (
+    _HYBRID_NETWORK_CACHE_TTL_SECONDS,
     _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
+    _build_provider_runtime,
     _defender_configuration_adapter,
     _execution_verifier,
+    _exposure_generation_window,
+    _hybrid_network_cache,
     _hybrid_remediation_cache,
     _load_fabric_iq_adapter,
     _load_network_service,
@@ -68,6 +73,94 @@ def _clean_env(monkeypatch, tmp_path):
 def test_home_follows_aiops_home(monkeypatch, tmp_path):
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "custom"))
     assert aiops_home() == tmp_path / "custom"
+
+
+def test_exposure_generation_window_reports_unavailable_without_a_generation(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    class _EmptyDocumentStore:
+        def __init__(self, root: str) -> None:
+            del root
+
+        def read(self, name: str) -> dict:
+            del name
+            return {}
+
+    monkeypatch.setattr(runtime_module, "OneLakeDocumentStore", _EmptyDocumentStore)
+    monkeypatch.setattr(runtime_module, "_load_exposure_read_port", lambda: None)
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="Exposure readable generation is unavailable",
+    ):
+        _exposure_generation_window()
+
+
+def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    class _Service:
+        def semantic_version(self) -> str:
+            return "semantic-generation-7"
+
+        def semantic_snapshot(self) -> dict:
+            raise AssertionError("provider wrapper must not pre-read the full snapshot")
+
+    class _Runtime:
+        service = _Service()
+
+        def semantic_engine(self) -> object:
+            return type(
+                "_Semantic",
+                (),
+                {
+                    "freshness": "2026-09-08T00:00:00Z",
+                    "knowledge_version": "semantic-generation-7",
+                },
+            )()
+
+    class _PolicyStore:
+        def revision_or_raise(self) -> int:
+            return 11
+
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+    monkeypatch.setattr(
+        runtime_module,
+        "_fabric_runtime_from_environment",
+        lambda: _Runtime(),
+    )
+    monkeypatch.setattr(runtime_module, "_network_policy_store", _PolicyStore)
+
+    providers = _build_provider_runtime(object())
+    semantic = providers.specs["semantic"].loader()
+
+    assert isinstance(semantic, ProviderValue)
+    assert semantic.ontology_version == "semantic-generation-7"
+    for name in (
+        "semantic",
+        "semantic_graph",
+        "vulnerability",
+        "exposure_query",
+        "incidents",
+        "remediation",
+        "change",
+    ):
+        assert providers.specs[name].cache_key is not None
+        assert providers.specs[name].cache_key() == (
+            "fabric-generation",
+            "semantic-generation-7",
+        )
+    assert providers.specs["network"].cache_key is not None
+    assert providers.specs["network"].cache_key() == (
+        "fabric-generation",
+        "semantic-generation-7",
+        "network-policy",
+        11,
+    )
 
 
 def test_managed_network_provider_analyzes_ingested_flow_observations(
@@ -497,6 +590,46 @@ def test_ttl_cached_value_starts_ttl_after_slow_build_completes():
     assert first is second
     assert build_calls["count"] == 1
     assert cache[key][0] == 1_045.0
+
+
+def test_hybrid_network_cache_starts_ttl_after_slow_arg_query(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    _hybrid_network_cache.clear()
+    clock = [1_000.0]
+    query_calls = 0
+
+    def query(_self, _spec, *, subscription_ids):
+        nonlocal query_calls
+        query_calls += 1
+        assert subscription_ids == [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+        clock[0] = 1_045.0
+        return type(
+            "Observation",
+            (),
+            {"rows": (), "observed_at": "2026-09-08T00:00:00Z"},
+        )()
+
+    context = build_context()
+    assert context.hybrid_network_provider is not None
+
+    monkeypatch.setattr(runtime_module.time, "time", lambda: clock[0])
+    monkeypatch.setattr(
+        runtime_module.ConnectionScopedLiveResourceProvider,
+        "query",
+        query,
+    )
+
+    context.hybrid_network_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
+    clock[0] = 1_200.0
+    context.hybrid_network_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
+
+    assert _HYBRID_NETWORK_CACHE_TTL_SECONDS >= 300
+    assert query_calls == 1
 
 
 def test_ttl_cached_value_serializes_concurrent_builds_for_same_key():

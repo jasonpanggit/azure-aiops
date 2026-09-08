@@ -17,7 +17,7 @@ import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
-import type { SubscriptionConnection, SyncState } from "@/lib/types";
+import { ApiError, type SubscriptionConnection, type SyncState } from "@/lib/types";
 
 const SYNC_POLL_INTERVAL_MS = 1500;
 // Discovery + merge + ontology + Fabric publish can take well past 10 minutes
@@ -34,6 +34,21 @@ const ACTIVE_SYNC_STATUSES = new Set([
   "running",
   "in_progress",
 ]);
+const TRANSIENT_SYNC_POLL_STATUSES = new Set([0, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isActiveSyncState(state: Pick<SyncState, "status" | "stage"> | null | undefined): boolean {
+  if (!state) return false;
+  const status = state.status.toLowerCase();
+  return status === "running" || ACTIVE_SYNC_STATUSES.has(status) || ACTIVE_SYNC_STATUSES.has((state.stage ?? "").toLowerCase());
+}
+
+function isTransientSyncPollError(reason: unknown): boolean {
+  return reason instanceof ApiError && TRANSIENT_SYNC_POLL_STATUSES.has(reason.status);
+}
 
 function readableSyncStage(stage: string | null | undefined): string {
   if (!stage) return "Sync in progress";
@@ -128,19 +143,28 @@ export default function ConnectionsPage() {
   ): Promise<SyncState> => {
     const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const report = await connectionsApi.health(connectionId);
+      let report;
+      try {
+        report = await connectionsApi.health(connectionId);
+      } catch (reason) {
+        if (isTransientSyncPollError(reason)) {
+          await sleep(SYNC_POLL_INTERVAL_MS);
+          continue;
+        }
+        throw reason;
+      }
       const summary = report.data.connections.find((entry) => entry.connection_id === connectionId);
       const state = summary?.sync;
       if (state) {
         onState?.(state);
         if (!onState) {
-          setSyncProgress({ connectionId, state });
+          setSyncProgress(isActiveSyncState(state) ? { connectionId, state } : null);
         }
-        if (["succeeded", "failed"].includes(state.status.toLowerCase())) {
+        if (!isActiveSyncState(state) || ["succeeded", "failed"].includes(state.status.toLowerCase())) {
           return state;
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+      await sleep(SYNC_POLL_INTERVAL_MS);
     }
     throw new Error(
       "Still waiting for sync to reach a final state after 20 minutes. It may still be running in the background — check the connection's status and refresh shortly."
@@ -149,14 +173,21 @@ export default function ConnectionsPage() {
 
   useEffect(() => {
     const activeConnection = rows.find((connection) =>
-      ACTIVE_SYNC_STATUSES.has(connection.sync_status.toLowerCase()),
+      isActiveSyncState({ status: connection.sync_status, stage: null }),
     );
-    if (!activeConnection) return;
+    if (!activeConnection) {
+      setSyncProgress(null);
+      return;
+    }
 
     let cancelled = false;
     void pollSyncState(activeConnection.connection_id, (state) => {
       if (!cancelled) {
-        setSyncProgress({ connectionId: activeConnection.connection_id, state });
+        setSyncProgress(isActiveSyncState(state) ? { connectionId: activeConnection.connection_id, state } : null);
+      }
+    }).then(() => {
+      if (!cancelled) {
+        setRefreshKey((value) => value + 1);
       }
     }).catch((reason) => {
       if (!cancelled) {
@@ -196,6 +227,7 @@ export default function ConnectionsPage() {
       } else {
         setActionMessage(`${connection.name} is up to date (${finalState.record_count ?? 0} records synced).`);
       }
+      setSyncProgress(null);
       setRefreshKey((value) => value + 1);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : `Unable to sync ${connection.name}.`);

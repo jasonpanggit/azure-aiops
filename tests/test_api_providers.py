@@ -93,6 +93,74 @@ def test_cache_key_read_failure_retains_last_good_provider():
     assert attempts == 1
 
 
+def test_unchanged_cache_key_skips_periodic_provider_rebuild() -> None:
+    attempts = 0
+    revision = 7
+    elapsed = [0.0]
+
+    def load() -> SnapshotProvider:
+        nonlocal attempts
+        attempts += 1
+        return SnapshotProvider(
+            version=f"policy-v{revision}",
+            freshness="2026-08-22T00:00:00Z",
+        )
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: elapsed[0],
+    )
+
+    runtime.refresh(force=True)
+    elapsed[0] = 31.0
+    runtime.refresh()
+
+    assert attempts == 1
+    assert runtime.get("network").knowledge_version == "policy-v7"
+
+
+def test_changed_cache_key_rebuilds_once_and_force_overrides_key() -> None:
+    attempts = 0
+    revision = 7
+    elapsed = [0.0]
+
+    def load() -> SnapshotProvider:
+        nonlocal attempts
+        attempts += 1
+        return SnapshotProvider(
+            version=f"policy-v{revision}",
+            freshness="2026-08-22T00:00:00Z",
+        )
+
+    runtime = ProviderRuntime(
+        {
+            "network": ProviderSpec(
+                load,
+                cache_key=lambda: ("network-policy", revision),
+            )
+        },
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: elapsed[0],
+    )
+    runtime.refresh(force=True)
+
+    revision = 8
+    elapsed[0] = 31.0
+    runtime.refresh()
+    elapsed[0] = 62.0
+    runtime.refresh()
+    runtime.refresh(force=True)
+
+    assert attempts == 3
+    assert runtime.get("network").knowledge_version == "policy-v8"
+
+
 def test_known_newer_key_with_failed_body_serves_last_good_once():
     attempts = 0
     revision = 7

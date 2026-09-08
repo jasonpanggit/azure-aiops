@@ -108,6 +108,28 @@ variable "image_tag" {
   default     = "v1"
 }
 
+variable "api_image_digest" {
+  description = "Optional immutable sha256 digest for the API image and API-based workers. When set, it takes precedence over image_tag."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.api_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.api_image_digest))
+    error_message = "api_image_digest must be empty or an exact lowercase sha256 digest."
+  }
+}
+
+variable "web_image_digest" {
+  description = "Optional immutable sha256 digest for the web image. When set, it takes precedence over image_tag."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.web_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.web_image_digest))
+    error_message = "web_image_digest must be empty or an exact lowercase sha256 digest."
+  }
+}
+
 variable "ontology_discovery_image_tag" {
   description = "Optional immutable API image tag used only by the Phase 13 ontology coordinator and RBAC-validation Jobs. Empty inherits image_tag."
   type        = string
@@ -119,6 +141,18 @@ variable "ontology_discovery_image_tag" {
       can(regex("^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$", var.ontology_discovery_image_tag))
     )
     error_message = "ontology_discovery_image_tag must be empty or a valid 1-128 character OCI/Docker tag."
+  }
+
+}
+
+variable "ontology_discovery_environment" {
+  description = "Exact ontology coordinator data classification. Validation selects only the isolated validation connection registry and fixture Jobs; it does not rename the shared deployment."
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = contains(["production", "validation"], var.ontology_discovery_environment)
+    error_message = "ontology_discovery_environment must be exactly production or validation."
   }
 }
 
@@ -153,13 +187,13 @@ variable "deploy_images" {
 variable "api_cpu" {
   description = "vCPU allocated to the API container."
   type        = number
-  default     = 1.0
+  default     = 2.0
 }
 
 variable "api_memory" {
   description = "Memory allocated to the API container. Must pair with api_cpu per the Container Apps ratio (2Gi per vCPU)."
   type        = string
-  default     = "2Gi"
+  default     = "4Gi"
 }
 
 variable "api_min_replicas" {

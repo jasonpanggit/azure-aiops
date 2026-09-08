@@ -172,6 +172,10 @@ ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS = (
     "AIOPS_REMEDIATION_VERIFICATION_DEADLINE_SECONDS"
 )
+ENV_CONNECTION_HOME = "AIOPS_CONNECTION_HOME"
+ENV_ONTOLOGY_STATE_HOME = "AIOPS_ONTOLOGY_STATE_HOME"
+ENV_ONTOLOGY_PUBLICATION_HOME = "AIOPS_ONTOLOGY_PUBLICATION_HOME"
+ENV_ONTOLOGY_COMMAND_HOME = "AIOPS_ONTOLOGY_COMMAND_HOME"
 ENV_EXPOSURE_ROLLOUT_AUTHORIZED = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"
 ENV_EXPOSURE_WRITE_STAGE = "AIOPS_EXPOSURE_WRITE_STAGE"
 ENV_EXPOSURE_READ_STAGE = "AIOPS_EXPOSURE_READ_STAGE"
@@ -245,30 +249,85 @@ before/after rows in one export.
 
 def _load_ontology_discovery_api(
     onboarding: SubscriptionOnboardingService,
+    roots: Mapping[str, str],
 ) -> Any:
     """Build a restart-safe API facade with no publisher credential."""
 
     from api.routers.ontology_discovery import OntologyDiscoveryApi
+    from ontology_discovery.command_intake import CommandIntakeService
+    from ontology_discovery.store import OntologyRunStore
     from storage.datasets import DatasetStore
 
-    root = aiops_home()
-
     def generation_resolver(connection_id: str) -> GenerationResolver:
-        return GenerationResolver(
-            DatasetStore(
-                _connection_dataset_dir(str(root), connection_id)
-            )
-        )
+        del connection_id
+        return GenerationResolver(DatasetStore(roots["publication"]))
 
     return OntologyDiscoveryApi(
         onboarding=onboarding,
-        run_store=onboarding.ontology_run_store,
-        evaluation_store=EvaluationSnapshotStore(root),
+        run_store=OntologyRunStore(
+            Path("."),
+            document_store=OneLakeDocumentStore(roots["state"]),
+        ),
+        evaluation_store=EvaluationSnapshotStore(
+            document_store=OneLakeDocumentStore(roots["state"])
+        ),
         generation_resolver_factory=generation_resolver,
-        # Rollback remains a narrow publisher-service action. The API process
-        # intentionally has no credential or direct pointer/stage capability.
+        command_intake=CommandIntakeService(roots["command"]),
+        connection_reader=ConnectionRegistry(roots["connection"]).get,
         rollback_action=None,
     )
+
+
+def _ontology_api_roots(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve the API's exact read/read/read/create capability roots."""
+
+    from storage.fs import join_root
+
+    values = dict(os.environ if environ is None else environ)
+    mode = str(values.get(ENV_RUNTIME_MODE) or "validation").strip().casefold()
+    base = str(values.get(ENV_HOME) or str(Path.home() / ".aiops")).strip()
+    env_names = {
+        "connection": ENV_CONNECTION_HOME,
+        "state": ENV_ONTOLOGY_STATE_HOME,
+        "publication": ENV_ONTOLOGY_PUBLICATION_HOME,
+        "command": ENV_ONTOLOGY_COMMAND_HOME,
+    }
+    if mode == "production":
+        roots = {
+            name: str(values.get(env_name) or "").strip()
+            for name, env_name in env_names.items()
+        }
+        for name, value in roots.items():
+            if not value:
+                raise ValueError(f"{env_names[name]} must not be empty")
+            if not is_onelake_uri(value):
+                raise ValueError(
+                    f"{env_names[name]} must be an explicit OneLake URI"
+                )
+    else:
+        roots = {
+            "connection": str(
+                values.get(ENV_CONNECTION_HOME) or base
+            ).strip(),
+            "state": str(
+                values.get(ENV_ONTOLOGY_STATE_HOME)
+                or join_root(base, "ontology-api-state")
+            ).strip(),
+            "publication": str(
+                values.get(ENV_ONTOLOGY_PUBLICATION_HOME)
+                or join_root(base, "ontology-publication")
+            ).strip(),
+            "command": str(
+                values.get(ENV_ONTOLOGY_COMMAND_HOME)
+                or join_root(base, "ontology-command-intake")
+            ).strip(),
+        }
+    normalized = {value.rstrip("/").casefold() for value in roots.values()}
+    if len(normalized) != len(roots):
+        raise ValueError("Ontology API capability roots must be pairwise distinct")
+    return roots
 
 AUTH_GATEWAY = "gateway"
 AUTH_ENTRA = "entra"
@@ -426,7 +485,10 @@ def build_authenticator():
     )
 
 
-def _onboarding_service() -> SubscriptionOnboardingService:
+def _onboarding_service(
+    output_dir: str | Path | None = None,
+    command_home: str | None = None,
+) -> SubscriptionOnboardingService:
     """Build the onboarding service with a real ingestion factory wired in.
 
     Without this, `SubscriptionOnboardingService` falls back to no
@@ -441,15 +503,24 @@ def _onboarding_service() -> SubscriptionOnboardingService:
     config = (
         ConnectorConfig.load(config_path)
         if config_path
-        else ConnectorConfig(output_dir=aiops_home())
+        else ConnectorConfig(output_dir=output_dir or aiops_home())
     )
+    if output_dir is not None and str(config.output_dir) != str(output_dir):
+        import dataclasses
+
+        config = dataclasses.replace(config, output_dir=output_dir)
     vault = os.environ.get(ENV_CONNECTION_KEY_VAULT, "").strip()
-    return build_onboarding_service(
+    service = build_onboarding_service(
         config,
         secret_writer=KeyVaultSecretWriter(vault) if vault else None,
         config_path=config_path,
         fabric_config_path=os.environ.get(ENV_FABRIC_CONFIG, "").strip(),
     )
+    if command_home is not None:
+        from ontology_discovery.command_intake import CommandIntakeService
+
+        service.ontology_command_intake = CommandIntakeService(command_home)
+    return service
 
 
 def _connection_dataset_dir(root: str, connection_id: str) -> str:
@@ -501,10 +572,16 @@ _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
 
 # Scoped network requests bypass the persisted snapshot and query ARG live, so
-# without a cache every page load costs a round trip. Keyed by root *and*
-# subscription set, since rows fetched for one scope must never serve another.
-_HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
-_hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
+# without a cache every page interaction costs a round trip. Keep a completed
+# observation for a five-minute operator workflow: live ARG can take longer
+# than 30 seconds, and expiring it between Summary, Full detail, and drawer
+# interactions recreates that cost on every click. The observed timestamp
+# remains in the response so this bounded staleness is explicit.
+_HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
+_hybrid_network_cache: dict[
+    tuple[str, tuple[str, ...]],
+    tuple[float, tuple[list[dict], str, int]],
+] = {}
 _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
 _hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
 # Resolves the request-consistency half of WR-07: both the router's scope-
@@ -2865,15 +2942,14 @@ def _build_provider_runtime(
         runtime = fabric()
         if runtime is None:
             return None
-        snapshot = runtime.service.semantic_snapshot()
-        freshness = str(snapshot.get("freshness") or "")
-        if not freshness:
+        ontology_version = runtime.service.semantic_version()
+        if ontology_version == "semantic-unversioned":
             if _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
                 # A newly created validation lakehouse is intentionally empty
                 # until the first activation sync completes.
                 return None
             raise RuntimeError(
-                "Fabric semantic snapshot has no freshness; publish the ontology "
+                "Fabric semantic snapshot has no version; publish the ontology "
                 "and ingestion state before activating providers"
             )
         try:
@@ -2883,9 +2959,24 @@ def _build_provider_runtime(
             raise
         return ProviderValue(
             instance,
-            freshness=freshness,
-            ontology_version=str(snapshot.get("knowledge_version") or ""),
+            ontology_version=ontology_version,
         )
+
+    def fabric_provider_cache_key(name: str) -> tuple[object, ...]:
+        runtime = fabric()
+        if runtime is None:
+            raise RuntimeError("Fabric runtime is unavailable")
+        generation_key: tuple[object, ...] = (
+            "fabric-generation",
+            runtime.service.semantic_version(),
+        )
+        if name == "network":
+            return (
+                *generation_key,
+                "network-policy",
+                _network_policy_store().revision_or_raise(),
+            )
+        return generation_key
 
     if use_fabric:
         loaders: dict[str, Callable[[], Any]] = {
@@ -2937,13 +3028,8 @@ def _build_provider_runtime(
             configured=True,
             required=(name in core_readiness_providers and not bootstrap),
             cache_key=(
-                (
-                    lambda: (
-                        "network-policy",
-                        _network_policy_store().revision_or_raise(),
-                    )
-                )
-                if name == "network"
+                (lambda provider_name=name: fabric_provider_cache_key(provider_name))
+                if use_fabric
                 else None
             ),
         )
@@ -3472,7 +3558,10 @@ def _exposure_query_authorization(
 def _exposure_generation_window() -> Any:
     """Load the current/retained Gold pointer without exposing storage errors."""
 
-    from api.exposure_query import ExposureGenerationWindow
+    from api.exposure_query import (
+        ExposureGenerationWindow,
+        ExposureQueryUnavailableError,
+    )
     from fabric_pipelines.vulnerability_pipeline import (
         EXPOSURE_GOLD_POINTER_DOCUMENT,
     )
@@ -3511,7 +3600,9 @@ def _exposure_generation_window() -> Any:
         if len(active_generations) == 1:
             active = next(iter(active_generations))
     if not active:
-        raise RuntimeError("Exposure readable generation is unavailable")
+        raise ExposureQueryUnavailableError(
+            "Exposure readable generation is unavailable"
+        )
     return ExposureGenerationWindow(
         active_generation=active,
         retained_generations=retained,
@@ -3588,7 +3679,11 @@ def _load_eol_review_service() -> Any:
 
 def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
-    onboarding = _onboarding_service()
+    ontology_roots = _ontology_api_roots()
+    onboarding = _onboarding_service(
+        ontology_roots["connection"],
+        command_home=ontology_roots["command"],
+    )
     providers = _build_provider_runtime(onboarding)
     # Investigation ledgers are the audit trail for operator decisions, so they
     # are written through to OneLake and survive replica restarts. A local
@@ -3692,48 +3787,43 @@ def build_context() -> ApiContext:
         # Double-checked locking on a miss, matching `hybrid_vulnerability`
         # immediately below -- never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
-        now = time.time()
-        cached = _hybrid_network_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-            rows = cached[1]
-            observed_at = max(
-                (str(row.get("observed_at") or "") for row in rows),
-                default="",
+        def load_network_rows() -> tuple[list[dict], str, int]:
+            # Private Link candidates are fetched alongside the network plane
+            # so private-endpoint coverage can be judged per resource rather
+            # than per service kind.
+            paas_types = ", ".join(
+                f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
             )
-        else:
-            with _ttl_cache_lock(_hybrid_network_cache, cache_key):
-                cached = _hybrid_network_cache.get(cache_key)
-                if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-                    rows = cached[1]
-                    observed_at = max(
-                        (str(row.get("observed_at") or "") for row in rows),
-                        default="",
-                    )
-                else:
-                    # Private Link candidates are fetched alongside the
-                    # network plane so private-endpoint coverage can be
-                    # judged per resource rather than per service kind.
-                    paas_types = ", ".join(
-                        f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
-                    )
-                    observation = live_resources.query(
-                        QuerySpec(
-                            name="live_network_resources",
-                            table="Resources",
-                            query=(
-                                "Resources "
-                                "| where type startswith 'microsoft.network/' "
-                                f"or tolower(type) in ({paas_types}) "
-                                "| project id, name, type, tenantId, subscriptionId, "
-                                "resourceGroup, location, tags, properties, observed_at=now()"
-                            ),
-                            incremental=False,
-                        ),
-                        subscription_ids=subscription_ids,
-                    )
-                    rows = list(observation.rows)
-                    observed_at = observation.observed_at
-                    _hybrid_network_cache[cache_key] = (now, rows)
+            started = time.perf_counter()
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_network_resources",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type startswith 'microsoft.network/' "
+                        f"or tolower(type) in ({paas_types}) "
+                        "| project id, name, type, tenantId, subscriptionId, "
+                        "resourceGroup, location, tags, properties, observed_at=now()"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=subscription_ids,
+            )
+            return (
+                list(observation.rows),
+                observation.observed_at,
+                round(max(0.0, time.perf_counter() - started) * 1_000),
+            )
+
+        rows, observed_at, topology_build_duration_ms = _ttl_cached_value(
+            _hybrid_network_cache,
+            cache_key,
+            ttl_seconds=_HYBRID_NETWORK_CACHE_TTL_SECONDS,
+            now=time.time(),
+            build=load_network_rows,
+            completion_clock=time.time,
+        )
         policy, _revision = _network_policy_store().read_with_revision_or_raise()
         managed_network = providers.get("network", optional=True)
         flow_observations = (
@@ -3746,6 +3836,7 @@ def build_context() -> ApiContext:
             observed_at=observed_at,
             policy=policy,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     def hybrid_vulnerability(
@@ -4174,5 +4265,7 @@ def build_context() -> ApiContext:
         exposure_remediation_provider=exposure_remediation,
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
         verification_coordinator_provider=_verification_coordinator,
-        ontology_discovery_provider=lambda: _load_ontology_discovery_api(onboarding),
+        ontology_discovery_provider=lambda: _load_ontology_discovery_api(
+            onboarding, ontology_roots
+        ),
     )

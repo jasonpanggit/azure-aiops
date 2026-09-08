@@ -219,6 +219,16 @@ class ProviderRuntime:
                     name,
                 )
                 return
+        if not force and spec.cache_key is not None:
+            with self._state_lock:
+                unchanged = (
+                    name in self._instances
+                    and self._cache_keys.get(name) == cache_key_before
+                )
+                if unchanged:
+                    state.cache_key_stale = False
+            if unchanged:
+                return
         with self._state_lock:
             state.last_attempt_at = now_iso
         try:

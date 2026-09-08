@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pyarrow.parquet as pq
 import pytest
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 
+from storage.datasets import DatasetStore
 from storage.onelake_fs import OneLakeFileSystem
 
 WORKSPACE = "workspace-id"
@@ -29,17 +31,34 @@ class FakePathEntry:
 
 
 class FakeFileClient:
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
+    def __init__(self, backend: FakeFileSystemClient, path: str) -> None:
+        self._backend = backend
+        self._store = backend.files
         self._path = path
 
     def exists(self) -> bool:
         return self._path in self._store
 
-    def upload_data(self, content, overwrite: bool = False) -> None:
-        if isinstance(content, str):
-            content = content.encode("utf-8")
-        self._store[self._path] = content
+    def create_file(self) -> None:
+        self._store[self._path] = b""
+
+    def append_data(self, content, *, offset: int, length: int) -> None:
+        payload = bytes(content)
+        assert length == len(payload)
+        assert offset == len(self._store[self._path])
+        self._store[self._path] += payload
+        self._backend.append_sizes.append(length)
+
+    def flush_data(self, position: int, *, close: bool = False) -> None:
+        assert position == len(self._store[self._path])
+        self._backend.flush_positions.append(position)
+        self._backend.flush_close_flags.append(close)
+
+    def upload_data(self, content, *, overwrite: bool = False) -> None:
+        assert overwrite is True
+        payload = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        self._store[self._path] = payload
+        self._backend.whole_upload_sizes.append(len(payload))
 
     def download_file(self):
         if self._path not in self._store:
@@ -80,9 +99,13 @@ class FakeFileSystemClient:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.directories: set[str] = set()
+        self.append_sizes: list[int] = []
+        self.flush_positions: list[int] = []
+        self.flush_close_flags: list[bool] = []
+        self.whole_upload_sizes: list[int] = []
 
     def get_file_client(self, path: str) -> FakeFileClient:
-        return FakeFileClient(self.files, path)
+        return FakeFileClient(self, path)
 
     def get_directory_client(self, path: str) -> FakeDirectoryClient:
         return FakeDirectoryClient(self.directories, path)
@@ -146,6 +169,55 @@ def test_write_then_read_round_trips_bytes(filesystem: OneLakeFileSystem) -> Non
 
     with filesystem.open(_path("lakehouse/Files/a.parquet"), "rb") as handle:
         assert handle.read() == b"PAR1"
+
+
+def test_write_streams_bounded_dfs_chunks(
+    filesystem: OneLakeFileSystem,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("storage.onelake_fs._UPLOAD_CHUNK_BYTES", 4)
+
+    with filesystem.open(
+        _path("lakehouse/Files/chunked.bin"),
+        "wb",
+        streaming=True,
+    ) as handle:
+        handle.write(b"0123456789")
+
+    assert filesystem.backend.append_sizes == [4, 4, 2]  # type: ignore[attr-defined]
+    assert filesystem.backend.flush_positions == [10]  # type: ignore[attr-defined]
+    assert filesystem.backend.flush_close_flags == [True]  # type: ignore[attr-defined]
+    assert filesystem.backend.whole_upload_sizes == []  # type: ignore[attr-defined]
+    with filesystem.open(_path("lakehouse/Files/chunked.bin"), "rb") as handle:
+        assert handle.read() == b"0123456789"
+
+
+def test_remote_dataset_writer_streams_jsonl_and_parquet(
+    filesystem: OneLakeFileSystem,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("storage.onelake_fs._UPLOAD_CHUNK_BYTES", 64)
+    store = DatasetStore.__new__(DatasetStore)
+    store.is_remote = True
+    store.fs = filesystem
+    rows = [
+        {"id": f"resource-{index}", "payload": {"value": "x" * 128}}
+        for index in range(17)
+    ]
+
+    store._write_dataset(
+        _path("lakehouse/Files/generations/run-1"),
+        "entities/Resource",
+        rows,
+    )
+
+    assert max(filesystem.backend.append_sizes) <= 64  # type: ignore[attr-defined]
+    assert filesystem.backend.whole_upload_sizes == []  # type: ignore[attr-defined]
+    with filesystem.open(
+        _path("lakehouse/Files/generations/run-1/entities/Resource.parquet"),
+        "rb",
+    ) as handle:
+        assert pq.read_table(handle).num_rows == len(rows)
 
 
 def test_exists_distinguishes_present_and_missing(filesystem: OneLakeFileSystem) -> None:

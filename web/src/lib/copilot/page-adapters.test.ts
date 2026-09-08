@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildComplianceCopilotContext,
   buildInventoryCopilotContext,
+  buildNetworkCopilotContext,
+  buildOverviewCopilotContext,
   canonicalEvidenceStableId,
+  CORE_COPILOT_PAGE_ADAPTERS,
   COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
   serializeCopilotSnapshot,
@@ -61,6 +65,540 @@ const baseInput = {
 describe("inventory Copilot page adapter", () => {
   it("has an explicit integrated route disposition", () => {
     expect(copilotPageDisposition("/inventory")).toBe("integrated");
+  });
+
+  const corePageInput = {
+    scope: { subscription: ["sub-a"] },
+    filters: { search: ["critical"] },
+    sort: { priority: "asc" as const },
+    records: [
+      {
+        identity: "situation-1",
+        namespace: "operations",
+        kind: "situation",
+        source: "situations/visible",
+        observedAt: "2026-09-07T10:00:00Z",
+        selected: true,
+        data: { title: "Critical service interruption", priority: "P1" },
+      },
+      {
+        identity:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Network/virtualNetworks/Hub-1",
+        namespace: "network",
+        kind: "virtual_network",
+        source: "network/topology",
+        resourceId:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Network/virtualNetworks/Hub-1",
+        resourceType: "Microsoft.Network/virtualNetworks",
+        name: "Hub-1",
+        observedAt: "2026-09-07T09:00:00Z",
+        selected: true,
+        data: { role: "hub" },
+      },
+    ],
+    evidence: [
+      {
+        source_engine: "ARG",
+        source_table: "resources",
+        timestamp: "2026-09-07T10:00:00Z",
+        resource_id:
+          "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/hub-1",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+    coverage: [
+      {
+        key: "situations",
+        visibleCount: 2,
+        totalCount: 5,
+        truncated: true,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "situations",
+        observedAt: "2026-09-07T10:00:00Z",
+        status: "fresh" as const,
+      },
+      {
+        source: "network",
+        observedAt: "2026-09-07T09:00:00Z",
+        status: "partial" as const,
+      },
+    ],
+  };
+
+  describe("core Copilot page adapters", () => {
+    it("registers Overview, Network, and Compliance as integrated routes", () => {
+      expect(Object.keys(CORE_COPILOT_PAGE_ADAPTERS)).toEqual([
+        "/",
+        "/compliance",
+        "/network",
+      ]);
+      expect(copilotPageDisposition("/")).toBe("integrated");
+      expect(copilotPageDisposition("/network")).toBe("integrated");
+      expect(copilotPageDisposition("/compliance")).toBe("integrated");
+    });
+
+    it("builds bounded Overview evidence with stable domain identities and conditional executive intent", () => {
+      const context = buildOverviewCopilotContext(corePageInput);
+      const reordered = buildOverviewCopilotContext({
+        ...corePageInput,
+        records: [...corePageInput.records].reverse().map((record) => ({
+          ...record,
+          observedAt: "2026-09-08T10:00:00Z",
+        })),
+      });
+
+      expect(context.snapshot).toMatchObject({
+        version: "1",
+        page_kind: "resource",
+        page_id: "operations-overview",
+        filters: {
+          search: ["critical"],
+          sort: ["priority:asc"],
+        },
+      });
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "domain",
+          namespace: "operations",
+          kind: "situation",
+          source_key: "situation-1",
+        },
+        {
+          type: "azure",
+          resource_id:
+            "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/virtualnetworks/hub-1",
+        },
+      ]);
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        reordered.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      expect(context.snapshot.evidence).toHaveLength(
+        Math.min(context.snapshot.evidence.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows),
+      );
+      expect(context.starterQuestions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            specialistId: "incident",
+            tool: "incidents",
+          }),
+          expect.objectContaining({
+            specialistId: "executive_summary",
+          }),
+        ]),
+      );
+      expect(
+        context.starterQuestions.find(
+          (starter) => starter.specialistId === "executive_summary",
+        ),
+      ).not.toHaveProperty("tool");
+      expect(
+        context.starterQuestions.filter(
+          (starter) => starter.specialistId === "executive_summary",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("preserves Network selection, tab filters, pagination coverage, freshness, and read-only hints", () => {
+      const context = buildNetworkCopilotContext({
+        ...corePageInput,
+        filters: { tab: ["gaps"] },
+        sort: { severity: "desc" },
+        coverage: [
+          {
+            key: "gaps",
+            visibleCount: 100,
+            totalCount: 340,
+            truncated: true,
+          },
+          {
+            key: "rule_findings",
+            visibleCount: 100,
+            totalCount: 620,
+            truncated: true,
+          },
+        ],
+      });
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "network",
+        page_id: "network-topology",
+        filters: {
+          tab: ["gaps"],
+          sort: ["severity:desc"],
+        },
+        selected_resources: [
+          {
+            resource_id:
+              "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/virtualnetworks/hub-1",
+            resource_type: "Microsoft.Network/virtualNetworks",
+            name: "Hub-1",
+          },
+        ],
+        freshness: [
+          {
+            source: "network",
+            observed_at: "2026-09-07T09:00:00Z",
+            status: "partial",
+          },
+          {
+            source: "situations",
+            observed_at: "2026-09-07T10:00:00Z",
+            status: "fresh",
+          },
+        ],
+      });
+      expect(context.coverage).toEqual({
+        gaps: {
+          visible_count: 100,
+          total_count: 340,
+          complete: false,
+          truncated: true,
+        },
+        rule_findings: {
+          visible_count: 100,
+          total_count: 620,
+          complete: false,
+          truncated: true,
+        },
+      });
+      expect(context.uncertainty).toEqual([
+        "gaps coverage is truncated",
+        "rule_findings coverage is truncated",
+        "network freshness is partial",
+      ]);
+      expect(context.starterQuestions.every((starter) =>
+        starter.specialistId === "network"
+        && !/write|update|delete|execute/i.test(starter.tool ?? ""),
+      )).toBe(true);
+    });
+
+    it("preserves Compliance policy/resource evidence, aggregate coverage, selection, and governance hints", () => {
+      const context = buildComplianceCopilotContext({
+        ...corePageInput,
+        filters: {
+          policy: ["Approved landing zone"],
+          selected: ["policy-1"],
+        },
+        sort: { severity: "desc" },
+        records: [
+          {
+            identity: "policy-1",
+            namespace: "compliance",
+            kind: "policy_violation",
+            source: "compliance/violations",
+            selected: true,
+            observedAt: "2026-09-07T10:00:00Z",
+            data: {
+              policy: "Approved landing zone",
+              resource: "payroll-sql",
+              severity: "critical",
+            },
+          },
+          {
+            identity: "deviation-1",
+            namespace: "compliance",
+            kind: "governed_deviation",
+            source: "compliance/deviations",
+            observedAt: "2026-09-07T09:00:00Z",
+            data: {
+              control: "private-access",
+              resource: "payroll-sql",
+              status: "open",
+            },
+          },
+        ],
+        coverage: [
+          {
+            key: "violations",
+            visibleCount: 2,
+            totalCount: 7,
+            truncated: true,
+          },
+        ],
+      });
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "governance",
+        page_id: "compliance-posture",
+        filters: {
+          policy: ["Approved landing zone"],
+          selected: ["policy-1"],
+          sort: ["severity:desc"],
+        },
+      });
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "domain",
+          namespace: "compliance",
+          kind: "policy_violation",
+          source_key: "policy-1",
+        },
+      ]);
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              entity: {
+                type: "domain",
+                namespace: "compliance",
+                kind: "policy_violation",
+                source_key: "policy-1",
+              },
+              mutation_authorized: false,
+              selected: true,
+            }),
+          }),
+          expect.objectContaining({
+            data: expect.objectContaining({
+              coverage: {
+                visible_count: 2,
+                total_count: 7,
+                complete: false,
+                truncated: true,
+              },
+            }),
+          }),
+        ]),
+      );
+      expect(context.starterQuestions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            specialistId: "governance",
+            tool: "risk_context",
+          }),
+          expect.objectContaining({
+            specialistId: "network",
+            tool: "firewall_nsg_gaps",
+          }),
+        ]),
+      );
+    });
+
+    it("never marks stale, partial, or unavailable observations as actionable", () => {
+      const context = buildComplianceCopilotContext({
+        ...corePageInput,
+        records: corePageInput.records.map((record) => ({
+          ...record,
+          data: { ...record.data, actionable: true },
+        })),
+        sourceStatuses: corePageInput.sourceStatuses.map((source) => ({
+          ...source,
+          status: "stale" as const,
+        })),
+      });
+
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false
+        && row.data.mutation_authorized === false,
+      )).toBe(true);
+    });
+
+    it("projects long Compliance identities into stable bounded keys without losing selection", () => {
+      const longIdentity = `peering:${"remote-vnet/".repeat(16)}`;
+      const input = {
+        scope: {},
+        policyName: "Approved landing zone",
+        selectedId: longIdentity,
+        violations: [{
+          id: longIdentity,
+          type: "peering",
+          severity: "high",
+          title: "Unapproved peering",
+          detail: "The peering bypasses the approved hub.",
+          resource: "hub-vnet",
+          application: "Payments",
+          businessService: "Checkout",
+          owner: "Network",
+          affectedTraffic: "Spoke to spoke",
+          vulnerabilityExposure: "Unknown",
+          remediation: "Route through the approved hub.",
+        }],
+        governedDeviations: [],
+        evidence: [],
+        sourceEnvelopes: {},
+      };
+
+      const context = buildComplianceCopilotContext(input);
+      const repeated = buildComplianceCopilotContext(input);
+      const selected = context.selectedEntities[0];
+
+      expect(selected).toMatchObject({
+        type: "domain",
+        namespace: "compliance",
+        kind: "policy_violation",
+      });
+      expect(selected?.type === "domain" ? selected.source_key.length : 0).toBeLessThanOrEqual(256);
+      expect(context.snapshot.filters.selected).toEqual([
+        selected?.type === "domain" ? selected.source_key : "",
+      ]);
+      expect(context.selectedEntities).toEqual(repeated.selectedEntities);
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({ selected: true }),
+          }),
+        ]),
+      );
+    });
+
+    it("retains the latest evidence timestamp when live observation metadata is absent", () => {
+      const context = buildOverviewCopilotContext({
+        scope: {},
+        situations: {
+          data: [],
+          evidence: [
+            {
+              source_engine: "ARG",
+              source_table: "resources",
+              timestamp: "2026-09-07T10:00:00Z",
+              confidence: "high",
+              freshness: "fresh",
+            },
+            {
+              source_engine: "ARG",
+              source_table: "resources",
+              timestamp: "2026-09-07T11:00:00Z",
+              confidence: "high",
+              freshness: "fresh",
+            },
+          ],
+          scope: {},
+        },
+        network: null,
+        vulnerabilities: null,
+        connections: null,
+      });
+
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          {
+            source: "situations",
+            observed_at: "2026-09-07T11:00:00Z",
+            status: "fresh",
+          },
+        ]),
+      );
+    });
+
+    it("derives deterministic domain identities when loaded rows omit their IDs", () => {
+      const input = {
+        ...corePageInput,
+        records: [{
+          identity: " ",
+          namespace: "network",
+          kind: "network_gap",
+          source: "network/gaps",
+          selected: true,
+          data: {
+            title: "Missing route",
+            resource: "hub-vnet",
+          },
+        }],
+        evidence: [],
+      };
+
+      const context = buildNetworkCopilotContext(input);
+      const repeated = buildNetworkCopilotContext(input);
+      const selected = context.selectedEntities[0];
+
+      expect(selected).toMatchObject({
+        type: "domain",
+        namespace: "network",
+        kind: "network_gap",
+      });
+      expect(selected?.type === "domain" ? selected.source_key : "").toMatch(/^anonymous:/);
+      expect(context.selectedEntities).toEqual(repeated.selectedEntities);
+      expect(context.snapshot.evidence).toEqual(repeated.snapshot.evidence);
+    });
+
+    it("marks unavailable page collections incomplete and empty-evidence sources unavailable", () => {
+      const emptyEnvelope = {
+        data: [],
+        evidence: [],
+        scope: {},
+        knowledge_version: "empty",
+        pagination: { offset: 0, limit: 100, total: 0, next_offset: null },
+      };
+      const context = buildOverviewCopilotContext({
+        scope: {},
+        situations: emptyEnvelope,
+        network: null,
+        vulnerabilities: null,
+        connections: null,
+      });
+
+      expect(context.coverage).toEqual({
+        connections: {
+          visible_count: 0,
+          total_count: 0,
+          complete: false,
+          truncated: false,
+        },
+        situations: {
+          visible_count: 0,
+          total_count: 0,
+          complete: true,
+          truncated: false,
+        },
+      });
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "situations", status: "unavailable" }),
+          expect.objectContaining({ source: "connections", status: "unavailable" }),
+        ]),
+      );
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            section: "coverage",
+            status: "unavailable",
+            data: expect.objectContaining({
+              source_key: "connections",
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("trims low-priority evidence deterministically to the snapshot byte limit", () => {
+      const records = Array.from({ length: COPILOT_SNAPSHOT_LIMITS.evidenceRows }, (_, index) => ({
+        identity: `record-${index.toString().padStart(3, "0")}`,
+        namespace: "operations",
+        kind: "situation",
+        source: "situations/visible",
+        priority: index,
+        data: {
+          title: `Situation ${index}`,
+          detail: "x".repeat(900),
+        },
+      }));
+      const input = {
+        ...corePageInput,
+        records,
+        evidence: [],
+      };
+
+      const context = buildOverviewCopilotContext(input);
+      const repeated = buildOverviewCopilotContext(input);
+
+      expect(new TextEncoder().encode(JSON.stringify(context.snapshot)).length)
+        .toBeLessThanOrEqual(COPILOT_SNAPSHOT_LIMITS.snapshotBytes);
+      expect(context.snapshot.evidence.length).toBeLessThan(records.length);
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        repeated.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            section: "coverage",
+          }),
+        ]),
+      );
+    });
   });
 
   it("matches the server bounds exactly", () => {

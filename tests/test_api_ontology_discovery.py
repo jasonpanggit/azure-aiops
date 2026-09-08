@@ -17,10 +17,15 @@ from api.dependencies import ApiContext
 from api.governance_snapshot import GovernanceSnapshot
 from api.rbac import Authorizer, Grant, Principal
 from api.routers.ontology_discovery import OntologyDiscoveryApi
-from api.runtime import build_context
+from api.runtime import _ontology_api_roots, build_context
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    CoordinatorCommandConsumer,
+)
+from ontology_discovery.runtime import CoordinatorIntakeAdapter
 from ontology_discovery.store import OntologyRunStore
 
 NOW = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
@@ -33,6 +38,7 @@ TOKENS = {
     "operator": "ontology-operator-token",
     "approver": "ontology-approver-token",
     "admin": "ontology-admin-token",
+    "maintainer": "ontology-maintainer-token",
 }
 
 
@@ -86,6 +92,7 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
             subscription_id=subscription_id,
             client_id=CLIENT,
             secret_ref="kv://test/credential",
+            metadata={"environment": "validation"},
         )
 
     run_a, _ = run_store.get_or_create_run(
@@ -189,6 +196,10 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
                     grants=(Grant("admin"),),
                     org_roles=("ontology_steward",),
                 ),
+                TOKENS["maintainer"]: Principal(
+                    "maintainer@example.com",
+                    grants=(Grant("ontology_maintainer", scoped_a),),
+                ),
             }
         ),
         authorizer=Authorizer(),
@@ -206,6 +217,7 @@ def api_fixture(tmp_path: Path) -> dict[str, Any]:
         "proposal_b": proposal_b,
         "collision_proposal": collision_proposal,
         "rollback_calls": rollback_calls,
+        "tmp_path": tmp_path,
     }
 
 
@@ -526,9 +538,11 @@ def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
         client_id=CLIENT,
         secret_ref="kv://test/credential",
     )
-    created = context.onboarding.enqueue_ontology_refresh(
+    created = context.ontology_discovery_provider().run_now(
         "conn-a",
-        requested_by="admin@example.com",
+        actor="admin@example.com",
+        idempotency_key="manual-command-degraded-sections",
+        reason="exercise durable command intake",
     )
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -539,8 +553,176 @@ def test_default_runtime_degrades_missing_sections_without_hiding_durable_runs(
     )
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["current_run"]["run_id"] == created["run_id"]
+    assert created["type"] == "manual_run"
+    assert created["status"] == "pending"
+    assert data["current_run"] is None
     assert data["generation"]["status"] == "unavailable"
     assert data["generation"]["rollback_disabled_reason"]
     assert data["evaluation"]["status"] == "missing"
     assert data["evaluation"]["release_eligible"] is False
+
+
+def test_production_api_requires_exact_distinct_onelake_capability_roots() -> None:
+    roots = {
+        "AIOPS_RUNTIME_MODE": "production",
+        "AIOPS_CONNECTION_HOME": (
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/connections"
+        ),
+        "AIOPS_ONTOLOGY_STATE_HOME": (
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/state"
+        ),
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME": (
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/publication"
+        ),
+        "AIOPS_ONTOLOGY_COMMAND_HOME": (
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/commands"
+        ),
+    }
+
+    assert _ontology_api_roots(roots) == {
+        "connection": roots["AIOPS_CONNECTION_HOME"],
+        "state": roots["AIOPS_ONTOLOGY_STATE_HOME"],
+        "publication": roots["AIOPS_ONTOLOGY_PUBLICATION_HOME"],
+        "command": roots["AIOPS_ONTOLOGY_COMMAND_HOME"],
+    }
+    for missing in tuple(roots)[1:]:
+        invalid = dict(roots)
+        invalid.pop(missing)
+        with pytest.raises(ValueError, match=missing):
+            _ontology_api_roots(invalid)
+    aliased = dict(roots)
+    aliased["AIOPS_ONTOLOGY_COMMAND_HOME"] = roots["AIOPS_ONTOLOGY_STATE_HOME"]
+    with pytest.raises(ValueError, match="pairwise distinct"):
+        _ontology_api_roots(aliased)
+
+
+def test_default_runtime_enqueues_manual_and_rollback_commands_without_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "runtime"
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                TOKENS["admin"]: {
+                    "subject": "admin@example.com",
+                    "grants": [{"role": "admin", "scope": {}}],
+                }
+            }
+        ),
+    )
+    context = build_context()
+    context.onboarding.add(
+        connection_id="conn-a",
+        name="Connection A",
+        tenant_id=TENANT,
+        subscription_id=SUB_A,
+        client_id=CLIENT,
+        secret_ref="kv://test/credential",
+    )
+    provider = context.ontology_discovery_provider()
+    assert provider.command_intake is not None
+    assert not hasattr(provider, "publisher_identity")
+    assert not hasattr(provider, "stage_generation")
+    assert not hasattr(provider, "conditional_promote")
+    assert not hasattr(provider, "allocate_fence")
+
+    manual = provider.run_now(
+        "conn-a",
+        actor="admin@example.com",
+        idempotency_key="manual-command-1",
+        reason="operator requested",
+    )
+    duplicate = provider.run_now(
+        "conn-a",
+        actor="admin@example.com",
+        idempotency_key="manual-command-1",
+        reason="operator requested",
+    )
+    assert manual == duplicate
+    assert manual["type"] == "manual_run"
+    assert manual["status"] == "pending"
+
+    provider._generation_resolver_factory = lambda _connection_id: _GenerationReader()
+    rollback = provider.rollback(
+        "conn-a",
+        "generation-1",
+        expected_etag="etag-2",
+        actor="admin@example.com",
+        reason="restore prior generation",
+        idempotency_key="rollback-command-1",
+    )
+    assert rollback is not None
+    assert rollback["type"] == "rollback"
+    assert rollback["status"] == "pending"
+
+    rebuilt = build_context().ontology_discovery_provider()
+    assert rebuilt.command(manual["command_id"]) == manual
+    assert rebuilt.command(rollback["command_id"]) == rollback
+
+
+def test_maintenance_command_requires_distinct_authority_and_coordinator_cas(
+    api_fixture: dict[str, Any],
+) -> None:
+    provider = api_fixture["provider"]
+    command_root = api_fixture["tmp_path"] / "maintenance-commands"
+    provider.command_intake = CommandIntakeService(str(command_root))
+    client = api_fixture["client"]
+    payload = {
+        "expected_revision": 0,
+        "reason": "force one full validation reconciliation",
+        "idempotency_key": "maintenance-command-1",
+        "cadence_seconds": 3600,
+    }
+    path = (
+        "/api/v1/ontology-discovery/connections/conn-a/"
+        "maintenance/full-reconciliation-due"
+    )
+
+    assert client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("operator"),
+        json=payload,
+    ).status_code == 403
+    response = client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("maintainer"),
+        json=payload,
+    )
+    assert response.status_code == 200, response.text
+    command = response.json()["data"]
+    assert command["type"] == "mark_full_reconciliation_due"
+    assert command["status"] == "pending"
+    duplicate = client.post(
+        path,
+        params={"subscription": SUB_A},
+        headers=_headers("maintainer"),
+        json=payload,
+    )
+    assert duplicate.json()["data"] == command
+    assert api_fixture["run_store"].get_reconciliation_control("conn-a") is None
+
+    consumer = CoordinatorCommandConsumer(str(command_root))
+    adapter = CoordinatorIntakeAdapter(
+        registry=api_fixture["context"].onboarding.registry,
+        commands=consumer,
+        run_store=api_fixture["run_store"],
+        source_generation=lambda _connection: "source-next",
+        environment="validation",
+        now=lambda: NOW,
+    )
+    assert adapter.process_one() == {
+        "accepted": 1,
+        "denied": 0,
+        "contended": 0,
+    }
+    control = api_fixture["run_store"].get_reconciliation_control("conn-a")
+    assert control is not None
+    assert control["force_full"] is True
+    assert control["revision"] == 1
