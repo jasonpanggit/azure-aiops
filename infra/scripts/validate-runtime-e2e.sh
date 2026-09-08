@@ -32,6 +32,26 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 # ---------------------------------------------------------------------------
+# Staged rollout context (Plan 11-12 Task 2).
+#
+# The canonical orchestrator is introduced compatibility -> shadow -> canary ->
+# default. This gate runs in the fixed order create -> validate -> switch ->
+# observe -> promote: specialist parity (below) validates first, the deployed
+# runtime is observed, and only then is a promotion decision printed. A canary
+# or default promotion is never printed unless live parity passes; any parity
+# block or runtime failure holds the current stage and the operator rolls back
+# per docs/runbooks/copilot-orchestration-rollout.md.
+# ---------------------------------------------------------------------------
+COPILOT_ROLLOUT_MODE="${COPILOT_ROLLOUT_MODE:-compatibility}"
+case "$COPILOT_ROLLOUT_MODE" in
+  compatibility | shadow | canary | default) ;;
+  *)
+    echo "COPILOT_ROLLOUT_MODE must be compatibility, shadow, canary, or default" >&2
+    exit 2
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Specialist parity gate -- runs before anything that could be read as a
 # promotion signal.
 # ---------------------------------------------------------------------------
@@ -89,7 +109,7 @@ curl -fsS -H "$auth_header" \
   "$API_URL/api/v1/remediation-plans" >"$tmp_dir/remediation.json"
 curl -fsS "$WEB_URL" >/dev/null
 
-python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" <<'PY'
+python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" "$COPILOT_ROLLOUT_MODE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -98,6 +118,7 @@ root = Path(sys.argv[1])
 hub = sys.argv[2]
 spoke = sys.argv[3]
 parity_status = sys.argv[4]
+rollout_mode = sys.argv[5]
 
 activation = json.loads((root / "activation.json").read_text())
 ready = json.loads((root / "ready.json").read_text())
@@ -149,14 +170,19 @@ parity = json.loads((root / "parity-offline.json").read_text())
 assert parity["status"] == "pass", parity["failures"]
 
 # Live parity is a promotion prerequisite, not an assumption: a blocked gate
-# holds promotion with an explicit reason instead of reporting a pass.
+# holds promotion with an explicit reason instead of reporting a pass. A canary
+# or default stage additionally requires live parity to pass before promotion;
+# earlier stages (compatibility, shadow) never promote.
 promotion = "promote" if parity_status == "pass" else "hold"
+if rollout_mode in {"compatibility", "shadow"}:
+    promotion = "hold"
 
 print(
     json.dumps(
         {
             "status": "passed",
             "promotion": promotion,
+            "rollout_mode": rollout_mode,
             "parity_status": parity_status,
             "specialist_count": parity["specialist_count"],
             "ontology_version": ready["ontology_version"],
