@@ -7,6 +7,7 @@ import pytest
 from scripts.collect_ontology_evidence import (
     EvidenceCollectionError,
     _collect_api,
+    _list_fixed_paths,
     build_closed_record,
     decode_identity_claims,
     sanitize_closed_record,
@@ -82,6 +83,29 @@ def test_api_observation_uses_managed_identity_token(
         "json_body": None,
     }
     assert result["count"] == 1
+
+
+def test_missing_optional_onelake_prefix_is_an_empty_observation() -> None:
+    class MissingPath(Exception):
+        status_code = 404
+
+    class Client:
+        def get_paths(self, **_: object) -> object:
+            raise MissingPath
+
+    assert _list_fixed_paths(Client(), path="missing", root="state") == []
+
+
+def test_onelake_authorization_failure_remains_blocking() -> None:
+    class Forbidden(Exception):
+        status_code = 403
+
+    class Client:
+        def get_paths(self, **_: object) -> object:
+            raise Forbidden
+
+    with pytest.raises(EvidenceCollectionError, match="state root"):
+        _list_fixed_paths(Client(), path="forbidden", root="state")
 
 
 def test_closed_record_rejects_raw_sensitive_values_and_write_capabilities() -> None:

@@ -519,6 +519,22 @@ def _read_json_document(
     return payload
 
 
+def _list_fixed_paths(
+    client: FileSystemClient,
+    *,
+    path: str,
+    root: str,
+) -> list[object]:
+    try:
+        return list(client.get_paths(path=path, recursive=True))
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404:
+            return []
+        raise EvidenceCollectionError(
+            f"OneLake read failed for fixed {root} root"
+        ) from exc
+
+
 def _collect_onelake(
     env: Mapping[str, str],
     credential: ManagedIdentityCredential,
@@ -537,12 +553,11 @@ def _collect_onelake(
         clients[root] = client
         for relative_path in ROOT_PATHS[root]:
             full_path = f"{lakehouse}/{relative_path}"
-            try:
-                rows = list(client.get_paths(path=full_path, recursive=True))
-            except Exception as exc:
-                raise EvidenceCollectionError(
-                    f"OneLake read failed for fixed {root} root"
-                ) from exc
+            rows = _list_fixed_paths(
+                client,
+                path=full_path,
+                root=root,
+            )
             hashes.append(
                 _hash(
                     {
