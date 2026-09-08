@@ -33,6 +33,7 @@ export type TopologyDetailLevel = "summary" | "full";
 // Plan 12-02 measured the largest interactive fCoSE canvas at 1,500 nodes
 // (224.298 ms against a 250 ms ceiling). Never raise this above the contract cap.
 export const FULL_DETAIL_GUARD_NODES = 1_500;
+export const FULL_DETAIL_GUARD_BUILD_MS = 3_000;
 export const BADGE_FETCH_PAGE_SIZE = 500;
 export const BADGE_FETCH_MAX_PAGES = 4;
 
@@ -214,7 +215,9 @@ interface TopologyWorkspaceProps {
   topology: NetworkTopology | null;
   summary?: NetworkSummary | null;
   detailLevel?: TopologyDetailLevel;
+  renderedDetailLevel?: TopologyDetailLevel;
   onDetailLevelChange?: (detail: TopologyDetailLevel) => void;
+  onCancelDetailLoad?: () => void;
   loading: boolean;
   error: Error | null;
   gaps?: NetworkGap[];
@@ -237,7 +240,9 @@ export function TopologyWorkspace({
   topology,
   summary = null,
   detailLevel = "summary",
+  renderedDetailLevel = detailLevel,
   onDetailLevelChange,
+  onCancelDetailLoad,
   loading,
   error,
   gaps = EMPTY_GAPS,
@@ -257,9 +262,12 @@ export function TopologyWorkspace({
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState(false);
   const [showServices, setShowServices] = useState(true);
+  const [showUnattachedPrivateLinkCandidates, setShowUnattachedPrivateLinkCandidates] =
+    useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [fullDetailPending, setFullDetailPending] = useState(false);
+  const [detailLoadElapsedSeconds, setDetailLoadElapsedSeconds] = useState(0);
   const [selection, setSelection] = useState<TopologySelection>(EMPTY_SELECTION);
   const [selectionAnnouncement, setSelectionAnnouncement] = useState("");
   const selectionContextRef = useRef("");
@@ -337,8 +345,13 @@ export function TopologyWorkspace({
     [badgeGaps, badgeRuleFindings]
   );
   const renderedGraph = useMemo(
-    () => (topology ? buildTopologyGraph(topology) : null),
-    [topology],
+    () =>
+      topology
+        ? buildTopologyGraph(topology, {
+            showUnattachedPrivateLinkCandidates,
+          })
+        : null,
+    [showUnattachedPrivateLinkCandidates, topology],
   );
   const visibleNodeIds = useMemo(
     () =>
@@ -356,6 +369,9 @@ export function TopologyWorkspace({
     query.sort();
     return query.toString();
   }, [scope]);
+  useEffect(() => {
+    setFullDetailPending(false);
+  }, [scopeKey, summary]);
   const normalizedSearch = search.trim().toLowerCase();
   const matchingNodeIds = useMemo(
     () =>
@@ -389,7 +405,7 @@ export function TopologyWorkspace({
   }, []);
 
   useEffect(() => {
-    const contextKey = `${scopeKey}::${detailLevel}`;
+    const contextKey = `${scopeKey}::${renderedDetailLevel}`;
     if (
       selectionContextRef.current &&
       selectionContextRef.current !== contextKey
@@ -399,7 +415,7 @@ export function TopologyWorkspace({
       setSelectionAnnouncement("");
     }
     selectionContextRef.current = contextKey;
-  }, [clearSelection, detailLevel, scopeKey]);
+  }, [clearSelection, renderedDetailLevel, scopeKey]);
 
   useEffect(() => {
     if (topologyRef.current !== topology) {
@@ -465,13 +481,18 @@ export function TopologyWorkspace({
   ]);
 
   const projectedFullNodeCount = summary?.projected_full_node_count;
+  const topologyBuildDurationMs = summary?.topology_build_duration_ms;
+  const slowTopologyBuild =
+    topologyBuildDurationMs !== undefined &&
+    topologyBuildDurationMs > FULL_DETAIL_GUARD_BUILD_MS;
 
   const chooseDetailLevel = useCallback(
     (nextDetail: TopologyDetailLevel) => {
       if (
         nextDetail === "full" &&
         (projectedFullNodeCount === undefined ||
-          projectedFullNodeCount > FULL_DETAIL_GUARD_NODES)
+          projectedFullNodeCount > FULL_DETAIL_GUARD_NODES ||
+          slowTopologyBuild)
       ) {
         setFullDetailPending(true);
         return;
@@ -479,8 +500,22 @@ export function TopologyWorkspace({
       setFullDetailPending(false);
       onDetailLevelChange?.(nextDetail);
     },
-    [onDetailLevelChange, projectedFullNodeCount],
+    [onDetailLevelChange, projectedFullNodeCount, slowTopologyBuild],
   );
+
+  useEffect(() => {
+    if (!loading || !topology || detailLevel !== "full") {
+      setDetailLoadElapsedSeconds(0);
+      return undefined;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setDetailLoadElapsedSeconds(
+        Math.max(1, Math.floor((Date.now() - started) / 1_000)),
+      );
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [detailLevel, loading, topology]);
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -561,7 +596,7 @@ export function TopologyWorkspace({
         : counts?.relationships ?? null);
     return {
       scope,
-      detailLevel,
+      detailLevel: renderedDetailLevel,
       coverage: {
         total: topology?.coverage?.total ?? counts?.total ?? null,
         returned:
@@ -599,11 +634,11 @@ export function TopologyWorkspace({
     badgeCoverage,
     badgeLoading,
     counts,
-    detailLevel,
     evidence,
     filterMode,
     graphFreshness,
     knowledgeVersion,
+    renderedDetailLevel,
     scope,
     search,
     showFindings,
@@ -621,7 +656,7 @@ export function TopologyWorkspace({
       />
     );
   }
-  if (error) {
+  if (error && !topology) {
     return <StatePanel title="Topology is unavailable" message={error.message} tone="error" />;
   }
   if (!topology || !renderedGraph || renderedGraph.nodes.length === 0) {
@@ -689,6 +724,16 @@ export function TopologyWorkspace({
           />
           <span>Shared services</span>
         </label>
+        <label className="topology-toggle">
+          <input
+            type="checkbox"
+            checked={showUnattachedPrivateLinkCandidates}
+            onChange={(event) =>
+              setShowUnattachedPrivateLinkCandidates(event.target.checked)
+            }
+          />
+          <span>Unattached private link candidates</span>
+        </label>
         <label
           className="topology-toggle"
           title="Visual only — the details drawer always lists open findings."
@@ -749,12 +794,23 @@ export function TopologyWorkspace({
         </button>
       </div>
 
+      {error && (
+        <div className="callout callout-critical topology-coverage" role="alert">
+          <strong>Topology refresh failed.</strong>
+          <span>{error.message} The retained topology remains available.</span>
+        </div>
+      )}
+
       {fullDetailPending && (
         <div className="callout callout-warning topology-coverage" role="status">
           <strong>
             {projectedFullNodeCount === undefined
               ? "Full-detail size is unavailable and may make the canvas slow to interact with."
-              : `Full detail renders about ${projectedFullNodeCount} nodes and may make the canvas slow to interact with.`}
+              : projectedFullNodeCount > FULL_DETAIL_GUARD_NODES
+                ? `Full detail renders about ${projectedFullNodeCount} nodes and may make the canvas slow to interact with.`
+                : topologyBuildDurationMs !== undefined
+                  ? `The last topology build took ${(topologyBuildDurationMs / 1_000).toFixed(1)} seconds; full detail may take a similar amount of time.`
+                  : "Full-detail build cost is unavailable and may make the canvas slow to interact with."}
           </strong>
           <button
             type="button"
@@ -768,6 +824,31 @@ export function TopologyWorkspace({
           </button>
         </div>
       )}
+
+      {loading &&
+        topology &&
+        detailLevel === "full" &&
+        detailLoadElapsedSeconds >= 3 && (
+          <div
+            className="callout callout-info topology-coverage"
+            role="status"
+          >
+            <strong>
+              Loading full detail — {detailLoadElapsedSeconds} seconds elapsed.
+            </strong>
+            <span>The populated topology remains available while this loads.</span>
+            {onCancelDetailLoad && (
+              <button
+                type="button"
+                className="button button-secondary"
+                aria-label="Cancel full-detail load"
+                onClick={onCancelDetailLoad}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        )}
 
       {badgeCoverage.truncated && (
         <div className="callout callout-warning topology-coverage" role="status">
@@ -797,6 +878,9 @@ export function TopologyWorkspace({
           onReady={handleGraphReady}
           exportContext={exportContext}
           findingSeverityByResource={showFindings ? findingSeverityByResource : undefined}
+          showUnattachedPrivateLinkCandidates={
+            showUnattachedPrivateLinkCandidates
+          }
         />
         <TopologyDetailDrawer
           node={selection.node}
@@ -822,7 +906,7 @@ export function TopologyWorkspace({
                 }
               : undefined
           }
-          detailLevel={detailLevel}
+          detailLevel={renderedDetailLevel}
           visibleNodeIds={visibleNodeIds}
           scope={scope ?? {}}
         />
@@ -837,8 +921,17 @@ export function TopologyWorkspace({
       {counts && (
         <div className="topology-footnote">
           <span>
-            Rendering {counts.rendered} of {counts.total} nodes at {detailLevel} detail.
+            Rendering {counts.rendered} of {counts.total} nodes at {renderedDetailLevel} detail.
           </span>
+          {renderedGraph.hiddenUnattachedPrivateLinkCount > 0 && (
+            <span>
+              {renderedGraph.hiddenUnattachedPrivateLinkCount} unattached private
+              link candidate
+              {renderedGraph.hiddenUnattachedPrivateLinkCount === 1 ? "" : "s"}{" "}
+              hidden; enable the filter to show{" "}
+              {renderedGraph.hiddenUnattachedPrivateLinkCount === 1 ? "it" : "them"}.
+            </span>
+          )}
           <span>{filterHiddenCount} hidden by filter</span>
           <span>{counts.hubs} hubs</span>
           <span>{counts.spokes} spokes</span>

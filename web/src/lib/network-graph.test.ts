@@ -486,6 +486,61 @@ describe("buildTopologyGraph", () => {
     });
   });
 
+  it("hides only unattached private-link candidates when the canvas requests the focused projection", () => {
+    const attachedCandidate = `${AI_SERVICES}-attached`;
+    const unattachedCandidate = `${AI_SERVICES}-unattached`;
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: HUB, entity_type: "VNet", role: "hub" }),
+          resource({
+            id: attachedCandidate,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+          resource({
+            id: unattachedCandidate,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+        ],
+        relationships: [
+          {
+            id: `private:${HUB}::${attachedCandidate}`,
+            source: HUB,
+            target: attachedCandidate,
+            relationship_type: "private_endpoint_targets",
+            label: "targets",
+            details: {},
+          },
+        ],
+      }),
+      { showUnattachedPrivateLinkCandidates: false },
+    );
+
+    expect(graph.nodes.map((node) => node.id)).toContain(attachedCandidate);
+    expect(graph.nodes.map((node) => node.id)).not.toContain(unattachedCandidate);
+    expect(graph.hiddenUnattachedPrivateLinkCount).toBe(1);
+  });
+
+  it("keeps a private-link-only estate visible instead of filtering every node", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({
+            id: AI_SERVICES,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+        ],
+      }),
+      { showUnattachedPrivateLinkCandidates: false },
+    );
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.hiddenUnattachedPrivateLinkCount).toBe(0);
+  });
+
   it("keeps an icon-less Fabric node addressable for finding badges", () => {
     const graph = buildTopologyGraph(
       topologyOf({ resources: [resource({ id: FABRIC, entity_type: "FabricCapacity" })] })

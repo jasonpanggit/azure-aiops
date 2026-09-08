@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -37,6 +38,7 @@ const graphProbe = vi.hoisted(() => ({
       string,
       { severity: string; count: number; title?: string }
     >;
+    showUnattachedPrivateLinkCandidates?: boolean;
     exportContext?: TopologyExportContext;
   },
 }));
@@ -198,6 +200,22 @@ describe("TopologyWorkspace detail level", () => {
     expect(onDetailLevelChange).toHaveBeenCalledWith("full");
   });
 
+  it("also guards full detail when the last server topology build exceeded three seconds", () => {
+    const { onDetailLevelChange } = renderWorkspace({
+      summary: {
+        ...summaryWithProjectedNodes(100),
+        topology_build_duration_ms: 3_501,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Full detail" }));
+
+    expect(onDetailLevelChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The last topology build took 3.5 seconds",
+    );
+  });
+
   it("uses the measured 1,500-node ceiling and never a larger literal", () => {
     expect(FULL_DETAIL_GUARD_NODES).toBe(1_500);
     expect(FULL_DETAIL_GUARD_NODES).toBeLessThanOrEqual(1_500);
@@ -213,6 +231,111 @@ describe("TopologyWorkspace detail level", () => {
     expect(
       screen.getByRole("region", { name: "Network topology" }),
     ).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("keeps retained summary topology visible when the full-detail request fails", () => {
+    renderWorkspace({
+      detailLevel: "full",
+      renderedDetailLevel: "summary",
+      error: new Error("Full-detail request failed"),
+    });
+
+    expect(screen.getByTestId("topology-graph")).toBeInTheDocument();
+    expect(screen.getByText("Rendering 2 of 2 nodes at summary detail.")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Full-detail request failed",
+    );
+    expect(
+      screen.queryByText("Topology is unavailable"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears stale full-detail confirmation when the summary context changes without rendering NaN", () => {
+    const { rerender } = renderWorkspace({
+      scope: { subscription: ["sub-a"] },
+      summary: {
+        ...summaryWithProjectedNodes(100),
+        topology_build_duration_ms: 3_501,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Full detail" }));
+    expect(
+      screen.getByRole("button", { name: "Load full detail" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <TopologyWorkspace
+        topology={buildTopologyEnvelope().data.topology}
+        summary={summaryWithProjectedNodes(100)}
+        detailLevel="summary"
+        onDetailLevelChange={vi.fn()}
+        loading={false}
+        error={null}
+        scope={{ subscription: ["sub-a"] }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Load full detail" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
+  it("clears stale full-detail confirmation when the operating scope changes", () => {
+    const slowSummary = {
+      ...summaryWithProjectedNodes(100),
+      topology_build_duration_ms: 3_501,
+    };
+    const { rerender } = renderWorkspace({
+      scope: { subscription: ["sub-a"] },
+      summary: slowSummary,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Full detail" }));
+    expect(
+      screen.getByRole("button", { name: "Load full detail" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <TopologyWorkspace
+        topology={buildTopologyEnvelope().data.topology}
+        summary={slowSummary}
+        detailLevel="summary"
+        onDetailLevelChange={vi.fn()}
+        loading={false}
+        error={null}
+        scope={{ subscription: ["sub-b"] }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Load full detail" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows elapsed progress and an explicit cancel action for a long full-detail request", () => {
+    vi.useFakeTimers();
+    const onCancelDetailLoad = vi.fn();
+    try {
+      renderWorkspace({
+        detailLevel: "full",
+        loading: true,
+        onCancelDetailLoad,
+      });
+
+      act(() => vi.advanceTimersByTime(3_100));
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Loading full detail — 3 seconds elapsed",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Cancel full-detail load" }),
+      );
+      expect(onCancelDetailLoad).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders a private-link-only topology instead of the empty state", () => {
@@ -235,6 +358,33 @@ describe("TopologyWorkspace detail level", () => {
     expect(
       screen.queryByText("No observed network topology"),
     ).not.toBeInTheDocument();
+  });
+
+  it("defaults unattached private-link candidates off with a count disclosure and opt-in toggle", () => {
+    const topology = buildTopologyEnvelope(3, 3).data.topology;
+    topology.resources![2] = {
+      ...topology.resources![2],
+      entity_type: "AIFoundryAccount",
+      role: "private_link",
+      details: { private_link_candidate: true },
+    };
+
+    renderWorkspace({ topology });
+
+    const toggle = screen.getByRole("checkbox", {
+      name: "Unattached private link candidates",
+    });
+    expect(toggle).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "1 unattached private link candidate hidden; enable the filter to show it.",
+      ),
+    ).toBeInTheDocument();
+    expect(graphProbe.props?.showUnattachedPrivateLinkCandidates).toBe(false);
+
+    fireEvent.click(toggle);
+
+    expect(graphProbe.props?.showUnattachedPrivateLinkCandidates).toBe(true);
   });
 
   it("labels the dashed workload treatment as Private link candidate", () => {

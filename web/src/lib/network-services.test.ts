@@ -53,6 +53,24 @@ describe("networkApi", () => {
     expect(url.searchParams.getAll("environment")).toEqual(["prod"]);
   });
 
+  it("forwards an AbortSignal to the topology request", async () => {
+    const spy = captureFetch({ topology: {}, summary: {} });
+    const controller = new AbortController();
+
+    await networkApi.topology(
+      { subscription: ["sub-a"] },
+      { detail: "full" },
+      { signal: controller.signal },
+    );
+
+    const apiCall = spy.mock.calls.find(([input]) =>
+      String(input).includes("/api/v1/"),
+    );
+    expect(apiCall?.[1]).toEqual(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it("sends source, destination and port for a traffic-flow query", async () => {
     const spy = captureFetch({ verdict: "denied" });
     await networkApi.trafficFlow({ source: "10.2.1.10", destination: "10.1.1.10", port: 1433 });
@@ -69,12 +87,13 @@ describe("networkApi", () => {
     expect(calledUrl(spy).searchParams.has("port")).toBe(false);
   });
 
-  it("encodes a resource ID containing slashes into the hub-dependents path", async () => {
+  it("uses a routable hub path without encoding a leading empty segment", async () => {
     const spy = captureFetch({ dependent_count: 0 });
     await networkApi.hubDependents("/subscriptions/s/providers/microsoft.network/virtualnetworks/v");
-    // Encoded, not interpolated raw: otherwise the ARM ID would be read as
-    // extra path segments and hit the wrong route.
-    expect(calledPath(spy)).toContain("%2Fsubscriptions%2Fs%2F");
+    expect(calledPath(spy)).toContain(
+      "/network/topology/hubs/subscriptions%2Fs%2Fproviders%2F",
+    );
+    expect(calledPath(spy)).not.toContain("/hubs/%2Fsubscriptions");
   });
 
   it("applies severity and category filters to gaps", async () => {

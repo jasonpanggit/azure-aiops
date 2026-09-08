@@ -1173,12 +1173,13 @@ export const networkApi = {
   topology: (
     scope: ScopeSelection = {},
     options: { detail: "summary" | "full" } = { detail: "full" },
+    requestOptions: { signal?: AbortSignal } = {},
   ) => {
     const query = scopeToSearchParams(scope);
     query.set("detail", options.detail);
     return apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>(
       "/network/topology",
-      { query },
+      { query, signal: requestOptions.signal },
     );
   },
 
@@ -1188,7 +1189,7 @@ export const networkApi = {
   /** "What depends on the hub?" */
   hubDependents: (vnetId: string, scope: ScopeSelection = {}) =>
     apiRequest<HubDependents>(
-      `/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`,
+      `/network/topology/hubs/${encodeURIComponent(vnetId.replace(/^\/+/, ""))}/dependents`,
       { query: scopeToSearchParams(scope) },
     ),
 

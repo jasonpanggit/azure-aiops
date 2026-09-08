@@ -92,6 +92,22 @@ describe("TopologyDetailDrawer findings states", () => {
     );
   });
 
+  describe("TopologyDetailDrawer hub dependency states", () => {
+    it("renders a dependency failure as an assertive critical callout", async () => {
+      vi.spyOn(networkApi, "hubDependents").mockRejectedValue(
+        new Error("Hub dependency lookup failed"),
+      );
+
+      renderDrawer(node({ kind: "hub", entityType: "VNet" }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveClass("callout", "callout-critical");
+      expect(alert).toHaveTextContent(
+        "Dependencies are unavailable: Hub dependency lookup failed",
+      );
+    });
+  });
+
   it("renders the findings-present count and grouped records", () => {
     const gap = { ...buildGapsEnvelope(1).data.gaps[0], resource_id: NODE_ID };
     const rule = {

@@ -1,18 +1,18 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-08T00:47:00+08:00
-status: failed
-verdict: FAIL — deployed runtime does not meet the contract
+reviewed: 2026-09-08T10:27:00+08:00
+status: source-ready-complete-post-deploy-gate-pending
+verdict: SOURCE READY — local acceptance pass; authenticated runtime suite retained as a post-deploy gate
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
 repository_head_at_verification: 702a5eba894238feb3d5bbc43d44d5ef6e5617e2
 screenshots: 13 captured (Playwright, authenticated) + 1 API capture
 evidence_dir: session artifact `network-live-ui-audit-20260908/`
-score: 13/24
-weighted_score: 46.25/100
-blockers: 4
-warnings: 5
+original_score: 13/24
+original_weighted_score: 46.25/100
+open_source_findings: 0
+live_recheck_findings: 9
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -23,6 +23,112 @@ supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 **Baseline:** approved `12-UI-SPEC.md` design contract
 
 **Verdict:** **FAIL — 13/24 (weighted 46.25/100). 4 blockers, 5 warnings.**
+
+## Remediation Update — 2026-09-08
+
+**Current verdict:** **SOURCE READY — local acceptance pass; authenticated
+runtime suite retained as a post-deploy gate.**
+
+All nine findings below are fixed in the working tree and covered by focused
+regressions. The implementation has not been pushed or deployed, so the
+historical deployed score above remains the last valid live score. Deployment
+is outside this source-debug session's terminal criterion: local source
+readiness is complete, while the authenticated suite below remains explicitly
+pending for the normal post-deploy process. Its pending state is neither a
+claim that the live application is fixed nor a request to deploy from this
+session.
+
+### Pre-deployment review closure — 2026-09-08
+
+A second source review found five release-readiness gaps. All five now have
+explicit dispositions:
+
+1. A failed full-detail refresh no longer replaces retained topology:
+   `TopologyWorkspace` uses the replacement error panel only for
+   `error && !topology`; retained data renders with an assertive, non-destructive
+   refresh alert. A failing-first regression pins the summary-labelled canvas.
+2. Full-detail confirmation is invalidated when either operating scope or
+   summary observation changes. Warning copy now checks the duration explicitly;
+   there is no `topologyBuildDurationMs!`/`NaN` path. Summary-change and
+   scope-change regressions both ran RED→GREEN.
+3. `.gitignore` now covers `infra/terraform/*.tfstate*`, including timestamped
+   backups. Verification used a hypothetical `git check-ignore --no-index`
+   pathname; no existing Terraform state or backup was inspected, printed,
+   hashed, moved, or deleted.
+4. The resize/wheel source-string tests were removed. Mounted-component tests
+   now drive a controlled `ResizeObserver` with fake timers and verify:
+   sub-threshold resize-only, supra-threshold resize+fit, teardown timer cleanup,
+   and omission of a custom Cytoscape wheel option.
+5. `network-topology-deployed.spec.ts` now exposes ten independent,
+   finding-labelled tests. Missing hub/candidate/gap live data produces an
+   explicit reasoned skip; p95 latency, retained/progress behavior, painted
+   canvas, >55% canvas use, mobile containment/all-five-tab interaction, and
+   console cleanliness remain unconditional. The slow-request UI checks delay
+   only pass-through live traffic; they do not replace API responses.
+
+| # | Original finding | Source disposition | Acceptance evidence |
+|---:|---|---|---|
+| 1 | Detail switch destroys populated canvas | **Fixed locally.** `useApi` can retain data for explicitly soft dependency changes while still clearing on scope changes. The topology page binds the footnote/export detail to the dependency tuple that produced the retained payload. A failed refresh also retains the canvas and reports an in-workspace alert; only `error && !topology` uses the replacement panel. | RED→GREEN: `useApi.test.ts` soft/hard dependency test; `page.test.tsx` retained summary test; `TopologyWorkspace.test.tsx` retained-error test; Playwright retains the summary canvas and `aria-busy` during delayed full detail. |
+| 2 | 146-second full-detail request, no useful guard/progress/cancel | **Fixed locally at the repeat-amplification root.** The hybrid cache TTL now starts after ARG acquisition, not before it, and covers a five-minute operator workflow instead of expiring between Summary, Full detail, and drawer interactions. The cached provider duration is exposed as `summary.topology_build_duration_ms`; requests above 3 seconds trigger confirmation, and an in-flight full-detail request gets elapsed status plus browser abort. Pending confirmation resets on summary/scope replacement and every warning branch handles absent duration without `NaN`. | RED→GREEN: completion-time and five-minute cache-boundary test, API duration test, latency-aware workspace guard, summary/scope context regressions, `useApi` abort test, and delayed-response Playwright test. Live cold/warm p95 remains required after deployment. |
+| 3 | Hub drill-down false 404 | **Fixed locally.** The browser strips the leading slash before encoding the path; the service restores canonical ARM form; the router checks actual scoped snapshot membership instead of result truthiness; drawer failures are assertive critical callouts. | RED→GREEN: client URL test, two HTTP route tests (path-safe id and existing isolated VNet), and drawer error-state test. |
+| 4 | Blank graph after resize | **Fixed locally.** `ResizeObserver` now debounces for 150ms, always resizes Cytoscape, and reapplies the reduced-motion-aware fit after a significant viewport delta. | Mounted behavioral tests cover 47px resize-only, 49px resize+fit, and teardown timer cleanup; real Chromium covers 1440→390 resize with non-transparent canvas pixels after the debounce. |
+| 5 | 68 unattached private-link candidates dominate | **Fixed locally.** Only unattached candidates are hidden by default when primary topology exists; attached candidates remain. The exact hidden count and an opt-in checkbox preserve honesty and access. Private-link-only estates remain visible. | Pure graph projection boundaries, workspace toggle/disclosure tests, and real-Chromium default-hidden/opt-in acceptance. |
+| 6 | Connected graph uses 37–41% of canvas | **Fixed locally as the composition consequence of #5.** Layout quality is based on connected nodes rather than hidden singleton context, and the default fit no longer includes the orphan grid. | Unit layout regression and real-Chromium ink-bound measurement requiring the graph to occupy >55% of canvas width. Live screenshot recheck remains required. |
+| 7 | Five tabs overflow at 390px | **Fixed locally.** `.workspace-tabs` is a width-bounded horizontal scroll container; buttons do not shrink and scroll-snap within the tablist instead of widening the page. | CSS contract test plus real-Chromium 390px bounding-box and Design-policy interaction check. |
+| 8 | 77 gap cards render as one 15,763px page | **Fixed locally with an explicit C-1 amendment.** Both card lists now request 20 rows initially and reset to 20 on scope changes; badge collection remains independently paged at 500. | Updated `12-UI-SPEC.md`, page request/range tests, and real-Chromium assertion of 20 cards plus `Showing 1–20 of 77 inspection gaps`. |
+| 9 | Cytoscape wheel-sensitivity warning | **Fixed locally.** The custom `wheelSensitivity` override was removed, restoring Cytoscape's platform default. | Mounted constructor-options regression proves no custom wheel option is passed; real-Chromium console-warning assertion remains unconditional. |
+
+### Self-verified gates
+
+| Check | Result |
+|---|---|
+| Focused backend topology/API/scale/contracts | **PASS — 152 tests** |
+| Focused web topology suite | **PASS — 8 files, 194 tests** |
+| Full backend pytest suite | **PASS** |
+| Full web Vitest suite | **PASS — 57 files, 583 tests** |
+| TypeScript `npx --no-install tsc --noEmit` | **PASS — zero diagnostics** |
+| Next.js ESLint `npm run lint` | **PASS — zero warnings/errors** |
+| Next.js production build | **PASS** |
+| Full local Playwright suite | **PASS — 10 passed, 10 independently named deployment-gated tests skipped** |
+| Ruff on changed Python paths | **PASS** |
+| Repository-wide Ruff | **PRE-EXISTING RED — 27 findings under unrelated `infra/scripts/` and `scripts/`; no Phase 12 changed path is implicated** |
+| Revert-and-reconfirm | **PASS — 5 backend/CSS and 15 web behavior assertions failed with only production fixes stashed; the same focused suites passed after reapply** |
+| Mutation runner | **SKIPPED — no Stryker configuration/binary is present** |
+
+The production build logs the existing non-fatal `@azure/msal-browser`
+`window is not defined` messages during static page generation. The build exits
+zero and this remediation does not touch authentication code.
+
+### Preserved post-deploy authenticated acceptance
+
+The repository now includes ten independent checks in
+`web/e2e/network-topology-deployed.spec.ts`. They are intentionally skipped
+during local mocked runs and do not replace live API responses. Two UI-state
+checks delay only pass-through full-detail traffic so retained/progress states
+are observable. When a later authorized release deploys these changes through
+the normal deployment process, provide a Playwright storage-state file for an
+authenticated, authorized operator and run:
+
+```bash
+cd web
+AIOPS_LIVE_NETWORK_E2E=1 \
+PLAYWRIGHT_BASE_URL=https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io \
+PLAYWRIGHT_STORAGE_STATE=/secure/path/to/authenticated-storage-state.json \
+npx playwright test e2e/network-topology-deployed.spec.ts --project=chromium
+```
+
+Acceptance evidence required from that run:
+
+1. The summary response succeeds and the topology canvas contains painted pixels.
+2. The exact count of unattached private-link candidates is disclosed and hidden by default.
+3. Full detail retains the summary-labelled canvas while busy; if it exceeds 3 seconds, Cancel is visible.
+4. Five immediate authenticated full-detail samples have observed p95 below 1 second.
+5. The first returned hub ARM id succeeds through the routable dependents path; zero dependents is a 200 empty envelope.
+6. A 1440→390 resize leaves painted graph pixels without pressing Fit.
+7. The tablist stays inside the 390px viewport and all five tabs remain reachable.
+8. Inspection gaps renders no more than 20 cards on the first page.
+9. No console warning mentions wheel sensitivity.
+10. The Playwright output attachment includes a 390px full-page screenshot for visual review.
 
 ## Why this audit disagrees with the previous one
 

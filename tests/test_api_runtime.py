@@ -98,6 +98,35 @@ def test_exposure_generation_window_reports_unavailable_without_a_generation(
         _exposure_generation_window()
 
 
+def test_exposure_generation_window_reads_api_home_pointer(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fabric_pipelines.vulnerability_pipeline import (
+        EXPOSURE_GOLD_POINTER_DOCUMENT,
+    )
+    from storage.onelake_documents import OneLakeDocumentStore
+
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path))
+    OneLakeDocumentStore(tmp_path).write(
+        EXPOSURE_GOLD_POINTER_DOCUMENT,
+        {
+            "readable_generation_id": "exposure-gold-7",
+            "retained_generations": {
+                "exposure-gold-6": {
+                    "retain_until": "2026-09-15T00:00:00+00:00"
+                }
+            },
+        },
+        expected_revision=0,
+    )
+
+    window = _exposure_generation_window()
+
+    assert window.active_generation == "exposure-gold-7"
+    assert set(window.retained_generations) == {"exposure-gold-6"}
+
+
 def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
     monkeypatch,
 ) -> None:
