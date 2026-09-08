@@ -18,7 +18,11 @@ import {
   buildPredeployCopilotContext,
   buildRemediationCopilotContext,
   buildResourceHealthCopilotContext,
+  buildServiceDetailCopilotContext,
+  buildServicesCopilotContext,
+  buildSituationDetailCopilotContext,
   buildSituationsCopilotContext,
+  buildTwinCopilotContext,
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
   COPILOT_SNAPSHOT_LIMITS,
@@ -3187,6 +3191,303 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     });
     expect(empty.uncertainty).not.toEqual(
       expect.arrayContaining(["resource_health freshness is unavailable"]),
+    );
+  });
+});
+
+describe("situation detail and service Copilot page adapters", () => {
+  const situationDetailInput = {
+    scope: { subscription: ["sub-a"] },
+    situationId: "situation://one",
+    situation: {
+      situation_id: "situation://one",
+      title: "Database exposure",
+      severity: "high",
+      priority: "P2",
+      lifecycle_state: "open",
+      situation_type: "exposure",
+      owner: "Security",
+      support_team: "Platform",
+      evidence_state: "contradictory",
+      affected_resource_ids: [
+        "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db",
+      ],
+      unknowns: ["Service ownership is not known."],
+      started_at: "2026-08-25T01:00:00Z",
+      last_observed_at: "2026-08-25T01:05:00Z",
+    },
+    evidence: [
+      {
+        evidence_id: "evidence://one",
+        source_family: "defender",
+        source_object_id: "defender-1",
+        assertion: "Database exposure detected",
+        quality: "contradictory",
+        availability: "available",
+        freshness: "fresh",
+        observed_at: "2026-08-25T01:00:00Z",
+        resource_ids: [
+          "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db",
+        ],
+      },
+    ],
+    links: [
+      {
+        link_id: "link://one",
+        entity_type: "Exposure",
+        entity_id: "exposure-1",
+        relation: "relates_to",
+        quality: "unresolved",
+      },
+    ],
+    sourceStatuses: [
+      { source_family: "defender", availability: "available", freshness: "fresh", observed_at: "2026-08-25T01:00:00Z" },
+      { source_family: "policy", availability: "unavailable", freshness: "unknown", observed_at: "" },
+    ],
+    auditEvents: [
+      { event_id: "audit://one", actor: "system:ingestion", action: "evidence.ingested", timestamp: "2026-08-25T01:05:00Z" },
+    ],
+    auditAvailable: true,
+    available: true,
+    observedAt: "2026-08-25T01:05:00Z",
+    citations: [
+      {
+        source_engine: "Fabric",
+        source_table: "situations",
+        timestamp: "2026-08-25T01:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds situation identity, timeline, evidence trust, affected resources, and links", () => {
+    const context = buildSituationDetailCopilotContext(situationDetailInput);
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "incident",
+      page_id: "situation:situation://one",
+    });
+    expect(context.selectedEntities).toEqual([
+      {
+        type: "domain",
+        namespace: "operations",
+        kind: "situation",
+        source_key: "situation://one",
+      },
+    ]);
+    // Affected resource is retained as a canonical ARM entity.
+    expect(context.snapshot.evidence.some((row) =>
+      row.resource_id
+        === "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db")).toBe(true);
+    // Evidence source trust is retained per row.
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.source_family === "defender" && row.data.quality === "contradictory")).toBe(true);
+    // Every row is forced non-actionable / non-mutation-authorized.
+    expect(context.snapshot.evidence.every((row) =>
+      row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    expect(context.coverage.evidence).toMatchObject({ visible_count: 1, available: true });
+    expect(context.coverage.links).toMatchObject({ visible_count: 1 });
+    expect(context.starterQuestions.length).toBeGreaterThan(0);
+    expect(context.starterQuestions.every((q) => q.specialistId === "incident")).toBe(true);
+  });
+
+  it("keeps an unavailable source distinct from a fresh source and retains stale freshness", () => {
+    const context = buildSituationDetailCopilotContext(situationDetailInput);
+    expect(context.snapshot.freshness).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "defender", status: "fresh" }),
+        expect.objectContaining({ source: "policy", status: "unavailable" }),
+      ]),
+    );
+  });
+
+  it("distinguishes an unavailable situation record from an authorized empty detail", () => {
+    const unavailable = buildSituationDetailCopilotContext({
+      ...situationDetailInput,
+      situation: null,
+      evidence: [],
+      links: [],
+      auditEvents: [],
+      available: false,
+      citations: [],
+    });
+    expect(unavailable.coverage.evidence).toMatchObject({ visible_count: 0, complete: false });
+  });
+
+  const servicesInput = {
+    scope: { subscription: ["sub-a"] },
+    services: [
+      {
+        name: "Payments",
+        environments: ["prod"],
+        subscriptionCount: 2,
+        situationCount: 3,
+        criticalCount: 1,
+        healthRisk: 2,
+        operationalState: "Critical attention",
+      },
+      {
+        name: "Billing",
+        environments: ["prod", "staging"],
+        subscriptionCount: 1,
+        situationCount: 0,
+        criticalCount: 0,
+        healthRisk: 0,
+        operationalState: "No active situation",
+      },
+    ],
+    visibleCount: 2,
+    totalCount: 5,
+    filters: { state: ["Critical attention"] },
+    connectionsAvailable: true,
+    incidentsAvailable: true,
+    connectionsObservedAt: "2026-08-25T01:00:00Z",
+    incidentsObservedAt: "2026-08-25T01:00:00Z",
+    connectionsFreshness: "fresh" as const,
+    incidentsFreshness: "fresh" as const,
+    evidence: [
+      {
+        source_engine: "connections",
+        source_table: "subscription_connections",
+        timestamp: "2026-08-25T01:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds visible services with ownership/health facts, filters, and honest total coverage", () => {
+    const context = buildServicesCopilotContext(servicesInput);
+    expect(context.snapshot).toMatchObject({
+      page_kind: "resource",
+      page_id: "services",
+      filters: { state: ["Critical attention"] },
+    });
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.service === "Payments" && row.data.situation_count === 3 && row.data.critical_count === 1)).toBe(true);
+    expect(context.coverage.services).toMatchObject({
+      visible_count: 2,
+      total_count: 5,
+      complete: false,
+      truncated: true,
+    });
+    expect(context.starterQuestions.every((q) => q.specialistId === "resource_health_observability")).toBe(true);
+  });
+
+  it("keeps an unavailable services catalog distinct from an authorized empty catalog", () => {
+    const unavailable = buildServicesCopilotContext({
+      ...servicesInput,
+      services: [],
+      visibleCount: 0,
+      totalCount: 0,
+      connectionsAvailable: false,
+      incidentsAvailable: false,
+      evidence: [],
+    });
+    const empty = buildServicesCopilotContext({
+      ...servicesInput,
+      services: [],
+      visibleCount: 0,
+      totalCount: 0,
+      evidence: [],
+    });
+    expect(unavailable.coverage.services.complete).toBe(false);
+    expect(empty.coverage.services.complete).toBe(true);
+    expect(unavailable.snapshot.freshness).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "connections", status: "unavailable" }),
+      ]),
+    );
+  });
+
+  const serviceDetailInput = {
+    scope: { subscription: ["sub-a"] },
+    name: "Payments",
+    context: {
+      subject: {
+        entity_type: "business_service",
+        name: "Payments",
+        owner: "Payments SRE",
+        support_team: "Platform",
+        criticality: "high",
+        environment: "prod",
+      },
+      available: true,
+      freshness: "fresh" as const,
+      observedAt: "2026-08-25T01:00:00Z",
+      sections: ["context", "topology"],
+    },
+    risk: {
+      subject: { entity_type: "business_service", name: "Payments" },
+      available: true,
+      freshness: "fresh" as const,
+      observedAt: "2026-08-25T01:00:00Z",
+      sections: ["aggregated_risk"],
+    },
+    impact: {
+      subject: { entity_type: "business_service", name: "Payments" },
+      available: true,
+      freshness: "fresh" as const,
+      observedAt: "2026-08-25T01:00:00Z",
+      sections: ["dependency_impact"],
+    },
+    dependencies: [
+      {
+        id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db",
+        name: "payments-db",
+        relation: "depends_on",
+        resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db",
+      },
+      { id: "app:PaymentsApi", name: "Payments API", relation: "serves" },
+    ],
+    evidence: [
+      {
+        source_engine: "graph",
+        source_table: "business_service",
+        timestamp: "2026-08-25T01:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds selected service identity, ownership, dependencies, and cited evidence", () => {
+    const context = buildServiceDetailCopilotContext(serviceDetailInput);
+    expect(context.snapshot).toMatchObject({
+      page_kind: "resource",
+      page_id: "service:Payments",
+    });
+    expect(context.selectedEntities).toEqual([
+      {
+        type: "domain",
+        namespace: "operations",
+        kind: "business_service",
+        source_key: "Payments",
+      },
+    ]);
+    // The canonical ARM dependency is retained as an azure entity.
+    expect(context.snapshot.evidence.some((row) =>
+      row.resource_id
+        === "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db")).toBe(true);
+    // The non-ARM dependency stays a domain entity.
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.relation === "serves" && row.data.entity?.type === "domain")).toBe(true);
+    expect(context.snapshot.evidence.some((row) => row.data.owner === "Payments SRE")).toBe(true);
+    expect(context.starterQuestions.every((q) => q.specialistId === "resource_health_observability")).toBe(true);
+    expect(context.starterQuestions.some((q) => q.label.includes("Payments"))).toBe(true);
+  });
+
+  it("keeps an unavailable service section distinct from a fresh one", () => {
+    const context = buildServiceDetailCopilotContext({
+      ...serviceDetailInput,
+      risk: { ...serviceDetailInput.risk, available: false, freshness: "unavailable" as const },
+    });
+    expect(context.snapshot.freshness).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "context", status: "fresh" }),
+        expect.objectContaining({ source: "risk", status: "unavailable" }),
+      ]),
     );
   });
 });
