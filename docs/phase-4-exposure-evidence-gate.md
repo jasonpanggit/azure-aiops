@@ -119,8 +119,11 @@ repository, tag, unknown, or incomplete evidence must not be substituted.
    deployment/workload evidence in the authorized dev scope.
 2. Re-run the deployed managed-identity source sync.
 3. Publish and reconcile a non-empty retained Gold generation.
-4. Run the derived-scope 100k Fabric SQL benchmark.
-5. Run the live validator and exact forward/reverse traversal.
-6. Require represented/total completeness and a single generation.
-7. Only then advance write shadow, reader canary, web canary, and governed
+4. Prove detailed Defender subassessments remain in Silver while ontology
+   contains only canonical current digest-CVE exposures with evidence
+   references; duplicate source events must not create duplicate graph nodes.
+5. Run the derived-scope 100k Fabric SQL benchmark.
+6. Run the live validator and exact forward/reverse traversal.
+7. Require represented/total completeness and a single generation.
+8. Only then advance write shadow, reader canary, web canary, and governed
    handoff canary.

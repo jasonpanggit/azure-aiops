@@ -62,6 +62,14 @@ layer:
 7. **API and web** — identical authorized scope and generation.
 8. **Governed handoff** — review-only container behavior and immutable audit.
 
+Detailed Defender subassessments remain durable Silver evidence. They are not
+copied one-for-one into ontology: the ontology projects one current exposure
+node per scoped immutable digest and CVE pair, references the contributing
+Silver observation IDs, and preserves exact digest-to-workload edges. Portal
+and API summaries group those current facts by logical image, digest, CVE,
+severity, and affected workload. This keeps complete audit evidence without
+making source-event cardinality the graph cardinality.
+
 ## Release preparation
 
 Run the focused suites before building:
