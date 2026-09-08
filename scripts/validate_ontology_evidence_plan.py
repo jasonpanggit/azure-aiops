@@ -17,6 +17,8 @@ _EVIDENCE_ENV_NAMES = frozenset(
         "AIOPS_EVIDENCE_OBJECT_ID",
         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
         "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
         *{
             f"AIOPS_EVIDENCE_{name}_WORKSPACE_ID"
             for name in (
@@ -163,17 +165,24 @@ def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
         if isinstance(row, Mapping)
     }
     removed = set(before_env) - set(after_env)
-    if frozenset(removed) not in {
-        frozenset(),
-        frozenset(
-            {
-                "AIOPS_EVIDENCE_API_URL",
-                "AIOPS_EVIDENCE_API_SCOPE",
-            }
-        ),
-    } or any(before_env[name] != after_env[name] for name in after_env):
+    added = set(after_env) - set(before_env)
+    allowed_boundary = frozenset(
+        {
+            "AIOPS_EVIDENCE_API_URL",
+            "AIOPS_EVIDENCE_API_SCOPE",
+        }
+    )
+    if (
+        frozenset(removed) not in {frozenset(), allowed_boundary}
+        or frozenset(added) not in {frozenset(), allowed_boundary}
+        or (removed and added)
+        or any(
+            before_env[name] != after_env[name]
+            for name in set(before_env) & set(after_env)
+        )
+    ):
         raise EvidencePlanError(
-            "evidence Job update may only remove the API read boundary"
+            "evidence Job update may only change the API denial boundary"
         )
     before_container["env"] = []
     after_container["env"] = []
@@ -181,7 +190,7 @@ def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
     after_container["image"] = ""
     if before != after:
         raise EvidencePlanError(
-            "evidence Job update may change only image and API read env"
+            "evidence Job update may change only image and API denial env"
         )
 
 

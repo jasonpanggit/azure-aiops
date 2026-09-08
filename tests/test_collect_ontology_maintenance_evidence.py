@@ -194,9 +194,49 @@ def test_authenticated_general_operator_403_is_required_before_maintenance(
     assert report["status"] == "PASS"
     assert report["general_operator_evidence"] == "authenticated_forbidden"
     assert report["general_operator_http_status"] == 403
-    assert transport.requests[0]["token"] == GENERAL_OPERATOR_TOKEN
+    assert transport.requests[0]["token"] == MAINTENANCE_TOKEN
     assert transport.requests[1]["token"] == GENERAL_OPERATOR_TOKEN
     assert transport.requests[2]["token"] == MAINTENANCE_TOKEN
+
+
+def test_fixed_evidence_job_denial_replaces_general_token(
+    azure_config_dir: Path,
+) -> None:
+    transport = FakeTransport(
+        [
+            _response(
+                200,
+                {"data": {"reconciliation_control": {"revision": 4}}},
+            ),
+            _accepted(),
+        ]
+    )
+    environment = _environment()
+    environment.pop(collector.GENERAL_OPERATOR_TOKEN_ENV)
+
+    report = collector.collect_evidence(
+        _config(azure_config_dir),
+        {
+            "connection_id": CONNECTION_ID,
+            "general_operator_denial": {
+                "source": "authenticated_api",
+                "general_operator_status": 403,
+                "identity_hash": "sha256:" + "1" * 64,
+            },
+        },
+        env=environment,
+        runner=_runner_spy([]),
+        transport=transport,
+        nonce_factory=lambda: "fixed-job-denial",
+    )
+
+    assert report["status"] == "PASS"
+    assert report["general_operator_source"] == "fixed_evidence_job"
+    assert len(transport.requests) == 2
+    assert all(
+        request["token"] == MAINTENANCE_TOKEN
+        for request in transport.requests
+    )
 
 
 def test_unverifiable_403_fails_closed_without_maintenance_post(

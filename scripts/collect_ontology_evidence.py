@@ -65,6 +65,7 @@ FAILURE_CODES = frozenset(
         "arg_read",
         "fabric_read",
         "onelake_read",
+        "maintenance_denial",
     }
 )
 FORBIDDEN_OUTPUT_KEYS = {
@@ -761,6 +762,8 @@ def _required_environment() -> dict[str, str]:
         "AIOPS_EVIDENCE_OBJECT_ID",
         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
         "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
     }
     for root in ROOT_NAMES:
         prefix = f"AIOPS_EVIDENCE_{root.upper()}"
@@ -1000,6 +1003,47 @@ def _collect_onelake(
     return {"count": len(hashes), "hashes": hashes}, facts
 
 
+def _probe_maintenance_denial(
+    env: Mapping[str, str],
+    token: str,
+    identity_hash: str,
+) -> dict[str, object]:
+    base = env["AIOPS_EVIDENCE_API_URL"].rstrip("/")
+    url = (
+        f"{base}/api/v1/ontology-discovery/connections/"
+        "phase13-denial-probe/maintenance/full-reconciliation-due"
+    )
+    response = httpx.post(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "expected_revision": 0,
+            "reason": "phase13-read-only-denial-proof",
+            "idempotency_key": "phase13-read-only-denial-proof",
+            "cadence_seconds": 3600,
+        },
+        timeout=30,
+    )
+    if response.status_code != 403:
+        raise EvidenceCollectionError("maintenance_denial")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise EvidenceCollectionError("maintenance_denial") from exc
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    if not isinstance(error, Mapping) or error.get("code") != "forbidden":
+        raise EvidenceCollectionError("maintenance_denial")
+    return {
+        "source": "authenticated_api",
+        "general_operator_status": 403,
+        "identity_hash": identity_hash,
+    }
+
+
 def collect() -> dict[str, object]:
     env = _required_environment()
     credential = ManagedIdentityCredential(client_id=env["AZURE_CLIENT_ID"])
@@ -1026,6 +1070,15 @@ def collect() -> dict[str, object]:
             )
         except EvidenceCollectionError as exc:
             raise EvidenceCollectionError("fabric_read") from exc
+        try:
+            maintenance_denial = _probe_maintenance_denial(
+                env,
+                _token(credential, env["AIOPS_EVIDENCE_API_SCOPE"]),
+                identity["object_id_hash"],
+            )
+        except EvidenceCollectionError as exc:
+            raise EvidenceCollectionError("maintenance_denial") from exc
+        facts = {**facts, "maintenance_denial": maintenance_denial}
         observations = {
             "arg": arg_observation,
             "fabric": fabric_observation,

@@ -60,6 +60,8 @@ def _plan() -> dict[str, object]:
                                         "AIOPS_EVIDENCE_OBJECT_ID",
                                         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
                                         "AIOPS_EVIDENCE_RESOURCE_GROUP",
+                                        "AIOPS_EVIDENCE_API_URL",
+                                        "AIOPS_EVIDENCE_API_SCOPE",
                                         "AIOPS_EVIDENCE_STATE_WORKSPACE_ID",
                                         "AIOPS_EVIDENCE_STATE_LAKEHOUSE_ID",
                                         "AIOPS_EVIDENCE_COMMAND_WORKSPACE_ID",
@@ -209,7 +211,7 @@ def test_targeted_plan_rejects_missing_or_secret_evidence_environment() -> None:
         _validate(plan)
 
 
-def test_evidence_job_update_allows_only_api_read_boundary_removal() -> None:
+def test_evidence_job_update_allows_only_api_denial_boundary_change() -> None:
     plan = _plan()
     job = next(
         row
@@ -222,12 +224,12 @@ def test_evidence_job_update_allows_only_api_read_boundary_removal() -> None:
     before["template"][0]["container"][0]["image"] = (
         "old@sha256:" + "1" * 64
     )
-    before["template"][0]["container"][0]["env"].extend(
-        [
-            {"name": "AIOPS_EVIDENCE_API_URL", "value": "https://old.invalid"},
-            {"name": "AIOPS_EVIDENCE_API_SCOPE", "value": "api://old/.default"},
-        ]
-    )
+    before["template"][0]["container"][0]["env"] = [
+        row
+        for row in before["template"][0]["container"][0]["env"]
+        if row["name"]
+        not in {"AIOPS_EVIDENCE_API_URL", "AIOPS_EVIDENCE_API_SCOPE"}
+    ]
     job["change"]["actions"] = ["update"]
     job["change"]["before"] = before
 

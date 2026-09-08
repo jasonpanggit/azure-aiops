@@ -150,6 +150,7 @@ EVIDENCE_FACT_NAMES = frozenset(
         "runs",
         "preflight",
         "lifecycle",
+        "maintenance_denial",
         "publication",
     }
 )
@@ -3205,6 +3206,8 @@ def _assert_exact_evidence_job_template(
         "AIOPS_EVIDENCE_OBJECT_ID",
         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
         "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
         *{
             f"AIOPS_EVIDENCE_{name}_{suffix}"
             for name in (
@@ -3516,7 +3519,7 @@ def _run_preflight_stage(
     )
     if deployer_identity_hash == expected_identity_hash:
         raise EvidenceError("deployment and evidence identities must be distinct")
-    _record, execution = _run_evidence_snapshot(
+    record, execution = _run_evidence_snapshot(
         args=args,
         contexts=contexts,
         resource_group=resource_group,
@@ -3650,6 +3653,14 @@ def _run_preflight_stage(
             azure_config_dir=contexts.deployer,
         ),
     }
+    maintenance_denial = _snapshot_fact(record, "maintenance_denial")
+    if (
+        maintenance_denial.get("source") != "authenticated_api"
+        or maintenance_denial.get("general_operator_status") != 403
+        or maintenance_denial.get("identity_hash")
+        != expected_identity_hash
+    ):
+        raise EvidenceError("maintenance_authenticated_denial_unavailable")
     evidence_job = validate_evidence_job_boundary(
         before=jobs["evidence"],
         after=fetch_live_job(
@@ -3698,6 +3709,7 @@ def _run_preflight_stage(
             "coordinator_tag_hash": contract.coordinator_tag_hash,
         },
         "injection_contract": injection_contract,
+        "maintenance_denial": dict(maintenance_denial),
         "contract_hash": _full_opaque(asdict(contract)),
         "release_status": "BLOCKED/PENDING",
     }

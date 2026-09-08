@@ -7,6 +7,7 @@ import pytest
 from scripts.collect_ontology_evidence import (
     EvidenceCollectionError,
     _list_fixed_paths,
+    _probe_maintenance_denial,
     build_closed_record,
     decode_identity_claims,
     sanitize_closed_record,
@@ -67,6 +68,48 @@ def test_onelake_authorization_failure_remains_blocking() -> None:
 
     with pytest.raises(EvidenceCollectionError, match="state root"):
         _list_fixed_paths(Client(), path="forbidden", root="state")
+
+
+def test_maintenance_probe_accepts_only_authenticated_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        status_code = 403
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"error": {"code": "forbidden"}}
+
+    observed: dict[str, object] = {}
+
+    def post(url: str, **kwargs: object) -> Response:
+        observed.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(
+        "scripts.collect_ontology_evidence.httpx.post",
+        post,
+    )
+    result = _probe_maintenance_denial(
+        {
+            "AIOPS_EVIDENCE_API_URL": "https://api.example",
+        },
+        "token",
+        "sha256:" + "1" * 64,
+    )
+
+    assert result["general_operator_status"] == 403
+    assert str(observed["url"]).endswith(
+        "/phase13-denial-probe/maintenance/full-reconciliation-due"
+    )
+
+    Response.status_code = 401
+    with pytest.raises(EvidenceCollectionError, match="maintenance_denial"):
+        _probe_maintenance_denial(
+            {"AIOPS_EVIDENCE_API_URL": "https://api.example"},
+            "token",
+            "sha256:" + "1" * 64,
+        )
 
 
 def test_closed_record_rejects_raw_sensitive_values_and_write_capabilities() -> None:
