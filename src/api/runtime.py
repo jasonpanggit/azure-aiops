@@ -2787,6 +2787,68 @@ def _attach_remediation_decisions(planner: Any) -> Any:
     return planner
 
 
+def _merge_trigger_signals(
+    planner: Any, correlator: Any, vulnerability_service: Any
+) -> None:
+    """Flatten Defender/vulnerability signals onto the planner's resources.
+
+    ``RemediationPlanner.from_semantic_engine`` flattens ``resource_signals``
+    onto each resource at construction time, but the Defender correlator is
+    only attached afterwards -- and correlation itself runs at plan
+    *generation* time, which is strictly later than opportunity
+    *identification*. Without this merge the ``defender_*`` and
+    ``critical_vulnerability_count`` trigger fields are never present on the
+    rows that ``RemediationOpportunityEngine.identify`` matches against, so
+    the governed catalog actions keyed on them can never fire.
+
+    Read-only and defensive: a partial snapshot (missing Defender tables or
+    exposure rows) degrades to leaving the affected signal absent rather
+    than failing the planner.
+    """
+    from intelligence.predictive.predictive_context_builder import (
+        PredictiveContextBuilder,
+    )
+
+    resources = getattr(planner, "resources", None)
+    if not resources:
+        return
+
+    signals: dict[str, dict[str, Any]] = {}
+
+    def _slot(raw_key: Any) -> dict[str, Any] | None:
+        key = PredictiveContextBuilder.canonical_key(raw_key)
+        return signals.setdefault(key, {}) if key else None
+
+    if correlator is not None:
+        try:
+            posture = correlator.posture_by_resource()
+        except Exception:  # noqa: BLE001 - partial snapshot must not break planning
+            posture = {}
+        for raw_key, row in (posture or {}).items():
+            slot = _slot(raw_key)
+            if slot is not None:
+                slot.update(row)
+
+    if vulnerability_service is not None:
+        try:
+            exposures = vulnerability_service.asset_exposures()
+        except Exception:  # noqa: BLE001 - see above
+            exposures = []
+        for row in exposures or ():
+            slot = _slot(row.get("asset_id"))
+            if slot is None:
+                continue
+            slot["critical_vulnerability_count"] = int(row.get("critical_count") or 0)
+
+    if not signals:
+        return
+
+    for resource in resources:
+        key = PredictiveContextBuilder.canonical_key(resource.get("resource_key"))
+        if key and key in signals:
+            resource.update(signals[key])
+
+
 def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
     """Attach a read-only Defender remediation correlator to ``planner``.
 
@@ -2810,6 +2872,7 @@ def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
         resource_lookup=planner.resources,
         action_catalog=catalog,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 
@@ -2852,6 +2915,7 @@ def _attach_live_defender_correlator(
         dependency_analyzer=DependencyAnalyzer(),
         resource_lookup=resources,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 

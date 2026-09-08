@@ -363,6 +363,12 @@ class FabricRuntime:
                     {
                         "configuration_drift_count": "configuration_drift_count",
                         "change_risk_score": "change_risk_score",
+                        # Governed catalog action "configuration-baseline-recovery"
+                        # triggers on policy_violation_count; without this the
+                        # compliance half of that trigger was permanently dead.
+                        "policy_violation_count": "policy_violation_count",
+                        "policy_deviation_count": "policy_deviation_count",
+                        "security_deviation_count": "security_deviation_count",
                     },
                 )
             if predictive_intelligence is not None:

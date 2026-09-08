@@ -561,7 +561,7 @@ export interface CopilotPageSnapshotInput {
   question?: string; rechecks?: string[];
 }
 
-function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
+export function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
   const parts = String(value ?? "").split("/").filter(Boolean);
   const providerIndex = parts.findIndex((part) => part.toLowerCase() === "providers");
   return (
