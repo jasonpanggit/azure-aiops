@@ -1545,6 +1545,122 @@ export interface PredeployCopilotPageInput {
   evidence: EvidenceItem[];
 }
 
+/** A subscription connection row projected before adapter typing. */
+export interface ConnectionCopilotObservation {
+  connection_id: string;
+  name: string;
+  subscription_id: string;
+  business_service?: string;
+  environment?: string;
+  criticality?: string;
+  health_status: string;
+  sync_status: string;
+  sync_record_count?: number;
+  last_successful_sync_at?: string | null;
+  is_active: boolean;
+}
+
+/** Already-loaded subscription-connection registry and evaluated page state. */
+export interface ConnectionsCopilotPageInput {
+  scope: ScopeSelection;
+  connections: ConnectionCopilotObservation[];
+  loadedCount: number;
+  totalCount: number;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  selectedConnectionId?: string | null;
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
+/** A Fabric medallion layer health count the adapter cites. */
+export interface FabricLayerCopilotFields {
+  layer: "bronze" | "silver" | "gold";
+  healthy: number;
+  total: number;
+}
+
+/** A Fabric manifest projection row projected before adapter typing. */
+export interface FabricManifestCopilotObservation {
+  projection_name: string;
+  disposition: string;
+  compatibility_version?: string | null;
+  subscription_id?: string;
+}
+
+/** Fabric governance completeness aggregate the adapter cites. */
+export interface FabricGovernanceCopilotFields {
+  ownership_gap_count: number;
+  tag_gap_count: number;
+  referential_integrity_blockers: number;
+}
+
+/** Fabric capacity/readiness aggregate the adapter cites. */
+export interface FabricCapacityCopilotFields {
+  status: string;
+  state?: string;
+  capacity_name?: string;
+}
+
+/** Independent Fabric source availability/freshness carried per section. */
+export interface FabricMedallionSourceStatus {
+  source: string;
+  freshness?: string;
+  observedAt?: string;
+  availability?: string;
+}
+
+/** Already-loaded Fabric medallion sections and evaluated page state. */
+export interface FabricMedallionCopilotPageInput {
+  scope: ScopeSelection;
+  subscriptionId?: string | null;
+  layers: FabricLayerCopilotFields[];
+  manifest: FabricManifestCopilotObservation[];
+  manifestTotalCount?: number;
+  governance?: FabricGovernanceCopilotFields | null;
+  capacity?: FabricCapacityCopilotFields | null;
+  semanticReadiness?: { status: string; reason?: string } | null;
+  dataAgentReadiness?: { status: string; configured: boolean } | null;
+  lineageRef?: string | null;
+  available: boolean;
+  deploymentBlocked?: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  evidence: EvidenceItem[];
+  sourceStatuses?: FabricMedallionSourceStatus[];
+}
+
+/** An enterprise governance role projected before adapter typing. */
+export interface GovernanceRoleObservation {
+  role_id: string;
+  name?: string;
+  permissions: string[];
+}
+
+/** A governance policy section summary projected before adapter typing. */
+export interface GovernancePolicyObservation {
+  section: string;
+  setting_count: number;
+}
+
+/** Already-loaded governance sections and evaluated page state. */
+export interface GovernanceCopilotPageInput {
+  scope: ScopeSelection;
+  roles: GovernanceRoleObservation[];
+  rolesTotalCount?: number;
+  policies: GovernancePolicyObservation[];
+  accessReviewAudiences: string[];
+  auditExportKinds: string[];
+  settingsAvailable: boolean;
+  audiencesAvailable: boolean;
+  kindsAvailable: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -1783,6 +1899,60 @@ const PREDEPLOY_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "What governed remediation would this change require?",
     specialistId: "remediation",
     tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+];
+
+const CONNECTIONS_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Review visible connection health",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+  {
+    label: "Where is subscription coverage incomplete or blocked?",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+];
+
+// Fabric medallion hints reach the Inventory & Data Health specialist only;
+// optional Gold/Data Agent grounding is never a prerequisite (D-03, D-09).
+const FABRIC_MEDALLION_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "How healthy are the Bronze, Silver, and Gold layers?",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+  {
+    label: "Which datasets have governance or lineage gaps?",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+];
+
+// Governance hints stay within the governance specialist's read-only toolset.
+const GOVERNANCE_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Who owns governance decisions in this scope?",
+    specialistId: "governance",
+    tool: "business_service_context",
+    toolArguments: {},
+  },
+  {
+    label: "Where are policy or ownership gaps?",
+    specialistId: "governance",
+    tool: "risk_context",
+    toolArguments: {},
+  },
+  {
+    label: "Which services need governance attention?",
+    specialistId: "governance",
+    tool: "impact_context",
     toolArguments: {},
   },
 ];
@@ -3314,6 +3484,261 @@ function predeployCoreInput(input: PredeployCopilotPageInput): CoreCopilotAdapte
   };
 }
 
+function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAdapterInput {
+  const selectedId = input.selectedConnectionId ?? null;
+  const records: CoreCopilotRecord[] = input.connections.slice(0, 50).map((connection, index) => {
+    const sync = String(connection.sync_status ?? "").toLowerCase();
+    const health = String(connection.health_status ?? "").toLowerCase();
+    // A failed or blocked sync is a distinct deployment-blocked state, never an
+    // outage of the connection registry itself.
+    const deploymentBlocked = ["failed", "blocked", "error"].includes(sync)
+      || health === "blocked";
+    return {
+      identity: connection.connection_id,
+      namespace: "connection",
+      kind: "subscription_connection",
+      source: "connections/registry",
+      observedAt: connection.last_successful_sync_at ?? input.observedAt,
+      selected: selectedId != null && connection.connection_id === selectedId,
+      priority: index,
+      data: {
+        connection_id: connection.connection_id,
+        name: connection.name,
+        subscription_id: connection.subscription_id,
+        business_service: connection.business_service,
+        environment: connection.environment,
+        criticality: connection.criticality,
+        health_status: connection.health_status,
+        sync_status: connection.sync_status,
+        record_count: connection.sync_record_count ?? 0,
+        last_successful_sync_at: connection.last_successful_sync_at,
+        is_active: connection.is_active,
+        deployment_blocked: deploymentBlocked,
+      },
+    };
+  });
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["subscriptions"] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "connections",
+        visibleCount: input.loadedCount,
+        totalCount: Math.max(input.loadedCount, input.totalCount),
+        truncated: input.loadedCount < input.totalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "connections",
+        observedAt: input.observedAt,
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
+function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreCopilotAdapterInput {
+  const records: CoreCopilotRecord[] = [
+    ...input.layers.map((layer, index) => ({
+      identity: layer.layer,
+      namespace: "fabric",
+      kind: "medallion_layer",
+      source: "fabric/medallion-layers",
+      observedAt: input.observedAt,
+      priority: index,
+      data: {
+        layer: layer.layer,
+        healthy: layer.healthy,
+        total: layer.total,
+      },
+    })),
+    ...input.manifest.slice(0, 50).map((entry, index) => ({
+      identity: entry.projection_name,
+      namespace: "fabric",
+      kind: "fabric_manifest",
+      source: "fabric/manifest",
+      observedAt: input.observedAt,
+      priority: 10 + index,
+      data: {
+        projection_name: entry.projection_name,
+        disposition: entry.disposition,
+        compatibility_version: entry.compatibility_version,
+        subscription_id: entry.subscription_id,
+      },
+    })),
+    ...(input.governance ? [{
+      identity: "fabric-governance",
+      namespace: "fabric",
+      kind: "fabric_governance",
+      source: "fabric/governance",
+      observedAt: input.observedAt,
+      priority: 8,
+      data: {
+        ownership_gap_count: input.governance.ownership_gap_count,
+        tag_gap_count: input.governance.tag_gap_count,
+        referential_integrity_blockers: input.governance.referential_integrity_blockers,
+      },
+    }] : []),
+    ...(input.capacity || input.semanticReadiness || input.dataAgentReadiness || input.lineageRef ? [{
+      identity: "fabric-capacity",
+      namespace: "fabric",
+      kind: "fabric_capacity",
+      source: "fabric/capabilities",
+      observedAt: input.observedAt,
+      priority: 9,
+      data: {
+        status: input.capacity?.status ?? "unknown",
+        state: input.capacity?.state,
+        capacity_name: input.capacity?.capacity_name,
+        semantic_status: input.semanticReadiness?.status,
+        data_agent_status: input.dataAgentReadiness?.status,
+        // Optional Gold/Data Agent grounding is an enrichment, never required.
+        data_agent_configured: input.dataAgentReadiness?.configured ?? false,
+        lineage_ref: input.lineageRef ?? undefined,
+        deployment_blocked: input.deploymentBlocked ?? false,
+      },
+    }] : []),
+  ];
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
+    ? input.sourceStatuses.map((status) => ({
+      source: status.source,
+      observedAt: status.observedAt ?? input.observedAt,
+      status: status.availability === "unavailable"
+        ? "unavailable"
+        : freshnessStatus(status.freshness ?? "unknown"),
+    }))
+    : [{
+      source: "fabric_medallion",
+      observedAt: input.observedAt,
+      status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    }];
+  return {
+    scope: input.scope,
+    filters: {
+      view: ["fabric-medallion"],
+      ...(input.subscriptionId ? { subscription: [input.subscriptionId] } : {}),
+    },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "manifest",
+        visibleCount: input.manifest.length,
+        totalCount: Math.max(input.manifest.length, input.manifestTotalCount ?? input.manifest.length),
+        truncated: input.manifest.length < (input.manifestTotalCount ?? input.manifest.length),
+        available: input.available,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
+function governanceCoreInput(input: GovernanceCopilotPageInput): CoreCopilotAdapterInput {
+  const records: CoreCopilotRecord[] = [
+    ...input.roles.slice(0, 50).map((role, index) => ({
+      identity: role.role_id,
+      namespace: "governance",
+      kind: "governance_role",
+      source: "governance/settings",
+      observedAt: input.observedAt,
+      priority: index,
+      data: {
+        role_id: role.role_id,
+        name: role.name,
+        permissions: role.permissions,
+        // Ownership evidence: owner-equivalent roles are flagged, never mutated.
+        privileged: role.permissions.some((permission) =>
+          ["admin", "owner"].includes(String(permission).toLowerCase())),
+      },
+    })),
+    ...input.policies.map((policy, index) => ({
+      identity: policy.section,
+      namespace: "governance",
+      kind: "governance_policy",
+      source: "governance/settings",
+      observedAt: input.observedAt,
+      priority: 20 + index,
+      data: {
+        section: policy.section,
+        setting_count: policy.setting_count,
+      },
+    })),
+    ...input.accessReviewAudiences.map((audience, index) => ({
+      identity: audience,
+      namespace: "governance",
+      kind: "access_review_audience",
+      source: "governance/access-reviews",
+      observedAt: input.observedAt,
+      priority: 30 + index,
+      data: {
+        audience,
+      },
+    })),
+    ...input.auditExportKinds.map((kind, index) => ({
+      identity: kind,
+      namespace: "governance",
+      kind: "audit_export_kind",
+      source: "governance/exports",
+      observedAt: input.observedAt,
+      priority: 40 + index,
+      data: {
+        export_kind: kind,
+      },
+    })),
+  ];
+  // Settings, access reviews, and audit exports degrade independently; an
+  // unavailable review/export source never blanks the settings evidence.
+  const sourceStatuses: CoreCopilotSourceStatus[] = [
+    {
+      source: "settings",
+      observedAt: input.observedAt,
+      status: (input.settingsAvailable ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    },
+    {
+      source: "access_reviews",
+      observedAt: input.observedAt,
+      status: (input.audiencesAvailable ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    },
+    {
+      source: "audit_exports",
+      observedAt: input.observedAt,
+      status: (input.kindsAvailable ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    },
+  ];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["governance"] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "roles",
+        visibleCount: input.roles.length,
+        totalCount: Math.max(input.roles.length, input.rolesTotalCount ?? input.roles.length),
+        truncated: input.roles.length < (input.rolesTotalCount ?? input.roles.length),
+        available: input.settingsAvailable,
+      },
+      {
+        key: "access_review_audiences",
+        visibleCount: input.accessReviewAudiences.length,
+        totalCount: input.accessReviewAudiences.length,
+        available: input.audiencesAvailable,
+      },
+      {
+        key: "audit_export_kinds",
+        visibleCount: input.auditExportKinds.length,
+        totalCount: input.auditExportKinds.length,
+        available: input.kindsAvailable,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
 function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.situations.slice(0, 50).map((situation, index) => ({
     identity: situation.situation_id,
@@ -3639,6 +4064,53 @@ export function buildRemediationCopilotContext(
     CORE_PAGE_CONFIG.remediation,
     isCoreCopilotInput(input) ? input : remediationCoreInput(input),
     REMEDIATION_STARTERS,
+  );
+}
+
+/**
+ * Builds the typed connection data-health context from the loaded subscription
+ * registry. Sync/health remain the only mutation paths on the page; this
+ * adapter only explains already-loaded source health (D-03, D-09).
+ */
+export function buildConnectionsCopilotContext(
+  input: CoreCopilotAdapterInput | ConnectionsCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "resource", pageId: "connections" },
+    isCoreCopilotInput(input) ? input : connectionsCoreInput(input),
+    CONNECTIONS_STARTERS,
+  );
+}
+
+/** Builds the typed Fabric medallion context from loaded layer/manifest health. */
+export function buildFabricMedallionCopilotContext(
+  input: CoreCopilotAdapterInput | FabricMedallionCopilotPageInput,
+): CoreCopilotContext {
+  const context = buildCoreCopilotContext(
+    { pageKind: "resource", pageId: "fabric-medallion" },
+    isCoreCopilotInput(input) ? input : fabricMedallionCoreInput(input),
+    FABRIC_MEDALLION_STARTERS,
+  );
+  // A paused/unprovisioned capacity is a distinct deployment-blocked state,
+  // surfaced explicitly so it is never conflated with an outage or a healthy
+  // empty layer (D-09).
+  if (!isCoreCopilotInput(input) && input.deploymentBlocked) {
+    return {
+      ...context,
+      uncertainty: [...context.uncertainty, "fabric_medallion is deployment-blocked"],
+    };
+  }
+  return context;
+}
+
+/** Builds the typed governance context from loaded settings/review/export state. */
+export function buildGovernanceCopilotContext(
+  input: CoreCopilotAdapterInput | GovernanceCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "governance", pageId: "governance" },
+    isCoreCopilotInput(input) ? input : governanceCoreInput(input),
+    GOVERNANCE_STARTERS,
   );
 }
 

@@ -30,6 +30,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: unknown) => input,
   connectionsApi: { list },
   fabricMedallionApi: {
     layers: fabricLayers,

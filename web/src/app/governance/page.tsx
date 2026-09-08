@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,6 +12,7 @@ import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
+import { buildGovernanceCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
@@ -50,6 +53,7 @@ type PolicySection = (typeof EDITABLE_POLICY_SECTIONS)[number];
 export default function GovernancePage() {
   const { scope } = useScope();
   const [tab, setTab] = useState<Tab>("reviews");
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [pack, setPack] = useState<AccessReviewPack | AuditExportPack | null>(null);
   const [packLabel, setPackLabel] = useState("");
   const [busy, setBusy] = useState("");
@@ -135,12 +139,44 @@ export default function GovernancePage() {
     }
   }
 
+  // Read-only contextual Copilot over the already-loaded governance evidence.
+  // Optional access-review/export enrichment is never a prerequisite; the
+  // governance settings remain usable without it (D-03, D-04, D-06, D-09).
+  const governanceCopilot = buildGovernanceCopilotContext({
+    scope,
+    roles: (currentSettings?.roles ?? []).map((role) => ({
+      role_id: role.role_id,
+      name: role.name,
+      permissions: role.permissions,
+    })),
+    rolesTotalCount: roles.length,
+    policies: EDITABLE_POLICY_SECTIONS.map((section) => ({
+      section,
+      setting_count: Object.keys(
+        (currentSettings?.[section] as Record<string, unknown> | undefined) ?? {},
+      ).length,
+    })).filter((policy) => policy.setting_count > 0),
+    accessReviewAudiences: audiences.data?.data.audiences ?? [],
+    auditExportKinds: kinds.data?.data.kinds ?? [],
+    settingsAvailable: !settings.error && Boolean(settings.data),
+    audiencesAvailable: !audiences.error && Boolean(audiences.data),
+    kindsAvailable: !kinds.error && Boolean(kinds.data),
+    freshness: settings.error || !settings.data ? "unavailable" : "fresh",
+    evidence: settings.data?.evidence ?? [],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Enterprise governance"
         title="Can governance decisions be reviewed?"
         description="Review access packs, audit evidence availability, and the settings that shape onboarding, architecture, agents, and retention."
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about governance"
+          />
+        }
         metadata={
           <>
             <span>Every pack records its own provenance</span>
@@ -453,6 +489,15 @@ export default function GovernancePage() {
           </div>
         </section>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Enterprise governance"
+        requestedScope={governanceCopilot.requestedScope}
+        snapshot={governanceCopilot.snapshot}
+        starterQuestions={governanceCopilot.starterQuestions}
+      />
     </div>
   );
 }
