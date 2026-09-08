@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -4444,6 +4445,12 @@ def _deployed_failure_report(
         blocker_code = "subprocess_failure"
     else:
         blocker_code = "io_failure"
+    message = str(exc)
+    closed_reason = (
+        message
+        if re.fullmatch(r"[a-z0-9_]{1,96}", message)
+        else blocker_code
+    )
     return {
         "schema_version": "ontology-deployed-lifecycle-validation.v1",
         "mode": "deployed-fixed-template",
@@ -4451,9 +4458,10 @@ def _deployed_failure_report(
         "stage": stage,
         "status": "FAIL",
         "release_status": "BLOCKED/PENDING",
-        "missing_evidence": [type(exc).__name__],
+        "missing_evidence": [closed_reason],
         "blocker": "deployed evidence unavailable",
         "blocker_code": blocker_code,
+        "closed_reason": closed_reason,
         "reason_hash": _full_opaque(
             {"type": type(exc).__name__, "message": str(exc)}
         ),

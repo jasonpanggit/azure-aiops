@@ -15,6 +15,7 @@ from scripts.validate_ontology_discovery_live import (
     EvidenceError,
     Plan19DeploymentContract,
     _configured_curator_tools,
+    _deployed_failure_report,
     _full_opaque,
     _parser,
     _run_isolated_az_json,
@@ -504,6 +505,14 @@ def test_maintenance_evidence_boundary_fails_closed_without_direct_api_receipts(
         match="maintenance_authenticated_api_evidence_required",
     ):
         derive_maintenance_evidence(fabricated)
+
+    failure = _deployed_failure_report(
+        stage="lifecycle",
+        exc=EvidenceError("maintenance_authenticated_api_evidence_required"),
+    )
+    assert failure["closed_reason"] == (
+        "maintenance_authenticated_api_evidence_required"
+    )
 
 
 def test_sequence_rejects_reordered_or_incomplete_lifecycle() -> None:
@@ -1524,4 +1533,5 @@ def test_deployed_stage_failure_artifact_never_retains_exception_text(
     assert "/subscriptions/raw" not in rendered
     report = json.loads(rendered)
     assert report["blocker_code"] == "evidence_precondition"
+    assert report["closed_reason"] == "evidence_precondition"
     assert report["status"] == "FAIL"
