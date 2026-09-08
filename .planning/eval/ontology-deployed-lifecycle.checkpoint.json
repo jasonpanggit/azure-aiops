@@ -4,7 +4,7 @@
     "sha256:9e4d3d24405232fe37bbb345ed4394c7b7d8831b08443351465bd5a6866576a5"
   ],
   "evidence_refs": [
-    "sha256:96694f46cf3dd8dc8c6a851d43763a292e563bd09e0b8e8e280f3241505b4951"
+    "sha256:e871ee425c247ec204e3424bedc2113ced69153aeaf74003d9e7cec23856870f"
   ],
   "schema_version": "ontology-deployed-lifecycle-checkpoint.v1",
   "stage": "preflight"
