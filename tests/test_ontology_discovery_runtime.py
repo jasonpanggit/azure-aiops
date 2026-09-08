@@ -547,6 +547,10 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
     }
     assert "subscription-a" in subscription_ids
     assert len(subscription_ids) == 3
+    assert {
+        row.credential.kind
+        for row in ConnectionRegistry(connection_home).list()
+    } == {"managed_identity"}
     assert OntologyRunStore(
         state_home,
         document_store=OneLakeDocumentStore(state_home),

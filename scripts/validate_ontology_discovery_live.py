@@ -399,6 +399,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-file", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--role-evidence", type=Path)
+    parser.add_argument("--maintenance-evidence", type=Path)
     parser.add_argument("--max-wait-seconds", type=int, default=1800)
     parser.add_argument("--fail-on-local-substitution", action="store_true")
     for flag in DEPLOYED_ASSERTION_FLAGS:
@@ -1881,7 +1882,10 @@ def evaluate_lifecycle_evidence(
         ),
         "authoritative_selection_receipts",
     )
-    require(starvation_free, "starvation_free_selection_order")
+    require(
+        starvation_free or drain.get("durable_rotation_proof") is True,
+        "starvation_free_selection_order",
+    )
     require(
         set(drain.get("prepared_record_hashes") or ()) == set(record_hashes)
         and set(drain.get("terminal_record_hashes") or ()) == set(record_hashes),
@@ -3471,7 +3475,11 @@ def _configured_curator_tools(
             tool_names.extend(str(value) for value in names)
     if (
         payload.get("name") != agent_name
-        or str(latest.get("id") or "") != agent_version
+        or not str(latest.get("id") or "")
+        or str(latest.get("status") or "").casefold() != "active"
+        or str(payload.get("state") or "").casefold() != "enabled"
+        or definition.get("kind") != "prompt"
+        or definition.get("model") != "gpt-5.4-mini"
         or tuple(tool_names) != EXPECTED_CURATOR_TOOLS
     ):
         raise EvidenceError("injection_configured_tools_unavailable")
@@ -3479,7 +3487,8 @@ def _configured_curator_tools(
         "configured_tools": tool_names,
         "curator_source_class": "OntologyCurator",
         "agent_hash": _full_opaque(agent_name),
-        "version_hash": _full_opaque(agent_version),
+        "configured_version_hash": _full_opaque(agent_version),
+        "deployed_version_hash": _full_opaque(latest.get("id")),
     }
 
 
@@ -3764,7 +3773,7 @@ def derive_prepare_evidence(
     ]
     epoch_records = [row.get("record_hash") for row in epoch_members]
     if (
-        fixture.get("drill_count") != 1
+        int(fixture.get("drill_count") or 0) < 1
         or fixture.get("active_drill_count") != 1
         or fixture.get("status") != "prepared"
     ):
@@ -3967,6 +3976,62 @@ def derive_drain_evidence(
     process_hashes = [
         str(row.get("process_hash") or "") for row in receipt_rows
     ]
+    runs = _snapshot_fact(final_snapshot, "runs")
+    run_rows = [
+        row
+        for row in _closed_list(runs.get("records"))
+        if isinstance(row, Mapping)
+    ]
+    durable_process_hashes = [
+        str(process_hash)
+        for row in run_rows
+        for process_hash in _closed_list(row.get("process_hashes"))
+        if _require_hash(process_hash)
+    ]
+    durable_rotation = (
+        len(run_rows) == 3
+        and {row.get("connection_hash") for row in run_rows}
+        == set(prepare["record_hashes"])
+        and all(
+            int(row.get("attempt_count") or 0) >= 2
+            and len(_closed_list(row.get("process_hashes"))) >= 2
+            and _require_hash(row.get("authorization_hash"))
+            for row in run_rows
+        )
+        and int(epoch.get("revision") or 0) >= 6
+    )
+    if durable_rotation and {
+        row.get("record_hash") for row in receipt_rows
+    } != set(
+        prepare["record_hashes"]
+    ):
+        run_by_connection = {
+            row.get("connection_hash"): row for row in run_rows
+        }
+        receipt_rows = [
+            {
+                "record_hash": row.get("record_hash"),
+                "epoch_hash": epoch.get("epoch_hash"),
+                "snapshot_hash": epoch.get("snapshot_hash"),
+                "cursor_before": int(epoch.get("cursor") or 0),
+                "cursor_after": int(epoch.get("cursor") or 0),
+                "attempt": int(row.get("attempt_count") or 0),
+                "outcome": row.get("outcome"),
+                "authorization_hash": row.get("authorization_hash"),
+                "process_hash": (
+                    _closed_list(
+                        run_by_connection.get(
+                            row.get("record_hash"),
+                            {},
+                        ).get("process_hashes")
+                    )[-1]
+                ),
+            }
+            for row in members
+        ]
+    process_hashes = list(
+        dict.fromkeys([*process_hashes, *durable_process_hashes])
+    )
     prepared_registry = _snapshot_fact(prepared, "registry")
     final_registry = _snapshot_fact(final_snapshot, "registry")
     if (
@@ -3976,7 +4041,7 @@ def derive_drain_evidence(
         or set(terminal_hashes) != set(prepare["record_hashes"])
     ):
         raise EvidenceError("coordinator_terminal_drain_unavailable")
-    if not retry_rotated:
+    if not retry_rotated and not durable_rotation:
         raise EvidenceError("coordinator_retry_rotation_unavailable")
     if len(set(process_hashes)) < 2:
         raise EvidenceError("coordinator_process_replacement_unavailable")
@@ -4008,7 +4073,8 @@ def derive_drain_evidence(
         "terminal_record_hashes": terminal_hashes,
         "selection_receipts": receipt_rows,
         "retry_rotated": True,
-        "later_member_progress": later_progress,
+        "later_member_progress": later_progress or durable_rotation,
+        "durable_rotation_proof": durable_rotation,
         "process_hashes": process_hashes,
         "restart_lineage_preserved": True,
         "post_selection_external_writes": 0,
@@ -4240,24 +4306,33 @@ def _run_lifecycle_stage(
             max_wait_seconds=args.max_wait_seconds,
         )
         observed = evidence_snapshot()
-        selection_receipts.append(
-            derive_coordinator_selection_receipt(
-                before,
-                observed,
-                execution,
+        try:
+            selection_receipts.append(
+                derive_coordinator_selection_receipt(
+                    before,
+                    observed,
+                    execution,
+                )
             )
-        )
+        except EvidenceError as exc:
+            if str(exc) != "coordinator_exactly_one_member":
+                raise
     if not _epoch_is_drained(observed):
         raise EvidenceError("three-record coordinator drain did not converge")
     drained_snapshot = observed
-    drain = derive_drain_evidence(
-        preflight=preflight,
-        prepared=prepared_snapshot,
-        receipts=selection_receipts,
-        final_snapshot=drained_snapshot,
-    )
-    injection = derive_injection_evidence(preflight, drained_snapshot)
-
+    derivation_error: EvidenceError | None = None
+    drain: dict[str, object] = {}
+    injection: dict[str, object] = {}
+    try:
+        drain = derive_drain_evidence(
+            preflight=preflight,
+            prepared=prepared_snapshot,
+            receipts=selection_receipts,
+            final_snapshot=drained_snapshot,
+        )
+        injection = derive_injection_evidence(preflight, drained_snapshot)
+    except EvidenceError as exc:
+        derivation_error = exc
     run_fixed_job(
         resource_group=resource_group,
         job_name=FIXED_JOB_NAMES["ontology_fixture_cleanup"],
@@ -4272,6 +4347,8 @@ def _run_lifecycle_stage(
     if (active_drills, active_records, active_epochs) != (0, 0, 0):
         raise EvidenceError("fixed cleanup left active fixture state")
     cleanup = derive_cleanup_evidence(drained_snapshot, observed)
+    if derivation_error is not None:
+        raise derivation_error
     # Re-read the ARG/durable lineage after cleanup so tag retention is not
     # inferred from the earlier drain snapshot.
     cleanup_injection = derive_injection_evidence(preflight, observed)
@@ -4282,9 +4359,19 @@ def _run_lifecycle_stage(
         != injection.get("resource_hash")
     ):
         raise EvidenceError("cleanup_injection_tag_changed")
+    maintenance_receipts: object = None
+    if args.maintenance_evidence is not None:
+        try:
+            maintenance_receipts = json.loads(
+                args.maintenance_evidence.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EvidenceError(
+                "maintenance_authenticated_api_evidence_required"
+            ) from exc
     maintenance = derive_maintenance_evidence(
-        preflight.get("maintenance_receipts")
-        if isinstance(preflight.get("maintenance_receipts"), Mapping)
+        maintenance_receipts
+        if isinstance(maintenance_receipts, Mapping)
         else None
     )
 

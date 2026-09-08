@@ -20,7 +20,7 @@ from onboarding.credentials import CredentialResolver, default_secret_provider
 from onboarding.registry import ConnectionNotFoundError, ConnectionRegistry
 from onboarding.runtime import build_connection_inventory_pipeline
 from ontology.ontology_validator import OntologyValidator
-from ontology.subscription_connection import SubscriptionConnection
+from ontology.subscription_connection import CredentialReference, SubscriptionConnection
 from storage.fs import is_onelake_uri
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
@@ -762,9 +762,8 @@ class ValidationFixtureLifecycle:
             state_home,
             document_store=OneLakeDocumentStore(state_home),
         )
-        self.owner_hash = hashlib.sha256(
-            _required(owner_id, "owner_id").encode()
-        ).hexdigest()
+        self.owner_id = _required(owner_id, "owner_id")
+        self.owner_hash = hashlib.sha256(self.owner_id.encode()).hexdigest()
         self.tenant_id = _required(tenant_id, "tenant_id")
         self.subscription_id = _required(
             subscription_id,
@@ -806,6 +805,12 @@ class ValidationFixtureLifecycle:
                                 f"{drill_id}:subscription:{index}",
                             )
                         )
+                    ),
+                    credential=CredentialReference(
+                        credential_id=f"{connection_id}-managed-identity",
+                        kind="managed_identity",
+                        client_id=self.owner_id,
+                        tenant_id=self.tenant_id,
                     ),
                     metadata={
                         "environment": "validation",

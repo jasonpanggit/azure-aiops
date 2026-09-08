@@ -212,10 +212,12 @@ class CredentialResolver:
         self,
         provider: SecretProvider | None = None,
         credential_factory: Any = None,
+        managed_identity_factory: Any = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
         self.provider = provider or default_secret_provider(env=env)
         self.credential_factory = credential_factory
+        self.managed_identity_factory = managed_identity_factory
 
     def describe(self, credential: CredentialReference | None) -> dict[str, Any]:
         """Safe, log-ready description of a credential reference."""
@@ -247,6 +249,16 @@ class CredentialResolver:
     def build(self, credential: CredentialReference | None):
         if credential is None:
             raise SecretNotFoundError("Connection has no credential reference configured")
+        if credential.kind == "managed_identity":
+            if not credential.active or not credential.client_id:
+                raise SecretNotFoundError(
+                    f"Credential {credential.credential_id} requires an active client_id"
+                )
+            factory = (
+                self.managed_identity_factory
+                or _managed_identity_credential
+            )
+            return factory(client_id=credential.client_id)
         if credential.kind != "service_principal":
             raise SecretNotFoundError(
                 f"Unsupported credential kind '{credential.kind}'; expected service_principal"
@@ -281,6 +293,12 @@ def _client_secret_credential(*, tenant_id: str, client_id: str, client_secret: 
         client_id=client_id,
         client_secret=client_secret,
     )
+
+
+def _managed_identity_credential(*, client_id: str):
+    from azure.identity import ManagedIdentityCredential
+
+    return ManagedIdentityCredential(client_id=client_id)
 
 
 def _secret_client(vault_name: str):

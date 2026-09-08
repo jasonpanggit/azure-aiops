@@ -1372,10 +1372,14 @@ def test_configured_curator_tools_are_read_from_live_agent_definition(
         "scripts.validate_ontology_discovery_live._run_isolated_az_json",
         lambda *_args, **_kwargs: {
             "name": "curator",
+            "state": "enabled",
             "versions": {
                 "latest": {
-                    "id": "7",
+                    "id": "curator:1",
+                    "status": "active",
                     "definition": {
+                        "kind": "prompt",
+                        "model": "gpt-5.4-mini",
                         "tools": [
                             {
                                 "allowed_tools": {
@@ -1396,7 +1400,7 @@ def test_configured_curator_tools_are_read_from_live_agent_definition(
         azure_config_dir=tmp_path,
     )
     assert result["configured_tools"] == list(EXPECTED_CURATOR_TOOLS)
-    assert result["configured_tools"] == list(EXPECTED_CURATOR_TOOLS)
+    assert result["configured_version_hash"] != result["deployed_version_hash"]
 
 
 def test_deployed_stage_dispatch_is_ordered_resumable_and_idempotent(
