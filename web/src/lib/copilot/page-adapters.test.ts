@@ -1,3 +1,6 @@
+import { readdirSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildChangesCopilotContext,
@@ -25,6 +28,7 @@ import {
   buildTwinCopilotContext,
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
+  COPILOT_ROUTE_DISPOSITIONS,
   COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
   serializeCopilotSnapshot,
@@ -3656,5 +3660,105 @@ describe("operational twin Copilot page adapter", () => {
         expect.objectContaining({ source: "twin", status: "unavailable" }),
       ]),
     );
+  });
+});
+
+const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "app");
+
+function discoverRoutePageFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...discoverRoutePageFiles(full));
+    } else if (entry.name === "page.tsx") {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+function routePathForFile(file: string): string {
+  const relative_dir = relative(APP_DIR, dirname(file)).split(sep).join("/");
+  return relative_dir === "" ? "/" : `/${relative_dir}`;
+}
+
+describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
+  const discoveredRoutes = discoverRoutePageFiles(APP_DIR)
+    .map(routePathForFile)
+    .sort();
+  const registeredRoutes = Object.keys(COPILOT_ROUTE_DISPOSITIONS).sort();
+
+  it("discovers exactly the 28 reviewed route files on disk", () => {
+    expect(discoveredRoutes).toHaveLength(28);
+  });
+
+  it("makes the registry route inventory equal the filesystem inventory exactly", () => {
+    // Bidirectional: no absent disposition (filesystem route missing from the
+    // registry) and no extra disposition (registry route with no page file).
+    expect(registeredRoutes).toEqual(discoveredRoutes);
+  });
+
+  it("gives every discovered route exactly one disposition", () => {
+    for (const route of discoveredRoutes) {
+      expect(
+        COPILOT_ROUTE_DISPOSITIONS[route],
+        `route ${route} has no reviewed Copilot disposition`,
+      ).toBeDefined();
+    }
+    expect(new Set(registeredRoutes).size).toBe(registeredRoutes.length);
+  });
+
+  it("matches the resolved research disposition table counts", () => {
+    const counts = { integrated: 0, dedicated: 0, redirect: 0, excluded: 0 };
+    for (const route of registeredRoutes) {
+      counts[COPILOT_ROUTE_DISPOSITIONS[route].kind] += 1;
+    }
+    expect(counts).toEqual({ integrated: 23, dedicated: 3, redirect: 1, excluded: 1 });
+  });
+
+  it("names /copilot, /investigate, and /agents as the dedicated surfaces", () => {
+    const dedicated = registeredRoutes
+      .filter((route) => COPILOT_ROUTE_DISPOSITIONS[route].kind === "dedicated")
+      .sort();
+    expect(dedicated).toEqual(["/agents", "/copilot", "/investigate"]);
+  });
+
+  it("redirects /vulnerabilities into Exposure and never hosts a duplicate adapter", () => {
+    const disposition = COPILOT_ROUTE_DISPOSITIONS["/vulnerabilities"];
+    expect(disposition.kind).toBe("redirect");
+    expect(
+      disposition.kind === "redirect" && disposition.target.startsWith("/exposure"),
+    ).toBe(true);
+    // The alias route resolves to an integrated adapter only via the canonical
+    // Exposure product, so no second adapter is registered for it.
+    expect(Object.prototype.hasOwnProperty.call(CORE_COPILOT_PAGE_ADAPTERS, "/vulnerabilities")).toBe(false);
+  });
+
+  it("excludes /search as the single reasoned exclusion with a stable-evidence reason", () => {
+    const excluded = registeredRoutes.filter(
+      (route) => COPILOT_ROUTE_DISPOSITIONS[route].kind === "excluded",
+    );
+    expect(excluded).toEqual(["/search"]);
+    const disposition = COPILOT_ROUTE_DISPOSITIONS["/search"];
+    expect(
+      disposition.kind === "excluded" && /evidence/i.test(disposition.reason),
+    ).toBe(true);
+  });
+
+  it("anchors every integrated route on a declared Copilot page kind", () => {
+    for (const route of registeredRoutes) {
+      const disposition = COPILOT_ROUTE_DISPOSITIONS[route];
+      if (disposition.kind === "integrated") {
+        expect(typeof disposition.pageKind, `${route} lacks a page kind`).toBe("string");
+        expect(disposition.pageKind.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("keeps copilotPageDisposition backward compatible for integrated routes", () => {
+    expect(copilotPageDisposition("/")).toBe("integrated");
+    expect(copilotPageDisposition("/inventory")).toBe("integrated");
+    expect(copilotPageDisposition("/twin")).toBe("integrated");
   });
 });
