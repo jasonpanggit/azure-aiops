@@ -22,8 +22,11 @@ Phase 11 deployment target:
 - Tenant: `ffc83107-fcc0-4d2e-8798-d582da36505e`
 - Resource group: existing `aiops-dev-rg`
 - Region: existing `australiaeast`
-- Recipe: repository Terraform wrapper plus existing immutable image build,
-  parity, evaluation, and rollback scripts
+- Recipe: direct Azure CLI updates of the existing ACR and Container Apps,
+  plus existing parity, evaluation, and rollback scripts. This isolated
+  worktree does not contain the gitignored canonical Terraform state or
+  service-principal inputs, so Task 3 must not create a replacement state or
+  run an unreviewable apply.
 - Safety: plan must show zero resource destruction/replacement outside expected
   additive revision/provisioner changes; retain the currently serving revision
   and `compatibility` rollback mode
@@ -38,15 +41,16 @@ deployments and is not reused as proof for this canary.
 ## Phase 11 Validation Checklist
 
 - [ ] All validation checks pass
-  - [ ] Terraform CLI installed
   - [ ] Azure CLI installed and authenticated to the configured subscription
-  - [ ] Terraform backend initialized and accessible
-  - [ ] `terraform fmt -check` passes
-  - [ ] `terraform validate` passes
-  - [ ] Canonical repository Terraform plan succeeds with zero destructive
-        Azure resource changes
-  - [ ] Terraform state is readable
-  - [ ] No unresolved Go-style `{{ .Env.* }}` variables exist in Terraform
+  - [ ] Existing ACR and API/web Container Apps are readable and healthy
+  - [ ] API and web Docker build contexts contain their lock files and build
+        successfully before remote image creation
+  - [ ] Candidate image tags are immutable and unique to the source commit
+  - [ ] Planned `az containerapp update` commands change only API/web image
+        references and Phase 11 rollout environment variables
+  - [ ] Existing Container App identities, secrets, ingress, scaling, and RBAC
+        remain unchanged
+  - [ ] Previous API/web revisions remain available for compatibility rollback
   - [ ] Offline specialist parity passes
   - [ ] Focused Phase 11 evaluation and rollout-control tests pass
   - [ ] Static managed-identity/RBAC review confirms existing least-privilege
@@ -54,6 +58,10 @@ deployments and is not reused as proof for this canary.
   - [ ] Assigned Azure policies do not conflict with the additive revision
 - [ ] Validation Proof records exact commands, timestamp, plan summary, and
       resolved target before deployment
+
+Phase 11 execution uses `az acr build` with commit-derived immutable API/web
+tags and `az containerapp update` against the existing apps. It does not create,
+delete, or replace Azure resources and does not modify Terraform state.
 
 Build and push the API and web container images to Azure Container Registry,
 then update the existing Azure Container Apps deployment.
