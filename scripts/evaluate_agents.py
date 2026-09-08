@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import subprocess
 import sys
@@ -70,6 +71,14 @@ PAUSE_BETWEEN_CASES_SECONDS = 12
 TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 20
+
+# Versioned evaluation data (Plan 11-12). The corpus and thresholds are
+# reviewed data, not inline constants, so a release decision is reproducible
+# from a committed file.
+DATASET_VERSION = "1"
+THRESHOLDS_VERSION = "1"
+DEFAULT_DATASET = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_evaluation_cases.v1.json"
+DEFAULT_THRESHOLDS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_release_thresholds.v1.json"
 
 
 @dataclass(frozen=True)
@@ -494,6 +503,327 @@ def _load_summary(path: Path) -> dict[str, Any]:
     return payload.get("summary", {})
 
 
+# ===========================================================================
+# Plan 11-12: versioned corpus/thresholds, independent release metrics, and
+# the deterministic promotion/hold gate.
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class EvalCase:
+    """One reviewed evaluation case loaded from the versioned corpus."""
+
+    case_id: str
+    category: str
+    page_kind: str
+    question: str
+    expect_specialists: tuple[str, ...]
+    provider_state: str
+    turn_class: str
+    disposition: str
+    expect_grants: tuple[str, ...] = ()
+    safety: dict[str, Any] = field(default_factory=dict)
+    continuity_group: str | None = None
+    note: str = ""
+
+
+def load_thresholds(path: Path | str) -> dict[str, Any]:
+    """Load and version-check the release thresholds artifact."""
+    payload = json.loads(Path(path).read_text())
+    version = payload.get("thresholds_version")
+    if version != THRESHOLDS_VERSION:
+        raise ValueError(
+            f"unsupported thresholds_version {version!r}; expected {THRESHOLDS_VERSION!r}"
+        )
+    return payload
+
+
+def load_cases(path: Path | str) -> list[EvalCase]:
+    """Load and version-check the evaluation corpus into typed cases."""
+    payload = json.loads(Path(path).read_text())
+    version = payload.get("dataset_version")
+    if version != DATASET_VERSION:
+        raise ValueError(
+            f"unsupported dataset_version {version!r}; expected {DATASET_VERSION!r}"
+        )
+    cases: list[EvalCase] = []
+    for raw in payload["cases"]:
+        cases.append(
+            EvalCase(
+                case_id=raw["case_id"],
+                category=raw["category"],
+                page_kind=raw["page_kind"],
+                question=raw["question"],
+                expect_specialists=tuple(raw["expect_specialists"]),
+                provider_state=raw["provider_state"],
+                turn_class=raw["turn_class"],
+                disposition=raw["disposition"],
+                expect_grants=tuple(raw.get("expect_grants", ())),
+                safety=dict(raw.get("safety", {})),
+                continuity_group=raw.get("continuity_group"),
+                note=raw.get("note", ""),
+            )
+        )
+    return cases
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    """Nearest-rank percentile; None when there is nothing to measure."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(pct / 100.0 * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    return round(statistics.fmean(values), 4) if values else None
+
+
+def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reduce per-turn results into independent release dimensions.
+
+    Every dimension is computed from its own inputs, so a collapse in one
+    (e.g. groundedness) cannot move another (e.g. routing or latency). A
+    dimension with no applicable turns reports ``None`` -- a missing
+    measurement is null, never a passing or failing zero.
+    """
+
+    def flag_count(key: str) -> int:
+        # A safety flag is a violation when the turn recorded it as False.
+        return sum(1 for r in results if r.get(key) is False)
+
+    # Routing is scored only on completed, non-timed-out turns that expect a
+    # specialist set. A timeout drops specialists for budget reasons and would
+    # otherwise masquerade as a routing miss.
+    routable = [
+        r
+        for r in results
+        if r.get("expected_specialists")
+        and r.get("completed", True)
+        and not r.get("timed_out", False)
+    ]
+    exact = sum(1 for r in routable if set(r["specialists"]) == set(r["expected_specialists"]))
+    routing_exact = round(exact / len(routable), 4) if routable else None
+
+    recalls: dict[str, float] = {}
+    expected_specialists: set[str] = set()
+    for r in routable:
+        expected_specialists.update(r["expected_specialists"])
+    for specialist in sorted(expected_specialists):
+        expecting = [r for r in routable if specialist in r["expected_specialists"]]
+        hit = sum(1 for r in expecting if specialist in r["specialists"])
+        recalls[specialist] = round(hit / len(expecting), 4) if expecting else None
+    recall_values = [v for v in recalls.values() if v is not None]
+    min_recall = min(recall_values) if recall_values else None
+
+    grounded = [r["groundedness"] for r in results if r.get("groundedness") is not None]
+    coverage = [
+        r["material_claim_coverage"]
+        for r in results
+        if r.get("material_claim_coverage") is not None
+    ]
+    tool_scores = [
+        r["tool_correctness"] for r in results if r.get("tool_correctness") is not None
+    ]
+    citation_flags = [r["citation_valid"] for r in results if "citation_valid" in r]
+
+    single = [r["latency_ms"] for r in results if r.get("turn_class") == "single_domain" and r.get("latency_ms") is not None]
+    cross = [r["latency_ms"] for r in results if r.get("turn_class") == "cross_domain" and r.get("latency_ms") is not None]
+
+    non_injected = [r for r in results if not r.get("injected_outage", False)]
+    completed_rate = (
+        round(sum(1 for r in non_injected if r.get("completed", True)) / len(non_injected), 4)
+        if non_injected
+        else None
+    )
+    timeout_rate = (
+        round(sum(1 for r in non_injected if r.get("timed_out", False)) / len(non_injected), 4)
+        if non_injected
+        else None
+    )
+
+    single_spend = [r["spend_usd"] for r in results if r.get("turn_class") == "single_domain" and r.get("spend_usd") is not None]
+    cross_spend = [r["spend_usd"] for r in results if r.get("turn_class") == "cross_domain" and r.get("spend_usd") is not None]
+
+    return {
+        "turns": len(results),
+        "routing_exact_set_accuracy": routing_exact,
+        "per_specialist_recall": recalls,
+        "per_specialist_recall_min": min_recall,
+        "groundedness_mean": _mean_or_none(grounded),
+        "groundedness_p10": _percentile(grounded, 10),
+        "unsupported_severe_causal_action_total": sum(
+            int(r.get("unsupported_severe_causal_action", 0)) for r in results
+        ),
+        "citation_validity": (
+            round(sum(1 for v in citation_flags if v) / len(citation_flags), 4)
+            if citation_flags
+            else None
+        ),
+        "material_claim_coverage": _mean_or_none(coverage),
+        "tool_correctness_mean": _mean_or_none(tool_scores),
+        "latency_single_domain_p95_ms": _percentile(single, 95),
+        "latency_cross_domain_p95_ms": _percentile(cross, 95),
+        "completed_turn_rate": completed_rate,
+        "timeout_rate": timeout_rate,
+        "spend_single_domain_max_usd": max(single_spend) if single_spend else None,
+        "spend_cross_domain_max_usd": max(cross_spend) if cross_spend else None,
+        "violations": {
+            "scope_isolation": flag_count("scope_ok"),
+            "mutation_denied": flag_count("mutation_denied"),
+            "unknown_specialist_or_tool_denied": flag_count("unknown_id_denied"),
+            "route_disposition_parity": flag_count("disposition_ok"),
+            "tool_grant_parity": flag_count("grants_ok"),
+            "snapshot_schema": flag_count("snapshot_schema_ok"),
+            "citation_reference_integrity": flag_count("citation_reference_integrity_ok"),
+        },
+    }
+
+
+def _gate(passed: bool, observed: Any, threshold: Any, note: str = "") -> dict[str, Any]:
+    return {"passed": bool(passed), "observed": observed, "threshold": threshold, "note": note}
+
+
+def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[str, Any]:
+    """Apply the predetermined absolute gates mechanically.
+
+    A deterministic safety or citation-integrity failure HOLDs the whole build.
+    A model-quality, latency, reliability, or spend miss HOLDs OR DISABLES only
+    the affected optional mode; the governed deterministic fallback survives.
+    A metric that was not measured (None) cannot fail its own gate falsely.
+    """
+    gates: dict[str, dict[str, Any]] = {}
+    hold_build = False
+    disabled_modes: list[str] = []
+    mode_map = thresholds.get("mode_map", {})
+
+    # --- Deterministic, zero-tolerance safety and parity gates ---
+    det = thresholds["deterministic_gates"]
+    violations = metrics.get("violations", {})
+    for name, spec in det.items():
+        observed = violations.get(name, 0)
+        passed = observed <= spec["max_violations"]
+        gates[name] = _gate(passed, observed, spec["max_violations"], spec.get("holds", ""))
+        if not passed:
+            hold_build = True
+
+    # Citation validity is a citation-integrity gate: any invalid citation
+    # holds all answer promotion (whole-build hold).
+    cv = metrics.get("citation_validity")
+    cv_pass = cv is None or cv >= thresholds["citation"]["validity_min"]
+    gates["citation_validity"] = _gate(cv_pass, cv, thresholds["citation"]["validity_min"], "all_answer_promotion")
+    if not cv_pass:
+        hold_build = True
+
+    # Tool correctness must be perfect on deterministic expected-tool cases.
+    tc = metrics.get("tool_correctness_mean")
+    tc_pass = tc is None or tc >= thresholds["tool_correctness"]["min"]
+    gates["tool_correctness"] = _gate(tc_pass, tc, thresholds["tool_correctness"]["min"], "affected_build")
+    if not tc_pass:
+        hold_build = True
+
+    # --- Mode-scoped quality/latency/reliability/spend gates ---
+    def mode_gate(name: str, passed: bool, observed: Any, threshold: Any, mode_key: str) -> None:
+        gates[name] = _gate(passed, observed, threshold, mode_map.get(mode_key, mode_key))
+        if not passed:
+            mode = mode_map.get(mode_key, mode_key)
+            if mode not in disabled_modes:
+                disabled_modes.append(mode)
+
+    r_exact = metrics.get("routing_exact_set_accuracy")
+    r_recall = metrics.get("per_specialist_recall_min")
+    routing_pass = (
+        (r_exact is None or r_exact >= thresholds["routing"]["exact_set_accuracy_min"])
+        and (r_recall is None or r_recall >= thresholds["routing"]["per_specialist_recall_min"])
+    )
+    mode_gate("routing", routing_pass, {"exact": r_exact, "min_recall": r_recall},
+              {"exact": thresholds["routing"]["exact_set_accuracy_min"], "recall": thresholds["routing"]["per_specialist_recall_min"]},
+              "routing")
+
+    g_mean = metrics.get("groundedness_mean")
+    g_p10 = metrics.get("groundedness_p10")
+    g_unsup = metrics.get("unsupported_severe_causal_action_total", 0)
+    ground_pass = (
+        (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
+        and (g_p10 is None or g_p10 >= thresholds["groundedness"]["p10_min"])
+        and g_unsup <= thresholds["groundedness"]["unsupported_severe_causal_action_max"]
+    )
+    mode_gate("groundedness", ground_pass, {"mean": g_mean, "p10": g_p10, "unsupported": g_unsup},
+              {"mean": thresholds["groundedness"]["mean_min"], "p10": thresholds["groundedness"]["p10_min"]},
+              "groundedness")
+
+    cov = metrics.get("material_claim_coverage")
+    cov_pass = cov is None or cov >= thresholds["citation"]["material_claim_coverage_min"]
+    mode_gate("citation_coverage", cov_pass, cov, thresholds["citation"]["material_claim_coverage_min"], "citation_coverage")
+
+    sl = metrics.get("latency_single_domain_p95_ms")
+    sl_pass = sl is None or sl <= thresholds["latency"]["single_domain_p95_ms_max"]
+    mode_gate("single_domain_latency", sl_pass, sl, thresholds["latency"]["single_domain_p95_ms_max"], "single_domain_latency")
+
+    cl = metrics.get("latency_cross_domain_p95_ms")
+    cl_pass = cl is None or cl <= thresholds["latency"]["cross_domain_p95_ms_max"]
+    mode_gate("cross_domain_latency", cl_pass, cl, thresholds["latency"]["cross_domain_p95_ms_max"], "cross_domain_latency")
+
+    ctr = metrics.get("completed_turn_rate")
+    tor = metrics.get("timeout_rate")
+    rel_pass = (
+        (ctr is None or ctr >= thresholds["reliability"]["completed_turn_rate_min"])
+        and (tor is None or tor <= thresholds["reliability"]["timeout_rate_max"])
+    )
+    mode_gate("reliability", rel_pass, {"completed": ctr, "timeout": tor},
+              {"completed": thresholds["reliability"]["completed_turn_rate_min"], "timeout": thresholds["reliability"]["timeout_rate_max"]},
+              "reliability")
+
+    ss = metrics.get("spend_single_domain_max_usd")
+    ss_pass = ss is None or ss <= thresholds["spend"]["single_domain_usd_max"]
+    mode_gate("spend_single_domain", ss_pass, ss, thresholds["spend"]["single_domain_usd_max"], "spend_single_domain")
+
+    cs = metrics.get("spend_cross_domain_max_usd")
+    cs_pass = cs is None or cs <= thresholds["spend"]["cross_domain_usd_max"]
+    mode_gate("spend_cross_domain", cs_pass, cs, thresholds["spend"]["cross_domain_usd_max"], "spend_cross_domain")
+
+    if hold_build:
+        decision = "HOLD"
+    elif disabled_modes:
+        decision = "HOLD_OR_DISABLE_MODE"
+    else:
+        decision = "PROMOTE"
+
+    return {"decision": decision, "gates": gates, "disabled_modes": disabled_modes}
+
+
+def validate_artifact(
+    artifact: dict[str, Any], *, dataset_version: str, thresholds_version: str
+) -> tuple[bool, list[str]]:
+    """Check a committed baseline artifact for provenance and honesty.
+
+    The artifact must name the exact dataset and thresholds versions it was
+    scored against, carry a real decision, and never record a PROMOTE while any
+    gate failed -- a model threshold miss must surface as a recorded hold, not
+    a fabricated pass.
+    """
+    problems: list[str] = []
+    if artifact.get("dataset_version") != dataset_version:
+        problems.append(
+            f"dataset version mismatch: artifact {artifact.get('dataset_version')!r} != {dataset_version!r}"
+        )
+    if artifact.get("thresholds_version") != thresholds_version:
+        problems.append(
+            f"thresholds version mismatch: artifact {artifact.get('thresholds_version')!r} != {thresholds_version!r}"
+        )
+    decision = artifact.get("decision")
+    if decision not in {"PROMOTE", "HOLD", "HOLD_OR_DISABLE_MODE"}:
+        problems.append(f"missing or invalid decision: {decision!r}")
+    if not artifact.get("revision"):
+        problems.append("artifact does not record the deployed revision")
+    gates = artifact.get("gates") or {}
+    failed = [name for name, g in gates.items() if not g.get("passed", False)]
+    if decision == "PROMOTE" and failed:
+        problems.append(f"decision PROMOTE recorded while gates failed: {failed}")
+    return (not problems, problems)
+
+
 def _print_comparison(title: str, current: dict[str, Any], baseline: dict[str, Any]) -> None:
     print(f"\n{title}:")
     for line in _compare(current, baseline):
@@ -512,7 +842,68 @@ def main() -> int:
         help="compare this deterministic/baseline run against a saved MAF run",
     )
     parser.add_argument("--case", action="append", help="run only these case ids")
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DEFAULT_DATASET,
+        help="versioned evaluation corpus (copilot_evaluation_cases.v1.json)",
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=Path,
+        default=DEFAULT_THRESHOLDS,
+        help="versioned release thresholds (copilot_release_thresholds.v1.json)",
+    )
+    parser.add_argument(
+        "--validate-artifact",
+        type=Path,
+        help="validate a committed baseline artifact against --dataset/--thresholds and exit",
+    )
     args = parser.parse_args()
+
+    # Offline artifact validation: no live calls, no credentials. Confirms a
+    # committed baseline names the exact dataset/thresholds versions it was
+    # scored against and never records a PROMOTE over a failed gate.
+    if args.validate_artifact is not None:
+        try:
+            dataset = json.loads(Path(args.dataset).read_text())
+            thresholds = json.loads(Path(args.thresholds).read_text())
+            artifact = json.loads(Path(args.validate_artifact).read_text())
+        except FileNotFoundError as exc:
+            print(
+                json.dumps(
+                    {
+                        "artifact": str(args.validate_artifact),
+                        "status": "missing",
+                        "problem": f"required file not found: {exc.filename}",
+                        "note": "No deployed baseline artifact exists yet; deploy-and-record (Task 3) has not run.",
+                    },
+                    indent=2,
+                )
+            )
+            return 2
+        ok, problems = validate_artifact(
+            artifact,
+            dataset_version=dataset.get("dataset_version"),
+            thresholds_version=thresholds.get("thresholds_version"),
+        )
+        if ok:
+            print(
+                json.dumps(
+                    {
+                        "artifact": str(args.validate_artifact),
+                        "status": "valid",
+                        "decision": artifact.get("decision"),
+                        "revision": artifact.get("revision"),
+                        "dataset_version": artifact.get("dataset_version"),
+                        "thresholds_version": artifact.get("thresholds_version"),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        print(json.dumps({"artifact": str(args.validate_artifact), "status": "invalid", "problems": problems}, indent=2))
+        return 1
 
     cases = CASES
     if args.case:

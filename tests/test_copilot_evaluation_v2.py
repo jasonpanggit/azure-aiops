@@ -1052,7 +1052,6 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
 # ===========================================================================
 
 import importlib.util
-import statistics
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1217,7 +1216,7 @@ def test_thresholds_loader_round_trips():
     evaluate_agents = _load_evaluate_agents()
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
     assert thresholds["thresholds_version"] == "1"
-    with pytest.raises(Exception):
+    with pytest.raises((ValueError, FileNotFoundError, OSError)):
         evaluate_agents.load_thresholds(_FIXTURES / "does_not_exist.json")
 
 
@@ -1352,7 +1351,6 @@ def test_per_specialist_recall_holds_routing():
 
 def test_validate_artifact_rejects_wrong_dataset_version():
     evaluate_agents = _load_evaluate_agents()
-    thresholds = json.loads(_THRESHOLDS_PATH.read_text())
     artifact = {
         "dataset_version": "999",
         "thresholds_version": "1",
