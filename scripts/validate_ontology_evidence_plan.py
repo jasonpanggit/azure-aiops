@@ -11,23 +11,39 @@ from pathlib import Path
 from typing import Any
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_ROLE_NAMES = (
-    "ontology_discovery_state",
-    "ontology_command",
-    "ontology_dispatch",
-    "ontology_publication",
-    "ontology_rbac_validation",
+_EVIDENCE_ENV_NAMES = frozenset(
+    {
+        "AZURE_CLIENT_ID",
+        "AIOPS_EVIDENCE_OBJECT_ID",
+        "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
+        "AIOPS_EVIDENCE_RESOURCE_GROUP",
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
+        *{
+            f"AIOPS_EVIDENCE_{name}_WORKSPACE_ID"
+            for name in (
+                "STATE",
+                "COMMAND",
+                "DISPATCH",
+                "PUBLICATION",
+                "VALIDATION",
+            )
+        },
+        *{
+            f"AIOPS_EVIDENCE_{name}_LAKEHOUSE_ID"
+            for name in (
+                "STATE",
+                "COMMAND",
+                "DISPATCH",
+                "PUBLICATION",
+                "VALIDATION",
+            )
+        },
+    }
 )
 CREATE_ADDRESSES = frozenset(
     {
         "azurerm_container_app_job.ontology_evidence_read[0]",
-        *{
-            f"fabric_workspace_role_assignment.ontology_evidence_{name}[0]"
-            for name in _ROLE_NAMES
-        },
-        # fabric_onelake_data_access_security resources removed — now managed
-        # by scripts/reconcile_onelake_data_access_roles.py via Fabric REST API
-        # due to provider 1.13 ManagedIdentity round-tripping bug.
     }
 )
 UPDATE_ADDRESSES = frozenset(
@@ -113,61 +129,112 @@ def _validate_evidence_job(
         )
     ):
         raise EvidencePlanError("evidence Job command or image is not fixed")
-    env_names = {
-        str(row.get("name") or "")
-        for row in container.get("env") or ()
-        if isinstance(row, Mapping)
-    }
+    env_rows = [
+        row for row in container.get("env") or () if isinstance(row, Mapping)
+    ]
+    env_names = {str(row.get("name") or "") for row in env_rows}
     if (
-        "AZURE_CLIENT_ID" not in env_names
-        or "AIOPS_ONTOLOGY_API_TOKEN" in env_names
+        env_names != _EVIDENCE_ENV_NAMES
+        or len(env_rows) != len(_EVIDENCE_ENV_NAMES)
+        or any(not str(row.get("value") or "").strip() for row in env_rows)
         or any(
-            "PUBLISHER" in name or "COORDINATOR" in name
-            for name in env_names
+            row.get("secret_name") or row.get("secretRef") for row in env_rows
         )
     ):
-        raise EvidencePlanError("evidence Job environment widens authority")
-
-
-def _validate_evidence_roles(
-    rows: Mapping[str, Mapping[str, Any]],
-    *,
-    expected_principal_id: str,
-    production_workspace_id: str,
-) -> None:
-    workspace_ids: set[str] = set()
-    for name in _ROLE_NAMES:
-        workspace_address = (
-            "fabric_workspace_role_assignment."
-            f"ontology_evidence_{name}[0]"
+        raise EvidencePlanError(
+            "evidence Job environment is not the exact secret-free read contract"
         )
-        workspace = rows[workspace_address].get("after")
-        workspace = workspace if isinstance(workspace, Mapping) else {}
-        principal = workspace.get("principal")
-        principal = principal if isinstance(principal, Mapping) else {}
-        workspace_id = str(workspace.get("workspace_id") or "")
-        if (
-            workspace.get("role") != "Viewer"
-            or not workspace_id
-            or workspace_id == production_workspace_id
-            or principal
-            != {
-                "id": expected_principal_id,
-                "type": "ServicePrincipal",
+
+
+def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError("evidence Job update shape is invalid") from exc
+    before_env = {
+        row.get("name"): row
+        for row in before_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    after_env = {
+        row.get("name"): row
+        for row in after_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    removed = set(before_env) - set(after_env)
+    added = set(after_env) - set(before_env)
+    allowed_boundary = frozenset(
+        {
+            "AIOPS_EVIDENCE_API_URL",
+            "AIOPS_EVIDENCE_API_SCOPE",
+        }
+    )
+    if (
+        frozenset(removed) not in {frozenset(), allowed_boundary}
+        or frozenset(added) not in {frozenset(), allowed_boundary}
+        or (removed and added)
+        or any(
+            before_env[name] != after_env[name]
+            for name in set(before_env) & set(after_env)
+        )
+    ):
+        raise EvidencePlanError(
+            "evidence Job update may only change the API denial boundary"
+        )
+    before_container["env"] = []
+    after_container["env"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            "evidence Job update may change only image and API denial env"
+        )
+
+
+def _validate_fixture_job_update(change: Mapping[str, object]) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError("fixture Job update shape is invalid") from exc
+    before_env = {
+        row.get("name"): row
+        for row in before_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    after_env = {
+        row.get("name"): row
+        for row in after_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    added = set(after_env) - set(before_env)
+    if frozenset(added) not in {
+        frozenset(),
+        frozenset(
+            {
+                "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID",
+                "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID",
             }
-        ):
-            raise EvidencePlanError(
-                f"{workspace_address} is not exact read-only metadata access"
-            )
-        workspace_ids.add(workspace_id)
-
-        # fabric_onelake_data_access_security validation removed — those
-        # resources are now managed by the REST reconciliation script
-        # (scripts/reconcile_onelake_data_access_roles.py) due to Fabric
-        # provider 1.13 ManagedIdentity round-tripping bug.
-
-    if len(workspace_ids) != 5:
-        raise EvidencePlanError("evidence roles must target five exact workspaces")
+        ),
+    } or any(before_env[name] != after_env[name] for name in before_env):
+        raise EvidencePlanError(
+            "fixture Job update may only add fixed validation scope"
+        )
+    if any(not str(after_env[name].get("value") or "").strip() for name in added):
+        raise EvidencePlanError("fixture validation scope must be explicit")
+    before_container["env"] = []
+    after_container["env"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            "fixture Job update may change only image and validation scope"
+        )
 
 
 def validate_targeted_plan(
@@ -178,12 +245,13 @@ def validate_targeted_plan(
     expected_identity_id: str,
     production_workspace_id: str,
 ) -> dict[str, object]:
-    """Require 11 creates plus image-only updates to five existing Jobs."""
+    """Require six creates plus image-only updates to five existing Jobs."""
 
     if not _DIGEST.fullmatch(expected_api_digest):
         raise EvidencePlanError("expected API digest is invalid")
     changes: dict[str, tuple[str, ...]] = {}
     rows: dict[str, Mapping[str, Any]] = {}
+    all_rows: dict[str, Mapping[str, Any]] = {}
     for row in plan.get("resource_changes") or ():
         if not isinstance(row, Mapping):
             continue
@@ -191,41 +259,64 @@ def validate_targeted_plan(
         change = row.get("change")
         change = change if isinstance(change, Mapping) else {}
         actions = tuple(str(value) for value in change.get("actions") or ())
+        all_rows[address] = change
         if actions and actions != ("no-op",):
             changes[address] = actions
             rows[address] = change
 
-    if set(changes) != CREATE_ADDRESSES | UPDATE_ADDRESSES:
+    missing_contract = sorted(CREATE_ADDRESSES - set(all_rows))
+    invalid_contract = sorted(
+        address
+        for address in CREATE_ADDRESSES
+        if tuple(all_rows.get(address, {}).get("actions") or ())
+        not in {("create",), ("update",), ("no-op",)}
+    )
+    required_changes = {
+        "azurerm_container_app_job.ontology_evidence_read[0]",
+        *UPDATE_ADDRESSES,
+    }
+    if (
+        missing_contract
+        or invalid_contract
+        or not required_changes.issubset(changes)
+        or set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES
+    ):
         unexpected = sorted(set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES)
-        missing = sorted(CREATE_ADDRESSES | UPDATE_ADDRESSES - set(changes))
+        missing = sorted(required_changes - set(changes))
         raise EvidencePlanError(
             "targeted plan must contain the exact evidence rollout "
-            f"(unexpected={unexpected}, missing={missing})"
+            f"(unexpected={unexpected}, missing={missing}, "
+            f"contract_missing={missing_contract}, invalid={invalid_contract})"
         )
-    for address in CREATE_ADDRESSES:
-        if changes[address] != ("create",):
-            raise EvidencePlanError(f"{address} must be create-only")
+    evidence_address = "azurerm_container_app_job.ontology_evidence_read[0]"
+    evidence_actions = changes[evidence_address]
+    if evidence_actions not in {("create",), ("update",)}:
+        raise EvidencePlanError(
+            "evidence Job must be created or updated in place"
+        )
     _validate_evidence_job(
-        rows["azurerm_container_app_job.ontology_evidence_read[0]"].get(
-            "after", {}
-        ),
+        rows[evidence_address].get("after", {}),
         expected_api_digest=expected_api_digest,
         expected_identity_id=expected_identity_id,
     )
-    _validate_evidence_roles(
-        rows,
-        expected_principal_id=expected_principal_id,
-        production_workspace_id=production_workspace_id,
-    )
+    if evidence_actions == ("update",):
+        _validate_evidence_job_update(rows[evidence_address])
     for address in UPDATE_ADDRESSES:
         if changes[address] != ("update",):
             raise EvidencePlanError(f"{address} must be an in-place update")
         change = rows[address]
-        paths = _changed_paths(change.get("before"), change.get("after"))
-        if paths != {"template[0].container[0].image"}:
-            raise EvidencePlanError(
-                f"{address} update must be image-only; changed={sorted(paths)}"
-            )
+        if address in {
+            "azurerm_container_app_job.ontology_fixture_prepare[0]",
+            "azurerm_container_app_job.ontology_fixture_cleanup[0]",
+        }:
+            _validate_fixture_job_update(change)
+        else:
+            paths = _changed_paths(change.get("before"), change.get("after"))
+            if paths != {"template[0].container[0].image"}:
+                raise EvidencePlanError(
+                    f"{address} update must be image-only; "
+                    f"changed={sorted(paths)}"
+                )
         after = change.get("after")
         try:
             image = after["template"][0]["container"][0]["image"]
@@ -237,11 +328,27 @@ def validate_targeted_plan(
     return {
         "status": "PASS",
         "sanitized": True,
-        "create_addresses": sorted(CREATE_ADDRESSES),
-        "update_addresses": sorted(UPDATE_ADDRESSES),
+        "create_addresses": sorted(
+            address
+            for address, actions in changes.items()
+            if actions == ("create",)
+        ),
+        "update_addresses": sorted(
+            [
+                *UPDATE_ADDRESSES,
+                *(
+                    [evidence_address]
+                    if evidence_actions == ("update",)
+                    else []
+                ),
+            ]
+        ),
         "delete_count": 0,
         "replace_count": 0,
         "api_digest": expected_api_digest,
+        "external_role_contract": (
+            "Workspace=Viewer;ManagedIdentity:Path=*:Action=Read"
+        ),
     }
 
 

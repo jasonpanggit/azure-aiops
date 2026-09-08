@@ -1,55 +1,40 @@
 ---
 phase: 13-autonomous-ontology-discovery-and-fabric-synchronization
-verified: 2026-09-08T03:30:00Z
+verified: 2026-09-08T09:02:47Z
 status: gaps_found
-verdict: partial
-score: 3/7 must-haves verified
+verdict: implementation_complete_deployed_acceptance_blocked
+score: 6/7 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-revision_note: "Re-verified after Plan 20 deployed stage dispatch. CLI uses build_production_runtime; 14 ontology routes deployed; fixture lifecycle and injection tag pass; 4 deployed stages PASS. Truths 1, 3, 6 upgraded from failed to partial/passed based on direct deployed evidence."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 3/7
+  gaps_closed:
+    - "The coordinator CLI now constructs and runs the production OneLake-backed inventory, curator, governance, reconciliation, and dispatch pipeline."
+    - "The separate publisher is now constructed as a finite production worker with isolated credentials, ordered Fabric materialization, fenced pointer CAS, consumer checks, and rollback."
+    - "The default API and Connections UI now use the durable four-root command/read topology without acquiring publisher authority."
+    - "The reviewed infrastructure and deployment evidence establish fixed templates, distinct capability roots, separated identities, and no runtime Job-start grants."
+  gaps_remaining:
+    - "The retained deployed lifecycle has only passed preflight; lifecycle fails closed with coordinator_retry_rotation_unavailable."
+    - "Publication, rollback, five-consumer convergence, deployed API/UI, and final effective-RBAC audit evidence are not complete because the lifecycle gate did not advance."
+  regressions: []
 gaps:
-  - truth: "A durable scheduled coordinator refreshes every eligible connection without an open browser and shares the same durable publisher path with Manual Sync."
-    status: partial
-    reason: "CLI now uses build_production_runtime() which constructs the full coordinator pipeline. Deployed fixture lifecycle (prepare → coordinator drain → cleanup) succeeded. 14 ontology-discovery API routes deployed. Granular 3-record per-pass fairness and restart evidence not yet collected."
-    artifacts:
-      - path: "src/ontology_discovery/cli.py"
-        issue: "RESOLVED: Production entry point now uses build_production_runtime() and coordinator.run_once()."
-      - path: ".planning/eval/ontology-deployed-lifecycle.json"
-        issue: "Deployed lifecycle stage PASS with fixture prepare/coordinator/cleanup evidence."
-    missing:
-      - "Per-member drain with process replacement and restart-preserved lineage."
-      - "Authenticated API read of run checkpoints from deployed coordinator."
-  - truth: "A separate least-privilege publisher performs fenced immutable publication, Fabric synchronization, and rollback in the production path."
+  - truth: "Offline and live evaluations demonstrate the complete no-click refresh, recovery, publication, rollback, consumer, security, and audit contract."
     status: failed
-    reason: "OntologyGenerationPublisher, PublisherDispatchProcessor, BoundedEvidenceProcessor, OntologyCurator, and DedicatedOntologyPublisherAdapter are substantive but have no non-test construction site. The default API explicitly sets rollback_action=None."
-    artifacts:
-      - path: "src/ontology_discovery/publisher.py"
-        issue: "Substantive publisher implementation is orphaned from a production composition root."
-      - path: "src/fabric/sync_service.py"
-        issue: "DedicatedOntologyPublisherAdapter is defined but never instantiated outside tests."
-      - path: "src/api/runtime.py"
-        issue: "Default ontology API provider sets rollback_action=None, so the live action surface cannot perform rollback."
-    missing:
-      - "Construct the dedicated publisher worker under the publisher managed identity and connect it to coordinator dispatch."
-      - "Provide a narrow authenticated rollback transport/service to the API without giving the API publisher credentials."
-      - "Deploy and prove deterministic generation promotion, Fabric materialization, consumer cutover, stale-writer rejection, and rollback from the deployed runtime."
-  - truth: "Scope-enforced ontology lifecycle APIs and the Connections UI are deployed and expose actual durable runtime state."
-    status: passed
-    reason: "14 ontology-discovery API routes confirmed deployed via live OpenAPI inspection. API health returns HTTP 200. Playwright harness lists 1 Chromium test for the deployed Connections UI. Authenticated reads require a scoped operator token."
+    reason: "The current authoritative deployed lifecycle artifact is FAIL/BLOCKED/PENDING. Only preflight completed; lifecycle stopped at coordinator_retry_rotation_unavailable, so publication and finalize were not accepted."
     artifacts:
       - path: ".planning/eval/ontology-deployed-lifecycle.json"
-        issue: "RESOLVED: Deployed preflight and lifecycle stages PASS."
-  - truth: "Live evaluation proves deployed no-click refresh, zero authoritative model edges, deterministic publication/consumers/rollback, and complete audit without substituting local contract tests."
-    status: partial
-    reason: "Plan 20 deployed lifecycle evidence replaces local test substitution. All 4 deployed stages PASS with direct Azure evidence. 0 authoritative model edges confirmed. Templates unchanged and coordinator tag intact after sequence. Granular publisher drill and authenticated API correlation remain."
-    artifacts:
-      - path: ".planning/eval/ontology-deployed-lifecycle.json"
-        issue: "RESOLVED: Deployed-only evidence with sanitized opaque hashes, no local substitution."
-      - path: "scripts/validate_ontology_discovery_live.py"
-        issue: "RESOLVED: _deployed_stage() implements 4-stage dispatch with real Azure CLI calls."
+        issue: "status=FAIL, completed_stages=[preflight], lifecycle last_failure.closed_reason=coordinator_retry_rotation_unavailable, release_status=BLOCKED/PENDING."
+      - path: ".planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-20-SUMMARY.md"
+        issue: "Stale narrative claims all four deployed stages passed; it is contradicted by the current retained lifecycle artifact and is not verification evidence."
+      - path: ".planning/phases/13-autonomous-ontology-discovery-and-fabric-synchronization/13-21-PLAN.md"
+        issue: "Final deployed API/UI/RBAC/shadow closeout remains unexecuted and has no summary."
     missing:
-      - "Authenticated API reads to correlate deployed run/generation state with lifecycle evidence."
-      - "Regenerated RBAC evidence with sanitized schema fields."
+      - "Direct deployed three-record coordinator evidence showing one record per pass, retry rotation behind a later member, at least one process replacement, restart-preserved epoch/cursor lineage, and complete terminal drain."
+      - "After lifecycle passes, direct deployed maintenance, ordered publication, stale-writer rejection, automatic and explicit rollback, old/new/old convergence, and all-five-consumer receipts."
+      - "Deployed, authenticated API and Connections UI audit without interception or local substitution."
+      - "Fresh effective-role/RBAC and no-override saved-template closeout evidence, followed by a deployed-only final shadow report."
+deferred: []
 ---
 
 # Phase 13: Autonomous Ontology Discovery and Fabric Synchronization Verification Report
@@ -60,212 +45,216 @@ using a scoped Microsoft Foundry agent to propose evidence-backed
 relationships, and publishing only relationships that pass deterministic
 governance, validation, concurrency, and audit controls.
 
-**Verified:** 2026-09-07T04:20:09Z
+**Verified:** 2026-09-08T09:02:47Z
 **Status:** `gaps_found`
-**Verdict:** **FAILED — component implementations are substantial, but the
-production composition and deployed end-to-end data flow do not exist.**
-**Re-verification:** No — initial verification.
+**Verdict:** **Implementation complete; deployed acceptance blocked.**
+**Re-verification:** Yes — after Plans 13-16 through 13-21 implementation and
+integration work.
 
 ## Executive Finding
 
-The phase built and thoroughly unit-tested most intended components. It did not
-connect them into the command actually run by the scheduled Container Apps Job.
-The deployed Job runs:
+Phase 13's production implementation is now substantive and wired. The earlier
+record-only coordinator, orphaned publisher, and local-only API findings are no
+longer accurate:
+
+- `ontology_discovery.cli` calls `build_production_runtime()` and executes a
+  one-member coordinator pass.
+- The coordinator reads the explicit connection/command/state/dispatch roots,
+  refreshes inventory, invokes the version-bound curator, applies hard-shadow
+  governance, validates the candidate, commits reconciliation, and creates an
+  immutable publisher dispatch.
+- A separate publisher CLI/worker consumes dispatches with the publisher
+  identity, materializes Fabric before pointer CAS, checks all five consumer
+  families, and performs newer-fence rollback.
+- Manual Sync, run-now, maintenance, and rollback use immutable command intake;
+  fresh-process tests reconstruct API → coordinator → publisher → API state.
+- Terraform and the applied deployment artifact record distinct roots,
+  separated identities, fixed Job templates, and no runtime Job-start grants.
+
+That is **implementation completeness**, not deployed end-to-end proof. The
+current retained lifecycle artifact truthfully reports:
 
 ```text
-python -m ontology_discovery.cli run-once --limit 10
+status: FAIL
+completed_stages: [preflight]
+last_failure.stage: lifecycle
+last_failure.closed_reason: coordinator_retry_rotation_unavailable
+release_status: BLOCKED/PENDING
+activation_interface_present: false
 ```
 
-That entry point still constructs `_RecordOnlyProcessor`, which immediately
-marks a pre-existing run complete at `intake_recorded`. It does not enumerate
-eligible connections, collect incremental evidence, call the Foundry curator,
-apply proposal policy, publish a generation, synchronize Fabric, or roll back.
-It also defaults to `.aiops-local/state/ontology_discovery_runs.json` and does
-not consume the Job's `AIOPS_HOME` OneLake setting.
-
-An isolated execution of the exact CLI composition returned:
-
-```json
-{"selected": 0, "processed": 0, "retrying": 0, "failed": 0, "timed_out": 0}
-```
-
-Therefore the observed Azure Job `Succeeded` statuses prove only that the
-finite process exited successfully. They do not prove that an ontology refresh
-occurred.
+Therefore the phase goal is not yet accepted. The prior simplified claim that
+all four deployed stages passed is a false positive and is not preserved here.
+No Azure commands, deployments, Job starts, or cloud mutations were performed
+during this verification.
 
 ## Goal Achievement
 
 ### Observable Truths
 
-| # | Roadmap truth | Status | Actual evidence |
+| # | Roadmap truth | Status | Codebase and evidence |
 |---|---|---|---|
-| 1 | Durable scheduled refresh, restart safety, writer exclusion, bounded recovery, and Manual Sync parity | ◐ PARTIAL | CLI now uses `build_production_runtime()` with full coordinator pipeline. Deployed fixture lifecycle (prepare → coordinator drain → cleanup) succeeded via fixed-template Jobs. Granular 3-record per-pass fairness and restart evidence not yet collected. |
-| 2 | Incremental discovery emits only added/changed/retired/unresolved/stale work and full reconciliation detects drift | ◐ PARTIAL | `BoundedEvidenceProcessor` is now constructed by `ProductionConnectionProcessor` in `build_production_runtime()`. Local tests pass. Deployed incremental discovery trace not independently confirmed. |
-| 3 | Scoped proposal-only Foundry curator receives bounded evidence through exactly four read-only tools | ◐ PARTIAL | Deployed coordinator UAI injection tag exact (`aiops_validation_fixture`). Tag traversal through ARG/inventory/curator verified: 4 tools, 0 mutations, 0 authoritative model edges. Live curator invocation trace not independently captured. |
-| 4 | Every proposal is content-addressed, governed, audited, and blocked by hard shadow admission | ◐ PARTIAL | All 253 predicate/type pairs remain BLOCKED/PENDING. `activation_interface_present: false`. Local policy/store tests pass. Deployed proposal lifecycle not independently observed. |
-| 5 | Dedicated publisher performs validated immutable generation promotion with ETag/fence checks, consumer compatibility, Fabric sync, and rollback | ◐ PARTIAL | Publisher Job executed successfully. RBAC denials confirmed for API/coordinator/curator. Full publisher drill with stale-writer/rollback requires active generation. |
-| 6 | Runs, pending edges, proposals, leases, attempts, metrics, and EvaluationSnapshots survive restart and are visible through scoped API/UI | ✓ PASSED | **14 ontology-discovery routes deployed** on live API (previously reported as zero). API health returns HTTP 200 in 0.47s. Playwright harness lists 1 Chromium test for deployed Connections UI. Authenticated API/UI verification requires scoped operator token and browser storage state. |
-| 7 | Offline and deployed evaluation prove no-click refresh, safety, bounds, recovery, cutover, rollback, and audit | ◐ PARTIAL | Plan 20 deployed lifecycle evidence replaces local test substitution. All 4 deployed stages PASS (preflight, lifecycle, publication, finalize). Templates unchanged, tag intact, 0 authoritative edges, BLOCKED/PENDING release. Full publisher drill and authenticated API reads remain. |
+| 1 | Durable scheduled coordinator, one member per pass, restart-safe fair rotation, writer exclusion, bounded recovery, and audited Manual Sync parity | ✓ VERIFIED (implementation) | `EligibleConnectionScheduler.run_once()` enforces `limit == 1`, durable epoch/cursor outcomes, retry rotation, leases/fences, and terminal exclusions. Manual intake is reauthorized. The named restart/fairness test passed in this verification. Deployed fairness acceptance remains part of failed Truth 7. |
+| 2 | Incremental added/changed/retired/unresolved/stale processing plus authoritative full reconciliation and drift detection | ✓ VERIFIED (implementation) | `ProductionConnectionProcessor` constructs `BoundedEvidenceProcessor`, records bounded evidence, and commits reconciliation only after dispatch. The named full-reconciliation convergence test passed. |
+| 3 | Scoped proposal-only Foundry curator with bounded evidence, exactly four read-only tools, citations/confidence, and no authoritative write path | ✓ VERIFIED (implementation) | Production runtime constructs `OntologyCurator`; tests define and exercise the exact four-tool boundary. Terraform preflight records the configured tools and separated identity. No curator publication capability is present. |
+| 4 | Content-addressed, deduplicated, validated, audited proposals with hard server-side shadow exclusion | ✓ VERIFIED | `ProposalPolicy(shadow_mode=True)` is hard-wired in the production processor. The named durable-review test passed while proving accepted model proposals never enter the authoritative candidate. Release records start `BLOCKED/PENDING`; activation is test-only and guarded by `_allow_pair_release_testing`. |
+| 5 | Exact capability matrix and separate least-privilege publisher with ordered validation, Fabric sync, fencing, five-consumer checks, and rollback | ✓ VERIFIED (implementation) | Production publisher CLI/worker and dispatch view are wired. Materialization precedes pointer CAS; stale pointer/fence checks and compensating rollback are substantive. The named newer-fence post-check rollback test passed. Deployment preflight confirms distinct roots/identities, but deployed drill receipts remain required by Truth 7. |
+| 6 | Runs, proposals, pending edges, leases, attempts, metrics, publication and EvaluationSnapshot state survive restart; stale writers/evidence cannot authorize release | ✓ VERIFIED (implementation) | OneLake document stores and fresh-process topology reconstruct command/run/generation/publication/rollback state. The named API → coordinator → publisher → API reconstruction test passed. |
+| 7 | Offline **and live** evaluation proves no-click refresh, bounds, isolation, injection resistance, publisher separation, deployment allowlists, credential isolation, alerts, degradation, rollback, cutover, and complete sanitized audit | ✗ FAILED | Offline/local gates are strong and deployment preflight passes, but `.planning/eval/ontology-deployed-lifecycle.json` stops after preflight with `coordinator_retry_rotation_unavailable`. No accepted lifecycle, publication, finalize, live API/UI, or final effective-RBAC evidence follows. |
 
-**Score:** 3/7 roadmap truths verified (1 passed, 6 partial; previously 0/7).
-
-The score reflects actual deployed evidence from Plan 20 deployed stage
-validation. The CLI production wiring, 14 deployed API routes, and fixture
-lifecycle evidence upgrade the previously-failed truths. Remaining gaps
-require authenticated API reads, Playwright browser state, and granular
-coordinator drain observations.
+**Score:** 6/7 roadmap truths verified at implementation level; the mandatory
+live-evaluation truth failed.
 
 ## Required Artifacts
 
-| Artifact group | Exists | Substantive | Wired to production | Status |
-|---|---:|---:|---:|---|
-| Durable run/pending/proposal stores | Yes | Yes | No shared OneLake-backed Job/API composition | ⚠ ORPHANED |
-| Incremental classifier/batcher | Yes | Yes | No production processor construction | ⚠ ORPHANED |
-| Curator, strict contracts, prompt, four MCP tools | Yes | Yes | Agent deployed; application invocation absent | ⚠ PARTIAL |
-| Proposal policy and shadow exclusion | Yes | Yes | No production proposal/candidate flow | ⚠ ORPHANED |
-| Generation resolver, CAS/fencing publisher, rollback | Yes | Yes | No production publisher construction; API rollback unavailable | ⚠ ORPHANED |
-| `ontology_discovery.cli` | Yes | No for final-phase purpose | Deployed directly | ✗ STUB |
-| Scoped API and Connections UI | Yes | Yes | Local only; live API lacks routes | ⚠ NOT DEPLOYED |
-| Promptfoo/Phoenix/evaluator | Yes | Yes | Runnable synthetic evaluation | ✓ VERIFIED |
-| Telemetry/alerts/live validator | Yes | Mostly | Live validator overstates local contracts as deployed evidence | ⚠ PARTIAL |
-| Terraform scheduled Job/identity/workspaces | Yes | Yes | Job is wired to the record-only CLI | ✗ WRONG TARGET |
+| Artifact group | Exists | Substantive | Wired | Status | Details |
+|---|---:|---:|---:|---|---|
+| Coordinator runtime and CLI | Yes | Yes | Yes | ✓ VERIFIED | Explicit roots → registry/state/intake/dispatch → inventory/curator/policy/reconciliation. |
+| Incremental and reconciliation stores | Yes | Yes | Yes | ✓ VERIFIED | Durable cadence, watermarks, parity, epochs, cursor, leases, retries, and exclusions. |
+| Curator and four-tool boundary | Yes | Yes | Yes | ✓ VERIFIED | Constructed by production runtime; proposal-only and scope-bound. |
+| Hard-shadow proposal policy | Yes | Yes | Yes | ✓ VERIFIED | Production processor forces `shadow_mode=True`; model proposals remain excluded. |
+| Publisher CLI/worker and Fabric adapter | Yes | Yes | Yes | ✓ VERIFIED | Dispatch claim → stage/validate/materialize/CAS/post-check; rollback uses a newer fence. |
+| Four-root API and Connections UI | Yes | Yes | Yes | ✓ VERIFIED (implementation) | UI calls typed ontology APIs; API reads durable stores and only creates isolated commands. |
+| Terraform identities, Jobs, roots, and fixed fixtures | Yes | Yes | Yes | ✓ VERIFIED (deployment preflight) | Applied artifact has zero deletes/replacements, fixed hashes, distinct roots, and no runtime Job-start grants. |
+| Deployed lifecycle evidence | Yes | Yes | N/A | ✗ FAILED | Honest fail-closed artifact; only preflight completed. |
+| Final deployed-only audit | No completed result | — | — | ✗ MISSING | Plan 13-21 has no summary or accepted final report. |
 
 ## Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| ACA schedule | durable coordinator | `python -m ontology_discovery.cli run-once` | ✗ BROKEN | Reaches a local store and `_RecordOnlyProcessor`, not eligible-connection discovery. |
-| Manual Sync | scheduled worker | shared durable run store | ✗ BROKEN | API and Job do not use one deployed store; Job CLI ignores `AIOPS_HOME`. |
-| Coordinator | incremental evidence | `BoundedEvidenceProcessor` | ✗ NOT WIRED | No non-test construction. |
-| Evidence | Foundry curator | `OntologyCurator` | ✗ NOT WIRED | No non-test construction. |
-| Reviewed proposal | hard shadow policy | `ProposalPolicyCoordinator` | ✗ NOT WIRED | No non-test construction. |
-| Validated candidate | dedicated publisher | `PublisherDispatchProcessor` → `DedicatedOntologyPublisherAdapter` | ✗ NOT WIRED | Classes are only composed in tests. |
-| Publisher | Fabric | `OntologyGenerationPublisher` then `FabricSyncService` | ✗ NOT WIRED | Adapter exists but is never constructed in runtime code. |
-| API rollback | publisher | narrow rollback action | ✗ NOT WIRED | `src/api/runtime.py:256` passes `rollback_action=None`. |
-| Web panel | scoped ontology API | typed `/ontology-discovery/*` calls | ⚠ LOCAL ONLY | Source wiring exists and tests pass; live OpenAPI exposes zero matching paths. |
-| Evaluator | durable snapshot | `EvaluationSnapshotStore` | ✓ WIRED | Synthetic evaluator wrote and reconstructed a BLOCKED/PENDING snapshot. |
+| Scheduled coordinator Job | production coordinator | `python -m ontology_discovery.cli run-once` → `build_production_runtime()` | ✓ WIRED | No record-only processor remains in the production composition. |
+| Coordinator | bounded inventory/curator pipeline | `ProductionConnectionProcessor` | ✓ WIRED | Real inventory refresh, bounded evidence, curator, policy, validation, and reconciliation. |
+| Coordinator | publisher | dispatch-only `PublisherDispatchStore.coordinator()` | ✓ WIRED | Coordinator creates immutable dispatch and has no publication root. |
+| Publisher Job | publication/Fabric | `publisher_cli` → `PublisherWorker` → `OntologyGenerationPublisher` | ✓ WIRED | Publisher identity is required and rebound into Fabric runtime. |
+| API/Manual Sync | authoritative workers | immutable command intake and worker reauthorization | ✓ WIRED | API has no dispatch, stage, pointer, fence, Fabric-write, or publisher credential capability. |
+| Connections UI | ontology API | typed run/rollback/status requests and durable projections | ✓ WIRED (source) | Local frontend coverage passes; deployed authenticated browser proof remains absent. |
+| Deployed coordinator execution | complete three-record drain | lifecycle evidence derivation | ✗ NOT PROVEN | Direct evidence cannot establish retry rotation; lifecycle fails closed. |
+| Deployed drain | publication/finalize/audit | ordered deployed stage machine | ✗ BLOCKED | Later stages cannot be accepted before lifecycle passes. |
 
 ## Data-Flow Trace
 
-| Flow | Actual terminal source/result | Status |
+| Flow | Source → sink | Status |
 |---|---|---|
-| Scheduled Job → refresh | `_RecordOnlyProcessor` → `intake_recorded`; usually selects zero runs | ✗ DISCONNECTED |
-| Job state → OneLake | CLI default `.aiops-local/...`; exported `AIOPS_HOME` unused | ✗ LOCAL/EPHEMERAL |
-| Incremental evidence → curator | No production constructor | ✗ DISCONNECTED |
-| Curator proposals → policy → candidate | No production constructor | ✗ DISCONNECTED |
-| Candidate → generation → Fabric → consumers | Local test fixture only | ✗ DISCONNECTED |
-| Live report generation/rollback facts | SHA-256 of `test_ontology_discovery_e2e.py` plus local pytest result | ⚠ STATIC/SUBSTITUTED |
-| Evaluation snapshot | Synthetic corpus → evaluator → durable snapshot contract | ✓ FLOWING for synthetic evaluation |
-
-## Live Deployment Evidence
-
-### Confirmed
-
-- Azure read-only inspection found `aiops-dev-ontology-discovery` provisioned
-  successfully with schedule `*/15 * * * *`, timeout 900 seconds, retry limit
-  2, user-assigned identity, and the expected finite command.
-- The five most recent listed Job executions were `Succeeded`, including the
-  scheduled execution at `2026-09-07T04:15:00Z`.
-- `13-07-LIVE-RBAC.json` records API/coordinator stage and pointer denials,
-  publisher stage/pointer/rollback/cleanup authorization, publisher
-  Contributor, and absent writer roles for API/coordinator/curator.
-- Terraform/source and live report metadata agree that the curator has four
-  read-only tools; source names are exactly
-  `list_changed_entities`, `get_entity_evidence`,
-  `get_ontology_vocabulary`, and `search_relationship_history`.
-- The final report contains 253/253 pairs at `BLOCKED/PENDING`, zero expert
-  labels, both missing release predicates, and
-  `activation_interface_present: false`.
-- Static production-code scan found no `shadow_mode=False`,
-  `allow_pair_release_testing=True`, or production invocation of
-  `activate_admission_release()`. The expected 30-day/200-label block is a
-  successful safety result.
-
-### Not confirmed by deployed behavior
-
-- The successful Job executions performed discovery or publication.
-- Zero model edges in deployed candidate, stage, pointer, or consumers.
-- Deployed deterministic publication, five-family consumer cutover, or
-  rollback.
-- Deployed lifecycle API/UI behavior.
-
-The retained report explicitly identifies the model-edge source as
-`executable-publication-contract` and the generation evidence as
-`artifact:test-ontology-discovery-e2e.py`. Those are valid offline checks, not
-deployed-state evidence.
+| Scheduled discovery | ConnectionRegistry → inventory pipeline → bounded evidence → curator → shadow policy → validation → dispatch | ✓ FLOWING in production code |
+| Incremental reconciliation | authoritative inventory → delta/full graph → parity → post-dispatch watermark commit | ✓ FLOWING in production code |
+| Publication | immutable dispatch → publisher validation → generation-scoped Fabric materialization → pointer CAS → five consumer checks | ✓ FLOWING in production code |
+| Rollback | immutable rollback command → publisher reauthorization → newer fence → conditional predecessor restore → consumer verification | ✓ FLOWING in production code |
+| API/UI state | OneLake state/publication/command roots → scoped API projections → Connections panel | ✓ FLOWING in production code |
+| Deployed acceptance | fixed prepare/coordinator lifecycle → retry-rotation receipt → publication/finalize | ✗ STOPPED at retry-rotation evidence |
 
 ## Behavioral Spot-Checks
 
-| Behavior | Command/result | Status |
-|---|---|---|
-| Phase 13 Python contracts | 27 targeted files; **299 passed** | ✓ PASS |
-| Connections ontology UI/type contracts | Vitest **16 passed**; `tsc --noEmit` passed | ✓ PASS |
-| Terraform | `fmt -check` and `validate`; configuration valid | ✓ PASS |
-| Dependency gate | `preflight_phase_13.py`; Phase 10/12 evidence passed | ✓ PASS |
-| Promptfoo | Exact config validation and no-cache eval; **8/8 passed** | ✓ PASS |
-| Phoenix | Loopback inspection; **7 spans**, zero violations | ✓ PASS |
-| Repository evaluator | Synthetic corpus passed; snapshot written under `/tmp`; release `BLOCKED/PENDING` | ✓ PASS |
-| Targeted Ruff | All Phase 13 Python implementation files passed | ✓ PASS |
-| Exact deployed CLI composition | Isolated run returned `selected=0`, `processed=0` | ✗ FAIL |
-| Live API route presence | Live OpenAPI contains **0** `/ontology-discovery` paths | ✗ FAIL |
+The user-provided post-merge focused gates are accepted as integration evidence:
 
-## Probe Execution
+| Gate | Result | Status |
+|---|---:|---|
+| Phase 13 backend tests | 161 passed | ✓ PASS |
+| Frontend tests | 596 passed | ✓ PASS |
+| Ruff | passed | ✓ PASS |
+| Terraform fmt/validate | passed | ✓ PASS |
+| TypeScript | passed | ✓ PASS |
+| ESLint | passed | ✓ PASS |
 
-| Probe | Result | Status |
+Five critical named tests were also rerun locally without cloud access:
+
+| Behavior | Test | Result |
 |---|---|---|
-| `.planning/scripts/preflight_phase_13.py` | Phase 10 and Phase 12 complete and independently verified | PASS |
-| Conventional `probe-*.sh` | No Phase 13 probe declared; applicable executable gates were run directly | N/A |
+| Restart-safe fair retry rotation | `test_eligible_epoch_rotates_retrying_head_and_survives_every_restart` | ✓ PASS |
+| Full reconciliation converges to clean rebuild | `test_complete_reconciliation_converges_to_clean_rebuild` | ✓ PASS |
+| Failed post-check restores predecessor under newer fence | `test_failed_post_check_automatically_restores_predecessor_with_newer_fence` | ✓ PASS |
+| Manual publish and rollback survive process reconstruction | `test_manual_publish_and_rollback_survive_every_process_reconstruction` | ✓ PASS |
+| Accepted review remains shadow-excluded | `test_accepted_review_is_durable_but_shadow_never_admits_model_edge` | ✓ PASS |
+
+These tests prove implementation behavior. They do not substitute for the
+missing deployed lifecycle evidence.
+
+## Deployment and Probe Evidence
+
+| Evidence | Result | Status |
+|---|---|---|
+| `.planning/eval/ontology-gap-deployment.json` | `status=applied`; zero deletes/replacements; reviewed roots/templates/images; no runtime Job-start grants | ✓ PASS for deployment topology |
+| `.planning/eval/ontology-deployed-lifecycle.json` preflight | Template/root/tag/credential boundary accepted | ✓ PASS |
+| Deployed lifecycle stage | `coordinator_retry_rotation_unavailable` | ✗ FAIL |
+| Publication stage | Not completed in current artifact | ✗ BLOCKED |
+| Finalize stage | Not completed in current artifact | ✗ BLOCKED |
+| Plan 13-21 final deployed-only audit | No completed summary/report | ✗ MISSING |
+
+No Azure command or probe was run during this verification.
 
 ## Requirements Coverage
 
-| Requirement | Verdict | Evidence and exact remediation |
+| Requirement | Status | Evidence |
 |---|---|---|
-| AUTO-ONT-01 | ✗ BLOCKED | Durable algorithms exist, but the deployed scheduler is record-only, does not enqueue eligible work, and uses no shared durable store. Replace the CLI composition and add deployed checkpoint/output verification. |
-| AUTO-ONT-02 | ✗ BLOCKED | Incremental logic passes tests but is orphaned from the production coordinator. Wire an authoritative evidence provider and full-reconciliation schedule into the run-once pipeline. |
-| AUTO-ONT-03 | ✗ BLOCKED | Curator/tool boundary is deployed and least-privilege evidence exists, but no runtime invokes the curator. Construct and execute the scoped curator adapter from persisted bounded batches. |
-| AUTO-ONT-04 | ✗ BLOCKED | Policy, identity, review CAS, and hard shadow checks pass in isolation, but no production proposal flow reaches them. Wire proposal persistence/review/policy/candidate assembly while retaining shadow-only defaults. |
-| AUTO-ONT-05 | ✗ BLOCKED | CAS/fence/publisher/rollback code and RBAC canaries pass, but the publisher adapter is never constructed and API rollback is unavailable. Add the dedicated publisher service composition and deployed rollback proof. |
-| AUTO-ONT-06 | ✗ BLOCKED | Local persistence/API/UI contracts pass; deployed Job state is ephemeral/separate, OneLake-root construction fails, and live APIs are absent. Implement a shared remote store and deploy the routes/UI. |
-| AUTO-ONT-07 | ✗ BLOCKED | Offline evaluation is strong, but “live” publication/edge/consumer/rollback facts are local test substitutions. Make the validator inspect deployed checkpoints, pointers, stages, consumers, and rollback outcomes. |
+| AUTO-ONT-01 | ✓ IMPLEMENTED / deployment acceptance pending | Durable one-per-pass epoch/cursor/retry/restart behavior passes local integration tests; direct deployed retry rotation is the current blocker. |
+| AUTO-ONT-02 | ✓ SATISFIED in implementation | Incremental/full reconciliation and drift convergence are wired and behavior-tested. |
+| AUTO-ONT-03 | ✓ SATISFIED in implementation | Scoped proposal-only curator, exact four read-only tools, and no publication authority. |
+| AUTO-ONT-04 | ✓ SATISFIED | Content addressing, review/audit, deterministic validation, and hard-shadow exclusion are enforced. |
+| AUTO-ONT-05 | ✓ IMPLEMENTED / deployed drill pending | Exact publisher capability boundary, ordered visibility, fencing, consumers, and rollback are behavior-tested. |
+| AUTO-ONT-06 | ✓ SATISFIED in implementation | Durable shared roots and fresh-process API/worker reconstruction are tested. |
+| AUTO-ONT-07 | ✗ BLOCKED | Complete deployed lifecycle, publication/rollback, UI/API, and final sanitized audit evidence is absent. |
 
-No later roadmap phase explicitly owns these gaps; nothing was deferred.
+No later roadmap phase owns these gaps. Plans 13-20 and 13-21 are the explicit
+Phase 13 closeout work; the roadmap still marks Plans 13-19 through 13-21
+unexecuted.
 
-## Anti-Patterns and Warnings
+## Safety and Security Outcome
 
-| File | Pattern | Severity | Impact |
+`13-SECURITY.md` truthfully closes the implementation threat register and notes
+that security closure does not promote the feature. The retained safety
+outcome is correct:
+
+- `activation_interface_present: false`
+- `release_status: BLOCKED/PENDING`
+- zero accepted authoritative model promotion
+- production policy uses `shadow_mode=True`
+- `activate_admission_release()` is a guarded synthetic-test seam, not a
+  production API/UI or runtime invocation
+- API, coordinator, curator, and evidence identities have no Job-start
+  authority; API/coordinator have no publisher authority
+
+The deployed evidence failure is therefore fail-closed. It does not create a
+release or privilege bypass.
+
+## Anti-Patterns and Evidence Integrity
+
+| File | Finding | Severity | Impact |
 |---|---|---|---|
-| `src/ontology_discovery/cli.py` | Explicit “Later Phase 13 plans replace this composition” record-only implementation remained at phase completion | 🛑 BLOCKER | The deployed schedule is a successful no-op, not ontology discovery. |
-| `scripts/validate_ontology_discovery_live.py` | Local test PASS is projected into deployed edge-count/generation/consumer fields | 🛑 BLOCKER | Produces a false-positive live closeout report. |
-| `src/onboarding/service.py` | `resolve_root(abfss://...)` returns `str`, then code uses `/ "state"` | 🛑 BLOCKER | A direct OneLake-root construction raises `TypeError`; remote durability is not implemented. |
-| `13-07-LIVE-RBAC.json` | Raw scoped identifiers and missing declared evidence fields | ⚠ WARNING | Retained evidence violates the phase's sanitization/audit shape. |
-| `13-VALIDATION.md` | Frontmatter remains `in_progress` and many implemented task rows remain `pending` | ⚠ WARNING | Validation metadata does not accurately represent phase completion. |
+| `13-20-SUMMARY.md` | Claims all four deployed stages passed | ⚠ WARNING | Contradicted by the current lifecycle artifact; must not be used for closeout. |
+| `OntologyAutomationPanel.tsx` | Conditional `return null` in a status helper | ℹ INFO | Inspection shows a loading/error suppression branch, not a user-visible feature stub. |
 
-The only generic stub-pattern match in the UI was a conditional
-`return null` while status is loading/error; inspection showed it is not a
-user-visible stub. No unreferenced `TODO`, `FIXME`, or `XXX` marker was found
-in the Phase 13 implementation surfaces.
+No unreferenced `TBD`, `FIXME`, or `XXX` marker was found in the inspected
+Phase 13 integration surfaces. No production activation call or UI/API release
+control was found.
 
-## Human Verification Required
+## Exact Remaining Blockers
 
-The UI-SPEC keyboard/focus/assistive-technology/390px backstop remains
-unperformed in this verification. It is not the current release gate because
-the production-wiring and deployment blockers above must be fixed first.
+1. **Coordinator deployed retry rotation:** retain direct before/after snapshots
+   and execution receipts proving one member per pass, a retrying member rotates
+   behind later work, at least one process replacement occurs, epoch/cursor
+   lineage survives restart, and all three prepared members terminate.
+2. **Publication and rollback deployed drill:** only after blocker 1 closes,
+   capture immutable stage, validation, five-family compatibility, Fabric
+   materialization, final preconditions, pointer CAS, post-check, stale-writer
+   rejection, automatic/explicit rollback, and old/new/old receipts.
+3. **Final deployed-only audit:** run the authenticated API and live Connections
+   UI audit without interception, regenerate effective RBAC/no-override
+   evidence, prove cleanup and retained audit, and issue the final sanitized
+   shadow report.
 
-## Gaps Summary
+## Ship / Integration Recommendation
 
-This is not a case where the expected shadow-only release block should be
-treated as failure. The 30-day/200-label `BLOCKED/PENDING` result and absence
-of an activation bypass are correct and verified.
+**Integrate the implementation branch only as fail-closed shadow
+infrastructure; do not declare Phase 13 complete and do not enable or promote
+model-derived ontology relationships.**
 
-The failure is earlier in the flow: the deployed scheduled command never
-executes the implementation that Phase 13 built. The live validator then
-accepts successful no-op Job exits and local contract tests as evidence for
-deployed discovery, publication, consumer cutover, rollback, and zero
-authoritative model edges. Until the production composition, shared durable
-store, publisher/rollback transport, deployment, and genuine live assertions
-are added, the phase goal is not achieved.
+The code and local quality gates are suitable for integration because the
+authoritative path remains hard-shadowed and the deployed validator fails
+closed. Shipping as a completed operational capability is blocked until the
+current lifecycle artifact reaches genuine deployed PASS through lifecycle,
+publication, and finalize, followed by the Plan 13-21 API/UI/RBAC audit.
 
 ---
 
-_Verified: 2026-09-07T04:20:09Z_
+_Verified: 2026-09-08T09:02:47Z_
 _Verifier: the agent (gsd-verifier)_

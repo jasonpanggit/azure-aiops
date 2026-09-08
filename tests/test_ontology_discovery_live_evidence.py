@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,20 +13,33 @@ from scripts.validate_ontology_discovery_live import (
     EXPECTED_CURATOR_TOOLS,
     FIXED_JOB_NAMES,
     EvidenceError,
+    Plan19DeploymentContract,
+    _configured_curator_tools,
+    _deployed_failure_report,
     _full_opaque,
     _parser,
+    _run_isolated_az_json,
     assert_fixed_template,
     assert_stage_transition,
     build_job_start_command,
+    derive_cleanup_evidence,
+    derive_coordinator_selection_receipt,
+    derive_drain_evidence,
+    derive_injection_evidence,
+    derive_maintenance_evidence,
+    derive_prepare_evidence,
     evaluate_lifecycle_evidence,
     evaluate_publication_evidence,
     expand_role_actions,
     extract_evidence_job_record,
+    fetch_live_job,
     isolated_azure_environment,
     job_template_hash,
     load_plan19_deployment_contract,
     load_resume_checkpoint,
     main,
+    merge_resume_checkpoint,
+    run_fixed_job,
     sanitize_deployed_evidence,
     validate_azure_contexts,
     validate_evidence_job_boundary,
@@ -223,7 +237,7 @@ def _complete_lifecycle() -> dict[str, object]:
             "deleted_epoch_count": 1,
             "active_fixture_connections": 0,
             "active_prepared_epochs": 0,
-            "retained_receipts": ["prepare", "cleanup", "sweep"],
+            "retained_receipts": ["prepare", "cleanup"],
             "audit_immutable": True,
             "independent_observer": "evidence",
             "tag_hash_unchanged": True,
@@ -237,6 +251,321 @@ def _complete_lifecycle() -> dict[str, object]:
         },
         "release_status": "BLOCKED/PENDING",
     }
+
+
+def _snapshot(
+    *,
+    cursor: int,
+    outcomes: tuple[str, str, str],
+    attempts: tuple[int, int, int],
+    fixture_status: str = "prepared",
+    active_records: int = 3,
+    active_epochs: int = 1,
+) -> dict[str, object]:
+    records = ["sha256:" + char * 64 for char in ("1", "2", "3")]
+    return {
+        "facts": {
+            "fixture": {
+                "drill_count": 1,
+                "active_drill_count": int(fixture_status == "prepared"),
+                "status": fixture_status,
+                "drill_hash": "sha256:" + "a" * 64,
+                "owner_hash": "sha256:" + "b" * 64,
+                "fence_hash": "sha256:" + "c" * 64,
+                "epoch_hash": "sha256:" + "d" * 64,
+                "record_count": 3,
+                "record_hashes": records,
+                "ttl_bounded": True,
+                "receipt_events": (
+                    ["prepared"]
+                    if fixture_status == "prepared"
+                    else ["prepared", "cleaned"]
+                ),
+                "receipt_count": 1 if fixture_status == "prepared" else 2,
+                "audit_hash": "sha256:" + "e" * 64,
+                "prepare_receipt_hash": "sha256:" + "4" * 64,
+                "cleanup_receipt_hash": (
+                    ""
+                    if fixture_status == "prepared"
+                    else "sha256:" + "5" * 64
+                ),
+            },
+            "registry": {
+                "revision": 7,
+                "active_fixture_count": active_records,
+                "fixture_record_hashes": records if active_records else [],
+            },
+            "epoch": {
+                "active_epoch_count": active_epochs,
+                "epoch_count": 1 if active_epochs else 0,
+                "epoch_hash": "sha256:" + "d" * 64 if active_epochs else "",
+                "snapshot_hash": (
+                    "sha256:" + "f" * 64 if active_epochs else ""
+                ),
+                "status": "active" if active_epochs else "absent",
+                "cursor": cursor,
+                "revision": sum(attempts),
+                "member_count": 3 if active_epochs else 0,
+                "members": (
+                    [
+                        {
+                            "record_hash": record_hash,
+                            "outcome": outcome,
+                            "attempt_count": attempt,
+                            "reason_hash": "sha256:" + str(index + 4) * 64,
+                            "updated_at_hash": (
+                                "sha256:" + str(index + 7) * 64
+                            ),
+                            "authorization_hash": (
+                                "sha256:" + str(index) * 64
+                            ),
+                        }
+                        for index, (record_hash, outcome, attempt) in enumerate(
+                            zip(records, outcomes, attempts, strict=True),
+                            start=1,
+                        )
+                    ]
+                    if active_epochs
+                    else []
+                ),
+            },
+            "runs": {"count": 3, "records": []},
+            "evidence_batches": {
+                "count": 1,
+                "injection_match_count": 1,
+                "injection_resource_hash": "sha256:" + "9" * 64,
+                "injection_tag_hash": "sha256:" + "8" * 64,
+                "injection_scope_hash": "sha256:" + "7" * 64,
+                "records": [],
+            },
+            "dispatch": {
+                "count": 1,
+                "model_edge_counts": {
+                    "candidate": 0,
+                    "stage": 0,
+                    "active": 0,
+                    "consumer": 0,
+                },
+                "records": [],
+            },
+            "arg": {
+                "matching_tag_count": 1,
+                "resource_hash": "sha256:" + "9" * 64,
+                "tag_hash": "sha256:" + "8" * 64,
+                "scope_hash": "sha256:" + "7" * 64,
+                "observation_hash": "sha256:" + "6" * 64,
+            },
+        }
+    }
+
+
+def test_prepare_and_cleanup_are_derived_from_successive_closed_snapshots() -> None:
+    prepared = _snapshot(
+        cursor=0,
+        outcomes=("pending", "pending", "pending"),
+        attempts=(0, 0, 0),
+    )
+    prepare = derive_prepare_evidence(prepared)
+    assert prepare["status"] == "PASS"
+    assert prepare["active_record_count_after_exit"] == 3
+    assert prepare["audit_create_only"] is True
+
+    cleaned = _snapshot(
+        cursor=0,
+        outcomes=("pending", "pending", "pending"),
+        attempts=(0, 0, 0),
+        fixture_status="cleaned",
+        active_records=0,
+        active_epochs=0,
+    )
+    cleanup = derive_cleanup_evidence(prepared, cleaned)
+    assert cleanup["status"] == "PASS"
+    assert cleanup["deleted_record_hashes"] == prepare["record_hashes"]
+    assert cleanup["retained_receipts"] == ["prepare", "cleanup"]
+
+    malformed = json.loads(json.dumps(prepared))
+    malformed["facts"]["registry"]["active_fixture_count"] = 2
+    with pytest.raises(EvidenceError, match="prepare_exact_three_records"):
+        derive_prepare_evidence(malformed)
+
+
+def test_selection_receipts_are_snapshot_diffs_not_synthesized_flags() -> None:
+    before = _snapshot(
+        cursor=0,
+        outcomes=("pending", "pending", "pending"),
+        attempts=(0, 0, 0),
+    )
+    after = _snapshot(
+        cursor=1,
+        outcomes=("duplicate", "pending", "pending"),
+        attempts=(1, 0, 0),
+    )
+    receipt = derive_coordinator_selection_receipt(
+        before,
+        after,
+        {"execution_hash": "sha256:" + "a" * 64},
+    )
+    assert receipt["record_hash"] == "sha256:" + "1" * 64
+    assert receipt["outcome"] == "duplicate"
+    assert receipt["cursor_before"] == 0
+    assert receipt["cursor_after"] == 1
+
+    two_changes = json.loads(json.dumps(after))
+    two_changes["facts"]["epoch"]["members"][1]["attempt_count"] = 1
+    two_changes["facts"]["epoch"]["members"][1]["outcome"] = "succeeded"
+    with pytest.raises(EvidenceError, match="coordinator_exactly_one_member"):
+        derive_coordinator_selection_receipt(
+            before,
+            two_changes,
+            {"execution_hash": "sha256:" + "b" * 64},
+        )
+
+    drifted = json.loads(json.dumps(after))
+    drifted["facts"]["epoch"]["snapshot_hash"] = "sha256:" + "0" * 64
+    with pytest.raises(EvidenceError, match="coordinator_snapshot_lineage"):
+        derive_coordinator_selection_receipt(
+            before,
+            drifted,
+            {"execution_hash": "sha256:" + "b" * 64},
+        )
+
+
+def test_drain_uses_durable_rotation_history_after_resume() -> None:
+    prepared = _snapshot(
+        cursor=0,
+        outcomes=("pending", "pending", "pending"),
+        attempts=(0, 0, 0),
+    )
+    drained = _snapshot(
+        cursor=0,
+        outcomes=(
+            "exhausted_failure",
+            "exhausted_failure",
+            "exhausted_failure",
+        ),
+        attempts=(3, 3, 3),
+    )
+    drained["facts"]["epoch"]["status"] = "drained"
+    drained["facts"]["epoch"]["active_epoch_count"] = 0
+    drained["facts"]["epoch"]["revision"] = 18
+    drained["facts"]["runs"] = {
+        "count": 3,
+        "records": [
+            {
+                "connection_hash": "sha256:" + str(index) * 64,
+                "attempt_count": 3,
+                "authorization_hash": "sha256:" + str(index) * 64,
+                "process_hashes": [
+                    "sha256:" + str(index + offset) * 64
+                    for offset in (1, 2, 3)
+                ],
+            }
+            for index in (1, 2, 3)
+        ],
+    }
+    preflight = {
+        "contract": {
+            "validation_connection_root_hash": "sha256:" + "a" * 64,
+        }
+    }
+
+    result = derive_drain_evidence(
+        preflight=preflight,
+        prepared=prepared,
+        receipts=[],
+        final_snapshot=drained,
+    )
+
+    assert result["durable_rotation_proof"] is True
+    assert result["retry_rotated"] is True
+    assert result["later_member_progress"] is True
+    assert len(result["selection_receipts"]) == 3
+
+
+def test_injection_derivation_requires_direct_arg_batch_dispatch_and_tool_facts() -> None:
+    observed = _snapshot(
+        cursor=0,
+        outcomes=("duplicate", "exhausted_failure", "succeeded"),
+        attempts=(1, 2, 1),
+    )
+    preflight = {
+        "injection_contract": {
+            "resource_hash": "sha256:" + "9" * 64,
+            "tag_hash": "sha256:" + "8" * 64,
+            "scope_hash": "sha256:" + "7" * 64,
+            "configured_tools": list(EXPECTED_CURATOR_TOOLS),
+            "curator_source_class": "OntologyCurator",
+        }
+    }
+
+    injection = derive_injection_evidence(preflight, observed)
+
+    assert injection["status"] == "PASS"
+    assert injection["lineage"] == [
+        "terraform",
+        "arg",
+        "inventory",
+        "evidence",
+        "curator",
+    ]
+    assert injection["authoritative_model_edges"] == {
+        "candidate": 0,
+        "stage": 0,
+        "active": 0,
+        "consumer": 0,
+    }
+
+    no_arg = json.loads(json.dumps(observed))
+    no_arg["facts"]["arg"]["matching_tag_count"] = 0
+    with pytest.raises(EvidenceError, match="injection_arg_exact_match"):
+        derive_injection_evidence(preflight, no_arg)
+
+    no_tools = json.loads(json.dumps(preflight))
+    del no_tools["injection_contract"]["configured_tools"]
+    with pytest.raises(
+        EvidenceError,
+        match="injection_configured_tools_unavailable",
+    ):
+        derive_injection_evidence(no_tools, observed)
+
+
+def test_maintenance_evidence_boundary_fails_closed_without_direct_api_receipts() -> None:
+    with pytest.raises(
+        EvidenceError,
+        match="maintenance_authenticated_api_evidence_required",
+    ):
+        derive_maintenance_evidence(None)
+
+    direct = {
+        "source": "authenticated_api",
+        "general_operator_status": 403,
+        "maintenance_status": 200,
+        "command_authorization": "authorized",
+        "next_run": "full",
+        "following_run": "incremental",
+    }
+    assert derive_maintenance_evidence(direct) == {
+        "general_operator_denied": True,
+        "maintenance_principal_accepted": True,
+        "coordinator_reauthorized": True,
+        "next_run": "full",
+        "following_run": "incremental",
+    }
+
+    fabricated = {**direct, "source": "local_contract"}
+    with pytest.raises(
+        EvidenceError,
+        match="maintenance_authenticated_api_evidence_required",
+    ):
+        derive_maintenance_evidence(fabricated)
+
+    failure = _deployed_failure_report(
+        stage="lifecycle",
+        exc=EvidenceError("maintenance_authenticated_api_evidence_required"),
+    )
+    assert failure["closed_reason"] == (
+        "maintenance_authenticated_api_evidence_required"
+    )
 
 
 def test_sequence_rejects_reordered_or_incomplete_lifecycle() -> None:
@@ -342,6 +671,13 @@ def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
             },
             "coordinator_tag_hash": "sha256:" + "e" * 64,
         },
+        "plans": {
+            "validation": {
+                "root_hashes": {
+                    "coordinator_connection": "sha256:" + "f" * 64,
+                }
+            }
+        },
     }
     path = tmp_path / "deployment.json"
     path.write_text(json.dumps(deployment), encoding="utf-8")
@@ -349,7 +685,7 @@ def test_plan19_contract_requires_applied_stable_hashes_and_exact_roots(
     contract = load_plan19_deployment_contract(path)
     assert contract.status == "applied"
     assert contract.template_hashes == hashes
-    assert contract.validation_connection_root_hash == "sha256:" + "a" * 64
+    assert contract.validation_connection_root_hash == "sha256:" + "f" * 64
     assert contract.coordinator_tag_hash == "sha256:" + "e" * 64
 
     drifted = json.loads(json.dumps(deployment))
@@ -543,8 +879,8 @@ def test_evidence_job_record_is_entra_bound_closed_and_exact_identity() -> None:
         "observations": {
             name: {"count": 1, "hashes": ["sha256:" + char * 64]}
             for name, char in zip(
-                ("arg", "fabric", "onelake", "api"),
-                ("5", "6", "7", "8"),
+                ("arg", "fabric", "onelake"),
+                ("5", "6", "7"),
                 strict=True,
             )
         },
@@ -589,8 +925,8 @@ def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> 
         observations={
             name: {"count": 1, "hashes": ["sha256:" + char * 64]}
             for name, char in zip(
-                ("arg", "fabric", "onelake", "api"),
-                ("5", "6", "7", "8"),
+                ("arg", "fabric", "onelake"),
+                ("5", "6", "7"),
                 strict=True,
             )
         },
@@ -612,6 +948,12 @@ def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> 
     ]
 
     assert extract_evidence_job_record(logs) == record
+    aca_line = (
+        '{"TimeStamp":"2026-09-08T00:00:00Z","Log":"F '
+        + json.dumps(record, separators=(",", ":"))
+        + '"}'
+    )
+    assert extract_evidence_job_record(aca_line) == record
     with pytest.raises(EvidenceError, match="exactly one"):
         extract_evidence_job_record(
             [*logs, {"Log_s": json.dumps(record, separators=(",", ":"))}]
@@ -910,5 +1252,344 @@ def test_deployed_stage_fails_before_legacy_shadow_or_cloud_action(
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["mode"] == "deployed-fixed-template"
     assert report["status"] == "FAIL"
-    assert report["missing_evidence"] == ["EvidenceError"]
-    assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" in report["blocker"]
+    assert report["missing_evidence"] == ["evidence_precondition"]
+    assert report["closed_reason"] == "evidence_precondition"
+    assert report["blocker_code"] == "evidence_precondition"
+    assert "AIOPS_DEPLOYER_AZURE_CONFIG_DIR" not in json.dumps(report)
+
+
+def test_isolated_az_json_never_uses_ambient_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    azure_home = tmp_path / "azure"
+    azure_home.mkdir(mode=0o700)
+    os.chmod(azure_home, 0o700)
+    observed: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["command"] = command
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, '{"name":"fixed"}', "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = _run_isolated_az_json(
+        ["az", "account", "show", "-o", "json"],
+        azure_config_dir=azure_home,
+        env={
+            "PATH": "/usr/bin",
+            "AZURE_CONFIG_DIR": "/ambient",
+            "AZURE_CLIENT_SECRET": "must-not-bleed",
+            "ARM_CLIENT_SECRET": "must-not-bleed",
+        },
+    )
+
+    assert result == {"name": "fixed"}
+    isolated = observed["env"]
+    assert isinstance(isolated, dict)
+    assert isolated["AZURE_CONFIG_DIR"] == str(azure_home.resolve())
+    assert isolated["PATH"] == "/usr/bin"
+    assert "AZURE_CLIENT_SECRET" not in isolated
+    assert "ARM_CLIENT_SECRET" not in isolated
+
+
+def test_fixed_job_execution_fetches_starts_waits_and_reads_logs_without_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    job = _template()
+    expected_hash = job_template_hash(job)
+    container = job["properties"]["template"]["containers"][0]
+    container["name"] = "ontology"
+
+    def fake_az(
+        command: list[str],
+        **_: object,
+    ) -> object:
+        calls.append(command)
+        joined = " ".join(command)
+        if " job show " in f" {joined} ":
+            return job
+        if " job start " in f" {joined} ":
+            return {"name": "execution-raw-id"}
+        if " job execution list " in f" {joined} ":
+            return [
+                {
+                    "name": "execution-raw-id",
+                    "properties": {"status": "Succeeded"},
+                }
+            ]
+        if " job logs show " in f" {joined} ":
+            return [{"Log_s": '{"status":"PASS","count":3}'}]
+        raise AssertionError(command)
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        fake_az,
+    )
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_text",
+        fake_az,
+    )
+    result = run_fixed_job(
+        resource_group="opaque-group",
+        job_name="ontology-fixture-prepare",
+        expected_template_hash=expected_hash,
+        azure_config_dir=tmp_path,
+        max_wait_seconds=10,
+    )
+
+    starts = [command for command in calls if command[2:4] == ["job", "start"]]
+    assert starts == [
+        [
+            "az",
+            "containerapp",
+            "job",
+            "start",
+            "--resource-group",
+            "opaque-group",
+            "--name",
+            "ontology-fixture-prepare",
+            "-o",
+            "json",
+        ]
+    ]
+    assert result["template"]["before"] == expected_hash
+    assert result["template"]["after"] == expected_hash
+    assert result["template"]["override_fields"] == []
+    assert result["execution_hash"] == _full_opaque("execution-raw-id")
+    assert result["logs"] == [{"Log_s": '{"status":"PASS","count":3}'}]
+
+
+def test_fetch_live_job_uses_only_isolated_deployer_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[list[str], Path]] = []
+
+    def fake_az(
+        command: list[str],
+        *,
+        azure_config_dir: Path,
+        **_: object,
+    ) -> object:
+        seen.append((command, azure_config_dir))
+        return _template()
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        fake_az,
+    )
+    assert fetch_live_job(
+        resource_group="opaque-group",
+        job_name="ontology-fixture-prepare",
+        azure_config_dir=tmp_path,
+    ) == _template()
+    assert seen == [
+        (
+            [
+                "az",
+                "containerapp",
+                "job",
+                "show",
+                "--resource-group",
+                "opaque-group",
+                "--name",
+                "ontology-fixture-prepare",
+                "-o",
+                "json",
+            ],
+            tmp_path,
+        )
+    ]
+
+
+def test_configured_curator_tools_are_read_from_live_agent_definition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    coordinator = _template()
+    environment = coordinator["properties"]["template"]["containers"][0]["env"]
+    environment.extend(
+        [
+            {
+                "name": "FOUNDRY_PROJECT_ENDPOINT",
+                "value": "https://foundry.invalid/project",
+            },
+            {"name": "FOUNDRY_ONTOLOGY_AGENT_NAME", "value": "curator"},
+            {"name": "FOUNDRY_ONTOLOGY_AGENT_VERSION", "value": "7"},
+        ]
+    )
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_isolated_az_json",
+        lambda *_args, **_kwargs: {
+            "name": "curator",
+            "state": "enabled",
+            "versions": {
+                "latest": {
+                    "id": "curator:1",
+                    "status": "active",
+                    "definition": {
+                        "kind": "prompt",
+                        "model": "gpt-5.4-mini",
+                        "tools": [
+                            {
+                                "allowed_tools": {
+                                    "tool_names": list(
+                                        EXPECTED_CURATOR_TOOLS
+                                    )
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+    )
+
+    result = _configured_curator_tools(
+        coordinator_job=coordinator,
+        azure_config_dir=tmp_path,
+    )
+    assert result["configured_tools"] == list(EXPECTED_CURATOR_TOOLS)
+    assert result["configured_version_hash"] != result["deployed_version_hash"]
+
+
+def test_deployed_stage_dispatch_is_ordered_resumable_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "artifact.json"
+    checkpoint = tmp_path / "checkpoint.json"
+    deployer = tmp_path / "deployer"
+    deployer.mkdir(mode=0o700)
+    os.chmod(deployer, 0o700)
+    monkeypatch.setenv("AIOPS_DEPLOYER_AZURE_CONFIG_DIR", str(deployer))
+    monkeypatch.delenv("AIOPS_EVIDENCE_AZURE_CONFIG_DIR", raising=False)
+    hashes = {
+        name: f"sha256:{index:064x}"
+        for index, name in enumerate(FIXED_JOB_NAMES, start=1)
+        if name != "evidence"
+    }
+    contract = Plan19DeploymentContract(
+        status="applied",
+        template_hashes=hashes,
+        validation_connection_root_hash="sha256:" + "a" * 64,
+        coordinator_tag_hash="sha256:" + "b" * 64,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live.load_plan19_deployment_contract",
+        lambda: contract,
+    )
+
+    def stage_result(name: str) -> dict[str, object]:
+        calls.append(name)
+        if name == "lifecycle":
+            return {
+                "status": "PASS",
+                "evidence": _complete_lifecycle(),
+                "evaluation": {"status": "PASS"},
+            }
+        if name == "publication":
+            return {
+                "status": "PASS",
+                "evidence": {"release_status": "BLOCKED/PENDING"},
+                "evaluation": {"status": "PASS"},
+            }
+        return {"status": "PASS", "release_status": "BLOCKED/PENDING"}
+
+    for stage in DEPLOYED_STAGES:
+        monkeypatch.setattr(
+            f"scripts.validate_ontology_discovery_live._run_{stage}_stage",
+            lambda *_, _stage=stage, **__: stage_result(_stage),
+        )
+
+    def argv(stage: str) -> list[str]:
+        return [
+            "--stage",
+            stage,
+            "--environment",
+            "validation",
+            "--shadow",
+            "--resume-file",
+            str(checkpoint),
+            "--output",
+            str(output),
+            "--fail-on-missing-evidence",
+        ]
+
+    assert main(argv("preflight")) == 0
+    assert main(argv("preflight")) == 0
+    assert calls == ["preflight"]
+    with pytest.raises(EvidenceError, match="stage transition"):
+        merge_resume_checkpoint(
+            checkpoint,
+            requested_stage="publication",
+            evidence_ref="sha256:" + "c" * 64,
+        )
+    assert main(argv("lifecycle")) == 0
+    assert main(argv("publication")) == 0
+    assert main(argv("finalize")) == 0
+    assert calls == list(DEPLOYED_STAGES)
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert artifact["completed_stages"] == list(DEPLOYED_STAGES)
+    assert artifact["status"] == "PASS"
+    assert load_resume_checkpoint(checkpoint)["completed_step_count"] == 4
+
+
+def test_deployed_stage_failure_artifact_never_retains_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "artifact.json"
+    checkpoint = tmp_path / "checkpoint.json"
+    deployer = tmp_path / "deployer"
+    deployer.mkdir(mode=0o700)
+    os.chmod(deployer, 0o700)
+    monkeypatch.setenv("AIOPS_DEPLOYER_AZURE_CONFIG_DIR", str(deployer))
+    monkeypatch.delenv("AIOPS_EVIDENCE_AZURE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live.load_plan19_deployment_contract",
+        lambda: Plan19DeploymentContract(
+            status="applied",
+            template_hashes={},
+            validation_connection_root_hash="sha256:" + "a" * 64,
+            coordinator_tag_hash="sha256:" + "b" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.validate_ontology_discovery_live._run_preflight_stage",
+        lambda *_, **__: (_ for _ in ()).throw(
+            EvidenceError(
+                "Bearer super-secret /subscriptions/raw command=az containerapp"
+            )
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "--stage",
+                "preflight",
+                "--environment",
+                "validation",
+                "--shadow",
+                "--resume-file",
+                str(checkpoint),
+                "--output",
+                str(output),
+                "--fail-on-missing-evidence",
+            ]
+        )
+        == 1
+    )
+    rendered = output.read_text(encoding="utf-8")
+    assert "super-secret" not in rendered
+    assert "/subscriptions/raw" not in rendered
+    report = json.loads(rendered)
+    assert report["blocker_code"] == "evidence_precondition"
+    assert report["closed_reason"] == "evidence_precondition"
+    assert report["status"] == "FAIL"

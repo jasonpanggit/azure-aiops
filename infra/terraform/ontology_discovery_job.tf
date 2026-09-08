@@ -137,7 +137,6 @@ resource "azurerm_container_app_job" "ontology_discovery" {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_coordinator.client_id
       }
-
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.main.connection_string
@@ -202,10 +201,20 @@ resource "azurerm_container_app_job" "ontology_publisher" {
     identity = azurerm_user_assigned_identity.ontology_publisher.id
   }
 
-  schedule_trigger_config {
-    cron_expression          = "*/5 * * * *"
-    parallelism              = 1
-    replica_completion_count = 1
+  dynamic "schedule_trigger_config" {
+    for_each = var.ontology_discovery_environment == "validation" ? [] : [1]
+    content {
+      cron_expression          = "*/5 * * * *"
+      parallelism              = 1
+      replica_completion_count = 1
+    }
+  }
+  dynamic "manual_trigger_config" {
+    for_each = var.ontology_discovery_environment == "validation" ? [1] : []
+    content {
+      parallelism              = 1
+      replica_completion_count = 1
+    }
   }
 
   template {
@@ -505,16 +514,8 @@ resource "azurerm_container_app_job" "ontology_evidence_read" {
     }
   }
 
-  # OneLake data-access roles (Phase13EvidenceRead) are managed outside
-  # Terraform by scripts/reconcile_onelake_data_access_roles.py. The operator
-  # must run that script before starting this Job for the first time.
   depends_on = [
     azurerm_role_assignment.azure_mcp_acr_pull,
-    fabric_workspace_role_assignment.ontology_evidence_ontology_discovery_state,
-    fabric_workspace_role_assignment.ontology_evidence_ontology_command,
-    fabric_workspace_role_assignment.ontology_evidence_ontology_dispatch,
-    fabric_workspace_role_assignment.ontology_evidence_ontology_publication,
-    fabric_workspace_role_assignment.ontology_evidence_ontology_rbac_validation,
   ]
   tags = local.tags
 }
@@ -569,6 +570,14 @@ resource "azurerm_container_app_job" "ontology_fixture_prepare" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_coordinator.client_id
+      }
+      env {
+        name  = "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID"
+        value = var.tenant_id
+      }
+      env {
+        name  = "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID"
+        value = var.subscription_id
       }
     }
   }
@@ -629,6 +638,14 @@ resource "azurerm_container_app_job" "ontology_fixture_cleanup" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_coordinator.client_id
+      }
+      env {
+        name  = "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID"
+        value = var.tenant_id
+      }
+      env {
+        name  = "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID"
+        value = var.subscription_id
       }
     }
   }

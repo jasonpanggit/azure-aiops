@@ -670,6 +670,7 @@ function GenerationSection({
               <div><dt>Validation</dt><dd>{item.validation.passed ? "Passed" : "Failed"}</dd></div>
               <div><dt>Fence/version</dt><dd>{item.fence} · {display(item.pointer_etag)}</dd></div>
               <div><dt>Prior generation</dt><dd>{display(item.prior_generation)}</dd></div>
+              <div><dt>Authoritative model edges</dt><dd>{item.validation.model_derived_relationships}</dd></div>
               <div><dt>Publication intent/result</dt><dd>{display(item.publication.intent)} / {display(item.publication.result)}</dd></div>
             </dl>
             {item.validation.errors.length > 0 && (

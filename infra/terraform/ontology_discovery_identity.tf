@@ -221,73 +221,10 @@ resource "fabric_workspace_role_assignment" "ontology_publication_publisher" {
 # The pre-existing Azure MCP UAI already has subscription Reader, Monitoring
 # Reader, and ACR pull. It is reused here only because those are the exact
 # read capabilities the fixed evidence collector requires. These assignments
-# add Viewer metadata access and OneLake Data Access Security Read to the five
-# isolated Phase 13 Lakehouse items. They deliberately do not touch the
-# production ops workspace, replace any existing data-access role, or grant
-# Contributor/Member/Admin.
-# ---------------------------------------------------------------------------
-
-resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_discovery_state" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_discovery_state[0].id
-  role         = "Viewer"
-  principal = {
-    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-    type = "ServicePrincipal"
-  }
-}
-
-resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_command" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_command[0].id
-  role         = "Viewer"
-  principal = {
-    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-    type = "ServicePrincipal"
-  }
-}
-
-resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_dispatch" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_dispatch[0].id
-  role         = "Viewer"
-  principal = {
-    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-    type = "ServicePrincipal"
-  }
-}
-
-resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_publication" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_publication[0].id
-  role         = "Viewer"
-  principal = {
-    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-    type = "ServicePrincipal"
-  }
-}
-
-resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_rbac_validation" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
-  role         = "Viewer"
-  principal = {
-    id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-    type = "ServicePrincipal"
-  }
-}
-
-# ---------------------------------------------------------------------------
-# OneLake data-access roles (Phase13EvidenceRead)
-#
-# These five roles were previously declared as fabric_onelake_data_access_security
-# resources, but the Fabric provider 1.13 ManagedIdentity round-tripping bug
-# prevents Terraform from managing them reliably.
-#
-# They are now managed by scripts/reconcile_onelake_data_access_roles.py via
-# the official Fabric REST API (PUT /v1/workspaces/{wid}/items/{iid}/dataAccessRoles).
-#
-# If these resources already exist in Terraform state from a prior apply, they
-# must be removed with `terraform state rm` AFTER live REST verification
-# confirms the roles are correct. See docs/onelake-data-access-role-migration.md.
+# add Viewer metadata access to the five isolated Phase 13 workspaces. OneLake
+# Read roles are reconciled by scripts/reconcile_onelake_data_access_roles.py
+# because Fabric provider 1.13.0 drops ManagedIdentity member fields while
+# refreshing state. The script preserves unrelated roles, uses ETag
+# preconditions, calls the REST dry-run endpoint first, and verifies the exact
+# server representation.
 # ---------------------------------------------------------------------------

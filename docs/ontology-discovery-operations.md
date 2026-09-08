@@ -198,26 +198,32 @@ ManagedIdentity round-tripping bug. See
 [docs/onelake-data-access-role-migration.md](onelake-data-access-role-migration.md)
 for the full migration procedure.
 
-### Dry-run (read-only verification)
+Create the mode-0600 contract from the sensitive Terraform output:
 
 ```bash
-uv run python scripts/reconcile_onelake_data_access_roles.py \
-  --items-json /path/to/evidence-items.json \
-  --object-id <AZURE_MCP_PRINCIPAL_ID> \
-  --tenant-id <TENANT_ID>
+contract_file="$(mktemp)"
+chmod 0600 "$contract_file"
+terraform -chdir=infra/terraform output -json \
+  ontology_evidence_role_contract >"$contract_file"
 ```
 
-### Apply (with ETag preconditions and post-write verification)
+Run a local dry run first, then the server-side dry-run, ETag-guarded write, and
+post-write verification:
 
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
-  --items-json /path/to/evidence-items.json \
-  --object-id <AZURE_MCP_PRINCIPAL_ID> \
-  --tenant-id <TENANT_ID> \
+  --contract-file "$contract_file" \
+  --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
+  --output .planning/eval/ontology-onelake-role-dry-run.json
+uv run python scripts/reconcile_onelake_data_access_roles.py \
+  --contract-file "$contract_file" \
+  --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
+  --output .planning/eval/ontology-onelake-role-reconciliation.json \
   --apply
+rm "$contract_file"
 ```
 
-The script acquires credentials via `DefaultAzureCredential`. No secrets
-appear on the CLI. Each item receives a dry-run comparison before write,
-ETag-guarded PUT, and post-write GET verification. Unrelated roles on the
-same item are preserved in the PUT payload.
+The script acquires a delegated Fabric token from only the selected mode-0700
+Azure CLI context. Each write is preceded by Fabric's `dryRun=true` request,
+uses the same collection ETag, and is followed by a GET that must return the
+exact `ManagedIdentity` member shape. Unrelated roles are preserved.

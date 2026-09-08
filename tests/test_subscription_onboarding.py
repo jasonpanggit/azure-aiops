@@ -646,6 +646,23 @@ def test_resolver_never_returns_secret_in_description() -> None:
     assert resolver.build(reference)["client_secret"] == "s3cret"
 
 
+def test_resolver_builds_managed_identity_without_secret() -> None:
+    from ontology.subscription_connection import CredentialReference
+
+    resolver = CredentialResolver(
+        provider=EnvironmentSecretProvider(env={}),
+        managed_identity_factory=lambda **kwargs: kwargs,
+    )
+    reference = CredentialReference(
+        credential_id="fixture-mi",
+        kind="managed_identity",
+        client_id=CLIENT,
+        tenant_id=TENANT,
+    )
+
+    assert resolver.build(reference) == {"client_id": CLIENT}
+
+
 def test_inactive_credential_cannot_be_resolved() -> None:
     from ontology.subscription_connection import CredentialReference
 

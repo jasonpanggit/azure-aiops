@@ -20,7 +20,7 @@ from onboarding.credentials import CredentialResolver, default_secret_provider
 from onboarding.registry import ConnectionNotFoundError, ConnectionRegistry
 from onboarding.runtime import build_connection_inventory_pipeline
 from ontology.ontology_validator import OntologyValidator
-from ontology.subscription_connection import SubscriptionConnection
+from ontology.subscription_connection import CredentialReference, SubscriptionConnection
 from storage.fs import is_onelake_uri
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
@@ -744,6 +744,8 @@ class ValidationFixtureLifecycle:
         state_home: str,
         environment: str,
         owner_id: str,
+        tenant_id: str,
+        subscription_id: str,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         if environment.strip().casefold() != "validation":
@@ -760,9 +762,13 @@ class ValidationFixtureLifecycle:
             state_home,
             document_store=OneLakeDocumentStore(state_home),
         )
-        self.owner_hash = hashlib.sha256(
-            _required(owner_id, "owner_id").encode()
-        ).hexdigest()
+        self.owner_id = _required(owner_id, "owner_id")
+        self.owner_hash = hashlib.sha256(self.owner_id.encode()).hexdigest()
+        self.tenant_id = _required(tenant_id, "tenant_id")
+        self.subscription_id = _required(
+            subscription_id,
+            "subscription_id",
+        )
         self.now = now or (lambda: datetime.now(UTC))
 
     def prepare(self) -> dict[str, Any]:
@@ -789,13 +795,22 @@ class ValidationFixtureLifecycle:
                 SubscriptionConnection(
                     connection_id=connection_id,
                     name=f"Ontology validation fixture {index}",
-                    tenant_id=str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, f"{drill_id}:tenant")
-                    ),
-                    subscription_id=str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_URL, f"{drill_id}:subscription:{index}"
+                    tenant_id=self.tenant_id,
+                    subscription_id=(
+                        self.subscription_id
+                        if index == 1
+                        else str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"{drill_id}:subscription:{index}",
+                            )
                         )
+                    ),
+                    credential=CredentialReference(
+                        credential_id=f"{connection_id}-managed-identity",
+                        kind="managed_identity",
+                        client_id=self.owner_id,
+                        tenant_id=self.tenant_id,
                     ),
                     metadata={
                         "environment": "validation",
@@ -930,6 +945,14 @@ def _fixture_lifecycle_from_env() -> ValidationFixtureLifecycle:
             "AIOPS_ONTOLOGY_ENVIRONMENT",
         ),
         owner_id=_required(os.environ.get("AZURE_CLIENT_ID"), "AZURE_CLIENT_ID"),
+        tenant_id=_required(
+            os.environ.get("AIOPS_ONTOLOGY_FIXTURE_TENANT_ID"),
+            "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID",
+        ),
+        subscription_id=_required(
+            os.environ.get("AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID"),
+            "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID",
+        ),
     )
 
 

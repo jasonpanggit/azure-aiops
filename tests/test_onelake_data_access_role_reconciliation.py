@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import copy
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The module under test — will be created in the next commit.
 from scripts.reconcile_onelake_data_access_roles import (
     EVIDENCE_ROLE_NAME,
     MAX_RETRIES,
@@ -24,7 +25,10 @@ from scripts.reconcile_onelake_data_access_roles import (
     VerificationDriftError,
     build_desired_role,
     merge_roles,
+    parse_contract,
+    reconcile_all_evidence_items,
     reconcile_item_roles,
+    reconcile_workspace_viewer,
     verify_roles_match,
 )
 
@@ -84,6 +88,49 @@ def _expected_evidence_role() -> dict[str, Any]:
     return build_desired_role(OBJECT_ID, TENANT_ID)
 
 
+def _contract() -> dict[str, object]:
+    names = (
+        "ontology_discovery_state",
+        "ontology_command",
+        "ontology_dispatch",
+        "ontology_publication",
+        "ontology_rbac_validation",
+    )
+    return {
+        "principal_object_id": OBJECT_ID,
+        "principal_resource_id": (
+            "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "resourceGroups/rg/providers/Microsoft.ManagedIdentity/"
+            "userAssignedIdentities/evidence"
+        ),
+        "tenant_id": TENANT_ID,
+        "targets": {
+            name: {
+                "workspace_id": f"00000000-0000-0000-0000-00000000000{index}",
+                "item_id": f"10000000-0000-0000-0000-00000000000{index}",
+            }
+            for index, name in enumerate(names, start=1)
+        },
+    }
+
+
+def test_contract_requires_exactly_five_isolated_targets() -> None:
+    items, object_id, tenant_id, resource_id = parse_contract(_contract())
+
+    assert len(items) == 5
+    assert object_id == OBJECT_ID
+    assert tenant_id == TENANT_ID
+    assert resource_id.endswith("/userAssignedIdentities/evidence")
+
+    invalid = _contract()
+    invalid["targets"].pop("ontology_dispatch")
+    with pytest.raises(
+        DataAccessRoleReconciliationError,
+        match="five exact",
+    ):
+        parse_contract(invalid)
+
+
 # ---------------------------------------------------------------------------
 # build_desired_role: exact least-privilege contract
 # ---------------------------------------------------------------------------
@@ -93,6 +140,7 @@ class TestBuildDesiredRole:
     def test_role_name_is_canonical(self) -> None:
         role = build_desired_role(OBJECT_ID, TENANT_ID)
         assert role["name"] == EVIDENCE_ROLE_NAME
+        assert role["kind"] == "Policy"
 
     def test_single_permit_rule_with_wildcard_path_and_read_action(self) -> None:
         role = build_desired_role(OBJECT_ID, TENANT_ID)
@@ -139,7 +187,9 @@ class TestMergeRoles:
         merged = merge_roles(existing, desired)
         unrelated_in_merged = [r for r in merged if r["name"] != EVIDENCE_ROLE_NAME]
         assert len(unrelated_in_merged) == 1
-        assert unrelated_in_merged[0] == UNRELATED_ROLE
+        assert unrelated_in_merged[0] == {
+            key: value for key, value in UNRELATED_ROLE.items() if key != "eTag"
+        }
 
     def test_preserves_multiple_unrelated_roles(self) -> None:
         existing = [copy.deepcopy(UNRELATED_ROLE), copy.deepcopy(SECOND_UNRELATED_ROLE)]
@@ -218,18 +268,21 @@ class TestVerifyRolesMatch:
         with pytest.raises(VerificationDriftError, match="drift"):
             verify_roles_match([wrong_member], desired)
 
-    def test_fails_when_unrelated_role_removed(self) -> None:
-        """Preservation means unrelated roles must survive; removal is drift."""
+    def test_accepts_omitted_object_type_only_with_entra_managed_identity_proof(
+        self,
+    ) -> None:
         desired = _expected_evidence_role()
-        original_roles = [
-            copy.deepcopy(UNRELATED_ROLE),
-            copy.deepcopy(desired),
-        ]
-        # Verify passes with both
-        verify_roles_match(original_roles, desired)
-        # If unrelated was removed, verify still passes because
-        # verify_roles_match only checks the evidence role presence/content
-        # (the PUT payload is what preserves unrelated roles).
+        omitted = copy.deepcopy(desired)
+        del omitted["members"]["microsoftEntraMembers"][0]["objectType"]
+
+        with pytest.raises(VerificationDriftError, match="drift"):
+            verify_roles_match([omitted], desired)
+
+        verify_roles_match(
+            [omitted],
+            desired,
+            verified_principal_type="ManagedIdentity",
+        )
 
     def test_passes_with_additional_unrelated_roles(self) -> None:
         desired = _expected_evidence_role()
@@ -297,6 +350,71 @@ class TestReconcileItemRolesETag:
         assert put_call.kwargs.get("headers", {}).get("If-Match") == '"v42"'
 
 
+def test_workspace_viewer_is_created_and_verified_without_broadening() -> None:
+    client = MagicMock()
+    missing = MagicMock()
+    missing.json.return_value = {"value": []}
+    missing.raise_for_status = MagicMock()
+    created = MagicMock(status_code=201)
+    verified = MagicMock()
+    verified.json.return_value = {
+        "value": [
+            {
+                "principal": {
+                    "id": OBJECT_ID,
+                    "type": "ServicePrincipal",
+                },
+                "role": "Viewer",
+            }
+        ]
+    }
+    verified.raise_for_status = MagicMock()
+    client.get.side_effect = [missing, verified]
+    client.post.return_value = created
+
+    result = reconcile_workspace_viewer(
+        client=client,
+        workspace_id=WORKSPACE_ID,
+        object_id=OBJECT_ID,
+        dry_run=False,
+    )
+
+    assert result["verified"] is True
+    assert client.post.call_args.kwargs["json"] == {
+        "principal": {"id": OBJECT_ID, "type": "ServicePrincipal"},
+        "role": "Viewer",
+    }
+
+
+def test_workspace_viewer_rejects_existing_broader_role() -> None:
+    client = MagicMock()
+    response = MagicMock()
+    response.json.return_value = {
+        "value": [
+            {
+                "principal": {
+                    "id": OBJECT_ID,
+                    "type": "ServicePrincipal",
+                },
+                "role": "Contributor",
+            }
+        ]
+    }
+    response.raise_for_status = MagicMock()
+    client.get.return_value = response
+
+    with pytest.raises(
+        DataAccessRoleReconciliationError,
+        match="non-Viewer",
+    ):
+        reconcile_workspace_viewer(
+            client=client,
+            workspace_id=WORKSPACE_ID,
+            object_id=OBJECT_ID,
+            dry_run=False,
+        )
+
+
 class TestReconcileItemRolesDryRun:
     def test_dry_run_does_not_put(self) -> None:
         existing = [copy.deepcopy(UNRELATED_ROLE)]
@@ -353,7 +471,7 @@ class TestReconcileItemRolesBoundedRetry:
 
         client = MagicMock()
         client.get.side_effect = [get_resp_1, get_resp_2, verify_resp]
-        client.put.side_effect = [put_412, put_ok]
+        client.put.side_effect = [put_412, put_ok, put_ok]
 
         result = reconcile_item_roles(
             client=client,
@@ -406,7 +524,7 @@ class TestReconcileItemRolesBoundedRetry:
 
         client = MagicMock()
         client.get.side_effect = [get_resp, get_resp, verify_resp]
-        client.put.side_effect = [put_429, put_ok]
+        client.put.side_effect = [put_429, put_ok, put_ok]
 
         result = reconcile_item_roles(
             client=client,
@@ -466,6 +584,33 @@ class TestReconcileItemRolesPostWriteVerification:
 
         assert result["verified"] is True
         assert client.get.call_count == 2
+        assert client.put.call_count == 2
+        dry_run_call, apply_call = client.put.call_args_list
+        assert dry_run_call.kwargs["params"] == {"dryRun": "true"}
+        assert "params" not in apply_call.kwargs
+
+    def test_verification_rejects_unrelated_role_removal(self) -> None:
+        existing = [copy.deepcopy(UNRELATED_ROLE)]
+        get_resp = _mock_get_response(existing, etag='"v1"')
+        put_resp = _mock_put_response(etag='"v2"')
+        verify_resp = _mock_get_response(
+            [_expected_evidence_role()],
+            etag='"v2"',
+        )
+
+        client = MagicMock()
+        client.get.side_effect = [get_resp, verify_resp]
+        client.put.return_value = put_resp
+
+        with pytest.raises(VerificationDriftError, match="unrelated"):
+            reconcile_item_roles(
+                client=client,
+                workspace_id=WORKSPACE_ID,
+                item_id=ITEM_ID,
+                object_id=OBJECT_ID,
+                tenant_id=TENANT_ID,
+                dry_run=False,
+            )
 
     def test_verification_failure_raises(self) -> None:
         existing = [copy.deepcopy(UNRELATED_ROLE)]
@@ -513,3 +658,45 @@ class TestReconcileItemRolesIdempotency:
         client.put.assert_not_called()
         assert result["already_converged"] is True
         assert result["verified"] is True
+
+
+def test_batch_uses_in_memory_bearer_token() -> None:
+    items, _, _, _ = parse_contract(_contract())
+    fake_client = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = fake_client
+
+    with (
+        patch("httpx.Client", return_value=context) as client_factory,
+        patch(
+            "scripts.reconcile_onelake_data_access_roles.reconcile_item_roles",
+            return_value={"verified": True},
+        ),
+        patch(
+            "scripts.reconcile_onelake_data_access_roles.reconcile_workspace_viewer",
+            return_value={"verified": True},
+        ),
+    ):
+        results = reconcile_all_evidence_items(
+            items=items,
+            object_id=OBJECT_ID,
+            tenant_id=TENANT_ID,
+            token_provider=lambda: "in-memory-token",
+            dry_run=False,
+        )
+
+    assert len(results) == 5
+    assert client_factory.call_args.kwargs["headers"] == {
+        "Authorization": "Bearer in-memory-token"
+    }
+
+    with pytest.raises(
+        DataAccessRoleReconciliationError,
+        match="five isolated",
+    ):
+        reconcile_all_evidence_items(
+            items=items[:-1],
+            object_id=OBJECT_ID,
+            tenant_id=TENANT_ID,
+            token_provider=lambda: "in-memory-token",
+        )

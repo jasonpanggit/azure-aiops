@@ -532,6 +532,8 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
         state_home=state_home,
         environment="validation",
         owner_id="coordinator-uai",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
         now=lambda: NOW,
     )
 
@@ -539,6 +541,16 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
     assert prepared["status"] == "prepared"
     assert len(prepared["connection_ids"]) == 3
     assert len(ConnectionRegistry(connection_home).list()) == 3
+    subscription_ids = {
+        row.subscription_id
+        for row in ConnectionRegistry(connection_home).list()
+    }
+    assert "subscription-a" in subscription_ids
+    assert len(subscription_ids) == 3
+    assert {
+        row.credential.kind
+        for row in ConnectionRegistry(connection_home).list()
+    } == {"managed_identity"}
     assert OntologyRunStore(
         state_home,
         document_store=OneLakeDocumentStore(state_home),
@@ -552,6 +564,8 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
         state_home=state_home,
         environment="validation",
         owner_id="coordinator-uai",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
         now=lambda: NOW,
     ).cleanup()
     assert cleaned["status"] == "cleaned"
