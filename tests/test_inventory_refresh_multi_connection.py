@@ -183,7 +183,8 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             [{"resource_id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
         ),
     }
-    calls: list[str] = []
+    calls: list[Path | str] = []
+    replay_calls: list[str] = []
     scope_calls: list[dict[str, list[str]] | None] = []
 
     def fake_build(config: ConnectorConfig, connection, resolver=None):
@@ -194,8 +195,9 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             self.source_root = source_root
             self.service = self
 
-        def sync(self, *, requested_scope=None):
+        def sync(self, *, replay_source_run_id="", requested_scope=None):
             calls.append(self.source_root)
+            replay_calls.append(replay_source_run_id)
             scope_calls.append(requested_scope)
             return type(
                 "Publication",
@@ -215,9 +217,28 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     monkeypatch.setattr(
         "onboarding.runtime.build_connection_inventory_pipeline", fake_build
     )
+    def fake_republish(root, *_args, **_kwargs):
+        DatasetStore(root).publish(
+            {
+                "inventory/os_observations": [],
+                "inventory/source_status": [],
+                "inventory/software_observations": [],
+                "inventory/software_source_status": [],
+                "inventory/resource_observations": [],
+            },
+            {},
+            {
+                "runId": "concurrent-empty-publication",
+                "status": "completed",
+                "startedAt": "2026-01-01T00:00:01Z",
+            },
+            ontology={},
+        )
+        return {"status": "published"}
+
     monkeypatch.setattr(
         "intelligence.inventory.combine.republish_combined_snapshot_to_fabric",
-        lambda *_args, **_kwargs: {"status": "published"},
+        fake_republish,
     )
     monkeypatch.setattr(
         "fabric.config.FabricRuntimeConfig.load",
@@ -234,8 +255,12 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         registry_root=str(tmp_path),
     )
 
-    expected_generation = Path(DatasetStore(tmp_path / "compat").current_generation() or "")
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]
-    assert calls == [str(expected_generation)]
+    assert calls == [tmp_path / "compat"]
+    assert replay_calls == [result["combined_manifest"]["runId"]]
     assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
-    assert (Path(calls[0]) / "manifest.json").is_file()
+    store = DatasetStore(tmp_path / "compat")
+    expected_generation = Path(
+        store.generation_path(str(result["combined_manifest"]["runId"])) or ""
+    )
+    assert (expected_generation / "manifest.json").is_file()
