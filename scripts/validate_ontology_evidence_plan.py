@@ -178,7 +178,7 @@ def validate_targeted_plan(
         address
         for address in CREATE_ADDRESSES
         if tuple(all_rows.get(address, {}).get("actions") or ())
-        not in {("create",), ("no-op",)}
+        not in {("create",), ("update",), ("no-op",)}
     )
     required_changes = {
         "azurerm_container_app_job.ontology_evidence_read[0]",
