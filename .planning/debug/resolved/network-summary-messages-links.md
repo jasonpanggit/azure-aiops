@@ -2,7 +2,7 @@
 status: resolved
 trigger: "Results incomplete callout remains; route table has no firewall edge; route-table drawer says findings may be incomplete despite 83 of 83 loaded."
 created: 2026-09-08T15:20:00+08:00
-updated: 2026-09-08T16:38:00+08:00
+updated: 2026-09-08T16:40:00+08:00
 reopened: 2026-09-08T16:08:48.698+08:00
 ---
 
@@ -43,7 +43,7 @@ reopened: 2026-09-08T16:08:48.698+08:00
 hypothesis: Resolved — the explicit provider-backed direct relationship is causal, scope-safe, deduplicated, accepted by the client, and independent of summary omission bookkeeping.
 test: Completed — failing-first targets, authorization/dedup boundaries, 166 adjacent backend tests, 200 adjacent web tests, static gates, and production-source revert/reapply all passed.
 expecting: Satisfied — source-only acceptance is complete without deployment or push; the deployed recheck remains pending under the frozen cloud lane.
-next_action: None — source/tests are committed as `17d072851`; this archived session and Phase 12 evidence are ready for exact-path documentation commit.
+next_action: None — source/tests are committed as `17d072851`, and the archived session, knowledge base, and Phase 12 evidence are committed as `b9e8e2f5e`.
 bug_class: bohrbug
 known_deployed_observation: The read-only deployed full payload contains Route `route-to-firewall` with next-hop IP `10.0.2.4` resolved to AzureFirewall, while summary contains zero next-hop edges; isolated replay of the prior conditional contraction passes.
 candidate_causes:
@@ -235,6 +235,10 @@ tdd_checkpoint:
   checked: Durable knowledge-base write and semantic index availability
   found: The prevention-backed resolution was appended to `.planning/debug/knowledge-base.md`. MemPalace is not installed in this environment, so semantic indexing was skipped and the plain-text knowledge base remains the durable fallback.
   implication: Future sessions can recall this omission-coupled relationship pattern through the required knowledge-base fallback.
+- timestamp: 2026-09-08T16:40:00+08:00
+  checked: Exact-path documentation commit and final repository status
+  found: Commit `b9e8e2f5e` contains only the resolved debug session, knowledge base, and two authorized Phase 12 evidence documents. Final status contains only the preserved pre-existing `.azure/deployment-plan.md` and `.azure/validate-status.json` modifications.
+  implication: Session archival and all owned commits are complete with no deployment, push, or unrelated staging.
 
 ## Eliminated
 
@@ -345,6 +349,7 @@ verification:
     deployment_performed: false
     push_performed: false
   commit: 17d072851
+  documentation_commit: b9e8e2f5e
 files_changed:
   - src/network/topology.py
   - tests/test_network_topology.py
