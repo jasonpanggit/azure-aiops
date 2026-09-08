@@ -396,6 +396,66 @@ MODEL_CONTRACT_DIVERGENCE = "acknowledged_deployment_name_distinct_from_contract
 DEPLOYMENT_MODEL_SOURCE = "var.foundry_model_name"
 
 
+# Staged rollout controls (Plan 11-12 Task 2). The canonical OrchestrationService
+# is introduced compatibility -> shadow -> canary -> default and can be reversed
+# to the prior revision/mode without rewriting threads or ledgers. The offline
+# gate proves the Terraform seam and the operator runbook agree on every stage,
+# the automatic hold, and the separately reviewed legacy-retirement condition.
+ROLLOUT_MODES = ("compatibility", "shadow", "canary", "default")
+
+
+def _check_rollout_controls() -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    container_tf = _read("infra/terraform/container_apps.tf")
+    variables_source = container_tf + "\n" + _read("infra/terraform/variables.tf")
+
+    # A single reviewed variable selects the rollout stage, constrained to the
+    # four modes; a big-bang cutover is unrepresentable.
+    if 'variable "copilot_rollout_mode"' not in variables_source:
+        failures.append(_failure("rollout_mode_variable_missing"))
+    else:
+        for mode in ROLLOUT_MODES:
+            if f'"{mode}"' not in variables_source:
+                failures.append(_failure("rollout_mode_absent", mode=mode))
+
+    # The mode and its bounded canary traffic reach the running revision as
+    # environment, and a rollback fallback mode is retained.
+    for token in (
+        "AIOPS_COPILOT_ROLLOUT_MODE",
+        "AIOPS_COPILOT_CANARY_PERCENTAGE",
+        "AIOPS_COPILOT_ROLLBACK_MODE",
+    ):
+        if token not in container_tf:
+            failures.append(_failure("rollout_env_missing", token=token))
+
+    if 'variable "copilot_canary_percentage"' not in variables_source:
+        failures.append(_failure("canary_percentage_variable_missing"))
+
+    # Legacy page-anchored planners must remain selectable for rollback
+    # throughout Phase 11; this plan never deletes them.
+    if '"deterministic"' not in variables_source:
+        failures.append(_failure("legacy_deterministic_mode_removed"))
+
+    # The operator runbook must document every stage, the automatic hold, the
+    # deterministic rollback, and the separately reviewed retirement gate.
+    try:
+        runbook = _read("docs/runbooks/copilot-orchestration-rollout.md")
+    except FileNotFoundError:
+        failures.append(_failure("rollout_runbook_missing"))
+        runbook = ""
+    runbook_lower = runbook.lower()
+    for stage in ROLLOUT_MODES:
+        if stage not in runbook_lower:
+            failures.append(_failure("runbook_missing_stage", stage=stage))
+    for token in ("hold", "rollback", "30", "shadow", "canary"):
+        if token not in runbook_lower:
+            failures.append(_failure("runbook_missing_procedure", token=token))
+    if "zero" not in runbook_lower or "v1" not in runbook_lower:
+        failures.append(_failure("runbook_missing_retirement_gate"))
+
+    return _check("rollout_controls", failures)
+
+
 def contract_models(manifest) -> list[str]:
     """Return the distinct model names the manifest declares."""
 
@@ -480,6 +540,7 @@ def run_offline() -> dict[str, Any]:
         _check_terraform_projection(manifest),
         _check_model_contract(manifest),
         _check_package_contents(),
+        _check_rollout_controls(),
     ]
     failures = [failure for check in checks for failure in check["failures"]]
     models = contract_models(manifest)
