@@ -1,0 +1,30 @@
+{
+  "live": {
+    "applied": true,
+    "coordinator_tag_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
+    "deployment_principal_fixture_access": true,
+    "no_runtime_job_start_grants": true,
+    "root_hashes": {
+      "AIOPS_CONNECTION_HOME": "sha256:c53e75f87d75a55fd79eda8b7952ba8dc79f40737707554d9e6aaf077d5c4f49",
+      "AIOPS_ONTOLOGY_COMMAND_HOME": "sha256:71bcf36d9cf09b1d357eddf12bf7d329e919fab2040f9160dcfe6772547e4976",
+      "AIOPS_ONTOLOGY_PUBLICATION_HOME": "sha256:86b3a09d55b2ecb98f3355cc9235a9bb6e6984532dc11959ee52b69c687eeba5",
+      "AIOPS_ONTOLOGY_STATE_HOME": "sha256:816e4380d622110652b3033cca55ae0d6e94ef09b4b90c9bd2c0ec471e9fedab"
+    },
+    "template_hashes_after": {
+      "coordinator": "sha256:dd88c46821850d19f9da561ae337cd44cbd0f7f15ec79078d7cedc4ba0717976",
+      "ontology_fixture_cleanup": "sha256:5faa5d12a56130244bcb25a057d7b63e9fd22d253ef8a9a55b196c7e4b2151e0",
+      "ontology_fixture_prepare": "sha256:4f0c9c9d65cd3dfc208730558aa0ca1c148cdc04ff037a4802519e93df72ec8b",
+      "publisher": "sha256:70e9054ca49bb6b99d1e07e8e7e8822d52539f5d8c823f9a5f69f19978e4cb84",
+      "rbac_validator": "sha256:51f3bdc2af660bc825671f9ca8034bf37694f24c2c685ff495ae15211ec0be79"
+    },
+    "template_hashes_before": {
+      "coordinator": "sha256:dd88c46821850d19f9da561ae337cd44cbd0f7f15ec79078d7cedc4ba0717976",
+      "ontology_fixture_cleanup": "sha256:5faa5d12a56130244bcb25a057d7b63e9fd22d253ef8a9a55b196c7e4b2151e0",
+      "ontology_fixture_prepare": "sha256:4f0c9c9d65cd3dfc208730558aa0ca1c148cdc04ff037a4802519e93df72ec8b",
+      "publisher": "sha256:70e9054ca49bb6b99d1e07e8e7e8822d52539f5d8c823f9a5f69f19978e4cb84",
+      "rbac_validator": "sha256:51f3bdc2af660bc825671f9ca8034bf37694f24c2c685ff495ae15211ec0be79"
+    }
+  },
+  "schema_version": "ontology-gap-deployment.v1",
+  "status": "applied"
+}
