@@ -3492,3 +3492,169 @@ describe("situation detail and service Copilot page adapters", () => {
     );
   });
 });
+
+describe("operational twin Copilot page adapter", () => {
+  const twinInput = {
+    scope: { subscription: ["sub-a"] },
+    twinId: "operational-twin",
+    version: "v1",
+    previousVersion: "v0",
+    observedAt: "2026-01-01T10:00:00Z",
+    liveObservedAt: "2026-01-01T10:00:00Z",
+    confidence: "medium",
+    entities: [
+      {
+        id: "resource:vm-payroll-1",
+        kind: "resource",
+        name: "payroll-vm",
+        version: "r1",
+        state: "current",
+        confidence: "high",
+        business_service: "Payroll",
+        resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/payroll-vm",
+      },
+      { id: "business_service:Payroll", kind: "business_service", name: "Payroll", version: "b1", state: "current", confidence: "high" },
+    ],
+    entitiesTotal: 4,
+    relationships: [
+      { id: "rel-1", source: "resource:vm-payroll-1", target: "business_service:Payroll", type: "supports", confidence: "high", supported: true },
+    ],
+    relationshipsTotal: 3,
+    timeline: [
+      { timestamp: "2026-01-01T10:00:00Z", type: "vulnerability_observed", entity: "vulnerability:CVE-2026-0001", summary: "CVE-2026-0001 observed" },
+    ],
+    timelineTotal: 5,
+    traversal: {
+      resource_id: "vm-payroll-1",
+      path: [
+        { id: "resource:vm-payroll-1", kind: "resource", name: "payroll-vm" },
+        { id: "business_service:Payroll", kind: "business_service", name: "Payroll" },
+      ],
+      business_consequence: ["Payroll", "Payroll API"],
+    },
+    scenario: {
+      scenario: "firewall_failure",
+      target: "vm-payroll-1",
+      likely_impact: "Traffic inspection and hub dependencies degrade.",
+      risk_delta: 20,
+      impacted_count: 4,
+      assumptions: ["Operator validation required"],
+    },
+    selectedResourceId: "vm-payroll-1",
+    available: true,
+    freshness: "fresh" as const,
+    unsupportedRelationships: ["experimental_edge"],
+    staleTemporalEvidence: ["previous revision v0"],
+    evidence: [
+      {
+        source_engine: "twin",
+        source_table: "live",
+        timestamp: "2026-01-01T10:00:00Z",
+        confidence: "medium" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds twin entity, relationship, timeline, traversal, and scenario identities with provenance", () => {
+    const context = buildTwinCopilotContext(twinInput);
+    expect(context.snapshot).toMatchObject({
+      page_kind: "network",
+      page_id: "twin",
+    });
+    // The selected resource carries a canonical ARM id, so it is retained as a
+    // scope-validated azure identity (not a domain guess).
+    expect(context.selectedEntities).toEqual([
+      {
+        type: "azure",
+        resource_id: "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/payroll-vm",
+      },
+    ]);
+    // A canonical ARM entity is retained as an azure identity.
+    expect(context.snapshot.evidence.some((row) =>
+      row.resource_id
+        === "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/payroll-vm")).toBe(true);
+    // Relationship identity and provenance are retained.
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.type === "supports" && row.data.source === "resource:vm-payroll-1")).toBe(true);
+    // Scenario projection is marked hypothetical, never observed reality.
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.scenario === "firewall_failure" && row.data.observed === false)).toBe(true);
+    // Observed entities are distinguished from scenario projections.
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.name === "payroll-vm" && row.data.observed === true)).toBe(true);
+    expect(context.starterQuestions.every((q) => q.specialistId === "network")).toBe(true);
+    expect(context.snapshot.evidence.every((row) =>
+      row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+  });
+
+  it("exposes visible/total/truncated coverage for bounded graph and traversal results", () => {
+    const context = buildTwinCopilotContext(twinInput);
+    expect(context.coverage.entities).toMatchObject({
+      visible_count: 2,
+      total_count: 4,
+      complete: false,
+      truncated: true,
+    });
+    expect(context.coverage.relationships).toMatchObject({
+      visible_count: 1,
+      total_count: 3,
+      truncated: true,
+    });
+    expect(context.coverage.timeline).toMatchObject({
+      visible_count: 1,
+      total_count: 5,
+      truncated: true,
+    });
+  });
+
+  it("keeps unsupported relationships and stale temporal evidence uncertain rather than asserted", () => {
+    const context = buildTwinCopilotContext(twinInput);
+    expect(context.uncertainty).toEqual(
+      expect.arrayContaining([
+        "experimental_edge is not a supported twin relationship; treat as uncertain",
+        "previous revision v0 is historical evidence and is not asserted as current",
+      ]),
+    );
+  });
+
+  it("distinguishes an unavailable twin from an empty authorized twin", () => {
+    const unavailable = buildTwinCopilotContext({
+      ...twinInput,
+      entities: [],
+      entitiesTotal: 0,
+      relationships: [],
+      relationshipsTotal: 0,
+      timeline: [],
+      timelineTotal: 0,
+      traversal: null,
+      scenario: null,
+      unsupportedRelationships: [],
+      staleTemporalEvidence: [],
+      available: false,
+      evidence: [],
+    });
+    const empty = buildTwinCopilotContext({
+      ...twinInput,
+      entities: [],
+      entitiesTotal: 0,
+      relationships: [],
+      relationshipsTotal: 0,
+      timeline: [],
+      timelineTotal: 0,
+      traversal: null,
+      scenario: null,
+      unsupportedRelationships: [],
+      staleTemporalEvidence: [],
+      available: true,
+      evidence: [],
+    });
+    expect(unavailable.coverage.entities.complete).toBe(false);
+    expect(empty.coverage.entities.complete).toBe(true);
+    expect(unavailable.snapshot.freshness).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "twin", status: "unavailable" }),
+      ]),
+    );
+  });
+});
