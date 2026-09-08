@@ -28,10 +28,9 @@ import {
 } from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
 import {
-  buildCopilotSnapshot,
-  copilotEvidenceRows,
   vulnerabilityApi,
 } from "@/lib/services";
+import { buildExposureCopilotContext } from "@/lib/copilot/page-adapters";
 import type {
   Envelope,
   ExposureCommonContract,
@@ -126,6 +125,31 @@ function withLocalMetadata<T>(
         section.metadata.expected,
       total: section.data?.total_count ?? section.metadata.total,
     },
+  };
+}
+
+/** Projects a loaded Exposure section into the pure Copilot adapter contract. */
+function toExposureCopilotSection<T>(
+  section: ExposureSectionResult<OverviewSectionData<T>>,
+) {
+  const status = section.status;
+  const available = status !== "unavailable" && status !== "loading";
+  const freshness =
+    status === "current" || status === "healthy-empty"
+      ? ("fresh" as const)
+      : status === "partial"
+        ? ("partial" as const)
+        : status === "stale"
+          ? ("stale" as const)
+          : ("unavailable" as const);
+  return {
+    value: section.data?.value,
+    loadedCount: section.data?.loaded_count ?? 0,
+    totalCount: section.data?.total_count ?? 0,
+    freshness,
+    available,
+    observedAt: section.metadata.observedAt,
+    evidence: section.envelope?.evidence ?? [],
   };
 }
 
@@ -415,6 +439,16 @@ export default function ExposurePage() {
     ? defenderCoverage.filter((state) => state.availability === "available")
         .length
     : null;
+
+  const exposureCopilot = buildExposureCopilotContext({
+    scope,
+    summary: toExposureCopilotSection(summary),
+    patchPriorities: toExposureCopilotSection(patches),
+    assets: toExposureCopilotSection(assets),
+    defender: toExposureCopilotSection(defender),
+    sla: toExposureCopilotSection(sla),
+    riskExceptions: toExposureCopilotSection(riskExceptions),
+  });
 
   return (
     <div className="page-container">
@@ -729,41 +763,9 @@ export default function ExposurePage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Vulnerability exposure"
-        snapshot={buildCopilotSnapshot({
-          pageKind: "vulnerability",
-          pageId: "exposure",
-          scope,
-          filters: {},
-          evidence: copilotEvidenceRows(
-            "vulnerability",
-            evidence,
-            [
-              ...(summaryValue ? [summaryValue] : []),
-              ...patchRows,
-              ...assetRows,
-              ...(defenderValue ? [defenderValue] : []),
-              ...(slaValue ? [slaValue] : []),
-              ...exceptionRows,
-            ],
-          ),
-        })}
-        starterQuestions={[
-          {
-            label: "Which CVEs affect our highest-risk service?",
-            tool: "cve_exposure",
-            toolArguments: {},
-          },
-          {
-            label: "What should be patched first?",
-            tool: "cve_exposure",
-            toolArguments: {},
-          },
-          {
-            label: "Which Defender plans have the most open recommendations?",
-            tool: "cve_exposure",
-            toolArguments: {},
-          },
-        ]}
+        requestedScope={exposureCopilot.requestedScope}
+        snapshot={exposureCopilot.snapshot}
+        starterQuestions={exposureCopilot.starterQuestions}
       />
     </div>
   );
