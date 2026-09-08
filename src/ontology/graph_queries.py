@@ -364,6 +364,11 @@ class OntologyQueryService:
                 if not isinstance(observation_row, Mapping):
                     excluded_reasons["invalid_exact_evidence"] += 1
                     continue
+                evidence_refs = [
+                    str(value)
+                    for value in observation_payload.get("evidence_refs") or ()
+                    if str(value)
+                ]
                 deployment_key = str(
                     deployment_payload.get("fabric_key") or ""
                 )
@@ -375,7 +380,9 @@ class OntologyQueryService:
                         or ""
                     ),
                     "observation_id": str(
-                        observation_payload.get("fabric_key") or ""
+                        evidence_refs[0]
+                        if evidence_refs
+                        else observation_payload.get("fabric_key") or ""
                     ),
                     "effective_generation": str(
                         edge_evidence.get("effective_generation") or ""
@@ -877,13 +884,27 @@ def _exact_observation_evidence(
     if not isinstance(fabric_row, Mapping):
         return False
     fabric_key = str(payload.get("fabric_key") or "")
+    fabric_identity = str(
+        fabric_row.get("container_exposure_id")
+        or fabric_row.get("vulnerability_observation_id")
+        or ""
+    )
+    evidence_refs = {
+        str(value)
+        for value in payload.get("evidence_refs") or ()
+        if str(value)
+    }
     return (
         observation.get("entity_type") == "VulnerabilityObservation"
         and payload.get("target_kind") == "container_image"
         and fabric_row.get("target_kind") == "container_image"
         and str(fabric_row.get("cve_id") or "").strip().upper() == cve_id
-        and str(fabric_row.get("vulnerability_observation_id") or "")
-        == fabric_key
+        and fabric_identity == fabric_key
+        and (
+            bool(evidence_refs)
+            if fabric_row.get("container_exposure_id")
+            else True
+        )
         and str(evidence.get("evidence_identity") or "") == fabric_key
     )
 
