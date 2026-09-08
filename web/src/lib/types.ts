@@ -3156,6 +3156,51 @@ export interface CanonicalCopilotResult {
   thread_revision: number;
   mutation_authorized: false;
 }
+
+/**
+ * One conditional executive-synthesis claim: a cited, evidence-closed
+ * conclusion. Every claim's {@link evidence_refs} point only at identifiers a
+ * specialist reported, so the narration never introduces uncited authority.
+ */
+export interface CanonicalSynthesisClaim {
+  finding_id: string;
+  summary: string;
+  evidence_refs: string[];
+  confidence: Confidence;
+  freshness: string;
+  uncertainty: string[];
+}
+
+/**
+ * The conditional executive synthesis that accompanies a canonical turn.
+ * `status` is `"synthesized"` only when a citation-closed narration ran;
+ * `"degraded"` (narrator withheld) and `"skipped"` (single-domain) keep the
+ * specialists' own deterministic findings visible instead of inventing text.
+ */
+export interface CanonicalInvestigationSynthesis {
+  status: "synthesized" | "degraded" | "skipped" | string;
+  reason: string;
+  domain_count: number;
+  claims: CanonicalSynthesisClaim[];
+  warning: string;
+}
+
+/**
+ * Canonical result semantics shared by every dedicated Copilot surface. These
+ * fields are present when the server routes through the canonical
+ * OrchestrationService; they are optional so a legacy projection still types.
+ */
+export interface CanonicalInvestigationSemantics {
+  contract_version?: "1";
+  thread_id?: string;
+  thread_revision?: number;
+  policy_status?: "accepted" | "fallback";
+  fallback_reason?: string;
+  coverage?: CopilotSnapshotCoverageV2;
+  citations?: CanonicalCopilotCitation[];
+  synthesis?: CanonicalInvestigationSynthesis | null;
+}
+
 export interface CopilotContextFinding {
   finding_id: string; resource_ids: string[]; check_id: string; policy_id: string; source_status: string;
   status: "verified" | "hypothesis" | "partial" | "unavailable" | "denied"; summary: string;

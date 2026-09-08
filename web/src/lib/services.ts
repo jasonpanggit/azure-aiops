@@ -44,6 +44,10 @@ import type {
   DefenderSecureScoreControl,
   CanonicalCopilotRequest,
   CanonicalCopilotResult,
+  CanonicalCopilotCitation,
+  CanonicalInvestigationSemantics,
+  CanonicalInvestigationSynthesis,
+  CopilotSnapshotCoverageV2,
   SemanticContext,
   SubscriptionConnection,
   CveDetail,
@@ -546,7 +550,7 @@ export interface CopilotToolCall {
 }
 
 /** The outcome of a `/copilot/investigate` turn: every tool call plus the narration. */
-export interface CopilotInvestigation {
+export interface CopilotInvestigation extends CanonicalInvestigationSemantics {
   question: string;
   tool_calls: CopilotToolCall[];
   answer: CopilotAnswer | null;
@@ -677,6 +681,103 @@ export const copilotApi = {
     investigateContext: (snapshot: CopilotPageSnapshot) =>
       apiRequest<CopilotContextResult>("/copilot/investigate-context", { method: "POST", body: { snapshot } }),
 };
+
+/**
+ * The one same-tab root session every dedicated Copilot surface shares.
+ *
+ * The server binds a `(principal, session_id)` pair to a single opaque
+ * canonical thread, so passing this shared identifier from the standalone
+ * Copilot, the investigation workspace, and any other dedicated surface keeps
+ * them on one authorized, principal-scoped thread rather than fragmenting
+ * continuity per page. It is not authority: the server still validates scope
+ * and issues the real `thr-…` handle it returns.
+ */
+export const ROOT_COPILOT_SESSION = "aiops-root-copilot";
+
+/**
+ * The one canonical API client helper the dedicated Copilot surfaces submit
+ * through. It posts the canonical-backed `/copilot/investigate` contract and
+ * defaults continuity to {@link ROOT_COPILOT_SESSION} so equivalent questions
+ * resolve to the same governed policy/evidence semantics regardless of which
+ * surface asked. Standalone requests may omit page context; workspace requests
+ * pass the same helper with their own generated question.
+ */
+export function askCanonicalInvestigation(
+  question: string,
+  scope: ScopeSelection = {},
+  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown> } = {},
+): Promise<Envelope<CopilotInvestigation>> {
+  return apiRequest<CopilotInvestigation>("/copilot/investigate", {
+    method: "POST",
+    query: scopeToSearchParams(scope),
+    body: {
+      question,
+      session_id: options.sessionId ?? ROOT_COPILOT_SESSION,
+      tool: options.tool ?? "",
+      tool_arguments: options.toolArguments ?? {},
+    },
+  });
+}
+
+/** Display-ready projection of a canonical turn, shared across surfaces. */
+export interface CanonicalInvestigationView {
+  toolCalls: CopilotToolCall[];
+  narration: CopilotAnswer | null;
+  policyStatus: "accepted" | "fallback";
+  fallbackReason: string;
+  degraded: boolean;
+  degradationNote: string;
+  citations: CanonicalCopilotCitation[];
+  uncertainty: string[];
+  coverage?: CopilotSnapshotCoverageV2;
+  synthesis: CanonicalInvestigationSynthesis | null;
+  threadId?: string;
+  threadRevision?: number;
+}
+
+/**
+ * Convert a canonical investigation result into the fields every dedicated
+ * surface renders the same way: narration (only when synthesis actually ran),
+ * a policy/fallback degradation note, citations, and uncertainty. This is the
+ * single presentation converter, so the standalone Copilot and the workspace
+ * cannot drift in how they surface canonical semantics.
+ *
+ * A withheld or unavailable narrator never removes the specialists' own tool
+ * evidence (D-09): `toolCalls` are preserved and `degradationNote` explains the
+ * fallback instead of fabricating text.
+ */
+export function toCanonicalInvestigationView(data: CopilotInvestigation): CanonicalInvestigationView {
+  const synthesis = data.synthesis ?? null;
+  const synthesized = synthesis?.status === "synthesized";
+  const narrationText = synthesized
+    ? synthesis!.claims.map((claim) => claim.summary.trim()).filter(Boolean).join(" ")
+    : "";
+  const narration: CopilotAnswer | null = data.answer
+    ?? (narrationText
+      ? { text: narrationText, agent_name: "Executive synthesis", model: "Canonical", grounded: true }
+      : null);
+  const policyStatus = data.policy_status ?? "accepted";
+  const fallbackReason = data.fallback_reason ?? "";
+  const degraded = policyStatus === "fallback" || synthesis?.status === "degraded";
+  const degradationNote = synthesis?.warning?.trim()
+    || (policyStatus === "fallback"
+      ? "Deterministic specialist evidence is shown; Foundry narration was not produced."
+      : "");
+  return {
+    toolCalls: data.tool_calls ?? [],
+    narration,
+    policyStatus,
+    fallbackReason,
+    degraded,
+    degradationNote,
+    citations: data.citations ?? [],
+    uncertainty: data.warnings ?? [],
+    coverage: data.coverage,
+    synthesis,
+    threadId: data.thread_id,
+    threadRevision: data.thread_revision,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Operations (incidents / remediation)
