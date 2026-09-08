@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Validated
+Status: Ready for Validation
 
 ## Objective
 
@@ -12,6 +12,34 @@ accepting JSON media-type parameters at the existing APIM MCP policy, registerin
 all eight specialist clients in the API provider runtime, selecting the page's
 specialist for narration, and deduplicating safe fallback warnings in the web UI.
 APIM must be updated in place and must not be destroyed or replaced.
+
+Current repair: deploy the Network topology live-runtime remediation. Preserve the
+populated summary canvas during detail changes; bound/cancel slow full-detail
+requests; fix slash-safe hub-dependent lookup and honest zero-dependent responses;
+cache network provider results from completion time; hide unattached private-link
+candidates by default behind an explicit disclosed toggle; improve connected-node
+layout and canvas fit on resize; contain mobile tabs; reduce card-list page size to
+20; and remove unsupported Cytoscape wheel sensitivity. This is an API/web
+image-only rollout using the existing Container Apps, ACR, identities, APIM, and
+Terraform state. No infrastructure, RBAC, secret, region, capacity, or resource
+replacement is in scope.
+
+Current repair: deploy the Network message-semantics correction. Remove duplicate
+pagination warnings from the global provenance banner while retaining the
+contextual incomplete-results callout; distinguish relationship endpoints excluded
+by scope from endpoints missing or not projected; qualify topology evidence
+confidence and graph observation labels; and rename the inspection-bypass metric
+to the finding population it actually counts. This is an API/web image-only
+rollout. No infrastructure, sizing, RBAC, APIM, secret, or region change is in
+scope.
+
+Current repair: deploy the final Network summary semantics correction. Remove the
+page-level ordinary-pagination warning while preserving per-tab range/pagination;
+contract an intentionally omitted summary Route node into a direct
+RouteTable-to-AzureFirewall next-hop edge; and make exhaustive badge-loader
+coverage authoritative for drawer clean state so 83/83 does not remain
+unconfirmed solely because the visible list is paged. API/web image update only;
+no infrastructure, sizing, RBAC, APIM, or secret changes.
 
 Current follow-up: make the Network specialist answer the operator's actual
 question instead of emitting a findings-only JSON inventory, deduplicate
@@ -45,6 +73,18 @@ target before enabling authoritative publication. No model-derived relationship
 may enter the authoritative ontology in this deployment; shadow mode remains
 mandatory. Do not replace APIM, the Foundry account/project, Fabric workspace,
 or existing Container Apps.
+
+Current repair: deploy the compliance-to-remediation fix and make governed
+remediation catalog publication deployment-owned. Commit only the remediation
+catalog/bootstrap files, publish an immutable shared image tag, and update the
+existing API/web Container Apps in place. After Terraform apply, the repository
+deployment wrapper must publish the packaged versioned catalog through the
+authenticated application CLI before revision verification. The remediation
+provider is required for readiness when enabled, so an absent, one-sided, or
+mixed catalog generation must fail closed rather than serve an empty page as
+healthy. No new infrastructure, resource deletion/replacement, RBAC expansion,
+APIM change, Fabric workspace/lakehouse change, region change, or capacity
+change is in scope.
 
 ## Workspace
 
@@ -135,6 +175,87 @@ or existing Container Apps.
   production Fabric items remain untouched.
 
 ## Validation Proof
+
+- 2026-09-08: Final Network summary semantics passed 159 backend tests, 199 web
+  tests, 3 Chromium scenarios, TypeScript, ESLint, changed-path Ruff, Next.js
+  production build, Python source/wheel build, and revert/reapply causality
+  checks. The fixes are committed at `65c0f8bed` and `548b88080`; concurrent
+  uncommitted remediation/Fabric/Exposure work is excluded because ACR builds
+  from committed HEAD.
+
+- 2026-09-08: Governed remediation catalog deployment preparation passed the
+  full Python suite, changed-path Ruff, `git diff --check`, `bash -n
+  infra/scripts/deploy.sh`, Python compile, Next.js production build, and wheel
+  inspection proving `fabric/catalogs/governed_remediation_catalog.v1.json` is
+  packaged. The official Terraform preflight passed installation,
+  authentication/subscription selection, init, validate, state access, and
+  template checks; its bare plan omitted this repository's secret-backed
+  variables. The canonical `AIOPS_ENV_FILE=web/.env.local
+  ./infra/scripts/deploy.sh plan` path supplied those variables successfully.
+  The unrestricted plan was rejected because it contained six unrelated
+  Fabric role additions and unrelated ontology-job updates. A targeted
+  `azurerm_container_app.api`/`azurerm_container_app.web` plan completed with
+  zero mutating resources at the currently deployed tag, zero destruction, and
+  no Terraform/RBAC source changes. Deployment remains constrained to those
+  two existing Container Apps plus the post-apply authenticated catalog
+  publication command.
+- 2026-09-08: Network message-semantics remediation passed 8/8 focused backend
+  boundary tests, 43/43 focused frontend tests, 275/275 adjacent backend tests,
+  59/59 applicable frontend import-graph tests, TypeScript, changed-path Ruff,
+  ESLint, and `git diff --check`. Revert/reapply testing proved the regressions
+  fail without the implementation and pass with it. One unrelated full-web
+  failure belongs to concurrently modified Compliance/services code and is
+  excluded from this image build because ACR archives committed HEAD only.
+- 2026-09-08: Message-semantics deployment validation completed for tag
+  `network-messages-20260908-1425`. The targeted Terraform plan contains
+  exactly **0 additions, 2 in-place API/web image updates, and 0 destructions**,
+  with API sizing pinned to the current 2 vCPU / 4Gi. Python compile and the
+  Next.js production build passed. No Terraform or RBAC file changed.
+- 2026-09-08: Deployed `network-messages-20260908-1425` to API revision
+  `aiops-dev-api--0000261` and web revision `aiops-dev-web--0000209`, both
+  healthy and serving the new tag. Terraform applied **0 additions, 2 in-place
+  image updates, and 0 destructions**. API `/health` and `/ready` and web
+  `/network` returned HTTP 200. Authenticated Playwright confirmed the global
+  provenance banner no longer repeats pagination warnings; the contextual
+  incomplete-results callout remains; confidence is labeled
+  `Topology evidence · high confidence`; relationship loss says
+  `missing or not projected in this topology`; and the metric reads
+  `Inspection bypass findings` with subnet-route/public-IP detail.
+
+- 2026-09-08: Network topology live-runtime repair completed locally. Focused
+  backend tests passed (150), focused web tests passed (189), full backend and
+  web suites passed (web: 578), real-Chromium local Playwright acceptance passed
+  10 tests with one deployment-gated live test skipped, and TypeScript, ESLint,
+  changed-path Ruff, and the Next.js production build passed. The remaining
+  validation is Azure plan review plus deployed authenticated Playwright against
+  the existing `aiops-dev` API/web Container Apps. The deployment must remain
+  image-only with zero infrastructure creates, deletes, replacements, RBAC
+  changes, or APIM changes.
+- 2026-09-08: Azure deployment validation rerun for the Network repair.
+  The official Terraform preflight passed Terraform/Azure CLI installation,
+  subscription selection/authentication, init, fmt, validate, state access, and
+  template-variable checks; its bare plan failed only because this repository
+  requires secret-backed variables. The canonical repository wrapper was then
+  used with those variables. The unrestricted plan was rejected because it
+  exposed four unrelated Fabric role-assignment deletions and a provider preview
+  error. A targeted recovery plan for `azurerm_container_app.api` and
+  `azurerm_container_app.web`, with digest overrides cleared, passed with exactly
+  **0 additions, 2 in-place image changes, and 0 destructions**. No Terraform or
+  RBAC file changed. `python3 -m compileall -q src` and `cd web && npm run build`
+  passed. Target subscription:
+  `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`), location `australiaeast`.
+- 2026-09-08: Final Network remediation deployment completed. API revision
+  `aiops-dev-api--0000258` serves
+  `aiops-api:network-topology-final-20260908-0440`; web revision
+  `aiops-dev-web--0000208` serves
+  `aiops-web:network-topology-fix2-20260908-0320`. Both are healthy at 100%
+  traffic; API `/health` and `/ready` and web `/network` return HTTP 200.
+  The definitive authenticated Chromium suite passed **10/10** in 47.4 seconds,
+  including retained canvas/cancel, server handler p95 <1,000 ms, end-to-end
+  HTTP p95 <3,000 ms, hub-dependent 200 behavior, responsive repaint,
+  candidate disclosure, >55% canvas utilization, mobile tab containment,
+  20-card gap pagination, and console cleanliness.
 
 - 2026-09-05: Built and pushed immutable release
   `remediation-final-20260905-0035`; unchanged `azure-mcp` content was retagged
@@ -772,3 +893,63 @@ or existing Container Apps.
 - Existing API/web Container Apps, APIM, Foundry account/project, production
   Fabric workspace/lakehouse/roles, and global API/web image outputs were
   unchanged.
+
+## Current Release Plan (2026-09-08)
+
+- Source revision: current release branch based on
+  `ac556cc26f435694944d5aa22580cc047a03c010` (`origin/main`), plus the
+  compliance-page test-contract correction required by that revision.
+- Build four immutable `linux/amd64` images from the committed source archive:
+  `aiops-api`, `aiops-web`, `mcp-server`, and `azure-mcp`.
+- Preserve the existing `aiops-dev` environment in subscription
+  `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, tenant
+  `ffc83107-fcc0-4d2e-8798-d582da36505e`, region `australiaeast`.
+- Use the canonical local Terraform state and its gitignored `terraform.tfvars`;
+  do not synthesize, replace, or silently migrate state in another worktree.
+- Produce a saved, refreshed Terraform plan after the image build. Reject the
+  release if the plan contains any destroy, replacement, unrelated resource
+  change, privilege broadening, or unexpected drift.
+- The expected Phase 13 authorization delta is the additive
+  `fabric_workspace_role_assignment.ontology_state_api[0]`, granting the API
+  managed identity only Fabric Workspace `Viewer` on the ontology state
+  workspace. No API write, publication, Job-start, Member, Contributor, or
+  Admin authority may be added.
+- Apply only the reviewed saved plan. Do not start or stop Phase 13 Jobs during
+  infrastructure deployment.
+- Verify all Container Apps serve the immutable release tag, revisions and
+  replicas are healthy, `/health` and `/ready` succeed, the web application
+  loads over HTTPS, and the API identity's live Fabric role is exactly Viewer.
+- Run authenticated deployed API/UI and Playwright validation after the role
+  assignment is live. Keep Phase 13 release state `BLOCKED/PENDING` and
+  authoritative model-edge count zero until every remaining Plan 21 gate passes.
+
+### Current Release Safety Gates
+
+- Dirty worktrees are excluded from this release and remain untouched.
+- Stale clean Phase 13 branches are not merged because they predate the merged
+  REST-role reconciliation and contain superseded blocker/freeze variants.
+- Build and deployment credentials remain in the existing gitignored
+  environment file and process environment; no secret is passed on a command
+  line or committed.
+- Deployment stops before apply if canonical Terraform state is unavailable.
+- Online validation records only sanitized evidence and deletes ephemeral
+  browser authentication state after Playwright completes.
+
+### Current Release Validation Proof
+
+- 2026-09-08: `uv run python -m ruff check src tests` passed.
+- 2026-09-08: `uv run python -m pytest` passed: 3,842 passed, 1 skipped.
+- 2026-09-08: `cd web && npm run lint` passed.
+- 2026-09-08: `cd web && npm test -- --run` passed: 593 tests.
+- 2026-09-08: `cd web && npm run build` passed.
+- 2026-09-08: `terraform -chdir=infra/terraform fmt -check -recursive` and
+  `terraform -chdir=infra/terraform validate` passed.
+- Azure context was confirmed as subscription
+  `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, tenant
+  `ffc83107-fcc0-4d2e-8798-d582da36505e`, resource group `aiops-dev-rg`,
+  Container Apps environment `aiops-dev-cae`, and region `australiaeast`.
+- The Terraform recipe preflight remains blocked at `plan` and `state list`
+  because this isolated worktree does not contain the canonical local state,
+  gitignored `terraform.tfvars`, or deployment environment file. Validation
+  must remain incomplete and deployment must not start until those canonical
+  artifacts are supplied without using a dirty worktree.

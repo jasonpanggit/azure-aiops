@@ -17,6 +17,7 @@ from storage.onelake_documents import OneLakeDocumentStore
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
 
 _EXPOSURE_PASSTHROUGH_KEYS = {
+    "exposure/source_partition_rows": "row_key",
     "exposure/workload_observations": "observation_id",
     "exposure/workload_deployments": "deployment_id",
     "exposure/workload_source_checkpoints": "checkpoint_key",
@@ -103,6 +104,8 @@ def publish_combined_snapshot(
                         (
                             str(row.get("connection_id") or connection_id),
                             str(row.get("workspace_id") or ""),
+                            str(row.get("partition_key") or ""),
+                            str(row.get("query_name") or ""),
                             str(row.get(key_field) or ""),
                         )
                     )

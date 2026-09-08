@@ -8,6 +8,7 @@ the "unavailable, not empty" contract are validated end to end.
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import quote
 
 import pytest
@@ -193,6 +194,85 @@ class TestTopology:
         assert response.json()["data"]["summary"][
             "topology_build_duration_ms"
         ] == 3_500
+
+    def test_reports_handler_time_for_analysis_and_response_serialization(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import api.routers.network as network_router
+
+        events: list[str] = []
+        serialized_bodies: list[bytes] = []
+        ticks = iter((1_000_000, 8_250_000))
+
+        def observed_clock() -> int:
+            events.append("clock")
+            return next(ticks)
+
+        finish_timing = network_router._add_handler_timing_header
+
+        def observe_serialized_response(response, started_ns):
+            events.append("serialize")
+            assert isinstance(response.body, bytes)
+            serialized_bodies.append(response.body)
+            assert "topology" in json.loads(response.body)["data"]
+            finish_timing(response, started_ns)
+
+        monkeypatch.setattr(
+            network_router,
+            "perf_counter_ns",
+            observed_clock,
+        )
+        monkeypatch.setattr(
+            network_router,
+            "_add_handler_timing_header",
+            observe_serialized_response,
+        )
+
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "full"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200, (events, response.text)
+        assert events == ["clock", "serialize", "clock"]
+        assert json.loads(serialized_bodies[0]) == response.json()
+        assert response.headers["x-aiops-handler-ms"] == "7.250"
+
+    def test_handler_time_header_is_additive_and_numeric(self, client):
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "summary"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert re.fullmatch(
+            r"\d+\.\d{3}",
+            response.headers["x-aiops-handler-ms"],
+        )
+        assert float(response.headers["x-aiops-handler-ms"]) >= 0
+
+    def test_handler_timing_does_not_change_auth_or_error_responses(
+        self,
+        tmp_path,
+    ):
+        client = _client(tmp_path, with_network=False)
+
+        anonymous = client.get("/api/v1/network/topology")
+        unavailable = client.get(
+            "/api/v1/network/topology",
+            headers=_auth(),
+        )
+
+        assert anonymous.status_code == 401
+        assert anonymous.json()["error"]["code"] == "unauthenticated"
+        assert "x-aiops-handler-ms" not in anonymous.headers
+        assert unavailable.status_code == 503
+        assert unavailable.json()["error"]["code"] == "provider_unavailable"
+        assert "x-aiops-handler-ms" not in unavailable.headers
 
     def test_carries_evidence_naming_the_engine(self, client):
         body = client.get("/api/v1/network/topology", headers=_auth()).json()
@@ -445,10 +525,12 @@ class TestGaps:
         }
         assert second["data"]["gaps"] == complete["data"]["gaps"][1:2]
         assert second["pagination"]["next_offset"] == 2
-        assert any(
-            f"Showing 1 of {total} inspection gaps" in warning
-            for warning in first["warnings"]
-        )
+        assert first["warnings"] == [
+            (
+                f"Showing 1 of {total} inspection gaps; "
+                "use pagination for the complete result"
+            )
+        ]
 
 
 class TestRuleFindings:
@@ -547,17 +629,21 @@ class TestRuleFindings:
         }
         assert second["data"]["findings"] == complete["data"]["findings"][1:2]
         assert second["pagination"]["next_offset"] == 2
-        assert any(
-            f"Showing 1 of {total} rule findings" in warning
-            for warning in first["warnings"]
-        )
+        assert first["warnings"] == [
+            (
+                f"Showing 1 of {total} rule findings; "
+                "use pagination for the complete result"
+            )
+        ]
 
 
 class TestFirewallBypass:
-    def test_answers_which_spokes_bypass_the_firewall(self, client):
+    def test_returns_a_count_of_bypass_findings(self, client):
         response = client.get("/api/v1/network/firewall-bypass", headers=_auth())
         assert response.status_code == 200
-        assert response.json()["data"]["count"] >= 1
+        data = response.json()["data"]
+        assert data["count"] == len(data["gaps"])
+        assert data["count"] >= 1
 
 
 class TestUnavailableSnapshot:

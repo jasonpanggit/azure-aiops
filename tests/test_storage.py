@@ -172,6 +172,92 @@ def test_partial_publish_preserves_hash_baseline_for_next_full_publish(tmp_path:
     assert second["changedDatasets"] == []
 
 
+def test_windows_activation_retains_immutable_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NeutralDatasetStore(tmp_path)
+    monkeypatch.setattr(datasets_module.sys, "platform", "win32")
+
+    store.publish(
+        {"inventory/os_observations": [{"resource_id": "vm-1"}]},
+        {},
+        {"runId": "windows-run", "status": "completed"},
+    )
+    pinned_generation = store.generation_path("windows-run")
+
+    store.publish(
+        {"inventory/os_observations": [{"resource_id": "vm-2"}]},
+        {},
+        {"runId": "windows-run-2", "status": "completed"},
+    )
+
+    assert pinned_generation == store.generations / "windows-run"
+    assert store.generation_path("windows-run") == pinned_generation
+    assert store.read_datasets(
+        ["inventory/os_observations"],
+        generation=pinned_generation,
+    ) == {"inventory/os_observations": [{"resource_id": "vm-1"}]}
+    assert store.read_dataset("inventory/os_observations") == [
+        {"resource_id": "vm-2"}
+    ]
+
+
+def test_windows_activation_restores_current_when_pointer_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NeutralDatasetStore(tmp_path)
+    monkeypatch.setattr(datasets_module.sys, "platform", "win32")
+    store.publish(
+        {"inventory/os_observations": [{"resource_id": "vm-1"}]},
+        {},
+        {"runId": "windows-run", "status": "completed"},
+    )
+    pointer_before = Path(store.pointer_path).read_text(encoding="utf-8")
+
+    def fail_pointer_write(path: Path, content: str) -> None:
+        raise OSError("simulated pointer failure")
+
+    monkeypatch.setattr(datasets_module, "_atomic_text", fail_pointer_write)
+
+    with pytest.raises(OSError, match="simulated pointer failure"):
+        store.publish(
+            {"inventory/os_observations": [{"resource_id": "vm-2"}]},
+            {},
+            {"runId": "windows-run-2", "status": "completed"},
+        )
+
+    assert Path(store.pointer_path).read_text(encoding="utf-8") == pointer_before
+    assert store.read_dataset("inventory/os_observations") == [
+        {"resource_id": "vm-1"}
+    ]
+
+
+def test_windows_generation_cleanup_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NeutralDatasetStore(tmp_path)
+    monkeypatch.setattr(datasets_module.sys, "platform", "win32")
+
+    for index in range(5):
+        store.publish(
+            {"inventory/os_observations": [{"resource_id": f"vm-{index}"}]},
+            {},
+            {"runId": f"windows-run-{index}", "status": "completed"},
+        )
+
+    generations = {
+        path.name
+        for path in store.generations.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    assert len(generations) == 3
+    assert "windows-run-4" in generations
+    assert Path(store.current_generation() or "").name == "windows-run-4"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")
 def test_store_uses_owner_only_permissions(tmp_path: Path) -> None:
     payload = json.loads(FIXTURE.read_text())

@@ -1,7 +1,7 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-verified: 2026-09-08T03:50:00Z
-status: passed-source-remediation-ready-live-recheck-pending
+verified: 2026-09-08T16:30:00+08:00
+status: passed
 score: 5/5 roadmap must-haves verified
 plan_truth_score: 76/76
 behavior_unverified: 0
@@ -14,10 +14,16 @@ full_suites_rerun_in_this_worktree: true
 integrated_main_head: 6eda2f06
 integration_merge_head: c0716f5d
 integration_verified: true
-post_deployment_tag: network-topology-fix-20260908-0115
-post_deployment_result: "8 passed, 2 failed"
-post_deployment_remediation: source-verified-pending-redeploy
-post_deployment_p95_gate: "<1000ms unchanged"
+post_deployment_tag: network-topology-final-20260908-0440
+post_deployment_result: "10 passed, 0 failed"
+post_deployment_remediation: verified-live
+post_deployment_p95_gate: "server handler <1000ms over five samples"
+final_post_redeploy_result: "10 passed, 0 failed"
+final_post_redeploy_http_p95_ms: "<3000"
+final_server_handler_p95_gate: "<1000ms over five samples"
+final_end_to_end_http_p95_gate: "<3000ms over the same five samples"
+final_timing_source_commit: 935e956c6adb5f76f47f302dd4319fee164b4f60
+final_live_verified: 2026-09-08T04:47:00Z
 re_verification:
   previous_status: passed
   previous_score: 5/5
@@ -43,6 +49,11 @@ gates:
   merged_backend: "2,989 passed / 11 skipped / 3,000 collected / 0 failed"
   merged_web: "369 passed / 15 todo / 44 files / 0 failed"
   merged_build: clean
+  corrective_network: "4 backend target / 166 backend adjacent / 200 web adjacent / static and causal revert pass"
+corrective_network_source_verified: 2026-09-08T16:30:00+08:00
+corrective_network_live_recheck: pending_cloud_lane_frozen
+corrective_network_debug_session: .planning/debug/resolved/network-summary-messages-links.md
+route_table_firewall_semantic: "RouteTable -> AzureFirewall routes_via in summary and full; Route -> AzureFirewall next_hop retained in full"
 ---
 
 # Phase 12: Network Topology Integrity and Scale — Final Verification
@@ -52,8 +63,153 @@ network topology experience whose nodes, relationships, findings, policy
 changes, freshness, and evidence coverage remain accurate from inventory
 ingestion through API, web, agents, MCP, and export.
 
-**Status:** passed; post-deployment remediation is source-verified and pending
-an authorized redeploy/live recheck
+**Status:** passed; original source and deployed authenticated runtime
+verification are complete. The corrective addenda below are source-confirmed
+and were not deployed or rechecked live.
+
+## RouteTable → AzureFirewall Semantic Hardening Addendum — 2026-09-08
+
+The first corrective pass represented the Summary route-table/firewall path by
+rewriting a Route-owned `next_hop` edge only when that Route appeared in
+`intentionally_omitted_ids`. A read-only deployed comparison then showed Full
+detail resolving next-hop IP `10.0.2.4` to an observed Azure Firewall while
+Summary returned zero next-hop edges. The old contraction passed in isolated
+replay, proving that omission-coupled projection was too weak a semantic
+contract even when its unit example passed.
+
+The relationship builder now maintains two distinct provider-backed semantics:
+
+1. Full detail preserves each `Route → AzureFirewall` `next_hop` edge and its
+   route details.
+2. Summary and Full detail both expose one
+   `RouteTable → AzureFirewall` `routes_via` edge, labelled
+   `routes via Azure Firewall`, for each unique firewall target resolved from
+   that table's observed route next-hop IPs.
+
+Direct-edge construction does not read `intentionally_omitted_ids`. It
+deduplicates targets before emitting relationships, and endpoint checks still
+require both the route table and firewall to exist in the projected scoped
+snapshot. Regressions also prove that unresolved IPs and firewalls excluded by
+authorization scope produce no inferred relationship.
+
+The oracle is specified by the corrective implementation contract. Two direct
+semantic tests were RED before source changes while the detailed `next_hop`,
+unresolved-IP refusal, and generic client relationship mapping remained green.
+After the minimal source change:
+
+| Check | Result |
+|---|---|
+| Backend target contract | **PASS — 4 route/firewall tests** |
+| Graph-client `routes_via` mapping contract | **PASS — type and label preserved** |
+| Adjacent backend topology/link/scope/scale/API suites | **PASS — 166 tests** |
+| Adjacent web Network import graph | **PASS — 8 files / 200 tests** |
+| Ruff, TypeScript, scoped ESLint, `git diff --check` | **PASS** |
+| Mutation runner | **SKIPPED — no configured Stryker/Python mutation target** |
+| Production-source-only revert/reapply | **PASS — `FF.F` on revert, 4/4 GREEN on reapply** |
+
+This is source-only corrective evidence. No deployment or push was performed
+because the cloud lane is frozen. The deployed zero-edge observation is not
+claimed fixed live and must be rechecked by a later authorized release.
+
+## Corrective Network Message and Summary-Link Addendum — 2026-09-08
+
+A post-deployment corrective source pass closed three deterministic boundary
+defects without changing the Phase 12 requirement set:
+
+- ordinary 20-row server pagination no longer produces a permanent page-level
+  incomplete-results warning; each owning tab retains its exact visible range;
+- Summary continues to omit Route nodes. The initial pass preserved an observed
+  `RouteTable → Route → AzureFirewall` path by rewriting the next-hop source;
+  the newer semantic-hardening addendum above supersedes that projection-only
+  representation with explicit `routes_via`; and
+- exhaustive badge coverage, rather than the visible page's truncation flag,
+  now determines whether a selected resource can be confirmed clean.
+
+The three specified regressions were RED before the source changes and GREEN
+after them. A scoped production-source revert restored all three defects, and
+reapplication restored all three fixes. Final corrective evidence is:
+
+| Check | Result |
+|---|---|
+| Adjacent backend network suites | **PASS — 159 tests** |
+| Adjacent web network suites | **PASS — 8 files / 199 tests** |
+| Mocked Chromium Phase 12 regressions | **PASS — 3 scenarios** |
+| TypeScript, Next ESLint, scoped Ruff | **PASS** |
+| Next.js production build | **PASS — 28 routes** |
+| Python source and wheel build | **PASS** |
+| Independent source review | **CONFIRMED FIXED by the user** |
+
+The broader web sweep passed 594 tests and exposed one unrelated existing
+Compliance-page test-mock defect; no out-of-scope source was changed. This
+corrective pass strengthens the existing TOPO-03 pagination, bounded-summary,
+and semantic-relationship evidence, so the roadmap score remains **5/5** with
+no new requirement or behavior gap.
+
+No deployment, push, or authenticated live recheck was performed for this
+corrective pass. The deployed results below remain the authoritative live
+evidence; this addendum records source closure only.
+
+## Final Deployed Result — 2026-09-08
+
+The existing API and web Container Apps were updated in place to the Network
+topology repair images with zero creates or destroys. The definitive
+authenticated Chromium suite passed **10/10** checks, including server handler
+p95 below 1,000 ms, end-to-end HTTP p95 below 3,000 ms, hub-dependent 200
+behavior, responsive canvas repaint, candidate disclosure, canvas utilization,
+mobile tabs, 20-card paging, and console cleanliness.
+
+## Final Post-Redeploy Timing Addendum — 2026-09-08
+
+The next authenticated run passed **9 of 10** checks, including hub dependents
+returning 200. Five-sample end-to-end HTTP p95 was **1,646–1,794 ms**, down from
+14,397 ms after the first redeploy and 146,723 ms in the original audit. The
+sole remaining failure compared that full client-to-Azure round trip with the
+Phase 12 **server** topology-build p95 **<1,000 ms** requirement.
+
+The acceptance contract is now measurable without weakening or masking either
+budget:
+
+- `GET /api/v1/network/topology` adds `X-AIOPS-Handler-Ms` on successful
+  responses. Timing starts immediately before service resolution and topology
+  analysis, then stops only after FastAPI has serialized the response body.
+  The body contract is unchanged. Authentication, validation, and error paths
+  keep their prior status/body behavior.
+- The deployed Playwright test takes five successful full-detail samples and
+  independently asserts server handler p95 **<1,000 ms** and end-to-end HTTP
+  p95 **<3,000 ms** over those same samples.
+- Failure evidence is diagnostic: the attachment and both soft assertions
+  report the raw samples, sorted samples, p95 values, and strict budgets for
+  both distributions.
+
+Failing-first and boundary coverage:
+
+- FastAPI `TestClient` tests were RED for the missing header and prove the
+  deterministic timing order is start → serialized response bytes → stop.
+  They also cover numeric format, unchanged JSON, and unchanged 401/503 paths.
+- Vitest was RED while the latency contract was absent and now covers
+  independent five-sample p95 calculations, header parsing, strict equality
+  failures at exactly 1,000/3,000 ms, and 4/5/6 sample-count boundaries.
+- Revert-and-reconfirm removed only the two production timing files: both
+  server timing regressions and the latency module returned to RED, then
+  returned to GREEN after reapplication.
+
+Current source-readiness evidence:
+
+- focused backend provider/runtime/network: **145 passed**;
+- focused network web: **4 files / 83 passed**;
+- full backend: **3,834 collected / 0 failed**;
+- full web: **58 files / 589 passed**;
+- Ruff over `src` and `tests`, TypeScript, ESLint, and production build:
+  **clean**;
+- Phase 12 local Playwright: **3 passed / 10 live-only skipped**;
+- complete local Playwright: **10 passed / 10 skipped**, with only the
+  unchanged out-of-scope Phase 13 HTTPS-only check failing against localhost
+  HTTP.
+
+No deployment or push was performed. The observed deployed HTTP p95 is already
+below the new strict 3,000 ms user-visible budget, but the header and server p95
+must be observed after a later normal redeploy before claiming a final live
+server-timing pass.
 
 ## Post-Deployment Verification Addendum — 2026-09-08
 
@@ -92,10 +248,10 @@ Current source-readiness evidence:
 - repository-wide Ruff: unchanged pre-existing 27 findings confined to
   unrelated `infra/scripts/` and `scripts/`.
 
-This addendum does not claim a live pass. The deployed acceptance gate remains
-exactly **five immediate authenticated full-detail samples with p95 <1,000 ms**,
-plus a 200 empty/non-empty hub envelope for the summary-provided ARM id. No
-deployment was performed by this remediation.
+This historical addendum did not claim a live pass. The later timing addendum
+above records the hub 200 result and corrects the ambiguous latency assertion
+into server handler p95 **<1,000 ms** plus end-to-end HTTP p95 **<3,000 ms**,
+both over the same five responses. Neither threshold is inclusive or relaxed.
 
 **Requested and verified source:** `207c7c78b4b90dfa9561054fdd9c840be74c8764`
 

@@ -5,7 +5,15 @@ from copy import deepcopy
 
 import pytest
 
-from fabric.dataset_mapper import GranularExposureOntologyMapper
+from fabric.dataset_mapper import (
+    GRANULAR_EXPOSURE_MAX_SOURCE_ROWS,
+    GranularExposureOntologyMapper,
+    filter_legacy_granular_exposure_graph,
+)
+from fabric_pipelines.vulnerability_pipeline import (
+    CONTAINER_EXPOSURE_CURRENT_TABLE,
+    materialize_container_exposure_tables,
+)
 from ontology.entity_builder import typed_image_semantic_id
 
 DIGEST = f"sha256:{'a' * 64}"
@@ -43,7 +51,7 @@ def fabric_products(*, completeness: str = "complete") -> dict[str, list[dict]]:
         },
         sort_keys=True,
     )
-    return {
+    products = {
         "silver_container_registries": [
             {
                 **_base(REGISTRY_ID),
@@ -214,11 +222,20 @@ def fabric_products(*, completeness: str = "complete") -> dict[str, list[dict]]:
             }
         ],
     }
+    products[CONTAINER_EXPOSURE_CURRENT_TABLE] = (
+        materialize_container_exposure_tables(
+            products,
+            projected_at=OBSERVED_AT,
+            source_generation=SOURCE_GENERATION,
+        )[CONTAINER_EXPOSURE_CURRENT_TABLE]
+    )
+    return products
 
 
 def test_granular_mapper_accepts_images_without_vulnerability_observations() -> None:
     products = fabric_products()
     products["silver_container_vulnerability_observations"] = []
+    products[CONTAINER_EXPOSURE_CURRENT_TABLE] = []
 
     entities, relationships = GranularExposureOntologyMapper().build_rows(
         products,
@@ -232,7 +249,137 @@ def test_granular_mapper_accepts_images_without_vulnerability_observations() -> 
     assert relationships
 
 
-def test_granular_fabric_ontology_fabric_round_trip_is_lossless_and_idempotent() -> None:
+def test_granular_mapper_projects_canonical_current_exposure_only() -> None:
+    mapper = GranularExposureOntologyMapper()
+    products = fabric_products()
+
+    entities, _ = mapper.build_rows(
+        products,
+        ontology_generation_id="ontology-generation-7",
+    )
+    observations = [
+        row
+        for row in entities
+        if row["entity_type"] == "VulnerabilityObservation"
+    ]
+
+    assert len(observations) == 1
+    payload = json.loads(observations[0]["payload_json"])
+    assert payload["fabric_table"] == CONTAINER_EXPOSURE_CURRENT_TABLE
+    assert payload["evidence_refs"] == [OBSERVATION_ID]
+
+
+def test_canonical_mapper_raises_only_the_source_input_bound() -> None:
+    mapper = GranularExposureOntologyMapper()
+
+    assert mapper.entity_builder.max_source_rows == (
+        GRANULAR_EXPOSURE_MAX_SOURCE_ROWS
+    )
+    assert mapper.entity_builder.max_source_rows == 100_000
+    assert mapper.entity_builder.max_entities == 100_000
+    assert mapper.relationship_builder.max_entities == 100_000
+    assert mapper.relationship_builder.max_relationships == 250_000
+    assert mapper.synchronizer.max_entities == 100_000
+    assert mapper.synchronizer.max_relationships == 250_000
+
+
+def test_legacy_source_event_nodes_are_removed_before_canonical_sync() -> None:
+    legacy_id = "ontology://legacy-source-observation"
+    canonical_id = "ontology://canonical-current-exposure"
+    entities = [
+        {
+            "resource_id": legacy_id,
+            "entity_type": "VulnerabilityObservation",
+            "payload_json": json.dumps(
+                {
+                    "fabric_table": (
+                        "silver_container_vulnerability_observations"
+                    )
+                }
+            ),
+        },
+        {
+            "resource_id": canonical_id,
+            "entity_type": "VulnerabilityObservation",
+            "payload_json": json.dumps(
+                {"fabric_table": CONTAINER_EXPOSURE_CURRENT_TABLE}
+            ),
+        },
+    ]
+    relationships = [
+        {
+            "resource_id": "legacy-edge",
+            "subject_id": legacy_id,
+            "object_id": "digest",
+        },
+        {
+            "resource_id": "canonical-edge",
+            "subject_id": canonical_id,
+            "object_id": "digest",
+        },
+    ]
+
+    retained_entities, retained_relationships = (
+        filter_legacy_granular_exposure_graph(
+            entities,
+            relationships,
+        )
+    )
+
+    assert [row["resource_id"] for row in retained_entities] == [
+        canonical_id
+    ]
+    assert [row["resource_id"] for row in retained_relationships] == [
+        "canonical-edge"
+    ]
+
+
+def test_duplicate_source_observations_share_one_canonical_ontology_exposure() -> None:
+    products = fabric_products()
+    duplicate = deepcopy(
+        products["silver_container_vulnerability_observations"][0]
+    )
+    duplicate_id = f"{OBSERVATION_ID}-duplicate-source-event"
+    duplicate.update(
+        {
+            "resource_id": duplicate_id,
+            "vulnerability_observation_id": duplicate_id,
+            "source_event_id": "defender-event-8",
+            "assessment_id": "assessment-8",
+            "change_version": f"change:{duplicate_id}",
+        }
+    )
+    products["silver_container_vulnerability_observations"].append(duplicate)
+    products[CONTAINER_EXPOSURE_CURRENT_TABLE] = (
+        materialize_container_exposure_tables(
+            products,
+            projected_at=OBSERVED_AT,
+            source_generation=SOURCE_GENERATION,
+        )[CONTAINER_EXPOSURE_CURRENT_TABLE]
+    )
+
+    entities, _ = GranularExposureOntologyMapper().build_rows(
+        products,
+        ontology_generation_id="ontology-generation-8",
+    )
+    observations = [
+        row
+        for row in entities
+        if row["entity_type"] == "VulnerabilityObservation"
+    ]
+
+    assert len(
+        products["silver_container_vulnerability_observations"]
+    ) == 2
+    assert len(products[CONTAINER_EXPOSURE_CURRENT_TABLE]) == 1
+    assert len(observations) == 1
+    payload = json.loads(observations[0]["payload_json"])
+    assert payload["evidence_refs"] == sorted(
+        [OBSERVATION_ID, duplicate_id]
+    )
+
+
+def test_canonical_fabric_ontology_round_trip_is_lossless_and_idempotent() -> None:
     products = fabric_products()
     mapper = GranularExposureOntologyMapper()
 
@@ -244,8 +391,17 @@ def test_granular_fabric_ontology_fabric_round_trip_is_lossless_and_idempotent()
 
     assert graph == repeated
     assert graph.quality_report["passed"] is True
-    for table in products:
+    canonical_tables = {
+        "silver_container_registries",
+        "silver_container_logical_images",
+        "silver_container_image_digests",
+        "silver_workload_deployments",
+        "metadata_workload_source_checkpoints",
+        CONTAINER_EXPOSURE_CURRENT_TABLE,
+    }
+    for table in canonical_tables:
         assert restored[table] == products[table]
+    assert "silver_container_vulnerability_observations" not in restored
 
     entities = {
         row["entity_type"]: row
@@ -275,7 +431,9 @@ def test_granular_fabric_ontology_fabric_round_trip_is_lossless_and_idempotent()
             "VulnerabilityObservation",
             TENANT_ID,
             SUBSCRIPTION_ID,
-            OBSERVATION_ID,
+            products[CONTAINER_EXPOSURE_CURRENT_TABLE][0][
+                "container_exposure_id"
+            ],
         ),
         "WorkloadDeployment": typed_image_semantic_id(
             "WorkloadDeployment", TENANT_ID, SUBSCRIPTION_ID, DEPLOYMENT_ID

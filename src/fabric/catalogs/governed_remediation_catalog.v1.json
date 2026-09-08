@@ -1,4 +1,5 @@
 {
+  "catalog_version": "1.0.0",
   "action_catalog": [
     {
       "action_id": "critical-alert-containment",

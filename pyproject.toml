@@ -45,6 +45,7 @@ packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology",
 # path in the wheel so an installed distribution cannot lose the manifest to a
 # packaging default that only collects .py files.
 "src/operations/specialists.v1.json" = "operations/specialists.v1.json"
+"src/fabric/catalogs/governed_remediation_catalog.v1.json" = "fabric/catalogs/governed_remediation_catalog.v1.json"
 
 [tool.uv]
 # Phoenix's evaluation-only pydantic-ai/OpenAI dependency line is not runtime

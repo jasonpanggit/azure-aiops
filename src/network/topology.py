@@ -222,6 +222,7 @@ class NetworkTopology:
     connection_ids: tuple[str, ...] = ()
     snapshot: NetworkSnapshot = field(default_factory=NetworkSnapshot)
     semantic_relationships: tuple[dict[str, Any], ...] = ()
+    scope_excluded_resource_ids: frozenset[str] = field(default_factory=frozenset)
     flow_log_provenance: dict[str, Any] = field(
         default_factory=lambda: {
             "state": "not_ingested",
@@ -306,7 +307,11 @@ class NetworkTopology:
         """
         all_resources = _topology_resources(self, detail=detail)
         omitted_ids = _summary_omitted_resource_ids(self.snapshot) if detail == "summary" else set()
-        relationships, dropped_relationships = _topology_relationships(
+        (
+            relationships,
+            dropped_relationships,
+            dropped_relationship_reasons,
+        ) = _topology_relationships(
             self,
             resource_ids={
                 str(resource["id"]).casefold() for resource in all_resources
@@ -317,6 +322,13 @@ class NetworkTopology:
             **self.snapshot.counts(),
             "dropped_relationships": dict(sorted(dropped_relationships.items())),
         }
+        if dropped_relationship_reasons:
+            counts["dropped_relationship_reasons"] = {
+                reason: dict(sorted(by_type.items()))
+                for reason, by_type in sorted(
+                    dropped_relationship_reasons.items()
+                )
+            }
 
         def serialize(
             resources: list[dict[str, Any]],
@@ -470,20 +482,29 @@ class NetworkTopology:
                     payload["coverage"]["collections"] = collection_coverage
                 if byte_ceiling is not None:
                     payload["coverage"]["byte_ceiling"] = byte_ceiling
-            if dropped_relationships:
-                total = sum(dropped_relationships.values())
+            warnings: list[str] = []
+            reason_copy = {
+                "excluded_by_scope": "outside the selected scope",
+                "missing_or_unprojected": (
+                    "missing or not projected in this topology"
+                ),
+            }
+            for reason, explanation in reason_copy.items():
+                by_type = dropped_relationship_reasons.get(reason, {})
+                if not by_type:
+                    continue
+                total = sum(by_type.values())
+                noun = "relationship" if total == 1 else "relationships"
                 breakdown = ", ".join(
                     f"{relationship_type}={count}"
-                    for relationship_type, count in sorted(
-                        dropped_relationships.items()
-                    )
+                    for relationship_type, count in sorted(by_type.items())
                 )
-                payload["warnings"] = [
-                    (
-                        f"{total} topology relationships dropped because an endpoint "
-                        f"was absent from this scope ({breakdown})"
-                    )
-                ]
+                warnings.append(
+                    f"{total} topology {noun} omitted because an endpoint was "
+                    f"{explanation} ({breakdown})"
+                )
+            if warnings:
+                payload["warnings"] = warnings
             return payload
 
         if detail == "full":
@@ -754,6 +775,7 @@ class TopologyBuilder:
         *,
         flow_log_provenance: dict[str, Any] | None = None,
         peer_resolutions: Mapping[str, str] | None = None,
+        scope_excluded_resource_ids: frozenset[str] | None = None,
     ) -> NetworkTopology:
         vnets = {vnet.resource_id: vnet for vnet in snapshot.vnets}
         links = self._stitch_peerings(snapshot, vnets)
@@ -784,6 +806,11 @@ class TopologyBuilder:
             connection_ids=snapshot.connection_ids(),
             snapshot=snapshot,
             semantic_relationships=semantic_relationships,
+            scope_excluded_resource_ids=frozenset(
+                str(resource_id or "").casefold()
+                for resource_id in (scope_excluded_resource_ids or ())
+                if resource_id
+            ),
             flow_log_provenance=flow_log_provenance
             or _flow_log_provenance(semantic_relationships),
         )
@@ -1467,11 +1494,16 @@ def _topology_relationships(
     *,
     resource_ids: set[str],
     intentionally_omitted_ids: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, int],
+    dict[str, dict[str, int]],
+]:
     snapshot = topology.snapshot
     intentionally_omitted_ids = intentionally_omitted_ids or set()
     relationships: dict[str, dict[str, Any]] = {}
     dropped_relationships: dict[str, int] = {}
+    dropped_relationship_reasons: dict[str, dict[str, int]] = {}
 
     def add(source: str, target: str, relationship_type: str, *, label: str = "", details: dict[str, Any] | None = None) -> None:
         source_id = str(source or "").casefold()
@@ -1490,6 +1522,18 @@ def _topology_relationships(
             dropped_relationships[relationship_type] = (
                 dropped_relationships.get(relationship_type, 0) + 1
             )
+            absent_endpoint_ids = {
+                endpoint_id
+                for endpoint_id in (source_id, target_id)
+                if not _has_resource(resource_ids, endpoint_id)
+            }
+            reason = (
+                "excluded_by_scope"
+                if absent_endpoint_ids & topology.scope_excluded_resource_ids
+                else "missing_or_unprojected"
+            )
+            by_type = dropped_relationship_reasons.setdefault(reason, {})
+            by_type[relationship_type] = by_type.get(relationship_type, 0) + 1
             return
         relationship = _relationship(
             source_id,
@@ -1570,6 +1614,7 @@ def _topology_relationships(
     }
 
     for table in snapshot.route_tables:
+        resolved_firewall_ids: set[str] = set()
         for route in table.routes:
             add(table.resource_id, route.resource_id, "has_route", label="has route", details=route.to_dict())
             next_hop_id = firewall_by_private_ip.get(route.next_hop_ip, "")
@@ -1579,6 +1624,16 @@ def _topology_relationships(
                 "next_hop",
                 label=f"next hop {route.next_hop_ip}",
                 details=route.to_dict(),
+            )
+            if next_hop_id:
+                resolved_firewall_ids.add(next_hop_id)
+        for firewall_id in sorted(resolved_firewall_ids):
+            add(
+                table.resource_id,
+                firewall_id,
+                "routes_via",
+                label="routes via Azure Firewall",
+                details={"resolution": "observed_firewall_private_ip"},
             )
         for subnet_id in table.subnet_ids:
             add(subnet_id, table.resource_id, "routed_by", label="routed by route table")
@@ -1662,4 +1717,5 @@ def _topology_relationships(
             ),
         ),
         dropped_relationships,
+        dropped_relationship_reasons,
     )

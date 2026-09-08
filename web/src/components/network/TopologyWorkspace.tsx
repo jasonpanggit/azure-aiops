@@ -226,7 +226,6 @@ interface TopologyWorkspaceProps {
   loadRuleFindingsPage?: LoadRuleFindingPage;
   findingsLoading?: boolean;
   findingsError?: Error | null;
-  findingsTruncated?: boolean;
   onRetryFindings?: () => void;
   scope?: ScopeSelection | null;
   evidence?: EvidenceItem[] | null;
@@ -251,7 +250,6 @@ export function TopologyWorkspace({
   loadRuleFindingsPage,
   findingsLoading = false,
   findingsError = null,
-  findingsTruncated = false,
   onRetryFindings = () => undefined,
   scope = null,
   evidence = null,
@@ -898,7 +896,7 @@ export function TopologyWorkspace({
                     summary?.rule_finding_count ?? ruleFindings.length,
                   mapped: badgeCoverage.mapped,
                   total: badgeCoverage.total,
-                  truncated: findingsTruncated || badgeCoverage.truncated,
+                  truncated: badgeCoverage.truncated,
                   exhausted: !badgeLoading && !badgeCoverage.truncated,
                   loading: findingsLoading || badgeLoading,
                   error: findingsError,

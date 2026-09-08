@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -452,11 +453,8 @@ class DatasetStore:
         self._cleanup_generations(keep=3)
         return manifest
 
-    def _current_datasets(self, names: object) -> dict[str, list[dict]]:
-        datasets: dict[str, list[dict]] = {}
-        for name in sorted(set(names)):
-            datasets[name] = self.read_dataset(name)
-        return datasets
+    def _current_datasets(self, names: Iterable[str]) -> dict[str, list[dict]]:
+        return self.read_datasets(names)
 
     def _current_ontology(self) -> dict[str, Any] | None:
         if self.is_remote:
@@ -483,23 +481,79 @@ class DatasetStore:
         return payload if isinstance(payload, dict) else None
 
     def read_dataset(self, name: str) -> list[dict]:
+        """Read one dataset from the active immutable generation."""
+        return self.read_datasets((name,))[name]
+
+    def read_datasets(
+        self,
+        names: Iterable[str],
+        *,
+        generation: Path | str | None = None,
+    ) -> dict[str, list[dict]]:
+        """Read datasets from one pinned immutable generation.
+
+        Resolving ``current.json`` once prevents a concurrent publisher from
+        mixing rows from different generations during a multi-dataset read.
+        Callers that already own an immutable generation may pass it directly.
+        """
+        selected = sorted(set(names))
+        resolved_generation = generation or self.current_generation()
+        return {
+            name: self._read_dataset_from_generation(name, resolved_generation)
+            for name in selected
+        }
+
+    def _read_dataset_from_generation(
+        self,
+        name: str,
+        generation: Path | str | None,
+    ) -> list[dict]:
+        if generation is None:
+            return []
         if self.is_remote:
-            generation = self.current_generation()
-            if generation is None:
-                return []
             path = f"{generation}/{name}.jsonl"
             if not self.fs.exists(path):
                 return []
             with self.fs.open(path, "rt") as handle:
                 return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
 
-        generation = self.current_generation()
-        if generation is None:
-            return []
         path = (Path(generation) / name).with_suffix(".jsonl")
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def generation_path(self, generation_id: str) -> Path | str | None:
+        """Resolve an immutable generation ID without consulting `current`."""
+        name = _safe_generation_id(generation_id)
+        candidate: Path | str
+        if self.is_remote:
+            candidate = f"{self.generations}/{name}"
+            return candidate if self.fs.exists(candidate) else None
+        candidate = self.generations / name
+        if candidate.exists():
+            return candidate
+        if sys.platform != "win32":
+            return None
+
+        # Windows activation moves the selected directory to ``current``
+        # instead of creating a symlink. Match by the immutable manifest run
+        # ID, including prior generations renamed to ``legacy-*``.
+        candidates = [self.current]
+        if self.generations.exists():
+            candidates.extend(
+                path for path in self.generations.iterdir() if path.is_dir()
+            )
+        for path in candidates:
+            manifest_path = path / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(manifest, dict) and str(manifest.get("runId") or "") == name:
+                return path
+        return None
 
     def current_generation(self) -> str | None:
         """Return the absolute path/URI of the active generation, or ``None``.
@@ -537,8 +591,7 @@ class DatasetStore:
         name = str(pointer.get("generation") or "").strip()
         if not name:
             return None
-        candidate = f"{self.generations}/{name}"
-        return candidate if self.fs.exists(candidate) else None
+        return self.generation_path(name)
 
     def current_generation_uri(self) -> str | None:
         """Return the active generation as a URI suitable for external callers."""
@@ -636,10 +689,28 @@ class DatasetStore:
             return
 
         if sys.platform == "win32":
+            name = Path(generation).name
+            temporary = self.root / f".current-{uuid.uuid4().hex}"
             backup = self.root / f".current-backup-{uuid.uuid4().hex}"
-            if self.current.exists():
-                self.current.replace(backup)
-            generation.replace(self.current)
+            shutil.copytree(generation, temporary)
+            previous_current_moved = False
+            try:
+                if self.current.exists():
+                    self.current.replace(backup)
+                    previous_current_moved = True
+                temporary.replace(self.current)
+                _atomic_text(
+                    Path(self.pointer_path),
+                    json.dumps({"generation": name}, indent=2) + "\n",
+                )
+            except Exception:
+                if self.current.exists():
+                    shutil.rmtree(self.current)
+                if previous_current_moved and backup.exists():
+                    backup.replace(self.current)
+                raise
+            finally:
+                shutil.rmtree(temporary, ignore_errors=True)
             shutil.rmtree(backup, ignore_errors=True)
             return
 
@@ -688,8 +759,10 @@ class DatasetStore:
             return
 
         if sys.platform == "win32":
-            return
-        active = self.current.resolve() if self.current.exists() else None
+            current_generation = self.current_generation()
+            active = Path(current_generation) if current_generation else None
+        else:
+            active = self.current.resolve() if self.current.exists() else None
         generations = sorted(
             (path for path in self.generations.iterdir() if path.is_dir() and not path.name.startswith(".")),
             key=lambda path: path.stat().st_mtime,

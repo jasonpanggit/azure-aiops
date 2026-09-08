@@ -14,6 +14,8 @@ export interface EvidenceBarProps {
   durableEvidence?: DurableEvidence[];
   durableSourceStatus?: DurableSourceStatus[];
   aggregateState?: PageHeaderCompleteness;
+  confidenceSubject?: string;
+  graphTimestampLabel?: string;
 }
 
 /** Keep this predicate identical to the long-form topology freshness guard:
@@ -39,6 +41,8 @@ export function EvidenceBar({
   durableEvidence = [],
   durableSourceStatus = [],
   aggregateState,
+  confidenceSubject,
+  graphTimestampLabel = "Graph",
 }: EvidenceBarProps) {
   const latest = evidence[0];
   const timestamp = latest?.timestamp || fallbackTimestamp;
@@ -62,7 +66,7 @@ export function EvidenceBar({
       : null,
     { key: "updated", label: "Updated", value: relativeTime(timestamp) },
     knowledgeVersion ? { key: "knowledge", label: "Knowledge", value: knowledgeVersion } : null,
-    { key: "graph", label: "Graph", value: freshnessChip(graphFreshness) },
+    { key: "graph", label: graphTimestampLabel, value: freshnessChip(graphFreshness) },
     liveObservedAt ? { key: "live", label: "Live", value: relativeTime(liveObservedAt) } : null,
   ].filter((segment): segment is { key: string; label: string; value: string; title?: string } => segment !== null);
 
@@ -70,7 +74,10 @@ export function EvidenceBar({
     <aside className={`evidence-bar evidence-bar-${tone}`} aria-label="Data trust and provenance">
       <div className="evidence-bar-primary">
         <StatusBadge
-          label={aggregateLabel ?? `${confidence} confidence`}
+          label={
+            aggregateLabel ??
+            `${confidenceSubject ? `${confidenceSubject} · ` : ""}${confidence} confidence`
+          }
           tone={tone}
           compact
         />

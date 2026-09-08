@@ -700,26 +700,30 @@ _GRANULAR_EXPOSURE_TABLE_KEYS = {
     "silver_container_registries": "registry_id",
     "silver_container_logical_images": "logical_image_id",
     "silver_container_image_digests": "image_digest_id",
-    "silver_container_vulnerability_observations": (
-        "vulnerability_observation_id"
-    ),
     "silver_workload_deployments": "deployment_id",
     "metadata_workload_source_checkpoints": "checkpoint_key",
+    "gold_container_exposure_current": "container_exposure_id",
 }
+
+GRANULAR_EXPOSURE_MAX_SOURCE_ROWS = 100_000
 
 
 @dataclass
 class GranularExposureOntologyMapper:
-    """Losslessly project the durable granular Fabric contract into ontology v2.
+    """Project canonical container Exposure state into ontology v2.
 
     Unlike :class:`ExposureOntologyMapper`, which consumes the summarized
     Exposure read model, this adapter consumes the Plan 10 granular products.
-    Every source row is retained in the entity payload so the approved Fabric
-    keys, generation evidence, event interval, provenance, and completeness
-    can be reconstructed without reinterpretation.
+    Detailed vulnerability observations remain in Silver. Ontology receives
+    one current digest-CVE exposure per canonical key, with references to all
+    contributing Silver evidence, plus exact image and workload identities.
     """
 
-    entity_builder: EntityBuilder = field(default_factory=EntityBuilder)
+    entity_builder: EntityBuilder = field(
+        default_factory=lambda: EntityBuilder(
+            max_source_rows=GRANULAR_EXPOSURE_MAX_SOURCE_ROWS,
+        )
+    )
     relationship_builder: RelationshipBuilder = field(
         default_factory=RelationshipBuilder
     )
@@ -736,11 +740,11 @@ class GranularExposureOntologyMapper:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Build unsynchronized granular rows for a shared graph transaction."""
         logical_images = datasets.get("silver_container_logical_images", ())
-        observations = datasets.get(
-            "silver_container_vulnerability_observations",
+        current_exposures = datasets.get(
+            "gold_container_exposure_current",
             (),
         )
-        if allow_empty and not logical_images and not observations:
+        if allow_empty and not logical_images and not current_exposures:
             return [], []
         source_rows = _granular_exposure_ontology_source_rows(datasets)
         entities = self.entity_builder.build(
@@ -782,7 +786,11 @@ class GranularExposureOntologyMapper:
         self,
         graph: OntologyGraphResult,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Reconstruct the granular Fabric rows embedded by :meth:`project`."""
+        """Reconstruct canonical Fabric rows embedded by :meth:`project`.
+
+        Detailed Silver vulnerability observations are deliberately excluded;
+        canonical exposure rows retain their immutable evidence references.
+        """
 
         restored: dict[str, dict[str, dict[str, Any]]] = {
             table_name: {} for table_name in _GRANULAR_EXPOSURE_TABLE_KEYS
@@ -828,6 +836,41 @@ class GranularExposureOntologyMapper:
         }
 
 
+def filter_legacy_granular_exposure_graph(
+    entities: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Remove superseded one-node-per-source-event ontology projections."""
+    legacy_ids = {
+        str(row.get("resource_id") or "").casefold()
+        for row in entities
+        if str(row.get("entity_type") or "") == "VulnerabilityObservation"
+        if _json_mapping(
+            row.get("payload_json"),
+            field_name="ontology entity payload_json",
+        ).get("fabric_table")
+        == "silver_container_vulnerability_observations"
+    }
+    if not legacy_ids:
+        return entities, relationships
+    return (
+        [
+            row
+            for row in entities
+            if str(row.get("resource_id") or "").casefold()
+            not in legacy_ids
+        ],
+        [
+            row
+            for row in relationships
+            if str(row.get("subject_id") or "").casefold()
+            not in legacy_ids
+            and str(row.get("object_id") or "").casefold()
+            not in legacy_ids
+        ],
+    )
+
+
 def _granular_exposure_ontology_source_rows(
     datasets: Mapping[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -844,9 +887,14 @@ def _granular_exposure_ontology_source_rows(
     registries = indexed["silver_container_registries"]
     logical_images = indexed["silver_container_logical_images"]
     digests = indexed["silver_container_image_digests"]
-    observations = indexed["silver_container_vulnerability_observations"]
+    observations = _index_granular_rows(
+        datasets.get("silver_container_vulnerability_observations", ()),
+        table_name="silver_container_vulnerability_observations",
+        key_field="vulnerability_observation_id",
+    )
     deployments = indexed["silver_workload_deployments"]
     checkpoints = indexed["metadata_workload_source_checkpoints"]
+    current_exposures = indexed["gold_container_exposure_current"]
     digest_pattern = re.compile(r"^sha256:[0-9a-f]{64}$")
 
     if not logical_images:
@@ -856,9 +904,10 @@ def _granular_exposure_ontology_source_rows(
 
     logical_entity_ids: dict[str, str] = {}
     digest_entity_ids: dict[str, str] = {}
-    observation_entity_ids: dict[str, str] = {}
+    exposure_entity_ids: dict[str, str] = {}
     deployment_entity_ids: dict[str, str] = {}
     source_rows: list[dict[str, Any]] = []
+    weakness_source_rows: dict[str, dict[str, Any]] = {}
 
     for key, row in logical_images.items():
         _require_granular_scope(row, table_name="silver_container_logical_images")
@@ -936,7 +985,44 @@ def _granular_exposure_ontology_source_rows(
             raise ValueError(
                 "Container vulnerability observation crosses an evidence scope"
             )
-        observation_entity_ids[key] = typed_image_semantic_id(
+    for key, row in current_exposures.items():
+        _require_granular_scope(
+            row,
+            table_name="gold_container_exposure_current",
+        )
+        digest_key = str(row.get("image_digest_id") or "")
+        digest_row = digests.get(digest_key)
+        if digest_row is None or str(
+            digest_row.get("image_digest") or ""
+        ) != str(row.get("image_digest") or ""):
+            raise ValueError(
+                "Container exposure references an unknown image digest"
+            )
+        if str(row.get("logical_image_id") or "") not in logical_entity_ids:
+            raise ValueError(
+                "Container exposure references an unknown logical image"
+            )
+        evidence_ids = {
+            str(value)
+            for value in row.get("vulnerability_observation_ids") or ()
+            if str(value)
+        }
+        if not evidence_ids or not evidence_ids <= observations.keys():
+            raise ValueError(
+                "Container exposure references unknown vulnerability evidence"
+            )
+        matching_evidence = [observations[value] for value in evidence_ids]
+        if any(
+            str(evidence.get("image_digest_id") or "") != digest_key
+            or str(evidence.get("cve_id") or "").upper()
+            != str(row.get("cve_id") or "").upper()
+            or _granular_scope(evidence) != _granular_scope(row)
+            for evidence in matching_evidence
+        ):
+            raise ValueError(
+                "Container exposure conflicts with vulnerability evidence"
+            )
+        exposure_entity_ids[key] = typed_image_semantic_id(
             "VulnerabilityObservation",
             str(row["tenant_id"]),
             str(row["subscription_id"]),
@@ -1114,16 +1200,25 @@ def _granular_exposure_ontology_source_rows(
             },
         )
 
-    for key, row in observations.items():
+    for key, row in current_exposures.items():
         weakness_id = str(row.get("cve_id") or "").strip().upper()
         if not weakness_id:
-            raise ValueError("Container vulnerability observation requires a CVE")
+            raise ValueError("Container exposure requires a CVE")
         weakness_entity_id = semantic_id(
             "CVE",
             str(row["tenant_id"]),
             weakness_id,
         )
-        source_rows.append(
+        evidence_ids = sorted(
+            {
+                str(value)
+                for value in row.get("vulnerability_observation_ids") or ()
+                if str(value)
+            }
+        )
+        matching_evidence = [observations[value] for value in evidence_ids]
+        weakness_source_rows.setdefault(
+            weakness_entity_id,
             {
                 "tenant_id": str(row["tenant_id"]),
                 "subscription_id": "not-applicable",
@@ -1132,13 +1227,13 @@ def _granular_exposure_ontology_source_rows(
                 "name": weakness_id,
                 "payload_json": _canonical({"cve_id": weakness_id}),
                 "discovery": "granular_exposure_fabric",
-            }
+            },
         )
         add_fabric_entity(
-            table_name="silver_container_vulnerability_observations",
+            table_name="gold_container_exposure_current",
             fabric_key=key,
             entity_type="VulnerabilityObservation",
-            entity_id=observation_entity_ids[key],
+            entity_id=exposure_entity_ids[key],
             row=row,
             name=key,
             extra_payload={
@@ -1147,17 +1242,34 @@ def _granular_exposure_ontology_source_rows(
                     str(row["image_digest_id"])
                 ],
                 "weakness_entity_id": weakness_entity_id,
-                "source_families": [str(row.get("source_family") or "")],
-                "source_generation": str(row.get("ingestion_run_id") or ""),
+                "source_families": sorted(
+                    {
+                        str(value.get("source_family") or "")
+                        for value in matching_evidence
+                        if str(value.get("source_family") or "")
+                    }
+                ),
+                "source_generation": str(
+                    row.get("ingestion_run_id") or ""
+                ),
                 "evidence_identity": key,
+                "evidence_refs": evidence_ids,
                 "event_interval": {
-                    "from": str(row.get("provider_event_time") or ""),
+                    "from": min(
+                        (
+                            str(
+                                value.get("provider_event_time")
+                                or value.get("observed_at")
+                                or ""
+                            )
+                            for value in matching_evidence
+                            if value.get("provider_event_time")
+                            or value.get("observed_at")
+                        ),
+                        default="",
+                    ),
                     "to": str(row.get("observed_at") or ""),
                 },
-                "provenance": _json_mapping(
-                    row.get("provenance_json"),
-                    field_name="vulnerability observation provenance_json",
-                ),
                 "completeness": "complete",
             },
         )
@@ -1231,7 +1343,7 @@ def _granular_exposure_ontology_source_rows(
         )
 
     return sorted(
-        source_rows,
+        [*source_rows, *weakness_source_rows.values()],
         key=lambda row: (
             str(row.get("entity_type") or ""),
             str(row.get("resource_id") or ""),

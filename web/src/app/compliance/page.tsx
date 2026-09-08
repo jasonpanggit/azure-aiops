@@ -15,7 +15,7 @@ import { useApi } from "@/hooks/useApi";
 import { buildComplianceCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
-import { complianceApi, networkApi, vulnerabilityApi } from "@/lib/services";
+import { complianceApi, isCanonicalAzureResourceId, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 
 type ViolationType =
@@ -323,6 +323,21 @@ function attachVulnerabilityContext(violations: Violation[], exposures: Vulnerab
   }));
 }
 
+/** Build the remediation deep link for a violation.
+ *
+ * The remediation page filters by `resource_key`/`resource` only -- it has no
+ * `business_service` filter, so the previous `?business_service=` link was
+ * silently ignored (and was usually empty anyway, because gap/rule/peering
+ * violations carry no business service). Only send a resource filter when the
+ * violation actually names a canonical Azure resource; a rule id or synthetic
+ * key would filter the plan list down to nothing.
+ */
+function remediationHref(violation: Violation): string {
+  return isCanonicalAzureResourceId(violation.resource)
+    ? `/remediation?resource_key=${encodeURIComponent(violation.resource)}`
+    : "/remediation";
+}
+
 function remediationFor(type: ViolationType): string {
   const map: Record<ViolationType, string> = {
     firewall_bypass: "Restore approved hub firewall inspection path.",
@@ -507,7 +522,7 @@ export default function CompliancePage() {
                   <dt>Vulnerability exposure</dt><dd>{selected.vulnerabilityExposure}</dd>
                   <dt>Remediation candidate</dt><dd>{selected.remediation}</dd>
                 </dl>
-                <Link className="button button-primary" href={`/remediation?business_service=${encodeURIComponent(selected.businessService)}`}>Open remediation</Link>
+                <Link className="button button-primary" href={remediationHref(selected)}>Open remediation</Link>
                 <details>
                   <summary>Evidence</summary>
                   <StructuredData value={selected.evidence} />

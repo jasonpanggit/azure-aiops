@@ -44,4 +44,27 @@ describe("EvidenceBar graph freshness", () => {
     expect(screen.getByText("Graph").parentElement).toHaveTextContent("Graph 1 hour ago");
     expect(screen.getByLabelText("Data trust and provenance")).toHaveClass("evidence-bar-high");
   });
+
+  it("qualifies confidence and graph observation labels when a surface supplies subjects", () => {
+    render(
+      <EvidenceBar
+        confidenceSubject="Topology evidence"
+        graphTimestampLabel="Topology graph observed"
+        evidence={[
+          {
+            source_engine: "network.NetworkIntelligenceService",
+            source_table: "ontology_entities",
+            timestamp: "2025-12-31T23:00:00Z",
+            confidence: "high",
+            freshness: "fresh",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Topology evidence · high confidence")).toBeInTheDocument();
+    expect(screen.getByText("Topology graph observed").parentElement).toHaveTextContent(
+      "Topology graph observed Unknown",
+    );
+  });
 });

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   expect,
   test,
@@ -5,8 +6,18 @@ import {
   type Response,
   type TestInfo,
 } from "@playwright/test";
+import {
+  HANDLER_TIMING_HEADER,
+  HTTP_P95_BUDGET_MS,
+  LATENCY_SAMPLE_COUNT,
+  SERVER_HANDLER_P95_BUDGET_MS,
+  handlerDurationMs,
+  latencyDistribution,
+} from "../src/lib/network-topology-latency";
 
 const liveEnabled = process.env.AIOPS_LIVE_NETWORK_E2E === "1";
+const liveSessionStoragePath =
+  process.env.PLAYWRIGHT_SESSION_STORAGE_STATE;
 const FULL_DETAIL_GUARD_NODES = 1_500;
 const FULL_DETAIL_GUARD_BUILD_MS = 3_000;
 
@@ -158,8 +169,18 @@ test.describe("deployed Phase 12 network topology acceptance", () => {
     "Set AIOPS_LIVE_NETWORK_E2E=1 with PLAYWRIGHT_BASE_URL and PLAYWRIGHT_STORAGE_STATE after deployment.",
   );
 
-  test.beforeEach(() => {
+  test.beforeEach(async ({ page }) => {
     test.setTimeout(240_000);
+    if (liveSessionStoragePath) {
+      const sessionState = JSON.parse(
+        readFileSync(liveSessionStoragePath, "utf8"),
+      ) as Record<string, string>;
+      await page.addInitScript((state) => {
+        for (const [key, value] of Object.entries(state)) {
+          window.sessionStorage.setItem(key, value);
+        }
+      }, sessionState);
+    }
   });
 
   test("[Finding 1] retains the summary canvas while full detail loads", async ({
@@ -226,31 +247,55 @@ test.describe("deployed Phase 12 network topology acceptance", () => {
     await page.unrouteAll({ behavior: "wait" });
   });
 
-  test("[Finding 2] keeps five-sample full-detail p95 below one second", async ({
+  test("[Finding 2] keeps five-sample server and HTTP p95 within separate budgets", async ({
     page,
     request,
   }, testInfo) => {
     const { response } = await openTopology(page);
     const authorization = await authorizationFrom(response);
     const topologyUrl = fullDetailUrl(response);
-    const durations: number[] = [];
+    const serverHandlerSamplesMs: number[] = [];
+    const httpSamplesMs: number[] = [];
 
-    for (let sample = 0; sample < 5; sample += 1) {
+    for (let sample = 0; sample < LATENCY_SAMPLE_COUNT; sample += 1) {
       const started = Date.now();
       const sampleResponse = await request.get(topologyUrl.toString(), {
         headers: { Authorization: authorization },
       });
-      durations.push(Date.now() - started);
+      httpSamplesMs.push(Date.now() - started);
       expect(sampleResponse.ok()).toBe(true);
+      serverHandlerSamplesMs.push(
+        handlerDurationMs(
+          sampleResponse.headers()[HANDLER_TIMING_HEADER],
+        ),
+      );
     }
 
-    durations.sort((left, right) => left - right);
-    const p95 = durations[Math.ceil(durations.length * 0.95) - 1];
+    const serverHandler = latencyDistribution(serverHandlerSamplesMs);
+    const endToEndHttp = latencyDistribution(httpSamplesMs);
+    const diagnostics = {
+      server_handler: {
+        ...serverHandler,
+        strict_budget_ms: SERVER_HANDLER_P95_BUDGET_MS,
+      },
+      end_to_end_http: {
+        ...endToEndHttp,
+        strict_budget_ms: HTTP_P95_BUDGET_MS,
+      },
+    };
     await testInfo.attach("full-detail-latency.json", {
-      body: JSON.stringify({ durations_ms: durations, p95_ms: p95 }, null, 2),
+      body: JSON.stringify(diagnostics, null, 2),
       contentType: "application/json",
     });
-    expect(p95).toBeLessThan(1_000);
+    const diagnosticText = JSON.stringify(diagnostics);
+    expect.soft(
+      serverHandler.p95Ms,
+      `server handler p95 must be <${SERVER_HANDLER_P95_BUDGET_MS}ms; ${diagnosticText}`,
+    ).toBeLessThan(SERVER_HANDLER_P95_BUDGET_MS);
+    expect.soft(
+      endToEndHttp.p95Ms,
+      `end-to-end HTTP p95 must be <${HTTP_P95_BUDGET_MS}ms; ${diagnosticText}`,
+    ).toBeLessThan(HTTP_P95_BUDGET_MS);
   });
 
   test("[Finding 3] returns a routable hub envelope with an explicit empty/non-empty disposition", async ({

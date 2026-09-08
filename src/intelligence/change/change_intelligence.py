@@ -201,6 +201,27 @@ class ChangeIntelligence:
                 row["configuration_drift_count"],
                 len(finding["configuration_drift"]["fields"]),
             )
+        # Deviation counts are keyed on the resource itself, not on a change, so
+        # a resource that is out of policy without a recent change still gets a
+        # posture row. Remediation opportunity triggers read
+        # `policy_violation_count`, so omitting these left the governed
+        # "configuration and policy debt" action unable to ever fire.
+        for deviations, name in (
+            (self.policy, "policy_deviation_count"),
+            (self.security, "security_deviation_count"),
+        ):
+            for deviation in deviations:
+                if str(deviation.get("status", "")).casefold() == "resolved":
+                    continue
+                row = posture.setdefault(
+                    str(deviation["resource_key"]),
+                    {"change_risk_score": 0, "configuration_drift_count": 0},
+                )
+                row[name] = row.get(name, 0) + 1
+        for row in posture.values():
+            row["policy_violation_count"] = row.get(
+                "policy_deviation_count", 0
+            ) + row.get("security_deviation_count", 0)
         return posture
 
     def timelines(self):

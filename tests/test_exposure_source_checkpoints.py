@@ -1329,6 +1329,52 @@ def test_failed_workload_workspace_without_lkg_is_unavailable_and_rowless() -> N
     )
 
 
+def test_failed_workload_partition_rejects_checkpoint_without_effective_generation() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+        workload_checkpoint_key,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(
+        generation="generation-2",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+    invalid_checkpoint = {
+        "checkpoint_key": workload_checkpoint_key(
+            "connection-a",
+            "workspace-a",
+            "container_image_inventory",
+        ),
+        "connection_id": "connection-a",
+        "workspace_id": "workspace-a",
+        "source_family": "container_image_inventory",
+        "status": "stale",
+        "completeness": "stale",
+        "effective_generation": "",
+        "last_success_at": "",
+    }
+
+    projected = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:05:01Z",
+        previous_checkpoints=[invalid_checkpoint],
+    )
+
+    failed = next(
+        row
+        for row in projected.checkpoints
+        if row["workspace_id"] == "workspace-a"
+        and row["source_family"] == "container_image_inventory"
+    )
+    assert failed["status"] == "unavailable"
+    assert failed["completeness"] == "unavailable"
+    assert failed["effective_generation"] == ""
+    assert failed["carried_forward"] is False
+
+
 def test_fabric_sync_validates_workload_references_before_activation(tmp_path) -> None:
     from deltalake import DeltaTable
 

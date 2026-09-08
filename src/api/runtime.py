@@ -2591,6 +2591,14 @@ def _fabric_is_configured() -> bool:
     )
 
 
+def _fabric_remediation_enabled() -> bool:
+    """Whether the configured Fabric runtime enables remediation planning."""
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if not config_path:
+        return True
+    return FabricRuntimeConfig.load(config_path).remediation.enabled
+
+
 def _fabric_runtime_from_environment() -> FabricRuntime | None:
     """Build the authoritative Fabric reader from a file or Container Apps env."""
     config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
@@ -2787,6 +2795,68 @@ def _attach_remediation_decisions(planner: Any) -> Any:
     return planner
 
 
+def _merge_trigger_signals(
+    planner: Any, correlator: Any, vulnerability_service: Any
+) -> None:
+    """Flatten Defender/vulnerability signals onto the planner's resources.
+
+    ``RemediationPlanner.from_semantic_engine`` flattens ``resource_signals``
+    onto each resource at construction time, but the Defender correlator is
+    only attached afterwards -- and correlation itself runs at plan
+    *generation* time, which is strictly later than opportunity
+    *identification*. Without this merge the ``defender_*`` and
+    ``critical_vulnerability_count`` trigger fields are never present on the
+    rows that ``RemediationOpportunityEngine.identify`` matches against, so
+    the governed catalog actions keyed on them can never fire.
+
+    Read-only and defensive: a partial snapshot (missing Defender tables or
+    exposure rows) degrades to leaving the affected signal absent rather
+    than failing the planner.
+    """
+    from intelligence.predictive.predictive_context_builder import (
+        PredictiveContextBuilder,
+    )
+
+    resources = getattr(planner, "resources", None)
+    if not resources:
+        return
+
+    signals: dict[str, dict[str, Any]] = {}
+
+    def _slot(raw_key: Any) -> dict[str, Any] | None:
+        key = PredictiveContextBuilder.canonical_key(raw_key)
+        return signals.setdefault(key, {}) if key else None
+
+    if correlator is not None:
+        try:
+            posture = correlator.posture_by_resource()
+        except Exception:  # noqa: BLE001 - partial snapshot must not break planning
+            posture = {}
+        for raw_key, row in (posture or {}).items():
+            slot = _slot(raw_key)
+            if slot is not None:
+                slot.update(row)
+
+    if vulnerability_service is not None:
+        try:
+            exposures = vulnerability_service.asset_exposures()
+        except Exception:  # noqa: BLE001 - see above
+            exposures = []
+        for row in exposures or ():
+            slot = _slot(row.get("asset_id"))
+            if slot is None:
+                continue
+            slot["critical_vulnerability_count"] = int(row.get("critical_count") or 0)
+
+    if not signals:
+        return
+
+    for resource in resources:
+        key = PredictiveContextBuilder.canonical_key(resource.get("resource_key"))
+        if key and key in signals:
+            resource.update(signals[key])
+
+
 def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
     """Attach a read-only Defender remediation correlator to ``planner``.
 
@@ -2810,6 +2880,7 @@ def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
         resource_lookup=planner.resources,
         action_catalog=catalog,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 
@@ -2817,6 +2888,19 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
     planner = _attach_remediation_decisions(
         getattr(runtime.operations_agent(), "remediation_planner", None)
     )
+    if planner is None:
+        return None
+    catalog = getattr(getattr(planner, "opportunities", None), "catalog", ())
+    policies = getattr(
+        getattr(getattr(planner, "generator", None), "approvals", None),
+        "policies",
+        (),
+    )
+    if not catalog or not policies:
+        raise RuntimeError(
+            "Governed remediation catalog is empty; deployment must publish "
+            "the versioned action catalog and approval policies"
+        )
     return _attach_defender_correlator(planner, runtime)
 
 
@@ -2852,6 +2936,7 @@ def _attach_live_defender_correlator(
         dependency_analyzer=DependencyAnalyzer(),
         resource_lookup=resources,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 
@@ -3022,11 +3107,23 @@ def _build_provider_runtime(
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     core_readiness_providers = {"semantic", "semantic_graph"}
+    remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
+    remediation_required = (
+        use_fabric
+        and remediation_enabled
+        and mode == "production"
+        and not bootstrap
+    )
     specs = {
         name: ProviderSpec(
             loader=loader,
-            configured=True,
-            required=(name in core_readiness_providers and not bootstrap),
+            configured=not (
+                name == "remediation" and use_fabric and not remediation_enabled
+            ),
+            required=(
+                (name in core_readiness_providers and not bootstrap)
+                or (name == "remediation" and remediation_required)
+            ),
             cache_key=(
                 (lambda provider_name=name: fabric_provider_cache_key(provider_name))
                 if use_fabric

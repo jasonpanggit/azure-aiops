@@ -52,6 +52,16 @@ def _publish(root, connection_id: str, resource_id: str) -> None:
             },
             "relationships/relationships": [],
             "changes/resource_changes": [],
+            "exposure/source_partition_rows": [
+                {
+                    "partition_key": f"partition-{connection_id}",
+                    "query_name": "defender_assessments",
+                    "row_key": f"row-{connection_id}",
+                    "payload_json": "{}",
+                    "effective_generation": f"effective-{connection_id}",
+                    "connection_id": connection_id,
+                }
+            ],
             "exposure/workload_observations": [
                 {
                     "observation_id": f"observation-{connection_id}",
@@ -81,7 +91,7 @@ def _publish(root, connection_id: str, resource_id: str) -> None:
                     "effective_generation": f"effective-{connection_id}",
                     "attempted_at": "2026-01-01T00:00:00Z",
                     "last_success_at": "2026-01-01T00:00:00Z",
-                    "row_count": 0,
+                    "row_count": 1,
                     "represented_count": 1,
                     "expected_count": 1,
                     "completeness": "complete",
@@ -122,6 +132,10 @@ def test_combined_snapshot_preserves_distinct_connection_entities(tmp_path):
         row["deployment_id"]
         for row in combined.read_dataset("exposure/workload_deployments")
     } == {"deployment-hub", "deployment-spoke"}
+    assert {
+        row["row_key"]
+        for row in combined.read_dataset("exposure/source_partition_rows")
+    } == {"row-hub", "row-spoke"}
     assert {
         row["checkpoint_key"]
         for row in combined.read_dataset(
