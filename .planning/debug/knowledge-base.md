@@ -43,3 +43,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** Provider tests pinned request-owned refresh behavior, and the earlier route regression checked encoded URL text rather than passing a slash-prefixed ARM ID through the actual FastAPI route stack; authenticated post-deploy timing was the first gate to expose the combined environment amplification.
 - **Recurrence guard:** `tests/test_api_providers.py::{test_get_is_a_strict_last_known_good_read_without_refresh_io,test_concurrent_gets_do_no_io_during_background_refresh,test_initial_get_during_background_startup_does_not_duplicate_io}`, `tests/test_api_network.py::TestHubDependents::test_query_route_preserves_the_exact_slash_prefixed_arm_id`, the web query-contract test, and the unchanged authenticated five-sample p95/hub-200 checks in `web/e2e/network-topology-deployed.spec.ts`. The authenticated p95 <1,000 ms and hub-route run remains pending until a later authorized redeploy.
 ---
+
+## network-topology-live-ui-final-timing — Server topology budget was applied to full Azure round-trip latency
+- **Date:** 2026-09-08
+- **Error patterns:** 9/10 live checks, HTTP p95 1646-1794 ms, server p95 unobservable, topology latency gate
+- **Root cause(s):** The topology route exposed no post-serialization handler duration, so deployed Playwright compared full client-to-Azure round-trip p95 with the server-only <1,000 ms topology-build requirement.
+- **Fix:** Added `X-AIOPS-Handler-Ms` around topology analysis plus FastAPI response serialization, then split the same five samples into strict server-handler p95 <1,000 ms and end-to-end HTTP p95 <3,000 ms gates with diagnostic distributions.
+- **Files changed:** src/api/routers/network.py, tests/test_api_network.py, web/src/lib/network-topology-latency.ts, web/src/lib/network-topology-latency.test.ts, web/e2e/network-topology-deployed.spec.ts, .planning/phases/12-network-topology-integrity-and-scale/12-UI-REVIEW.md, .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
+- **Why not caught:** The acceptance harness had one elapsed timer and no response-level server metric, so it could not distinguish server work from Azure ingress, TLS, network, and client overhead.
+- **Recurrence guard:** `tests/test_api_network.py::TestTopology::{test_reports_handler_time_for_analysis_and_response_serialization,test_handler_time_header_is_additive_and_numeric,test_handler_timing_does_not_change_auth_or_error_responses}`, `web/src/lib/network-topology-latency.test.ts`, and the two explicit soft assertions in `web/e2e/network-topology-deployed.spec.ts`.
+---

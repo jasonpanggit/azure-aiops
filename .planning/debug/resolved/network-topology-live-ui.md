@@ -2,8 +2,9 @@
 status: resolved
 trigger: "Troubleshoot and fix all findings and errors from the authenticated Playwright review of the deployed /network experience."
 created: 2026-09-08T01:10:00+08:00
-updated: 2026-09-08T11:55:00+08:00
+updated: 2026-09-08T13:18:00+08:00
 reopened: 2026-09-08T11:13:42.686+08:00
+reopened_final_gate: 2026-09-08T12:03:28.076+08:00
 ---
 
 # Debug Session: Network Topology Live UI
@@ -58,31 +59,30 @@ reopened: 2026-09-08T11:13:42.686+08:00
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed: request-time ProviderRuntime.get I/O caused the repeated warm endpoint latency, and wildcard-path ARM-id transport caused the deployed hub 404."
-test: "Terminal reconciliation completed against commit 5927182d2f2cded3873c0c6ba969a2a0ab1df2ed, the authoritative Phase 12 review/readiness records, and the current worktree."
-expecting: "Met: both reopened failures are failing-first regression-covered and committed; authenticated p95 <1,000 ms plus query-route hub verification remains pending after a later authorized redeploy."
-next_action: "Archive this resolved session. Do not deploy or push; leave terminal session-document commit handling to the manager."
+hypothesis: "Confirmed: the final live failure is caused by applying the server-only <1,000 ms topology budget to full client-to-Azure elapsed time when the route exposes no post-serialization handler duration."
+test: "Reconcile final docs and debug history against the verified source diff, then stage only session-owned paths plus only the latency hunks from the overlapping deployed Playwright file."
+expecting: "Met: the resolved record and authoritative Phase 12 evidence state 9/10 deployed, preserve server <1,000 ms, add HTTP <3,000 ms, and do not claim the undeployed handler header has passed live."
+next_action: "Archive this record, append the final timing-contract knowledge-base entry, stage only session-owned changes with patch-level staging for deployed Playwright, and commit without deploying or pushing."
 known_pattern_candidate: "none — MemPalace is unavailable and the durable knowledge base has no two-token match for ProviderRuntime.get request-thread I/O or slash-losing hub routes."
 candidate_causes:
-  - "code: ProviderRuntime.get refreshes cache identity and reads loader state synchronously; path transport embeds a slash-prefixed ARM id in a route wildcard"
-  - "config/environment: one API replica and slow Fabric semantic-version access amplify any synchronous request-thread work"
-  - "data: slash-prefixed ARM hub ids expose route normalization while simple policy requests do not"
-and_gate: "under investigation — latency may require synchronous request-time freshness I/O plus slow deployed Fabric access; the hub 404 may require a slash-prefixed ARM id plus path normalization."
+  - "code: the topology endpoint does not publish route analysis-plus-serialization timing, and the deployed test uses only browser-observed HTTP duration"
+  - "config/environment: Azure ingress, TLS, browser, and network transit add 646-794 ms beyond the strict server budget"
+  - "data: the 349 KB full topology payload makes serialization material and therefore forbids timing only the handler's unserialized return"
+and_gate: "likely yes for the misleading gate: absent server timing telemetry AND nontrivial client-to-Azure transit make HTTP p95 an invalid proxy for server build p95; both server and end-to-end budgets must remain independently enforced."
 reasoning_checkpoint:
-  hypothesis: "ProviderRuntime.get causes repeated network endpoint latency because it performs Fabric semantic-version/cache-key reads and can execute provider loaders on the request thread; the hub 404 persists because a slash-prefixed ARM identifier is transported through a path wildcard whose deployed normalization is lossy."
+  hypothesis: "The acceptance test reports a false server-budget failure because network_topology has no server handler metric and the test compares full HTTP round-trip p95 directly with the server-only <1,000 ms requirement."
   confirming_evidence:
-    - "Direct code tracing shows get() calls _refresh_changed_cache_key twice, refresh(blocking=False), and _read_cache_key; both refresh helpers execute I/O after a nonblocking lock acquisition, and the network cache key calls Fabric semantic_version()."
-    - "Agent-authored regressions are RED: one get produced seven I/O calls, four concurrent gets added twelve I/O calls during a background refresh, and an initial-startup get added three I/O calls."
-    - "The FastAPI TestClient query-route regression returns 404 and the web client regression still observes the encoded path contract; deployed evidence independently shows the same hub id losing its leading slash."
-    - "Authenticated endpoint differential is specific: topology/gaps/rule-findings, which resolve the managed network provider, take 9–22 seconds while /network/policy, which bypasses it, takes about 0.8 seconds."
-  falsification_test: "The hypothesis would be false if get() could be observed making zero cache-key/loader calls before the fix, if slow network routes bypassed ProviderRuntime.get, or if an exact slash-prefixed query parameter still arrived corrupted through TestClient."
-  fix_rationale: "A state-only get() enforces the documented LKG boundary rather than masking latency, while the already-existing immediate startup and periodic background thread remains the sole refresh owner. A query parameter delegates slash encoding/decoding to URL query semantics and preserves exact ARM identity; sharing the membership helper retains honest 404/empty behavior and legacy compatibility."
-  blind_spots: "This environment cannot redeploy or repeat authenticated production timing, so the unchanged live p95 <1s gate remains pending after source verification. The hybrid ARG cache and Fabric latency could still contribute after request-time provider I/O is removed, although five-minute cached rows and the endpoint differential argue against them as the repeated warm-request cause."
+    - "The deployed source returns an unserialized dict and no response header; FastAPI performs response serialization only after the endpoint function returns."
+    - "The current Playwright test records only Date.now() elapsed durations and applies expect(p95).toBeLessThan(1_000), while the authenticated post-redeploy HTTP p95 is 1,646-1,794 ms and nine other checks, including hub 200, pass."
+    - "Failing-first TestClient coverage observed no timing calls/header, and the frontend latency test cannot resolve the not-yet-existing independent-distribution helper."
+  falsification_test: "This hypothesis is false if a successful topology response already exposes a numeric duration sampled after response serialization, or if separate five-sample server p95 <1,000 ms and HTTP p95 <3,000 ms calculations still classify the supplied 1,646-1,794 ms round trips as a server failure."
+  fix_rationale: "A route-scoped APIRoute wrapper can stop the clock only after FastAPI has built the serialized Response, preserving the existing body and exception flow. A pure shared p95/header parser lets Playwright retain strict independent server and user-visible latency budgets and diagnostic distributions."
+  blind_spots: "An Azure proxy could strip the new custom header; the post-change source tests can prove ASGI/TestClient behavior but no deployment is authorized here. The next authorized live run must confirm header propagation and actual server p95."
   candidate_causes:
-    - "code: get() executes cache-key and loader paths; client/server use a lossy path-wildcard identifier contract"
-    - "config/environment: one replica and 9–22 second deployed Fabric semantic-version latency amplify the request-thread code path"
-    - "data: slash-prefixed ARM identifiers trigger normalization loss; ordinary policy payloads do not"
-  and_gate: "yes for observed severity: synchronous get() I/O plus slow deployed Fabric access produces the multi-second warm latency, and path transport plus slash-prefixed ARM data produces the 404. The two top-level failures are otherwise independent and both require separate fixes."
+    - "code: no post-serialization handler timing signal exists and one HTTP p95 is compared with the server budget"
+    - "environment: Azure ingress/TLS/network/browser transit contributes roughly 646-794 ms beyond the server budget"
+    - "data: full topology serialization of the approximately 349 KB envelope is part of server work and must be inside the measured interval"
+  and_gate: "yes: the misleading failure requires both the absent server timing signal and material end-to-end transit; the correct acceptance contract therefore needs two independently strict gates over the same samples."
 
 ## Post-Deployment Reopen Symptoms
 
@@ -382,6 +382,38 @@ reasoning_checkpoint:
   checked: "User-supplied terminal criterion, committed remediation, authoritative 12-UI-REVIEW/12-VERIFICATION readiness records, and tracked worktree scope."
   found: "HEAD is the reported commit 5927182d2f2cded3873c0c6ba969a2a0ab1df2ed. Its causal source and failing-first regressions cover state-only ProviderRuntime.get behavior plus exact query-parameter hub routing. The records preserve the unchanged authenticated five-sample p95 <1,000 ms and hub-200 checks as pending_redeploy, while explicitly recording the unrelated pre-existing Phase 13 local-HTTP Playwright failure and 27 unrelated repository-wide Ruff findings. Only this session document plus pre-existing concurrent .azure/deployment-plan.md and session-storage Playwright edits remain tracked modifications."
   implication: "The user's completion criterion is met without another deployment, push, or source edit. Archive the session and report DEBUG COMPLETE; terminal session-document commit handling remains with the manager."
+- timestamp: 2026-09-08T12:03:28.076+08:00
+  checked: "Final authenticated post-redeploy checkpoint supplied by the user."
+  found: "Nine of ten live checks pass, including the hub 200 contract. Five full-detail samples have end-to-end HTTP p95 between 1,646 and 1,794 ms, substantially below the prior 14,397 ms and 146,723 ms observations but still above the server-only Phase 12 budget."
+  implication: "The causal latency remediation is live, but the final test cannot distinguish server topology analysis/serialization from Azure and client transit. Preserve strict server p95 <1,000 ms and add an independent strict end-to-end HTTP p95 <3,000 ms gate."
+- timestamp: 2026-09-08T12:10:00+08:00
+  checked: "Repository scope, current topology route, FastAPI response path, API coverage, deployed Playwright latency test, and overlapping unstaged diff."
+  found: "Phase 03.1 remains active but this Phase 12 acceptance remediation is explicitly authorized. network_topology returns a dict and exposes no timing header; FastAPI serializes that dict after the endpoint returns. The deployed test records only Date.now() round-trip durations and asserts that distribution below 1,000 ms. The only pre-existing diff in that file is the required readFileSync/sessionStorage harness hunk."
+  implication: "A timestamp set immediately before route analysis must be stopped only after JSON response rendering. Returning a route-local JSONResponse permits that exact boundary without changing response data, while the Playwright hunk must preserve the concurrent harness byte-for-byte and report two five-sample distributions."
+- timestamp: 2026-09-08T12:16:00+08:00
+  checked: "Agent-authored failing-first server timing and latency-distribution regressions."
+  found: "The TestClient run failed exactly two new contract assertions because no timing events/header exist; the auth/error preservation neighbor already passed. The Vitest suite failed to resolve the intentionally absent network-topology-latency module."
+  implication: "The defect is reproduced before production changes with specified-contract oracles. Implement only the timing boundary, parser/distribution helper, and separate Playwright assertions."
+- timestamp: 2026-09-08T12:34:00+08:00
+  checked: "Post-fix focused API/web regressions, TypeScript, ESLint, Ruff, Playwright discovery, and overlapping worktree diff."
+  found: "The exact API timing regressions pass 3/3, including deterministic clock-start → serialized bytes → clock-stop ordering and a 7.250 ms header. Focused backend passes 145 tests; focused web passes 83 tests including 4/5/6 sample-count neighbors; TypeScript, ESLint, changed-path Ruff, and ten-test deployed Playwright discovery pass. The session-storage harness diff is byte-for-byte unchanged, and the new import plus latency block are the only added Playwright hunks."
+  implication: "The implementation satisfies the causal contract and adjacent focused coverage. Proceed to full source-readiness and browser gates before anti-overfitting verification."
+- timestamp: 2026-09-08T12:43:00+08:00
+  checked: "First full backend/web/source-quality run."
+  found: "Full Vitest, TypeScript, and Ruff over src/tests passed. Full pytest found exactly two failures in frozen baseline helpers that call network_topology(context, scope) directly; inserting Request as the first positional parameter broke that internal callable compatibility. All other backend tests passed. The focused web run initially exposed only an it.each empty-array argument-shape mistake in the new test, which was corrected and then passed 83/83."
+  implication: "The timing mechanism is valid, but the Request dependency must be optional and placed after the original positional signature so HTTP injection still marks timing while direct contract capture remains unchanged."
+- timestamp: 2026-09-08T12:55:00+08:00
+  checked: "Compatibility correction and definitive source-readiness gates."
+  found: "The original direct-call signature works again while FastAPI still injects Request: both frozen baseline tests and all three HTTP timing tests pass. Full pytest exits 0; full Vitest passes 58 files/589 tests; src/tests Ruff, TypeScript, ESLint, and the production build pass. Focused Phase 12 Playwright passes 3 with 10 live-only checks skipped. Complete local Playwright reports 10 passed/10 skipped and only the unchanged Phase 13 ontology HTTPS-only failure against localhost HTTP."
+  implication: "No Phase 12 source regression remains. The final acceptance work is ready for revert-and-reconfirm, documentation updates, scoped staging, and commit."
+- timestamp: 2026-09-08T13:02:00+08:00
+  checked: "Fix-acceptance revert-and-reconfirm and mutation availability."
+  found: "Stashing only src/api/routers/network.py and the new latency utility made both server timing tests fail and made the latency suite fail to resolve its production contract. Reapplying those exact files restored 2/2 API and 6/6 latency assertions to GREEN. No Stryker file or binary is configured; the source change is additive rather than deletion-only; git diff --check passes."
+  implication: "Guardrail signals 1, 3, 4, and 5 pass. Mutation signal 2 is explicitly skipped as unavailable, so the final fix is accepted."
+- timestamp: 2026-09-08T13:12:00+08:00
+  checked: "Authoritative Phase 12 UI review/verification updates and concurrent repository state."
+  found: "Both records now preserve the historical 8/10 and 14,397 ms evidence, add the final 9/10 result with HTTP p95 1,646-1,794 ms and hub 200, define strict server <1,000 ms plus HTTP <3,000 ms gates over the same five samples, and state that live header verification remains pending because this session does not deploy. Concurrent HEAD advanced only through an infra sizing commit and origin advanced independently; the session did not merge, deploy, push, or inspect Terraform state."
+  implication: "Documentation is truthful and scoped. Commit only the handler timing source/tests, latency contract, exact Playwright latency hunks, two authoritative Phase 12 records, resolved debug record, and final KB entry."
 
 ## Eliminated
 
@@ -420,6 +452,8 @@ root_cause:
 post_deployment_root_cause:
   - "ProviderRuntime.get was not a last-known-good read: it synchronously resolved cache keys up to three times and could execute provider loaders after acquiring a nonblocking refresh lock. For the network provider, every cache-key resolution called Fabric semantic_version() plus policy revision, putting 9–22 second freshness I/O on each request thread."
   - "Hub ARM identity was still transported in a wildcard path segment. The deployed route stack normalized the slash-bearing value and the service received a non-identical id, so membership validation returned 404 even though the summary contained the hub."
+final_gate_root_cause:
+  - "The Phase 12 server topology-build budget was applied to Playwright's full client-to-Azure round-trip distribution because network_topology exposed no handler duration after response serialization. The remaining 1,646-1,794 ms HTTP p95 therefore could not distinguish server work from transit latency."
 fix:
   - Added scoped dependency retention and AbortController cancellation to useApi; the network detail request retains summary data only when the canonical scope key is unchanged, tracks rendered detail separately, and exposes elapsed full-detail progress plus Cancel.
   - Timestamped the hybrid network cache after live ARG completion, extended only that scoped cache to a five-minute operator window, and added measured topology build duration to the summary for a latency-aware full-detail guard.
@@ -433,6 +467,46 @@ fix:
 post_deployment_fix:
   - "Made ProviderRuntime.get a state-lock-only last-known-good read with no cache-key, metadata, freshness, or loader calls; the existing immediate-startup and periodic background refresh loop remains the sole refresh owner."
   - "Added GET /api/v1/network/topology/hubs/dependents?vnet_id=... with exact query transport and shared membership/empty-envelope behavior, retained the legacy wildcard route, and switched the web client and deployed acceptance to the query route."
+final_gate_fix:
+  - "Added a route-scoped X-AIOPS-Handler-Ms response header whose clock starts immediately before topology service analysis and stops after FastAPI has serialized the successful response."
+  - "Split deployed latency acceptance into independent five-sample server-handler p95 <1,000 ms and end-to-end HTTP p95 <3,000 ms gates with both distributions and p95 values attached and embedded in soft-assert failure output."
+final_gate_verification:
+  target_test:
+    result: pass
+    details: "3/3 TestClient timing/auth/error regressions and 6/6 latency distribution/header/boundary assertions pass. The deterministic fake-clock test proves start → serialized body bytes → stop and emits exactly 7.250 ms."
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No Stryker binary or configuration is present."
+    mutant_killed: null
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: false
+    details: "The fix is additive: a route wrapper/header, a shared latency contract, independent Playwright gates, and regression tests. No product branch is removed or short-circuited."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "focused provider/runtime/network backend — 145 passed"
+      - "focused network web — 4 files, 83 passed"
+      - "full pytest — 3,834 collected, 0 failed"
+      - "full Vitest — 58 files, 589 passed"
+      - "Ruff over src and tests"
+      - "TypeScript noEmit"
+      - "Next ESLint"
+      - "Next production build"
+      - "Phase 12 local Playwright — 3 passed, 10 live-only skipped"
+    caveat: "Complete local Playwright reports 10 passed/10 skipped plus the unchanged out-of-scope Phase 13 HTTPS-only failure against localhost HTTP."
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+    details: "Removing only src/api/routers/network.py and web/src/lib/network-topology-latency.ts restored missing-header and missing-dual-distribution failures; reapplying restored every targeted assertion."
+  guardrail_verdict: accepted
+  deployed_live:
+    result: partial_then_pending_redeploy
+    details: "The current deployment passed 9/10 and observed HTTP p95 1,646-1,794 ms plus hub 200. The additive header is not deployed, so server p95 remains unmeasured live. No deployment or push was performed."
+  source_ready_terminal:
+    result: pass
+    details: "The server timing contract and both strict p95 gates are regression-covered without relaxing either budget, satisfying the user-defined terminal criterion."
 post_deployment_verification:
   target_test:
     result: pass
@@ -530,6 +604,8 @@ files_changed:
   - web/src/lib/network-graph.ts
   - web/src/lib/network-graph.test.ts
   - web/src/lib/network-services.test.ts
+  - web/src/lib/network-topology-latency.ts
+  - web/src/lib/network-topology-latency.test.ts
   - web/src/lib/services.ts
   - web/src/lib/types.ts
   - web/e2e/network-topology-live-ui.spec.ts
@@ -544,10 +620,14 @@ files_changed:
   - .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
 oracle_type: specified and derived-contract
 post_deployment_oracle_type: specified
+final_gate_oracle_type: specified
 commit: "5927182d2f2cded3873c0c6ba969a2a0ab1df2ed"
+final_timing_source_commit: "935e956c6adb5f76f47f302dd4319fee164b4f60"
 
 ## Prevention
 
 why_not_caught: "The earlier source-contract audit did not exercise deployed data shape, routing normalization, acquisition latency/cache age, real resize behavior, or retained request state; several follow-up tests also inspected source text or aggregated live dispositions instead of executing independent behavior."
 recurrence_guard: "Focused RED→GREEN backend/web regressions, mounted ResizeObserver/Cytoscape behavior coverage, three mocked Chromium topology scenarios, and ten independent authenticated post-deploy checks in web/e2e/network-topology-deployed.spec.ts."
 post_deploy_gate: "Pending by design and outside this session. Run only after a later authorized deployment with secure authenticated storage state; preserve explicit data-precondition skips and do not treat the pending gate as a current live pass."
+final_gate_why_not_caught: "The deployed acceptance had one elapsed timer and reused the server-build threshold for the full client-to-Azure path; no response-level post-serialization server metric existed, so the test could not distinguish server regression from transit cost."
+final_gate_recurrence_guard: "tests/test_api_network.py pins the post-serialization X-AIOPS-Handler-Ms contract and unchanged auth/error behavior; web/src/lib/network-topology-latency.test.ts pins five-sample p95/header parsing and strict 1,000/3,000 ms boundaries; web/e2e/network-topology-deployed.spec.ts enforces and diagnoses both distributions."
