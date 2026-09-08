@@ -10,9 +10,11 @@ statuses, counts, timestamps, hashes, and closed-vocabulary reason codes.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -78,6 +80,113 @@ EXPECTED_CURATOR_TOOLS = (
     "get_ontology_vocabulary",
     "search_relationship_history",
 )
+DEPLOYED_STAGES = ("preflight", "lifecycle", "publication", "finalize")
+FIXED_JOB_NAMES = {
+    "coordinator": "aiops-dev-ontology-discovery",
+    "publisher": "aiops-dev-ontology-publisher",
+    "rbac_validator": "aiops-dev-ontology-rbac-check",
+    "ontology_fixture_prepare": "ontology-fixture-prepare",
+    "ontology_fixture_cleanup": "ontology-fixture-cleanup",
+    "evidence": "ontology-evidence-read",
+}
+BASELINE_FIXED_JOB_NAMES = {
+    name: job_name
+    for name, job_name in FIXED_JOB_NAMES.items()
+    if name != "evidence"
+}
+DEPLOYED_LIFECYCLE_SEQUENCE = (
+    "preflight",
+    "prepare",
+    "select_epoch",
+    "drain_member_1",
+    "drain_member_2",
+    "process_replacement",
+    "drain_member_3",
+    "injection_tag",
+    "cleanup",
+    "maintenance",
+    "retained_audit",
+    "empty_registry",
+)
+EXPECTED_DEPLOYER_ACTIONS = frozenset(
+    {"job_read", "job_start", "job_execution_read"}
+)
+EXPECTED_EVIDENCE_ACTIONS = frozenset(
+    {"arg_read", "fabric_read", "onelake_read"}
+)
+EXPECTED_EVIDENCE_DENIALS = frozenset(
+    {
+        "job_execution_read",
+        "job_read",
+        "job_start",
+        "job_stop",
+        "mutation",
+    }
+)
+EXPECTED_TAG_LINEAGE = ("terraform", "arg", "inventory", "evidence", "curator")
+EXPECTED_COMMAND_TOPOLOGY = (
+    "api_intake",
+    "coordinator_claim",
+    "coordinator_reauthorization",
+    "publish_dispatch",
+    "publisher_claim",
+    "publisher_status",
+    "api_reload",
+)
+REQUIRED_JOB_TEMPLATES = tuple(FIXED_JOB_NAMES)
+AZURE_AMBIENT_CREDENTIAL_KEYS = frozenset(
+    {
+        "AZURE_CLIENT_CERTIFICATE_PATH",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_FEDERATED_TOKEN_FILE",
+        "AZURE_PASSWORD",
+        "AZURE_TENANT_ID",
+        "AZURE_USERNAME",
+        "ARM_CLIENT_CERTIFICATE_PATH",
+        "ARM_CLIENT_ID",
+        "ARM_CLIENT_SECRET",
+        "ARM_OIDC_TOKEN",
+        "ARM_TENANT_ID",
+    }
+)
+DEPLOYED_ASSERTION_FLAGS = (
+    "isolated-azure-contexts",
+    "deployer-only-job-start",
+    "evidence-read-only",
+    "no-runtime-job-start-grants",
+    "fixed-job-template-hashes",
+    "no-job-overrides",
+    "fixture-prepare",
+    "exact-three-records",
+    "validation-connection-root",
+    "production-registry-path",
+    "eligible-set-drain",
+    "no-post-selection-injection",
+    "process-replacement",
+    "coordinator-uai-injection-tag",
+    "real-arg-inventory-curator-path",
+    "exact-four-curator-tools",
+    "maintenance-authorization",
+    "full-then-incremental",
+    "fixture-cleanup",
+    "audit-retention",
+    "fixture-registry-empty",
+    "command-topology",
+    "api-reconstruction",
+    "publication-order",
+    "guarded-drill-control",
+    "stale-writer-drill",
+    "postcheck-failure-drill",
+    "drill-cleanup",
+    "automatic-rollback",
+    "five-consumer-convergence",
+    "fabric-materialization",
+    "final-precondition",
+    "pointer-cas",
+    "post-check",
+    "old-new-old",
+)
 SENSITIVE_KEYS = {
     "client_id",
     "foundry_agent_name",
@@ -90,6 +199,35 @@ SENSITIVE_KEYS = {
     "tenant_id",
     "workspace_id",
 }
+DEPLOYMENT_EVIDENCE = (
+    ROOT / ".planning" / "eval" / "ontology-gap-deployment.json"
+)
+_RAW_DEPLOYED_EVIDENCE_KEYS = frozenset(
+    {
+        "access_token",
+        "args",
+        "body",
+        "command",
+        "commands",
+        "env",
+        "error",
+        "fixture_path",
+        "object_id",
+        "path",
+        "principal_id",
+        "prompt",
+        "raw_error",
+        "resource_id",
+        "root",
+        "secret",
+        "subscription_id",
+        "tag_value",
+        "tenant_id",
+        "token",
+        "uri",
+        "url",
+    }
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -98,6 +236,23 @@ class ConfigurationError(RuntimeError):
 
 class EvidenceError(RuntimeError):
     """Credentialed or executable evidence could not be established."""
+
+
+@dataclass(frozen=True)
+class AzureContexts:
+    """Canonical private Azure CLI home for the deployment principal."""
+
+    deployer: Path
+
+
+@dataclass(frozen=True)
+class Plan19DeploymentContract:
+    """Closed subset of the applied deployment evidence needed by Plan 20."""
+
+    status: str
+    template_hashes: Mapping[str, str]
+    validation_connection_root_hash: str
+    coordinator_tag_hash: str
 
 
 @dataclass(frozen=True)
@@ -219,6 +374,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rbac-lakehouse-id")
     parser.add_argument("--foundry-project-endpoint")
     parser.add_argument("--foundry-agent-name")
+    parser.add_argument("--stage", choices=DEPLOYED_STAGES)
+    parser.add_argument("--environment", choices=("validation",))
+    parser.add_argument("--resume-file", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--max-wait-seconds", type=int, default=1800)
+    parser.add_argument("--fail-on-local-substitution", action="store_true")
+    for flag in DEPLOYED_ASSERTION_FLAGS:
+        parser.add_argument(f"--assert-{flag}", action="store_true")
     return parser
 
 
@@ -429,6 +592,1141 @@ def _run_contract(
 
 def _opaque(value: object) -> str:
     return "sha256:" + hashlib.sha256(str(value).encode()).hexdigest()[:16]
+
+
+def _full_opaque(value: object) -> str:
+    rendered = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return "sha256:" + hashlib.sha256(rendered.encode()).hexdigest()
+
+
+def _private_directory(
+    value: str | None,
+    *,
+    variable: str,
+) -> Path:
+    if not value:
+        raise EvidenceError(f"{variable} is required")
+    path = Path(value).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+        mode = stat.S_IMODE(resolved.stat().st_mode)
+    except OSError as exc:
+        raise EvidenceError(f"{variable} is unavailable") from exc
+    if not resolved.is_dir():
+        raise EvidenceError(f"{variable} must identify a directory")
+    if mode != 0o700:
+        raise EvidenceError(f"{variable} must have mode 0700")
+    return resolved
+
+
+def validate_azure_contexts(
+    env: Mapping[str, str] | None = None,
+) -> AzureContexts:
+    """Resolve one mode-0700 deployer CLI home without ambient auth.
+
+    The distinct evidence principal runs only inside the fixed managed-identity
+    Container Apps Job. A second local Azure CLI context would either be
+    impossible to provision or tempt an operator to clone the deployer.
+    """
+
+    environment = dict(os.environ if env is None else env)
+    ambient = sorted(
+        key
+        for key in AZURE_AMBIENT_CREDENTIAL_KEYS
+        if environment.get(key)
+    )
+    if ambient:
+        raise EvidenceError("ambient Azure credential variables are not permitted")
+    deployer = _private_directory(
+        environment.get("AIOPS_DEPLOYER_AZURE_CONFIG_DIR"),
+        variable="AIOPS_DEPLOYER_AZURE_CONFIG_DIR",
+    )
+    if environment.get("AIOPS_EVIDENCE_AZURE_CONFIG_DIR"):
+        raise EvidenceError(
+            "AIOPS_EVIDENCE_AZURE_CONFIG_DIR must not be configured; "
+            "evidence runs only as the fixed managed-identity Job"
+        )
+    return AzureContexts(deployer=deployer)
+
+
+def isolated_azure_environment(
+    azure_config_dir: Path,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a subprocess environment bound to exactly one Azure CLI home."""
+
+    source = dict(os.environ if env is None else env)
+    isolated = {
+        key: value
+        for key, value in source.items()
+        if key not in AZURE_AMBIENT_CREDENTIAL_KEYS
+        and key != "AZURE_CONFIG_DIR"
+        and not key.startswith("ARM_")
+    }
+    isolated["AZURE_CONFIG_DIR"] = str(azure_config_dir.resolve(strict=True))
+    return isolated
+
+
+def build_job_start_command(
+    *,
+    resource_group: str,
+    job_name: str,
+) -> list[str]:
+    """Build the only permitted input-free fixed-template Job start."""
+
+    if not resource_group.strip() or not job_name.strip():
+        raise EvidenceError("resource group and Job name are required")
+    if job_name not in FIXED_JOB_NAMES.values():
+        raise EvidenceError("Job start must name an exact fixed deployed Job")
+    return [
+        "az",
+        "containerapp",
+        "job",
+        "start",
+        "--resource-group",
+        resource_group,
+        "--name",
+        job_name,
+        "-o",
+        "json",
+    ]
+
+
+def _template_projection(job: Mapping[str, object]) -> dict[str, object]:
+    properties = job.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    configuration = properties.get("configuration")
+    configuration = (
+        configuration if isinstance(configuration, Mapping) else {}
+    )
+    template = properties.get("template")
+    template = template if isinstance(template, Mapping) else {}
+    containers = template.get("containers")
+    containers = containers if isinstance(containers, list) else []
+    projected_containers: list[dict[str, object]] = []
+    for container in containers:
+        if not isinstance(container, Mapping):
+            continue
+        env_rows = container.get("env")
+        env_rows = env_rows if isinstance(env_rows, list) else []
+        projected_containers.append(
+            {
+                "name": container.get("name"),
+                "image": container.get("image"),
+                "command": list(container.get("command") or ()),
+                "args": list(container.get("args") or ()),
+                "env": sorted(
+                    (
+                        {
+                            "name": row.get("name"),
+                            "value": row.get("value"),
+                            "secretRef": row.get("secretRef"),
+                        }
+                        for row in env_rows
+                        if isinstance(row, Mapping)
+                    ),
+                    key=lambda row: str(row.get("name") or ""),
+                ),
+            }
+        )
+    manual = configuration.get("manualTriggerConfig")
+    manual = manual if isinstance(manual, Mapping) else {}
+    identity = job.get("identity") or properties.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    assigned = identity.get("userAssignedIdentities")
+    assigned = assigned if isinstance(assigned, Mapping) else {}
+    return {
+        "containers": projected_containers,
+        "identity": {
+            "type": identity.get("type"),
+            "user_assigned_identity_keys": sorted(str(key) for key in assigned),
+        },
+        "trigger_type": (
+            configuration.get("triggerType")
+            or properties.get("triggerType")
+        ),
+        "timeout": configuration.get("replicaTimeout"),
+        "retry_limit": configuration.get("replicaRetryLimit"),
+        "parallelism": manual.get("parallelism"),
+        "completion_count": manual.get("replicaCompletionCount"),
+    }
+
+
+def job_template_hash(job: Mapping[str, object]) -> str:
+    """Hash every execution-relevant saved-template field."""
+
+    return _full_opaque(_template_projection(job))
+
+
+def assert_fixed_template(
+    expected_hash: str,
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+) -> None:
+    """Reject a start if either observed template differs from Plan 19."""
+
+    before_hash = job_template_hash(before)
+    after_hash = job_template_hash(after)
+    if (
+        not expected_hash.startswith("sha256:")
+        or before_hash != expected_hash
+        or after_hash != expected_hash
+        or before_hash != after_hash
+    ):
+        raise EvidenceError("saved Job template hash mismatch")
+
+
+def _require_hash(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    digest = value.removeprefix("sha256:")
+    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+
+
+def load_plan19_deployment_contract(
+    path: Path = DEPLOYMENT_EVIDENCE,
+) -> Plan19DeploymentContract:
+    """Load only stable, hash-only facts from the applied Plan 19 evidence."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvidenceError("Plan 19 deployment evidence is unavailable") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "applied":
+        raise EvidenceError("Plan 19 deployment evidence is not applied")
+    live = payload.get("live")
+    if not isinstance(live, Mapping):
+        raise EvidenceError("Plan 19 live deployment evidence is missing")
+    if (
+        live.get("applied") is not True
+        or live.get("no_runtime_job_start_grants") is not True
+        or live.get("deployment_principal_fixture_access") is not True
+    ):
+        raise EvidenceError("Plan 19 deployment boundary is not proven")
+    before = live.get("template_hashes_before")
+    after = live.get("template_hashes_after")
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        raise EvidenceError("Plan 19 template hashes are missing")
+    expected_names = set(BASELINE_FIXED_JOB_NAMES)
+    if set(before) != expected_names or set(after) != expected_names:
+        raise EvidenceError("Plan 19 fixed Job registry is not exact")
+    template_hashes = {
+        name: str(before[name]) for name in BASELINE_FIXED_JOB_NAMES
+    }
+    if (
+        before != after
+        or any(not _require_hash(value) for value in template_hashes.values())
+    ):
+        raise EvidenceError("Plan 19 saved Job template hashes are unstable")
+    roots = live.get("root_hashes")
+    if not isinstance(roots, Mapping):
+        raise EvidenceError("Plan 19 root hashes are missing")
+    required_roots = {
+        "AIOPS_CONNECTION_HOME",
+        "AIOPS_ONTOLOGY_COMMAND_HOME",
+        "AIOPS_ONTOLOGY_STATE_HOME",
+        "AIOPS_ONTOLOGY_PUBLICATION_HOME",
+    }
+    if not required_roots.issubset(roots) or any(
+        not _require_hash(roots.get(name)) for name in required_roots
+    ):
+        raise EvidenceError("Plan 19 root hashes are incomplete")
+    tag_hash = live.get("coordinator_tag_hash")
+    if not _require_hash(tag_hash):
+        raise EvidenceError("Plan 19 coordinator tag hash is missing")
+    return Plan19DeploymentContract(
+        status="applied",
+        template_hashes=template_hashes,
+        validation_connection_root_hash=str(
+            roots["AIOPS_CONNECTION_HOME"]
+        ),
+        coordinator_tag_hash=str(tag_hash),
+    )
+
+
+def assert_stage_transition(
+    completed_stages: Sequence[str],
+    requested_stage: str,
+) -> None:
+    """Reject skipped, reordered, duplicated, or unbounded stage execution."""
+
+    completed = tuple(completed_stages)
+    if (
+        requested_stage not in DEPLOYED_STAGES
+        or completed != DEPLOYED_STAGES[: len(completed)]
+        or len(completed) > len(DEPLOYED_STAGES)
+    ):
+        raise EvidenceError("invalid deployed stage transition")
+    next_stage = (
+        DEPLOYED_STAGES[len(completed)]
+        if len(completed) < len(DEPLOYED_STAGES)
+        else DEPLOYED_STAGES[-1]
+    )
+    idempotent_stage = completed[-1] if completed else None
+    if requested_stage not in {next_stage, idempotent_stage}:
+        raise EvidenceError("invalid deployed stage transition")
+
+
+def sanitize_deployed_evidence(value: object, *, key: str = "") -> object:
+    """Reject raw operational values from retained Plan 20 artifacts."""
+
+    normalized_key = key.casefold()
+    if (
+        normalized_key in _RAW_DEPLOYED_EVIDENCE_KEYS
+        and value not in (None, "")
+        and not _require_hash(value)
+    ):
+        raise EvidenceError(
+            f"unsafe deployed evidence field rejected: {normalized_key}"
+        )
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): sanitize_deployed_evidence(
+                item_value,
+                key=str(item_key),
+            )
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_deployed_evidence(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_deployed_evidence(item, key=key) for item in value]
+    if isinstance(value, str) and (
+        "Bearer " in value
+        or "client_secret" in value.casefold()
+        or "access_token" in value.casefold()
+    ):
+        raise EvidenceError("unsafe deployed evidence string rejected")
+    return value
+
+
+def validate_evidence_job_record(
+    record: Mapping[str, object],
+    *,
+    expected_object_id_hash: str,
+) -> dict[str, str]:
+    """Verify a closed console record is bound to the deployed evidence UAI."""
+
+    from scripts.collect_ontology_evidence import EXPECTED_CAPABILITIES
+
+    sanitized = sanitize_deployed_evidence(record)
+    if not isinstance(sanitized, Mapping):
+        raise EvidenceError("evidence Job record is not an object")
+    if (
+        sanitized.get("schema_version") != "ontology-evidence-read.v1"
+        or sanitized.get("mode") != "fixed-read-only"
+        or sanitized.get("sanitized") is not True
+    ):
+        raise EvidenceError("evidence Job record schema is invalid")
+    identity = sanitized.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    if (
+        not _require_hash(expected_object_id_hash)
+        or identity.get("object_id_hash") != expected_object_id_hash
+        or set(identity)
+        != {
+            "client_id_hash",
+            "object_id_hash",
+            "managed_identity_resource_hash",
+            "entra_signature_hash",
+        }
+        or any(not _require_hash(value) for value in identity.values())
+    ):
+        raise EvidenceError("evidence Job identity does not match its fixed UAI")
+    if sanitized.get("capabilities") != EXPECTED_CAPABILITIES:
+        raise EvidenceError("evidence Job record is not read-only")
+    observations = sanitized.get("observations")
+    observations = observations if isinstance(observations, Mapping) else {}
+    if set(observations) != {"arg", "fabric", "onelake", "api"}:
+        raise EvidenceError("evidence Job observations are incomplete")
+    for row in observations.values():
+        if not isinstance(row, Mapping):
+            raise EvidenceError("evidence Job observation is invalid")
+        hashes = row.get("hashes")
+        if (
+            set(row) != {"count", "hashes"}
+            or not isinstance(row.get("count"), int)
+            or int(row["count"]) < 0
+            or not isinstance(hashes, list)
+            or any(not _require_hash(value) for value in hashes)
+        ):
+            raise EvidenceError("evidence Job observation is not closed")
+    facts = sanitized.get("facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    if set(facts) != {"fixture", "registry", "epoch"} or any(
+        not isinstance(facts.get(name), Mapping)
+        for name in ("fixture", "registry", "epoch")
+    ):
+        raise EvidenceError("evidence Job lifecycle facts are incomplete")
+
+    unsigned = {
+        key: value
+        for key, value in sanitized.items()
+        if key not in {"record_hash", "entra_bound_record_hash"}
+    }
+    expected_record_hash = _full_opaque(unsigned)
+    expected_bound_hash = _full_opaque(
+        {
+            "record_hash": expected_record_hash,
+            "entra_signature_hash": identity["entra_signature_hash"],
+        }
+    )
+    if (
+        sanitized.get("record_hash") != expected_record_hash
+        or sanitized.get("entra_bound_record_hash") != expected_bound_hash
+    ):
+        raise EvidenceError("evidence Job record signature binding is invalid")
+    return {
+        "record_hash": expected_record_hash,
+        "entra_bound_record_hash": expected_bound_hash,
+        "identity_hash": str(identity["object_id_hash"]),
+    }
+
+
+def _log_strings(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        rows: list[str] = []
+        for key, child in value.items():
+            if str(key).casefold() in {"log", "log_s", "message"} and isinstance(
+                child, str
+            ):
+                rows.append(child)
+            else:
+                rows.extend(_log_strings(child))
+        return rows
+    if isinstance(value, list):
+        rows = []
+        for child in value:
+            rows.extend(_log_strings(child))
+        return rows
+    if isinstance(value, str):
+        return value.splitlines()
+    return []
+
+
+def extract_evidence_job_record(logs: object) -> dict[str, object]:
+    """Extract exactly one closed collector record from ACA Job logs."""
+
+    matches: list[dict[str, object]] = []
+    for line in _log_strings(logs):
+        candidate = line.strip()
+        if not candidate.startswith("{") or not candidate.endswith("}"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema_version") == "ontology-evidence-read.v1"
+        ):
+            matches.append(payload)
+    if len(matches) != 1:
+        raise EvidenceError(
+            "evidence Job logs must contain exactly one closed console record"
+        )
+    sanitize_deployed_evidence(matches[0])
+    return matches[0]
+
+
+def validate_evidence_job_boundary(
+    *,
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    expected_template_hash: str,
+    expected_identity_resource_hash: str,
+    expected_principal_hash: str,
+    role_snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate the live fixed Job plus normalized Fabric/OneLake role rows."""
+
+    assert_fixed_template(expected_template_hash, before, after)
+    projection = _template_projection(before)
+    identity = projection.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    identity_keys = identity.get("user_assigned_identity_keys")
+    identity_keys = identity_keys if isinstance(identity_keys, list) else []
+    if (
+        identity.get("type") != "UserAssigned"
+        or len(identity_keys) != 1
+        or _full_opaque(identity_keys[0]) != expected_identity_resource_hash
+    ):
+        raise EvidenceError("evidence Job live identity is not exact")
+    if (
+        projection.get("trigger_type") != "Manual"
+        or projection.get("retry_limit") != 0
+        or projection.get("parallelism") != 1
+        or projection.get("completion_count") != 1
+    ):
+        raise EvidenceError("evidence Job live template is not fixed manual-only")
+
+    workspace_roles = role_snapshot.get("workspace_roles")
+    workspace_roles = (
+        workspace_roles if isinstance(workspace_roles, list) else []
+    )
+    onelake_roles = role_snapshot.get("onelake_roles")
+    onelake_roles = onelake_roles if isinstance(onelake_roles, list) else []
+    if (
+        len(workspace_roles) != 5
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("role") != "Viewer"
+            or row.get("principal_hash") != expected_principal_hash
+            or row.get("production_workspace") is not False
+            for row in workspace_roles
+        )
+    ):
+        raise EvidenceError("evidence Job Fabric Viewer roles are not exact")
+    if (
+        len(onelake_roles) != 5
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("actions") != ["Read"]
+            or row.get("paths") != ["*"]
+            or row.get("object_type") != "ManagedIdentity"
+            or row.get("principal_hash") != expected_principal_hash
+            or row.get("production_workspace") is not False
+            for row in onelake_roles
+        )
+    ):
+        raise EvidenceError("evidence Job OneLake Read roles are not exact")
+    if role_snapshot.get("job_control_actions") != []:
+        raise EvidenceError("evidence Job has Job-control authority")
+    if role_snapshot.get("mutation_actions") != []:
+        raise EvidenceError("evidence Job has mutation authority")
+
+    return {
+        "identity_hash": expected_principal_hash,
+        "expected_identity_hash": expected_principal_hash,
+        "template_hash": expected_template_hash,
+        "expected_template_hash": expected_template_hash,
+        "template_unchanged": True,
+        "attached_identity_count": 1,
+        "trigger": "Manual",
+        "overrides": [],
+        "workspace_roles": ["Viewer"] * 5,
+        "onelake_actions": ["Read"] * 5,
+        "onelake_paths": ["*"] * 5,
+        "job_control_actions": [],
+        "mutation_actions": [],
+        "production_workspace_access": False,
+    }
+
+
+def write_resume_checkpoint(
+    path: Path,
+    *,
+    stage: str,
+    completed_steps: Sequence[str],
+    evidence_refs: Sequence[str],
+) -> None:
+    """Atomically retain only opaque idempotency keys and evidence hashes."""
+
+    if stage not in DEPLOYED_STAGES:
+        raise EvidenceError("resume stage is not finite")
+    if any(not _require_hash(value) for value in evidence_refs):
+        raise EvidenceError("resume evidence references must be opaque hashes")
+    step_keys = [_full_opaque({"stage": stage, "step": step}) for step in completed_steps]
+    payload = {
+        "schema_version": "ontology-deployed-lifecycle-checkpoint.v1",
+        "stage": stage,
+        "completed_step_count": len(step_keys),
+        "completed_step_keys": step_keys,
+        "evidence_refs": list(evidence_refs),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def load_resume_checkpoint(path: Path) -> dict[str, object]:
+    """Load and validate the closed resume schema before any cloud action."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvidenceError("resume checkpoint is unavailable or invalid") from exc
+    if not isinstance(payload, dict) or payload.get("stage") not in DEPLOYED_STAGES:
+        raise EvidenceError("resume checkpoint stage is invalid")
+    expected_keys = {
+        "schema_version",
+        "stage",
+        "completed_step_count",
+        "completed_step_keys",
+        "evidence_refs",
+    }
+    if set(payload) != expected_keys:
+        raise EvidenceError("resume checkpoint contains unexpected fields")
+    step_keys = payload.get("completed_step_keys")
+    refs = payload.get("evidence_refs")
+    if (
+        payload.get("schema_version")
+        != "ontology-deployed-lifecycle-checkpoint.v1"
+        or not isinstance(step_keys, list)
+        or not isinstance(refs, list)
+        or int(payload.get("completed_step_count") or -1) != len(step_keys)
+        or any(not _require_hash(value) for value in [*step_keys, *refs])
+    ):
+        raise EvidenceError("resume checkpoint failed its closed schema")
+    return payload
+
+
+def evaluate_lifecycle_evidence(
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    """Evaluate sanitized deployed lifecycle facts without local substitution."""
+
+    missing: list[str] = []
+
+    def require(condition: bool, code: str) -> None:
+        if not condition and code not in missing:
+            missing.append(code)
+
+    require(
+        evidence.get("sequence") == list(DEPLOYED_LIFECYCLE_SEQUENCE),
+        "exact_lifecycle_sequence",
+    )
+    require(evidence.get("environment") == "validation", "exact_environment")
+
+    credentials = evidence.get("credentials")
+    credentials = credentials if isinstance(credentials, Mapping) else {}
+    modes = credentials.get("modes")
+    modes = modes if isinstance(modes, Mapping) else {}
+    require(credentials.get("local_context_count") == 1, "single_local_context")
+    require(
+        modes == {"deployer": "0700"},
+        "private_credential_contexts",
+    )
+    require(
+        credentials.get("ambient_credentials_removed") is True,
+        "no_ambient_credentials",
+    )
+    identities = credentials.get("identity_hashes")
+    identities = identities if isinstance(identities, Mapping) else {}
+    deployer_identity = identities.get("deployer")
+    evidence_identity = identities.get("evidence")
+    require(
+        _require_hash(deployer_identity)
+        and _require_hash(evidence_identity)
+        and deployer_identity != evidence_identity,
+        "distinct_azure_identities",
+    )
+    require(
+        credentials.get("evidence_source") == "fixed_job",
+        "fixed_evidence_job_source",
+    )
+    require(
+        set(credentials.get("deployer_actions") or ())
+        == EXPECTED_DEPLOYER_ACTIONS,
+        "deployer_only_job_start",
+    )
+    require(
+        set(credentials.get("evidence_actions") or ())
+        == EXPECTED_EVIDENCE_ACTIONS,
+        "evidence_read_only",
+    )
+    require(
+        set(credentials.get("evidence_denied_actions") or ())
+        == EXPECTED_EVIDENCE_DENIALS,
+        "evidence_has_no_job_authority",
+    )
+    require(
+        not credentials.get("runtime_job_start_grants"),
+        "no_runtime_job_start_grants",
+    )
+
+    evidence_job = evidence.get("evidence_job")
+    evidence_job = (
+        evidence_job if isinstance(evidence_job, Mapping) else {}
+    )
+    require(
+        evidence_job.get("identity_hash") == evidence_identity
+        and evidence_job.get("identity_hash")
+        == evidence_job.get("expected_identity_hash")
+        and evidence_job.get("attached_identity_count") == 1,
+        "evidence_job_exact_identity",
+    )
+    require(
+        _require_hash(evidence_job.get("template_hash"))
+        and evidence_job.get("template_hash")
+        == evidence_job.get("expected_template_hash")
+        and evidence_job.get("template_unchanged") is True
+        and evidence_job.get("trigger") == "Manual"
+        and evidence_job.get("overrides") == [],
+        "evidence_job_fixed_template",
+    )
+    require(
+        evidence_job.get("workspace_roles") == ["Viewer"] * 5
+        and evidence_job.get("onelake_actions") == ["Read"] * 5
+        and evidence_job.get("onelake_paths") == ["*"] * 5
+        and evidence_job.get("job_control_actions") == []
+        and evidence_job.get("mutation_actions") == [],
+        "evidence_job_read_only_roles",
+    )
+    require(
+        evidence_job.get("production_workspace_access") is False,
+        "evidence_job_no_production_workspace",
+    )
+    require(
+        _require_hash(evidence_job.get("record_hash"))
+        and _require_hash(evidence_job.get("entra_bound_record_hash")),
+        "evidence_job_signed_record",
+    )
+
+    templates = evidence.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    for name in REQUIRED_JOB_TEMPLATES:
+        template = templates.get(name)
+        template = template if isinstance(template, Mapping) else {}
+        expected = template.get("expected")
+        require(
+            _require_hash(expected)
+            and template.get("before") == expected
+            and template.get("after") == expected,
+            f"fixed_template_{name}",
+        )
+        require(
+            template.get("override_fields") == [],
+            f"no_overrides_{name}",
+        )
+
+    prepare = evidence.get("prepare")
+    prepare = prepare if isinstance(prepare, Mapping) else {}
+    record_hashes = prepare.get("record_hashes")
+    record_hashes = record_hashes if isinstance(record_hashes, list) else []
+    require(prepare.get("status") == "PASS", "prepare_success")
+    require(prepare.get("server_generated") is True, "server_generated_drill")
+    require(_require_hash(prepare.get("drill_hash")), "opaque_drill")
+    require(
+        len(record_hashes) == 3
+        and len(set(record_hashes)) == 3
+        and all(_require_hash(value) for value in record_hashes),
+        "exact_three_records",
+    )
+    require(_require_hash(prepare.get("epoch_hash")), "single_prepared_epoch")
+    require(prepare.get("ttl_bounded") is True, "bounded_fixture_ttl")
+    require(
+        _require_hash(prepare.get("owner_hash"))
+        and _require_hash(prepare.get("fence_hash")),
+        "fixture_owner_fence",
+    )
+    require(prepare.get("audit_create_only") is True, "create_only_prepare_audit")
+    require(
+        prepare.get("active_record_count_after_exit") == 3,
+        "prepare_leaves_records_active",
+    )
+
+    drain = evidence.get("drain")
+    drain = drain if isinstance(drain, Mapping) else {}
+    require(drain.get("status") == "PASS", "drain_success")
+    require(
+        drain.get("connection_root_matches") is True,
+        "validation_connection_root",
+    )
+    require(
+        drain.get("registry_provider_class") == "ConnectionRegistry",
+        "production_registry_path",
+    )
+    require(
+        drain.get("registry_provider_module") == "onboarding.registry"
+        and drain.get("registry_store_class") == "OneLakeRegistryStore"
+        and _require_hash(drain.get("connection_root_hash")),
+        "production_registry_path",
+    )
+    require(
+        drain.get("normal_selection") is True
+        and drain.get("normal_reauthorization") is True,
+        "normal_selection_reauthorization",
+    )
+    processed = drain.get("processed_per_pass")
+    require(
+        isinstance(processed, list)
+        and len(processed) >= 3
+        and all(value == 1 for value in processed),
+        "one_member_per_pass",
+    )
+    require(drain.get("retry_rotated") is True, "retry_rotation")
+    require(drain.get("later_member_progress") is True, "later_member_progress")
+    selection_receipts = drain.get("selection_receipts")
+    selection_receipts = (
+        selection_receipts if isinstance(selection_receipts, list) else []
+    )
+    receipt_rows = [
+        row for row in selection_receipts if isinstance(row, Mapping)
+    ]
+    receipt_records = [row.get("record_hash") for row in receipt_rows]
+    retry_indexes = [
+        index
+        for index, row in enumerate(receipt_rows)
+        if row.get("outcome") == "retrying"
+    ]
+    starvation_free = False
+    for retry_index in retry_indexes:
+        retry_record = receipt_rows[retry_index].get("record_hash")
+        resumed_index = next(
+            (
+                index
+                for index in range(retry_index + 1, len(receipt_rows))
+                if receipt_rows[index].get("record_hash") == retry_record
+            ),
+            None,
+        )
+        if resumed_index is not None and any(
+            receipt_rows[index].get("record_hash") != retry_record
+            for index in range(retry_index + 1, resumed_index)
+        ):
+            starvation_free = True
+            break
+    require(
+        bool(receipt_rows)
+        and set(receipt_records) == set(record_hashes)
+        and all(
+            _require_hash(row.get("record_hash"))
+            and _require_hash(row.get("epoch_hash"))
+            and _require_hash(row.get("snapshot_hash"))
+            and _require_hash(row.get("authorization_hash"))
+            and _require_hash(row.get("process_hash"))
+            and isinstance(row.get("cursor_before"), int)
+            and isinstance(row.get("cursor_after"), int)
+            and isinstance(row.get("attempt"), int)
+            and row.get("outcome")
+            in {
+                "duplicate",
+                "retrying",
+                "succeeded",
+                "exhausted_failure",
+                "excluded",
+            }
+            for row in receipt_rows
+        ),
+        "authoritative_selection_receipts",
+    )
+    require(starvation_free, "starvation_free_selection_order")
+    require(
+        set(drain.get("prepared_record_hashes") or ()) == set(record_hashes)
+        and set(drain.get("terminal_record_hashes") or ()) == set(record_hashes),
+        "eligible_set_drained",
+    )
+    process_hashes = drain.get("process_hashes")
+    require(
+        isinstance(process_hashes, list)
+        and len(process_hashes) >= 2
+        and len(set(process_hashes)) >= 2
+        and all(_require_hash(value) for value in process_hashes),
+        "actual_process_replacement",
+    )
+    require(
+        drain.get("restart_lineage_preserved") is True,
+        "restart_lineage",
+    )
+    require(
+        bool(receipt_rows)
+        and len({row.get("epoch_hash") for row in receipt_rows}) == 1
+        and len({row.get("snapshot_hash") for row in receipt_rows}) == 1
+        and len({row.get("process_hash") for row in receipt_rows}) >= 2,
+        "restart_lineage",
+    )
+    require(
+        drain.get("post_selection_external_writes") == 0,
+        "no_post_selection_injection",
+    )
+    require(
+        drain.get("validator_store_writes") == 0,
+        "no_validator_store_writes",
+    )
+
+    injection = evidence.get("injection")
+    injection = injection if isinstance(injection, Mapping) else {}
+    require(injection.get("status") == "PASS", "injection_traversal")
+    require(
+        injection.get("terraform_tag_hash_matches") is True,
+        "terraform_tag_hash",
+    )
+    require(
+        injection.get("lineage") == list(EXPECTED_TAG_LINEAGE),
+        "real_tag_lineage",
+    )
+    tag_hashes = injection.get("tag_hashes")
+    tag_hashes = tag_hashes if isinstance(tag_hashes, Mapping) else {}
+    require(
+        _require_hash(injection.get("resource_hash"))
+        and _require_hash(injection.get("scope_hash"))
+        and set(tag_hashes) == set(EXPECTED_TAG_LINEAGE)
+        and len(set(tag_hashes.values())) == 1
+        and all(_require_hash(value) for value in tag_hashes.values()),
+        "exact_tag_lineage",
+    )
+    require(
+        injection.get("curator_source_class") == "OntologyCurator",
+        "deployed_curator_source",
+    )
+    require(
+        injection.get("tools") == list(EXPECTED_CURATOR_TOOLS),
+        "exact_four_curator_tools",
+    )
+    require(injection.get("scope_unchanged") is True, "curator_scope_unchanged")
+    require(injection.get("mutation_attempts") == 0, "zero_curator_mutations")
+    edge_counts = injection.get("authoritative_model_edges")
+    edge_counts = edge_counts if isinstance(edge_counts, Mapping) else {}
+    require(
+        all(
+            edge_counts.get(name) == 0
+            for name in ("candidate", "stage", "active", "consumer")
+        ),
+        "zero_authoritative_model_edges",
+    )
+
+    cleanup = evidence.get("cleanup")
+    cleanup = cleanup if isinstance(cleanup, Mapping) else {}
+    require(cleanup.get("status") == "PASS", "cleanup_success")
+    require(
+        cleanup.get("server_resolved_unique_drill") is True,
+        "server_resolved_cleanup",
+    )
+    require(cleanup.get("fence_matches") is True, "cleanup_fence")
+    require(
+        set(cleanup.get("deleted_record_hashes") or ()) == set(record_hashes),
+        "cleanup_exact_record_set",
+    )
+    require(cleanup.get("deleted_epoch_count") == 1, "cleanup_exact_epoch")
+    require(
+        cleanup.get("active_fixture_connections") == 0,
+        "fixture_registry_empty",
+    )
+    require(
+        cleanup.get("active_prepared_epochs") == 0,
+        "prepared_epoch_registry_empty",
+    )
+    require(
+        set(cleanup.get("retained_receipts") or ())
+        == {"prepare", "cleanup", "sweep"},
+        "retained_fixture_audit",
+    )
+    require(cleanup.get("audit_immutable") is True, "immutable_fixture_audit")
+    require(
+        cleanup.get("independent_observer") == "evidence",
+        "independent_empty_registry_observation",
+    )
+    require(
+        cleanup.get("tag_hash_unchanged") is True,
+        "terraform_tag_unchanged",
+    )
+
+    maintenance = evidence.get("maintenance")
+    maintenance = maintenance if isinstance(maintenance, Mapping) else {}
+    require(
+        maintenance.get("general_operator_denied") is True,
+        "general_maintenance_denied",
+    )
+    require(
+        maintenance.get("maintenance_principal_accepted") is True,
+        "maintenance_principal_accepted",
+    )
+    require(
+        maintenance.get("coordinator_reauthorized") is True,
+        "maintenance_reauthorization",
+    )
+    require(
+        maintenance.get("next_run") == "full"
+        and maintenance.get("following_run") == "incremental",
+        "full_then_incremental",
+    )
+    require(
+        evidence.get("release_status") == "BLOCKED/PENDING",
+        "release_blocked_pending",
+    )
+    return {
+        "schema_version": "ontology-deployed-lifecycle-validation.v1",
+        "status": "PASS" if not missing else "FAIL",
+        "sanitized": True,
+        "release_status": "BLOCKED/PENDING",
+        "missing_evidence": sorted(missing),
+    }
+
+
+def _action_matches(action: str, pattern: str) -> bool:
+    """Case-insensitive ARM action matching with Azure's wildcard semantics."""
+
+    return fnmatch.fnmatchcase(action.casefold(), pattern.casefold())
+
+
+def expand_role_actions(
+    role_definitions: Sequence[Mapping[str, object]],
+) -> dict[str, bool]:
+    """Classify effective role actions without pretending deny probes are safe.
+
+    A live ``start`` probe is a mutation when it succeeds.  The validator
+    therefore expands role definitions read through ARM/ARG and fails closed
+    on wildcard actions rather than attempting a destructive permission test.
+    """
+
+    effective: set[str] = set()
+    wildcard = False
+    for role in role_definitions:
+        actions = [
+            str(value)
+            for value in (
+                list(role.get("actions") or ())
+                + list(role.get("data_actions") or ())
+            )
+        ]
+        exclusions = [
+            str(value)
+            for value in (
+                list(role.get("not_actions") or ())
+                + list(role.get("not_data_actions") or ())
+            )
+        ]
+        for action in actions:
+            if action == "*":
+                wildcard = True
+            if not any(_action_matches(action, excluded) for excluded in exclusions):
+                effective.add(action)
+
+    job_start_patterns = (
+        "microsoft.app/jobs/start/action",
+        "microsoft.app/jobs/executions/write",
+        "microsoft.app/containerapps/jobs/start/action",
+    )
+    job_read_patterns = (
+        "microsoft.app/jobs/read",
+        "microsoft.app/jobs/executions/read",
+        "microsoft.app/containerapps/jobs/read",
+    )
+
+    def permits(patterns: Sequence[str]) -> bool:
+        return wildcard or any(
+            _action_matches(pattern, action) or _action_matches(action, pattern)
+            for action in effective
+            for pattern in patterns
+        )
+
+    mutation = wildcard or any(
+        not action.casefold().endswith(("/read", "/list/action"))
+        for action in effective
+    )
+    return {
+        "wildcard": wildcard,
+        "job_read": permits(job_read_patterns),
+        "job_start": permits(job_start_patterns),
+        "mutation": mutation,
+    }
+
+
+def evaluate_publication_evidence(
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    """Evaluate only direct deployed publication and rollback receipts."""
+
+    missing: list[str] = []
+
+    def require(condition: bool, code: str) -> None:
+        if not condition and code not in missing:
+            missing.append(code)
+
+    require(
+        evidence.get("command_topology") == list(EXPECTED_COMMAND_TOPOLOGY),
+        "command_topology",
+    )
+    process_hashes = evidence.get("process_hashes")
+    process_hashes = process_hashes if isinstance(process_hashes, Mapping) else {}
+    require(
+        set(process_hashes)
+        == {"api", "coordinator", "publisher", "api_reload"}
+        and all(_require_hash(value) for value in process_hashes.values())
+        and len(set(process_hashes.values())) == 4,
+        "distinct_process_reconstruction",
+    )
+    templates = evidence.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    for name in REQUIRED_JOB_TEMPLATES:
+        row = templates.get(name)
+        row = row if isinstance(row, Mapping) else {}
+        require(
+            _require_hash(row.get("expected"))
+            and row.get("before") == row.get("expected")
+            and row.get("after") == row.get("expected"),
+            f"fixed_template_{name}",
+        )
+        require(row.get("override_fields") == [], f"no_overrides_{name}")
+
+    receipts = evidence.get("receipts")
+    receipts = receipts if isinstance(receipts, Mapping) else {}
+    for name in (
+        "immutable_stage",
+        "validation",
+        "five_consumer_compatibility",
+        "fabric_materialization",
+        "final_precondition",
+        "pointer_cas",
+        "post_check",
+    ):
+        require(receipts.get(name) is True, f"receipt_{name}")
+
+    stale = evidence.get("stale_writer")
+    stale = stale if isinstance(stale, Mapping) else {}
+    for name in (
+        "pre_cas_pause",
+        "stale_fence_rejected",
+        "stale_etag_rejected",
+        "one_shot_consumed",
+        "cleaned",
+    ):
+        require(stale.get(name) is True, f"stale_writer_{name}")
+
+    rollback = evidence.get("rollback")
+    rollback = rollback if isinstance(rollback, Mapping) else {}
+    require(
+        rollback.get("allowlisted_post_check_failure") is True,
+        "allowlisted_post_check_failure",
+    )
+    require(rollback.get("automatic") is True, "automatic_rollback")
+    require(rollback.get("order") == ["old", "new", "old"], "old_new_old")
+    require(
+        rollback.get("one_shot_consumed") is True
+        and rollback.get("cleaned") is True,
+        "drill_cleanup",
+    )
+
+    consumers = evidence.get("consumers")
+    consumers = consumers if isinstance(consumers, Mapping) else {}
+    require(
+        set(consumers) == set(EXPECTED_CONSUMERS)
+        and all(consumers.get(name) == "PASS" for name in EXPECTED_CONSUMERS),
+        "five_consumer_convergence",
+    )
+
+    final = evidence.get("final")
+    final = final if isinstance(final, Mapping) else {}
+    require(final.get("fixture_registry_empty") is True, "fixture_registry_empty")
+    require(final.get("fixture_audit_retained") is True, "fixture_audit_retained")
+    require(final.get("terraform_tag_unchanged") is True, "terraform_tag_unchanged")
+    require(not final.get("runtime_job_start_grants"), "no_runtime_job_start_grants")
+    require(
+        final.get("authoritative_model_edges") == 0,
+        "zero_authoritative_model_edges",
+    )
+    require(final.get("local_substitution") is False, "no_local_substitution")
+    require(
+        evidence.get("release_status") == "BLOCKED/PENDING",
+        "release_blocked_pending",
+    )
+    return {
+        "schema_version": "ontology-deployed-publication-validation.v1",
+        "status": "PASS" if not missing else "FAIL",
+        "sanitized": True,
+        "release_status": "BLOCKED/PENDING",
+        "missing_evidence": sorted(missing),
+    }
 
 
 def sanitize_shadow_report(value: object, *, key: str = "") -> object:
@@ -1389,6 +2687,35 @@ def _shadow(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     return report_path, sanitize_shadow_report(report)  # type: ignore[return-value]
 
 
+def _deployed_stage(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
+    """Enter the deployed state machine without falling back to legacy shadow.
+
+    Context validation intentionally happens before target discovery, token
+    acquisition, Terraform reads, or any Job call.  This keeps missing or
+    ambient credentials a true precondition gate rather than an invitation to
+    reuse the operator's default Azure CLI session.
+    """
+
+    report_path = args.output
+    if report_path is None:
+        raise ConfigurationError("--output is required for deployed stages")
+    if args.resume_file is None:
+        raise ConfigurationError("--resume-file is required for deployed stages")
+    if args.environment != "validation":
+        raise ConfigurationError(
+            "deployed stages require --environment validation"
+        )
+    contexts = validate_azure_contexts()
+    # Loading the applied contract is the last local-only gate. Cloud reads and
+    # all Job actions belong to the stage implementation and must never happen
+    # through the legacy ambient-credential shadow collector.
+    load_plan19_deployment_contract()
+    raise EvidenceError(
+        "deployed stage requires Task 2 live preconditions after isolated "
+        f"context validation ({contexts.deployer.name}, {contexts.evidence.name})"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.alert_smoke:
@@ -1399,16 +2726,32 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.fail_on_missing_evidence and report["status"] != "PASS")
     if args.synthetic_only:
         _parser().error("--synthetic-only is valid only with --alert-smoke")
+    deployed = args.stage is not None
     try:
-        report_path, report = _shadow(args)
+        report_path, report = (
+            _deployed_stage(args) if deployed else _shadow(args)
+        )
     except (ConfigurationError, EvidenceError, OSError, subprocess.SubprocessError) as exc:
-        report_path = args.report or (
-            DEFAULT_REPORT_DIR
-            / f"ontology-discovery-shadow-{datetime.now(UTC).date().isoformat()}.json"
+        report_path = (
+            args.output
+            if deployed and args.output is not None
+            else args.report
+            or (
+                DEFAULT_REPORT_DIR
+                / f"ontology-discovery-shadow-{datetime.now(UTC).date().isoformat()}.json"
+            )
         )
         report = {
-            "schema_version": "ontology-discovery-shadow-validation.v1",
-            "mode": "credentialed-shadow",
+            "schema_version": (
+                "ontology-deployed-lifecycle-validation.v1"
+                if deployed
+                else "ontology-discovery-shadow-validation.v1"
+            ),
+            "mode": (
+                "deployed-fixed-template"
+                if deployed
+                else "credentialed-shadow"
+            ),
             "sanitized": True,
             "status": "FAIL",
             "release_status": "BLOCKED/PENDING",
