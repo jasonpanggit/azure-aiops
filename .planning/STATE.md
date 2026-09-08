@@ -340,3 +340,8 @@ current_phase_name: Exposure Reliability and Scale
 ### Blockers
 
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
+
+### Pending Todos
+
+- 2 pending — includes activation/publication progress logging captured during
+  the Plan 03.1-19 live Gold initialization.
