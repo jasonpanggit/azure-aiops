@@ -251,15 +251,22 @@ class ActivationProgressReporter:
             if self._current_stage == stage:
                 self._current_stage = None
 
-    def fail(self, stage: str, *, error_code: str = "ACTIVATION_FAILED") -> None:
-        """Fail a stage with only an allowlisted stable error code."""
+    def fail(
+        self,
+        stage: str,
+        *,
+        error_code: str = "ACTIVATION_FAILED",
+    ) -> float:
+        """Fail a stage and return its sanitized monotonic elapsed seconds."""
         self._stop_heartbeat()
+        elapsed_seconds = self.elapsed(stage)
         self._emit(
             stage,
             "failed",
-            elapsed_seconds=self.elapsed(stage),
+            elapsed_seconds=elapsed_seconds,
             error_code=error_code,
         )
+        return elapsed_seconds
 
     def fabric_table_progress(self, progress: FabricTableWriteProgress) -> None:
         """Translate an existing FabricTableWriteProgress after a successful write."""
@@ -600,8 +607,7 @@ def activate_runtime(
         return result
     except Exception as exc:
         stage = reporter.current_stage
-        elapsed_seconds = reporter.elapsed(stage)
-        reporter.fail(stage)
+        elapsed_seconds = reporter.fail(stage)
         raise ActivationFailure(
             stage=stage,
             error_code="ACTIVATION_FAILED",

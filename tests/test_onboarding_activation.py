@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -9,7 +10,9 @@ import pytest
 
 from fabric.sync_service import FabricTableWriteProgress
 from onboarding.activation import (
+    ActivationFailure,
     ActivationProgressReporter,
+    activate_runtime,
     build_activation_progress_event,
     publish_combined_snapshot,
 )
@@ -24,8 +27,16 @@ class _Connection:
 
 
 class _Registry:
+    def __init__(self, connection_ids: tuple[str, ...] = ()) -> None:
+        self.connection_ids = connection_ids
+        self.root = ""
+
     def get(self, connection_id: str) -> _Connection:
         return _Connection(connection_id)
+
+    def list(self, *, include_disabled: bool):
+        assert include_disabled is False
+        return [_Connection(connection_id) for connection_id in self.connection_ids]
 
 
 class _Coordinator:
@@ -38,8 +49,14 @@ class _Coordinator:
 
 class _Service:
     def __init__(self, roots):
-        self.registry = _Registry()
+        self.registry = _Registry(tuple(roots))
         self.sync_coordinator = _Coordinator(roots)
+
+    def validate(self, connection_id: str):
+        return {"connection_id": connection_id, "passed": True}
+
+    def sync(self, connection_id: str, *, mode: str):
+        return {"connection_id": connection_id, "status": "succeeded", "mode": mode}
 
 
 def _publish(root, connection_id: str, resource_id: str) -> None:
@@ -390,3 +407,130 @@ def test_progress_sink_failure_logs_only_fixed_safe_contract(caplog) -> None:
     assert resource_id not in rendered
     assert "RuntimeError" not in rendered
     assert "Traceback" not in rendered
+
+
+def test_activate_runtime_streams_fabric_stages_through_single_reporter(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    roots = {"hub": tmp_path / "hub"}
+    _publish(
+        roots["hub"],
+        "hub",
+        "/subscriptions/hub/resourceGroups/rg/providers/x/a",
+    )
+    service = _Service(roots)
+    service.registry.root = tmp_path / "registry"
+    events: list[dict[str, object]] = []
+
+    class FabricService:
+        def sync(self, **kwargs):
+            kwargs["stage_progress_callback"](
+                {"stage": "dataset_mapping", "status": "started"}
+            )
+            kwargs["stage_progress_callback"](
+                {
+                    "stage": "dataset_mapping",
+                    "status": "completed",
+                    "dataset_count": 17,
+                    "failure_count": 0,
+                }
+            )
+            kwargs["progress_callback"](
+                FabricTableWriteProgress(
+                    completed_tables=1,
+                    total_tables=1,
+                    table_name="silver_resources",
+                    result=DeltaWriteResult(rows_processed=123),
+                )
+            )
+            return type(
+                "Publication",
+                (),
+                {
+                    "run_id": "run-1",
+                    "source_run_id": "source-1",
+                    "status": "completed",
+                    "tables": ("silver_resources",),
+                },
+            )()
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: type(
+                "Semantic",
+                (),
+                {"knowledge_version": "v1", "freshness": "current"},
+            )(),
+        },
+    )()
+    config = type("Config", (), {"source_data_root": tmp_path / "combined"})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+    monkeypatch.setattr("fabric.runtime.build_runtime", lambda _config: runtime)
+
+    result = activate_runtime(
+        service,
+        fabric_config="fabric.test.yaml",
+        progress_callback=events.append,
+        heartbeat_interval=3600,
+    )
+
+    assert result["status"] == "activated"
+    assert [event["stage"] for event in events if event["status"] == "started"] == [
+        "activation",
+        "connection_validation",
+        "connection_discovery",
+        "combined_snapshot",
+        "fabric_publication",
+        "dataset_mapping",
+    ]
+    table_event = next(
+        event
+        for event in events
+        if event["stage"] == "table_publication"
+    )
+    assert table_event["row_count"] == 123
+    assert table_event["completed"] == table_event["total"] == 1
+    assert "hub" not in json.dumps(events)
+
+
+def test_activate_runtime_failure_uses_same_sanitized_elapsed_value(
+    tmp_path,
+) -> None:
+    service = _Service({"hub": tmp_path / "hub"})
+    secret = "credential=planted-secret"
+    resource_id = "/subscriptions/sub/resourceGroups/rg/providers/x/y"
+    events: list[dict[str, object]] = []
+    ticks = iter(range(20))
+
+    def fail_validation(_connection_id: str):
+        raise RuntimeError(f"{secret} {resource_id}")
+
+    service.validate = fail_validation
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="unused.yaml",
+            progress_callback=events.append,
+            heartbeat_interval=3600,
+            progress_clock=lambda: float(next(ticks)),
+        )
+
+    failure = captured.value
+    terminal_event = events[-1]
+    assert terminal_event == {
+        "event": "activation_progress",
+        "stage": "connection_validation",
+        "status": "failed",
+        "elapsed_seconds": failure.elapsed_seconds,
+        "error_code": "ACTIVATION_FAILED",
+    }
+    rendered = json.dumps(events) + str(failure)
+    assert secret not in rendered
+    assert resource_id not in rendered
