@@ -6,7 +6,6 @@ import pytest
 
 from scripts.collect_ontology_evidence import (
     EvidenceCollectionError,
-    _collect_api,
     _list_fixed_paths,
     build_closed_record,
     decode_identity_claims,
@@ -46,45 +45,6 @@ def test_managed_identity_claims_are_hashed_and_token_is_never_retained() -> Non
     assert token not in json.dumps(claims)
 
 
-def test_api_observation_uses_managed_identity_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: dict[str, object] = {}
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        token: str | None = None,
-        json_body: object = None,
-    ) -> object:
-        observed.update(
-            method=method,
-            url=url,
-            token=token,
-            json_body=json_body,
-        )
-        return {"data": []}
-
-    monkeypatch.setattr(
-        "scripts.collect_ontology_evidence._request_json",
-        request,
-    )
-
-    result = _collect_api(
-        {"AIOPS_EVIDENCE_API_URL": "https://api.example"},
-        "managed-identity-token",
-    )
-
-    assert observed == {
-        "method": "GET",
-        "url": "https://api.example/api/v1/connections?limit=1",
-        "token": "managed-identity-token",
-        "json_body": None,
-    }
-    assert result["count"] == 1
-
-
 def test_missing_optional_onelake_prefix_is_an_empty_observation() -> None:
     class MissingPath(Exception):
         status_code = 404
@@ -120,7 +80,6 @@ def test_closed_record_rejects_raw_sensitive_values_and_write_capabilities() -> 
             "arg": {"count": 1, "hashes": ["sha256:" + "5" * 64]},
             "fabric": {"count": 5, "hashes": ["sha256:" + "6" * 64]},
             "onelake": {"count": 7, "hashes": ["sha256:" + "7" * 64]},
-            "api": {"count": 1, "hashes": ["sha256:" + "8" * 64]},
         },
         capabilities={
             "azure": ["read"],
@@ -288,8 +247,8 @@ def test_closed_record_accepts_only_sanitized_lifecycle_facts() -> None:
     observations = {
         name: {"count": 1, "hashes": ["sha256:" + char * 64]}
         for name, char in zip(
-            ("arg", "fabric", "onelake", "api"),
-            ("5", "6", "7", "8"),
+            ("arg", "fabric", "onelake"),
+            ("5", "6", "7"),
             strict=True,
         )
     }

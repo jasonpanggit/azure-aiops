@@ -54,14 +54,13 @@ IDENTITY_HASH_KEYS = {
     "managed_identity_resource_hash",
     "entra_signature_hash",
 }
-OBSERVATION_NAMES = {"arg", "fabric", "onelake", "api"}
+OBSERVATION_NAMES = {"arg", "fabric", "onelake"}
 FAILURE_CODES = frozenset(
     {
         "identity_binding",
         "arg_read",
         "fabric_read",
         "onelake_read",
-        "api_read",
     }
 )
 FORBIDDEN_OUTPUT_KEYS = {
@@ -389,8 +388,6 @@ def _required_environment() -> dict[str, str]:
         "AIOPS_EVIDENCE_OBJECT_ID",
         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
         "AIOPS_EVIDENCE_RESOURCE_GROUP",
-        "AIOPS_EVIDENCE_API_URL",
-        "AIOPS_EVIDENCE_API_SCOPE",
     }
     for root in ROOT_NAMES:
         prefix = f"AIOPS_EVIDENCE_{root.upper()}"
@@ -605,19 +602,6 @@ def _collect_onelake(
     return {"count": len(hashes), "hashes": hashes}, facts
 
 
-def _collect_api(
-    env: Mapping[str, str],
-    token: str,
-) -> dict[str, object]:
-    base = env["AIOPS_EVIDENCE_API_URL"].rstrip("/")
-    payload = _request_json(
-        "GET",
-        f"{base}/api/v1/connections?limit=1",
-        token=token,
-    )
-    return {"count": 1, "hashes": [_hash(payload)]}
-
-
 def collect() -> dict[str, object]:
     env = _required_environment()
     credential = ManagedIdentityCredential(client_id=env["AZURE_CLIENT_ID"])
@@ -641,18 +625,10 @@ def collect() -> dict[str, object]:
             )
         except EvidenceCollectionError as exc:
             raise EvidenceCollectionError("fabric_read") from exc
-        try:
-            api_observation = _collect_api(
-                env,
-                _token(credential, env["AIOPS_EVIDENCE_API_SCOPE"]),
-            )
-        except EvidenceCollectionError as exc:
-            raise EvidenceCollectionError("api_read") from exc
         observations = {
             "arg": arg_observation,
             "fabric": fabric_observation,
             "onelake": onelake_observation,
-            "api": api_observation,
         }
         return build_closed_record(
             identity=identity,

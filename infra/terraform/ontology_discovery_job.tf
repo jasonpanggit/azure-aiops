@@ -455,14 +455,6 @@ resource "azurerm_container_app_job" "ontology_evidence_read" {
         value = azurerm_resource_group.main.name
       }
       env {
-        name  = "AIOPS_EVIDENCE_API_URL"
-        value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
-      }
-      env {
-        name  = "AIOPS_EVIDENCE_API_SCOPE"
-        value = "${var.entra_api_audience}/.default"
-      }
-      env {
         name  = "AIOPS_EVIDENCE_STATE_WORKSPACE_ID"
         value = fabric_workspace.ontology_discovery_state[0].id
       }

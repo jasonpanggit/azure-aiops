@@ -549,8 +549,8 @@ def test_evidence_job_record_is_entra_bound_closed_and_exact_identity() -> None:
         "observations": {
             name: {"count": 1, "hashes": ["sha256:" + char * 64]}
             for name, char in zip(
-                ("arg", "fabric", "onelake", "api"),
-                ("5", "6", "7", "8"),
+                ("arg", "fabric", "onelake"),
+                ("5", "6", "7"),
                 strict=True,
             )
         },
@@ -595,8 +595,8 @@ def test_evidence_job_log_parser_accepts_exactly_one_closed_console_record() -> 
         observations={
             name: {"count": 1, "hashes": ["sha256:" + char * 64]}
             for name, char in zip(
-                ("arg", "fabric", "onelake", "api"),
-                ("5", "6", "7", "8"),
+                ("arg", "fabric", "onelake"),
+                ("5", "6", "7"),
                 strict=True,
             )
         },

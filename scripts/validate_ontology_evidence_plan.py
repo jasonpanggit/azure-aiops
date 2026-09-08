@@ -17,8 +17,6 @@ _EVIDENCE_ENV_NAMES = frozenset(
         "AIOPS_EVIDENCE_OBJECT_ID",
         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
         "AIOPS_EVIDENCE_RESOURCE_GROUP",
-        "AIOPS_EVIDENCE_API_URL",
-        "AIOPS_EVIDENCE_API_SCOPE",
         *{
             f"AIOPS_EVIDENCE_{name}_WORKSPACE_ID"
             for name in (

@@ -60,8 +60,6 @@ def _plan() -> dict[str, object]:
                                         "AIOPS_EVIDENCE_OBJECT_ID",
                                         "AIOPS_EVIDENCE_SUBSCRIPTION_ID",
                                         "AIOPS_EVIDENCE_RESOURCE_GROUP",
-                                        "AIOPS_EVIDENCE_API_URL",
-                                        "AIOPS_EVIDENCE_API_SCOPE",
                                         "AIOPS_EVIDENCE_STATE_WORKSPACE_ID",
                                         "AIOPS_EVIDENCE_STATE_LAKEHOUSE_ID",
                                         "AIOPS_EVIDENCE_COMMAND_WORKSPACE_ID",
