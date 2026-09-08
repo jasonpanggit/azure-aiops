@@ -2885,8 +2885,9 @@ def test_canonical_multi_agent_ledger_isolated_from_foreign_principal(
     """T-11-36: A canonical ledger stays principal-scoped — a second principal
     can neither read it nor record a decision against it."""
     monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
-    from api.rbac import Grant, Principal
     from test_api_copilot_investigation import TOKEN
+
+    from api.rbac import Grant, Principal
 
     other_token = "other-token-0123456789abcdef"
     principals = {
