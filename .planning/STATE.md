@@ -5,12 +5,12 @@ milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
 stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-07T09:26:12.440Z"
+last_updated: "2026-09-08T08:55:42.702Z"
 progress:
   total_phases: 17
   completed_phases: 10
   total_plans: 165
-  completed_plans: 145
+  completed_plans: 146
 current_phase_name: Exposure Reliability and Scale
 ---
 
@@ -25,6 +25,7 @@ current_phase_name: Exposure Reliability and Scale
 
 ## Completed Plans (This Session)
 
+- **13-19** COMPLETE — Exact production API/coordinator/publisher roots, fixed coordinator-UAI fixture Jobs, isolated Fabric capabilities, immutable integrated images, zero-destroy apply, and sanitized live template/RBAC proof
 - **13-18** COMPLETE — Four-root read-only API, immutable run/rollback/maintenance intake, distinct maintenance RBAC, and reconstructed API/coordinator/publisher topology
 - **13-16** COMPLETE — OneLake-backed production coordinator with reauthorized command intake, fair restart-safe eligible epochs, durable reconciliation parity, hard-shadow Foundry curation, and publisher dispatch
 - **13-15** COMPLETE — Exact alert coverage and credentialed shadow validation with durable sanitized evidence, zero authoritative model edges, deterministic rollback, and every pair BLOCKED/PENDING
@@ -188,6 +189,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 13 P16 | 15min | 3 tasks | 9 files |
 | Phase 13 P17 | 16min | 3 tasks | 9 files |
 | Phase 13 P18 | 12min | 3 tasks | 12 files |
+| Phase 13 P19 | 2h10m | 3 tasks | 14 files |
 
 ## Decisions
 
@@ -313,6 +315,7 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 13]: Plan 13-17: publisher Fabric auth always replaces shared YAML identity with AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID.
 - [Phase 13]: API ontology authority is limited to four explicit roots: connection read, state read, publication read, and command create/read/status; dispatch and publisher capabilities remain absent.
 - [Phase 13]: Ontology maintenance is a non-inherited grant; only the coordinator may reauthorize the command and CAS the reconciliation cadence.
+- [Phase 13]: Validation changes only the coordinator environment and ConnectionRegistry root; fixed fixture Jobs reuse the coordinator UAI without runtime Job-start grants.
 
 ## Session
 
@@ -336,5 +339,4 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Blockers
 
-- Phase 13 Plan 19 Task 2: immutable targeted deployment is blocked because this worktree has no Terraform state or protected deployment env; Azure/Fabric CLI can read live resources but cannot prove the zero-destroy exact-address plan required before apply.
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
