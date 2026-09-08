@@ -11,18 +11,18 @@
       "AIOPS_ONTOLOGY_STATE_HOME": "sha256:816e4380d622110652b3033cca55ae0d6e94ef09b4b90c9bd2c0ec471e9fedab"
     },
     "template_hashes_after": {
-      "coordinator": "sha256:dd88c46821850d19f9da561ae337cd44cbd0f7f15ec79078d7cedc4ba0717976",
-      "ontology_fixture_cleanup": "sha256:5faa5d12a56130244bcb25a057d7b63e9fd22d253ef8a9a55b196c7e4b2151e0",
-      "ontology_fixture_prepare": "sha256:4f0c9c9d65cd3dfc208730558aa0ca1c148cdc04ff037a4802519e93df72ec8b",
-      "publisher": "sha256:70e9054ca49bb6b99d1e07e8e7e8822d52539f5d8c823f9a5f69f19978e4cb84",
-      "rbac_validator": "sha256:51f3bdc2af660bc825671f9ca8034bf37694f24c2c685ff495ae15211ec0be79"
+      "coordinator": "sha256:2b037208548bad5c8395119c3ceb3c3d0b17eb29519848b832839d8961b89e94",
+      "ontology_fixture_cleanup": "sha256:fb0b99a0274491d1fd581fbd1ff40f813a4f26d09cebafdae66cb6bb563c628f",
+      "ontology_fixture_prepare": "sha256:0599286139783616b176c5b35f88607eb1a323255c1352f5e5ecabcc51abf80d",
+      "publisher": "sha256:143ac718c8461187fb4b1d3f65946080f855a12a16a920903c6f7b999c7e40cc",
+      "rbac_validator": "sha256:7fcc893e44a4ac54f37cadaea999feed2c20da1822fd384421904dbd3345c1d8"
     },
     "template_hashes_before": {
-      "coordinator": "sha256:dd88c46821850d19f9da561ae337cd44cbd0f7f15ec79078d7cedc4ba0717976",
-      "ontology_fixture_cleanup": "sha256:5faa5d12a56130244bcb25a057d7b63e9fd22d253ef8a9a55b196c7e4b2151e0",
-      "ontology_fixture_prepare": "sha256:4f0c9c9d65cd3dfc208730558aa0ca1c148cdc04ff037a4802519e93df72ec8b",
-      "publisher": "sha256:70e9054ca49bb6b99d1e07e8e7e8822d52539f5d8c823f9a5f69f19978e4cb84",
-      "rbac_validator": "sha256:51f3bdc2af660bc825671f9ca8034bf37694f24c2c685ff495ae15211ec0be79"
+      "coordinator": "sha256:2b037208548bad5c8395119c3ceb3c3d0b17eb29519848b832839d8961b89e94",
+      "ontology_fixture_cleanup": "sha256:fb0b99a0274491d1fd581fbd1ff40f813a4f26d09cebafdae66cb6bb563c628f",
+      "ontology_fixture_prepare": "sha256:0599286139783616b176c5b35f88607eb1a323255c1352f5e5ecabcc51abf80d",
+      "publisher": "sha256:143ac718c8461187fb4b1d3f65946080f855a12a16a920903c6f7b999c7e40cc",
+      "rbac_validator": "sha256:7fcc893e44a4ac54f37cadaea999feed2c20da1822fd384421904dbd3345c1d8"
     }
   },
   "schema_version": "ontology-gap-deployment.v1",

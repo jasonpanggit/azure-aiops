@@ -1,0 +1,21 @@
+{
+  "completed_step_count": 6,
+  "completed_step_keys": [
+    "sha256:94bbb76d850498ffb7534c5b1e1ab2baa3ae95ec44a750bee9c8fa07f2574914",
+    "sha256:9e177d6c320eea9a6c96fbabce5dab82f0531e24d3571da300acb551dfb57819",
+    "sha256:4978fbdf65468f7bc3c259870155d047bda12191698131f21d4cc87da593f579",
+    "sha256:16ab1862625ed516243344876c055cecdd6b3c5530dbf07a017345a12ec24ce3",
+    "sha256:dbb62575b852f14a39f29fa8160e4a90873b64c657a69728fee52498eacdbb2a",
+    "sha256:9a77fc5be0e2f88090710b49f976b03186ab877ccc7e6ee8d9ebedb25ad60db4"
+  ],
+  "evidence_refs": [
+    "sha256:79a7b9ea68398e277ad80088ef529263bac7acc1074153cbbce13f4d6e075748",
+    "sha256:af6f5ffe9009e77eadc0f782869446c0535c75860a36c9ee576aea4890677c5e",
+    "sha256:56a509f1644233a7ddf1c25ce1a1b39f1caeddc5e4de54d5c0abb29d5746a5a1",
+    "sha256:b254d0715a96b63f759f702879c20d8cdeb84871be6a32d1b141cb3ff0a48cbd",
+    "sha256:5976f47320970e8ae1666c41f1ea696f848c51ba1699cc057b0d7b0a29a0fa2e",
+    "sha256:97bd79020e94774322f996cb304c835afc8bb44fd5d4623820dc844a915a82e1"
+  ],
+  "schema_version": "ontology-deployed-lifecycle-checkpoint.v1",
+  "stage": "lifecycle"
+}
