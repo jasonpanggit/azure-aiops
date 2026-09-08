@@ -212,6 +212,7 @@ class NetworkIntelligenceService:
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
         peer_resolutions: Mapping[str, str] | None = None,
+        topology_build_duration_ms: int | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
@@ -236,6 +237,7 @@ class NetworkIntelligenceService:
                 for peer_id, resolution in peer_resolutions.items()
             }
         )
+        self.topology_build_duration_ms = topology_build_duration_ms
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
@@ -250,6 +252,7 @@ class NetworkIntelligenceService:
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         observed_at: str | None = None,
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        topology_build_duration_ms: int | None = None,
     ) -> NetworkIntelligenceService:
         resolved = policy if policy is not None else load_design_policy(policy_path)
         return cls(
@@ -257,6 +260,7 @@ class NetworkIntelligenceService:
             policy=resolved,
             semantic_relationships=semantic_relationships,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     @classmethod
@@ -268,6 +272,7 @@ class NetworkIntelligenceService:
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        topology_build_duration_ms: int | None = None,
     ) -> NetworkIntelligenceService:
         """Normalize raw ARG resources before loading the typed network view.
 
@@ -327,6 +332,7 @@ class NetworkIntelligenceService:
             semantic_relationships=semantic_relationships,
             observed_at=normalized_observed_at,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     @property
@@ -422,6 +428,7 @@ class NetworkIntelligenceService:
                 )
             ),
             peer_resolutions=peer_resolutions,
+            topology_build_duration_ms=self.topology_build_duration_ms,
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
@@ -433,7 +440,7 @@ class NetworkIntelligenceService:
 
     def hub_dependents(self, hub_vnet_id: str) -> dict[str, Any]:
         """Answers "what depends on the hub?" for one hub."""
-        target = str(hub_vnet_id or "").casefold()
+        target = f"/{str(hub_vnet_id or '').lstrip('/')}".casefold()
         peers = self.topology.peers_of(target)
         services = [
             service

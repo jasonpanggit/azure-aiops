@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from test_incremental_sync import _source_snapshot
 
 from fabric.data_quality import DataQualityValidator
@@ -10,9 +11,16 @@ from fabric.sync_service import (
     DedicatedOntologyPublisherAdapter,
     FabricSyncService,
     FabricTableWriteProgress,
+    _exposure_gold_generation_id,
+    _observation_rows_at_or_before,
+)
+from fabric_pipelines.vulnerability_pipeline import (
+    EXPOSURE_GOLD_POINTER_DOCUMENT,
+    EXPOSURE_GOLD_TABLES,
 )
 from ontology_discovery.publisher import OntologyGenerationCandidate
 from storage.delta_writer import DeltaWriter
+from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 
 
@@ -56,6 +64,142 @@ def test_sync_ignores_progress_callback_errors(tmp_path: Path) -> None:
 
     assert result.status == "completed"
     assert calls == len(result.tables)
+
+
+def test_sync_publishes_repeatable_exposure_generation_and_pointer(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    first = service.sync(exposure_pointer_store=pointer_store)
+    first_pointer = pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    first_facts = service.delta.read(
+        service.onelake.table_uri("gold", "exposure_facts")
+    )
+    second = service.sync(exposure_pointer_store=pointer_store)
+
+    pointer = pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    second_facts = service.delta.read(
+        service.onelake.table_uri("gold", "exposure_facts")
+    )
+    expected_generation = str(pointer["readable_generation_id"])
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert expected_generation.startswith("exposure-gold-")
+    assert set(EXPOSURE_GOLD_TABLES) <= set(second.tables)
+    assert "metadata_exposure_gold_generations" in second.tables
+    assert pointer["retained_generations"][expected_generation]
+    assert pointer["revision"] > first_pointer["revision"]
+    assert pointer["activated_at"] == first_pointer["activated_at"]
+    assert pointer["retained_generations"][expected_generation] == (
+        first_pointer["retained_generations"][expected_generation]
+    )
+    assert second_facts == first_facts
+    generation_rows = service.delta.read(
+        service.onelake.table_uri(
+            "metadata",
+            "exposure_gold_generations",
+        )
+    )
+    assert {
+        row["read_model_generation_id"] for row in generation_rows
+    } == {expected_generation}
+    assert generation_rows[0]["published_at"] == pointer["activated_at"]
+    assert generation_rows[0]["retain_until"] == (
+        pointer["retained_generations"][expected_generation]["retain_until"]
+    )
+    observations = service.delta.read(
+        service.onelake.table_uri(
+            "silver",
+            "exposure_observations",
+        )
+    )
+    assert len(observations) == len(
+        {row["observation_id"] for row in observations}
+    )
+    assert service.delta.read(
+        service.onelake.table_uri(
+            "gold",
+            "container_exposure_coverage",
+        )
+    )[0]["timestamp"] != "1970-01-01T00:00:00Z"
+
+
+def test_identical_source_produces_identical_gold_in_clean_lakehouses(
+    tmp_path: Path,
+) -> None:
+    first_service = _service(tmp_path / "first")
+    second_service = _service(tmp_path / "second")
+    first_pointer = OneLakeDocumentStore(tmp_path / "first-registry")
+    second_pointer = OneLakeDocumentStore(tmp_path / "second-registry")
+
+    first_service.sync(exposure_pointer_store=first_pointer)
+    second_service.sync(exposure_pointer_store=second_pointer)
+
+    assert first_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)[
+        "readable_generation_id"
+    ] == second_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)[
+        "readable_generation_id"
+    ]
+    assert first_service.delta.read(
+        first_service.onelake.table_uri("gold", "exposure_facts")
+    ) == second_service.delta.read(
+        second_service.onelake.table_uri("gold", "exposure_facts")
+    )
+
+
+def test_sync_does_not_activate_gold_pointer_before_finalization(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    def fail_shortcuts() -> None:
+        raise RuntimeError("shortcut finalization failed")
+
+    service._create_shortcuts = fail_shortcuts  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="shortcut finalization failed"):
+        service.sync(exposure_pointer_store=pointer_store)
+
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert max(
+        service.status(),
+        key=lambda row: str(row.get("timestamp") or ""),
+    )["status"] == "failed"
+
+
+def test_replayed_generation_excludes_later_observation_history() -> None:
+    rows = [
+        {"observation_id": "before", "ingested_at": "2026-09-08T00:00:00Z"},
+        {"observation_id": "same", "ingested_at": "2026-09-08T01:00:00Z"},
+        {"observation_id": "after", "ingested_at": "2026-09-08T02:00:00Z"},
+    ]
+
+    visible = _observation_rows_at_or_before(
+        rows,
+        projected_at="2026-09-08T01:00:00Z",
+    )
+
+    assert [row["observation_id"] for row in visible] == [
+        "before",
+        "same",
+    ]
+
+
+def test_gold_generation_identity_changes_with_late_observation() -> None:
+    datasets = {
+        "silver_exposure_observations": [
+            {"observation_id": "observation-a"}
+        ]
+    }
+    first = _exposure_gold_generation_id("source-a", datasets)
+    datasets["silver_exposure_observations"].append(
+        {"observation_id": "observation-late"}
+    )
+
+    assert _exposure_gold_generation_id("source-a", datasets) != first
 
 
 def test_dedicated_publisher_promotes_before_fabric_materialization() -> None:

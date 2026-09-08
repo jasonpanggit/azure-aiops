@@ -2425,6 +2425,10 @@ textarea:focus-visible {
 
 .workspace-tabs {
   display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: x proximity;
   gap: 2px;
   margin-top: 22px;
   border-bottom: 1px solid var(--color-border-strong);
@@ -2432,6 +2436,9 @@ textarea:focus-visible {
 
 .workspace-tabs button {
   position: relative;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  white-space: nowrap;
   min-height: 40px;
   padding: 7px 14px;
   cursor: pointer;

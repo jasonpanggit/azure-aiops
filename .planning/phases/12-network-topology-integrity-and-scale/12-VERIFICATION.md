@@ -1,7 +1,7 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-verified: 2026-09-06T08:25:00Z
-status: passed
+verified: 2026-09-08T03:50:00Z
+status: passed-source-remediation-ready-live-recheck-pending
 score: 5/5 roadmap must-haves verified
 plan_truth_score: 76/76
 behavior_unverified: 0
@@ -14,6 +14,10 @@ full_suites_rerun_in_this_worktree: true
 integrated_main_head: 6eda2f06
 integration_merge_head: c0716f5d
 integration_verified: true
+post_deployment_tag: network-topology-fix-20260908-0115
+post_deployment_result: "8 passed, 2 failed"
+post_deployment_remediation: source-verified-pending-redeploy
+post_deployment_p95_gate: "<1000ms unchanged"
 re_verification:
   previous_status: passed
   previous_score: 5/5
@@ -48,7 +52,50 @@ network topology experience whose nodes, relationships, findings, policy
 changes, freshness, and evidence coverage remain accurate from inventory
 ingestion through API, web, agents, MCP, and export.
 
-**Status:** passed
+**Status:** passed; post-deployment remediation is source-verified and pending
+an authorized redeploy/live recheck
+
+## Post-Deployment Verification Addendum — 2026-09-08
+
+The authenticated suite against deployment tag
+`network-topology-fix-20260908-0115` passed 8 checks and failed 2. Five
+full-detail samples measured p95 **14,397 ms**, and the hub-dependent request
+returned 404 for a slash-prefixed ARM id present in the same summary.
+
+The follow-up investigation confirmed two residual source causes:
+
+- `ProviderRuntime.get()` performed Fabric semantic-version/cache-key reads and
+  could run provider loaders on a request thread after a nonblocking lock
+  acquisition. It now only returns the last completed in-memory publication;
+  startup and the periodic background thread own every cache-key, freshness,
+  metadata, and loader operation.
+- Hub ids were still transported through a path wildcard. A new
+  `/api/v1/network/topology/hubs/dependents?vnet_id=...` route preserves the
+  exact ARM id through FastAPI routing. The web client and deployed acceptance
+  use it, while the path route remains for compatibility.
+
+Failing-first specified-contract regressions cover normal, concurrent, and
+initial-startup provider reads plus actual FastAPI query routing and web URL
+construction. The causal regressions failed again when only the three
+production fix files were restored to HEAD and passed after reapplication.
+
+Current source-readiness evidence:
+
+- full backend: **3,831 passed**;
+- full web: **57 files / 583 tests passed**;
+- focused provider/runtime/network API: **131 passed**;
+- TypeScript, ESLint, production build, and changed-path Ruff: **clean**;
+- Phase 12 local Playwright: **3 passed / 10 deployment-gated skipped**;
+- complete Playwright invocation: Phase 12 clean, with one unrelated
+  pre-existing Phase 13 ontology test requiring HTTPS while the local runner is
+  HTTP;
+- repository-wide Ruff: unchanged pre-existing 27 findings confined to
+  unrelated `infra/scripts/` and `scripts/`.
+
+This addendum does not claim a live pass. The deployed acceptance gate remains
+exactly **five immediate authenticated full-detail samples with p95 <1,000 ms**,
+plus a 200 empty/non-empty hub envelope for the summary-provided ARM id. No
+deployment was performed by this remediation.
 
 **Requested and verified source:** `207c7c78b4b90dfa9561054fdd9c840be74c8764`
 
@@ -110,7 +157,7 @@ or modified.
 | 1 | Scoped topology, gaps, findings, agents, and MCP expose no out-of-scope resource/relationship, preserve semantic edges, and do not fabricate gaps through asymmetric filtering. | ✓ VERIFIED | `NetworkScope.filter_snapshot()` filters all 15 collections, including `private_link_resources` (`src/network/service.py:66-100`). `scoped()` filters semantic relationships and flow observations only after snapshot scoping (`service.py:391-424`). The router, twin, and operations tools resolve through this seam (`src/api/routers/network.py:51`, `src/api/routers/twin.py:36`, `src/operations/tools.py:410,434,463,493`). The focused scope suite passed 14 tests, including direct service, REST, agent, twin, and MCP cases. |
 | 2 | Fabric capacities, AI Foundry accounts, and other in-scope private-link candidates appear once, and every open topology finding resolves to a visible/retrievable node. | ✓ VERIFIED | Provider mapping emits `FabricCapacity` and `AIFoundryAccount`; `_topology_resources()` reconciles candidates through one case-folded map (`src/network/topology.py:1284-1363`). Fabric per-capacity false positives are suppressed (`src/network/gaps.py:394-399`) while Cognitive Services findings remain. Projection/dedup/finding-resolution regressions passed in the 14-test rerun. |
 | 3 | Totals/truncation are truthful, summary topology is bounded, detail is on demand, and downstream contracts remain compatible. | ✓ VERIFIED | Summary serialization publishes node/group/relationship/collection coverage and enforces node/byte ceilings (`src/network/topology.py:300-600`); gaps/findings publish pagination and coverage (`src/api/routers/network.py:280-380`); drill-down resolves from the scoped snapshot (`network.py:112-205`). G-1/G-2/G-4/G-5/G-6 and browser-export checks passed in the 7-test rerun. The definitive full suites are green. |
-| 4 | Enabling, disabling, creating, previewing, or deleting a policy rule refreshes derived data without reload; invalid rules fail visibly and are not persisted. | ✓ VERIFIED | Policy writes are revisioned and strictly decoded (`src/network/design.py:470-624`); provider refresh is cache-key-aware and retains a degraded last-good provider under failure (`src/api/providers.py:250-386`). The web calls policy plus topology/gap/finding refetches and retains data while busy (`web/src/app/network/page.tsx:100-174,900-1362`; `web/src/hooks/useApi.ts:1-88`). Ten focused policy integrity tests and all 32 `page.test.tsx` Network-page tests passed in the full web rerun. |
+| 4 | Enabling, disabling, creating, previewing, or deleting a policy rule refreshes derived data without reload; invalid rules fail visibly and are not persisted. | ✓ VERIFIED | Policy writes are revisioned and strictly decoded (`src/network/design.py:470-624`); background provider refresh is cache-key-aware and retains a degraded last-good provider under failure, while request-time `get()` is strictly last-known-good (`src/api/providers.py`). The web calls policy plus topology/gap/finding refetches and retains data while busy (`web/src/app/network/page.tsx`; `web/src/hooks/useApi.ts`). Focused policy integrity and page tests pass. |
 | 5 | Relationship drops, normalization gaps, freshness, DNS/subnet/private-endpoint integrity, and flow provenance are observable and regression/scale tested. | ✓ VERIFIED | IDs are normalized before membership checks; dropped edges are counted by type without endpoint disclosure (`src/network/topology.py:1449-1555`); snapshot freshness and three-state flow provenance are wired through `NetworkIntelligenceService` (`src/network/service.py:250-370`); peer resolution is explicit. The focused provenance/relationship rerun and representative scale gates passed. |
 
 **Roadmap score:** 5/5 verified
@@ -177,7 +224,7 @@ All **47 declared key links** are wired.
 | 12-01 | 4 | ✓ WIRED | `filter_snapshot` → all collections; `scoped` → edge filtering; preview → scoped context; tools → `scoped`. |
 | 12-02 | 6 | ✓ WIRED | fixture builders → G tests; baseline JSON → strict loader → G-4; base SHA → non-empty phase diff; measured ceiling → UI guard; shared fixture → web tests. |
 | 12-03 | 4 | ✓ WIRED | observed stamp → snapshot/evidence; casefold → edge survival/drop counts; unscoped reference → peer reason; flow observations → rule analysis/confidence. |
-| 12-04 | 4 | ✓ WIRED | update → revision → provider key; PATCH → invalidation → next gaps; server vocabulary → editor help; nonce → loader effect. |
+| 12-04 | 4 | ✓ WIRED | update → revision → provider key; background refresh → replacement publication → subsequent gaps; server vocabulary → editor help; nonce → loader effect. |
 | 12-05 | 1 | ✓ WIRED | Research assumption → decision artifact → Fabric suppression/qualification and icon fallback. |
 | 12-06 | 3 | ✓ WIRED | private-link collection → deduped projection; provider type → client entity type; gap resource ID → node. |
 | 12-07 | 5 | ✓ WIRED | query detail → serializer; detail endpoint → drawer; truncation → envelope warning; affected IDs → badge map; bound helper → G-6. |
@@ -193,7 +240,7 @@ All **47 declared key links** are wired.
 | Topology nodes and relationships | ARG/OneLake ontology rows → loader/normalizer → `NetworkSnapshot` → `NetworkIntelligenceService.scoped()` → `NetworkTopology.to_dict()` → `/network/topology` → `networkApi` → workspace/graph | ✓ FLOWING |
 | Gaps and rule findings | Scoped snapshot + policy + flow observations → analyzers → paginated route envelopes → page tables/badge loader → node badges/drawer | ✓ FLOWING |
 | Freshness and flow provenance | Observed timestamps and `trafficObserved` rows → service provenance → evidence envelope → EvidenceBar/header/footnote | ✓ FLOWING |
-| Policy mutation state | UI action → preview/PATCH → strict server validation → revisioned store/CAS → provider cache-key refresh → coalesced client refetch → metrics/gaps/findings/badges | ✓ FLOWING |
+| Policy mutation state | UI action → preview/PATCH → strict server validation → revisioned store/CAS → background provider cache-key refresh → atomic replacement publication → subsequent metrics/gaps/findings/badges refetch | ✓ FLOWING |
 | Export completeness | Scoped topology + coverage + filters + evidence + warnings + freshness → `buildTopologyExport()` → JSON download; PNG separately labelled image-only | ✓ FLOWING |
 
 No rendered phase value terminates in a static mock, hardcoded empty collection,

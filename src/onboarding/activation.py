@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -11,8 +12,16 @@ from typing import Any
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
 from storage.datasets import DatasetStore
+from storage.onelake_documents import OneLakeDocumentStore
 
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
+
+_EXPOSURE_PASSTHROUGH_KEYS = {
+    "exposure/workload_observations": "observation_id",
+    "exposure/workload_deployments": "deployment_id",
+    "exposure/workload_source_checkpoints": "checkpoint_key",
+    "situations/source_status": "partition_key",
+}
 
 
 def publish_combined_snapshot(
@@ -28,6 +37,9 @@ def publish_combined_snapshot(
     }
     relationships: dict[str, dict[str, Any]] = {}
     changes: dict[str, dict[str, Any]] = {}
+    exposure_rows: dict[str, dict[str, dict[str, Any]]] = {
+        name: {} for name in _EXPOSURE_PASSTHROUGH_KEYS
+    }
     source_runs: list[str] = []
     latest_started_at = ""
 
@@ -84,6 +96,25 @@ def publish_combined_snapshot(
                         for key in ("id", "changeId", "timestamp", "connection_id")
                     )
                     changes[identifier] = row
+            elif dataset_name in exposure_rows:
+                key_field = _EXPOSURE_PASSTHROUGH_KEYS[dataset_name]
+                for row in store.read_dataset(dataset_name):
+                    identifier = "|".join(
+                        (
+                            str(row.get("connection_id") or connection_id),
+                            str(row.get("workspace_id") or ""),
+                            str(row.get(key_field) or ""),
+                        )
+                    )
+                    if not str(row.get(key_field) or ""):
+                        identifier = hashlib.sha256(
+                            json.dumps(
+                                row,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode()
+                        ).hexdigest()
+                    exposure_rows[dataset_name][identifier] = row
 
     graph = NormalizedGraph(
         entities={
@@ -108,6 +139,13 @@ def publish_combined_snapshot(
         **{f"entities/{entity_type}": rows for entity_type, rows in graph.entities.items()},
         "relationships/relationships": graph.relationships,
         "changes/resource_changes": graph.changes,
+        **{
+            name: [
+                rows[key]
+                for key in sorted(rows)
+            ]
+            for name, rows in exposure_rows.items()
+        },
     }
     return DatasetStore(target_root).publish(
         datasets,
@@ -159,7 +197,9 @@ def activate_runtime(
     config = FabricRuntimeConfig.load(fabric_config)
     combined = publish_combined_snapshot(service, selected, config.source_data_root)
     runtime = build_runtime(config)
-    publication = runtime.service.sync()
+    publication = runtime.service.sync(
+        exposure_pointer_store=OneLakeDocumentStore(service.registry.root)
+    )
     semantic = runtime.semantic_engine()
     return {
         "status": "activated",

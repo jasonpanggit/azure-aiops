@@ -33,12 +33,6 @@ function calledUrl(spy: ReturnType<typeof captureFetch>): URL {
   return new URL(String(apiCall[0]));
 }
 
-function calledPath(spy: ReturnType<typeof captureFetch>): string {
-  const apiCall = spy.mock.calls.find(([input]) => String(input).includes("/api/v1/"));
-  if (!apiCall) throw new Error("Expected an Operations API request");
-  return String(apiCall[0]);
-}
-
 describe("networkApi", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -51,6 +45,24 @@ describe("networkApi", () => {
     expect(url.pathname).toBe("/api/v1/network/topology");
     expect(url.searchParams.getAll("subscription")).toEqual(["sub-a", "sub-b"]);
     expect(url.searchParams.getAll("environment")).toEqual(["prod"]);
+  });
+
+  it("forwards an AbortSignal to the topology request", async () => {
+    const spy = captureFetch({ topology: {}, summary: {} });
+    const controller = new AbortController();
+
+    await networkApi.topology(
+      { subscription: ["sub-a"] },
+      { detail: "full" },
+      { signal: controller.signal },
+    );
+
+    const apiCall = spy.mock.calls.find(([input]) =>
+      String(input).includes("/api/v1/"),
+    );
+    expect(apiCall?.[1]).toEqual(
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 
   it("sends source, destination and port for a traffic-flow query", async () => {
@@ -69,12 +81,14 @@ describe("networkApi", () => {
     expect(calledUrl(spy).searchParams.has("port")).toBe(false);
   });
 
-  it("encodes a resource ID containing slashes into the hub-dependents path", async () => {
+  it("sends the exact slash-prefixed hub ARM id in a query parameter", async () => {
     const spy = captureFetch({ dependent_count: 0 });
     await networkApi.hubDependents("/subscriptions/s/providers/microsoft.network/virtualnetworks/v");
-    // Encoded, not interpolated raw: otherwise the ARM ID would be read as
-    // extra path segments and hit the wrong route.
-    expect(calledPath(spy)).toContain("%2Fsubscriptions%2Fs%2F");
+    const url = calledUrl(spy);
+    expect(url.pathname).toBe("/api/v1/network/topology/hubs/dependents");
+    expect(url.searchParams.get("vnet_id")).toBe(
+      "/subscriptions/s/providers/microsoft.network/virtualnetworks/v",
+    );
   });
 
   it("applies severity and category filters to gaps", async () => {

@@ -150,6 +150,14 @@ function renderPage(withScopeControl = false) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function primeSuccessfulLoaders(gapTotal = 340, findingTotal = 620) {
   const topology = buildTopologyEnvelope();
   topology.data.summary = buildNetworkSummary({
@@ -200,9 +208,9 @@ describe("Network page honest totals and server pagination", () => {
         scope: {},
         tab: "flow",
         gapOffset: 0,
-        gapLimit: 100,
+        gapLimit: 20,
         findingOffset: 0,
-        findingLimit: 100,
+        findingLimit: 20,
         topology: expect.objectContaining({ data: expect.any(Object) }),
         gaps: expect.objectContaining({ data: expect.any(Object) }),
         findings: expect.objectContaining({ data: expect.any(Object) }),
@@ -222,14 +230,53 @@ describe("Network page honest totals and server pagination", () => {
       renderPage();
 
       await waitFor(() =>
-        expect(mocks.topology).toHaveBeenCalledWith({}, { detail: "summary" }),
+        expect(mocks.topology).toHaveBeenCalledWith(
+          {},
+          { detail: "summary" },
+          { signal: expect.any(AbortSignal) },
+        ),
       );
       await user.click(screen.getByRole("tab", { name: "Topology" }));
       await user.click(screen.getByRole("button", { name: "Test full detail" }));
 
       await waitFor(() =>
-        expect(mocks.topology).toHaveBeenLastCalledWith({}, { detail: "full" }),
+        expect(mocks.topology).toHaveBeenLastCalledWith(
+          {},
+          { detail: "full" },
+          { signal: expect.any(AbortSignal) },
+        ),
       );
+    });
+
+    it("retains the populated summary canvas and metrics while full detail is in flight", async () => {
+      const user = userEvent.setup();
+      const full = deferred<ReturnType<typeof buildTopologyEnvelope>>();
+      mocks.topology
+        .mockResolvedValueOnce(buildTopologyEnvelope())
+        .mockImplementationOnce(() => full.promise);
+      renderPage();
+
+      await user.click(await screen.findByRole("tab", { name: "Topology" }));
+      expect(screen.getByTestId("topology-workspace")).toHaveTextContent(
+        "Topology canvas",
+      );
+      await user.click(screen.getByRole("button", { name: "Test full detail" }));
+      await waitFor(() => expect(mocks.topology).toHaveBeenCalledTimes(2));
+
+      expect(screen.getByTestId("topology-workspace")).toHaveTextContent(
+        "Topology canvas",
+      );
+      expect(
+        screen.getByTestId("topology-workspace").parentElement,
+      ).toHaveAttribute("aria-busy", "true");
+      expect(
+        screen.getByText("Observed network").closest("article"),
+      ).toHaveTextContent("1 / 1");
+
+      await act(async () => {
+        full.resolve(buildTopologyEnvelope());
+        await full.promise;
+      });
     });
   });
 
@@ -248,7 +295,7 @@ describe("Network page honest totals and server pagination", () => {
     expect(within(incomplete).getByText("Results are incomplete.")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 100 of 340 inspection gaps and 100 of 620 rule findings. Metric totals are complete; the lists below are not.",
+        "Showing 20 of 340 inspection gaps and 20 of 620 rule findings. Metric totals are complete; the lists below are not.",
       ),
     ).toBeInTheDocument();
   });
@@ -297,21 +344,21 @@ describe("Network page honest totals and server pagination", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 100, offset: 0 });
-      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 100, offset: 0 });
+      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 20, offset: 0 });
+      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 20, offset: 0 });
     });
 
     await user.click(screen.getByRole("tab", { name: "Inspection gaps" }));
-    expect(await screen.findByText("Showing 1–100 of 340 inspection gaps")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Rows per page for inspection gaps" })).toHaveValue("100");
+    expect(await screen.findByText("Showing 1–20 of 340 inspection gaps")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Rows per page for inspection gaps" })).toHaveValue("20");
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
 
     await waitFor(() => {
-      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 100, offset: 100 });
+      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 20, offset: 20 });
       expect(mocks.gaps).toHaveBeenCalledTimes(2);
     });
-    expect(await screen.findByText("Showing 101–200 of 340 inspection gaps")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 21–40 of 340 inspection gaps")).toBeInTheDocument();
   });
 
   it("renders the rule-findings server range and advances exactly once", async () => {
@@ -319,16 +366,16 @@ describe("Network page honest totals and server pagination", () => {
     renderPage();
 
     await user.click(await screen.findByRole("tab", { name: "Rule findings" }));
-    expect(await screen.findByText("Showing 1–100 of 620 rule findings")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Rows per page for rule findings" })).toHaveValue("100");
+    expect(await screen.findByText("Showing 1–20 of 620 rule findings")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Rows per page for rule findings" })).toHaveValue("20");
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
 
     await waitFor(() => {
-      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 100, offset: 100 });
+      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 20, offset: 20 });
       expect(mocks.ruleFindings).toHaveBeenCalledTimes(2);
     });
-    expect(await screen.findByText("Showing 101–200 of 620 rule findings")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 21–40 of 620 rule findings")).toBeInTheDocument();
   });
 
   it("resets both server pagers before loading a changed scope", async () => {
@@ -357,18 +404,18 @@ describe("Network page honest totals and server pagination", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
     await user.click(screen.getByRole("button", { name: "Next page" }));
-    await screen.findByText("Showing 101–200 of 340 inspection gaps");
+    await screen.findByText("Showing 21–40 of 340 inspection gaps");
     await user.click(screen.getByRole("button", { name: "Narrow test scope" }));
 
     await waitFor(() =>
       expect(mocks.gaps).toHaveBeenLastCalledWith(
         { subscription: ["sub-narrow"] },
-        { limit: 100, offset: 0 },
+        { limit: 20, offset: 0 },
       ),
     );
     expect(mocks.ruleFindings).toHaveBeenLastCalledWith(
       { subscription: ["sub-narrow"] },
-      { limit: 100, offset: 0 },
+      { limit: 20, offset: 0 },
     );
     expect(
       screen.queryByText("No inspection gaps detected"),
@@ -590,7 +637,7 @@ describe("Network page policy round-trip", () => {
 
       await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
       await user.click(screen.getByRole("button", { name: "Next page" }));
-      await screen.findByText("Showing 101–200 of 340 inspection gaps");
+      await screen.findByText("Showing 21–40 of 340 inspection gaps");
       const gapPager = [
         screen.getByRole("combobox", { name: "Rows per page for inspection gaps" }),
         screen.getByRole("button", { name: "Previous page" }),
@@ -604,7 +651,7 @@ describe("Network page policy round-trip", () => {
 
       await user.click(screen.getByRole("tab", { name: "Rule findings" }));
       await user.click(screen.getByRole("button", { name: "Next page" }));
-      await screen.findByText("Showing 101–200 of 620 rule findings");
+      await screen.findByText("Showing 21–40 of 620 rule findings");
       const findingPager = [
         screen.getByRole("combobox", { name: "Rows per page for rule findings" }),
         screen.getByRole("button", { name: "Previous page" }),

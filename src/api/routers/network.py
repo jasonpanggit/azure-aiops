@@ -97,10 +97,16 @@ def network_topology(
 ) -> dict[str, Any]:
     service = _service(context, scope)
     analysis = service.analyze()
+    topology = analysis.topology.to_dict(detail=detail)
+    summary = analysis.summary()
+    if service.topology_build_duration_ms is not None:
+        summary["topology_build_duration_ms"] = (
+            service.topology_build_duration_ms
+        )
     return envelope(
         {
-            "topology": analysis.topology.to_dict(detail=detail),
-            "summary": analysis.summary(),
+            "topology": topology,
+            "summary": summary,
         },
         # Topology is stitched from observed peering resources, so it is a
         # direct reading of the estate rather than an inference.
@@ -206,22 +212,48 @@ def topology_resource_details(
     )
 
 
-@router.get("/topology/hubs/{vnet_id:path}/dependents", summary="Hub dependents")
-def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    """Answers "what depends on the hub?"."""
+def _hub_dependents(
+    vnet_id: str,
+    context: Context,
+    scope: Scope,
+) -> dict[str, Any]:
+    """Resolve one exact hub identity against the authorized snapshot."""
     service = _service(context, scope)
-    result = service.hub_dependents(vnet_id)
-    if not result.get("hub_name") and not result.get("dependent_count"):
+    canonical_vnet_id = f"/{vnet_id.lstrip('/')}".casefold()
+    if not any(
+        vnet.resource_id == canonical_vnet_id
+        for vnet in service.snapshot.vnets
+    ):
         raise ApiError(
             ErrorCode.NOT_FOUND,
             "Hub VNet not found",
-            details={"vnet_id": vnet_id},
+            details={"vnet_id": canonical_vnet_id},
         )
+    result = service.hub_dependents(canonical_vnet_id)
     return envelope(
         result,
-        evidence=_evidence(service, resource_id=vnet_id),
+        evidence=_evidence(service, resource_id=canonical_vnet_id),
         scope=scope.to_dict(),
     )
+
+
+@router.get("/topology/hubs/dependents", summary="Hub dependents")
+def hub_dependents_query(
+    context: Context,
+    scope: ReadScope,
+    vnet_id: Annotated[str, Query(min_length=1, max_length=2048)],
+) -> dict[str, Any]:
+    """Answers "what depends on the hub?" with a slash-safe query id."""
+    return _hub_dependents(vnet_id, context, scope)
+
+
+@router.get(
+    "/topology/hubs/{vnet_id:path}/dependents",
+    summary="Hub dependents (legacy path)",
+)
+def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Compatibility adapter for clients using the legacy path contract."""
+    return _hub_dependents(vnet_id, context, scope)
 
 
 @router.get("/firewall-bypass", summary="Spokes that bypass the hub firewall")

@@ -572,9 +572,12 @@ _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
 
 # Scoped network requests bypass the persisted snapshot and query ARG live, so
-# without a cache every page load costs a round trip. Keyed by root *and*
-# subscription set, since rows fetched for one scope must never serve another.
-_HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
+# without a cache every page interaction costs a round trip. Keep a completed
+# observation for a five-minute operator workflow: live ARG can take longer
+# than 30 seconds, and expiring it between Summary, Full detail, and drawer
+# interactions recreates that cost on every click. The observed timestamp
+# remains in the response so this bounded staleness is explicit.
+_HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
 _hybrid_network_cache: dict[
     tuple[str, tuple[str, ...]],
     tuple[float, tuple[list[dict], str, int]],
@@ -2939,15 +2942,14 @@ def _build_provider_runtime(
         runtime = fabric()
         if runtime is None:
             return None
-        snapshot = runtime.service.semantic_snapshot()
-        freshness = str(snapshot.get("freshness") or "")
-        if not freshness:
+        ontology_version = runtime.service.semantic_version()
+        if ontology_version == "semantic-unversioned":
             if _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
                 # A newly created validation lakehouse is intentionally empty
                 # until the first activation sync completes.
                 return None
             raise RuntimeError(
-                "Fabric semantic snapshot has no freshness; publish the ontology "
+                "Fabric semantic snapshot has no version; publish the ontology "
                 "and ingestion state before activating providers"
             )
         try:
@@ -2957,9 +2959,24 @@ def _build_provider_runtime(
             raise
         return ProviderValue(
             instance,
-            freshness=freshness,
-            ontology_version=str(snapshot.get("knowledge_version") or ""),
+            ontology_version=ontology_version,
         )
+
+    def fabric_provider_cache_key(name: str) -> tuple[object, ...]:
+        runtime = fabric()
+        if runtime is None:
+            raise RuntimeError("Fabric runtime is unavailable")
+        generation_key: tuple[object, ...] = (
+            "fabric-generation",
+            runtime.service.semantic_version(),
+        )
+        if name == "network":
+            return (
+                *generation_key,
+                "network-policy",
+                _network_policy_store().revision_or_raise(),
+            )
+        return generation_key
 
     if use_fabric:
         loaders: dict[str, Callable[[], Any]] = {
@@ -3011,13 +3028,8 @@ def _build_provider_runtime(
             configured=True,
             required=(name in core_readiness_providers and not bootstrap),
             cache_key=(
-                (
-                    lambda: (
-                        "network-policy",
-                        _network_policy_store().revision_or_raise(),
-                    )
-                )
-                if name == "network"
+                (lambda provider_name=name: fabric_provider_cache_key(provider_name))
+                if use_fabric
                 else None
             ),
         )

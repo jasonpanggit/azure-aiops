@@ -32,7 +32,7 @@ from network.design import (
     NetworkDesignPolicyStore,
     NetworkDesignPolicyValidationError,
 )
-from network.models import NetworkSnapshot
+from network.models import NetworkSnapshot, VNet
 from network.rule_engine import SUPPORTED_OPERATORS, SUPPORTED_TARGET_NAMES
 from network.service import NetworkIntelligenceService, build_service
 from onboarding.service import SubscriptionOnboardingService
@@ -176,6 +176,24 @@ class TestTopology:
         assert topology["spokes"] or topology["hubs"]
         assert body["data"]["summary"]
 
+    def test_reports_server_topology_build_duration(self, tmp_path):
+        service = NetworkIntelligenceService.from_rows(
+            network_rows(),
+            topology_build_duration_ms=3_500,
+        )
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "summary"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["summary"][
+            "topology_build_duration_ms"
+        ] == 3_500
+
     def test_carries_evidence_naming_the_engine(self, client):
         body = client.get("/api/v1/network/topology", headers=_auth()).json()
         evidence = body["evidence"][0]
@@ -266,6 +284,16 @@ class TestTopology:
 
 
 class TestHubDependents:
+    def test_query_route_preserves_the_exact_slash_prefixed_arm_id(self, client):
+        response = client.get(
+            "/api/v1/network/topology/hubs/dependents",
+            params={"vnet_id": HUB_VNET},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["hub_vnet_id"] == HUB_VNET
+
     def test_answers_what_depends_on_the_hub(self, client):
         response = client.get(
             f"/api/v1/network/topology/hubs/{HUB_VNET}/dependents", headers=_auth()
@@ -278,6 +306,43 @@ class TestHubDependents:
             "/api/v1/network/topology/hubs/no-such-vnet/dependents", headers=_auth()
         )
         assert response.status_code == 404
+
+    def test_path_safe_arm_id_without_a_leading_slash_resolves(self, client):
+        routable_id = quote(HUB_VNET.lstrip("/"), safe="")
+
+        response = client.get(
+            f"/api/v1/network/topology/hubs/{routable_id}/dependents",
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["hub_vnet_id"] == HUB_VNET
+
+    def test_existing_isolated_hub_returns_an_honest_empty_envelope(self, tmp_path):
+        isolated_id = (
+            "/subscriptions/sub-isolated/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/isolated"
+        )
+        service = NetworkIntelligenceService(
+            NetworkSnapshot(
+                vnets=(
+                    VNet(
+                        resource_id=isolated_id,
+                        name="",
+                    ),
+                ),
+            ),
+        )
+        client = _client(tmp_path, network_service=service)
+
+        response = client.get(
+            f"/api/v1/network/topology/hubs/{quote(isolated_id.lstrip('/'), safe='')}/dependents",
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["dependent_count"] == 0
+        assert response.json()["data"]["dependent_vnets"] == []
 
 
 class TestTrafficFlow:
@@ -890,6 +955,9 @@ class TestPolicy:
             headers=_auth(),
             json={"require_private_dns_zone_link": False},
         )
+        # Provider cache keys and loaders are evaluated only by startup/
+        # background refresh, never by the following request thread.
+        runtime.refresh(force=True)
         after = client.get("/api/v1/network/gaps", headers=_auth())
 
         assert patched.status_code == 200
