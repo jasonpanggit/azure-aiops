@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
-stopped_at: 13-20 local evidence deviation complete; cloud gate frozen for Exposure 03.1-19
-last_updated: "2026-09-07T16:59:34.500Z"
+stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
+last_updated: "2026-09-08T08:55:42.702Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -189,6 +189,7 @@ current_phase_name: Exposure Reliability and Scale
 | Phase 13 P16 | 15min | 3 tasks | 9 files |
 | Phase 13 P17 | 16min | 3 tasks | 9 files |
 | Phase 13 P18 | 12min | 3 tasks | 12 files |
+| Phase 13 P19 | 2h10m | 3 tasks | 14 files |
 
 ## Decisions
 
@@ -314,15 +315,13 @@ current_phase_name: Exposure Reliability and Scale
 - [Phase 13]: Plan 13-17: publisher Fabric auth always replaces shared YAML identity with AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID.
 - [Phase 13]: API ontology authority is limited to four explicit roots: connection read, state read, publication read, and command create/read/status; dispatch and publisher capabilities remain absent.
 - [Phase 13]: Ontology maintenance is a non-inherited grant; only the coordinator may reauthorize the command and CAS the reconciliation cadence.
-- [Phase 13]: Plan 13-19 validation changes only the coordinator environment and ConnectionRegistry root; production registry construction, eligibility, reauthorization, retry, and restart logic remain identical.
-- [Phase 13]: Plan 13-19 fixture preparation and cleanup use fixed templates under the existing coordinator UAI; no fixture identity or runtime Job-start grant exists.
-- [Phase 13]: Plan 13-19 deployment evidence is hash-only and fails closed when superseded; completion requires a fresh applied snapshot bound to exact immutable image and template digests.
+- [Phase 13]: Validation changes only the coordinator environment and ConnectionRegistry root; fixed fixture Jobs reuse the coordinator UAI without runtime Job-start grants.
 
 ## Session
 
-**Last session:** 2026-09-07T16:59:34.481Z
-**Stopped at:** 13-20 local evidence deviation complete; cloud gate frozen for Exposure 03.1-19
-**Resume file:** .planning/eval/ontology-deployed-lifecycle.checkpoint.json
+**Last session:** 2026-09-07T09:26:12.397Z
+**Stopped at:** Blocked at 03.1-19 exact live source evidence after successful Fabric publication
+**Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-19-LIVE-EVIDENCE.json
 
 ## Accumulated Context
 
@@ -341,5 +340,3 @@ current_phase_name: Exposure Reliability and Scale
 ### Blockers
 
 - Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
-- Phase 13 Plan 20 blocked: Fabric provider 1.13.0 cannot round-trip OneLake Data Access Security Microsoft Entra ManagedIdentity members (object_type omitted; null fabric_item_members normalized to empty set). Evidence Job was not created; do not broaden to Contributor or continue Plan 21.
-- Cloud operations frozen for Phase 13 Plan 20 while Exposure Plan 03.1-19 owns the shared deployment/job lane; no build, push, Terraform plan/apply, or ACA Job start/stop until explicit release.

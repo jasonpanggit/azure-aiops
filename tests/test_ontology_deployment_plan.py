@@ -406,17 +406,3 @@ def test_sanitized_applied_evidence_is_closed_and_hash_only() -> None:
         "marker=ontology",
     ):
         assert forbidden not in serialized
-
-    superseded = copy.deepcopy(evidence)
-    superseded["status"] = "superseded"
-    superseded["superseded_at"] = "2026-09-07T15:02:00+00:00"
-    superseded["superseded_reason_code"] = "concurrent_shared_deployment"
-    superseded["live"]["applied"] = False
-    assert (
-        validate_deployment_evidence(
-            superseded, require_applied=False
-        )["status"]
-        == "superseded"
-    )
-    with pytest.raises(PlanValidationError, match="not applied"):
-        validate_deployment_evidence(superseded, require_applied=True)

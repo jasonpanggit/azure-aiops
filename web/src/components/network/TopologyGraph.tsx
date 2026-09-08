@@ -251,9 +251,13 @@ export function clearHoverFocus(cy: cytoscape.Core): void {
  * disorienting precisely when there is most to keep track of.
  */
 const LAYOUT_NODE_BUDGET = 100;
+const RESIZE_REFIT_DEBOUNCE_MS = 150;
 
-export function layoutFor(nodeCount: number): cytoscape.LayoutOptions {
-  const large = nodeCount > LAYOUT_NODE_BUDGET;
+export function layoutFor(
+  nodeCount: number,
+  connectedNodeCount = nodeCount,
+): cytoscape.LayoutOptions {
+  const large = connectedNodeCount > LAYOUT_NODE_BUDGET;
   return {
     name: "fcose",
     quality: large ? "default" : "proof",
@@ -274,8 +278,9 @@ export function layoutFor(nodeCount: number): cytoscape.LayoutOptions {
 export function layoutForTransition(
   nodeCount: number,
   hasPreviousPositions: boolean,
+  connectedNodeCount = nodeCount,
 ): cytoscape.LayoutOptions {
-  const options = layoutFor(nodeCount);
+  const options = layoutFor(nodeCount, connectedNodeCount);
   return hasPreviousPositions
     ? ({ ...options, randomize: false } as cytoscape.LayoutOptions)
     : options;
@@ -444,6 +449,7 @@ interface TopologyGraphProps {
     string,
     { severity: string; count: number; title?: string }
   >;
+  showUnattachedPrivateLinkCandidates?: boolean;
 }
 
 /**
@@ -462,6 +468,7 @@ export default function TopologyGraph({
   onReady,
   exportContext,
   findingSeverityByResource,
+  showUnattachedPrivateLinkCandidates = false,
 }: TopologyGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
@@ -471,7 +478,17 @@ export default function TopologyGraph({
   const exportContextRef = useRef(exportContext);
   exportContextRef.current = exportContext;
 
-  const graph = useMemo(() => buildTopologyGraph(topology), [topology]);
+  const graph = useMemo(
+    () =>
+      buildTopologyGraph(topology, { showUnattachedPrivateLinkCandidates }),
+    [showUnattachedPrivateLinkCandidates, topology],
+  );
+  const connectedNodeCount = useMemo(() => {
+    const connected = new Set(
+      graph.edges.flatMap((edge) => [edge.source, edge.target]),
+    );
+    return connected.size || graph.nodes.length;
+  }, [graph]);
 
   const elements = useMemo<ElementDefinition[]>(() => {
     const groups: ElementDefinition[] = graph.groups.map((group) => ({
@@ -501,7 +518,6 @@ export default function TopologyGraph({
       style: STYLESHEET,
       minZoom: 0.15,
       maxZoom: 3,
-      wheelSensitivity: 0.2,
       boxSelectionEnabled: false,
     });
     cyRef.current = cy;
@@ -510,7 +526,13 @@ export default function TopologyGraph({
       .nodes()
       .toArray()
       .some((node) => previousPositions.has(node.id()));
-    cy.layout(layoutForTransition(cy.nodes().length, hasPreviousPositions)).run();
+    cy.layout(
+      layoutForTransition(
+        graph.nodes.length,
+        hasPreviousPositions,
+        connectedNodeCount,
+      ),
+    ).run();
     cy.fit(undefined, 40);
 
     cy.on("tap", "node", (event) => {
@@ -544,8 +566,36 @@ export default function TopologyGraph({
     });
 
     // Keep the viewport correct when the canvas is expanded to full screen.
-    const observer = new ResizeObserver(() => {
-      cy.resize();
+    let previousSize = {
+      width: container.clientWidth,
+      height: container.clientHeight,
+    };
+    let resizeNeedsFit = false;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      const nextSize = {
+        width: rect?.width ?? container.clientWidth,
+        height: rect?.height ?? container.clientHeight,
+      };
+      const widthDelta = Math.abs(nextSize.width - previousSize.width);
+      const heightDelta = Math.abs(nextSize.height - previousSize.height);
+      resizeNeedsFit =
+        resizeNeedsFit ||
+        widthDelta >= 48 ||
+        heightDelta >= 48 ||
+        previousSize.width === 0 ||
+        previousSize.height === 0;
+      previousSize = nextSize;
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        cy.resize();
+        if (resizeNeedsFit) {
+          resizeNeedsFit = false;
+          fitTopology(cy);
+        }
+      }, RESIZE_REFIT_DEBOUNCE_MS);
     });
     observer.observe(container);
 
@@ -579,11 +629,12 @@ export default function TopologyGraph({
       });
       positionsRef.current = positions;
       observer.disconnect();
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
       onReady?.(null);
       cy.destroy();
       cyRef.current = null;
     };
-  }, [elements, onReady, topology]);
+  }, [connectedNodeCount, elements, graph.nodes.length, onReady, topology]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -647,9 +698,12 @@ export default function TopologyGraph({
     if (!cy) return;
     // An explicit re-layout is the one case where discarding positions is what
     // the user asked for, so force the randomized pass regardless of size.
-    cy.layout({ ...layoutFor(cy.nodes().length), randomize: true } as cytoscape.LayoutOptions).run();
+    cy.layout({
+      ...layoutFor(graph.nodes.length, connectedNodeCount),
+      randomize: true,
+    } as cytoscape.LayoutOptions).run();
     cy.fit(undefined, 40);
-  }, []);
+  }, [connectedNodeCount, graph.nodes.length]);
 
   return (
     <div className="topology-canvas-wrap">

@@ -114,6 +114,10 @@ def production_consumers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         ),
     )
     context = build_context()
+    assert context.provider_runtime is not None
+    # This fixture bypasses create_app(), so explicitly perform the startup
+    # refresh that the API's provider-refresh thread normally owns.
+    context.provider_runtime.refresh(force=True)
     scope = Scope.from_mapping(
         {"subscription": scenario["scope"]["authorized_subscriptions"]}
     )

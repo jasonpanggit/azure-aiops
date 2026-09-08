@@ -33,3 +33,33 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** Existing stability tests reused one unchanged in-memory planner and did not vary derived enrichment identities, source-id casing, or evidence ordering across the 10-citation boundary.
 - **Recurrence guard:** `tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_derived_cve_enrichment`, `::test_live_patch_action_version_canonicalizes_citations_before_limiting`, and `tests/test_api_remediation_approvals.py::test_patch_approval_survives_request_to_request_cve_enrichment_drift`.
 ---
+
+## network-topology-live-ui — Warm topology requests blocked on provider refresh and hub ARM IDs failed routing
+- **Date:** 2026-09-08
+- **Error patterns:** full-detail p95 14397 ms, repeated 9–22 second network requests, Hub VNet not found, 404, leading slash missing, slash-prefixed ARM id
+- **Root cause(s):** `ProviderRuntime.get()` synchronously resolved cache keys and could execute loaders on request threads, so slow Fabric semantic-version I/O delayed every managed-network endpoint; slash-prefixed hub ARM IDs were also transported through a lossy wildcard path and no longer matched the authorized snapshot after route normalization.
+- **Fix:** Made `ProviderRuntime.get()` a state-lock-only last-known-good read owned by startup/background refresh, and added an exact query-parameter hub-dependents route used by the web client while retaining the legacy path adapter.
+- **Files changed:** src/api/app.py, src/api/providers.py, src/api/routers/network.py, tests/test_api_network.py, tests/test_api_providers.py, tests/test_api_runtime.py, tests/test_exposure_consumer_parity.py, web/src/lib/network-services.test.ts, web/src/lib/services.ts, web/e2e/network-topology-deployed.spec.ts
+- **Why not caught:** Provider tests pinned request-owned refresh behavior, and the earlier route regression checked encoded URL text rather than passing a slash-prefixed ARM ID through the actual FastAPI route stack; authenticated post-deploy timing was the first gate to expose the combined environment amplification.
+- **Recurrence guard:** `tests/test_api_providers.py::{test_get_is_a_strict_last_known_good_read_without_refresh_io,test_concurrent_gets_do_no_io_during_background_refresh,test_initial_get_during_background_startup_does_not_duplicate_io}`, `tests/test_api_network.py::TestHubDependents::test_query_route_preserves_the_exact_slash_prefixed_arm_id`, the web query-contract test, and the unchanged authenticated five-sample p95/hub-200 checks in `web/e2e/network-topology-deployed.spec.ts`. The authenticated p95 <1,000 ms and hub-route run remains pending until a later authorized redeploy.
+---
+
+## network-topology-live-ui-final-timing — Server topology budget was applied to full Azure round-trip latency
+- **Date:** 2026-09-08
+- **Error patterns:** 9/10 live checks, HTTP p95 1646-1794 ms, server p95 unobservable, topology latency gate
+- **Root cause(s):** The topology route exposed no post-serialization handler duration, so deployed Playwright compared full client-to-Azure round-trip p95 with the server-only <1,000 ms topology-build requirement.
+- **Fix:** Added `X-AIOPS-Handler-Ms` around topology analysis plus FastAPI response serialization, then split the same five samples into strict server-handler p95 <1,000 ms and end-to-end HTTP p95 <3,000 ms gates with diagnostic distributions.
+- **Files changed:** src/api/routers/network.py, tests/test_api_network.py, web/src/lib/network-topology-latency.ts, web/src/lib/network-topology-latency.test.ts, web/e2e/network-topology-deployed.spec.ts, .planning/phases/12-network-topology-integrity-and-scale/12-UI-REVIEW.md, .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
+- **Why not caught:** The acceptance harness had one elapsed timer and no response-level server metric, so it could not distinguish server work from Azure ingress, TLS, network, and client overhead.
+- **Recurrence guard:** `tests/test_api_network.py::TestTopology::{test_reports_handler_time_for_analysis_and_response_serialization,test_handler_time_header_is_additive_and_numeric,test_handler_timing_does_not_change_auth_or_error_responses}`, `web/src/lib/network-topology-latency.test.ts`, and the two explicit soft assertions in `web/e2e/network-topology-deployed.spec.ts`.
+---
+
+## network-summary-messages-links — RouteTable-to-firewall semantics depended on omitted Route IDs
+- **Date:** 2026-09-08
+- **Error patterns:** summary zero next_hop edges, full Route next_hop resolves AzureFirewall, RouteTable firewall edge missing, intentionally_omitted_ids, routes_via
+- **Root cause(s):** The prior corrective implementation encoded RouteTable→AzureFirewall only as a summary-time source rewrite of each Route→AzureFirewall `next_hop` when the Route appeared in `intentionally_omitted_ids`; it emitted no first-class direct relationship and coupled summary semantics to omission bookkeeping.
+- **Fix:** Preserve detailed Route→AzureFirewall `next_hop` edges and independently emit one sorted, deduplicated, provider-backed RouteTable→AzureFirewall `routes_via` relationship in Summary and Full detail for every uniquely resolved in-scope firewall target.
+- **Files changed:** src/network/topology.py, tests/test_network_topology.py, web/src/lib/network-graph.test.ts, .planning/phases/12-network-topology-integrity-and-scale/12-UI-REVIEW.md, .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
+- **Why not caught:** The existing topology gate asserted the projection workaround itself—summary `next_hop` with a substituted source—rather than requiring a distinct direct semantic in both detail levels, omission independence, deterministic multi-route deduplication, and unresolved/scope negatives.
+- **Recurrence guard:** `tests/test_network_topology.py::{test_virtual_appliance_route_links_to_the_firewall_it_targets,test_route_table_firewall_relationship_is_deduplicated,test_unresolved_route_next_hop_does_not_infer_a_firewall_relationship,test_route_does_not_resolve_to_a_firewall_outside_authorized_scope}` and `web/src/lib/network-graph.test.ts` test `accepts provider-backed route-table to firewall relationships`.
+---

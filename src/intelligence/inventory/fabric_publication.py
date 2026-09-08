@@ -30,7 +30,9 @@ class InventoryFabricPublisher:
         *,
         query_results: Mapping[str, list[dict[str, Any]]] | None = None,
         run_metadata: Mapping[str, Any] | None = None,
+        persist_compatibility: bool = True,
     ) -> dict[str, Any]:
+        """Publish validated inventory tables and optionally update the store."""
         logical_datasets = {name: list(rows) for name, rows in datasets.items()}
         published_datasets: dict[str, list[dict[str, Any]]] = {}
         for logical_name, rows in logical_datasets.items():
@@ -68,6 +70,14 @@ class InventoryFabricPublisher:
             },
             "fabricTableWrites": dict(self.table_writes),
         }
+        if not persist_compatibility:
+            return {
+                **metadata,
+                "datasets": {
+                    name: {"rowCount": len(rows)}
+                    for name, rows in sorted(published_datasets.items())
+                },
+            }
         return self.store.publish(
             published_datasets,
             dict(query_results or {}),

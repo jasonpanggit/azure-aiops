@@ -53,6 +53,18 @@ resource "fabric_workspace_role_assignment" "ontology_coordinator_state" {
   }
 }
 
+resource "fabric_workspace_role_assignment" "ontology_state_api" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ontology_discovery_state[0].id
+  role         = "Viewer"
+
+  principal = {
+    id   = azurerm_user_assigned_identity.apps.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
 # Authorization canaries run in a second disposable non-production boundary.
 resource "fabric_workspace" "ontology_rbac_validation" {
   count = var.enable_fabric ? 1 : 0
@@ -265,137 +277,17 @@ resource "fabric_workspace_role_assignment" "ontology_evidence_ontology_rbac_val
   }
 }
 
-resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_discovery_state" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_discovery_state[0].id
-  item_id      = fabric_lakehouse.ontology_discovery_state[0].id
-  role_name    = "Phase13EvidenceRead"
-  decision_rules = [{
-    effect = "Permit"
-    permission = [
-      {
-        attribute_name              = "Path"
-        attribute_value_included_in = ["*"]
-      },
-      {
-        attribute_name              = "Action"
-        attribute_value_included_in = ["Read"]
-      },
-    ]
-  }]
-  members = {
-    microsoft_entra_members = [{
-      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-      object_type = "ManagedIdentity"
-      tenant_id   = var.tenant_id
-    }]
-  }
-}
-
-resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_command" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_command[0].id
-  item_id      = fabric_lakehouse.ontology_command[0].id
-  role_name    = "Phase13EvidenceRead"
-  decision_rules = [{
-    effect = "Permit"
-    permission = [
-      {
-        attribute_name              = "Path"
-        attribute_value_included_in = ["*"]
-      },
-      {
-        attribute_name              = "Action"
-        attribute_value_included_in = ["Read"]
-      },
-    ]
-  }]
-  members = {
-    microsoft_entra_members = [{
-      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-      object_type = "ManagedIdentity"
-      tenant_id   = var.tenant_id
-    }]
-  }
-}
-
-resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_dispatch" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_dispatch[0].id
-  item_id      = fabric_lakehouse.ontology_dispatch[0].id
-  role_name    = "Phase13EvidenceRead"
-  decision_rules = [{
-    effect = "Permit"
-    permission = [
-      {
-        attribute_name              = "Path"
-        attribute_value_included_in = ["*"]
-      },
-      {
-        attribute_name              = "Action"
-        attribute_value_included_in = ["Read"]
-      },
-    ]
-  }]
-  members = {
-    microsoft_entra_members = [{
-      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-      object_type = "ManagedIdentity"
-      tenant_id   = var.tenant_id
-    }]
-  }
-}
-
-resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_publication" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_publication[0].id
-  item_id      = fabric_lakehouse.ontology_publication[0].id
-  role_name    = "Phase13EvidenceRead"
-  decision_rules = [{
-    effect = "Permit"
-    permission = [
-      {
-        attribute_name              = "Path"
-        attribute_value_included_in = ["*"]
-      },
-      {
-        attribute_name              = "Action"
-        attribute_value_included_in = ["Read"]
-      },
-    ]
-  }]
-  members = {
-    microsoft_entra_members = [{
-      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-      object_type = "ManagedIdentity"
-      tenant_id   = var.tenant_id
-    }]
-  }
-}
-
-resource "fabric_onelake_data_access_security" "ontology_evidence_ontology_rbac_validation" {
-  count        = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
-  workspace_id = fabric_workspace.ontology_rbac_validation[0].id
-  item_id      = fabric_lakehouse.ontology_rbac_validation[0].id
-  role_name    = "Phase13EvidenceRead"
-  decision_rules = [{
-    effect = "Permit"
-    permission = [
-      {
-        attribute_name              = "Path"
-        attribute_value_included_in = ["*"]
-      },
-      {
-        attribute_name              = "Action"
-        attribute_value_included_in = ["Read"]
-      },
-    ]
-  }]
-  members = {
-    microsoft_entra_members = [{
-      object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
-      object_type = "ManagedIdentity"
-      tenant_id   = var.tenant_id
-    }]
-  }
-}
+# ---------------------------------------------------------------------------
+# OneLake data-access roles (Phase13EvidenceRead)
+#
+# These five roles were previously declared as fabric_onelake_data_access_security
+# resources, but the Fabric provider 1.13 ManagedIdentity round-tripping bug
+# prevents Terraform from managing them reliably.
+#
+# They are now managed by scripts/reconcile_onelake_data_access_roles.py via
+# the official Fabric REST API (PUT /v1/workspaces/{wid}/items/{iid}/dataAccessRoles).
+#
+# If these resources already exist in Terraform state from a prior apply, they
+# must be removed with `terraform state rm` AFTER live REST verification
+# confirms the roles are correct. See docs/onelake-data-access-role-migration.md.
+# ---------------------------------------------------------------------------

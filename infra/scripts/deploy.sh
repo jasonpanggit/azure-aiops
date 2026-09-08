@@ -233,6 +233,31 @@ report_running_images() {
   echo "deploy: all apps serving ${expected}."
 }
 
+publish_governed_remediation_catalog() {
+  local python="${AIOPS_PYTHON:-${repo_root}/.venv/bin/python}"
+  local fabric_config="${AIOPS_FABRIC_CONFIG:-${repo_root}/fabric.config.yaml}"
+
+  if [[ ! -x "${python}" ]]; then
+    echo "deploy: Python runtime not found at ${python}; cannot publish governed remediation catalog" >&2
+    exit 1
+  fi
+  if [[ ! -f "${fabric_config}" ]]; then
+    echo "deploy: Fabric config not found at ${fabric_config}" >&2
+    exit 1
+  fi
+
+  # fabric.config.yaml names AZURE_CLIENT_SECRET as its credential source.
+  # Keep the value process-local; neither the CLI nor deployment artifacts
+  # serialize it.
+  export AZURE_CLIENT_SECRET="${ARM_CLIENT_SECRET}"
+  echo
+  echo "deploy: publishing governed remediation catalog..."
+  PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${python}" -m onboarding.cli fabric \
+      "Publish governed remediation catalog" \
+      --config "${fabric_config}"
+}
+
 if [[ ! -d .terraform ]]; then
   terraform init -input=false
 fi
@@ -245,6 +270,7 @@ case "${command}" in
     verify_images_exist "$@"
     capture_apim_snapshot
     terraform apply -input=false "$@"
+    publish_governed_remediation_catalog
     report_running_images
     ;;
   destroy)

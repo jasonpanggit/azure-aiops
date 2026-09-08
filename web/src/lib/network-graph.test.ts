@@ -424,6 +424,41 @@ describe("buildTopologyGraph", () => {
     ]);
   });
 
+  it("accepts provider-backed route-table to firewall relationships", () => {
+    const routeTableId =
+      "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt";
+    const firewallId =
+      "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/azureFirewalls/fw";
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: routeTableId, entity_type: "RouteTable" }),
+          resource({ id: firewallId, entity_type: "AzureFirewall" }),
+        ],
+        relationships: [
+          {
+            id: `routes_via:${routeTableId.toLowerCase()}::${firewallId.toLowerCase()}`,
+            source: routeTableId.toLowerCase(),
+            target: firewallId.toLowerCase(),
+            relationship_type: "routes_via",
+            label: "routes via Azure Firewall",
+            details: { resolution: "observed_firewall_private_ip" },
+          },
+        ],
+      }),
+    );
+
+    expect(graph.edges).toEqual([
+      expect.objectContaining({
+        source: routeTableId,
+        target: firewallId,
+        kind: "relationship",
+        relationshipType: "routes_via",
+        label: "routes via Azure Firewall",
+      }),
+    ]);
+  });
+
   it("preserves Fabric and AI Foundry entity types as exactly two graph nodes", () => {
     const graph = buildTopologyGraph(
       topologyOf({
@@ -484,6 +519,61 @@ describe("buildTopologyGraph", () => {
       icon: "",
       entityType: "PrivateLinkResource",
     });
+  });
+
+  it("hides only unattached private-link candidates when the canvas requests the focused projection", () => {
+    const attachedCandidate = `${AI_SERVICES}-attached`;
+    const unattachedCandidate = `${AI_SERVICES}-unattached`;
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: HUB, entity_type: "VNet", role: "hub" }),
+          resource({
+            id: attachedCandidate,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+          resource({
+            id: unattachedCandidate,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+        ],
+        relationships: [
+          {
+            id: `private:${HUB}::${attachedCandidate}`,
+            source: HUB,
+            target: attachedCandidate,
+            relationship_type: "private_endpoint_targets",
+            label: "targets",
+            details: {},
+          },
+        ],
+      }),
+      { showUnattachedPrivateLinkCandidates: false },
+    );
+
+    expect(graph.nodes.map((node) => node.id)).toContain(attachedCandidate);
+    expect(graph.nodes.map((node) => node.id)).not.toContain(unattachedCandidate);
+    expect(graph.hiddenUnattachedPrivateLinkCount).toBe(1);
+  });
+
+  it("keeps a private-link-only estate visible instead of filtering every node", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({
+            id: AI_SERVICES,
+            entity_type: "AIFoundryAccount",
+            details: { private_link_candidate: true },
+          }),
+        ],
+      }),
+      { showUnattachedPrivateLinkCandidates: false },
+    );
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.hiddenUnattachedPrivateLinkCount).toBe(0);
   });
 
   it("keeps an icon-less Fabric node addressable for finding badges", () => {

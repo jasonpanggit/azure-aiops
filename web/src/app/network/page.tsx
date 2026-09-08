@@ -22,7 +22,18 @@ import { ApiError } from "@/lib/types";
 import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
-const NETWORK_PAGE_SIZE = 100;
+const NETWORK_PAGE_SIZE = 20;
+const GENERIC_TRUNCATION_WARNING =
+  "Results are truncated; narrow the scope or use pagination for a complete view.";
+
+function isCollectionPaginationWarning(warning: string): boolean {
+  return (
+    warning === GENERIC_TRUNCATION_WARNING ||
+    /^Showing \d+ of \d+ (inspection gaps|rule findings); use pagination for the complete result$/.test(
+      warning,
+    )
+  );
+}
 
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
@@ -58,9 +69,17 @@ export default function NetworkPage() {
     saved: boolean;
   } | null>(null);
   const topology = useApi(
-    () => networkApi.topology(scope, { detail: topologyDetail }),
-    [scope, topologyDetail],
+    (signal) =>
+      networkApi.topology(scope, { detail: topologyDetail }, { signal }),
+    [scopeKey, topologyDetail],
+    {
+      retainDataOnDependencyChange: (previous, next) =>
+        previous[0] === next[0],
+    },
   );
+  const renderedTopologyDetail =
+    (topology.dataDependencies?.[1] as TopologyDetailLevel | undefined) ??
+    "summary";
   const gaps = useApi(
     () => networkApi.gaps(scope, {
       limit: activeGapPageSize,
@@ -80,8 +99,6 @@ export default function NetworkPage() {
   const summary = topology.data?.data.summary;
   const gapTotal = gaps.data?.data.summary.gap_count;
   const findingTotal = findings.data?.data.summary.rule_finding_count;
-  const gapCoverage = gaps.data?.data.coverage;
-  const findingCoverage = findings.data?.data.coverage;
   const flowLogProvenance = topology.data?.data.topology.flow_log_provenance;
   const loadBadgeGapsPage = useCallback(
     (offset: number, limit: number) => networkApi.gaps(scope, { offset, limit }),
@@ -92,6 +109,11 @@ export default function NetworkPage() {
       networkApi.ruleFindings(scope, { offset, limit }),
     [scope],
   );
+
+  const cancelTopologyDetailLoad = useCallback(() => {
+    topology.cancel();
+    setTopologyDetail(renderedTopologyDetail);
+  }, [renderedTopologyDetail, topology]);
 
   useEffect(() => {
     if (paginationScopeKey === scopeKey) return;
@@ -183,10 +205,13 @@ export default function NetworkPage() {
     ...(topology.data?.warnings ?? []),
     ...(topology.data?.data.topology.warnings ?? []),
   ]));
-  const warnings = Array.from(new Set([
-    ...topologyWarnings,
+  const collectionWarnings = [
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
+  ].filter((warning) => !isCollectionPaginationWarning(warning));
+  const warnings = Array.from(new Set([
+    ...topologyWarnings,
+    ...collectionWarnings,
     ...(bypass.data?.warnings ?? []),
   ]));
   const networkCopilot = buildNetworkCopilotContext({
@@ -223,6 +248,8 @@ export default function NetworkPage() {
         knowledgeVersion={topology.data?.knowledge_version}
         graphFreshness={topology.data?.graph_freshness}
         warnings={warnings}
+        confidenceSubject="Topology evidence"
+        graphTimestampLabel="Topology graph observed"
       />
 
       <div className="metric-grid network-metrics">
@@ -232,9 +259,9 @@ export default function NetworkPage() {
           detail="Hub / spoke VNets across the current scope"
         />
         <MetricCard
-          label="Inspection bypass"
+          label="Inspection bypass findings"
           value={bypass.data?.data.count ?? "—"}
-          detail="Spokes with a path that may avoid firewall inspection"
+          detail="Subnet route and public-IP findings that may avoid firewall inspection"
           tone={bypass.data ? (bypass.data.data.count > 0 ? "critical" : "success") : "default"}
         />
         <MetricCard
@@ -257,23 +284,6 @@ export default function NetworkPage() {
           <span>
             The workbench can prove observed structure and rule decisions, but cannot label deviations from an approved
             hub-spoke policy until that intent is mapped.
-          </span>
-        </div>
-      )}
-
-      {gaps.data && findings.data && (gapCoverage?.truncated || findingCoverage?.truncated) && (
-        <div
-          className="callout callout-warning topology-coverage"
-          role="status"
-          aria-live="polite"
-          aria-label="Incomplete network analysis results"
-        >
-          <strong>Results are incomplete.</strong>
-          <span>
-            Showing {gapCoverage?.returned ?? gaps.data?.data.gaps.length ?? 0} of{" "}
-            {gapCoverage?.total ?? gapTotal ?? 0} inspection gaps and{" "}
-            {findingCoverage?.returned ?? findings.data?.data.findings.length ?? 0} of{" "}
-            {findingCoverage?.total ?? findingTotal ?? 0} rule findings. Metric totals are complete; the lists below are not.
           </span>
         </div>
       )}
@@ -316,7 +326,9 @@ export default function NetworkPage() {
               topology={topology.data?.data.topology ?? null}
               summary={topology.data?.data.summary ?? null}
               detailLevel={topologyDetail}
+              renderedDetailLevel={renderedTopologyDetail}
               onDetailLevelChange={setTopologyDetail}
+              onCancelDetailLoad={cancelTopologyDetailLoad}
               loading={topology.loading}
               error={topology.error}
               gaps={gaps.data?.data.gaps ?? []}
@@ -325,10 +337,6 @@ export default function NetworkPage() {
               loadRuleFindingsPage={loadBadgeRuleFindingsPage}
               findingsLoading={gaps.loading || findings.loading}
               findingsError={gaps.error ?? findings.error}
-              findingsTruncated={Boolean(
-                gaps.data?.data.coverage?.truncated ||
-                  findings.data?.data.coverage?.truncated,
-              )}
               onRetryFindings={
                 gaps.error ? gaps.refetch : findings.error ? findings.refetch : gaps.refetch
               }

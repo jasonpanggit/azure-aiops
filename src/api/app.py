@@ -162,9 +162,9 @@ def _start_background_refresh(app: FastAPI, context: ApiContext) -> None:
     or otherwise) to drive refreshes means a slow loader blocks whatever
     request happened to trigger it -- including liveness/readiness probes,
     which Container Apps kills on timeout. This timer thread is the only
-    thing that performs *blocking* refreshes; request threads only ever call
-    `refresh(blocking=False)`, which is a no-op if this thread is already
-    working.
+    owner of provider cache-key, freshness, metadata, and loader I/O;
+    request-time `ProviderRuntime.get()` calls only read the last completed
+    in-memory publication.
     """
     provider_runtime = context.provider_runtime
     if provider_runtime is None:

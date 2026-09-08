@@ -1,10 +1,23 @@
 {
-  "completed_step_count": 0,
-  "completed_step_keys": [],
+  "completed_step_count": 7,
+  "completed_step_keys": [
+    "sha256:804156227ca195172fc17df1c433e726cd770dfacab96dbb8dee4553f51c96bf",
+    "sha256:44b36e76baab106028770b0f046cdc507472551a35202b8a30c4ad6c2f6e61bc",
+    "sha256:04210c7f63c65c0fe4d281b52ce6159855241b0c87b93bdd3ec51c31eeab8365",
+    "sha256:f7a6bdc2e304c7bd2630e1b5eb804c0877d9986470d82c35959cdf891b7d8576",
+    "sha256:17ec929f45f8e26f49c501797a076dad6bc07036e541a4dddaaaed81c0974837",
+    "sha256:396fba7bd2b7ca09ba895566832ccade3e5bca59c647d953647ad179c79f9065",
+    "sha256:c0a9373fc95353f8da28d2854273b62c03007ade35eb4acf1b3af8ad1f97fe71"
+  ],
   "evidence_refs": [
-    "sha256:41512dba7a9d690251ac3d8f1bcf6c1426d56ae7fe2f55840e10897f92f53e8e",
-    "sha256:b6241ebc3227fbd577f5f8121bd89d212292a74265f6e180bba63fd81bbb1d20"
+    "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+    "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+    "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+    "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+    "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+    "sha256:1373b6b6aa85e91d1ad26fc008866693c71383621e0c05e0022bc6bd6829b23f",
+    "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
   ],
   "schema_version": "ontology-deployed-lifecycle-checkpoint.v1",
-  "stage": "preflight"
+  "stage": "finalize"
 }

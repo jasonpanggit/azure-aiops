@@ -561,7 +561,7 @@ export interface CopilotPageSnapshotInput {
   question?: string; rechecks?: string[];
 }
 
-function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
+export function isCanonicalAzureResourceId(value: string | null | undefined): value is string {
   const parts = String(value ?? "").split("/").filter(Boolean);
   const providerIndex = parts.findIndex((part) => part.toLowerCase() === "providers");
   return (
@@ -1173,12 +1173,13 @@ export const networkApi = {
   topology: (
     scope: ScopeSelection = {},
     options: { detail: "summary" | "full" } = { detail: "full" },
+    requestOptions: { signal?: AbortSignal } = {},
   ) => {
     const query = scopeToSearchParams(scope);
     query.set("detail", options.detail);
     return apiRequest<{ topology: NetworkTopology; summary: NetworkSummary }>(
       "/network/topology",
-      { query },
+      { query, signal: requestOptions.signal },
     );
   },
 
@@ -1186,11 +1187,13 @@ export const networkApi = {
     apiRequest<NetworkSummary>("/network/summary", { query: scopeToSearchParams(scope) }),
 
   /** "What depends on the hub?" */
-  hubDependents: (vnetId: string, scope: ScopeSelection = {}) =>
-    apiRequest<HubDependents>(
-      `/network/topology/hubs/${encodeURIComponent(vnetId)}/dependents`,
-      { query: scopeToSearchParams(scope) },
-    ),
+  hubDependents: (vnetId: string, scope: ScopeSelection = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("vnet_id", vnetId);
+    return apiRequest<HubDependents>("/network/topology/hubs/dependents", {
+      query,
+    });
+  },
 
   topologyResourceDetails: (
     resourceId: string,

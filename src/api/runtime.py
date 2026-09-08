@@ -572,10 +572,16 @@ _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
 
 # Scoped network requests bypass the persisted snapshot and query ARG live, so
-# without a cache every page load costs a round trip. Keyed by root *and*
-# subscription set, since rows fetched for one scope must never serve another.
-_HYBRID_NETWORK_CACHE_TTL_SECONDS = 30
-_hybrid_network_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[dict]]] = {}
+# without a cache every page interaction costs a round trip. Keep a completed
+# observation for a five-minute operator workflow: live ARG can take longer
+# than 30 seconds, and expiring it between Summary, Full detail, and drawer
+# interactions recreates that cost on every click. The observed timestamp
+# remains in the response so this bounded staleness is explicit.
+_HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
+_hybrid_network_cache: dict[
+    tuple[str, tuple[str, ...]],
+    tuple[float, tuple[list[dict], str, int]],
+] = {}
 _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
 _hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
 # Resolves the request-consistency half of WR-07: both the router's scope-
@@ -2585,6 +2591,14 @@ def _fabric_is_configured() -> bool:
     )
 
 
+def _fabric_remediation_enabled() -> bool:
+    """Whether the configured Fabric runtime enables remediation planning."""
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if not config_path:
+        return True
+    return FabricRuntimeConfig.load(config_path).remediation.enabled
+
+
 def _fabric_runtime_from_environment() -> FabricRuntime | None:
     """Build the authoritative Fabric reader from a file or Container Apps env."""
     config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
@@ -2781,6 +2795,68 @@ def _attach_remediation_decisions(planner: Any) -> Any:
     return planner
 
 
+def _merge_trigger_signals(
+    planner: Any, correlator: Any, vulnerability_service: Any
+) -> None:
+    """Flatten Defender/vulnerability signals onto the planner's resources.
+
+    ``RemediationPlanner.from_semantic_engine`` flattens ``resource_signals``
+    onto each resource at construction time, but the Defender correlator is
+    only attached afterwards -- and correlation itself runs at plan
+    *generation* time, which is strictly later than opportunity
+    *identification*. Without this merge the ``defender_*`` and
+    ``critical_vulnerability_count`` trigger fields are never present on the
+    rows that ``RemediationOpportunityEngine.identify`` matches against, so
+    the governed catalog actions keyed on them can never fire.
+
+    Read-only and defensive: a partial snapshot (missing Defender tables or
+    exposure rows) degrades to leaving the affected signal absent rather
+    than failing the planner.
+    """
+    from intelligence.predictive.predictive_context_builder import (
+        PredictiveContextBuilder,
+    )
+
+    resources = getattr(planner, "resources", None)
+    if not resources:
+        return
+
+    signals: dict[str, dict[str, Any]] = {}
+
+    def _slot(raw_key: Any) -> dict[str, Any] | None:
+        key = PredictiveContextBuilder.canonical_key(raw_key)
+        return signals.setdefault(key, {}) if key else None
+
+    if correlator is not None:
+        try:
+            posture = correlator.posture_by_resource()
+        except Exception:  # noqa: BLE001 - partial snapshot must not break planning
+            posture = {}
+        for raw_key, row in (posture or {}).items():
+            slot = _slot(raw_key)
+            if slot is not None:
+                slot.update(row)
+
+    if vulnerability_service is not None:
+        try:
+            exposures = vulnerability_service.asset_exposures()
+        except Exception:  # noqa: BLE001 - see above
+            exposures = []
+        for row in exposures or ():
+            slot = _slot(row.get("asset_id"))
+            if slot is None:
+                continue
+            slot["critical_vulnerability_count"] = int(row.get("critical_count") or 0)
+
+    if not signals:
+        return
+
+    for resource in resources:
+        key = PredictiveContextBuilder.canonical_key(resource.get("resource_key"))
+        if key and key in signals:
+            resource.update(signals[key])
+
+
 def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
     """Attach a read-only Defender remediation correlator to ``planner``.
 
@@ -2804,6 +2880,7 @@ def _attach_defender_correlator(planner: Any, runtime: FabricRuntime) -> Any:
         resource_lookup=planner.resources,
         action_catalog=catalog,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 
@@ -2811,6 +2888,19 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
     planner = _attach_remediation_decisions(
         getattr(runtime.operations_agent(), "remediation_planner", None)
     )
+    if planner is None:
+        return None
+    catalog = getattr(getattr(planner, "opportunities", None), "catalog", ())
+    policies = getattr(
+        getattr(getattr(planner, "generator", None), "approvals", None),
+        "policies",
+        (),
+    )
+    if not catalog or not policies:
+        raise RuntimeError(
+            "Governed remediation catalog is empty; deployment must publish "
+            "the versioned action catalog and approval policies"
+        )
     return _attach_defender_correlator(planner, runtime)
 
 
@@ -2846,6 +2936,7 @@ def _attach_live_defender_correlator(
         dependency_analyzer=DependencyAnalyzer(),
         resource_lookup=resources,
     )
+    _merge_trigger_signals(planner, planner.defender_correlator, vulnerability_service)
     return planner
 
 
@@ -2936,15 +3027,14 @@ def _build_provider_runtime(
         runtime = fabric()
         if runtime is None:
             return None
-        snapshot = runtime.service.semantic_snapshot()
-        freshness = str(snapshot.get("freshness") or "")
-        if not freshness:
+        ontology_version = runtime.service.semantic_version()
+        if ontology_version == "semantic-unversioned":
             if _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
                 # A newly created validation lakehouse is intentionally empty
                 # until the first activation sync completes.
                 return None
             raise RuntimeError(
-                "Fabric semantic snapshot has no freshness; publish the ontology "
+                "Fabric semantic snapshot has no version; publish the ontology "
                 "and ingestion state before activating providers"
             )
         try:
@@ -2954,9 +3044,24 @@ def _build_provider_runtime(
             raise
         return ProviderValue(
             instance,
-            freshness=freshness,
-            ontology_version=str(snapshot.get("knowledge_version") or ""),
+            ontology_version=ontology_version,
         )
+
+    def fabric_provider_cache_key(name: str) -> tuple[object, ...]:
+        runtime = fabric()
+        if runtime is None:
+            raise RuntimeError("Fabric runtime is unavailable")
+        generation_key: tuple[object, ...] = (
+            "fabric-generation",
+            runtime.service.semantic_version(),
+        )
+        if name == "network":
+            return (
+                *generation_key,
+                "network-policy",
+                _network_policy_store().revision_or_raise(),
+            )
+        return generation_key
 
     if use_fabric:
         loaders: dict[str, Callable[[], Any]] = {
@@ -3002,19 +3107,26 @@ def _build_provider_runtime(
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     core_readiness_providers = {"semantic", "semantic_graph"}
+    remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
+    remediation_required = (
+        use_fabric
+        and remediation_enabled
+        and mode == "production"
+        and not bootstrap
+    )
     specs = {
         name: ProviderSpec(
             loader=loader,
-            configured=True,
-            required=(name in core_readiness_providers and not bootstrap),
+            configured=not (
+                name == "remediation" and use_fabric and not remediation_enabled
+            ),
+            required=(
+                (name in core_readiness_providers and not bootstrap)
+                or (name == "remediation" and remediation_required)
+            ),
             cache_key=(
-                (
-                    lambda: (
-                        "network-policy",
-                        _network_policy_store().revision_or_raise(),
-                    )
-                )
-                if name == "network"
+                (lambda provider_name=name: fabric_provider_cache_key(provider_name))
+                if use_fabric
                 else None
             ),
         )
@@ -3543,7 +3655,10 @@ def _exposure_query_authorization(
 def _exposure_generation_window() -> Any:
     """Load the current/retained Gold pointer without exposing storage errors."""
 
-    from api.exposure_query import ExposureGenerationWindow
+    from api.exposure_query import (
+        ExposureGenerationWindow,
+        ExposureQueryUnavailableError,
+    )
     from fabric_pipelines.vulnerability_pipeline import (
         EXPOSURE_GOLD_POINTER_DOCUMENT,
     )
@@ -3582,7 +3697,9 @@ def _exposure_generation_window() -> Any:
         if len(active_generations) == 1:
             active = next(iter(active_generations))
     if not active:
-        raise RuntimeError("Exposure readable generation is unavailable")
+        raise ExposureQueryUnavailableError(
+            "Exposure readable generation is unavailable"
+        )
     return ExposureGenerationWindow(
         active_generation=active,
         retained_generations=retained,
@@ -3767,48 +3884,43 @@ def build_context() -> ApiContext:
         # Double-checked locking on a miss, matching `hybrid_vulnerability`
         # immediately below -- never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
-        now = time.time()
-        cached = _hybrid_network_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-            rows = cached[1]
-            observed_at = max(
-                (str(row.get("observed_at") or "") for row in rows),
-                default="",
+        def load_network_rows() -> tuple[list[dict], str, int]:
+            # Private Link candidates are fetched alongside the network plane
+            # so private-endpoint coverage can be judged per resource rather
+            # than per service kind.
+            paas_types = ", ".join(
+                f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
             )
-        else:
-            with _ttl_cache_lock(_hybrid_network_cache, cache_key):
-                cached = _hybrid_network_cache.get(cache_key)
-                if cached is not None and now - cached[0] < _HYBRID_NETWORK_CACHE_TTL_SECONDS:
-                    rows = cached[1]
-                    observed_at = max(
-                        (str(row.get("observed_at") or "") for row in rows),
-                        default="",
-                    )
-                else:
-                    # Private Link candidates are fetched alongside the
-                    # network plane so private-endpoint coverage can be
-                    # judged per resource rather than per service kind.
-                    paas_types = ", ".join(
-                        f"'{name}'" for name in sorted(PRIVATE_LINK_RESOURCE_TYPES)
-                    )
-                    observation = live_resources.query(
-                        QuerySpec(
-                            name="live_network_resources",
-                            table="Resources",
-                            query=(
-                                "Resources "
-                                "| where type startswith 'microsoft.network/' "
-                                f"or tolower(type) in ({paas_types}) "
-                                "| project id, name, type, tenantId, subscriptionId, "
-                                "resourceGroup, location, tags, properties, observed_at=now()"
-                            ),
-                            incremental=False,
-                        ),
-                        subscription_ids=subscription_ids,
-                    )
-                    rows = list(observation.rows)
-                    observed_at = observation.observed_at
-                    _hybrid_network_cache[cache_key] = (now, rows)
+            started = time.perf_counter()
+            observation = live_resources.query(
+                QuerySpec(
+                    name="live_network_resources",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type startswith 'microsoft.network/' "
+                        f"or tolower(type) in ({paas_types}) "
+                        "| project id, name, type, tenantId, subscriptionId, "
+                        "resourceGroup, location, tags, properties, observed_at=now()"
+                    ),
+                    incremental=False,
+                ),
+                subscription_ids=subscription_ids,
+            )
+            return (
+                list(observation.rows),
+                observation.observed_at,
+                round(max(0.0, time.perf_counter() - started) * 1_000),
+            )
+
+        rows, observed_at, topology_build_duration_ms = _ttl_cached_value(
+            _hybrid_network_cache,
+            cache_key,
+            ttl_seconds=_HYBRID_NETWORK_CACHE_TTL_SECONDS,
+            now=time.time(),
+            build=load_network_rows,
+            completion_clock=time.time,
+        )
         policy, _revision = _network_policy_store().read_with_revision_or_raise()
         managed_network = providers.get("network", optional=True)
         flow_observations = (
@@ -3821,6 +3933,7 @@ def build_context() -> ApiContext:
             observed_at=observed_at,
             policy=policy,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     def hybrid_vulnerability(

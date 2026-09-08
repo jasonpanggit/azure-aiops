@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from deltalake import DeltaTable
 from topology_comparison_scenario import topology_comparison_scenario
 
@@ -605,6 +606,34 @@ def test_remediation_snapshot_uses_governed_inventory_and_catalogs(tmp_path: Pat
     assert snapshot["inventory"]
     assert snapshot["action_catalog"] == []
     assert snapshot["approval_policies"] == []
+
+
+def test_remediation_snapshot_rejects_incomplete_catalog_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _source_snapshot(source)
+
+    class _IncompleteDelta(DeltaWriter):
+        def version(self, uri):
+            return 1 if str(uri).endswith("silver_remediation_action_catalog") else None
+
+        def read(self, uri):
+            if str(uri).endswith("silver_remediation_action_catalog"):
+                return [{"action_id": "incomplete", "change_version": "generation-1"}]
+            return []
+
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace", "lakehouse", local_root=tmp_path / "lakehouse"
+        ),
+        delta_writer=_IncompleteDelta(),
+        validator=DataQualityValidator(),
+    )
+
+    with pytest.raises(RuntimeError, match="publication is incomplete"):
+        service.remediation_planning_snapshot()
 
 
 def test_failed_quality_run_is_recoverable(tmp_path: Path) -> None:

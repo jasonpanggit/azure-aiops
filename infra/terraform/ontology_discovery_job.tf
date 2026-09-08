@@ -505,6 +505,9 @@ resource "azurerm_container_app_job" "ontology_evidence_read" {
     }
   }
 
+  # OneLake data-access roles (Phase13EvidenceRead) are managed outside
+  # Terraform by scripts/reconcile_onelake_data_access_roles.py. The operator
+  # must run that script before starting this Job for the first time.
   depends_on = [
     azurerm_role_assignment.azure_mcp_acr_pull,
     fabric_workspace_role_assignment.ontology_evidence_ontology_discovery_state,
@@ -512,11 +515,6 @@ resource "azurerm_container_app_job" "ontology_evidence_read" {
     fabric_workspace_role_assignment.ontology_evidence_ontology_dispatch,
     fabric_workspace_role_assignment.ontology_evidence_ontology_publication,
     fabric_workspace_role_assignment.ontology_evidence_ontology_rbac_validation,
-    fabric_onelake_data_access_security.ontology_evidence_ontology_discovery_state,
-    fabric_onelake_data_access_security.ontology_evidence_ontology_command,
-    fabric_onelake_data_access_security.ontology_evidence_ontology_dispatch,
-    fabric_onelake_data_access_security.ontology_evidence_ontology_publication,
-    fabric_onelake_data_access_security.ontology_evidence_ontology_rbac_validation,
   ]
   tags = local.tags
 }

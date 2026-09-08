@@ -31,37 +31,6 @@ def _plan() -> dict[str, object]:
                     "type": "ServicePrincipal",
                 },
             }
-        elif address.startswith("fabric_onelake_data_access_security."):
-            after = {
-                "workspace_id": "workspace-" + address.rsplit("_", 1)[-1],
-                "item_id": "lakehouse-" + address.rsplit("_", 1)[-1],
-                "role_name": "Phase13EvidenceRead",
-                "decision_rules": [
-                    {
-                        "effect": "Permit",
-                        "permission": [
-                            {
-                                "attribute_name": "Path",
-                                "attribute_value_included_in": ["*"],
-                            },
-                            {
-                                "attribute_name": "Action",
-                                "attribute_value_included_in": ["Read"],
-                            },
-                        ],
-                    }
-                ],
-                "members": {
-                    "fabric_item_members": [],
-                    "microsoft_entra_members": [
-                        {
-                            "object_id": EVIDENCE_PRINCIPAL_ID,
-                            "object_type": "ManagedIdentity",
-                            "tenant_id": "33333333-3333-3333-3333-333333333333",
-                        }
-                    ],
-                },
-            }
         else:
             after = {
                 "name": "ontology-evidence-read",
@@ -191,50 +160,26 @@ def test_targeted_plan_requires_all_exact_resources() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "field", "value"),
+    ("field", "value"),
     [
-        ("workspace", "role", "Contributor"),
-        ("workspace", "workspace_id", PRODUCTION_WORKSPACE_ID),
-        ("workspace", "principal.id", "wrong-principal"),
-        ("onelake", "action", "ReadWrite"),
-        ("onelake", "action", "Write"),
-        ("onelake", "path", "/Files/too-broad"),
-        ("onelake", "object_type", "ServicePrincipal"),
-        ("onelake", "object_id", "wrong-principal"),
-        ("onelake", "workspace_id", PRODUCTION_WORKSPACE_ID),
+        ("role", "Contributor"),
+        ("workspace_id", PRODUCTION_WORKSPACE_ID),
+        ("principal.id", "wrong-principal"),
     ],
 )
-def test_targeted_plan_rejects_role_broadening_and_wrong_identity(
-    kind: str,
+def test_targeted_plan_rejects_workspace_role_broadening_and_wrong_identity(
     field: str,
     value: str,
 ) -> None:
     plan = _plan()
-    prefix = (
-        "fabric_workspace_role_assignment."
-        if kind == "workspace"
-        else "fabric_onelake_data_access_security."
-    )
     row = next(
         change
         for change in plan["resource_changes"]
-        if change["address"].startswith(prefix)
+        if change["address"].startswith("fabric_workspace_role_assignment.")
     )
     after = row["change"]["after"]
     if field == "principal.id":
         after["principal"]["id"] = value
-    elif field == "action":
-        permission = after["decision_rules"][0]["permission"]
-        next(
-            entry for entry in permission if entry["attribute_name"] == "Action"
-        )["attribute_value_included_in"] = [value]
-    elif field == "path":
-        permission = after["decision_rules"][0]["permission"]
-        next(
-            entry for entry in permission if entry["attribute_name"] == "Path"
-        )["attribute_value_included_in"] = [value]
-    elif field in {"object_type", "object_id"}:
-        after["members"]["microsoft_entra_members"][0][field] = value
     else:
         after[field] = value
 

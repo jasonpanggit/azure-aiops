@@ -6,7 +6,7 @@ import pytest
 
 from onboarding.activation import publish_combined_snapshot
 from onboarding.graph_normalize import ENTITY_TYPES, NormalizedGraph
-from onboarding.ingestion_storage import DatasetStore
+from storage.datasets import DatasetStore
 
 
 @dataclass(frozen=True)
@@ -43,8 +43,63 @@ def _publish(root, connection_id: str, resource_id: str) -> None:
             "connection_id": connection_id,
         }
     ]
+    graph = NormalizedGraph(entities=entities)
     DatasetStore(root).publish(
-        NormalizedGraph(entities=entities),
+        {
+            **{
+                f"entities/{entity_type}": rows
+                for entity_type, rows in graph.entities.items()
+            },
+            "relationships/relationships": [],
+            "changes/resource_changes": [],
+            "exposure/source_partition_rows": [
+                {
+                    "partition_key": f"partition-{connection_id}",
+                    "query_name": "defender_assessments",
+                    "row_key": f"row-{connection_id}",
+                    "payload_json": "{}",
+                    "effective_generation": f"effective-{connection_id}",
+                    "connection_id": connection_id,
+                }
+            ],
+            "exposure/workload_observations": [
+                {
+                    "observation_id": f"observation-{connection_id}",
+                    "connection_id": connection_id,
+                }
+            ],
+            "exposure/workload_deployments": [
+                {
+                    "deployment_id": f"deployment-{connection_id}",
+                    "connection_id": connection_id,
+                    "workspace_id": f"workspace-{connection_id}",
+                }
+            ],
+            "exposure/workload_source_checkpoints": [
+                {
+                    "checkpoint_key": f"checkpoint-{connection_id}",
+                    "connection_id": connection_id,
+                    "workspace_id": f"workspace-{connection_id}",
+                }
+            ],
+            "situations/source_status": [
+                {
+                    "partition_key": f"partition-{connection_id}",
+                    "connection_id": connection_id,
+                    "source_family": "defender_image",
+                    "attempted_generation": f"attempt-{connection_id}",
+                    "effective_generation": f"effective-{connection_id}",
+                    "attempted_at": "2026-01-01T00:00:00Z",
+                    "last_success_at": "2026-01-01T00:00:00Z",
+                    "row_count": 1,
+                    "represented_count": 1,
+                    "expected_count": 1,
+                    "completeness": "complete",
+                    "safe_error_code": "",
+                    "safe_error_summary": "",
+                }
+            ],
+        },
         {},
         {
             "runId": f"run-{connection_id}",
@@ -52,6 +107,7 @@ def _publish(root, connection_id: str, resource_id: str) -> None:
             "startedAt": "2026-01-01T00:00:00Z",
             "completedAt": "2026-01-01T00:01:00Z",
         },
+        ontology={},
     )
 
 
@@ -71,6 +127,25 @@ def test_combined_snapshot_preserves_distinct_connection_entities(tmp_path):
         ("/subscriptions/hub/resourceGroups/rg/providers/x/a", "hub"),
         ("/subscriptions/spoke/resourceGroups/rg/providers/x/b", "spoke"),
     }
+    combined = DatasetStore(tmp_path / "combined")
+    assert {
+        row["deployment_id"]
+        for row in combined.read_dataset("exposure/workload_deployments")
+    } == {"deployment-hub", "deployment-spoke"}
+    assert {
+        row["row_key"]
+        for row in combined.read_dataset("exposure/source_partition_rows")
+    } == {"row-hub", "row-spoke"}
+    assert {
+        row["checkpoint_key"]
+        for row in combined.read_dataset(
+            "exposure/workload_source_checkpoints"
+        )
+    } == {"checkpoint-hub", "checkpoint-spoke"}
+    assert {
+        row["partition_key"]
+        for row in combined.read_dataset("situations/source_status")
+    } == {"partition-hub", "partition-spoke"}
 
 
 def test_combined_snapshot_rejects_cross_connection_identity_collision(tmp_path):

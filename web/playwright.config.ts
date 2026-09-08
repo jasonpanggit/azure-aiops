@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const liveBaseUrl = process.env.PLAYWRIGHT_BASE_URL;
+const liveStorageState = process.env.PLAYWRIGHT_STORAGE_STATE;
+
 /**
  * Phase 03.6 Plan 06: Playwright E2E infrastructure.
  *
@@ -22,19 +25,22 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: liveBaseUrl ?? "http://127.0.0.1:3000",
+    ...(liveStorageState ? { storageState: liveStorageState } : {}),
     trace: "on-first-retry",
   },
-  webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:3000",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-    env: {
-      NEXT_PUBLIC_ENTRA_CLIENT_ID: "",
-      AIOPS_DEV_TOKEN: "local-e2e-test-token-0000",
-    },
-  },
+  webServer: liveBaseUrl
+    ? undefined
+    : {
+        command: "npm run dev",
+        url: "http://127.0.0.1:3000",
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+        env: {
+          NEXT_PUBLIC_ENTRA_CLIENT_ID: "",
+          AIOPS_DEV_TOKEN: "local-e2e-test-token-0000",
+        },
+      },
   projects: [
     {
       name: "chromium",

@@ -200,13 +200,19 @@ variable "deploy_images" {
 variable "api_cpu" {
   description = "vCPU allocated to the API container."
   type        = number
-  default     = 2.0
+  default     = 4.0
 }
 
 variable "api_memory" {
-  description = "Memory allocated to the API container. Must pair with api_cpu per the Container Apps ratio (2Gi per vCPU)."
+  description = <<-EOT
+    Memory allocated to the API container. Must pair with api_cpu per the
+    Container Apps ratio (2Gi per vCPU). 4Gi (2 vCPU) was observed
+    OOM-killing (exit 137) the API in a crash loop once real (non-empty)
+    inventory data was loaded into the in-memory provider cache; 8Gi (4
+    vCPU) is the minimum verified stable size.
+  EOT
   type        = string
-  default     = "4Gi"
+  default     = "8Gi"
 }
 
 variable "api_min_replicas" {

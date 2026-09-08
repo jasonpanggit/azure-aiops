@@ -206,6 +206,7 @@ class Envelope:
     knowledge_version: str = ""
     warnings: Sequence[str] = field(default_factory=tuple)
     pagination: Mapping[str, Any] | None = None
+    automatic_truncation_warning: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -229,7 +230,12 @@ class Envelope:
                 )
         if self.pagination is not None:
             body["pagination"] = dict(self.pagination)
-        warnings = list(dict.fromkeys((*_truncation_warnings(self.data), *self.warnings)))
+        automatic_warnings = (
+            _truncation_warnings(self.data)
+            if self.automatic_truncation_warning
+            else ()
+        )
+        warnings = list(dict.fromkeys((*automatic_warnings, *self.warnings)))
         if warnings:
             body["warnings"] = warnings
         return body
@@ -243,6 +249,7 @@ def envelope(
     knowledge_version: str = "",
     warnings: Sequence[str] | None = None,
     pagination: Mapping[str, Any] | None = None,
+    automatic_truncation_warning: bool = True,
 ) -> dict[str, Any]:
     """Convenience constructor returning a serialized envelope."""
     if evidence is None:
@@ -258,6 +265,7 @@ def envelope(
         knowledge_version=knowledge_version,
         warnings=tuple(warnings or ()),
         pagination=pagination,
+        automatic_truncation_warning=automatic_truncation_warning,
     ).to_dict()
 
 

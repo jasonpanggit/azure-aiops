@@ -212,6 +212,8 @@ class NetworkIntelligenceService:
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
         peer_resolutions: Mapping[str, str] | None = None,
+        scope_excluded_resource_ids: Iterable[str] = (),
+        topology_build_duration_ms: int | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.policy = policy if policy is not None else NetworkDesignPolicy()
@@ -236,6 +238,12 @@ class NetworkIntelligenceService:
                 for peer_id, resolution in peer_resolutions.items()
             }
         )
+        self.scope_excluded_resource_ids = frozenset(
+            str(resource_id or "").casefold()
+            for resource_id in scope_excluded_resource_ids
+            if resource_id
+        )
+        self.topology_build_duration_ms = topology_build_duration_ms
         self._topology: NetworkTopology | None = None
         self._gaps: tuple[NetworkGap, ...] | None = None
         self._findings: tuple[RuleFinding, ...] | None = None
@@ -250,6 +258,7 @@ class NetworkIntelligenceService:
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         observed_at: str | None = None,
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        topology_build_duration_ms: int | None = None,
     ) -> NetworkIntelligenceService:
         resolved = policy if policy is not None else load_design_policy(policy_path)
         return cls(
@@ -257,6 +266,7 @@ class NetworkIntelligenceService:
             policy=resolved,
             semantic_relationships=semantic_relationships,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     @classmethod
@@ -268,6 +278,7 @@ class NetworkIntelligenceService:
         policy: NetworkDesignPolicy | None = None,
         policy_path: str | None = None,
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
+        topology_build_duration_ms: int | None = None,
     ) -> NetworkIntelligenceService:
         """Normalize raw ARG resources before loading the typed network view.
 
@@ -327,6 +338,7 @@ class NetworkIntelligenceService:
             semantic_relationships=semantic_relationships,
             observed_at=normalized_observed_at,
             flow_observations=flow_observations,
+            topology_build_duration_ms=topology_build_duration_ms,
         )
 
     @property
@@ -337,6 +349,7 @@ class NetworkIntelligenceService:
                 self.semantic_relationships,
                 flow_log_provenance=self.flow_log_provenance,
                 peer_resolutions=self.peer_resolutions,
+                scope_excluded_resource_ids=self.scope_excluded_resource_ids,
             )
         return self._topology
 
@@ -406,6 +419,10 @@ class NetworkIntelligenceService:
                 peer_resolutions[peer_id] = "excluded_by_scope"
             else:
                 peer_resolutions[peer_id] = "not_ingested"
+        scope_excluded_resource_ids = set(self.scope_excluded_resource_ids)
+        scope_excluded_resource_ids.update(
+            _snapshot_resource_ids(self.snapshot) - _snapshot_resource_ids(snapshot)
+        )
         return NetworkIntelligenceService(
             snapshot,
             policy=self.policy,
@@ -422,6 +439,8 @@ class NetworkIntelligenceService:
                 )
             ),
             peer_resolutions=peer_resolutions,
+            scope_excluded_resource_ids=scope_excluded_resource_ids,
+            topology_build_duration_ms=self.topology_build_duration_ms,
         )
 
     def validate_flow(self, query: FlowQuery) -> FlowResult:
@@ -433,7 +452,7 @@ class NetworkIntelligenceService:
 
     def hub_dependents(self, hub_vnet_id: str) -> dict[str, Any]:
         """Answers "what depends on the hub?" for one hub."""
-        target = str(hub_vnet_id or "").casefold()
+        target = f"/{str(hub_vnet_id or '').lstrip('/')}".casefold()
         peers = self.topology.peers_of(target)
         services = [
             service
@@ -461,7 +480,7 @@ class NetworkIntelligenceService:
         }
 
     def firewall_bypass_spokes(self) -> tuple[NetworkGap, ...]:
-        """Answers "which spokes bypass the firewall?"."""
+        """Return every route or public-IP finding that can bypass inspection."""
         return tuple(gap for gap in self.gaps if gap.category == "firewall_bypass")
 
 def build_service(

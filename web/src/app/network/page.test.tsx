@@ -48,18 +48,25 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
     ruleFindings,
     detailLevel,
     onDetailLevelChange,
+    findingsTruncated,
   }: {
     topology: unknown;
     gaps: unknown[];
     ruleFindings: unknown[];
     detailLevel: "summary" | "full";
     onDetailLevelChange: (detail: "summary" | "full") => void;
+    findingsTruncated?: boolean;
   }) => (
     <div data-testid="topology-workspace">
       <span>{topology ? "Topology canvas" : "No topology"}</span>
       <span>{gaps.length} topology gaps</span>
       <span>{ruleFindings.length} topology findings</span>
       <span>Detail: {detailLevel}</span>
+      <span data-testid="topology-workspace-page-truncation">
+        {findingsTruncated === undefined
+          ? "Page truncation not forwarded"
+          : `Page truncation forwarded: ${String(findingsTruncated)}`}
+      </span>
       <button type="button" onClick={() => onDetailLevelChange("full")}>
         Test full detail
       </button>
@@ -150,6 +157,14 @@ function renderPage(withScopeControl = false) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function primeSuccessfulLoaders(gapTotal = 340, findingTotal = 620) {
   const topology = buildTopologyEnvelope();
   topology.data.summary = buildNetworkSummary({
@@ -200,9 +215,9 @@ describe("Network page honest totals and server pagination", () => {
         scope: {},
         tab: "flow",
         gapOffset: 0,
-        gapLimit: 100,
+        gapLimit: 20,
         findingOffset: 0,
-        findingLimit: 100,
+        findingLimit: 20,
         topology: expect.objectContaining({ data: expect.any(Object) }),
         gaps: expect.objectContaining({ data: expect.any(Object) }),
         findings: expect.objectContaining({ data: expect.any(Object) }),
@@ -222,18 +237,57 @@ describe("Network page honest totals and server pagination", () => {
       renderPage();
 
       await waitFor(() =>
-        expect(mocks.topology).toHaveBeenCalledWith({}, { detail: "summary" }),
+        expect(mocks.topology).toHaveBeenCalledWith(
+          {},
+          { detail: "summary" },
+          { signal: expect.any(AbortSignal) },
+        ),
       );
       await user.click(screen.getByRole("tab", { name: "Topology" }));
       await user.click(screen.getByRole("button", { name: "Test full detail" }));
 
       await waitFor(() =>
-        expect(mocks.topology).toHaveBeenLastCalledWith({}, { detail: "full" }),
+        expect(mocks.topology).toHaveBeenLastCalledWith(
+          {},
+          { detail: "full" },
+          { signal: expect.any(AbortSignal) },
+        ),
       );
+    });
+
+    it("retains the populated summary canvas and metrics while full detail is in flight", async () => {
+      const user = userEvent.setup();
+      const full = deferred<ReturnType<typeof buildTopologyEnvelope>>();
+      mocks.topology
+        .mockResolvedValueOnce(buildTopologyEnvelope())
+        .mockImplementationOnce(() => full.promise);
+      renderPage();
+
+      await user.click(await screen.findByRole("tab", { name: "Topology" }));
+      expect(screen.getByTestId("topology-workspace")).toHaveTextContent(
+        "Topology canvas",
+      );
+      await user.click(screen.getByRole("button", { name: "Test full detail" }));
+      await waitFor(() => expect(mocks.topology).toHaveBeenCalledTimes(2));
+
+      expect(screen.getByTestId("topology-workspace")).toHaveTextContent(
+        "Topology canvas",
+      );
+      expect(
+        screen.getByTestId("topology-workspace").parentElement,
+      ).toHaveAttribute("aria-busy", "true");
+      expect(
+        screen.getByText("Observed network").closest("article"),
+      ).toHaveTextContent("1 / 1");
+
+      await act(async () => {
+        full.resolve(buildTopologyEnvelope());
+        await full.promise;
+      });
     });
   });
 
-  it("renders summary totals rather than capped array lengths and discloses both incomplete collections", async () => {
+  it("keeps ordinary server-page ranges inside their owning tabs without a page warning", async () => {
     renderPage();
 
     const riskyRules = await screen.findByText("Broad or risky rules");
@@ -241,16 +295,106 @@ describe("Network page honest totals and server pagination", () => {
     expect(metric).not.toBeNull();
     expect(within(metric!).getByText("620")).toBeInTheDocument();
     expect(within(metric!).getByText("340 structural or design gaps")).toBeInTheDocument();
-    const incomplete = screen.getByRole("status", {
-      name: "Incomplete network analysis results",
-    });
-    expect(incomplete).toHaveAttribute("aria-live", "polite");
-    expect(within(incomplete).getByText("Results are incomplete.")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Showing 100 of 340 inspection gaps and 100 of 620 rule findings. Metric totals are complete; the lists below are not.",
-      ),
+      screen.queryByRole("status", {
+        name: "Incomplete network analysis results",
+      }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 340 inspection gaps"),
     ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rule findings" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 620 rule findings"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not forward visible-page truncation into exhaustive topology finding coverage", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Topology" }));
+
+    expect(
+      screen.getByTestId("topology-workspace-page-truncation"),
+    ).toHaveTextContent("Page truncation not forwarded");
+  });
+
+  it("keeps backend pagination warnings out of provenance because the owning tabs show ranges", async () => {
+    const gapEnvelope = buildGapsEnvelope(77, 0, 20);
+    gapEnvelope.warnings = [
+      "Results are truncated; narrow the scope or use pagination for a complete view.",
+      "Showing 20 of 77 inspection gaps; use pagination for the complete result",
+    ];
+    mocks.gaps.mockResolvedValue(gapEnvelope);
+    mocks.ruleFindings.mockResolvedValue(buildRuleFindingsEnvelope(6, 0, 20));
+
+    renderPage();
+
+    const provenance = await screen.findByLabelText("Data trust and provenance");
+    expect(provenance).not.toHaveTextContent("Results are truncated");
+    expect(provenance).not.toHaveTextContent("Showing 20 of 77 inspection gaps");
+    expect(
+      screen.queryByRole("status", { name: "Incomplete network analysis results" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 77 inspection gaps"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rule findings" }));
+    expect(
+      await screen.findByText("Showing 1–6 of 6 rule findings"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps an available collection range in its tab when the companion collection is unavailable", async () => {
+    const gapEnvelope = buildGapsEnvelope(77, 0, 20);
+    gapEnvelope.warnings = [
+      "Showing 20 of 77 inspection gaps; use pagination for the complete result",
+    ];
+    mocks.gaps.mockResolvedValue(gapEnvelope);
+    mocks.ruleFindings.mockRejectedValue(new Error("rule findings unavailable"));
+
+    renderPage();
+
+    expect(
+      await screen.findByLabelText("Data trust and provenance"),
+    ).not.toHaveTextContent("Showing 20 of 77 inspection gaps");
+    expect(screen.queryByText("Results are incomplete.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 77 inspection gaps"),
+    ).toBeInTheDocument();
+  });
+
+  it("qualifies trust dimensions and describes the bypass finding population", async () => {
+    const topology = buildTopologyEnvelope(1, 1);
+    topology.data.summary = buildNetworkSummary({
+      hub_count: 1,
+      spoke_count: 0,
+    });
+    const bypass = bypassEnvelope();
+    bypass.data.count = 2;
+    mocks.topology.mockResolvedValue(topology);
+    mocks.firewallBypass.mockResolvedValue(bypass);
+
+    renderPage();
+
+    const provenance = await screen.findByLabelText("Data trust and provenance");
+    expect(provenance).toHaveTextContent("Topology evidence · high confidence");
+    expect(provenance).toHaveTextContent("Topology graph observed Unknown");
+    const bypassMetric = screen.getByText("Inspection bypass findings").closest("article");
+    expect(bypassMetric).not.toBeNull();
+    expect(bypassMetric).toHaveTextContent("2");
+    expect(bypassMetric).toHaveTextContent(
+      "Subnet route and public-IP findings that may avoid firewall inspection",
+    );
+    expect(bypassMetric).not.toHaveTextContent("Spokes");
   });
 
   it("renders server-authored topology integrity warnings", async () => {
@@ -297,21 +441,21 @@ describe("Network page honest totals and server pagination", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 100, offset: 0 });
-      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 100, offset: 0 });
+      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 20, offset: 0 });
+      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 20, offset: 0 });
     });
 
     await user.click(screen.getByRole("tab", { name: "Inspection gaps" }));
-    expect(await screen.findByText("Showing 1–100 of 340 inspection gaps")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Rows per page for inspection gaps" })).toHaveValue("100");
+    expect(await screen.findByText("Showing 1–20 of 340 inspection gaps")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Rows per page for inspection gaps" })).toHaveValue("20");
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
 
     await waitFor(() => {
-      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 100, offset: 100 });
+      expect(mocks.gaps).toHaveBeenCalledWith({}, { limit: 20, offset: 20 });
       expect(mocks.gaps).toHaveBeenCalledTimes(2);
     });
-    expect(await screen.findByText("Showing 101–200 of 340 inspection gaps")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 21–40 of 340 inspection gaps")).toBeInTheDocument();
   });
 
   it("renders the rule-findings server range and advances exactly once", async () => {
@@ -319,16 +463,16 @@ describe("Network page honest totals and server pagination", () => {
     renderPage();
 
     await user.click(await screen.findByRole("tab", { name: "Rule findings" }));
-    expect(await screen.findByText("Showing 1–100 of 620 rule findings")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Rows per page for rule findings" })).toHaveValue("100");
+    expect(await screen.findByText("Showing 1–20 of 620 rule findings")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Rows per page for rule findings" })).toHaveValue("20");
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
 
     await waitFor(() => {
-      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 100, offset: 100 });
+      expect(mocks.ruleFindings).toHaveBeenCalledWith({}, { limit: 20, offset: 20 });
       expect(mocks.ruleFindings).toHaveBeenCalledTimes(2);
     });
-    expect(await screen.findByText("Showing 101–200 of 620 rule findings")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 21–40 of 620 rule findings")).toBeInTheDocument();
   });
 
   it("resets both server pagers before loading a changed scope", async () => {
@@ -357,18 +501,18 @@ describe("Network page honest totals and server pagination", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
     await user.click(screen.getByRole("button", { name: "Next page" }));
-    await screen.findByText("Showing 101–200 of 340 inspection gaps");
+    await screen.findByText("Showing 21–40 of 340 inspection gaps");
     await user.click(screen.getByRole("button", { name: "Narrow test scope" }));
 
     await waitFor(() =>
       expect(mocks.gaps).toHaveBeenLastCalledWith(
         { subscription: ["sub-narrow"] },
-        { limit: 100, offset: 0 },
+        { limit: 20, offset: 0 },
       ),
     );
     expect(mocks.ruleFindings).toHaveBeenLastCalledWith(
       { subscription: ["sub-narrow"] },
-      { limit: 100, offset: 0 },
+      { limit: 20, offset: 0 },
     );
     expect(
       screen.queryByText("No inspection gaps detected"),
@@ -590,7 +734,7 @@ describe("Network page policy round-trip", () => {
 
       await user.click(await screen.findByRole("tab", { name: "Inspection gaps" }));
       await user.click(screen.getByRole("button", { name: "Next page" }));
-      await screen.findByText("Showing 101–200 of 340 inspection gaps");
+      await screen.findByText("Showing 21–40 of 340 inspection gaps");
       const gapPager = [
         screen.getByRole("combobox", { name: "Rows per page for inspection gaps" }),
         screen.getByRole("button", { name: "Previous page" }),
@@ -604,7 +748,7 @@ describe("Network page policy round-trip", () => {
 
       await user.click(screen.getByRole("tab", { name: "Rule findings" }));
       await user.click(screen.getByRole("button", { name: "Next page" }));
-      await screen.findByText("Showing 101–200 of 620 rule findings");
+      await screen.findByText("Showing 21–40 of 620 rule findings");
       const findingPager = [
         screen.getByRole("combobox", { name: "Rows per page for rule findings" }),
         screen.getByRole("button", { name: "Previous page" }),

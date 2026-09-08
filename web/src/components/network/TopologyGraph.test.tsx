@@ -8,6 +8,7 @@ import {
   buildTopologyExport,
   clearHoverFocus,
   fitTopology,
+  layoutFor,
   nextExportIdentity,
   layoutForTransition,
   syncFindingBadge,
@@ -176,6 +177,13 @@ describe("topology detail transitions", () => {
   it("keeps existing positions on every payload transition", () => {
     expect(layoutForTransition(40, true)).toMatchObject({ randomize: false });
     expect(layoutForTransition(1_000, true)).toMatchObject({ randomize: false });
+  });
+
+  it("chooses layout quality from connected nodes rather than hidden singleton context", () => {
+    expect(layoutFor(103, 35)).toMatchObject({
+      quality: "proof",
+      randomize: true,
+    });
   });
 
   describe("topology motion preferences", () => {

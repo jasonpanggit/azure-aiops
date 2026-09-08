@@ -521,37 +521,35 @@ enterprise scale the page shows 0.14 % of findings as if it were 100 %.
 | MetricCard while loading | `value = "—"`, `aria-busy="true"` on the `.metric-grid`; never `0` |
 | MetricCard when the request failed | `value = "—"`, `detail = "Counts unavailable"`, `tone="critical"`; never `0` |
 | Page coverage callout | rendered **only** when `gaps.coverage.truncated \|\| findings.coverage.truncated`; `.callout.callout-warning` with `role="status"`; placed directly below the intended-design callout |
-| **Initial page size** | **100 rows** for both the Inspection-gaps and Rule-findings tabs. The client sends `limit=100&offset=0` **explicitly** on first load and never relies on the server default. |
-| Page-size selector | `PAGE_SIZE_OPTIONS` = `[20, 50, 100]` (already exported from `web/src/lib/use-table-pagination.ts`). The initial selection is **100**, the third option. |
-| Page-size persistence | the chosen size is component state only; it resets to 100 on scope change and is not persisted to storage or the URL in this phase |
+| **Initial page size** | **20 cards** for both the Inspection-gaps and Rule-findings tabs. The client sends `limit=20&offset=0` **explicitly** on first load and never relies on the server default. This 2026-09-08 live-review amendment corrects the original table-row assumption after 77 card-shaped gaps produced a 15,763px page. |
+| Page-size selector | `PAGE_SIZE_OPTIONS` = `[20, 50, 100]` (already exported from `web/src/lib/use-table-pagination.ts`). The initial selection is **20**, the first option. |
+| Page-size persistence | the chosen size is component state only; it resets to 20 on scope change and is not persisted to storage or the URL in this phase |
 | Failed load | `StatePanel tone="error"` with the copy from the Error/unavailable table **and** its `action` prop set to the matching Retry button (R-2 / R-3). A failed list is never rendered without a recovery affordance. |
 | Gaps / Rule-findings tabs | render `TablePagination` in server mode (`pagination` from the envelope), `label="gaps"` / `label="rule findings"` |
 | Badge source | `TopologyWorkspace` pages `/gaps` and `/rule-findings` at `limit=500` until exhausted, up to **`BADGE_FETCH_MAX_PAGES = 4`** (2,000 items per collection) |
 | Badge coverage disclosure | when the badge fetch stops before exhaustion, the workspace renders the badge-coverage callout **above** `.topology-stage` and the footnote shows `Badges: {mapped} of {total} findings` |
 | Footnote | always shows `{rendered} of {total} nodes` and `{mappedFindings} of {totalFindings} findings`, even when equal |
 
-**Why 100 and not `DEFAULT_PAGE_SIZE`.** `use-table-pagination.ts` exports `DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[0]`
-= **20**, but that constant governs `useTablePagination`, the **client-side** hook for tables whose rows are already
-in memory. The gaps and rule-findings tabs are **server**-paginated: they pass a `pagination` envelope to
-`TablePagination` and never call `useTablePagination`. Their initial size is therefore an explicit request
-parameter, and it is set to **100** to match the server's own `limit=100` default — so the first render fetches
-exactly one page, the truncation disclosure fires on the same boundary the backend already caps at, and the
-`Showing 1–100 of 340` acceptance strings below are exact. Defaulting to 20 would triple the request count for the
-same disclosure with no honesty gain. `DEFAULT_PAGE_SIZE` is **not** changed by this phase.
+**Why 20.** `use-table-pagination.ts` exports `DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[0]`
+= **20**. Although the gaps and rule-findings tabs are server-paginated, their rows are approximately 200px
+finding cards rather than compact table rows. The deployed estate rendered 77 cards in one 15,763px page when
+the original 100-row default was used. The client therefore sends the explicit card-density limit
+`limit=20&offset=0`; the backend default remains unchanged and the topology badge collector keeps its independent
+500-item page size.
 
 **Measurable acceptance**
 
 1. With a fixture of 340 gaps and 620 rule findings, the MetricCard values read exactly `620` and `340 structural or design gaps` — never `100`.
-2. With that fixture, the page-level coverage callout is present and its text contains both `100` and `340`.
-3. `TablePagination` on the gaps tab renders the string `Showing 1–100 of 340 gaps`.
-4. Advancing to page 2 issues exactly one request carrying `offset=100&limit=100` and the range summary updates to `Showing 101–200 of 340 gaps`.
+2. With that fixture, the page-level coverage callout is present and its text contains both `20` and `340`.
+3. `TablePagination` on the gaps tab renders the string `Showing 1–20 of 340 gaps`.
+4. Advancing to page 2 issues exactly one request carrying `offset=20&limit=20` and the range summary updates to `Showing 21–40 of 340 gaps`.
 5. With ≤ 2,000 findings the badge-coverage callout is **absent** and the footnote reads `Badges: {n} of {n} findings`.
 6. With 3,000 findings the badge-coverage callout is **present** and the footnote shows two different numbers.
 7. While either loader is in flight, no MetricCard displays `0`.
 8. When `/gaps` rejects, the gaps MetricCard shows `—` and the gaps tab shows the "Inspection gaps are unavailable" StatePanel containing the sentence "does not mean the estate is clean".
 9. That StatePanel renders a button whose accessible name is exactly `Retry loading inspection gaps`; pressing it issues exactly one new `/gaps` request and no `/topology`, `/rule-findings`, or `/policy` request.
-10. The first `/gaps` and `/rule-findings` requests each carry `limit=100` and `offset=0` explicitly in the query string.
-11. The page-size selector's initially selected option is `100`.
+10. The first `/gaps` and `/rule-findings` requests each carry `limit=20` and `offset=0` explicitly in the query string.
+11. The page-size selector's initially selected option is `20`.
 
 ---
 
@@ -570,7 +568,9 @@ same disclosure with no honesty gain. `DEFAULT_PAGE_SIZE` is **not** changed by 
 | Web default | **Summary.** The web client sends `detail=summary` explicitly. |
 | API default | **unchanged (`full`)** — locked decision 6. The UI must not rely on the server default. |
 | Summary content | no `NetworkSecurityRule`, `Route`, or `FirewallRule` nodes; surviving nodes carry no embedded `details.rules` / `details.routes` / `details.rule_collections` collections |
-| Full-detail guard | if `summary.resource_counts` projects **> 1,500** nodes at full detail, selecting "Full detail" does **not** fetch immediately. It renders a `.callout.callout-warning` with `role="status"`: *"Full detail renders about {n} nodes and may make the canvas slow to interact with."* plus a **Load full detail** button. Below 1,500 nodes the switch fetches directly. |
+| Full-detail guard | if `summary.resource_counts` projects **> 1,500** nodes at full detail **or** the server reports `topology_build_duration_ms > 3,000` from the cached source acquisition, selecting "Full detail" does **not** fetch immediately. It renders a `.callout.callout-warning` with `role="status"` describing the node or observed latency risk plus a **Load full detail** button. Below both thresholds the switch fetches directly. |
+| Long full-detail load | a request still running after 3 seconds keeps the populated summary topology visible, reports elapsed whole seconds in a polite status callout, and exposes **Cancel**. Cancel aborts the browser request and returns the segmented control to the detail level of the retained data; it is not an automatic timeout. |
+| Build-cost signal | `summary.topology_build_duration_ms` is additive and records the cached live-ARG acquisition duration when the hybrid provider supplied the topology. Managed snapshot responses may omit it. The cache TTL begins when acquisition completes, never when it starts, and the five-minute hybrid-network window covers Summary → Full detail → drawer interaction without forcing another cold ARG read. |
 | Position preservation | switching Summary → Full detail must run the incremental layout (`randomize: false`) so existing node positions survive; only the explicit **Re-layout** button may randomize |
 | Drill-down trigger | the drawer's rule/route sections at `detail=summary` render a **Load rules** / **Load routes** / **Load rule collections** button instead of an empty table |
 | Drill-down request | `GET /network/topology/resources/{id}/details` with `offset`/`limit`; default `limit=50` |
@@ -585,11 +585,12 @@ same disclosure with no honesty gain. `DEFAULT_PAGE_SIZE` is **not** changed by 
 3. Selecting an NSG node at `detail=summary` renders a **Load rules** button, and no request is issued until it is pressed.
 4. Pressing it issues exactly one request to `/network/topology/resources/{id}/details` and replaces the button with the rule table.
 5. With a 61-rule NSG, the drawer renders 50 rows plus `Showing 1–50 of 61 rules`.
-6. Choosing "Full detail" on a fixture projecting > 1,500 nodes renders the warning callout and issues **no** topology request until **Load full detail** is pressed.
+6. Choosing "Full detail" on a fixture projecting > 1,500 nodes or carrying `topology_build_duration_ms > 3,000` renders the warning callout and issues **no** topology request until **Load full detail** is pressed.
 7. Switching Summary → Full detail below the guard threshold preserves the on-screen position of at least one node that existed in both graphs.
 8. The segmented control's active option has `aria-pressed="true"`, carries the class `segmented-active`, and exactly one option is pressed at a time.
 9. Neither detail button carries the class `active`; the string `"active"` as a standalone className is absent from `TopologyWorkspace.tsx`.
 10. Choosing "Full detail" above the guard threshold renders the guard callout; its **Load full detail** button and the topology `StatePanel`'s Retry button (R-1) never coexist with the same accessible name.
+11. While a below-guard full-detail request is in flight, the summary canvas and summary-labelled footnote remain mounted with `aria-busy="true"`; after 3 seconds an elapsed status and uniquely named **Cancel full-detail load** control appear.
 
 ---
 
@@ -610,6 +611,7 @@ the exact resources flagged as missing a private endpoint are the ones that cann
 | Generic `PrivateLinkResource` | always icon-less tile; its `entity_type` alone is not a service identity |
 | Legend | one new entry, `Private link candidate`, using the existing `.topology-legend > span::before` dash treatment in `--color-text-muted` (the muted default — **not** a new colour) |
 | Search / filter | private-link nodes participate in label search and filter mode identically to every other node |
+| Default visibility | when primary network topology is present, private-link candidates with no incident relationship are hidden by default so they do not dominate layout or fit. A labelled **Unattached private link candidates** checkbox reveals them, and the footnote states the exact hidden count. A private-link-only estate remains visible rather than becoming an empty canvas. |
 | Drawer | `Kind` fact shows the mapped entity type (e.g. `Fabric Capacity`), plus new facts: `Service kind`, `Public network access`, and a `StatusBadge` `Private link candidate` (tone `info`) in the signals row |
 | Public access | when `details.public_network_access === "Enabled"`, add `StatusBadge` "Public network access enabled" (tone `critical`); when the value is absent, add tone `unknown` badge "Public network access unknown" — **never omit the row silently** |
 | De-duplication | a resource that is both private-endpoint-targeted and a private-link candidate renders **exactly one** node |
@@ -624,6 +626,7 @@ the exact resources flagged as missing a private endpoint are the ones that cann
 5. Selecting such a node opens the drawer with a `Private link candidate` badge and a `Public network access` fact — including when the value is unknown.
 6. When `RESOURCE_ICONS` has no entry, the node renders with `background-image: none` and still renders its severity badge (already covered by `TopologyGraph.test.tsx`'s icon-less badge case).
 7. The legend contains a `Private link candidate` entry and the legend still fits without horizontal scroll at 1280px.
+8. In a mixed graph, unattached candidates are absent from the default rendered projection, attached candidates remain, and the exact hidden count is disclosed; toggling **Unattached private link candidates** restores them.
 
 ---
 
@@ -1020,7 +1023,7 @@ Breakpoints are the ones already in `globals.css`. **No new breakpoint may be in
 | 900–1280px | toolbar wraps to 2 lines; legend wraps | The segmented control must stay adjacent to the search input when they wrap together (they are the two "what am I looking at" controls) |
 | ≤ 900px (`globals.css:5360`) | `.topology-stage` becomes a column; `.topology-canvas-wrap` height 420px; `.topology-drawer` becomes full-width with `max-height: 340px` and a top border | Drill-down tables and the findings section scroll **inside** `.topology-drawer-body`; the drawer must not grow past 340px and must not push the canvas off screen |
 | ≤ 640px | `.metric-grid` collapses (existing rule at `:4578`) | Coverage callouts stack vertically; `{N} of {M}` phrasing must not be abbreviated to fit — wrap instead |
-| 360px (floor) | — | No horizontal scrollbar on `.topology-toolbar`, `.topology-footnote`, `.topology-coverage`, or `.topology-drawer-body`. The footnote grows from 8 items today to **11–13** after Phase 12 (coverage counts, freshness sentence, dropped-edge count, and up to three peer-resolution counts); all wrap freely on the pre-existing `flex-wrap: wrap` + `gap: 14px` (declared spacing exception) and no item may set its own margin. |
+| 360px (floor) | — | No page-level horizontal scrollbar from `.workspace-tabs`, `.topology-toolbar`, `.topology-footnote`, `.topology-coverage`, or `.topology-drawer-body`. The tablist is a contained horizontal scroller with non-shrinking, scroll-snapped tabs, so all five remain reachable without widening the document. The footnote grows from 8 items today to **11–13** after Phase 12 (coverage counts, freshness sentence, dropped-edge count, and up to three peer-resolution counts); all wrap freely on the pre-existing `flex-wrap: wrap` + `gap: 14px` (declared spacing exception) and no item may set its own margin. |
 
 Additional rules:
 
@@ -1074,7 +1077,8 @@ targets. Values are taken from the measured numbers in `12-RESEARCH.md` §Scale 
 | Full-detail node guard | 1,500 projected nodes | Warning callout + explicit **Load full detail** press (C-2) |
 | Layout quality degradation | 100 nodes (`LAYOUT_NODE_BUDGET`, unchanged) | fCoSE drops to `quality: "default"`, `randomize: false` — existing behaviour |
 | Badge fetch budget | 4 pages × 500 items = 2,000 per collection | Badge-coverage callout + footnote disclosure (C-1) |
-| Server topology build | p95 < 1 s at enterprise size (646 ms measured) | If exceeded, the loading StatePanel remains; no client-side timeout is introduced |
+| Server topology build | p95 < 1 s at enterprise size (646 ms measured) | The cached source acquisition duration is published. Above 3 s, full detail requires confirmation; an in-flight request retains context, reports elapsed time, and offers explicit Cancel. No automatic client-side timeout is introduced. |
+| Hybrid network reuse | 5 minutes from completed ARG acquisition | Summary, Full detail, and drawer requests in one operator workflow reuse the same completed observation; freshness remains explicit through the response evidence timestamp. |
 | Refetch debounce | 400 ms | At most one refetch per loader per window (C-6) |
 | Drill-down page size | 50 rows | `TablePagination` (C-2) |
 | Node-count disclosure | always | Footnote reports `{rendered} of {total}` even when equal |

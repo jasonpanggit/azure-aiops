@@ -25,10 +25,9 @@ CREATE_ADDRESSES = frozenset(
             f"fabric_workspace_role_assignment.ontology_evidence_{name}[0]"
             for name in _ROLE_NAMES
         },
-        *{
-            f"fabric_onelake_data_access_security.ontology_evidence_{name}[0]"
-            for name in _ROLE_NAMES
-        },
+        # fabric_onelake_data_access_security resources removed — now managed
+        # by scripts/reconcile_onelake_data_access_roles.py via Fabric REST API
+        # due to provider 1.13 ManagedIdentity round-tripping bug.
     }
 )
 UPDATE_ADDRESSES = frozenset(
@@ -137,7 +136,6 @@ def _validate_evidence_roles(
     production_workspace_id: str,
 ) -> None:
     workspace_ids: set[str] = set()
-    data_workspace_ids: set[str] = set()
     for name in _ROLE_NAMES:
         workspace_address = (
             "fabric_workspace_role_assignment."
@@ -163,60 +161,12 @@ def _validate_evidence_roles(
             )
         workspace_ids.add(workspace_id)
 
-        data_address = (
-            "fabric_onelake_data_access_security."
-            f"ontology_evidence_{name}[0]"
-        )
-        data_role = rows[data_address].get("after")
-        data_role = data_role if isinstance(data_role, Mapping) else {}
-        data_workspace_id = str(data_role.get("workspace_id") or "")
-        if (
-            not data_workspace_id
-            or data_workspace_id == production_workspace_id
-            or not data_role.get("item_id")
-            or data_role.get("role_name") != "Phase13EvidenceRead"
-        ):
-            raise EvidencePlanError(
-                f"{data_address} targets a forbidden workspace or item"
-            )
-        rules = data_role.get("decision_rules")
-        rules = rules if isinstance(rules, list) else []
-        if len(rules) != 1 or not isinstance(rules[0], Mapping):
-            raise EvidencePlanError(f"{data_address} must have one permit rule")
-        permissions = rules[0].get("permission")
-        permissions = permissions if isinstance(permissions, list) else []
-        normalized_permissions = {
-            (
-                str(permission.get("attribute_name") or ""),
-                tuple(permission.get("attribute_value_included_in") or ()),
-            )
-            for permission in permissions
-            if isinstance(permission, Mapping)
-        }
-        members = data_role.get("members")
-        members = members if isinstance(members, Mapping) else {}
-        entra = members.get("microsoft_entra_members")
-        entra = entra if isinstance(entra, list) else []
-        if (
-            rules[0].get("effect") != "Permit"
-            or normalized_permissions != {("Path", ("*",)), ("Action", ("Read",))}
-            or members.get("fabric_item_members") not in (None, [])
-            or entra
-            != [
-                {
-                    "object_id": expected_principal_id,
-                    "object_type": "ManagedIdentity",
-                    "tenant_id": entra[0].get("tenant_id") if entra else None,
-                }
-            ]
-            or not entra[0].get("tenant_id")
-        ):
-            raise EvidencePlanError(
-                f"{data_address} is not exact OneLake Path wildcard Read"
-            )
-        data_workspace_ids.add(data_workspace_id)
+        # fabric_onelake_data_access_security validation removed — those
+        # resources are now managed by the REST reconciliation script
+        # (scripts/reconcile_onelake_data_access_roles.py) due to Fabric
+        # provider 1.13 ManagedIdentity round-tripping bug.
 
-    if len(workspace_ids) != 5 or workspace_ids != data_workspace_ids:
+    if len(workspace_ids) != 5:
         raise EvidencePlanError("evidence roles must target five exact workspaces")
 
 

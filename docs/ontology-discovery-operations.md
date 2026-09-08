@@ -6,186 +6,6 @@ candidates, immutable stages, the active generation, exports, and all
 consumers. There is no release, canary, allowlist, or activation option in the
 live validator.
 
-## Plan 20 fixed-template deployed lifecycle
-
-Plan 20 is a separate, fail-closed validation procedure. It does not use the
-legacy ambient-credential shadow command described later in this document.
-It runs only in the `validation` environment and preserves every ontology pair
-at `BLOCKED/PENDING`.
-
-### Credential boundary
-
-Use exactly one local Azure CLI home:
-
-- `AIOPS_DEPLOYER_AZURE_CONFIG_DIR`: the deployment principal. The directory
-  must already exist with mode `0700`; this is the only local identity that may
-  read/start the named deployed ontology Jobs.
-
-Do not create `AIOPS_EVIDENCE_AZURE_CONFIG_DIR`, copy a deployer token cache, or
-reuse the deployer as read-only evidence. Distinct evidence is produced only
-by the fixed, manual-only `ontology-evidence-read` ACA Job. That Job is attached
-only to the pre-existing Azure MCP UAI, has no schedule/API token/runtime Job
-control, and receives only Fabric Viewer plus OneLake `Path=["*"]`,
-`Action=["Read"]` on the five isolated Phase 13 Lakehouse items. Its immutable
-image emits one Entra-bound sanitized JSON record containing hashes, counts,
-closed statuses, and no raw IDs, paths, correlations, prompts, bodies, or
-tokens.
-
-Before any Job execution, verify no Terraform plan/apply process owns the
-deployment lane. Terraform language servers and read-only MCP servers do not
-own that lane; `terraform plan`, `terraform apply`, and wrapper processes that
-can apply state do. Do not build, push, apply, restart apps, or alter saved Job
-templates while Exposure owns the lane.
-
-### Secure target derivation
-
-Resolve API/web URLs, resource group, Foundry endpoint/name, and state and
-validation Fabric IDs from canonical Terraform outputs or the already
-deployed Job templates. Resolve the subscription from the isolated deployer
-context, use connection `demo`, and obtain API credentials through the
-approved secret channel. Keep tokens in process memory only. Do not print,
-persist, hash together with public fields, or pass tokens on a command line.
-
-The deployment evidence gate is:
-
-```bash
-uv run python scripts/validate_ontology_deployment_plan.py \
-  --evidence .planning/eval/ontology-gap-deployment.json \
-  --require-applied \
-  --assert-fixed-fixture-job-templates \
-  --assert-no-runtime-job-start-grants \
-  --assert-validation-connection-root \
-  --assert-coordinator-injection-tag
-```
-
-The applied API/Job digest is
-`sha256:8c2ff509670daf392f1eae8f7b0105f9469243bd704c1a38bb5bf70b114e8ecd`
-and the applied web digest is
-`sha256:bde3d582c0d96ee3f69ab89690cf5ba8a2d498e1a6fc4a567e09a95063eca84f`.
-The validator compares saved-template hashes against the applied Plan 19
-evidence before and after every execution.
-
-### Exact lifecycle order
-
-1. **Preflight.** Prove the one local deployer context is mode `0700`, no local
-   evidence context or credential bleed exists, the fixed evidence Job has the
-   distinct Azure MCP UAI, deployer-only Job control, exact Viewer/OneLake Read
-   access, no runtime Job-start grant, exact validation roots, and all six
-   unchanged saved-template hashes.
-2. **Prepare.** Start `ontology-fixture-prepare` with the saved template. The
-   `az containerapp job start` request contains only resource group, Job name,
-   and output format. Accept only a server-generated active drill with one
-   epoch, exactly three unique records, a bounded TTL, owner/fence hashes, and
-   a create-only prepare receipt. The Job must exit while all three records
-   remain active.
-3. **Drain.** Repeatedly start the ordinary
-   `aiops-dev-ontology-discovery` template. Each pass may select at most one
-   member. Read durable epoch/cursor/authorization receipts through the
-   fixed evidence Job. A deferred retry must rotate behind a later member, all
-   three prepared members must terminate or close-exclude, and at least two
-   execution hashes must share one epoch/snapshot lineage. Do not create or
-   edit fixture records after the epoch is selected.
-4. **Injection traversal.** Read the Terraform-owned coordinator UAI and exact
-   `aiops_validation_fixture` tag through real ARG. Require the same resource
-   and tag hashes in authoritative inventory, bounded evidence, and the
-   deployed `OntologyCurator` trace. The trace must use exactly
-   `list_changed_entities`, `get_entity_evidence`,
-   `get_ontology_vocabulary`, and `search_relationship_history`, preserve the
-   authorized scope, make zero mutation attempts, and create zero
-   authoritative model edges.
-5. **Cleanup.** Start `ontology-fixture-cleanup` with its unchanged template
-   and no overrides. Cleanup must resolve the single active drill
-   server-side, match owner/fence, remove exactly its three records and epoch,
-   and retain immutable prepare/cleanup/sweep audit. Independently observe
-   zero fixture connections and zero prepared epochs through the evidence
-   identity. Never widen deletion when ownership cannot be proven.
-6. **Maintenance.** Prove the general operator is denied, the dedicated
-   maintenance grant is accepted and coordinator-reauthorized, the next run
-   is full, and the following unchanged run is incremental.
-7. **Publication.** Reconstruct manual intake through coordinator claim and
-   publish dispatch, then publisher claim/status and a fresh API reload.
-   Exercise only server-owned fixed-template stale-writer and allowlisted
-   post-check controls. Require stale fence/ETag rejection, automatic rollback,
-   one-shot cleanup, direct stage/validation/materialization/CAS/post-check
-   receipts, and `old → new → old` convergence across API, Fabric, agent,
-   export, and semantic consumers.
-8. **Finalize.** Recheck template hashes, identity action sets, empty fixture
-   state, retained audit, the unchanged Terraform tag, zero authoritative
-   model edges, and `BLOCKED/PENDING` release for every pair.
-
-The fixed start shape is always:
-
-```bash
-az containerapp job start \
-  --resource-group <derived-resource-group> \
-  --name <deployed-fixed-job-name> \
-  -o json
-```
-
-Never add `--command`, `--args`, `--env-vars`, `--image`,
-`--mi-user-assigned`, replica, timeout, retry, or completion overrides. Never
-use `az containerapp job update` during the drill.
-
-Use one checkpoint and one sanitized output across stages:
-
-```bash
-uv run python scripts/validate_ontology_discovery_live.py \
-  --stage lifecycle --environment validation --shadow \
-  --resume-file .planning/eval/ontology-deployed-lifecycle.checkpoint.json \
-  --output .planning/eval/ontology-deployed-lifecycle.json \
-  --max-wait-seconds 1800 \
-  --assert-isolated-azure-contexts \
-  --assert-deployer-only-job-start \
-  --assert-evidence-read-only \
-  --assert-no-runtime-job-start-grants \
-  --assert-fixed-job-template-hashes \
-  --assert-no-job-overrides \
-  --assert-fixture-prepare \
-  --assert-exact-three-records \
-  --assert-validation-connection-root \
-  --assert-production-registry-path \
-  --assert-eligible-set-drain \
-  --assert-no-post-selection-injection \
-  --assert-process-replacement \
-  --assert-coordinator-uai-injection-tag \
-  --assert-real-arg-inventory-curator-path \
-  --assert-exact-four-curator-tools \
-  --assert-maintenance-authorization \
-  --assert-full-then-incremental \
-  --assert-fixture-cleanup \
-  --assert-audit-retention \
-  --assert-fixture-registry-empty \
-  --assert-authoritative-model-edge-count-zero \
-  --fail-on-local-substitution \
-  --fail-on-missing-evidence
-```
-
-If any stage fails, preserve the opaque checkpoint and immutable server
-receipts. Do not hand-edit evidence, inject replacement state, or skip ahead.
-The checkpoint may contain only stage names encoded as SHA-256 step keys and
-opaque evidence hashes; raw IDs, roots, tags, prompts, commands, tokens, and
-errors are forbidden.
-
-### Current OneLake provider blocker
-
-The 2026-09-07 targeted rollout passed its exact allowlist gate (11 creates,
-five Phase 13 Job image-only updates, zero replace/destroy). Fabric provider
-1.13.0 then failed to round-trip the official Microsoft Entra
-`ManagedIdentity` member: the API response omitted `object_type` and normalized
-the absent `fabric_item_members` collection to `[]`, producing
-`Provider produced inconsistent result after apply`. The fixed evidence Job
-was therefore not created and no lifecycle Job was started. Per the security
-gate, do not change the member to `ServicePrincipal`, ignore drift, replace
-`DefaultReader`, grant Contributor/Member/Admin, or continue Plan 21. Resume
-only after the provider/API safely preserves `ManagedIdentity` with
-`Path=["*"]`, `Action=["Read"]`.
-
-Cloud operations are additionally frozen while Exposure Plan 03.1-19 owns the
-shared deployment and Job-control lane. Until the owner explicitly releases
-that lane, Plan 20 work is local-only: code, tests, documentation, and commits.
-Do not build or push images, generate or apply Terraform plans, or start/stop
-any ACA Job.
-
 ## Credentialed validation
 
 ### Prerequisites
@@ -369,3 +189,35 @@ of the following:
 Until that new plan is reviewed and implemented, no CLI flag, UI action,
 review decision, configuration field, or synthetic test result can enable a
 pair.
+
+## OneLake data-access role reconciliation
+
+The five `Phase13EvidenceRead` OneLake data-access roles for the evidence
+identity are managed outside Terraform due to the Fabric provider 1.13
+ManagedIdentity round-tripping bug. See
+[docs/onelake-data-access-role-migration.md](onelake-data-access-role-migration.md)
+for the full migration procedure.
+
+### Dry-run (read-only verification)
+
+```bash
+uv run python scripts/reconcile_onelake_data_access_roles.py \
+  --items-json /path/to/evidence-items.json \
+  --object-id <AZURE_MCP_PRINCIPAL_ID> \
+  --tenant-id <TENANT_ID>
+```
+
+### Apply (with ETag preconditions and post-write verification)
+
+```bash
+uv run python scripts/reconcile_onelake_data_access_roles.py \
+  --items-json /path/to/evidence-items.json \
+  --object-id <AZURE_MCP_PRINCIPAL_ID> \
+  --tenant-id <TENANT_ID> \
+  --apply
+```
+
+The script acquires credentials via `DefaultAzureCredential`. No secrets
+appear on the CLI. Each item receives a dry-run comparison before write,
+ETag-guarded PUT, and post-write GET verification. Unrelated roles on the
+same item are preserved in the PUT payload.

@@ -69,6 +69,11 @@ export interface TopologyGraph {
   groups: TopologyGroupData[];
   nodes: TopologyNodeData[];
   edges: TopologyEdgeData[];
+  hiddenUnattachedPrivateLinkCount: number;
+}
+
+export interface TopologyGraphOptions {
+  showUnattachedPrivateLinkCandidates?: boolean;
 }
 
 /**
@@ -334,8 +339,13 @@ function resolveNodeId(byFoldedId: Map<string, string>, id: string): string | un
  * known unknown rather than silently dropping the relationship. Peerings are
  * de-duplicated on the unordered VNet pair so a bidirectional link draws once.
  */
-export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
-  if (topology.resources?.length) return buildResourceTopologyGraph(topology);
+export function buildTopologyGraph(
+  topology: NetworkTopology,
+  options: TopologyGraphOptions = {},
+): TopologyGraph {
+  if (topology.resources?.length) {
+    return buildResourceTopologyGraph(topology, options);
+  }
 
   const nodes = new Map<string, TopologyNodeData>();
   const resolutions = peerResolutionByFoldedId(topology);
@@ -436,10 +446,14 @@ export function buildTopologyGraph(topology: NetworkTopology): TopologyGraph {
     groups: Array.from(groups.values()),
     nodes: Array.from(nodes.values()),
     edges: Array.from(edges.values()),
+    hiddenUnattachedPrivateLinkCount: 0,
   };
 }
 
-function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
+function buildResourceTopologyGraph(
+  topology: NetworkTopology,
+  options: TopologyGraphOptions,
+): TopologyGraph {
   const nodes = new Map<string, TopologyNodeData>();
   const resourceIdsByFoldedId = new Map<string, string>();
   for (const resource of topology.resources ?? []) {
@@ -524,9 +538,44 @@ function buildResourceTopologyGraph(topology: NetworkTopology): TopologyGraph {
     });
   }
 
-  return {
+  const graph = {
     groups: Array.from(groups.values()),
     nodes: Array.from(nodes.values()),
     edges: Array.from(edges.values()),
+    hiddenUnattachedPrivateLinkCount: 0,
+  };
+  if (options.showUnattachedPrivateLinkCandidates !== false) return graph;
+
+  const connectedNodeIds = new Set(
+    graph.edges.flatMap((edge) => [edge.source, edge.target]),
+  );
+  const isPrivateLinkCandidate = (node: TopologyNodeData) =>
+    node.details?.private_link_candidate === true;
+  const hasPrimaryTopology = graph.nodes.some(
+    (node) => !isPrivateLinkCandidate(node),
+  );
+  if (!hasPrimaryTopology) return graph;
+
+  const hiddenIds = new Set(
+    graph.nodes
+      .filter(
+        (node) =>
+          isPrivateLinkCandidate(node) && !connectedNodeIds.has(node.id),
+      )
+      .map((node) => node.id),
+  );
+  if (hiddenIds.size === 0) return graph;
+
+  const visibleNodes = graph.nodes.filter((node) => !hiddenIds.has(node.id));
+  const visibleParentIds = new Set(
+    visibleNodes.flatMap((node) => (node.parent ? [node.parent] : [])),
+  );
+  return {
+    groups: graph.groups.filter((group) => visibleParentIds.has(group.id)),
+    nodes: visibleNodes,
+    edges: graph.edges.filter(
+      (edge) => !hiddenIds.has(edge.source) && !hiddenIds.has(edge.target),
+    ),
+    hiddenUnattachedPrivateLinkCount: hiddenIds.size,
   };
 }
