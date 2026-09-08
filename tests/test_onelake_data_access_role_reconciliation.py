@@ -97,6 +97,11 @@ def _contract() -> dict[str, object]:
     )
     return {
         "principal_object_id": OBJECT_ID,
+        "principal_resource_id": (
+            "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "resourceGroups/rg/providers/Microsoft.ManagedIdentity/"
+            "userAssignedIdentities/evidence"
+        ),
         "tenant_id": TENANT_ID,
         "targets": {
             name: {
@@ -109,11 +114,12 @@ def _contract() -> dict[str, object]:
 
 
 def test_contract_requires_exactly_five_isolated_targets() -> None:
-    items, object_id, tenant_id = parse_contract(_contract())
+    items, object_id, tenant_id, resource_id = parse_contract(_contract())
 
     assert len(items) == 5
     assert object_id == OBJECT_ID
     assert tenant_id == TENANT_ID
+    assert resource_id.endswith("/userAssignedIdentities/evidence")
 
     invalid = _contract()
     invalid["targets"].pop("ontology_dispatch")
@@ -133,6 +139,7 @@ class TestBuildDesiredRole:
     def test_role_name_is_canonical(self) -> None:
         role = build_desired_role(OBJECT_ID, TENANT_ID)
         assert role["name"] == EVIDENCE_ROLE_NAME
+        assert role["kind"] == "Policy"
 
     def test_single_permit_rule_with_wildcard_path_and_read_action(self) -> None:
         role = build_desired_role(OBJECT_ID, TENANT_ID)
@@ -259,6 +266,22 @@ class TestVerifyRolesMatch:
         wrong_member["members"]["microsoftEntraMembers"][0]["objectType"] = "User"
         with pytest.raises(VerificationDriftError, match="drift"):
             verify_roles_match([wrong_member], desired)
+
+    def test_accepts_omitted_object_type_only_with_entra_managed_identity_proof(
+        self,
+    ) -> None:
+        desired = _expected_evidence_role()
+        omitted = copy.deepcopy(desired)
+        del omitted["members"]["microsoftEntraMembers"][0]["objectType"]
+
+        with pytest.raises(VerificationDriftError, match="drift"):
+            verify_roles_match([omitted], desired)
+
+        verify_roles_match(
+            [omitted],
+            desired,
+            verified_principal_type="ManagedIdentity",
+        )
 
     def test_passes_with_additional_unrelated_roles(self) -> None:
         desired = _expected_evidence_role()
@@ -572,7 +595,7 @@ class TestReconcileItemRolesIdempotency:
 
 
 def test_batch_uses_in_memory_bearer_token() -> None:
-    items, _, _ = parse_contract(_contract())
+    items, _, _, _ = parse_contract(_contract())
     fake_client = MagicMock()
     context = MagicMock()
     context.__enter__.return_value = fake_client

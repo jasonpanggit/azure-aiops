@@ -104,8 +104,9 @@ output "ontology_evidence_role_contract" {
   description = "Exact five-item contract consumed by the external OneLake ManagedIdentity Read reconciler."
   sensitive   = true
   value = var.enable_fabric && var.ontology_discovery_environment == "validation" ? {
-    principal_object_id = azurerm_user_assigned_identity.azure_mcp.principal_id
-    tenant_id           = var.tenant_id
+    principal_object_id   = azurerm_user_assigned_identity.azure_mcp.principal_id
+    principal_resource_id = azurerm_user_assigned_identity.azure_mcp.id
+    tenant_id             = var.tenant_id
     targets = {
       ontology_discovery_state = {
         workspace_id = fabric_workspace.ontology_discovery_state[0].id

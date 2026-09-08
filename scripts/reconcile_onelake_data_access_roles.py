@@ -49,7 +49,7 @@ EVIDENCE_ROLE_NAME = "Phase13EvidenceRead"
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds, doubled per attempt
-SERVER_ROLE_KEYS = frozenset({"eTag", "id", "kind"})
+SERVER_ROLE_KEYS = frozenset({"eTag", "etag", "id"})
 
 # The five Phase 13 evidence Lakehouse items.
 EVIDENCE_ITEMS = (
@@ -87,6 +87,7 @@ def build_desired_role(object_id: str, tenant_id: str) -> dict[str, Any]:
 
     return {
         "name": EVIDENCE_ROLE_NAME,
+        "kind": "Policy",
         "decisionRules": [
             {
                 "effect": "Permit",
@@ -143,10 +144,44 @@ def merge_roles(
     return merged
 
 
-def _roles_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+def _role_semantics(
+    role: Mapping[str, Any],
+    *,
+    verified_principal_type: str | None = None,
+) -> dict[str, Any]:
+    normalized = _request_role(role)
+    members = normalized.get("members")
+    members = dict(members) if isinstance(members, Mapping) else {}
+    entra = members.get("microsoftEntraMembers")
+    if (
+        verified_principal_type == "ManagedIdentity"
+        and isinstance(entra, list)
+        and len(entra) == 1
+        and isinstance(entra[0], Mapping)
+        and not entra[0].get("objectType")
+    ):
+        member = dict(entra[0])
+        member["objectType"] = verified_principal_type
+        members["microsoftEntraMembers"] = [member]
+        normalized["members"] = members
+    return normalized
+
+
+def _roles_equal(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    *,
+    verified_principal_type: str | None = None,
+) -> bool:
     """Deep-compare two role dicts by canonical JSON."""
-    return json.dumps(_request_role(a), sort_keys=True) == json.dumps(
-        _request_role(b),
+    return json.dumps(
+        _role_semantics(
+            a,
+            verified_principal_type=verified_principal_type,
+        ),
+        sort_keys=True,
+    ) == json.dumps(
+        _role_semantics(b),
         sort_keys=True,
     )
 
@@ -175,12 +210,17 @@ def _validated_uuid(value: str, label: str) -> str:
 
 def parse_contract(
     value: object,
-) -> tuple[list[tuple[str, str, str]], str, str]:
+) -> tuple[list[tuple[str, str, str]], str, str, str]:
     """Parse the exact five-item Terraform output without CLI identifiers."""
 
     if not isinstance(value, Mapping):
         raise DataAccessRoleReconciliationError("role contract must be an object")
-    if set(value) != {"principal_object_id", "tenant_id", "targets"}:
+    if set(value) != {
+        "principal_object_id",
+        "principal_resource_id",
+        "tenant_id",
+        "targets",
+    }:
         raise DataAccessRoleReconciliationError(
             "role contract has unexpected fields"
         )
@@ -208,10 +248,19 @@ def parse_contract(
                 _validated_uuid(str(row.get("item_id")), "item_id"),
             )
         )
+    resource_id = str(value.get("principal_resource_id") or "").strip()
+    if (
+        "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+        not in resource_id
+    ):
+        raise DataAccessRoleReconciliationError(
+            "principal resource must be a user-assigned managed identity"
+        )
     return (
         items,
         _validated_uuid(str(value.get("principal_object_id")), "objectId"),
         _validated_uuid(str(value.get("tenant_id")), "tenantId"),
+        resource_id,
     )
 
 
@@ -279,6 +328,8 @@ def _list_roles(client: Any, url: str) -> tuple[list[dict[str, Any]], str]:
 def verify_roles_match(
     actual_roles: list[dict[str, Any]],
     desired: dict[str, Any],
+    *,
+    verified_principal_type: str | None = None,
 ) -> None:
     """Fail closed if the desired role is missing or drifted."""
     found = _find_role(actual_roles, desired["name"])
@@ -286,11 +337,13 @@ def verify_roles_match(
         raise VerificationDriftError(
             f"role {desired['name']!r} not found in response after PUT"
         )
-    if not _roles_equal(found, desired):
+    if not _roles_equal(
+        found,
+        desired,
+        verified_principal_type=verified_principal_type,
+    ):
         raise VerificationDriftError(
-            f"role {desired['name']!r} drift detected: "
-            f"expected={json.dumps(desired, sort_keys=True)}, "
-            f"actual={json.dumps(found, sort_keys=True)}"
+            "evidence role drifted from exact ManagedIdentity Read"
         )
 
 
@@ -310,6 +363,7 @@ def reconcile_item_roles(
     object_id: str,
     tenant_id: str,
     dry_run: bool = True,
+    verified_principal_type: str | None = None,
 ) -> dict[str, Any]:
     """Reconcile data-access roles for one Lakehouse item.
 
@@ -341,7 +395,11 @@ def reconcile_item_roles(
 
         # ---- Check convergence ----
         existing_evidence = _find_role(current_roles, EVIDENCE_ROLE_NAME)
-        if existing_evidence is not None and _roles_equal(existing_evidence, desired):
+        if existing_evidence is not None and _roles_equal(
+            existing_evidence,
+            desired,
+            verified_principal_type=verified_principal_type,
+        ):
             return {
                 "already_converged": True,
                 "would_change": False,
@@ -435,7 +493,11 @@ def reconcile_item_roles(
 
         # ---- POST-WRITE VERIFICATION ----
         actual_roles, verified_etag = _list_roles(client, url)
-        verify_roles_match(actual_roles, desired)
+        verify_roles_match(
+            actual_roles,
+            desired,
+            verified_principal_type=verified_principal_type,
+        )
         if _unrelated_roles(actual_roles) != unrelated_before:
             raise VerificationDriftError("unrelated OneLake roles changed")
 
@@ -466,6 +528,7 @@ def reconcile_all_evidence_items(
     object_id: str,
     tenant_id: str,
     token_provider: Callable[[], str],
+    principal_type_provider: Callable[[str], str] | None = None,
     dry_run: bool = True,
 ) -> list[dict[str, Any]]:
     """Reconcile the evidence read role across all five Phase 13 items.
@@ -508,6 +571,18 @@ def reconcile_all_evidence_items(
 
     # Acquire token once for the batch.
     token = token_provider()
+    verified_principal_type = (
+        principal_type_provider(object_id)
+        if principal_type_provider is not None
+        else None
+    )
+    if (
+        principal_type_provider is not None
+        and verified_principal_type != "ManagedIdentity"
+    ):
+        raise DataAccessRoleReconciliationError(
+            "evidence principal is not an Entra managed identity"
+        )
 
     with httpx.Client(
         headers={"Authorization": f"Bearer {token}"},
@@ -526,6 +601,7 @@ def reconcile_all_evidence_items(
                 object_id=object_id,
                 tenant_id=tenant_id,
                 dry_run=dry_run,
+                verified_principal_type=verified_principal_type,
             )
             result["logical_name"] = logical_name
             results.append(result)
@@ -596,6 +672,53 @@ def _get_token_from_azure_cli(config_dir: Path) -> str:
     return token
 
 
+def _get_principal_type_from_azure_cli(
+    config_dir: Path,
+    object_id: str,
+    resource_id: str,
+) -> str:
+    resolved = config_dir.expanduser().resolve(strict=True)
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "AZURE_TENANT_ID",
+            "ARM_CLIENT_ID",
+            "ARM_CLIENT_SECRET",
+            "ARM_TENANT_ID",
+        }
+    }
+    environment["AZURE_CONFIG_DIR"] = str(resolved)
+    completed = subprocess.run(
+        [
+            "az",
+            "identity",
+            "show",
+            "--ids",
+            resource_id,
+            "--query",
+            "principalId",
+            "--output",
+            "tsv",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env=environment,
+    )
+    principal_id = completed.stdout.strip()
+    if completed.returncode != 0 or principal_id.casefold() != object_id.casefold():
+        raise DataAccessRoleReconciliationError(
+            "evidence principal managed-identity proof failed"
+        )
+    return "ManagedIdentity"
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -627,7 +750,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     args = _parser().parse_args(argv)
-    items, object_id, tenant_id = parse_contract(json.load(args.contract_file))
+    items, object_id, tenant_id, resource_id = parse_contract(
+        json.load(args.contract_file)
+    )
     dry_run = not args.apply
 
     if dry_run:
@@ -640,6 +765,13 @@ def main(argv: list[str] | None = None) -> int:
         object_id=object_id,
         tenant_id=tenant_id,
         token_provider=lambda: _get_token_from_azure_cli(args.azure_config_dir),
+        principal_type_provider=lambda object_id: (
+            _get_principal_type_from_azure_cli(
+                args.azure_config_dir,
+                object_id,
+                resource_id,
+            )
+        ),
         dry_run=dry_run,
     )
 
@@ -648,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "PASS",
         "sanitized": True,
         "target_count": len(results),
+        "principal_type_proof_hash": _opaque("ManagedIdentity"),
         "results": results,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
