@@ -176,6 +176,14 @@ describe("durable Situation detail", () => {
     expect(await screen.findByText("No audit events are visible in this scope.")).toBeInTheDocument();
   });
 
+  it("shows audit service failure separately from successful empty history", async () => {
+    audit.mockRejectedValueOnce(new Error("audit backend offline"));
+    render(<ScopeProvider><SituationDetailPage params={{ id: "situation://one" }} /></ScopeProvider>);
+
+    expect(await screen.findByText("Audit history unavailable from the service")).toBeInTheDocument();
+    expect(screen.queryByText("No audit events are visible in this scope.")).not.toBeInTheDocument();
+  });
+
   it("offers a read-only Copilot entry point that opens the shared drawer in place", async () => {
     render(<ScopeProvider><SituationDetailPage params={{ id: "situation://one" }} /></ScopeProvider>);
     const trigger = await screen.findByRole("button", { name: "Ask Copilot about this situation" });
