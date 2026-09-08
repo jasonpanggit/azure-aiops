@@ -201,10 +201,20 @@ resource "azurerm_container_app_job" "ontology_publisher" {
     identity = azurerm_user_assigned_identity.ontology_publisher.id
   }
 
-  schedule_trigger_config {
-    cron_expression          = "*/5 * * * *"
-    parallelism              = 1
-    replica_completion_count = 1
+  dynamic "schedule_trigger_config" {
+    for_each = var.ontology_discovery_environment == "validation" ? [] : [1]
+    content {
+      cron_expression          = "*/5 * * * *"
+      parallelism              = 1
+      replica_completion_count = 1
+    }
+  }
+  dynamic "manual_trigger_config" {
+    for_each = var.ontology_discovery_environment == "validation" ? [1] : []
+    content {
+      parallelism              = 1
+      replica_completion_count = 1
+    }
   }
 
   template {

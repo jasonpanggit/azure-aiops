@@ -155,6 +155,26 @@ def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> N
     assert "fabric_lakehouse.context_graph[0].id" not in job
 
 
+def test_validation_publisher_is_manual_only() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    job = _resource(
+        terraform,
+        "azurerm_container_app_job",
+        "ontology_publisher",
+    )
+
+    assert 'dynamic "manual_trigger_config"' in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [1] : []"
+    ) in job
+    assert 'dynamic "schedule_trigger_config"' in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [] : [1]"
+    ) in job
+
+
 def test_validator_script_is_packaged_in_the_api_image() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 

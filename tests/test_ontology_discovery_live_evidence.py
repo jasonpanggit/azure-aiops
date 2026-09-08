@@ -24,6 +24,7 @@ from scripts.validate_ontology_discovery_live import (
     build_job_start_command,
     derive_cleanup_evidence,
     derive_coordinator_selection_receipt,
+    derive_drain_evidence,
     derive_injection_evidence,
     derive_maintenance_evidence,
     derive_prepare_evidence,
@@ -427,6 +428,58 @@ def test_selection_receipts_are_snapshot_diffs_not_synthesized_flags() -> None:
             drifted,
             {"execution_hash": "sha256:" + "b" * 64},
         )
+
+
+def test_drain_uses_durable_rotation_history_after_resume() -> None:
+    prepared = _snapshot(
+        cursor=0,
+        outcomes=("pending", "pending", "pending"),
+        attempts=(0, 0, 0),
+    )
+    drained = _snapshot(
+        cursor=0,
+        outcomes=(
+            "exhausted_failure",
+            "exhausted_failure",
+            "exhausted_failure",
+        ),
+        attempts=(3, 3, 3),
+    )
+    drained["facts"]["epoch"]["status"] = "drained"
+    drained["facts"]["epoch"]["active_epoch_count"] = 0
+    drained["facts"]["epoch"]["revision"] = 18
+    drained["facts"]["runs"] = {
+        "count": 3,
+        "records": [
+            {
+                "connection_hash": "sha256:" + str(index) * 64,
+                "attempt_count": 3,
+                "authorization_hash": "sha256:" + str(index) * 64,
+                "process_hashes": [
+                    "sha256:" + str(index + offset) * 64
+                    for offset in (1, 2, 3)
+                ],
+            }
+            for index in (1, 2, 3)
+        ],
+    }
+    preflight = {
+        "contract": {
+            "validation_connection_root_hash": "sha256:" + "a" * 64,
+        }
+    }
+
+    result = derive_drain_evidence(
+        preflight=preflight,
+        prepared=prepared,
+        receipts=[],
+        final_snapshot=drained,
+    )
+
+    assert result["durable_rotation_proof"] is True
+    assert result["retry_rotated"] is True
+    assert result["later_member_progress"] is True
+    assert len(result["selection_receipts"]) == 3
 
 
 def test_injection_derivation_requires_direct_arg_batch_dispatch_and_tool_facts() -> None:
