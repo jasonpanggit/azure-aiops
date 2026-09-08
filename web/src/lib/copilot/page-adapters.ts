@@ -866,20 +866,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     requestedScope: input.scope,
     snapshot,
     uncertainty,
-    starterQuestions: [
-      {
-        label: "Review visible inventory health",
-        specialistId: "inventory_data_health",
-        tool: "inventory_resources",
-        toolArguments: {},
-      },
-      {
-        label: "Where is inventory coverage incomplete?",
-        specialistId: "inventory_data_health",
-        tool: "inventory_resources",
-        toolArguments: {},
-      },
-    ],
+    starterQuestions: INVENTORY_STARTERS,
   };
 }
 
@@ -2131,6 +2118,26 @@ const CORE_PAGE_CONFIG = {
     pageId: "remediation",
   },
 } as const;
+
+const INVENTORY_STARTERS: Array<{
+  label: string;
+  specialistId: string;
+  tool: string;
+  toolArguments: Record<string, unknown>;
+}> = [
+  {
+    label: "Review visible inventory health",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+  {
+    label: "Where is inventory coverage incomplete?",
+    specialistId: "inventory_data_health",
+    tool: "inventory_resources",
+    toolArguments: {},
+  },
+];
 
 const OVERVIEW_STARTERS: CoreCopilotStarterQuestion[] = [
   {
@@ -5530,3 +5537,41 @@ export const CORE_COPILOT_PAGE_ADAPTERS = {
   "/remediation": buildRemediationCopilotContext,
   "/situations": buildSituationsCopilotContext,
 } as const;
+
+/**
+ * Reviewed starter specialist/tool hints per integrated route.
+ *
+ * Each value is the exact hint set the route's adapter emits -- the shared
+ * static hint constants, or a representative instance for the id-parameterized
+ * detail routes (the specialist and tool are invariant to the id). The Plan
+ * 11-16 manifest-parity gate proves every hint here maps to an authorized
+ * manifest specialist and a granted tool, and that the union of these hints
+ * plus each route's page-kind anchor owners equals the versioned specialist
+ * portfolio exactly (D-03, D-05, D-06). Hints carry advisory routing only;
+ * backend policy still authorizes every specialist and tool execution.
+ */
+export const COPILOT_ROUTE_STARTER_HINTS: Record<string, readonly CoreCopilotStarterQuestion[]> = {
+  "/": OVERVIEW_STARTERS,
+  "/network": NETWORK_STARTERS,
+  "/compliance": COMPLIANCE_STARTERS,
+  "/exposure": EXPOSURE_STARTERS,
+  "/exposure/cves/[id]": cveDetailStarters({ cveId: "CVE-0000-00000" } as unknown as CveDetailCopilotPageInput),
+  "/exposure/defender-posture": DEFENDER_POSTURE_STARTERS,
+  "/exposure/kbs/[id]": kbDetailStarters({ kbId: "KB0000000" } as unknown as KbDetailCopilotPageInput),
+  "/exposure/patch-priorities": PATCH_PRIORITIES_STARTERS,
+  "/situations": SITUATIONS_STARTERS,
+  "/situations/[id]": SITUATION_DETAIL_STARTERS,
+  "/changes": CHANGES_STARTERS,
+  "/changes/predeploy": PREDEPLOY_STARTERS,
+  "/inventory": INVENTORY_STARTERS,
+  "/connections": CONNECTIONS_STARTERS,
+  "/connections/fabric": FABRIC_MEDALLION_STARTERS,
+  "/governance": GOVERNANCE_STARTERS,
+  "/identity": IDENTITY_STARTERS,
+  "/finops": FINOPS_STARTERS,
+  "/remediation": REMEDIATION_STARTERS,
+  "/resource-health": RESOURCE_HEALTH_STARTERS,
+  "/services": SERVICES_STARTERS,
+  "/services/[name]": serviceDetailStarters("service"),
+  "/twin": TWIN_STARTERS,
+};

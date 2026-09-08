@@ -46,7 +46,7 @@ function projectPageMappings(
     }
   }
   const projection: Record<string, string[]> = {};
-  for (const [page, owners] of pages) {
+  for (const [page, owners] of Array.from(pages.entries())) {
     projection[page] = [...owners].sort(
       (left, right) => Number(left !== page) - Number(right !== page),
     );
@@ -142,7 +142,7 @@ describe("manifest / API / adapter specialist parity (COP-03, D-03, D-05, D-06)"
     for (const hints of Object.values(COPILOT_ROUTE_STARTER_HINTS)) {
       for (const hint of hints) referenced.add(hint.specialistId);
     }
-    expect(sameSet([...referenced], manifestSpecialistIds)).toBe(true);
+    expect(sameSet(Array.from(referenced), manifestSpecialistIds)).toBe(true);
   });
 
   it("keeps the known multi-owner manifest pages exact (owner-first order)", () => {
