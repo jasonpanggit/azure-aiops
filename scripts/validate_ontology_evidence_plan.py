@@ -162,9 +162,15 @@ def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
         for row in after_container.get("env") or ()
         if isinstance(row, Mapping)
     }
-    if set(before_env) - set(after_env) != {
-        "AIOPS_EVIDENCE_API_URL",
-        "AIOPS_EVIDENCE_API_SCOPE",
+    removed = set(before_env) - set(after_env)
+    if frozenset(removed) not in {
+        frozenset(),
+        frozenset(
+            {
+                "AIOPS_EVIDENCE_API_URL",
+                "AIOPS_EVIDENCE_API_SCOPE",
+            }
+        ),
     } or any(before_env[name] != after_env[name] for name in after_env):
         raise EvidencePlanError(
             "evidence Job update may only remove the API read boundary"
@@ -176,6 +182,49 @@ def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
     if before != after:
         raise EvidencePlanError(
             "evidence Job update may change only image and API read env"
+        )
+
+
+def _validate_fixture_job_update(change: Mapping[str, object]) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError("fixture Job update shape is invalid") from exc
+    before_env = {
+        row.get("name"): row
+        for row in before_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    after_env = {
+        row.get("name"): row
+        for row in after_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    added = set(after_env) - set(before_env)
+    if frozenset(added) not in {
+        frozenset(),
+        frozenset(
+            {
+                "AIOPS_ONTOLOGY_FIXTURE_TENANT_ID",
+                "AIOPS_ONTOLOGY_FIXTURE_SUBSCRIPTION_ID",
+            }
+        ),
+    } or any(before_env[name] != after_env[name] for name in before_env):
+        raise EvidencePlanError(
+            "fixture Job update may only add fixed validation scope"
+        )
+    if any(not str(after_env[name].get("value") or "").strip() for name in added):
+        raise EvidencePlanError("fixture validation scope must be explicit")
+    before_container["env"] = []
+    after_container["env"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            "fixture Job update may change only image and validation scope"
         )
 
 
@@ -247,11 +296,18 @@ def validate_targeted_plan(
         if changes[address] != ("update",):
             raise EvidencePlanError(f"{address} must be an in-place update")
         change = rows[address]
-        paths = _changed_paths(change.get("before"), change.get("after"))
-        if paths != {"template[0].container[0].image"}:
-            raise EvidencePlanError(
-                f"{address} update must be image-only; changed={sorted(paths)}"
-            )
+        if address in {
+            "azurerm_container_app_job.ontology_fixture_prepare[0]",
+            "azurerm_container_app_job.ontology_fixture_cleanup[0]",
+        }:
+            _validate_fixture_job_update(change)
+        else:
+            paths = _changed_paths(change.get("before"), change.get("after"))
+            if paths != {"template[0].container[0].image"}:
+                raise EvidencePlanError(
+                    f"{address} update must be image-only; "
+                    f"changed={sorted(paths)}"
+                )
         after = change.get("after")
         try:
             image = after["template"][0]["container"][0]["image"]
