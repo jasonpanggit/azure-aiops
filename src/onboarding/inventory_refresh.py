@@ -59,7 +59,11 @@ def _legacy_run_inventory_refresh_all_connections(
     connection_results: dict[str, Any] = {}
     for connection in connections:
         pipeline = build_connection_inventory_pipeline(config, connection, resolver)
-        connection_output_dirs[connection.connection_id] = str(pipeline.store.root)
+        # DatasetStore.root is fsspec's scheme-less internal path for remote
+        # stores. Preserve the configured URI for the subsequent merge.
+        connection_output_dirs[connection.connection_id] = str(
+            getattr(pipeline.store, "uri_root", pipeline.store.root)
+        )
         try:
             result = pipeline.refresh()
         except Exception as exc:  # noqa: BLE001 - isolate one connection's failure
@@ -206,10 +210,14 @@ def run_inventory_refresh(
             )
             delta_writer = DeltaWriter(
                 storage_options=storage_options,
-                storage_options_provider=lambda: build_delta_storage_options(credential),
+                storage_options_provider=lambda: build_delta_storage_options(
+                    credential
+                ),
             )
         publisher = InventoryFabricPublisher(
-            DatasetStore(config.output_dir, retain_raw_queries=config.retain_raw_queries),
+            DatasetStore(
+                config.output_dir, retain_raw_queries=config.retain_raw_queries
+            ),
             onelake=InventoryOneLakePublisher(onelake, delta_writer=delta_writer),
         )
     result = InventoryPipeline(

@@ -84,13 +84,19 @@ class FakePipeline:
         manifest = self.store.publish(
             {
                 "inventory/os_observations": self._rows,
-                "inventory/source_status": [{"source_type": "azure_vm", "state": "ready"}],
+                "inventory/source_status": [
+                    {"source_type": "azure_vm", "state": "ready"}
+                ],
                 "inventory/software_observations": [],
                 "inventory/software_source_status": [{"state": "ready"}],
                 "inventory/resource_observations": self._resource_rows,
             },
             {},
-            {"runId": "run-1", "status": "completed", "startedAt": "2026-01-01T00:00:00Z"},
+            {
+                "runId": "run-1",
+                "status": "completed",
+                "startedAt": "2026-01-01T00:00:00Z",
+            },
             ontology={},
         )
 
@@ -112,7 +118,9 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     _build_registry(tmp_path)
 
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8")
+    config_path.write_text(
+        f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8"
+    )
 
     pipelines: dict[str, FakePipeline] = {
         "conn-a": FakePipeline(
@@ -141,7 +149,9 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
         "onboarding.runtime.build_connection_inventory_pipeline", fake_build
     )
 
-    result = run_inventory_refresh_all_connections(str(config_path), registry_root=str(tmp_path))
+    result = run_inventory_refresh_all_connections(
+        str(config_path), registry_root=str(tmp_path)
+    )
 
     assert result["status"] == "partial"
     assert result["connections"]["conn-a"]["status"] == "completed"
@@ -160,6 +170,61 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     assert result["combined_manifest"]["sourceConnectionIds"] == ["conn-a"]
 
 
+def test_refresh_all_connections_preserves_remote_store_uri(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from api.inventory_orchestration import run_inventory_refresh_all_connections
+    from onboarding.config import ConnectorConfig
+
+    _build_registry(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"storage:\n  output_dir: {tmp_path / 'compat'}\n",
+        encoding="utf-8",
+    )
+    pipelines = {
+        connection_id: FakePipeline(
+            tmp_path / "connections" / connection_id,
+            [{"resource_id": f"/subscriptions/{connection_id}/vm1"}],
+        )
+        for connection_id in ("conn-a", "conn-b")
+    }
+    expected_roots = {
+        connection_id: f"abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops/connections/{connection_id}"
+        for connection_id in pipelines
+    }
+    for connection_id, pipeline in pipelines.items():
+        pipeline.store.uri_root = expected_roots[connection_id]
+    captured_roots: dict[str, str | Path] = {}
+
+    def fake_build(config: ConnectorConfig, connection, resolver=None):
+        return pipelines[connection.connection_id]
+
+    def fake_combine(connection_output_dirs, _target_root, *, connection_ids=None):
+        captured_roots.update(connection_output_dirs)
+        return {
+            "runId": "combined-run",
+            "sourceConnectionIds": sorted(connection_ids or []),
+        }
+
+    monkeypatch.setattr(
+        "onboarding.runtime.build_connection_inventory_pipeline",
+        fake_build,
+    )
+    monkeypatch.setattr(
+        "intelligence.inventory.combine.publish_combined_inventory_snapshot",
+        fake_combine,
+    )
+
+    result = run_inventory_refresh_all_connections(
+        str(config_path),
+        registry_root=str(tmp_path),
+    )
+
+    assert result["status"] == "completed"
+    assert captured_roots == expected_roots
+
+
 def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -172,7 +237,9 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     _build_registry(tmp_path)
 
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8")
+    config_path.write_text(
+        f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8"
+    )
     pipelines: dict[str, FakePipeline] = {
         "conn-a": FakePipeline(
             tmp_path / "connections" / "conn-a",
@@ -217,6 +284,7 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     monkeypatch.setattr(
         "onboarding.runtime.build_connection_inventory_pipeline", fake_build
     )
+
     def fake_republish(root, *_args, **_kwargs):
         DatasetStore(root).publish(
             {

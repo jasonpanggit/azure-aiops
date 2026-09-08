@@ -57,11 +57,17 @@ def run_inventory_refresh_all_connections(
             output_dir = ""
         else:
             outcome = {"status": "completed", "manifest": result.manifest}
-            output_dir = str(pipeline.store.root)
+            # DatasetStore.root is fsspec's scheme-less internal path for
+            # remote stores. Preserve the configured URI so the merge opens
+            # OneLake rather than treating that path as a local directory.
+            output_dir = str(getattr(pipeline.store, "uri_root", pipeline.store.root))
         return (
             connection.connection_id,
             output_dir,
-            {**outcome, "_duration_seconds": round(time.monotonic() - connection_started, 3)},
+            {
+                **outcome,
+                "_duration_seconds": round(time.monotonic() - connection_started, 3),
+            },
         )
 
     # Acquisition is independently scoped per connection, so it can run in
@@ -69,7 +75,10 @@ def run_inventory_refresh_all_connections(
     with ThreadPoolExecutor(
         max_workers=max_workers, thread_name_prefix="inventory-connection"
     ) as executor:
-        futures = [executor.submit(refresh_connection, connection) for connection in connections]
+        futures = [
+            executor.submit(refresh_connection, connection)
+            for connection in connections
+        ]
         for future in as_completed(futures):
             connection_id, output_dir, outcome = future.result()
             connection_output_dirs[connection_id] = output_dir
@@ -144,7 +153,7 @@ def run_inventory_refresh_all_connections(
         )
         publication = runtime.service.sync(
             replay_source_run_id=str(combined_manifest["runId"]),
-            requested_scope={"subscription": requested_subscriptions}
+            requested_scope={"subscription": requested_subscriptions},
         )
         fabric_publication = {
             "runId": publication.run_id,

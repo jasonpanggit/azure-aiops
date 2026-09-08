@@ -31,7 +31,11 @@ def _publish_connection_rows(
             "inventory/resource_observations": [],
         },
         {},
-        {"runId": f"run-{observed_at}", "status": "completed", "startedAt": observed_at},
+        {
+            "runId": f"run-{observed_at}",
+            "status": "completed",
+            "startedAt": observed_at,
+        },
         ontology={},
     )
 
@@ -127,6 +131,41 @@ def test_merge_rejects_cross_connection_identity_collision(tmp_path: Path) -> No
         )
 
 
+def test_merge_rejects_missing_active_connection_generation(tmp_path: Path) -> None:
+    combined_root = tmp_path / "combined"
+
+    with pytest.raises(RuntimeError, match="generation unavailable.*conn-a"):
+        publish_combined_inventory_snapshot(
+            {"conn-a": tmp_path / "missing-conn-a"},
+            combined_root,
+        )
+
+    assert DatasetStore(combined_root).current_generation() is None
+
+
+def test_merge_rejects_all_empty_inventory_without_explicit_authorization(
+    tmp_path: Path,
+) -> None:
+    conn_root = tmp_path / "conn-a"
+    _publish_connection_rows(conn_root, [])
+    combined_root = tmp_path / "combined"
+
+    with pytest.raises(RuntimeError, match="all-empty combined inventory"):
+        publish_combined_inventory_snapshot(
+            {"conn-a": conn_root},
+            combined_root,
+        )
+
+    assert DatasetStore(combined_root).current_generation() is None
+
+    manifest = publish_combined_inventory_snapshot(
+        {"conn-a": conn_root},
+        combined_root,
+        allow_empty=True,
+    )
+    assert manifest["sourceRunIds"] == ["run-2026-08-31T10:00:00Z"]
+
+
 def test_republish_loads_exact_combined_generation_after_pointer_moves(
     tmp_path: Path,
 ) -> None:
@@ -202,9 +241,7 @@ def test_republish_rejects_generation_that_does_not_match_manifest(
         combined_root,
     )
     store = DatasetStore(combined_root)
-    generation = Path(
-        store.generation_path(str(manifest["runId"])) or ""
-    )
+    generation = Path(store.generation_path(str(manifest["runId"])) or "")
     (generation / "inventory" / "os_observations.jsonl").unlink()
 
     with pytest.raises(RuntimeError, match="does not match its manifest"):
@@ -258,14 +295,14 @@ def test_combine_pins_each_connection_generation_when_pointer_moves(
             )
         return manifest
 
-    monkeypatch.setattr(combine_module, "_read_manifest", read_manifest_then_move_pointer)
+    monkeypatch.setattr(
+        combine_module, "_read_manifest", read_manifest_then_move_pointer
+    )
 
     publish_combined_inventory_snapshot(
         {"conn-a": conn_root},
         tmp_path / "combined",
     )
 
-    rows = DatasetStore(tmp_path / "combined").read_dataset(
-        "inventory/os_observations"
-    )
+    rows = DatasetStore(tmp_path / "combined").read_dataset("inventory/os_observations")
     assert [row["resource_id"] for row in rows] == [resource_id]

@@ -4,7 +4,10 @@ Mirrors ``onboarding.activation.publish_combined_snapshot``'s dedupe-and-merge
 pattern, but for the inventory-owned datasets. Inventory remains the sole
 owner of these dataset names and of the ``InventoryFabricPublisher`` republish
 step, so this module -- not ``onboarding`` or ``onboarding`` --
-performs the merge and the final Fabric write.
+performs the merge and the final Fabric write. Missing source generations and all-empty primary
+inventory datasets fail closed by default so a transient source-resolution
+problem cannot replace a healthy canonical snapshot. ``allow_empty`` is
+reserved for explicitly authorized empty-subscription activation.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ def publish_combined_inventory_snapshot(
     target_root: str | Path,
     *,
     connection_ids: list[str] | None = None,
+    allow_empty: bool = False,
 ) -> dict[str, Any]:
     """Merge each connection's isolated inventory snapshot into one target root.
 
@@ -51,9 +55,12 @@ def publish_combined_inventory_snapshot(
     os_statuses: list[dict[str, Any]] = []
     software_statuses: list[dict[str, Any]] = []
     source_runs: list[str] = []
+    missing_generations: list[str] = []
     latest_started_at = ""
 
-    def _merge(bucket: dict[str, dict[str, Any]], identifier: str, row: dict[str, Any]) -> None:
+    def _merge(
+        bucket: dict[str, dict[str, Any]], identifier: str, row: dict[str, Any]
+    ) -> None:
         if not identifier:
             return
         existing = bucket.get(identifier)
@@ -86,6 +93,7 @@ def publish_combined_inventory_snapshot(
         store = DatasetStore(root)
         generation = store.current_generation()
         if generation is None:
+            missing_generations.append(connection_id)
             continue
         manifest = _read_manifest(store, generation=generation)
         connection_datasets = store.read_datasets(
@@ -101,12 +109,23 @@ def publish_combined_inventory_snapshot(
             _merge(resource_rows, str(row.get("resource_id") or ""), dict(row))
         for row in connection_datasets["inventory/software_observations"]:
             key = "|".join(
-                str(row.get(field) or "") for field in ("resource_id", "canonical_identity")
+                str(row.get(field) or "")
+                for field in ("resource_id", "canonical_identity")
             )
             _merge(software_rows, key, dict(row))
         os_statuses.extend(connection_datasets["inventory/source_status"])
         software_statuses.extend(
             connection_datasets["inventory/software_source_status"]
+        )
+
+    if missing_generations:
+        raise RuntimeError(
+            "Active inventory generation unavailable for connections: "
+            + ", ".join(sorted(missing_generations))
+        )
+    if not allow_empty and not (os_rows or resource_rows or software_rows):
+        raise RuntimeError(
+            "Refusing to activate an all-empty combined inventory snapshot"
         )
 
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -280,4 +299,7 @@ def _read_manifest(
     return payload
 
 
-__all__ = ["publish_combined_inventory_snapshot", "republish_combined_snapshot_to_fabric"]
+__all__ = [
+    "publish_combined_inventory_snapshot",
+    "republish_combined_snapshot_to_fabric",
+]
