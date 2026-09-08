@@ -33,3 +33,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** Existing stability tests reused one unchanged in-memory planner and did not vary derived enrichment identities, source-id casing, or evidence ordering across the 10-citation boundary.
 - **Recurrence guard:** `tests/test_remediation_identity_and_audit_continuity.py::test_live_patch_action_version_ignores_derived_cve_enrichment`, `::test_live_patch_action_version_canonicalizes_citations_before_limiting`, and `tests/test_api_remediation_approvals.py::test_patch_approval_survives_request_to_request_cve_enrichment_drift`.
 ---
+
+## network-topology-live-ui — Warm topology requests blocked on provider refresh and hub ARM IDs failed routing
+- **Date:** 2026-09-08
+- **Error patterns:** full-detail p95 14397 ms, repeated 9–22 second network requests, Hub VNet not found, 404, leading slash missing, slash-prefixed ARM id
+- **Root cause(s):** `ProviderRuntime.get()` synchronously resolved cache keys and could execute loaders on request threads, so slow Fabric semantic-version I/O delayed every managed-network endpoint; slash-prefixed hub ARM IDs were also transported through a lossy wildcard path and no longer matched the authorized snapshot after route normalization.
+- **Fix:** Made `ProviderRuntime.get()` a state-lock-only last-known-good read owned by startup/background refresh, and added an exact query-parameter hub-dependents route used by the web client while retaining the legacy path adapter.
+- **Files changed:** src/api/app.py, src/api/providers.py, src/api/routers/network.py, tests/test_api_network.py, tests/test_api_providers.py, tests/test_api_runtime.py, tests/test_exposure_consumer_parity.py, web/src/lib/network-services.test.ts, web/src/lib/services.ts, web/e2e/network-topology-deployed.spec.ts
+- **Why not caught:** Provider tests pinned request-owned refresh behavior, and the earlier route regression checked encoded URL text rather than passing a slash-prefixed ARM ID through the actual FastAPI route stack; authenticated post-deploy timing was the first gate to expose the combined environment amplification.
+- **Recurrence guard:** `tests/test_api_providers.py::{test_get_is_a_strict_last_known_good_read_without_refresh_io,test_concurrent_gets_do_no_io_during_background_refresh,test_initial_get_during_background_startup_does_not_duplicate_io}`, `tests/test_api_network.py::TestHubDependents::test_query_route_preserves_the_exact_slash_prefixed_arm_id`, the web query-contract test, and the unchanged authenticated five-sample p95/hub-200 checks in `web/e2e/network-topology-deployed.spec.ts`. The authenticated p95 <1,000 ms and hub-route run remains pending until a later authorized redeploy.
+---
