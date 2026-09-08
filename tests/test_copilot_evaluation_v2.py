@@ -1362,3 +1362,88 @@ def test_validate_artifact_rejects_wrong_dataset_version():
     )
     assert ok is False
     assert any("dataset" in p for p in problems)
+
+
+def test_release_artifact_records_complete_provenance_and_controlled_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)[:2]
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            summary="must not be persisted",
+            narration="must not be persisted",
+            resource_id="/subscriptions/secret/resourceGroups/secret",
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+    )
+
+    assert artifact["revision"] == "api--phase11-canary"
+    assert artifact["dataset_version"] == "1"
+    assert artifact["thresholds_version"] == "1"
+    assert artifact["manifest_version"] == 1
+    assert artifact["contract_version"] == "1.0"
+    assert artifact["decision"] == "PROMOTE"
+    assert artifact["metrics"]["turns"] == 2
+    assert set(artifact["gates"]) >= {
+        "corpus_completeness",
+        "scope_isolation",
+        "routing",
+        "citation_validity",
+    }
+    encoded = json.dumps(artifact)
+    assert "must not be persisted" not in encoded
+    assert "/subscriptions/secret" not in encoded
+
+
+def test_release_artifact_holds_when_the_corpus_is_incomplete():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)[:2]
+
+    artifact = evaluate_agents.build_release_artifact(
+        [_passing_result(case_id=cases[0].case_id)],
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={"foundry": "available"},
+    )
+
+    assert artifact["decision"] == "HOLD"
+    assert artifact["gates"]["corpus_completeness"]["passed"] is False
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+    assert ok is True, problems
+
+
+def test_release_case_selection_uses_the_external_versioned_corpus():
+    evaluate_agents = _load_evaluate_agents()
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+
+    selected = evaluate_agents.select_cases(cases, ["scope.cross.principal"])
+
+    assert [case.case_id for case in selected] == ["scope.cross.principal"]
+    with pytest.raises(ValueError, match="unknown case id"):
+        evaluate_agents.select_cases(cases, ["legacy-inline-case"])
