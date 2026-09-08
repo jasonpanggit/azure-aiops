@@ -45,6 +45,7 @@ are checkable facts; answer quality is reported for a human to read.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import statistics
@@ -321,6 +322,13 @@ class Result:
     material_claim_coverage: float | None = None
     citation_reference_integrity_ok: bool | None = None
     mutation_denied: bool | None = None
+    spend_usd: float | None = None
+    scope_ok: bool | None = None
+    unknown_id_denied: bool | None = None
+    disposition_ok: bool | None = None
+    manifest_projection_ok: bool | None = None
+    snapshot_schema_ok: bool | None = None
+    unsupported_severe_causal_action: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -346,6 +354,13 @@ class Result:
             "material_claim_coverage": self.material_claim_coverage,
             "citation_reference_integrity_ok": self.citation_reference_integrity_ok,
             "mutation_denied": self.mutation_denied,
+            "spend_usd": self.spend_usd,
+            "scope_ok": self.scope_ok,
+            "unknown_id_denied": self.unknown_id_denied,
+            "disposition_ok": self.disposition_ok,
+            "manifest_projection_ok": self.manifest_projection_ok,
+            "snapshot_schema_ok": self.snapshot_schema_ok,
+            "unsupported_severe_causal_action": self.unsupported_severe_causal_action,
         }
 
 
@@ -453,6 +468,7 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
             seen.append(specialist)
 
     evaluation = data.get("evaluation") or {}
+    usage = data.get("usage") or evaluation.get("usage") or {}
     orchestration = data.get("orchestration") or {}
     runtime = str(
         orchestration.get("runtime") or evaluation.get("orchestration_runtime") or ""
@@ -534,6 +550,19 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         material_claim_coverage=material_claim_coverage,
         citation_reference_integrity_ok=citation_reference_integrity_ok,
         mutation_denied=mutation_denied,
+        spend_usd=(
+            evaluation.get("spend_usd")
+            if evaluation.get("spend_usd") is not None
+            else usage.get("estimated_cost_usd")
+        ),
+        scope_ok=evaluation.get("scope_ok"),
+        unknown_id_denied=evaluation.get("unknown_id_denied"),
+        disposition_ok=evaluation.get("disposition_ok"),
+        manifest_projection_ok=evaluation.get("manifest_projection_ok"),
+        snapshot_schema_ok=evaluation.get("snapshot_schema_ok"),
+        unsupported_severe_causal_action=evaluation.get(
+            "unsupported_severe_causal_action"
+        ),
     )
 
 
@@ -733,7 +762,11 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     tool_scores = [
         r["tool_correctness"] for r in results if r.get("tool_correctness") is not None
     ]
-    citation_flags = [r["citation_valid"] for r in results if "citation_valid" in r]
+    citation_flags = [
+        r["citation_valid"]
+        for r in results
+        if r.get("citation_valid") is not None
+    ]
 
     single = [r["latency_ms"] for r in results if r.get("turn_class") == "single_domain" and r.get("latency_ms") is not None]
     cross = [r["latency_ms"] for r in results if r.get("turn_class") == "cross_domain" and r.get("latency_ms") is not None]
@@ -761,7 +794,8 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "groundedness_mean": _mean_or_none(grounded),
         "groundedness_p10": _percentile(grounded, 10),
         "unsupported_severe_causal_action_total": sum(
-            int(r.get("unsupported_severe_causal_action", 0)) for r in results
+            int(r.get("unsupported_severe_causal_action") or 0)
+            for r in results
         ),
         "citation_validity": (
             round(sum(1 for v in citation_flags if v) / len(citation_flags), 4)
@@ -901,6 +935,26 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     return {"decision": decision, "gates": gates, "disabled_modes": disabled_modes}
 
 
+_QUALITY_GATE_NAMES = {
+    "citation_validity",
+    "tool_correctness",
+    "routing",
+    "groundedness",
+    "citation_coverage",
+    "single_domain_latency",
+    "cross_domain_latency",
+    "reliability",
+    "spend_single_domain",
+    "spend_cross_domain",
+}
+_RELEASE_GATE_NAMES = {
+    "corpus_completeness",
+    "release_input_integrity",
+    "measurement_completeness",
+    "provider_availability",
+}
+
+
 def validate_artifact(
     artifact: dict[str, Any], *, dataset_version: str, thresholds_version: str
 ) -> tuple[bool, list[str]]:
@@ -929,16 +983,57 @@ def validate_artifact(
         problems.append("artifact does not record the specialist manifest version")
     if artifact.get("contract_version") is None:
         problems.append("artifact does not record the orchestration contract version")
+    canonical_dataset = json.loads(DEFAULT_DATASET.read_text())
+    canonical_thresholds = json.loads(DEFAULT_THRESHOLDS.read_text())
+    canonical_dataset_digest = hashlib.sha256(
+        json.dumps(
+            canonical_dataset, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    canonical_thresholds_digest = hashlib.sha256(
+        json.dumps(
+            canonical_thresholds, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    if artifact.get("dataset_sha256") != canonical_dataset_digest:
+        problems.append("artifact dataset hash does not match the canonical corpus")
+    if artifact.get("thresholds_sha256") != canonical_thresholds_digest:
+        problems.append("artifact thresholds hash does not match canonical thresholds")
     if not isinstance(artifact.get("provider_availability"), dict):
         problems.append("artifact does not record provider availability")
     if not isinstance(artifact.get("metrics"), dict):
         problems.append("artifact does not record independent metrics")
+    if not isinstance(artifact.get("case_evidence"), list):
+        problems.append("artifact does not record controlled case evidence")
+    if not isinstance(artifact.get("validation_evidence"), dict):
+        problems.append("artifact does not record deterministic validation evidence")
     gates = artifact.get("gates") or {}
-    if "corpus_completeness" not in gates:
-        problems.append("artifact does not record the corpus completeness gate")
+    deterministic_gate_names = set(
+        json.loads(DEFAULT_THRESHOLDS.read_text())["deterministic_gates"]
+    )
+    required_gates = (
+        deterministic_gate_names | _QUALITY_GATE_NAMES | _RELEASE_GATE_NAMES
+    )
+    missing_gates = sorted(required_gates - set(gates))
+    if missing_gates:
+        problems.append(f"artifact is missing required gates: {missing_gates}")
     failed = [name for name, g in gates.items() if not g.get("passed", False)]
     if decision == "PROMOTE" and failed:
         problems.append(f"decision PROMOTE recorded while gates failed: {failed}")
+    if decision == "PROMOTE":
+        canonical_case_ids = {
+            str(case["case_id"]) for case in canonical_dataset["cases"]
+        }
+        observed_case_ids = {
+            str(case.get("case_id"))
+            for case in artifact.get("case_evidence") or []
+        }
+        if observed_case_ids != canonical_case_ids:
+            problems.append("PROMOTE artifact does not contain the canonical case-id set")
+        required_providers = {"foundry", "operations_mcp", "azure_mcp"}
+        availability = artifact.get("provider_availability") or {}
+        if any(availability.get(name) != "available" for name in required_providers):
+            problems.append("PROMOTE artifact has unavailable or missing providers")
     return (not problems, problems)
 
 
@@ -974,19 +1069,26 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     """Project one live result into bounded, non-sensitive release evidence."""
     completed = not result.error and not result.timed_out
     static_disposition = result.orchestration_runtime == "static_route_disposition"
-    expected_grants = set(case.expect_grants)
-    grants_ok = (
-        set(result.tool_names) <= expected_grants if expected_grants else True
-    )
+    expected_grants = set() if static_disposition else set(case.expect_grants)
+    grants_ok = set(result.tool_names) == expected_grants
     tool_correctness = result.tool_correctness
-    if tool_correctness is None and result.tool_names:
+    if tool_correctness is None and completed:
         tool_correctness = 1.0 if grants_ok else 0.0
-    scope_ok = completed and not bool(case.safety.get("cross_principal_denied"))
-    mutation_denied = (
-        result.mutation_denied
-        if case.safety.get("mutation_denied")
-        else True
-    )
+    context_snapshot_pages = {
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    }
+    snapshot_schema_ok = None
+    if not static_disposition:
+        snapshot_schema_ok = (
+            result.snapshot_schema_ok
+            if result.snapshot_schema_ok is not None
+            else completed and case.page_kind in context_snapshot_pages
+        )
     return {
         "case_id": case.case_id,
         "category": case.category,
@@ -1003,20 +1105,22 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
         "tool_correctness": tool_correctness,
         "citation_valid": result.citation_valid,
         "material_claim_coverage": result.material_claim_coverage,
-        "unsupported_severe_causal_action": 0,
+        "unsupported_severe_causal_action": result.unsupported_severe_causal_action,
         "latency_ms": (
             round(result.latency_ms, 1)
             if completed and not static_disposition
             else None
         ),
-        "spend_usd": None,
-        "scope_ok": scope_ok,
-        "mutation_denied": mutation_denied,
-        "unknown_id_denied": True,
-        "disposition_ok": True,
-        "manifest_projection_ok": True,
+        "spend_usd": result.spend_usd,
+        "scope_ok": result.scope_ok,
+        "mutation_denied": result.mutation_denied,
+        "unknown_id_denied": result.unknown_id_denied,
+        "disposition_ok": (
+            True if static_disposition else result.disposition_ok
+        ),
+        "manifest_projection_ok": result.manifest_projection_ok,
         "grants_ok": grants_ok,
-        "snapshot_schema_ok": completed,
+        "snapshot_schema_ok": snapshot_schema_ok,
         "citation_reference_integrity_ok": result.citation_reference_integrity_ok,
     }
 
@@ -1029,24 +1133,82 @@ def build_release_artifact(
     thresholds: dict[str, Any],
     revision: str,
     provider_availability: dict[str, str],
+    validation_evidence: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Build the immutable fail-closed release decision artifact."""
+    validation_evidence = validation_evidence or {}
     controlled_results = [
         {field: result.get(field) for field in _CONTROLLED_CASE_FIELDS}
         for result in results
     ]
     metrics = aggregate_release_metrics(controlled_results)
     report = evaluate_gates(metrics, thresholds)
+    deterministic_gate_names = tuple(thresholds["deterministic_gates"])
+    for name in deterministic_gate_names:
+        aggregate_gate = report["gates"][name]
+        evidence_value = validation_evidence.get(name)
+        passed = aggregate_gate["passed"] and evidence_value is True
+        report["gates"][name] = _gate(
+            passed,
+            {
+                "violations": aggregate_gate["observed"],
+                "validation_evidence": evidence_value,
+            },
+            {
+                "max_violations": aggregate_gate["threshold"],
+                "validation_evidence": True,
+            },
+            aggregate_gate["note"],
+        )
+
+    canonical_dataset = json.loads(DEFAULT_DATASET.read_text())
+    canonical_thresholds = json.loads(DEFAULT_THRESHOLDS.read_text())
+    canonical_case_ids = {
+        str(case["case_id"]) for case in canonical_dataset["cases"]
+    }
+    dataset_digest = hashlib.sha256(
+        json.dumps(dataset, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    canonical_dataset_digest = hashlib.sha256(
+        json.dumps(
+            canonical_dataset, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    thresholds_digest = hashlib.sha256(
+        json.dumps(thresholds, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    canonical_thresholds_digest = hashlib.sha256(
+        json.dumps(
+            canonical_thresholds, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
     expected_ids = [case.case_id for case in cases]
     observed_ids = [str(result.get("case_id")) for result in controlled_results]
     corpus_complete = (
         len(observed_ids) == len(set(observed_ids))
         and set(observed_ids) == set(expected_ids)
+        and set(expected_ids) == canonical_case_ids
     )
     report["gates"]["corpus_completeness"] = _gate(
         corpus_complete,
         {"observed": len(observed_ids), "expected": len(expected_ids)},
         "exact case-id set equality",
+        "all_promotion",
+    )
+    release_inputs_match = (
+        dataset_digest == canonical_dataset_digest
+        and thresholds_digest == canonical_thresholds_digest
+    )
+    report["gates"]["release_input_integrity"] = _gate(
+        release_inputs_match,
+        {
+            "dataset_sha256": dataset_digest,
+            "thresholds_sha256": thresholds_digest,
+        },
+        {
+            "dataset_sha256": canonical_dataset_digest,
+            "thresholds_sha256": canonical_thresholds_digest,
+        },
         "all_promotion",
     )
 
@@ -1095,7 +1257,16 @@ def build_release_artifact(
         "affected_provider_mode",
     )
 
-    if not corpus_complete or not providers_recorded:
+    deterministic_failed = any(
+        not report["gates"][name]["passed"]
+        for name in deterministic_gate_names
+    )
+    if (
+        not corpus_complete
+        or not release_inputs_match
+        or not providers_recorded
+        or deterministic_failed
+    ):
         report["decision"] = "HOLD"
     elif (
         report["decision"] == "PROMOTE"
@@ -1118,7 +1289,13 @@ def build_release_artifact(
         "thresholds_version": thresholds.get("thresholds_version"),
         "manifest_version": dataset.get("manifest_version"),
         "contract_version": dataset.get("contract_version"),
+        "dataset_sha256": dataset_digest,
+        "thresholds_sha256": thresholds_digest,
         "provider_availability": dict(sorted(provider_availability.items())),
+        "validation_evidence": {
+            name: validation_evidence.get(name)
+            for name in sorted(deterministic_gate_names)
+        },
         "metrics": metrics,
         "gates": report["gates"],
         "disabled_modes": report["disabled_modes"],
@@ -1159,6 +1336,11 @@ def main() -> int:
         action="append",
         metavar="NAME=STATUS",
         help="record provider availability in the release artifact",
+    )
+    parser.add_argument(
+        "--validation-evidence",
+        type=Path,
+        help="controlled deterministic-gate evidence JSON for this revision",
     )
     parser.add_argument("--baseline", type=Path, help="compare against a previous run")
     parser.add_argument(
@@ -1237,6 +1419,26 @@ def main() -> int:
         provider_availability = _provider_availability(args.provider)
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         raise SystemExit(str(exc)) from exc
+    if args.revision and args.case:
+        raise SystemExit("--case is diagnostic-only and cannot write a release artifact")
+
+    validation_evidence: dict[str, bool] = {}
+    if args.validation_evidence:
+        try:
+            evidence_payload = json.loads(args.validation_evidence.read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(str(exc)) from exc
+        evidence_revision = evidence_payload.get("revision")
+        if args.revision and evidence_revision != args.revision:
+            raise SystemExit(
+                "validation evidence revision does not match --revision"
+            )
+        raw_gates = evidence_payload.get("gates") or {}
+        if not isinstance(raw_gates, dict) or any(
+            not isinstance(value, bool) for value in raw_gates.values()
+        ):
+            raise SystemExit("validation evidence gates must be boolean values")
+        validation_evidence = raw_gates
 
     # Verify credentials once up front so a misconfigured run fails fast
     # rather than after ten slow cases.
@@ -1292,6 +1494,7 @@ def main() -> int:
             thresholds=thresholds,
             revision=args.revision,
             provider_availability=provider_availability,
+            validation_evidence=validation_evidence,
         )
         run = release_artifact
         print(f"\nrelease decision: {release_artifact['decision']}")

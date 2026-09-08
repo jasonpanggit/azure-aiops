@@ -1260,6 +1260,11 @@ def _passing_result(**overrides):
     return base
 
 
+def _passing_validation_evidence():
+    thresholds = json.loads(_THRESHOLDS_PATH.read_text())
+    return {name: True for name in thresholds["deterministic_gates"]}
+
+
 def test_deterministic_scope_violation_forces_hold():
     evaluate_agents = _load_evaluate_agents()
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
@@ -1368,7 +1373,7 @@ def test_release_artifact_records_complete_provenance_and_controlled_evidence():
     evaluate_agents = _load_evaluate_agents()
     dataset = json.loads(_CASES_PATH.read_text())
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
-    cases = evaluate_agents.load_cases(_CASES_PATH)[:2]
+    cases = evaluate_agents.load_cases(_CASES_PATH)
     results = [
         _passing_result(
             case_id=case.case_id,
@@ -1395,6 +1400,7 @@ def test_release_artifact_records_complete_provenance_and_controlled_evidence():
             "operations_mcp": "available",
             "azure_mcp": "available",
         },
+        validation_evidence=_passing_validation_evidence(),
     )
 
     assert artifact["revision"] == "api--phase11-canary"
@@ -1403,7 +1409,7 @@ def test_release_artifact_records_complete_provenance_and_controlled_evidence():
     assert artifact["manifest_version"] == 1
     assert artifact["contract_version"] == "1.0"
     assert artifact["decision"] == "PROMOTE"
-    assert artifact["metrics"]["turns"] == 2
+    assert artifact["metrics"]["turns"] == 96
     assert set(artifact["gates"]) >= {
         "corpus_completeness",
         "scope_isolation",
@@ -1428,6 +1434,7 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
         thresholds=thresholds,
         revision="api--phase11-canary",
         provider_availability={"foundry": "available"},
+        validation_evidence=_passing_validation_evidence(),
     )
 
     assert artifact["decision"] == "HOLD"
@@ -1436,6 +1443,24 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
         artifact, dataset_version="1", thresholds_version="1"
     )
     assert ok is True, problems
+
+
+def test_release_evidence_requires_exact_tool_grant_parity():
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.load_cases(_CASES_PATH)[0]
+    result = evaluate_agents.Result(
+        case_id=case.case_id,
+        ok=True,
+        specialists=list(case.expect_specialists),
+        tool_names=[case.expect_grants[0]],
+        mutation_denied=True,
+    )
+
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+
+    assert len(case.expect_grants) == 2
+    assert evidence["grants_ok"] is False
+    assert evidence["tool_correctness"] == 0.0
 
 
 def test_release_case_selection_uses_the_external_versioned_corpus():
@@ -1456,10 +1481,18 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
 
     evaluate_agents = _load_evaluate_agents()
     source = json.loads(_CASES_PATH.read_text())
-    source["cases"] = [source["cases"][0], source["cases"][75]]
     dataset = tmp_path / "cases.json"
     dataset.write_text(json.dumps(source))
     artifact = tmp_path / "baseline.json"
+    validation_evidence = tmp_path / "validation.json"
+    validation_evidence.write_text(
+        json.dumps(
+            {
+                "revision": "api--phase11-canary",
+                "gates": _passing_validation_evidence(),
+            }
+        )
+    )
     seen: list[str] = []
 
     def run_case(_api, _resource, case):
@@ -1477,6 +1510,13 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             citation_reference_integrity_ok=True,
             mutation_denied=True,
             tool_names=list(case.expect_grants),
+            spend_usd=0.05,
+            scope_ok=True,
+            unknown_id_denied=True,
+            disposition_ok=True,
+            manifest_projection_ok=True,
+            snapshot_schema_ok=True,
+            unsupported_severe_causal_action=0,
         )
 
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
@@ -1499,13 +1539,56 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             "operations_mcp=available",
             "--provider",
             "azure_mcp=available",
+            "--validation-evidence",
+            str(validation_evidence),
             "--out",
             str(artifact),
         ],
     )
 
-    assert evaluate_agents.main() == 3
-    assert seen == [case["case_id"] for case in source["cases"]]
+    assert evaluate_agents.main() == 0
+    assert seen == [
+        case["case_id"]
+        for case in source["cases"]
+        if case["disposition"] not in {"redirect", "excluded"}
+    ]
     payload = json.loads(artifact.read_text())
-    assert [item["case_id"] for item in payload["case_evidence"]] == seen
-    assert payload["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert [item["case_id"] for item in payload["case_evidence"]] == [
+        case["case_id"] for case in source["cases"]
+    ]
+    assert payload["decision"] == "PROMOTE"
+
+
+def test_validate_artifact_rejects_promote_with_omitted_release_gates():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = json.loads(_THRESHOLDS_PATH.read_text())
+    digest = lambda value: __import__("hashlib").sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    artifact = {
+        "dataset_version": "1",
+        "thresholds_version": "1",
+        "manifest_version": 1,
+        "contract_version": "1.0",
+        "dataset_sha256": digest(dataset),
+        "thresholds_sha256": digest(thresholds),
+        "revision": "api--phase11-canary",
+        "provider_availability": {
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        "metrics": {},
+        "validation_evidence": {},
+        "case_evidence": [],
+        "decision": "PROMOTE",
+        "gates": {"corpus_completeness": {"passed": True}},
+    }
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("missing required gates" in problem for problem in problems)
