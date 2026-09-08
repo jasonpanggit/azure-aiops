@@ -2892,7 +2892,7 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
         return None
     catalog = getattr(getattr(planner, "opportunities", None), "catalog", ())
     policies = getattr(
-        getattr(getattr(planner, "generator", None), "approval_engine", None),
+        getattr(getattr(planner, "generator", None), "approvals", None),
         "policies",
         (),
     )

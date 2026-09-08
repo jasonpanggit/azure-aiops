@@ -199,7 +199,7 @@ def test_fabric_remediation_provider_rejects_empty_governed_catalog() -> None:
     planner = SimpleNamespace(
         opportunities=SimpleNamespace(catalog=[]),
         generator=SimpleNamespace(
-            approval_engine=SimpleNamespace(policies=[])
+            approvals=SimpleNamespace(policies=[])
         ),
     )
     runtime = SimpleNamespace(
@@ -208,6 +208,29 @@ def test_fabric_remediation_provider_rejects_empty_governed_catalog() -> None:
 
     with pytest.raises(RuntimeError, match="Governed remediation catalog is empty"):
         _fabric_remediation_planner(runtime)
+
+
+def test_fabric_remediation_provider_accepts_complete_governed_catalog(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    planner = SimpleNamespace(
+        opportunities=SimpleNamespace(catalog=[{"action_id": "action"}]),
+        generator=SimpleNamespace(
+            approvals=SimpleNamespace(policies=[{"policy_id": "policy"}])
+        ),
+    )
+    runtime = SimpleNamespace(
+        operations_agent=lambda: SimpleNamespace(remediation_planner=planner)
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_attach_defender_correlator",
+        lambda candidate, _runtime: candidate,
+    )
+
+    assert _fabric_remediation_planner(runtime) is planner
 
 
 def test_disabled_fabric_remediation_is_not_required(
