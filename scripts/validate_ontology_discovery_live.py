@@ -3069,7 +3069,7 @@ def _wait_for_job_completion(
                 [
                     "containerapp", "job", "execution", "show",
                     "-n", job_name, "-g", rg,
-                    "--execution-name", execution_name,
+                    "--job-execution-name", execution_name,
                 ],
                 azure_config_dir=azure_config_dir,
             )
@@ -3104,7 +3104,7 @@ def _collect_job_evidence(
         [
             "containerapp", "job", "execution", "show",
             "-n", job_name, "-g", rg,
-            "--execution-name", execution_name,
+            "--job-execution-name", execution_name,
         ],
         azure_config_dir=azure_config_dir,
     )
