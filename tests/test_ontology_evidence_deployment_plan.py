@@ -208,6 +208,40 @@ def test_targeted_plan_rejects_missing_or_secret_evidence_environment() -> None:
     with pytest.raises(EvidencePlanError, match="secret-free"):
         _validate(plan)
 
+
+def test_evidence_job_update_allows_only_api_read_boundary_removal() -> None:
+    plan = _plan()
+    job = next(
+        row
+        for row in plan["resource_changes"]
+        if row["address"]
+        == "azurerm_container_app_job.ontology_evidence_read[0]"
+    )
+    after = job["change"]["after"]
+    before = copy.deepcopy(after)
+    before["template"][0]["container"][0]["image"] = (
+        "old@sha256:" + "1" * 64
+    )
+    before["template"][0]["container"][0]["env"].extend(
+        [
+            {"name": "AIOPS_EVIDENCE_API_URL", "value": "https://old.invalid"},
+            {"name": "AIOPS_EVIDENCE_API_SCOPE", "value": "api://old/.default"},
+        ]
+    )
+    job["change"]["actions"] = ["update"]
+    job["change"]["before"] = before
+
+    result = _validate(plan)
+
+    assert (
+        "azurerm_container_app_job.ontology_evidence_read[0]"
+        in result["update_addresses"]
+    )
+
+    job["change"]["before"]["replica_retry_limit"] = 2
+    with pytest.raises(EvidencePlanError, match="only"):
+        _validate(plan)
+
     plan = _plan()
     job = next(
         row

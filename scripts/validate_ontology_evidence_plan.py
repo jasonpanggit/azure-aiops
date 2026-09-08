@@ -144,6 +144,41 @@ def _validate_evidence_job(
         )
 
 
+def _validate_evidence_job_update(change: Mapping[str, object]) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError("evidence Job update shape is invalid") from exc
+    before_env = {
+        row.get("name"): row
+        for row in before_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    after_env = {
+        row.get("name"): row
+        for row in after_container.get("env") or ()
+        if isinstance(row, Mapping)
+    }
+    if set(before_env) - set(after_env) != {
+        "AIOPS_EVIDENCE_API_URL",
+        "AIOPS_EVIDENCE_API_SCOPE",
+    } or any(before_env[name] != after_env[name] for name in after_env):
+        raise EvidencePlanError(
+            "evidence Job update may only remove the API read boundary"
+        )
+    before_container["env"] = []
+    after_container["env"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            "evidence Job update may change only image and API read env"
+        )
+
+
 def validate_targeted_plan(
     plan: Mapping[str, Any],
     *,
@@ -207,15 +242,7 @@ def validate_targeted_plan(
         expected_identity_id=expected_identity_id,
     )
     if evidence_actions == ("update",):
-        paths = _changed_paths(
-            rows[evidence_address].get("before"),
-            rows[evidence_address].get("after"),
-        )
-        if paths != {"template[0].container[0].image"}:
-            raise EvidencePlanError(
-                "evidence Job update must be image-only; "
-                f"changed={sorted(paths)}"
-            )
+        _validate_evidence_job_update(rows[evidence_address])
     for address in UPDATE_ADDRESSES:
         if changes[address] != ("update",):
             raise EvidencePlanError(f"{address} must be an in-place update")
