@@ -14,18 +14,22 @@ const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDevia
   buildComplianceCopilotContext: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  copilotEvidenceRows: () => [],
-  networkApi: { topology, gaps, ruleFindings },
-  vulnerabilityApi: { exposures },
-  complianceApi: {
-    policyDeviations,
-    securityDeviations,
-    configurationDrift,
-    summary: complianceSummary,
-  },
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+    copilotEvidenceRows: () => [],
+    isCanonicalAzureResourceId: actual.isCanonicalAzureResourceId,
+    networkApi: { topology, gaps, ruleFindings },
+    vulnerabilityApi: { exposures },
+    complianceApi: {
+      policyDeviations,
+      securityDeviations,
+      configurationDrift,
+      summary: complianceSummary,
+    },
+  };
+});
 
 vi.mock("@/lib/copilot/page-adapters", () => ({
   buildComplianceCopilotContext,
@@ -175,7 +179,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     ));
     expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/CVE-2026-0001/).length).toBeGreaterThan(0);
-    expect(screen.getByRole("link", { name: "Open remediation" })).toHaveAttribute("href", "/remediation?business_service=Payroll");
+    expect(screen.getByRole("link", { name: "Open remediation" })).toHaveAttribute("href", "/remediation");
     expect(screen.getByRole("button", { name: "Ask Copilot about posture" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Payroll landing-zone policy" } });
