@@ -53,3 +53,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** The acceptance harness had one elapsed timer and no response-level server metric, so it could not distinguish server work from Azure ingress, TLS, network, and client overhead.
 - **Recurrence guard:** `tests/test_api_network.py::TestTopology::{test_reports_handler_time_for_analysis_and_response_serialization,test_handler_time_header_is_additive_and_numeric,test_handler_timing_does_not_change_auth_or_error_responses}`, `web/src/lib/network-topology-latency.test.ts`, and the two explicit soft assertions in `web/e2e/network-topology-deployed.spec.ts`.
 ---
+
+## network-summary-messages-links — RouteTable-to-firewall semantics depended on omitted Route IDs
+- **Date:** 2026-09-08
+- **Error patterns:** summary zero next_hop edges, full Route next_hop resolves AzureFirewall, RouteTable firewall edge missing, intentionally_omitted_ids, routes_via
+- **Root cause(s):** The prior corrective implementation encoded RouteTable→AzureFirewall only as a summary-time source rewrite of each Route→AzureFirewall `next_hop` when the Route appeared in `intentionally_omitted_ids`; it emitted no first-class direct relationship and coupled summary semantics to omission bookkeeping.
+- **Fix:** Preserve detailed Route→AzureFirewall `next_hop` edges and independently emit one sorted, deduplicated, provider-backed RouteTable→AzureFirewall `routes_via` relationship in Summary and Full detail for every uniquely resolved in-scope firewall target.
+- **Files changed:** src/network/topology.py, tests/test_network_topology.py, web/src/lib/network-graph.test.ts, .planning/phases/12-network-topology-integrity-and-scale/12-UI-REVIEW.md, .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
+- **Why not caught:** The existing topology gate asserted the projection workaround itself—summary `next_hop` with a substituted source—rather than requiring a distinct direct semantic in both detail levels, omission independence, deterministic multi-route deduplication, and unresolved/scope negatives.
+- **Recurrence guard:** `tests/test_network_topology.py::{test_virtual_appliance_route_links_to_the_firewall_it_targets,test_route_table_firewall_relationship_is_deduplicated,test_unresolved_route_next_hop_does_not_infer_a_firewall_relationship,test_route_does_not_resolve_to_a_firewall_outside_authorized_scope}` and `web/src/lib/network-graph.test.ts` test `accepts provider-backed route-table to firewall relationships`.
+---
