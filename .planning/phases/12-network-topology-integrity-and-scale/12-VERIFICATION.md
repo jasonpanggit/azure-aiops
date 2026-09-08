@@ -1,6 +1,6 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-verified: 2026-09-08T03:50:00Z
+verified: 2026-09-08T16:30:00+08:00
 status: passed
 score: 5/5 roadmap must-haves verified
 plan_truth_score: 76/76
@@ -49,10 +49,11 @@ gates:
   merged_backend: "2,989 passed / 11 skipped / 3,000 collected / 0 failed"
   merged_web: "369 passed / 15 todo / 44 files / 0 failed"
   merged_build: clean
-  corrective_network: "159 backend / 199 web / 3 mocked Chromium / independent source review confirmed"
-corrective_network_source_verified: 2026-09-08T15:36:10.121+08:00
-corrective_network_live_recheck: not_run_no_deployment
+  corrective_network: "4 backend target / 166 backend adjacent / 200 web adjacent / static and causal revert pass"
+corrective_network_source_verified: 2026-09-08T16:30:00+08:00
+corrective_network_live_recheck: pending_cloud_lane_frozen
 corrective_network_debug_session: .planning/debug/resolved/network-summary-messages-links.md
+route_table_firewall_semantic: "RouteTable -> AzureFirewall routes_via in summary and full; Route -> AzureFirewall next_hop retained in full"
 ---
 
 # Phase 12: Network Topology Integrity and Scale — Final Verification
@@ -63,8 +64,52 @@ changes, freshness, and evidence coverage remain accurate from inventory
 ingestion through API, web, agents, MCP, and export.
 
 **Status:** passed; original source and deployed authenticated runtime
-verification are complete. The corrective addendum below is source-confirmed
-and was not deployed or rechecked live.
+verification are complete. The corrective addenda below are source-confirmed
+and were not deployed or rechecked live.
+
+## RouteTable → AzureFirewall Semantic Hardening Addendum — 2026-09-08
+
+The first corrective pass represented the Summary route-table/firewall path by
+rewriting a Route-owned `next_hop` edge only when that Route appeared in
+`intentionally_omitted_ids`. A read-only deployed comparison then showed Full
+detail resolving next-hop IP `10.0.2.4` to an observed Azure Firewall while
+Summary returned zero next-hop edges. The old contraction passed in isolated
+replay, proving that omission-coupled projection was too weak a semantic
+contract even when its unit example passed.
+
+The relationship builder now maintains two distinct provider-backed semantics:
+
+1. Full detail preserves each `Route → AzureFirewall` `next_hop` edge and its
+   route details.
+2. Summary and Full detail both expose one
+   `RouteTable → AzureFirewall` `routes_via` edge, labelled
+   `routes via Azure Firewall`, for each unique firewall target resolved from
+   that table's observed route next-hop IPs.
+
+Direct-edge construction does not read `intentionally_omitted_ids`. It
+deduplicates targets before emitting relationships, and endpoint checks still
+require both the route table and firewall to exist in the projected scoped
+snapshot. Regressions also prove that unresolved IPs and firewalls excluded by
+authorization scope produce no inferred relationship.
+
+The oracle is specified by the corrective implementation contract. Two direct
+semantic tests were RED before source changes while the detailed `next_hop`,
+unresolved-IP refusal, and generic client relationship mapping remained green.
+After the minimal source change:
+
+| Check | Result |
+|---|---|
+| Backend target contract | **PASS — 4 route/firewall tests** |
+| Graph-client `routes_via` mapping contract | **PASS — type and label preserved** |
+| Adjacent backend topology/link/scope/scale/API suites | **PASS — 166 tests** |
+| Adjacent web Network import graph | **PASS — 8 files / 200 tests** |
+| Ruff, TypeScript, scoped ESLint, `git diff --check` | **PASS** |
+| Mutation runner | **SKIPPED — no configured Stryker/Python mutation target** |
+| Production-source-only revert/reapply | **PASS — `FF.F` on revert, 4/4 GREEN on reapply** |
+
+This is source-only corrective evidence. No deployment or push was performed
+because the cloud lane is frozen. The deployed zero-edge observation is not
+claimed fixed live and must be rechecked by a later authorized release.
 
 ## Corrective Network Message and Summary-Link Addendum — 2026-09-08
 
@@ -73,9 +118,10 @@ defects without changing the Phase 12 requirement set:
 
 - ordinary 20-row server pagination no longer produces a permanent page-level
   incomplete-results warning; each owning tab retains its exact visible range;
-- Summary continues to omit Route nodes while preserving an observed
-  `RouteTable → Route → AzureFirewall` path as a contracted
-  `RouteTable → AzureFirewall` next-hop relationship; and
+- Summary continues to omit Route nodes. The initial pass preserved an observed
+  `RouteTable → Route → AzureFirewall` path by rewriting the next-hop source;
+  the newer semantic-hardening addendum above supersedes that projection-only
+  representation with explicit `routes_via`; and
 - exhaustive badge coverage, rather than the visible page's truncation flag,
   now determines whether a selected resource can be confirmed clean.
 

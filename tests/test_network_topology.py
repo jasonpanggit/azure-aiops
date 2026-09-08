@@ -30,6 +30,56 @@ def _topology():
     return build_topology(load_network_snapshot(network_rows()))
 
 
+def _route_table_firewall_rows(
+    route_next_hop_ips: tuple[str, ...],
+    *,
+    firewall_private_ip: str = "10.0.2.4",
+    firewall_subscription: str = "sub-a",
+) -> tuple[list[dict[str, object]], str, str, tuple[str, ...]]:
+    firewall = (
+        f"/subscriptions/{firewall_subscription}/resourcegroups/rg/providers/"
+        "microsoft.network/azurefirewalls/fw"
+    )
+    table = "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/routetables/rt"
+    route_ids = tuple(
+        f"{table}/routes/to-firewall-{index}"
+        for index in range(len(route_next_hop_ips))
+    )
+    rows: list[dict[str, object]] = [
+        {
+            "entity_type": "AzureFirewall",
+            "resource_id": firewall,
+            "name": "fw",
+            "payload_json": {"privateIp": firewall_private_ip},
+        },
+        {
+            "entity_type": "RouteTable",
+            "resource_id": table,
+            "name": "rt",
+            "payload_json": {},
+        },
+    ]
+    rows.extend(
+        {
+            "entity_type": "Route",
+            "resource_id": route_id,
+            "name": f"to-firewall-{index}",
+            "payload_json": {
+                "routeTableId": table,
+                "addressPrefix": (
+                    "0.0.0.0/0" if index == 0 else f"10.{index}.0.0/16"
+                ),
+                "nextHopType": "VirtualAppliance",
+                "nextHopIp": next_hop_ip,
+            },
+        }
+        for index, (route_id, next_hop_ip) in enumerate(
+            zip(route_ids, route_next_hop_ips, strict=True)
+        )
+    )
+    return rows, table, firewall, route_ids
+
+
 class TestRuleFindingAffectedResources:
     def test_nsg_findings_name_the_subnets_and_nics_the_control_protects(self) -> None:
         service = build_service(network_rows())
@@ -650,39 +700,22 @@ class TestResourceTopologyProjection:
 
     def test_virtual_appliance_route_links_to_the_firewall_it_targets(self) -> None:
         """A next hop IP is only useful once it resolves to the real appliance."""
-        vnet = "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/virtualnetworks/rt-vnet"
-        subnet = f"{vnet}/subnets/azurefirewallsubnet"
-        firewall = "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/azurefirewalls/fw"
-        table = "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.network/routetables/rt"
-        route = f"{table}/routes/to-firewall"
-        rows = [
-            {"entity_type": "VNet", "resource_id": vnet, "name": "rt-vnet", "payload_json": {"subnetIds": [subnet]}},
-            {"entity_type": "Subnet", "resource_id": subnet, "name": "AzureFirewallSubnet", "payload_json": {"vnetId": vnet}},
-            {
-                "entity_type": "AzureFirewall",
-                "resource_id": firewall,
-                "name": "fw",
-                "payload_json": {"vnetId": vnet, "subnetId": subnet, "privateIp": "10.0.2.4"},
-            },
-            {"entity_type": "RouteTable", "resource_id": table, "name": "rt", "payload_json": {}},
-            {
-                "entity_type": "Route",
-                "resource_id": route,
-                "name": "to-firewall",
-                "payload_json": {
-                    "routeTableId": table,
-                    "addressPrefix": "0.0.0.0/0",
-                    "nextHopType": "VirtualAppliance",
-                    "nextHopIp": "10.0.2.4",
-                },
-            },
-        ]
+        rows, table, firewall, (route,) = _route_table_firewall_rows(
+            ("10.0.2.4",)
+        )
         topology = build_topology(load_network_snapshot(rows))
-        relationships = topology.to_dict()["relationships"]
+        relationships = topology.to_dict(detail="full")["relationships"]
         assert any(
             item["source"] == route.casefold()
             and item["target"] == firewall.casefold()
             and item["relationship_type"] == "next_hop"
+            for item in relationships
+        )
+        assert any(
+            item["source"] == table.casefold()
+            and item["target"] == firewall.casefold()
+            and item["relationship_type"] == "routes_via"
+            and item["label"] == "routes via Azure Firewall"
             for item in relationships
         )
 
@@ -693,9 +726,96 @@ class TestResourceTopologyProjection:
         assert any(
             item["source"] == table.casefold()
             and item["target"] == firewall.casefold()
+            and item["relationship_type"] == "routes_via"
+            and item["label"] == "routes via Azure Firewall"
+            for item in summary["relationships"]
+        )
+        assert not any(
+            item["source"] == table.casefold()
             and item["relationship_type"] == "next_hop"
             for item in summary["relationships"]
         )
+
+    def test_route_table_firewall_relationship_is_deduplicated(self) -> None:
+        rows, table, firewall, route_ids = _route_table_firewall_rows(
+            ("10.0.2.4", "10.0.2.4")
+        )
+        topology = build_topology(load_network_snapshot(rows))
+
+        for detail in ("summary", "full"):
+            relationships = topology.to_dict(detail=detail)["relationships"]
+            direct = [
+                item
+                for item in relationships
+                if item["source"] == table.casefold()
+                and item["target"] == firewall.casefold()
+                and item["relationship_type"] == "routes_via"
+            ]
+            assert len(direct) == 1
+
+        detailed_next_hops = [
+            item
+            for item in topology.to_dict(detail="full")["relationships"]
+            if item["target"] == firewall.casefold()
+            and item["relationship_type"] == "next_hop"
+        ]
+        assert {item["source"] for item in detailed_next_hops} == {
+            route_id.casefold() for route_id in route_ids
+        }
+
+    def test_unresolved_route_next_hop_does_not_infer_a_firewall_relationship(
+        self,
+    ) -> None:
+        rows, table, firewall, route_ids = _route_table_firewall_rows(
+            ("10.0.9.9",)
+        )
+        topology = build_topology(load_network_snapshot(rows))
+
+        for detail in ("summary", "full"):
+            relationships = topology.to_dict(detail=detail)["relationships"]
+            assert not any(
+                item["source"] == table.casefold()
+                and item["target"] == firewall.casefold()
+                and item["relationship_type"] == "routes_via"
+                for item in relationships
+            )
+        assert not any(
+            item["source"] == route_ids[0].casefold()
+            and item["relationship_type"] == "next_hop"
+            for item in topology.to_dict(detail="full")["relationships"]
+        )
+
+    def test_route_does_not_resolve_to_a_firewall_outside_authorized_scope(
+        self,
+    ) -> None:
+        rows, table, firewall, _route_ids = _route_table_firewall_rows(
+            ("10.0.2.4",),
+            firewall_subscription="sub-b",
+        )
+        service = NetworkIntelligenceService.from_rows(rows)
+        unscoped = service.scoped(NetworkScope()).topology.to_dict(
+            detail="summary"
+        )
+        assert any(
+            item["source"] == table.casefold()
+            and item["target"] == firewall.casefold()
+            and item["relationship_type"] == "routes_via"
+            for item in unscoped["relationships"]
+        )
+
+        scoped = service.scoped(
+            NetworkScope(subscription_ids=("sub-a",))
+        ).topology
+        for detail in ("summary", "full"):
+            payload = scoped.to_dict(detail=detail)
+            assert firewall.casefold() not in {
+                item["id"] for item in payload["resources"]
+            }
+            assert not any(
+                item["source"] == table.casefold()
+                and item["target"] == firewall.casefold()
+                for item in payload["relationships"]
+            )
 
     def test_nic_and_private_endpoint_link_to_the_workloads_they_serve(self) -> None:
         """A NIC that serves nothing and an endpoint with no service are dead ends."""

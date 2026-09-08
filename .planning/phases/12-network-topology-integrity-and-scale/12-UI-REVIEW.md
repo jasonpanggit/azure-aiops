@@ -1,8 +1,8 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-08T13:05:00+08:00
+reviewed: 2026-09-08T16:30:00+08:00
 status: passed
-verdict: PASS — deployed topology findings resolved; message-semantics and corrective summary-link follow-ups source-confirmed
+verdict: PASS — deployed topology findings resolved; message-semantics and explicit RouteTable-to-AzureFirewall semantics source-confirmed
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
@@ -25,9 +25,11 @@ final_live_verified: 2026-09-08T04:47:00Z
 message_semantics_source_verified: 2026-09-08T14:37:07.284+08:00
 message_semantics_live_recheck: not_run_no_deployment
 message_semantics_debug_session: .planning/debug/resolved/network-message-semantics.md
-corrective_network_source_verified: 2026-09-08T15:36:10.121+08:00
-corrective_network_live_recheck: not_run_no_deployment
+corrective_network_source_verified: 2026-09-08T16:30:00+08:00
+corrective_network_live_recheck: pending_cloud_lane_frozen
 corrective_network_debug_session: .planning/debug/resolved/network-summary-messages-links.md
+route_table_firewall_semantic: "RouteTable -> AzureFirewall routes_via in summary and full; Route -> AzureFirewall next_hop retained in full"
+route_table_firewall_source_gate: "4 backend target / 166 backend adjacent / 200 web adjacent / static and causal revert pass"
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -38,8 +40,53 @@ supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 **Baseline:** approved `12-UI-SPEC.md` design contract
 
 **Verdict:** **PASS after deployed topology remediation — 24/24. The
-message-semantics follow-up is source-confirmed and has no open source finding;
-it was not deployed or rechecked live in this debug session.**
+message-semantics and explicit RouteTable-to-AzureFirewall follow-ups are
+source-confirmed and have no open source finding; they were not deployed or
+rechecked live in this debug session.**
+
+## Explicit RouteTable → AzureFirewall Semantic Hardening — 2026-09-08
+
+A read-only deployed API comparison found one remaining discrepancy after the
+first corrective pass: full detail contained the observed
+`Route → AzureFirewall` edge for next-hop IP `10.0.2.4`, while Summary returned
+no corresponding route-table/firewall edge. Isolated replay of the prior
+summary contraction passed, so the source contract was strengthened rather than
+adding another deployment-specific conditional.
+
+Topology projection now emits a first-class, provider-backed
+`RouteTable → AzureFirewall` relationship with type `routes_via` and label
+`routes via Azure Firewall` whenever at least one route in that table resolves
+to the private IP of an observed, in-scope firewall. The relationship is
+present in Summary and Full detail and is built independently of
+`intentionally_omitted_ids`. Full detail separately retains every
+`Route → AzureFirewall` `next_hop` relationship.
+
+The direct relationship is deterministic and privacy-safe:
+
+- multiple qualifying routes from one route table to the same firewall produce
+  exactly one `routes_via` edge;
+- an unresolved next-hop IP produces no direct or detailed firewall edge; and
+- a firewall removed by authorization scope cannot be resolved or projected,
+  even when its private IP text matches the route.
+
+The graph client already accepted arbitrary relationship types and server
+labels. A dedicated `routes_via` regression now locks its mapped edge type and
+user-facing label; no graph production change was required.
+
+| Check | Result |
+|---|---|
+| Failing-first backend semantic regressions | **RED before implementation; GREEN after — 4 target tests pass** |
+| Detailed-edge preservation and direct-edge deduplication | **PASS in Summary and Full detail** |
+| Unresolved-IP and out-of-scope negative cases | **PASS** |
+| Adjacent backend topology/link/scope/scale/API suites | **PASS — 166 tests** |
+| Adjacent Network client/component suites | **PASS — 8 files / 200 tests** |
+| Ruff, TypeScript, scoped ESLint, diff hygiene | **PASS** |
+| Source-only revert and reapply | **PASS — three direct-semantic assertions returned to RED, then all four targets returned to GREEN** |
+
+No deployment, push, or authenticated live recheck was performed because the
+cloud lane is frozen. The observed deployed zero-edge payload remains the
+authoritative live state until a later authorized release; this section records
+source-contract closure only.
 
 ## Follow-up Message-Semantics Remediation — 2026-09-08
 

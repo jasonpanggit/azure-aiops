@@ -1614,20 +1614,26 @@ def _topology_relationships(
     }
 
     for table in snapshot.route_tables:
+        resolved_firewall_ids: set[str] = set()
         for route in table.routes:
             add(table.resource_id, route.resource_id, "has_route", label="has route", details=route.to_dict())
             next_hop_id = firewall_by_private_ip.get(route.next_hop_ip, "")
-            next_hop_source = (
-                table.resource_id
-                if route.resource_id.casefold() in intentionally_omitted_ids
-                else route.resource_id
-            )
             add(
-                next_hop_source,
+                route.resource_id,
                 next_hop_id,
                 "next_hop",
                 label=f"next hop {route.next_hop_ip}",
                 details=route.to_dict(),
+            )
+            if next_hop_id:
+                resolved_firewall_ids.add(next_hop_id)
+        for firewall_id in sorted(resolved_firewall_ids):
+            add(
+                table.resource_id,
+                firewall_id,
+                "routes_via",
+                label="routes via Azure Firewall",
+                details={"resolution": "observed_firewall_private_ip"},
             )
         for subnet_id in table.subnet_ids:
             add(subnet_id, table.resource_id, "routed_by", label="routed by route table")
