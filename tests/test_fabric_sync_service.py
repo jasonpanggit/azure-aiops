@@ -239,6 +239,31 @@ def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> Non
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
 
 
+def test_successful_publication_hooks_follow_exact_side_effect_order(
+    tmp_path: Path,
+) -> None:
+    trace: list[str] = []
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    result = service.sync(exposure_pointer_store=pointer_store)
+
+    normal_write_count = len(result.tables) - len(EXPOSURE_GOLD_TABLES) - 1
+    assert trace == [
+        *(["normal_write"] * normal_write_count),
+        "first_registration",
+        "normal_catalog",
+        "ontology_publication",
+        "gold_stage",
+        *(["gold_write"] * (len(EXPOSURE_GOLD_TABLES) + 1)),
+        "second_registration",
+        "gold_catalog",
+        "completed_state",
+        "shortcut_finalization",
+        "pointer_activation",
+    ]
+
+
 @pytest.mark.parametrize(
     "failpoint",
     [
