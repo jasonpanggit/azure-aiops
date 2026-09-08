@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from fabric_pipelines import (
     change_pipeline,
@@ -84,6 +84,101 @@ class FabricTableWriteProgress:
     total_tables: int
     table_name: str
     result: DeltaWriteResult
+
+
+class FabricStageProgress(TypedDict, total=False):
+    """Best-effort low-cardinality Fabric lifecycle stage notification.
+
+    ``stage`` and ``status`` are always present. Completion events include
+    only the aggregate fields assigned to that stage; every count is a
+    non-boolean integer in the inclusive range 0..2,147,483,647.
+    """
+
+    stage: str
+    status: str
+    dataset_count: int
+    entity_count: int
+    relationship_count: int
+    failure_count: int
+
+
+_FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
+    "dataset_mapping": frozenset({"dataset_count", "failure_count"}),
+    "workload_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "temporal_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "container_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "ontology_construction": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "ontology_validation": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "table_publication": frozenset(),
+    "fabric_asset_registration": frozenset(),
+    "ontology_publication": frozenset(),
+    "gold_staging": frozenset(),
+    "shortcut_finalization": frozenset(),
+    "pointer_activation": frozenset(),
+}
+_MAX_PROGRESS_COUNT = 2_147_483_647
+
+
+def _bounded_progress_count(value: int) -> int:
+    return min(max(int(value), 0), _MAX_PROGRESS_COUNT)
+
+
+def _notify_stage_progress(
+    callback: Callable[[FabricStageProgress], None] | None,
+    stage: str,
+    status: str,
+    **payload: int,
+) -> None:
+    if callback is None:
+        return
+    expected = (
+        _FABRIC_STAGE_FIELDS.get(stage)
+        if status == "completed"
+        else frozenset()
+        if status == "started"
+        else None
+    )
+    if expected is None or frozenset(payload) != expected:
+        return
+    event: FabricStageProgress = {"stage": stage, "status": status}
+    event.update(
+        {
+            field: _bounded_progress_count(value)
+            for field, value in payload.items()
+        }
+    )
+    try:
+        callback(event)
+    except Exception:  # noqa: BLE001 - observability must remain best-effort.
+        _LOGGER.warning(
+            "fabric_stage_progress_callback_failed",
+            extra={"error_code": "FABRIC_STAGE_PROGRESS_CALLBACK_FAILED"},
+        )
+
+
+def _notify_table_progress(
+    callback: Callable[[FabricTableWriteProgress], None] | None,
+    event: FabricTableWriteProgress,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:  # noqa: BLE001 - observability must remain best-effort.
+        _LOGGER.warning(
+            "fabric_table_progress_callback_failed",
+            extra={"error_code": "FABRIC_TABLE_PROGRESS_CALLBACK_FAILED"},
+        )
 
 
 class DedicatedOntologyPublisherAdapter:
@@ -328,14 +423,24 @@ class FabricSyncService:
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
         progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
+        stage_progress_callback: Callable[[FabricStageProgress], None] | None = None,
         exposure_pointer_store: OneLakeDocumentStore | None = None,
     ) -> FabricSyncResult:
+        """Publish one snapshot and optionally report best-effort progress.
+
+        Table callbacks retain the existing post-success
+        :class:`FabricTableWriteProgress` contract. Stage callbacks receive
+        exact, low-cardinality lifecycle mappings with bounded aggregate
+        counts; callback failures never affect publication or expose dynamic
+        exception data.
+        """
         with self.onelake.sync_lock():
             return self._sync_locked(
                 replay_source_run_id=replay_source_run_id,
                 raise_on_quality_failure=raise_on_quality_failure,
                 requested_scope=requested_scope,
                 progress_callback=progress_callback,
+                stage_progress_callback=stage_progress_callback,
                 exposure_pointer_store=exposure_pointer_store,
             )
 
@@ -346,6 +451,7 @@ class FabricSyncService:
         raise_on_quality_failure: bool = True,
         requested_scope: dict[str, list[str]] | None = None,
         progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
+        stage_progress_callback: Callable[[FabricStageProgress], None] | None = None,
         exposure_pointer_store: OneLakeDocumentStore | None = None,
     ) -> FabricSyncResult:
         started_clock = self.clock()
@@ -382,7 +488,19 @@ class FabricSyncService:
         exposure_gold_stage = None
         data_committed = False
         try:
+            _notify_stage_progress(
+                stage_progress_callback,
+                "dataset_mapping",
+                "started",
+            )
             datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            _notify_stage_progress(
+                stage_progress_callback,
+                "dataset_mapping",
+                "completed",
+                dataset_count=len(datasets),
+                failure_count=0,
+            )
             datasets["metadata_source_status"] = [
                 _with_source_partition_defaults(row)
                 for row in datasets.get("metadata_source_status", [])
@@ -398,8 +516,24 @@ class FabricSyncService:
                     if row.get("source_family") not in partition_families
                 ]
                 datasets["metadata_source_status"].extend(partition_status)
-            datasets.update(self._load_workload_products(snapshot))
+            _notify_stage_progress(
+                stage_progress_callback,
+                "workload_projection",
+                "started",
+            )
+            workload_products = self._load_workload_products(snapshot)
+            datasets.update(workload_products)
             self._validate_workload_products(datasets)
+            _notify_stage_progress(
+                stage_progress_callback,
+                "workload_projection",
+                "completed",
+                entity_count=_bounded_progress_count(
+                    sum(len(rows) for rows in workload_products.values())
+                ),
+                relationship_count=0,
+                failure_count=0,
+            )
             if exposure_pointer_store is not None:
                 observation_uri = self.onelake.table_uri(
                     "silver",
@@ -414,6 +548,11 @@ class FabricSyncService:
                     persisted_observations,
                     projected_at=source_projected_at,
                 )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_projection",
+                    "started",
+                )
                 temporal = materialize_temporal_exposure_tables(
                     temporal_products_from_legacy(
                         datasets,
@@ -423,13 +562,38 @@ class FabricSyncService:
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
                 )
-                datasets.update(temporal.write_tables())
-                datasets.update(
-                    materialize_container_exposure_tables(
-                        datasets,
-                        projected_at=source_projected_at,
-                        source_generation=source_run_id,
-                    )
+                temporal_tables = temporal.write_tables()
+                datasets.update(temporal_tables)
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_projection",
+                    "completed",
+                    entity_count=_bounded_progress_count(
+                        sum(len(rows) for rows in temporal_tables.values())
+                    ),
+                    relationship_count=0,
+                    failure_count=0,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "container_projection",
+                    "started",
+                )
+                container_tables = materialize_container_exposure_tables(
+                    datasets,
+                    projected_at=source_projected_at,
+                    source_generation=source_run_id,
+                )
+                datasets.update(container_tables)
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "container_projection",
+                    "completed",
+                    entity_count=_bounded_progress_count(
+                        sum(len(rows) for rows in container_tables.values())
+                    ),
+                    relationship_count=0,
+                    failure_count=0,
                 )
                 granular_entities, granular_relationships = (
                     GranularExposureOntologyMapper().build_rows(
@@ -452,6 +616,11 @@ class FabricSyncService:
                         dict(row) for row in temporal.all_observation_rows
                     ],
                 }
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_construction",
+                "started",
+            )
             if self.topology_enabled:
                 self._extend_with_topology_tables(
                     datasets,
@@ -549,6 +718,20 @@ class FabricSyncService:
             datasets["ontology_entities"].extend(incident_pipeline_result.entities)
             datasets["ontology_relationships"].extend(incident_pipeline_result.relationships)
             datasets = self._synchronize_ontology(datasets, source_run_id, started_at)
+            ontology_entity_count = _bounded_progress_count(
+                len(datasets.get("ontology_entities", ()))
+            )
+            ontology_relationship_count = _bounded_progress_count(
+                len(datasets.get("ontology_relationships", ()))
+            )
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_construction",
+                "completed",
+                entity_count=ontology_entity_count,
+                relationship_count=ontology_relationship_count,
+                failure_count=0,
+            )
             if self.lifecycle_catalog:
                 datasets["silver_lifecycle_history"] = self._lifecycle_history_rows(
                     datasets, run_id, source_run_id, started_at
@@ -562,8 +745,21 @@ class FabricSyncService:
                 ),
                 default=str(manifest.get("startedAt") or ""),
             )
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_validation",
+                "started",
+            )
             reports = self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_validation",
+                "completed",
+                entity_count=ontology_entity_count,
+                relationship_count=ontology_relationship_count,
+                failure_count=_bounded_progress_count(failed_records),
+            )
             self._write_quality_report(
                 run_id,
                 source_run_id,
@@ -679,6 +875,11 @@ class FabricSyncService:
                 else 0
             )
             total_publish_tables = len(publish_items) + gold_table_count
+            _notify_stage_progress(
+                stage_progress_callback,
+                "table_publication",
+                "started",
+            )
             with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
                 futures = [
                     executor.submit(write_table, item) for item in publish_items
@@ -695,22 +896,15 @@ class FabricSyncService:
                     if result.version != before_version:
                         written_versions[table_name] = (table_uri, before_version)
                     self.metrics.record_table(table_name, result)
-                    if progress_callback is not None:
-                        try:
-                            progress_callback(
-                                FabricTableWriteProgress(
-                                    completed_tables=completed_tables,
-                                    total_tables=total_publish_tables,
-                                    table_name=table_name,
-                                    result=result,
-                                )
-                            )
-                        except Exception:
-                            _LOGGER.debug(
-                                "Fabric table progress callback failed for %s",
-                                table_name,
-                                exc_info=True,
-                            )
+                    _notify_table_progress(
+                        progress_callback,
+                        FabricTableWriteProgress(
+                            completed_tables=completed_tables,
+                            total_tables=total_publish_tables,
+                            table_name=table_name,
+                            result=result,
+                        ),
+                    )
                 if write_error is not None:
                     raise write_error
 
@@ -720,7 +914,17 @@ class FabricSyncService:
                 run_id,
                 source_run_id,
             )
+            _notify_stage_progress(
+                stage_progress_callback,
+                "fabric_asset_registration",
+                "started",
+            )
             self._register_fabric_assets(set(table_results))
+            _notify_stage_progress(
+                stage_progress_callback,
+                "fabric_asset_registration",
+                "completed",
+            )
             if self.topology_enabled:
                 self._write_topology_manifest(
                     run_id=run_id,
@@ -728,7 +932,17 @@ class FabricSyncService:
                 )
             self.onelake.write_json("ontology/metadata/catalog.json", catalog)
             data_committed = True
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_publication",
+                "started",
+            )
             self._publish_ontology(datasets)
+            _notify_stage_progress(
+                stage_progress_callback,
+                "ontology_publication",
+                "completed",
+            )
             if (
                 exposure_gold_datasets is not None
                 and exposure_pointer_store is not None
@@ -756,36 +970,49 @@ class FabricSyncService:
                     delta_writer=self.delta,
                     pointer_store=exposure_pointer_store,
                 )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "gold_staging",
+                    "started",
+                )
                 exposure_gold_stage = exposure_gold_publisher.stage(
                     exposure_gold_datasets,
                     generation_id=gold_generation_id,
                     projected_at=source_projected_at,
                     published_at=started_at,
                 )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "gold_staging",
+                    "completed",
+                )
                 datasets.update(gold_tables)
                 for table_name, result in exposure_gold_stage.table_writes.items():
                     table_results[table_name] = result
                     completed_tables += 1
                     self.metrics.record_table(table_name, result)
-                    if progress_callback is not None:
-                        try:
-                            progress_callback(
-                                FabricTableWriteProgress(
-                                    completed_tables=completed_tables,
-                                    total_tables=total_publish_tables,
-                                    table_name=table_name,
-                                    result=result,
-                                )
-                            )
-                        except Exception:
-                            _LOGGER.debug(
-                                "Fabric table progress callback failed for %s",
-                                table_name,
-                                exc_info=True,
-                            )
+                    _notify_table_progress(
+                        progress_callback,
+                        FabricTableWriteProgress(
+                            completed_tables=completed_tables,
+                            total_tables=total_publish_tables,
+                            table_name=table_name,
+                            result=result,
+                        ),
+                    )
 
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "fabric_asset_registration",
+                    "started",
+                )
                 self._register_fabric_assets(
                     set(exposure_gold_stage.table_writes)
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "fabric_asset_registration",
+                    "completed",
                 )
                 self.onelake.write_json(
                     "ontology/metadata/catalog.json",
@@ -809,12 +1036,32 @@ class FabricSyncService:
                 watermark=source_watermark,
             )
             self._write_state(completed)
+            _notify_stage_progress(
+                stage_progress_callback,
+                "shortcut_finalization",
+                "started",
+            )
             self._create_shortcuts()
+            _notify_stage_progress(
+                stage_progress_callback,
+                "shortcut_finalization",
+                "completed",
+            )
             if (
                 exposure_gold_publisher is not None
                 and exposure_gold_stage is not None
             ):
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "pointer_activation",
+                    "started",
+                )
                 exposure_gold_publisher.activate(exposure_gold_stage)
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "pointer_activation",
+                    "completed",
+                )
             self.metrics.record_ontology(
                 ontology_health, self.clock() - ontology_started
             )
