@@ -1,0 +1,165 @@
+{
+  "activation_interface_present": false,
+  "finalize": {
+    "audit_retained": true,
+    "authoritative_model_edges": 0,
+    "coordinator_tag_unchanged": true,
+    "fixture_registry_empty": true,
+    "no_runtime_job_start_grants": true,
+    "release_status": "BLOCKED/PENDING",
+    "status": "PASS",
+    "templates_unchanged": true
+  },
+  "lifecycle": {
+    "cleanup": {
+      "execution_hash": "sha256:e94066b41812bec61f9701fd942372f19fe20fb3d823023798cb2210f5e48b53",
+      "execution_status": "Succeeded",
+      "job_hash": "sha256:4dc8059d9fa7c96f737dd20c535e1fc3caaf6524d37ea75b67cb6d04a152a093",
+      "server_generated": true,
+      "status": "PASS"
+    },
+    "drain": {
+      "connection_root_hash": "sha256:c53e75f87d75a55fd79eda8b7952ba8dc79f40737707554d9e6aaf077d5c4f49",
+      "connection_root_matches": true,
+      "execution_hash": "sha256:2467ce37847b9259f19ddd28347e7ce94e496294e57aa805409c93726d0fbb7c",
+      "normal_reauthorization": true,
+      "normal_selection": true,
+      "registry_provider_class": "ConnectionRegistry",
+      "registry_provider_module": "onboarding.registry",
+      "registry_store_class": "OneLakeRegistryStore",
+      "status": "PASS"
+    },
+    "environment": "validation",
+    "injection_tag": {
+      "authoritative_model_edges": 0,
+      "exact": true,
+      "expected_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
+      "lineage": [
+        "terraform",
+        "arg",
+        "inventory",
+        "evidence",
+        "curator"
+      ],
+      "mutation_count": 0,
+      "scope_unchanged": true,
+      "status": "PASS",
+      "tag_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
+      "tool_count": 4,
+      "tools": [
+        "list_changed_entities",
+        "get_entity_evidence",
+        "get_ontology_vocabulary",
+        "search_relationship_history"
+      ]
+    },
+    "prepare": {
+      "execution_hash": "sha256:e677f5c7d294f1266d0c95d7e68a09bce915c30f09832b01d7b50ee548730a36",
+      "execution_status": "Succeeded",
+      "job_hash": "sha256:af67da25d0b3dc1ae39cbe77d47fa62e26b3f870b3d3133fe61e23afd55477fa",
+      "server_generated": true,
+      "status": "PASS"
+    },
+    "sequence": [
+      "preflight",
+      "prepare",
+      "select_epoch",
+      "drain_member_1",
+      "drain_member_2",
+      "process_replacement",
+      "drain_member_3",
+      "injection_tag",
+      "cleanup",
+      "maintenance",
+      "retained_audit",
+      "empty_registry"
+    ],
+    "status": "PASS"
+  },
+  "mode": "deployed-fixed-template",
+  "preflight": {
+    "connection_root_hash": "sha256:c53e75f87d75a55fd79eda8b7952ba8dc79f40737707554d9e6aaf077d5c4f49",
+    "coordinator_tag": {
+      "exact": true,
+      "expected_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
+      "live_hash": "sha256:ca63068060c6d594f1e954df68421a69c313c389aec73231fd98456c0bfed8d5",
+      "tag_key": "aiops_validation_fixture"
+    },
+    "deployer": {
+      "identity_hash": "sha256:429739559dc7c63e648808a4e0600b9a1558a135c854c9f53f73f748023f4ff0",
+      "subscription_hash": "sha256:429739559dc7c63e648808a4e0600b9a1558a135c854c9f53f73f748023f4ff0"
+    },
+    "no_runtime_job_start_grants": true,
+    "rbac_denials": {
+      "api": {
+        "job_start_denied": true,
+        "wildcard_absent": true
+      },
+      "coordinator": {
+        "job_start_denied": true,
+        "wildcard_absent": true
+      },
+      "curator": {
+        "job_start_denied": true,
+        "wildcard_absent": true
+      }
+    },
+    "status": "PASS",
+    "templates": {
+      "coordinator": {
+        "after": "sha256:2b037208548bad5c8395119c3ceb3c3d0b17eb29519848b832839d8961b89e94",
+        "before": "sha256:2b037208548bad5c8395119c3ceb3c3d0b17eb29519848b832839d8961b89e94",
+        "expected": "sha256:2b037208548bad5c8395119c3ceb3c3d0b17eb29519848b832839d8961b89e94",
+        "override_fields": []
+      },
+      "ontology_fixture_cleanup": {
+        "after": "sha256:fb0b99a0274491d1fd581fbd1ff40f813a4f26d09cebafdae66cb6bb563c628f",
+        "before": "sha256:fb0b99a0274491d1fd581fbd1ff40f813a4f26d09cebafdae66cb6bb563c628f",
+        "expected": "sha256:fb0b99a0274491d1fd581fbd1ff40f813a4f26d09cebafdae66cb6bb563c628f",
+        "override_fields": []
+      },
+      "ontology_fixture_prepare": {
+        "after": "sha256:0599286139783616b176c5b35f88607eb1a323255c1352f5e5ecabcc51abf80d",
+        "before": "sha256:0599286139783616b176c5b35f88607eb1a323255c1352f5e5ecabcc51abf80d",
+        "expected": "sha256:0599286139783616b176c5b35f88607eb1a323255c1352f5e5ecabcc51abf80d",
+        "override_fields": []
+      },
+      "publisher": {
+        "after": "sha256:143ac718c8461187fb4b1d3f65946080f855a12a16a920903c6f7b999c7e40cc",
+        "before": "sha256:143ac718c8461187fb4b1d3f65946080f855a12a16a920903c6f7b999c7e40cc",
+        "expected": "sha256:143ac718c8461187fb4b1d3f65946080f855a12a16a920903c6f7b999c7e40cc",
+        "override_fields": []
+      },
+      "rbac_validator": {
+        "after": "sha256:7fcc893e44a4ac54f37cadaea999feed2c20da1822fd384421904dbd3345c1d8",
+        "before": "sha256:7fcc893e44a4ac54f37cadaea999feed2c20da1822fd384421904dbd3345c1d8",
+        "expected": "sha256:7fcc893e44a4ac54f37cadaea999feed2c20da1822fd384421904dbd3345c1d8",
+        "override_fields": []
+      }
+    }
+  },
+  "publication": {
+    "authoritative_model_edges": 0,
+    "command_topology": [
+      "api_intake",
+      "coordinator_claim",
+      "coordinator_reauthorization",
+      "publish_dispatch",
+      "publisher_claim",
+      "publisher_status",
+      "api_reload"
+    ],
+    "publication": {
+      "execution_hash": "sha256:98eecdea24dd2246c202e1d01d9fae3fb1705fa96ba0c263b262ea40487af858",
+      "execution_status": "Failed",
+      "job_hash": "sha256:ab49d4928a0706df2017c7cbd5afa091f5aeb8a708413e637af929c1e969a7c5",
+      "server_generated": true,
+      "status": "FAIL"
+    },
+    "status": "PASS"
+  },
+  "release_status": "BLOCKED/PENDING",
+  "sanitized": true,
+  "schema_version": "ontology-deployed-lifecycle-validation.v1",
+  "status": "PASS"
+}
