@@ -2,15 +2,15 @@
 status: diagnosed
 trigger: "Diagnose the Phase 03.1 Plan 19 live activation OOM scientifically, without modifying code. Repo: /Users/jasonmba/workspace/azure-aiops, branch main. Integrated image aiops-api:phase031-integrated-20260907-2240 ran `python -m onboarding.cli activate --config /app/config.yaml --fabric-config /app/fabric.config.yaml --connection-id demo` in Azure Container Apps Job with 2 CPU/4Gi. Execution aiops-dev-exposure-publication-ows94mn ran 2026-09-07 14:54-14:58 UTC and terminated exit 137. Console logs only show Cost Management 429 handled as non-fatal; no subsequent logs. Prior 1Gi job also OOM'd. Live ARG has ~21k microsoft.security/assessments. Need identify likely exact memory amplification/retained-object path in activation -> ingestion -> snapshot -> Fabric sync/ontology. Inspect code and existing tests only; report evidence with file/line references, primary root cause, minimal production-safe fix, and targeted tests. Respect concurrent ownership: do not edit src/fabric/dataset_mapper.py, src/fabric/sync_service.py, src/fabric/runtime.py, remediation files. Do not modify any files."
 created: 2026-09-07T23:02:19.059+08:00
-updated: 2026-09-08T20:31:00+08:00
+updated: 2026-09-08T21:02:00+08:00
 ---
 
 ## Current Focus
 
-hypothesis: confirmed — `_exposure_generation_window` has no readable identifier because the authoritative Gold pointer is absent and the active DatasetStore generation contains no fallback Exposure metadata; no Gold-capable publication execution has completed
-test: complete — direct authenticated OneLake GET/list evidence checked both generation sources and Gold table prefixes; ARM/ACR/history identified the missing publication transition; focused local contract tests passed
-expecting: diagnosis complete; no source or cloud mutation is authorized in this session
-next_action: hand the smallest cloud-only initialization sequence to the owning Topology session for decision
+hypothesis: confirmed — the exact recovery is an image-only update of the already-correct 4 CPU/8 GiB persistent Job template to target digest `sha256:29c8c203...`, followed by one plain no-override start; a successful full activation stages `exposure-gold-*` and performs the first pointer CAS
+test: complete — source contracts, active registry, target ancestry/digest, frozen Job template, execution override failure, pointer state, and legacy staged metadata were checked read-only
+expecting: owner preflight sees active set exactly `demo`, zero running executions, absent pointer, legacy empty `inventory-refresh` metadata allowed, and the exact frozen template; success yields one Succeeded execution and pointer revision 1 to the same generation returned by the Exposure API
+next_action: return the exact bounded Topology-owner command sequence with every cloud mutation clearly labeled; do not execute it
 bug_class: bohrbug
 known_pattern_candidate: none found in .planning/debug/knowledge-base.md
 candidate_causes:
@@ -19,6 +19,20 @@ candidate_causes:
   - data: Gold pointer and fallback Exposure metadata are absent
   - code: another generation-window dependency maps to the same 503
 and_gate: no for the current 503 — one absent readable pointer is sufficient; unsuccessful publication is the leading cause, while root drift has been eliminated
+reasoning_checkpoint:
+  hypothesis: "The overview 503 persists because no full final-image activation has completed the Gold pointer CAS; updating only the correct persistent Job template image and starting that template once addresses the missing lifecycle transition."
+  confirming_evidence:
+    - "Direct OneLake GET returns 404 for the Gold pointer and the active DatasetStore generation has no fallback generation."
+    - "Source activates the pointer only after complete Fabric/ontology/shortcut finalization, and the only final-tag execution ran at 0.5 CPU/1 GiB with null activation command/args."
+    - "The persistent Job already has the exact demo selector, identity/root, 4 CPU/8 GiB, one replica, zero retries, and 3600-second timeout."
+  falsification_test: "A preflight-readable Gold pointer, a non-demo active connection set, any running publication, or a Succeeded exact-template final-image execution without pointer revision 1 would falsify this bounded initial-activation plan and requires stopping rather than starting."
+  fix_rationale: "The image-only template update preserves every validated operational field; the plain start avoids the partial-start override defaults and invokes the only source-owned full activation path that can legally stage and CAS Gold."
+  blind_spots: "The owner must still observe live execution success and Fabric SQL propagation; local/read-only evidence cannot prove the future provider run will complete within its 3600-second boundary."
+  candidate_causes:
+    - "code/lifecycle: no exact-template final-image activation reached pointer CAS"
+    - "environment/config: a partial start override discarded the persistent command and 4 CPU/8 GiB sizing"
+    - "data: pointer and fallback generation remain absent"
+  and_gate: "yes for recovery safety — missing pointer causes the 503, while final source plus the preserved full Job template are both required to initialize it safely"
 
 ## Symptoms
 
@@ -275,9 +289,49 @@ started: Phase 03.1 Plan 19 live activation execution at 2026-09-07 14:54–14:5
   found: A/C confirmed — initial Gold activation has not completed and live pointer/fallback data are missing; B eliminated — API/Job share the correct root and identity and cursor refs are intact; D eliminated — the exact error has one source and both of its data branches were directly observed empty
   implication: no source migration or code fix is required for this blocker; the owning mutation lane must perform and verify one successful Gold-capable publication
 
+- timestamp: 2026-09-08T20:36:00+08:00
+  checked: activation CLI and complete activation runtime
+  found: `--connection-id` is appendable and defaults to all active only when omitted; activation validates and syncs each selected connection, publishes one combined snapshot, then calls Fabric sync with `exposure_pointer_store=OneLakeDocumentStore(service.registry.root)`
+  implication: the recovery must pass an explicit minimal complete connection set and cannot replace the full activation with a pointer-only write or a Fabric-only command
+
+- timestamp: 2026-09-08T20:36:00+08:00
+  checked: deploy connector config, Dockerfile, and onboarding runtime
+  found: the final image bakes `arg.config.deploy.yaml` at `/app/config.yaml`; its output root inherits the Job's OneLake `AIOPS_HOME`, and per-connection ingestion writes beneath that same root before combined publication
+  implication: the owner command should retain the deployed config paths and root/identity, changing only the Job image if preflight proves all other frozen template fields match
+
+- timestamp: 2026-09-08T20:43:00+08:00
+  checked: live OneLake subscription registry document
+  found: registry revision 2115 contains exactly one connection, `demo`, active, for subscription `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`
+  implication: the smallest complete and deterministic selector is exactly `--connection-id demo`; omitting it would introduce future registry growth into the run boundary
+
+- timestamp: 2026-09-08T20:43:00+08:00
+  checked: target ACR tag and current Job template
+  found: `integrated-main-b2ba7558-20260908-1833` resolves to `sha256:29c8c2038052367b5b21984c668d8975313550b4015e22b5279178c706b06cd8`; current Job template is manual, 4 CPU/8 GiB, timeout 3600, retry 0, parallelism/completion 1, command `python -m onboarding.cli activate ... --connection-id demo`, but points to old digest `sha256:14e76a75...`
+  implication: only the persistent template image needs changing before one plain start; all sizing, identity, root, and command fields are already correct
+
+- timestamp: 2026-09-08T20:43:00+08:00
+  checked: latest final-image execution `aiops-dev-exposure-publication-vupbscq`
+  found: its frozen execution override used the final tag but defaulted to 0.5 CPU/1 GiB and had null command/args, then Failed; it did not inherit the Job's 4 CPU/8 GiB activation template
+  implication: do not use `az containerapp job start --image ...` with partial overrides; update and verify the persistent template first, then start with no execution overrides
+
+- timestamp: 2026-09-08T20:50:00+08:00
+  checked: all six actual flat OneLake table prefixes derived from `OneLakeWriter.table_uri` and `_table_name`
+  found: `Tables/gold_exposure_facts`, dimensions, facets, summaries, evidence each contain two blobs, and `Tables/metadata_exposure_gold_generations` contains three; the earlier zero-blob check used the wrong nested prefix `Tables/gold/gold_exposure_facts`
+  implication: revoke the earlier inference that no Gold products were staged; pointer/fallback absence remains directly proven, but recovery preflight must permit retained staged Delta artifacts and must not attempt cleanup
+
+- timestamp: 2026-09-08T21:02:00+08:00
+  checked: staged Gold Delta blob timestamps and sanitized metadata parquet row
+  found: all flat Gold tables were initialized on 2026-09-07 around 07:12 UTC; the five product tables contain only their initial Delta logs, while metadata contains one reconciled `inventory-refresh` row with no previous generation and seven-day retention
+  implication: this is a legacy empty staged baseline, not a readable generation; it must be retained and idempotently merged by full activation, not manually activated, deleted, or treated as a rollback predecessor
+
+- timestamp: 2026-09-08T21:02:00+08:00
+  checked: target source ancestry and final pointer/result contracts
+  found: memory fix `88ad45393` is an ancestor of target commit `b2ba7558`; successful current source emits `exposure-gold-` plus 24 hex characters, writes five Gold product tables and generation metadata, then creates schema 1.0.0 pointer revision 1 with null previous generation, two-generation/seven-day retention policy, and zero activation conflicts
+  implication: exact success can be asserted without guessing row count by matching execution image/resources, pointer schema/revision/generation, and API `knowledge_version`/`data.generation`
+
 ## Resolution
 
 root_cause: "The API is correctly failing closed because both readable-generation sources are absent: `Files/aiops/exposure/gold-generation-pointer.json` does not exist, and the active DatasetStore generation has neither `vulnerability/exposure_metadata.jsonl` nor a manifest `readModelGenerationId`. The causal lifecycle gap is that no execution containing the Sep 8 Gold activation wiring completed: older successful Jobs predate commit 89201567e, while the sole Gold-capable ac556cc26 execution is Stopped. This is initial Gold activation/publication missing state (A leading to C), not a migration, cursor-secret drift, stale pointer, or another source bug."
-fix: "Not applied (diagnose-only). Smallest safe remediation for the owning Topology mutation lane: update/confirm `aiops-dev-exposure-publication` on the final immutable integrated image, start exactly one activation, require a Succeeded execution, then verify Gold facts/generation metadata and pointer revision/readable_generation_id before retrying the overview. Every Job template update and Job start is a cloud mutation."
-verification: "Diagnosis verified read-only: exact deployed source/tag and env inspected; pointer GET returned BlobNotFound/PathNotFound; Exposure prefix and both Gold table prefixes were empty; fallback metadata GET returned BlobNotFound and active manifest generation was null; ARM showed the only Gold-capable execution Stopped; 5 focused local generation tests passed."
+fix: "Not applied (diagnose-only). Owner-only recovery: first assert registry active set is exactly `demo`, no publication is Running, the Gold pointer is still absent, and the persistent Job remains the validated 4 CPU/8 GiB/3600s/retry-0/parallelism-1 activation template. Then CLOUD MUTATION update only its image to `aiopsdevacrg6ludc.azurecr.io/aiops-api@sha256:29c8c2038052367b5b21984c668d8975313550b4015e22b5279178c706b06cd8`; re-read and assert the full template; CLOUD MUTATION start once with no overrides. Require Succeeded and pointer revision 1/readable `exposure-gold-*`, then require the scoped overview's `knowledge_version` and `data.generation` to equal that pointer. Never use `job start --image` alone."
+verification: "Diagnosis/runbook verified read-only: exact target digest and memory-fix ancestry resolved; durable registry has only active `demo`; no execution was Running; persistent Job contract is 4 CPU/8 GiB, 3600 seconds, retry 0, parallelism/completion 1, correct identity/root/args; final-tag partial override execution failed at 0.5 CPU/1 GiB with null command/args; pointer/fallback remain absent; actual flat Gold paths contain only a legacy empty reconciled `inventory-refresh` baseline; source pointer/API invariants were traced and focused contract tests had passed."
 files_changed: []
