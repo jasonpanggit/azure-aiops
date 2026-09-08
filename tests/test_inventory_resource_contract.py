@@ -275,3 +275,30 @@ def test_published_resource_rows_are_readable_by_logical_name(tmp_path: Path) ->
     assert {row["resource_id"] for row in store.read_dataset("inventory/resource_observations")} == {
         row["resource_id"] for row in rows
     }
+
+
+def test_fabric_only_publication_does_not_replace_compatibility_generation(
+    tmp_path: Path,
+) -> None:
+    from intelligence.inventory.fabric_publication import InventoryFabricPublisher
+    from intelligence.inventory.models import ResourceObservation
+
+    rows = [
+        ResourceObservation.from_provider_row(
+            PAYLOADS[0],
+            family="paas",
+            observed_at="2026-08-26T06:00:00Z",
+            ingestion_run_id="run-1",
+            query_version="resource-observation-v1",
+        ).to_fabric_row()
+    ]
+    store = DatasetStore(tmp_path)
+
+    manifest = InventoryFabricPublisher(store).publish(
+        {"inventory/resource_observations": rows},
+        run_metadata={"runId": "fabric-only", "status": "completed"},
+        persist_compatibility=False,
+    )
+
+    assert store.current_generation() is None
+    assert manifest["datasets"]["inventory/resource_observations"]["rowCount"] == 1

@@ -125,3 +125,147 @@ def test_merge_rejects_cross_connection_identity_collision(tmp_path: Path) -> No
         publish_combined_inventory_snapshot(
             {"conn-a": conn_a, "conn-b": conn_b}, tmp_path / "combined"
         )
+
+
+def test_republish_loads_exact_combined_generation_after_pointer_moves(
+    tmp_path: Path,
+) -> None:
+    from intelligence.inventory.combine import _load_combined_inventory_generation
+
+    conn_root = tmp_path / "conn-a"
+    resource_id = "/subscriptions/sub-1/resourcegroups/rg-1/vm-1"
+    _publish_connection_rows(
+        conn_root,
+        [
+            _os_row(
+                resource_id=resource_id,
+                machine_name="vm-1",
+                observed_at="2026-08-31T10:00:00Z",
+            )
+        ],
+    )
+    combined_root = tmp_path / "combined"
+    combined_manifest = publish_combined_inventory_snapshot(
+        {"conn-a": conn_root},
+        combined_root,
+    )
+
+    store = DatasetStore(combined_root)
+    store.publish(
+        {
+            "inventory/os_observations": [],
+            "inventory/source_status": [],
+            "inventory/software_observations": [],
+            "inventory/software_source_status": [],
+            "inventory/resource_observations": [],
+        },
+        {},
+        {
+            "runId": "unrelated-empty-publication",
+            "status": "completed",
+            "startedAt": "2026-08-31T11:00:00Z",
+        },
+        ontology={},
+    )
+
+    assert store.read_dataset("inventory/os_observations") == []
+    datasets, manifest = _load_combined_inventory_generation(
+        store,
+        source_run_id=str(combined_manifest["runId"]),
+    )
+
+    assert manifest["runId"] == combined_manifest["runId"]
+    assert [row["resource_id"] for row in datasets["inventory/os_observations"]] == [
+        resource_id
+    ]
+
+
+def test_republish_rejects_generation_that_does_not_match_manifest(
+    tmp_path: Path,
+) -> None:
+    from intelligence.inventory.combine import _load_combined_inventory_generation
+
+    conn_root = tmp_path / "conn-a"
+    _publish_connection_rows(
+        conn_root,
+        [
+            _os_row(
+                resource_id="/subscriptions/sub-1/resourcegroups/rg-1/vm-1",
+                machine_name="vm-1",
+                observed_at="2026-08-31T10:00:00Z",
+            )
+        ],
+    )
+    combined_root = tmp_path / "combined"
+    manifest = publish_combined_inventory_snapshot(
+        {"conn-a": conn_root},
+        combined_root,
+    )
+    store = DatasetStore(combined_root)
+    generation = Path(
+        store.generation_path(str(manifest["runId"])) or ""
+    )
+    (generation / "inventory" / "os_observations.jsonl").unlink()
+
+    with pytest.raises(RuntimeError, match="does not match its manifest"):
+        _load_combined_inventory_generation(
+            store,
+            source_run_id=str(manifest["runId"]),
+        )
+
+
+def test_combine_pins_each_connection_generation_when_pointer_moves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import intelligence.inventory.combine as combine_module
+
+    conn_root = tmp_path / "conn-a"
+    resource_id = "/subscriptions/sub-1/resourcegroups/rg-1/vm-1"
+    _publish_connection_rows(
+        conn_root,
+        [
+            _os_row(
+                resource_id=resource_id,
+                machine_name="vm-1",
+                observed_at="2026-08-31T10:00:00Z",
+            )
+        ],
+    )
+    original_read_manifest = combine_module._read_manifest
+    pointer_moved = False
+
+    def read_manifest_then_move_pointer(store, *, generation=None):
+        nonlocal pointer_moved
+        manifest = original_read_manifest(store, generation=generation)
+        if not pointer_moved:
+            pointer_moved = True
+            store.publish(
+                {
+                    "inventory/os_observations": [],
+                    "inventory/source_status": [],
+                    "inventory/software_observations": [],
+                    "inventory/software_source_status": [],
+                    "inventory/resource_observations": [],
+                },
+                {},
+                {
+                    "runId": "newer-empty-connection-run",
+                    "status": "completed",
+                    "startedAt": "2026-08-31T11:00:00Z",
+                },
+                ontology={},
+            )
+        return manifest
+
+    monkeypatch.setattr(combine_module, "_read_manifest", read_manifest_then_move_pointer)
+
+    publish_combined_inventory_snapshot(
+        {"conn-a": conn_root},
+        tmp_path / "combined",
+    )
+
+    rows = DatasetStore(tmp_path / "combined").read_dataset(
+        "inventory/os_observations"
+    )
+    assert [row["resource_id"] for row in rows] == [resource_id]

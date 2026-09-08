@@ -14,12 +14,12 @@ const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDevia
   buildComplianceCopilotContext: vi.fn(),
 }));
 
-vi.mock("@/lib/services", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/services")>();
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
-    ...actual,
     buildCopilotSnapshot: (input: Record<string, unknown>) => input,
     copilotEvidenceRows: () => [],
+    isCanonicalAzureResourceId: actual.isCanonicalAzureResourceId,
     networkApi: { topology, gaps, ruleFindings },
     vulnerabilityApi: { exposures },
     complianceApi: {

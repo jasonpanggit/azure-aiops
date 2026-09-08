@@ -101,6 +101,7 @@ def _legacy_run_inventory_refresh_all_connections(
             config.output_dir,
             fabric_config_path,
             retain_raw_queries=config.retain_raw_queries,
+            source_run_id=str(combined_manifest["runId"]),
         )
 
     return {

@@ -84,23 +84,30 @@ def publish_combined_inventory_snapshot(
     for connection_id in selected:
         root = connection_output_dirs[connection_id]
         store = DatasetStore(root)
-        if store.current_generation() is None:
+        generation = store.current_generation()
+        if generation is None:
             continue
-        manifest = _read_manifest(store)
+        manifest = _read_manifest(store, generation=generation)
+        connection_datasets = store.read_datasets(
+            _INVENTORY_DATASETS,
+            generation=generation,
+        )
         source_runs.append(str(manifest.get("runId") or connection_id))
         latest_started_at = max(latest_started_at, str(manifest.get("startedAt") or ""))
 
-        for row in store.read_dataset("inventory/os_observations"):
+        for row in connection_datasets["inventory/os_observations"]:
             _merge(os_rows, str(row.get("resource_id") or ""), dict(row))
-        for row in store.read_dataset("inventory/resource_observations"):
+        for row in connection_datasets["inventory/resource_observations"]:
             _merge(resource_rows, str(row.get("resource_id") or ""), dict(row))
-        for row in store.read_dataset("inventory/software_observations"):
+        for row in connection_datasets["inventory/software_observations"]:
             key = "|".join(
                 str(row.get(field) or "") for field in ("resource_id", "canonical_identity")
             )
             _merge(software_rows, key, dict(row))
-        os_statuses.extend(store.read_dataset("inventory/source_status"))
-        software_statuses.extend(store.read_dataset("inventory/software_source_status"))
+        os_statuses.extend(connection_datasets["inventory/source_status"])
+        software_statuses.extend(
+            connection_datasets["inventory/software_source_status"]
+        )
 
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     run_id = f"inventory-activation-{uuid.uuid4()}"
@@ -142,6 +149,7 @@ def republish_combined_snapshot_to_fabric(
     fabric_config_path: str,
     *,
     retain_raw_queries: bool = False,
+    source_run_id: str = "",
 ) -> dict[str, Any]:
     """Publish the already-merged combined inventory snapshot through Fabric.
 
@@ -150,6 +158,13 @@ def republish_combined_snapshot_to_fabric(
     ever receives one write per refresh regardless of how many subscription
     connections were merged into it.
     """
+    store = DatasetStore(target_root, retain_raw_queries=retain_raw_queries)
+    datasets, manifest = _load_combined_inventory_generation(
+        store,
+        source_run_id=source_run_id,
+    )
+    manifest_run_id = str(manifest.get("runId") or "")
+
     from fabric.auth import build_credential, build_delta_storage_options
     from fabric.config import FabricRuntimeConfig
     from fabric.fabric_client import FabricClient
@@ -197,19 +212,60 @@ def republish_combined_snapshot_to_fabric(
             storage_options=storage_options,
             storage_options_provider=lambda: build_delta_storage_options(credential),
         )
-    store = DatasetStore(target_root, retain_raw_queries=retain_raw_queries)
     publisher = InventoryFabricPublisher(
         store,
         onelake=InventoryOneLakePublisher(onelake, delta_writer=delta_writer),
     )
-    datasets = {name: store.read_dataset(name) for name in _INVENTORY_DATASETS}
-    return publisher.publish(datasets, run_metadata={"runId": "inventory-refresh"})
+    return publisher.publish(
+        datasets,
+        run_metadata={"runId": manifest_run_id or "inventory-refresh"},
+        persist_compatibility=False,
+    )
 
 
-def _read_manifest(store: DatasetStore) -> dict[str, Any]:
+def _load_combined_inventory_generation(
+    store: DatasetStore,
+    *,
+    source_run_id: str,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Load and verify one immutable combined generation."""
+    generation = (
+        store.generation_path(source_run_id)
+        if source_run_id
+        else store.current_generation()
+    )
+    if generation is None:
+        raise RuntimeError("Combined inventory generation is unavailable")
+    manifest = _read_manifest(store, generation=generation)
+    manifest_run_id = str(manifest.get("runId") or "")
+    if source_run_id and manifest_run_id != source_run_id:
+        raise RuntimeError(
+            "Combined inventory generation does not match the requested run"
+        )
+    datasets = store.read_datasets(_INVENTORY_DATASETS, generation=generation)
+    manifest_datasets = manifest.get("datasets")
+    if not isinstance(manifest_datasets, dict):
+        raise TypeError("Combined inventory manifest has no dataset details")
+    for name, rows in datasets.items():
+        details = manifest_datasets.get(name)
+        expected = details.get("rowCount") if isinstance(details, dict) else None
+        if expected is None or int(expected) != len(rows):
+            raise RuntimeError(
+                f"Combined inventory dataset '{name}' does not match its manifest"
+            )
+    return datasets, manifest
+
+
+def _read_manifest(
+    store: DatasetStore,
+    *,
+    generation: Path | str | None = None,
+) -> dict[str, Any]:
     import json
 
-    generation = store.current_generation()
+    generation = generation or store.current_generation()
+    if generation is None:
+        raise ValueError("Inventory generation is unavailable")
     path = f"{generation}/manifest.json"
     try:
         if store.is_remote:
