@@ -424,6 +424,41 @@ describe("buildTopologyGraph", () => {
     ]);
   });
 
+  it("accepts provider-backed route-table to firewall relationships", () => {
+    const routeTableId =
+      "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt";
+    const firewallId =
+      "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/azureFirewalls/fw";
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: routeTableId, entity_type: "RouteTable" }),
+          resource({ id: firewallId, entity_type: "AzureFirewall" }),
+        ],
+        relationships: [
+          {
+            id: `routes_via:${routeTableId.toLowerCase()}::${firewallId.toLowerCase()}`,
+            source: routeTableId.toLowerCase(),
+            target: firewallId.toLowerCase(),
+            relationship_type: "routes_via",
+            label: "routes via Azure Firewall",
+            details: { resolution: "observed_firewall_private_ip" },
+          },
+        ],
+      }),
+    );
+
+    expect(graph.edges).toEqual([
+      expect.objectContaining({
+        source: routeTableId,
+        target: firewallId,
+        kind: "relationship",
+        relationshipType: "routes_via",
+        label: "routes via Azure Firewall",
+      }),
+    ]);
+  });
+
   it("preserves Fabric and AI Foundry entity types as exactly two graph nodes", () => {
     const graph = buildTopologyGraph(
       topologyOf({
