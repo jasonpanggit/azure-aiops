@@ -8,7 +8,8 @@ import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { useScope } from "@/lib/scope-context";
-import { buildCopilotSnapshot, copilotEvidenceRows, situationsApi } from "@/lib/services";
+import { situationsApi } from "@/lib/services";
+import { buildSituationsCopilotContext } from "@/lib/copilot/page-adapters";
 import { rankDurableSituations, type SituationPriority } from "@/lib/situations";
 import type { DurableSituation, Envelope } from "@/lib/types";
 
@@ -38,6 +39,31 @@ export default function SituationsPage() {
   const situations = useMemo(() => {
     return rankDurableSituations(envelope?.data ?? []);
   }, [envelope]);
+
+  const rankedDurableSituations = useMemo(() => {
+    const bySituationId = new Map(
+      (envelope?.data ?? []).map((situation) => [situation.situation_id, situation]),
+    );
+    return situations.flatMap((summary) => {
+      const durable = bySituationId.get(summary.id);
+      return durable ? [durable] : [];
+    });
+  }, [envelope, situations]);
+
+  const situationsCopilot = buildSituationsCopilotContext({
+    scope,
+    situations: rankedDurableSituations,
+    query,
+    priority,
+    page,
+    pageSize: 25,
+    totalCount: envelope?.pagination?.total ?? rankedDurableSituations.length,
+    nextOffset: envelope?.pagination?.next_offset ?? null,
+    selectedSituationId: null,
+    available: Boolean(envelope) && !error,
+    observedAt: envelope?.evidence?.[0]?.timestamp,
+    evidence: envelope?.evidence ?? [],
+  });
 
   return (
     <div className="page-container">
@@ -129,18 +155,9 @@ export default function SituationsPage() {
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Situations queue"
-        snapshot={buildCopilotSnapshot({
-          pageKind: "incident",
-          pageId: "situations",
-          scope,
-          filters: { query: query ? [query] : [], priority: priority === "all" ? [] : [priority], page: [String(page)] },
-          evidence: copilotEvidenceRows("situations", envelope?.evidence ?? [], situations),
-        })}
-        starterQuestions={[
-          { label: "Which situations are highest priority?", tool: "incidents", toolArguments: {} },
-          { label: "What should be fixed first?", tool: "remediation_opportunities", toolArguments: {} },
-          { label: "What changed before the outage?", tool: "incidents", toolArguments: {} },
-        ]}
+        requestedScope={situationsCopilot.requestedScope}
+        snapshot={situationsCopilot.snapshot}
+        starterQuestions={situationsCopilot.starterQuestions}
       />
     </div>
   );

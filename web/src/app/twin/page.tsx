@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,6 +12,7 @@ import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
 import { twinApi } from "@/lib/services";
+import { buildTwinCopilotContext } from "@/lib/copilot/page-adapters";
 import type {
   Envelope,
   TwinComparison,
@@ -53,6 +56,7 @@ export default function OperationalTwinPage() {
   const [exported, setExported] = useState<Envelope<TwinExport> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -95,6 +99,77 @@ export default function OperationalTwinPage() {
 
   const risk = riskScore(snapshot);
 
+  // Read-only contextual Copilot over the already-loaded request-time twin.
+  // Entity/relationship/temporal/scenario/traversal identities keep provenance
+  // and bounds; unsupported edges and historical evidence stay uncertain rather
+  // than asserted; no row carries mutation authority (D-03, D-04, D-08, D-09).
+  const twinData = snapshot?.data ?? null;
+  const twinAvailable = !error && Boolean(snapshot);
+  const twinCopilot = buildTwinCopilotContext({
+    scope,
+    twinId: twinData?.twin_id ?? "operational-twin",
+    version: twinData?.version,
+    previousVersion: twinData?.previous_version,
+    observedAt: twinData?.observed_at,
+    liveObservedAt: snapshot?.live_observed_at,
+    confidence: twinData?.confidence,
+    entities: (twinData?.entities ?? []).map((entity) => {
+      const properties = entity.properties ?? {};
+      const resourceId = typeof properties.resource_id === "string" ? properties.resource_id : undefined;
+      const businessService = typeof properties.business_service === "string" ? properties.business_service : undefined;
+      return {
+        id: entity.id,
+        kind: entity.kind,
+        name: entity.name,
+        version: entity.version,
+        state: entity.state,
+        confidence: entity.confidence,
+        business_service: businessService,
+        resource_id: resourceId,
+      };
+    }),
+    entitiesTotal: twinData?.entities.length ?? 0,
+    relationships: (twinData?.relationships ?? []).map((relationship) => ({
+      id: relationship.id,
+      source: relationship.source,
+      target: relationship.target,
+      type: relationship.type,
+      confidence: relationship.confidence,
+    })),
+    relationshipsTotal: twinData?.relationships.length ?? 0,
+    timeline: (twinData?.timeline ?? []).map((event) => ({
+      timestamp: event.timestamp,
+      type: event.type,
+      entity: event.entity,
+      summary: event.summary,
+    })),
+    timelineTotal: twinData?.timeline.length ?? 0,
+    traversal: traversal
+      ? {
+          resource_id: traversal.data.resource_id,
+          path: traversal.data.path.map((entity) => ({ id: entity.id, kind: entity.kind, name: entity.name })),
+          business_consequence: traversal.data.business_consequence,
+        }
+      : null,
+    scenario: scenario
+      ? {
+          scenario: scenario.data.scenario,
+          target: scenario.data.target,
+          likely_impact: scenario.data.likely_impact,
+          risk_delta: scenario.data.risk_delta,
+          impacted_count: scenario.data.impacted_entities.length,
+          assumptions: scenario.data.assumptions,
+        }
+      : null,
+    selectedResourceId: selectedResource || null,
+    available: twinAvailable,
+    freshness: twinAvailable ? "fresh" : "unavailable",
+    staleTemporalEvidence: comparison?.data.previous_version
+      ? [`previous revision ${comparison.data.previous_version}`]
+      : [],
+    evidence: snapshot?.evidence ?? [],
+  });
+
   return (
     <main className="page-container twin-workspace" aria-label="Operational Digital Twin">
       <PageHeader
@@ -103,6 +178,7 @@ export default function OperationalTwinPage() {
         description="A request-time twin that connects semantic relationships with live topology, vulnerabilities, incidents, and governed remediation outcomes."
         actions={
           <div className="mode-toggle" aria-label="Twin actions">
+            <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about the twin" />
             <button type="button" onClick={() => void twinApi.graph(scope).then(setSnapshot)}>
               Refresh current state
             </button>
@@ -263,6 +339,15 @@ export default function OperationalTwinPage() {
           </div>
         </section>
       </section>
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Operational twin"
+        requestedScope={twinCopilot.requestedScope}
+        snapshot={twinCopilot.snapshot}
+        starterQuestions={twinCopilot.starterQuestions}
+      />
     </main>
   );
 }

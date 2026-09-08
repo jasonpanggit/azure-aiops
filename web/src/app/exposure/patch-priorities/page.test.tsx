@@ -36,6 +36,7 @@ vi.mock("@/lib/services", () => ({
   remediationApi: {
     exposureHandoffs: api.exposureHandoffs,
   },
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
 }));
 
 import PatchPrioritiesPage from "./page";

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
@@ -37,6 +37,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
   operationsApi: { remediationPlans },
   remediationApi: {
     approve,
@@ -720,6 +721,82 @@ describe("Governed remediation workflow", () => {
     expect(await screen.findByText(/Audit ID:/)).toHaveTextContent("risk-audit-1");
     await user.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(invoker).toHaveFocus());
+  });
+
+  describe("read-only Copilot handoff (Plan 11-15)", () => {
+    const MUTATION_CONTROL_NAMES = [
+      "Approve",
+      "Run",
+      "Review and run",
+      "Confirm run",
+      "Record decision",
+      "Retry",
+      "Cancel",
+      "Supersede",
+    ];
+
+    it("offers an advisory Copilot entry point that exposes no mutation control", async () => {
+      workflow.mockResolvedValue(envelope(workflowFixture({ approvalCurrent: true })));
+      searchParams.current = new URLSearchParams(
+        `resource_key=${encodeURIComponent(TARGET)}`,
+      );
+      renderPage();
+      await screen.findAllByText(/KB600001/);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /Ask Copilot about remediation/i }),
+      );
+      const drawer = await screen.findByRole("dialog", { name: "Operations Copilot" });
+
+      // Advisory explanation starter is available inside the drawer...
+      expect(
+        within(drawer).getByRole("button", { name: /Explain this remediation plan/i }),
+      ).toBeInTheDocument();
+      // ...but no approval/execution/recovery mutation control lives in it.
+      for (const name of MUTATION_CONTROL_NAMES) {
+        expect(within(drawer).queryByRole("button", { name })).toBeNull();
+      }
+      // Opening Copilot never invokes a governed mutation endpoint.
+      expect(approve).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("keeps execution bound to the existing governed server endpoint, not Copilot", async () => {
+      workflow.mockResolvedValue(envelope(workflowFixture({ approvalCurrent: true })));
+      searchParams.current = new URLSearchParams(
+        `resource_key=${encodeURIComponent(TARGET)}`,
+      );
+      renderPage();
+      await screen.findAllByText(/KB600001/);
+
+      // Open the advisory drawer first; it must not intercept governed controls.
+      fireEvent.click(
+        screen.getByRole("button", { name: /Ask Copilot about remediation/i }),
+      );
+      await screen.findByRole("dialog", { name: "Operations Copilot" });
+
+      fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+      fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+
+      await waitFor(() => expect(execute).toHaveBeenCalledWith("plan-1", {}));
+    });
+
+    it("keeps deterministic cited evidence and the governed workflow available without Copilot narration", async () => {
+      workflow.mockResolvedValue(envelope(workflowFixture({ approvalCurrent: true })));
+      searchParams.current = new URLSearchParams(
+        `resource_key=${encodeURIComponent(TARGET)}`,
+      );
+      renderPage();
+      await screen.findAllByText(/KB600001/);
+
+      // The deterministic governed surface renders with no narration provider.
+      expect(
+        screen.getByRole("button", { name: /Ask Copilot about remediation/i }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText(/Missing critical update/).length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: /Run/ })).toBeInTheDocument();
+    });
   });
 });
 

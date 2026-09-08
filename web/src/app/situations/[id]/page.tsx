@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -9,6 +11,7 @@ import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { formatDateTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { situationsApi } from "@/lib/services";
+import { buildSituationDetailCopilotContext } from "@/lib/copilot/page-adapters";
 import type {
   DurableEvidence,
   DurableSituation,
@@ -33,6 +36,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
   const [error, setError] = useState("");
   const [selectedEvidence, setSelectedEvidence] = useState<DurableEvidence | null>(null);
   const [saved, setSaved] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const drawer = useRef<HTMLElement | null>(null);
 
@@ -109,6 +113,63 @@ export default function SituationDetailPage({ params }: { params: { id: string }
     setSaved(true);
   };
 
+  // Read-only contextual Copilot over the already-loaded durable brief. Timeline,
+  // evidence/source trust, affected ARM resources, links, and the selected
+  // situation identity stay bound; every row is non-actionable (D-03, D-08).
+  const situationCopilot = buildSituationDetailCopilotContext({
+    scope,
+    situationId: record.situation_id,
+    situation: {
+      situation_id: record.situation_id,
+      title: record.title,
+      severity: record.severity,
+      priority: record.priority,
+      lifecycle_state: record.lifecycle_state,
+      situation_type: record.situation_type,
+      owner: record.owner,
+      support_team: record.support_team,
+      evidence_state: record.evidence_state,
+      affected_resource_ids: record.affected_resource_ids,
+      unknowns: record.unknowns,
+      started_at: record.started_at,
+      last_observed_at: record.last_observed_at,
+    },
+    evidence: evidence.map((item) => ({
+      evidence_id: item.evidence_id,
+      source_family: item.source_family,
+      source_object_id: item.source_object_id,
+      assertion: item.assertion,
+      quality: item.quality,
+      availability: item.availability,
+      freshness: item.freshness,
+      observed_at: item.observed_at,
+      resource_ids: item.resource_ids,
+    })),
+    links: links.map((link) => ({
+      link_id: link.link_id,
+      entity_type: link.entity_type,
+      entity_id: link.entity_id,
+      relation: link.relation,
+      quality: link.quality,
+    })),
+    sourceStatuses: (record.source_status ?? []).map((status) => ({
+      source_family: status.source_family,
+      availability: status.availability,
+      freshness: status.freshness,
+      observed_at: status.observed_at,
+    })),
+    auditEvents: (audit?.data ?? []).map((event) => ({
+      event_id: event.event_id,
+      actor: event.actor,
+      action: event.action,
+      timestamp: event.timestamp,
+    })),
+    auditAvailable: !auditError && audit != null,
+    available: true,
+    observedAt: record.last_observed_at,
+    citations: situation.evidence ?? [],
+  });
+
   return (
     <div className="page-container investigation-page">
       <div className="breadcrumb">
@@ -118,7 +179,12 @@ export default function SituationDetailPage({ params }: { params: { id: string }
         eyebrow="Durable situation brief"
         title={record.title}
         description="Evidence-backed, authorized operational context. Read-only in Phase 1."
-        actions={<button type="button" className="button" onClick={saveView}>Save view locally</button>}
+        actions={
+          <>
+            <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about this situation" />
+            <button type="button" className="button" onClick={saveView}>Save view locally</button>
+          </>
+        }
         metadata={
           <>
             <StatusBadge label={record.lifecycle_state} tone={statusTone(record.lifecycle_state)} />
@@ -245,6 +311,15 @@ export default function SituationDetailPage({ params }: { params: { id: string }
           </div>
         </aside>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel={record.title || record.situation_id}
+        requestedScope={situationCopilot.requestedScope}
+        snapshot={situationCopilot.snapshot}
+        starterQuestions={situationCopilot.starterQuestions}
+      />
     </div>
   );
 }

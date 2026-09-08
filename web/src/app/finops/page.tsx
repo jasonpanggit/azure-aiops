@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -9,6 +11,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
+import { buildFinOpsCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
@@ -35,6 +38,7 @@ function money(amount: number | null | undefined, currency: string): string {
 export default function FinOpsPage() {
   const { scope } = useScope();
   const [dimension, setDimension] = useState<Dimension>("subscription");
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const summary = useApi(() => governanceApi.finopsSummary(scope), [scope]);
   const opportunities = useApi(() => governanceApi.finopsOpportunities(scope), [scope]);
@@ -98,12 +102,74 @@ export default function FinOpsPage() {
   const opportunityPaging = useTablePagination(filteredOpportunities);
   const wastePaging = useTablePagination(filteredWasteRows);
 
+  // Read-only contextual Copilot over already-loaded cost evidence. Currency,
+  // observation window, totals, and genuinely-unavailable metrics stay explicit
+  // and null savings remain "not quantified" (D-03, D-04, D-06, D-09).
+  const finopsAvailable = !error && Boolean(summary.data);
+  const finopsCopilot = buildFinOpsCopilotContext({
+    scope,
+    summary: totals
+      ? {
+          identified_annual_savings: totals.identified_annual_savings,
+          currency: totals.currency,
+          savings_opportunity_count: totals.savings_opportunity_count,
+          quantified_opportunity_count: totals.quantified_opportunity_count,
+          waste_item_count: totals.waste_item_count,
+          actual_spend: totals.actual_spend,
+          actual_spend_currency: totals.actual_spend_currency,
+          actual_spend_period_start: totals.actual_spend_period_start,
+          actual_spend_period_end: totals.actual_spend_period_end,
+          unavailable_metrics: totals.unavailable_metrics ?? [],
+        }
+      : null,
+    dimension,
+    attribution: attributionGroups.map((group) => ({
+      dimension,
+      group: String(group[dimension] ?? "Unattributed"),
+      identified_annual_savings: Number(group.identified_annual_savings ?? 0),
+      savings_opportunity_count: Number(group.savings_opportunity_count ?? 0),
+      waste_item_count: Number(group.waste_item_count ?? 0),
+    })),
+    attributionTotalCount: attribution.data?.data.count ?? attributionGroups.length,
+    opportunities: rows.map((opportunity) => ({
+      recommendation_id: opportunity.recommendation_id,
+      resource_id: opportunity.resource_id,
+      problem: opportunity.problem,
+      impact: opportunity.impact,
+      annual_savings: opportunity.annual_savings,
+      currency: opportunity.currency,
+      owner: opportunity.owner,
+      business_service: opportunity.business_service,
+      subscription: opportunity.subscription,
+    })),
+    opportunitiesTotalCount: opportunities.data?.data.count ?? rows.length,
+    waste: wasteRows.map((waste) => ({
+      resource_id: waste.resource_id,
+      resource_type: waste.resource_type,
+      reason: waste.reason,
+      annual_savings: waste.annual_savings,
+      currency: waste.currency,
+      owner: waste.owner,
+      business_service: waste.business_service,
+    })),
+    wasteTotalCount: waste.data?.data.count ?? wasteRows.length,
+    available: finopsAvailable,
+    freshness: finopsAvailable ? "fresh" : "unavailable",
+    evidence: [...(summary.data?.evidence ?? []), ...(opportunities.data?.evidence ?? [])],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Financial accountability"
         title="Where is spend signal available?"
         description="Review savings and waste attributed to the subscriptions, applications, business services, owners, and environments returned by Azure."
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about cost"
+          />
+        }
         metadata={
           <>
             <span>Savings figures are issued by Azure Advisor</span>
@@ -452,6 +518,15 @@ export default function FinOpsPage() {
           </section>
         </>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Financial accountability"
+        requestedScope={finopsCopilot.requestedScope}
+        snapshot={finopsCopilot.snapshot}
+        starterQuestions={finopsCopilot.starterQuestions}
+      />
     </div>
   );
 }

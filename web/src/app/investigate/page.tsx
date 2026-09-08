@@ -14,12 +14,15 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
 import {
   contextApi,
-  copilotApi,
+  askCanonicalInvestigation,
+  toCanonicalInvestigationView,
+  ROOT_COPILOT_SESSION,
   networkApi,
   operationsApi,
   vulnerabilityApi,
 } from "@/lib/services";
-import type { CopilotInvestigation } from "@/lib/services";
+import type { CanonicalInvestigationView, CopilotInvestigation } from "@/lib/services";
+import { useOptionalThreadContinuity } from "@/lib/copilot/thread-context";
 import type {
   Envelope,
   IncidentDetail,
@@ -66,6 +69,7 @@ interface WorkspaceState {
   exposures?: Envelope<VulnerabilityExposure[]>;
   remediation?: Envelope<RemediationPlanReport>;
   copilot?: Envelope<CopilotInvestigation>;
+  copilotView?: CanonicalInvestigationView;
   cveDetail?: Envelope<CveDetail>;
   attackPath?: Envelope<AttackPathGraph>;
   errors: string[];
@@ -171,6 +175,7 @@ export default function InvestigationWorkspacePage() {
 function InvestigationWorkspaceContent() {
   const params = useSearchParams();
   const { scope } = useScope();
+  const threadContinuity = useOptionalThreadContinuity();
   const [entryType, setEntryType] = useState<EntryType>((params.get("type") as EntryType) || "BusinessService");
   const [entryValue, setEntryValue] = useState(params.get("value") || "");
   const [mode, setMode] = useState<Mode>((params.get("mode") as Mode) || "executive");
@@ -299,8 +304,15 @@ function InvestigationWorkspaceContent() {
     const question = `Summarize the investigation for ${entryType} ${subject || "current scope"}; explain business risk, affected dependencies, evidence, and recommended decision.${focusPrompt}`;
     setLoading(true);
     try {
-      const result = await copilotApi.investigate(question, scope, { sessionId: `investigation-${entryType}-${subject}` });
-      setState((current) => ({ ...current, copilot: result }));
+      const result = await askCanonicalInvestigation(question, scope, { sessionId: ROOT_COPILOT_SESSION });
+      const view = toCanonicalInvestigationView(result.data);
+      // Mirror the server-issued thread into the shared root continuity so every
+      // dedicated surface reflects one authorized handle (best-effort; the
+      // provider is absent in isolated renders).
+      if (view.threadId && view.threadRevision) {
+        threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision });
+      }
+      setState((current) => ({ ...current, copilot: result, copilotView: view }));
       pushAudit("Generated Copilot conclusion");
     } catch {
       setState((current) => ({ ...current, errors: [...current.errors, "copilot unavailable"] }));
@@ -537,12 +549,45 @@ function InvestigationWorkspaceContent() {
             <button className="button button-secondary" type="button" onClick={runCopilot}>Refresh conclusion</button>
           </div>
           <div className="card-body">
-            {state.copilot?.data.answer?.text ? (
-              <p className="copilot-conclusion">{state.copilot.data.answer.text}</p>
+            {state.copilotView?.narration?.text ? (
+              <p className="copilot-conclusion">{state.copilotView.narration.text}</p>
             ) : (
-              <StatePanel title="No Copilot conclusion yet" message="Generate a conclusion after the investigation context loads." />
+              <StatePanel
+                title="No Copilot conclusion yet"
+                message={
+                  state.copilotView
+                    ? "The canonical service returned no synthesized narration; review the cited specialist evidence below."
+                    : "Generate a conclusion after the investigation context loads."
+                }
+              />
             )}
-            {mode === "engineer" && state.copilot && <StructuredData value={state.copilot.data.tool_calls} />}
+            {state.copilotView?.degraded && state.copilotView.degradationNote ? (
+              <p className="copilot-fallback-note" role="alert" aria-label="Investigation degradation">
+                {state.copilotView.degradationNote}
+              </p>
+            ) : null}
+            {state.copilotView?.uncertainty.length ? (
+              <div className="copilot-uncertainty" aria-label="Investigation uncertainty">
+                <StatusBadge label="Uncertainty" tone="warning" compact />
+                <ul>
+                  {state.copilotView.uncertainty.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {state.copilotView?.citations.length ? (
+              <div className="copilot-citations" aria-label="Investigation citations">
+                <StatusBadge label="Citations" tone="info" compact />
+                <ul>
+                  {state.copilotView.citations.map((citation) => (
+                    <li key={citation.citation_id}>
+                      {citation.source}
+                      {citation.status ? <span className="muted"> — {citation.status}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {mode === "engineer" && state.copilotView?.toolCalls.length ? <StructuredData value={state.copilotView.toolCalls} /> : null}
           </div>
         </section>
 

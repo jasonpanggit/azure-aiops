@@ -26,6 +26,7 @@ vi.mock("@/lib/scope-context", () => ({
 
 vi.mock("@/lib/services", () => ({
   vulnerabilityApi: api,
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
 }));
 
 import DefenderPosturePage from "./page";

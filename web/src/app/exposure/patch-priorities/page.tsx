@@ -17,6 +17,8 @@ import {
   type RiskExceptionRevokeResult,
 } from "@/components/exposure/RiskExceptionDialog";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -39,6 +41,7 @@ import {
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
+import { buildPatchPrioritiesCopilotContext } from "@/lib/copilot/page-adapters";
 import {
   remediationApi,
   vulnerabilityApi,
@@ -213,6 +216,21 @@ function nextSort(current: ExposureSort): ExposureSort {
   };
 }
 
+function patchSectionTrust(
+  status: ReturnType<typeof useExposureSection>["status"],
+): { available: boolean; freshness: "fresh" | "partial" | "stale" | "unavailable" } {
+  const available = status !== "unavailable" && status !== "loading";
+  const freshness =
+    status === "current" || status === "healthy-empty"
+      ? ("fresh" as const)
+      : status === "partial"
+        ? ("partial" as const)
+        : status === "stale"
+          ? ("stale" as const)
+          : ("unavailable" as const);
+  return { available, freshness };
+}
+
 /** Server-backed patch priorities over the canonical scoped Exposure read model. */
 export default function PatchPrioritiesPage() {
   const { scope } = useScope();
@@ -286,6 +304,7 @@ export default function PatchPrioritiesPage() {
     new Set(),
   );
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const revokeInvokerRef = useRef<HTMLButtonElement>(null);
   const restoredTargetRef = useRef("");
   const page = section.data;
@@ -333,6 +352,43 @@ export default function PatchPrioritiesPage() {
   const first = rows.length === 0 ? 0 : (queryState.page - 1) * queryState.pageSize + 1;
   const last = rows.length === 0 ? 0 : first + rows.length - 1;
   const targetKind = queryState.filters.target_kind ?? "all";
+
+  // Read-only contextual Copilot over the already-loaded patch-priority queue.
+  // Governed remediation stays behind existing server endpoints (D-03, D-04, D-10).
+  const patchCopilot = buildPatchPrioritiesCopilotContext({
+    scope,
+    rows: rows.map((row) => ({
+      exposure_id: row.exposure_id,
+      target_id: row.target_id,
+      weakness_id: row.weakness_id,
+      server_id: row.target_id,
+      severity: row.severity,
+      priority_score: row.priority_score,
+      recommendation: row.recommendation,
+      sla_state: row.sla_state,
+      sla_overdue: row.sla_overdue,
+    })),
+    loadedCount: rows.length,
+    totalCount: page?.total_count ?? rows.length,
+    available: patchSectionTrust(section.status).available,
+    freshness: patchSectionTrust(section.status).freshness,
+    observedAt: section.metadata.observedAt,
+    filters: {
+      target_kind: [targetKind],
+      page: [String(queryState.page)],
+    },
+    sort: queryState.sort
+      ? { [queryState.sort.field]: queryState.sort.direction }
+      : undefined,
+    evidence: section.envelope?.evidence ?? [],
+    sourceStatuses: [
+      {
+        source: "patch_priorities",
+        ...patchSectionTrust(section.status),
+        observedAt: section.metadata.observedAt,
+      },
+    ],
+  });
 
   const updateFilter = useCallback(
     (field: "target_kind", value: string) => {
@@ -418,6 +474,12 @@ export default function PatchPrioritiesPage() {
         title="Patch priorities"
         description="Review server-backed patch and vulnerability evidence, SLA state, and governed next actions."
         completeness={headerCompleteness(page)}
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about patch priorities"
+          />
+        }
       />
 
       {section.restart.required && (
@@ -837,6 +899,15 @@ export default function PatchPrioritiesPage() {
           riskExceptions.refetch();
           section.retry();
         }}
+      />
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Patch priorities"
+        requestedScope={patchCopilot.requestedScope}
+        snapshot={patchCopilot.snapshot}
+        starterQuestions={patchCopilot.starterQuestions}
       />
     </div>
   );

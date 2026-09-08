@@ -6,6 +6,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { buildKbDetailCopilotContext } from "@/lib/copilot/page-adapters";
 import { MetricCard } from "@/components/ui/MetricCard";
 import {
   PageHeader,
@@ -217,6 +220,21 @@ function Section({
 }
 
 /** Scoped KB detail with independent metadata, MSRC, and finding state. */
+function kbSectionTrust(
+  status: ExposureSectionPresentation["status"],
+): { available: boolean; freshness: "fresh" | "partial" | "stale" | "unavailable" } {
+  const available = status !== "unavailable" && status !== "loading";
+  const freshness =
+    status === "current" || status === "healthy-empty"
+      ? ("fresh" as const)
+      : status === "partial"
+        ? ("partial" as const)
+        : status === "stale"
+          ? ("stale" as const)
+          : ("unavailable" as const);
+  return { available, freshness };
+}
+
 export default function KbDetailPage({ params }: { params: { id: string } }) {
   const kbId = decodeURIComponent(params.id);
   const { scope } = useScope();
@@ -240,6 +258,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     cursorHistory: [],
     page: 1,
   }));
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const common = useExposureSection<ExposureOverview>({
     queryKey: `${exposureQueryKey(findingState)}|common`,
@@ -305,6 +324,58 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const cveHref = (cveId: string) =>
     exposureDetailHref("cves", cveId, queryState, detailContext);
 
+  // Read-only contextual Copilot over the already-loaded KB evidence. Governed
+  // remediation stays behind the existing server workflow (D-03, D-04, D-10).
+  const kbCopilot = buildKbDetailCopilotContext({
+    scope,
+    kbId,
+    kb: data
+      ? {
+          kb_id: data.kb_id,
+          title: data.title,
+          severity: data.severity,
+          published_at: data.published_at,
+          cve_ids: data.cve_ids,
+          affected_servers: data.affected_servers,
+          affected_business_services: data.affected_business_services,
+        }
+      : null,
+    findings: {
+      rows: rows.map((row) => ({
+        target_id: row.target_id,
+        server_id: row.server_id,
+        cve_id: row.cve_id,
+        application: row.application,
+        business_service: row.business_service,
+        environment: row.environment,
+        severity: row.severity,
+        reachable: row.reachable,
+        network_exposure: row.network_exposure,
+        missing_kb: data?.kb_id,
+      })),
+      loadedCount: rows.length,
+      totalCount: findingPage?.total_count ?? rows.length,
+      available: kbSectionTrust(findingsState.status).available,
+      freshness: kbSectionTrust(findingsState.status).freshness,
+      observedAt: findingsState.metadata.observedAt,
+    },
+    sources: [
+      {
+        key: "msrc",
+        ...kbSectionTrust(msrcState.status),
+        observedAt: msrcState.metadata.observedAt,
+      },
+    ],
+    filters: {
+      target_kind: [findingState.filters.target_kind ?? "all"],
+      page: [String(findingState.page)],
+    },
+    evidence: [
+      ...(common.envelope?.evidence ?? []),
+      ...(metadata.envelope?.evidence ?? []),
+    ],
+  });
+
   return (
     <div className="page-container exposure-detail-page">
       <div className="breadcrumb">
@@ -324,6 +395,10 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             <Link className="button button-quiet" href={backHref}>
               Back to {parentLabel}
             </Link>
+            <CopilotDrawerButton
+              onClick={() => setCopilotOpen(true)}
+              label={`Ask Copilot about ${data?.kb_id ?? kbId}`}
+            />
             {data && (
               <Link
                 className="button button-primary"
@@ -536,6 +611,15 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
           </Section>
         </>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel={data?.kb_id ?? kbId}
+        requestedScope={kbCopilot.requestedScope}
+        snapshot={kbCopilot.snapshot}
+        starterQuestions={kbCopilot.starterQuestions}
+      />
     </div>
   );
 }

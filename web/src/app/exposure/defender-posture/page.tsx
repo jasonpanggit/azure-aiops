@@ -10,13 +10,16 @@ import {
 } from "@fluentui/react-icons";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import type { ComponentType, SVGProps } from "react";
+import { useState, type ComponentType, type SVGProps } from "react";
 
 import {
   DefenderHandoff,
   type GovernedDefenderHandoff,
 } from "@/components/exposure/DefenderHandoff";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { buildDefenderPostureCopilotContext } from "@/lib/copilot/page-adapters";
 import {
   type ExposureSectionResult,
   useExposureSection,
@@ -906,9 +909,25 @@ function ContainerContent({
 }
 
 /** Defender evidence remains usable section-by-section under partial provider failure. */
+function defenderSectionTrust(
+  status: ExposureSectionResult<unknown>["status"],
+): { available: boolean; freshness: "fresh" | "partial" | "stale" | "unavailable" } {
+  const available = status !== "unavailable" && status !== "loading";
+  const freshness =
+    status === "current" || status === "healthy-empty"
+      ? ("fresh" as const)
+      : status === "partial"
+        ? ("partial" as const)
+        : status === "stale"
+          ? ("stale" as const)
+          : ("unavailable" as const);
+  return { available, freshness };
+}
+
 export default function DefenderPosturePage() {
   const { scope } = useScope();
   const searchParams = useSearchParams();
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const parsedQuery = parseExposureQueryState(
     new URLSearchParams(searchParams.toString()),
     { authorizedScope: scope },
@@ -985,6 +1004,98 @@ export default function DefenderPosturePage() {
   const scores = secureScore.data?.items ?? [];
   const score = scoreTotals(scores);
 
+  // Read-only contextual Copilot over the already-loaded Defender sections.
+  // Reasoning stays advisory; every Defender mutation (portal handoff, review)
+  // remains behind its existing governed control (D-03, D-04, D-10).
+  const defenderCopilot = buildDefenderPostureCopilotContext({
+    scope,
+    overview: {
+      value: overviewValue
+        ? {
+            active_alert_count: overviewValue.active_alert_count,
+            critical_alert_count: overviewValue.critical_alert_count,
+            attack_path_count: overviewValue.attack_path_count,
+            unhealthy_recommendation_count: overviewValue.unhealthy_recommendation_count,
+            vulnerable_container_image_count: overviewValue.vulnerable_container_image_count,
+            container_image_cve_count: overviewValue.container_image_cve_count,
+          }
+        : null,
+      loadedCount: overview.data?.total_count ?? 0,
+      totalCount: overview.data?.total_count ?? 0,
+      ...defenderSectionTrust(overview.status),
+      observedAt: overview.metadata.observedAt,
+    },
+    secureScore: {
+      value:
+        score.percentage === null
+          ? null
+          : { current: score.current, max: score.max, percentage: score.percentage },
+      loadedCount: scores.length,
+      totalCount: secureScore.data?.total_count ?? scores.length,
+      ...defenderSectionTrust(secureScore.status),
+      observedAt: secureScore.metadata.observedAt,
+    },
+    findings: {
+      value: (recommendations.data?.items ?? []).map((finding) => ({
+        assessment_id: finding.assessment_id,
+        asset_id: finding.asset_id,
+        asset_name: finding.asset_name,
+        resource_type: finding.resource_type,
+        defender_plan: finding.defender_plan,
+        status: finding.status,
+        severity: finding.severity,
+        recommendation: finding.recommendation,
+        business_service: finding.business_service,
+        application: finding.application,
+        last_assessed_at: finding.last_assessed_at,
+      })),
+      loadedCount: recommendations.data?.items.length ?? 0,
+      totalCount: recommendations.data?.total_count ?? 0,
+      ...defenderSectionTrust(recommendations.status),
+      observedAt: recommendations.metadata.observedAt,
+    },
+    alerts: {
+      value: (alerts.data?.items ?? []).map((alert) => ({
+        id: alert.id,
+        title: alert.title,
+        severity: alert.severity,
+        status: alert.status,
+        timeGenerated: alert.timeGenerated,
+      })),
+      loadedCount: alerts.data?.items.length ?? 0,
+      totalCount: alerts.data?.total_count ?? 0,
+      ...defenderSectionTrust(alerts.status),
+      observedAt: alerts.metadata.observedAt,
+    },
+    attackPaths: {
+      value: (attackPaths.data?.items ?? []).map((path) => ({
+        id: path.id,
+        title: path.title,
+        potentialImpact: path.potentialImpact,
+        nodeCount: path.nodeCount,
+      })),
+      loadedCount: attackPaths.data?.items.length ?? 0,
+      totalCount: attackPaths.data?.total_count ?? 0,
+      ...defenderSectionTrust(attackPaths.status),
+      observedAt: attackPaths.metadata.observedAt,
+    },
+    containers: {
+      value: (containers.data?.items ?? []).map((image) => ({
+        id: image.id,
+        target_resource_id: image.target_resource_id,
+        repository: image.repository,
+        severity: image.severity,
+        critical_count: image.critical_count,
+        cve_count: image.cve_count,
+      })),
+      loadedCount: containers.data?.items.length ?? 0,
+      totalCount: containers.data?.total_count ?? 0,
+      ...defenderSectionTrust(containers.status),
+      observedAt: containers.metadata.observedAt,
+    },
+    evidence: [],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
@@ -992,6 +1103,12 @@ export default function DefenderPosturePage() {
         title="Defender posture"
         description="Review Defender alerts, attack paths, recommendations, secure score, and container-image evidence without hiding partial scope."
         completeness={headerState}
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about Defender posture"
+          />
+        }
       />
 
       <nav aria-label="Defender posture sections">
@@ -1114,6 +1231,15 @@ export default function DefenderPosturePage() {
       >
         <ContainerContent images={containers.data?.items ?? []} />
       </DefenderSection>
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Defender posture"
+        requestedScope={defenderCopilot.requestedScope}
+        snapshot={defenderCopilot.snapshot}
+        starterQuestions={defenderCopilot.starterQuestions}
+      />
     </div>
   );
 }

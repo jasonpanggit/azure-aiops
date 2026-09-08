@@ -47,10 +47,9 @@ import {
 } from "@/hooks/useExposureSection";
 import { useScope } from "@/lib/scope-context";
 import {
-  buildCopilotSnapshot,
-  copilotEvidenceRows,
   vulnerabilityApi,
 } from "@/lib/services";
+import { buildCveDetailCopilotContext } from "@/lib/copilot/page-adapters";
 import type {
   AttackPathGraph,
   CveDetail,
@@ -246,6 +245,21 @@ function presentSection<T>(
   };
 }
 
+function copilotSectionTrust(
+  status: ExposureSectionPresentation["status"],
+): { available: boolean; freshness: "fresh" | "partial" | "stale" | "unavailable" } {
+  const available = status !== "unavailable" && status !== "loading";
+  const freshness =
+    status === "current" || status === "healthy-empty"
+      ? ("fresh" as const)
+      : status === "partial"
+        ? ("partial" as const)
+        : status === "stale"
+          ? ("stale" as const)
+          : ("unavailable" as const);
+  return { available, freshness };
+}
+
 function Section({
   label,
   sourceName,
@@ -258,8 +272,7 @@ function Section({
   itemLabel: string;
   state: ExposureSectionPresentation;
   children?: React.ReactNode;
-}) {
-  return (
+}) {  return (
     <section role="region" aria-label={`${label} section`}>
       <div className="card-header">
         <h2>{label}</h2>
@@ -494,6 +507,41 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
       };
     }
   }
+
+  const cveCopilot = buildCveDetailCopilotContext({
+    scope,
+    cveId,
+    cve: data?.cve ?? null,
+    findings: {
+      rows,
+      loadedCount: rows.length,
+      totalCount: findingPage?.total_count ?? rows.length,
+      available: copilotSectionTrust(coreState.status).available,
+      freshness: copilotSectionTrust(coreState.status).freshness,
+      observedAt: coreState.metadata.observedAt,
+    },
+    attack: {
+      graph: attack.data ?? null,
+      available: copilotSectionTrust(attackState.status).available,
+      freshness: copilotSectionTrust(attackState.status).freshness,
+      observedAt: attackState.metadata.observedAt,
+    },
+    sources: [
+      { key: "nvd", ...copilotSectionTrust(nvdState.status), observedAt: nvdState.metadata.observedAt },
+      { key: "epss", ...copilotSectionTrust(epssState.status), observedAt: epssState.metadata.observedAt },
+      { key: "kev", ...copilotSectionTrust(kevState.status), observedAt: kevState.metadata.observedAt },
+      { key: "msrc", ...copilotSectionTrust(kbState.status), observedAt: kbState.metadata.observedAt },
+    ],
+    filters: {
+      weakness_id: [cveId],
+      page: [String(findingState.page)],
+    },
+    evidence: [
+      ...(common.envelope?.evidence ?? []),
+      ...(core.envelope?.evidence ?? []),
+      ...(attack.envelope?.evidence ?? []),
+    ],
+  });
 
   return (
     <div className="page-container exposure-detail-page">
@@ -816,21 +864,9 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
           open={copilotOpen}
           onClose={() => setCopilotOpen(false)}
           contextLabel={data.cve.cve_id}
-          snapshot={buildCopilotSnapshot({
-            pageKind: "vulnerability",
-            pageId: `cve:${data.cve.cve_id}`,
-            scope,
-            selectedResources: [{ resource_id: data.cve.cve_id, resource_type: "CVE", name: data.cve.cve_id }],
-            evidence: copilotEvidenceRows(
-              "cve",
-              [...(core.envelope?.evidence ?? []), ...(attack.envelope?.evidence ?? [])],
-              [data.cve, ...rows, ...(attack.data?.nodes ?? [])],
-            ),
-          })}
-          starterQuestions={[
-            { label: `Explain ${data.cve.cve_id}`, tool: "cve_detail", toolArguments: { cve_id: data.cve.cve_id } },
-            { label: `Show the blast radius of ${data.cve.cve_id}`, tool: "cve_attack_path", toolArguments: { cve_id: data.cve.cve_id } },
-          ]}
+          requestedScope={cveCopilot.requestedScope}
+          snapshot={cveCopilot.snapshot}
+          starterQuestions={cveCopilot.starterQuestions}
         />
       )}
     </div>

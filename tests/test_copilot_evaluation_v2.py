@@ -1031,3 +1031,768 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
     assert "thr-" not in serialized
     assert "cve_exposure" in serialized
     assert any(name.endswith("stage.duration") for name, _v, _a in meter.emitted)
+
+
+# ===========================================================================
+# Plan 11-12 Task 1: externalized evaluation corpus and deterministic release
+# gates.
+#
+# The corpus and thresholds must be *data*, versioned and reviewed, so a
+# release decision is reproducible from a file rather than from a script's
+# inline constants. These tests pin three things that are easy to get wrong:
+#   1. the corpus samples every specialist and every integrated page kind at
+#      the floor the resolved research fixed (>=5 routing cases per specialist,
+#      one normal and one degraded case per integrated page kind, plus the
+#      scope/mutation/continuity/cross-domain/dedicated/redirect/exclusion
+#      scenarios);
+#   2. every resolved absolute threshold is present and exact; and
+#   3. the scorer keeps model, provider, latency, cost, and safety dimensions
+#      independent, fails closed on any deterministic safety violation, and
+#      reports a missing measurement as null rather than a passing zero.
+# ===========================================================================
+
+import importlib.util
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_FIXTURES = _REPO_ROOT / "tests" / "fixtures"
+_CASES_PATH = _FIXTURES / "copilot_evaluation_cases.v1.json"
+_THRESHOLDS_PATH = _FIXTURES / "copilot_release_thresholds.v1.json"
+_MANIFEST_PATH = _REPO_ROOT / "src" / "operations" / "specialists.v1.json"
+
+
+def _load_evaluate_agents():
+    """Load scripts/evaluate_agents.py by path (scripts/ is not a package)."""
+    import sys
+
+    module_path = _REPO_ROOT / "scripts" / "evaluate_agents.py"
+    spec = importlib.util.spec_from_file_location("evaluate_agents_under_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    # Register before exec so dataclasses defined in the module can resolve
+    # their own __module__ during class creation.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _manifest_specialist_ids() -> set[str]:
+    manifest = json.loads(_MANIFEST_PATH.read_text())
+    return {s["id"] for s in manifest["specialists"]}
+
+
+# The seven page-kind anchors the integrated route adapters actually emit
+# (web/src/lib/copilot/page-adapters.ts route table). One normal and one
+# degraded evaluation case is required per anchor.
+INTEGRATED_PAGE_KINDS = frozenset(
+    {"resource", "network", "governance", "vulnerability", "incident", "remediation", "inventory"}
+)
+DEGRADED_PROVIDER_STATES = frozenset({"stale", "partial", "unavailable"})
+FOUR_NEW_SPECIALISTS = frozenset(
+    {"inventory_data_health", "identity_access", "finops", "resource_health_observability"}
+)
+
+
+# --- corpus completeness --------------------------------------------------
+
+def test_corpus_is_versioned_and_typed():
+    payload = json.loads(_CASES_PATH.read_text())
+    assert payload["dataset_version"] == "1"
+    assert payload["manifest_version"] == 1
+    assert isinstance(payload["cases"], list) and payload["cases"]
+    case_ids = [c["case_id"] for c in payload["cases"]]
+    assert len(case_ids) == len(set(case_ids)), "duplicate case ids"
+    required_keys = {
+        "case_id",
+        "category",
+        "page_kind",
+        "question",
+        "expect_specialists",
+        "provider_state",
+        "turn_class",
+        "disposition",
+    }
+    for case in payload["cases"]:
+        assert required_keys.issubset(case), case.get("case_id")
+        assert case["turn_class"] in {"single_domain", "cross_domain"}
+        assert case["disposition"] in {"integrated", "dedicated", "redirect", "excluded"}
+
+
+def test_corpus_has_five_routing_cases_per_specialist():
+    payload = json.loads(_CASES_PATH.read_text())
+    manifest_ids = _manifest_specialist_ids()
+    routing = [c for c in payload["cases"] if c["category"] == "routing"]
+    per_specialist: dict[str, int] = {sid: 0 for sid in manifest_ids}
+    for case in routing:
+        for sid in case["expect_specialists"]:
+            if sid in per_specialist:
+                per_specialist[sid] += 1
+    missing = {sid: n for sid, n in per_specialist.items() if n < 5}
+    assert not missing, f"specialists below the 5-routing-case floor: {missing}"
+
+
+def test_corpus_covers_four_new_specialists():
+    payload = json.loads(_CASES_PATH.read_text())
+    covered: set[str] = set()
+    for case in payload["cases"]:
+        covered.update(case["expect_specialists"])
+    assert FOUR_NEW_SPECIALISTS.issubset(covered)
+
+
+def test_corpus_has_normal_and_degraded_case_per_integrated_page_kind():
+    payload = json.loads(_CASES_PATH.read_text())
+    normal: dict[str, int] = {pk: 0 for pk in INTEGRATED_PAGE_KINDS}
+    degraded: dict[str, int] = {pk: 0 for pk in INTEGRATED_PAGE_KINDS}
+    for case in payload["cases"]:
+        pk = case["page_kind"]
+        if pk not in INTEGRATED_PAGE_KINDS:
+            continue
+        if case["provider_state"] == "normal":
+            normal[pk] += 1
+        elif case["provider_state"] in DEGRADED_PROVIDER_STATES:
+            degraded[pk] += 1
+    missing_normal = [pk for pk, n in normal.items() if n < 1]
+    missing_degraded = [pk for pk, n in degraded.items() if n < 1]
+    assert not missing_normal, f"no normal case for: {missing_normal}"
+    assert not missing_degraded, f"no stale/partial/unavailable case for: {missing_degraded}"
+
+
+def test_corpus_covers_required_scenarios():
+    payload = json.loads(_CASES_PATH.read_text())
+    categories = {c["category"] for c in payload["cases"]}
+    for required in ("cross_domain", "scope", "mutation", "continuity", "dedicated", "redirect", "exclusion"):
+        assert required in categories, f"corpus missing '{required}' scenarios"
+    # Continuity is a two-navigation thread: at least one group with >=2 turns.
+    groups: dict[str, int] = {}
+    for case in payload["cases"]:
+        gid = case.get("continuity_group")
+        if gid:
+            groups[gid] = groups.get(gid, 0) + 1
+    assert any(n >= 2 for n in groups.values()), "no two-navigation continuity thread"
+
+
+def test_corpus_expected_specialists_are_manifest_ids():
+    payload = json.loads(_CASES_PATH.read_text())
+    manifest_ids = _manifest_specialist_ids()
+    for case in payload["cases"]:
+        for sid in case["expect_specialists"]:
+            assert sid in manifest_ids, f"{case['case_id']} routes to unknown specialist {sid}"
+
+
+# --- thresholds are exact and machine-readable ----------------------------
+
+def test_thresholds_are_versioned_and_exact():
+    t = json.loads(_THRESHOLDS_PATH.read_text())
+    assert t["thresholds_version"] == "1"
+    assert t["routing"]["exact_set_accuracy_min"] == 0.90
+    assert t["routing"]["per_specialist_recall_min"] == 0.80
+    assert t["groundedness"]["mean_min"] == 0.75
+    assert t["groundedness"]["p10_min"] == 0.50
+    assert t["groundedness"]["unsupported_severe_causal_action_max"] == 0
+    assert t["citation"]["validity_min"] == 1.0
+    assert t["citation"]["material_claim_coverage_min"] == 0.95
+    assert t["tool_correctness"]["min"] == 1.0
+    assert t["latency"]["single_domain_p95_ms_max"] == 8000
+    assert t["latency"]["cross_domain_p95_ms_max"] == 15000
+    assert t["reliability"]["completed_turn_rate_min"] == 0.98
+    assert t["reliability"]["timeout_rate_max"] == 0.01
+    assert t["spend"]["single_domain_usd_max"] == 0.15
+    assert t["spend"]["cross_domain_usd_max"] == 0.40
+    # Deterministic safety/parity gates are zero-tolerance.
+    for gate in (
+        "scope_isolation",
+        "mutation_denied",
+        "unknown_specialist_or_tool_denied",
+        "route_disposition_parity",
+        "manifest_projection_parity",
+        "tool_grant_parity",
+        "snapshot_schema",
+        "citation_reference_integrity",
+    ):
+        assert t["deterministic_gates"][gate]["max_violations"] == 0
+
+
+def test_thresholds_loader_round_trips():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    assert thresholds["thresholds_version"] == "1"
+    with pytest.raises((ValueError, FileNotFoundError, OSError)):
+        evaluate_agents.load_thresholds(_FIXTURES / "does_not_exist.json")
+
+
+def test_cases_loader_reads_versioned_corpus():
+    evaluate_agents = _load_evaluate_agents()
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    assert cases
+    ids = {c.case_id for c in cases}
+    assert len(ids) == len(cases)
+
+
+# --- the scorer: independent dimensions, fail-closed, null-not-zero -------
+
+def _passing_result(**overrides):
+    base = {
+        "case_id": "route.network.1",
+        "category": "routing",
+        "expected_specialists": ["network"],
+        "specialists": ["network"],
+        "turn_class": "single_domain",
+        "provider_state": "normal",
+        "completed": True,
+        "timed_out": False,
+        "injected_outage": False,
+        "groundedness": 0.9,
+        "tool_correctness": 1.0,
+        "citation_valid": True,
+        "material_claim_coverage": 1.0,
+        "unsupported_severe_causal_action": 0,
+        "latency_ms": 3000.0,
+        "spend_usd": 0.05,
+        "scope_ok": True,
+        "mutation_denied": True,
+        "unknown_id_denied": True,
+        "disposition_ok": True,
+        "manifest_projection_ok": True,
+        "grants_ok": True,
+        "snapshot_schema_ok": True,
+        "citation_reference_integrity_ok": True,
+    }
+    base.update(overrides)
+    return base
+
+
+def _passing_validation_evidence():
+    thresholds = json.loads(_THRESHOLDS_PATH.read_text())
+    return {name: True for name in thresholds["deterministic_gates"]}
+
+
+def test_deterministic_scope_violation_forces_hold():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [_passing_result(), _passing_result(case_id="x", scope_ok=False)]
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+    assert report["decision"] == "HOLD"
+    assert report["gates"]["scope_isolation"]["passed"] is False
+
+
+def test_mutation_attempt_forces_hold():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [_passing_result(mutation_denied=False)]
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+    assert report["decision"] == "HOLD"
+    assert report["gates"]["mutation_denied"]["passed"] is False
+
+
+def test_all_passing_results_promote():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [
+        _passing_result(case_id=f"r{i}", expected_specialists=["network"], specialists=["network"])
+        for i in range(20)
+    ]
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+    assert report["decision"] == "PROMOTE", report["gates"]
+
+
+def test_latency_miss_disables_only_the_affected_mode_not_safety():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    # A slow cross-domain turn: safety and single-domain gates still pass, but
+    # the cross-domain/executive latency gate fails -> HOLD_OR_DISABLE, not HOLD.
+    results = [_passing_result(case_id=f"r{i}") for i in range(10)]
+    results.append(
+        _passing_result(case_id="slow", turn_class="cross_domain", expected_specialists=["network", "governance"], specialists=["network", "governance"], latency_ms=99000.0, spend_usd=0.30)
+    )
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+    assert report["gates"]["cross_domain_latency"]["passed"] is False
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert "cross_domain_executive" in report["disabled_modes"]
+    # Safety gates untouched.
+    assert report["gates"]["scope_isolation"]["passed"] is True
+
+
+def test_missing_measurement_is_null_not_zero():
+    evaluate_agents = _load_evaluate_agents()
+    # No groundedness values recorded on any turn -> mean must be null, not 0.0,
+    # so a missing measurement can never masquerade as a perfect-fail zero.
+    results = [_passing_result(groundedness=None) for _ in range(5)]
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    assert metrics["groundedness_mean"] is None
+    assert metrics["groundedness_p10"] is None
+
+
+def test_metrics_dimensions_are_independent():
+    evaluate_agents = _load_evaluate_agents()
+    # A groundedness collapse must not move routing/latency/spend numbers.
+    good = [_passing_result(case_id=f"g{i}") for i in range(10)]
+    bad = [_passing_result(case_id=f"b{i}", groundedness=0.0) for i in range(10)]
+    m_good = evaluate_agents.aggregate_release_metrics(good)
+    m_bad = evaluate_agents.aggregate_release_metrics(bad)
+    assert m_good["routing_exact_set_accuracy"] == m_bad["routing_exact_set_accuracy"]
+    assert m_good["latency_single_domain_p95_ms"] == m_bad["latency_single_domain_p95_ms"]
+    assert m_good["spend_single_domain_max_usd"] == m_bad["spend_single_domain_max_usd"]
+    assert m_good["groundedness_mean"] != m_bad["groundedness_mean"]
+
+
+def test_per_specialist_recall_holds_routing():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    # finops expected five times but only routed twice -> recall 0.4 < 0.80.
+    results = [_passing_result(case_id=f"n{i}") for i in range(10)]
+    for i in range(5):
+        routed = ["finops"] if i < 2 else ["network"]
+        results.append(
+            _passing_result(case_id=f"f{i}", expected_specialists=["finops"], specialists=routed)
+        )
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+    assert report["gates"]["routing"]["passed"] is False
+    assert report["decision"] in {"HOLD_OR_DISABLE_MODE", "HOLD"}
+
+
+def test_validate_artifact_rejects_wrong_dataset_version():
+    evaluate_agents = _load_evaluate_agents()
+    artifact = {
+        "dataset_version": "999",
+        "thresholds_version": "1",
+        "decision": "PROMOTE",
+        "metrics": {},
+    }
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+    assert ok is False
+    assert any("dataset" in p for p in problems)
+
+
+def test_release_artifact_records_complete_provenance_and_controlled_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            summary="must not be persisted",
+            narration="must not be persisted",
+            resource_id="/subscriptions/secret/resourceGroups/secret",
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["revision"] == "api--phase11-canary"
+    assert artifact["dataset_version"] == "1"
+    assert artifact["thresholds_version"] == "1"
+    assert artifact["manifest_version"] == 1
+    assert artifact["contract_version"] == "1.0"
+    assert artifact["decision"] == "PROMOTE"
+    assert artifact["metrics"]["turns"] == 96
+    assert set(artifact["gates"]) >= {
+        "corpus_completeness",
+        "scope_isolation",
+        "routing",
+        "citation_validity",
+    }
+    encoded = json.dumps(artifact)
+    assert "must not be persisted" not in encoded
+    assert "/subscriptions/secret" not in encoded
+
+
+def test_release_artifact_holds_when_the_corpus_is_incomplete():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+
+    artifact = evaluate_agents.build_release_artifact(
+        [_passing_result(case_id=cases[0].case_id)],
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={"foundry": "available"},
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD"
+    assert artifact["gates"]["corpus_completeness"]["passed"] is False
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+    assert ok is False
+    assert any("canonical case-id set" in problem for problem in problems)
+
+
+def test_release_evidence_requires_exact_tool_grant_parity():
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.load_cases(_CASES_PATH)[0]
+    result = evaluate_agents.Result(
+        case_id=case.case_id,
+        ok=True,
+        specialists=list(case.expect_specialists),
+        tool_names=[case.expect_grants[0]],
+        mutation_denied=True,
+    )
+
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+
+    assert len(case.expect_grants) == 2
+    assert evidence["grants_ok"] is False
+    assert evidence["tool_correctness"] == 0.0
+
+
+def test_zero_grant_case_rejects_an_executed_tool():
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if not case.expect_grants and case.disposition == "integrated"
+    )
+    result = evaluate_agents.Result(
+        case_id=case.case_id,
+        ok=True,
+        specialists=list(case.expect_specialists),
+        tool_names=["unexpected_tool"],
+        mutation_denied=True,
+    )
+
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+
+    assert evidence["grants_ok"] is False
+    assert evidence["tool_correctness"] == 0.0
+
+
+def test_release_case_selection_uses_the_external_versioned_corpus():
+    evaluate_agents = _load_evaluate_agents()
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+
+    selected = evaluate_agents.select_cases(cases, ["scope.cross.principal"])
+
+    assert [case.case_id for case in selected] == ["scope.cross.principal"]
+    with pytest.raises(ValueError, match="unknown case id"):
+        evaluate_agents.select_cases(cases, ["legacy-inline-case"])
+
+
+def test_main_release_run_executes_cases_from_the_external_corpus(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    evaluate_agents = _load_evaluate_agents()
+    source = json.loads(_CASES_PATH.read_text())
+    dataset = tmp_path / "cases.json"
+    dataset.write_text(json.dumps(source))
+    artifact = tmp_path / "baseline.json"
+    validation_evidence = tmp_path / "validation.json"
+    validation_evidence.write_text(
+        json.dumps(
+            {
+                "revision": "api--phase11-canary",
+                "gates": _passing_validation_evidence(),
+            }
+        )
+    )
+    seen: list[str] = []
+
+    def run_case(_api, _resource, case):
+        seen.append(case.case_id)
+        return evaluate_agents.Result(
+            case_id=case.case_id,
+            ok=True,
+            specialists=list(case.expect_specialists),
+            expected_specialists=list(case.expect_specialists),
+            groundedness=0.9,
+            tool_correctness=1.0,
+            latency_ms=25.0,
+            citation_valid=True,
+            material_claim_coverage=1.0,
+            citation_reference_integrity_ok=True,
+            mutation_denied=True,
+            tool_names=list(case.expect_grants),
+            spend_usd=0.05,
+            scope_ok=True,
+            unknown_id_denied=True,
+            disposition_ok=True,
+            manifest_projection_ok=True,
+            snapshot_schema_ok=True,
+            unsupported_severe_causal_action=0,
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents, "_run_case", run_case)
+    monkeypatch.setattr(evaluate_agents, "PAUSE_BETWEEN_CASES_SECONDS", 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_agents.py",
+            "--dataset",
+            str(dataset),
+            "--thresholds",
+            str(_THRESHOLDS_PATH),
+            "--revision",
+            "api--phase11-canary",
+            "--provider",
+            "foundry=available",
+            "--provider",
+            "operations_mcp=available",
+            "--provider",
+            "azure_mcp=available",
+            "--validation-evidence",
+            str(validation_evidence),
+            "--out",
+            str(artifact),
+        ],
+    )
+
+    assert evaluate_agents.main() == 0
+    assert seen == [
+        case["case_id"]
+        for case in source["cases"]
+        if case["disposition"] not in {"redirect", "excluded"}
+    ]
+    payload = json.loads(artifact.read_text())
+    assert [item["case_id"] for item in payload["case_evidence"]] == [
+        case["case_id"] for case in source["cases"]
+    ]
+    assert payload["decision"] == "PROMOTE"
+
+
+def test_validate_artifact_rejects_promote_with_omitted_release_gates():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = json.loads(_THRESHOLDS_PATH.read_text())
+    digest = lambda value: __import__("hashlib").sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    artifact = {
+        "dataset_version": "1",
+        "thresholds_version": "1",
+        "manifest_version": 1,
+        "contract_version": "1.0",
+        "dataset_sha256": digest(dataset),
+        "thresholds_sha256": digest(thresholds),
+        "revision": "api--phase11-canary",
+        "provider_availability": {
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        "metrics": {},
+        "validation_evidence": {},
+        "case_evidence": [],
+        "decision": "PROMOTE",
+        "gates": {"corpus_completeness": {"passed": True}},
+    }
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("missing required gates" in problem for problem in problems)
+
+
+def test_release_artifact_holds_when_any_live_case_lacks_spend():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            spend_usd=None if index == 0 else 0.05,
+        )
+        for index, case in enumerate(cases)
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert artifact["gates"]["measurement_completeness"]["passed"] is False
+    assert artifact["gates"]["measurement_completeness"]["observed"][
+        "missing_spend_case_ids"
+    ] == [cases[0].case_id]
+
+
+def test_release_artifact_rejects_boolean_spend_values():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            spend_usd=False,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert artifact["gates"]["measurement_completeness"]["passed"] is False
+
+
+def test_external_boolean_cannot_override_missing_scope_case_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            scope_ok=None if case.case_id == "scope.cross.principal" else True,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD"
+    assert artifact["gates"]["scope_isolation"]["passed"] is False
+    assert artifact["gates"]["scope_isolation"]["observed"]["missing_case_ids"] == [
+        "scope.cross.principal"
+    ]
+
+
+def test_validate_artifact_recomputes_decision_from_case_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+        )
+        for case in cases
+    ]
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+    scope_case = next(
+        item
+        for item in artifact["case_evidence"]
+        if item["case_id"] == "scope.cross.subscription"
+    )
+    scope_case["scope_ok"] = False
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("recomputed evidence" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("case_evidence", [None]), ("gates", {"routing": None})],
+)
+def test_validate_artifact_rejects_malformed_nested_values(field, value):
+    evaluate_agents = _load_evaluate_agents()
+    artifact = {
+        "dataset_version": "1",
+        "thresholds_version": "1",
+        "revision": "api--phase11-canary",
+        "case_evidence": [],
+        "gates": {},
+    }
+    artifact[field] = value
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("malformed" in problem for problem in problems)

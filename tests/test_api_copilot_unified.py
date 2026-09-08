@@ -2748,3 +2748,218 @@ def test_multi_agent_reconciliation_counts_only_observed_evidence(
     assert data["synthesis"]["summary"].startswith(
         "Canonical investigation produced 0 evidence-backed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 11-11: dedicated multi-agent surface converges on the canonical service
+# ---------------------------------------------------------------------------
+
+
+def _canonical_multi_agent_result():
+    """One canonical OrchestrationResult shared by the equivalence assertions."""
+    from operations.orchestration_contract import (
+        Citation,
+        OrchestrationResult,
+        SnapshotCoverage,
+    )
+
+    return OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        fallback_reason="",
+        selected_specialists=["network"],
+        selected_tools=["network_topology"],
+        tool_results=[
+            {
+                "call_id": "0:0:network:network_topology",
+                "specialist_id": "network",
+                "tool": "network_topology",
+                "arguments": {},
+                "status": "ok",
+                "data": {"nodes": [{"id": "vnet-a"}]},
+                "evidence": [
+                    {
+                        "source_engine": "azure-resource-graph",
+                        "source_table": "resources",
+                        "timestamp": "2026-09-01T00:00:00Z",
+                        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+                        "confidence": "high",
+                    }
+                ],
+                "warning": "",
+            }
+        ],
+        uncertainty=["visible subset is incomplete"],
+        coverage=SnapshotCoverage(visible_count=1, total_count=2, complete=False),
+        citations=[
+            Citation(
+                citation_id="tool:0:0:network:network_topology:0",
+                source="azure-resource-graph",
+                status="ok",
+                observed_at="2026-09-01T00:00:00Z",
+                resource_id="/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet-a",
+            )
+        ],
+        thread_id="thr-" + "d" * 32,
+        thread_revision=1,
+        synthesis={
+            "status": "skipped",
+            "reason": "single_domain",
+            "domain_count": 1,
+            "claims": [],
+            "warning": "",
+        },
+    )
+
+
+def test_canonical_multi_agent_route_shares_orchestration_semantics_with_copilot(
+    tmp_path, monkeypatch
+):
+    """T-11-35: The dedicated /agents surface and /copilot/investigate submit
+    through the same canonical service, so an equivalent question yields the
+    same governed policy/coverage/citation/thread semantics rather than a
+    second, divergent planner."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    shared = _canonical_multi_agent_result()
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: shared,
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.execute_from_question",
+        lambda *_args, **_kwargs: shared,
+    )
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    agents = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Summarize network topology", "timeout_seconds": 3},
+        headers=HEADERS,
+    ).json()["data"]
+    copilot = client.post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        json={"question": "Summarize network topology"},
+        headers=HEADERS,
+    ).json()["data"]
+
+    # Both dedicated surfaces project the identical canonical result semantics.
+    assert agents["contract_version"] == copilot["contract_version"] == "1"
+    assert agents["orchestration"]["policy_status"] == copilot["policy_status"]
+    assert agents["reconciliation"]["coverage"] == copilot["coverage"]
+    assert agents["citations"] == copilot["citations"]
+    assert agents["thread_id"] == copilot["thread_id"]
+    # Neither surface asserts any execution authority.
+    assert "mutation_authorized" not in agents
+    assert copilot.get("mutation_authorized") in (None, False)
+
+
+def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
+    tmp_path, monkeypatch
+):
+    """T-11-37: The /agents catalog is manifest-derived and every specialist
+    carries an explicit deployment status, so the UI renders configured/
+    unavailable from the API instead of a local, drift-prone card list."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    agents = client.get(
+        "/api/v1/agents/catalog?subscription=sub-a", headers=HEADERS
+    ).json()["data"]["agents"]
+
+    assert agents, "catalog must list manifest specialists"
+    for agent in agents:
+        assert "foundry" in agent, "each agent must carry deployment status"
+        status = agent["foundry"].get("status")
+        assert status in {"ready", "unavailable"}, status
+        # With no FOUNDRY_* env configured, every specialist is honestly
+        # reported unavailable rather than implied to exist.
+        assert agent["foundry"].get("configured") is False
+        assert status == "unavailable"
+
+
+def test_canonical_multi_agent_ledger_isolated_from_foreign_principal(
+    tmp_path, monkeypatch
+):
+    """T-11-36: A canonical ledger stays principal-scoped — a second principal
+    can neither read it nor record a decision against it."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    from test_api_copilot_investigation import TOKEN
+
+    from api.rbac import Grant, Principal
+
+    other_token = "other-token-0123456789abcdef"
+    principals = {
+        TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
+        other_token: Principal(
+            subject="intruder@example.com", grants=(Grant("admin"),)
+        ),
+    }
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: _canonical_multi_agent_result(),
+    )
+    context = _context(tmp_path, None, principals=principals)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    ledger_id = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Summarize network topology", "timeout_seconds": 3},
+        headers=HEADERS,
+    ).json()["data"]["ledger_id"]
+
+    other_headers = {"Authorization": "Bearer " + other_token}
+    assert client.get(
+        f"/api/v1/agents/investigations/{ledger_id}?subscription=sub-a",
+        headers=other_headers,
+    ).status_code == 404
+    assert client.post(
+        f"/api/v1/agents/investigations/{ledger_id}/actions?subscription=sub-a",
+        json={"action": "accept_finding", "payload": {}},
+        headers=other_headers,
+    ).status_code == 404
+
+    # The owning principal still controls the ledger.
+    assert client.get(
+        f"/api/v1/agents/investigations/{ledger_id}?subscription=sub-a",
+        headers=HEADERS,
+    ).status_code == 200
+
+
+def test_canonical_multi_agent_ledger_action_confers_no_execution_authority(
+    tmp_path, monkeypatch
+):
+    """T-11-36: Approving the plan on the dedicated ledger records a governed
+    human decision only — it is not a production mutation and grants no
+    execution authority."""
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: _canonical_multi_agent_result(),
+    )
+    context = _context(tmp_path, None)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    ledger_id = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Summarize network topology", "timeout_seconds": 3},
+        headers=HEADERS,
+    ).json()["data"]["ledger_id"]
+
+    updated = client.post(
+        f"/api/v1/agents/investigations/{ledger_id}/actions?subscription=sub-a",
+        json={
+            "action": "approve_plan",
+            "payload": {"approved_by": "admin@example.com", "guardrail": "governed handoff only"},
+        },
+        headers=HEADERS,
+    ).json()["data"]
+
+    # The decision is recorded, the ledger confers no execution, and no field
+    # authorizes a mutation.
+    assert any(
+        decision["action"] == "approve_plan" for decision in updated["decisions"]
+    )
+    assert "mutation_authorized" not in updated
+    assert updated["outcome"] != "executed"
