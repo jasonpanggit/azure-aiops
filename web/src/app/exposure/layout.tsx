@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Suspense, type ReactNode } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 
 const EXPOSURE_VIEWS = [
@@ -35,8 +36,7 @@ function selectedView(pathname: string, origin: string | null): ExposureView {
   return "/exposure/patch-priorities";
 }
 
-/** Layout wrapper for exposure routes. Renders shared sub-navigation across the split exposure pages. */
-export default function ExposureLayout({ children }: { children: React.ReactNode }) {
+function ExposureLayoutContent({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "";
   const searchParams = useSearchParams();
   const activeView = selectedView(pathname, searchParams.get("origin"));
@@ -59,5 +59,20 @@ export default function ExposureLayout({ children }: { children: React.ReactNode
       </nav>
       {children}
     </>
+  );
+}
+
+/** Layout wrapper for exposure routes. Renders shared sub-navigation across the split exposure pages. */
+export default function ExposureLayout({ children }: { children: ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="page-container" role="status">
+          Loading exposure view…
+        </div>
+      }
+    >
+      <ExposureLayoutContent>{children}</ExposureLayoutContent>
+    </Suspense>
   );
 }

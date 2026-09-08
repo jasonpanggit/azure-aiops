@@ -21,9 +21,15 @@ class QueryCatalog:
             stamp = lower_bound.replace(microsecond=0).isoformat().replace("+00:00", "Z")
             change_filter = f"properties.changeAttributes.timestamp > datetime({stamp})"
 
+        # Azure Resource Graph pages via $skipToken require a deterministic
+        # sort key -- an unordered result set can shift between page
+        # fetches and yield the same row on two pages (or skip one), which
+        # is exactly what tripped the "Duplicate source partition row"
+        # validation once query volume crossed one page (page_size=1000).
+        # Every paginated query below must end in a stable `order by`.
         projection = (
             "project id, name, type, tenantId, subscriptionId, resourceGroup, "
-            "location, tags, properties"
+            "location, tags, properties | order by id asc"
         )
         specs = [
             QuerySpec("resources", "Resources", f"Resources | {projection}", False),
@@ -46,15 +52,23 @@ class QueryCatalog:
             QuerySpec(
                 "service_health",
                 "HealthResources",
-                "HealthResources | project id, name, type, subscriptionId, properties",
+                "HealthResources | project id, name, type, subscriptionId, properties | order by id asc",
                 False,
             ),
             QuerySpec(
                 "defender",
                 "SecurityResources",
                 "SecurityResources | where type startswith 'microsoft.security/' "
+                "| where type !in~ ("
+                "'microsoft.security/assessments', "
+                "'microsoft.security/assessments/subassessments', "
+                "'microsoft.security/locations/alerts', "
+                "'microsoft.security/attackpaths', "
+                "'microsoft.security/securescores', "
+                "'microsoft.security/securescores/securescorecontrols') "
                 "| extend resourceId=tostring(properties.resourceDetails.Id) "
-                "| project id, name, type, subscriptionId, resourceId, properties",
+                "| project id, name, type, subscriptionId, resourceId, properties "
+                "| order by id asc",
                 False,
             ),
             QuerySpec(
@@ -62,7 +76,8 @@ class QueryCatalog:
                 "PolicyResources",
                 "PolicyResources "
                 "| extend resourceId=tostring(properties.resourceId) "
-                "| project id, name, type, subscriptionId, resourceId, properties",
+                "| project id, name, type, subscriptionId, resourceId, properties "
+                "| order by id asc",
                 False,
             ),
             QuerySpec(
@@ -77,7 +92,7 @@ class QueryCatalog:
                 # lives at properties.resourceDetails.Id and is extracted by
                 # onboarding.defender_normalize._target_resource_id.
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
-                "location, properties",
+                "location, properties | order by id asc",
                 False,
                 source_family="defender_recommendation",
                 semantic_families=("defender_recommendation", "defender_image"),
@@ -89,7 +104,7 @@ class QueryCatalog:
                 "| where type =~ 'microsoft.security/assessments/subassessments' "
                 # Same missing-column issue as defender_assessments above.
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
-                "location, properties",
+                "location, properties | order by id asc",
                 False,
                 source_family="defender_subassessment",
                 semantic_families=("defender_subassessment", "defender_image"),
@@ -99,7 +114,8 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/locations/alerts' "
-                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties "
+                "| order by id asc",
                 False,
                 source_family="defender_alert",
             ),
@@ -108,7 +124,8 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/attackpaths' "
-                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties "
+                "| order by id asc",
                 False,
                 source_family="defender_attack_path",
             ),
@@ -117,7 +134,8 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/securescores' "
-                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties "
+                "| order by id asc",
                 False,
                 source_family="defender_posture",
             ),
@@ -126,7 +144,8 @@ class QueryCatalog:
                 "SecurityResources",
                 "SecurityResources "
                 "| where type =~ 'microsoft.security/securescores/securescorecontrols' "
-                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties",
+                "| project id, name, type, tenantId, subscriptionId, resourceGroup, location, properties "
+                "| order by id asc",
                 False,
                 source_family="defender_posture",
             ),

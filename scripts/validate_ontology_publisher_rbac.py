@@ -1107,6 +1107,15 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("AIOPS_TERRAFORM_STATE", ""),
         help="Terraform state used to resolve deployed control-plane identities",
     )
+    for assertion in (
+        "authoritative-capability-matrix",
+        "command-intake-boundary",
+        "dispatch-boundary",
+        "api-storage-roots",
+        "publisher-credential",
+        "guarded-drill-control",
+    ):
+        parser.add_argument(f"--assert-{assertion}", action="store_true")
     return parser
 
 
@@ -1119,7 +1128,17 @@ def main(argv: list[str] | None = None) -> int:
             raise ValidationBlocked("--fail-on-missing-evidence is required")
         config_path = Path(_required(args.config, "AIOPS_FABRIC_CONFIG")).expanduser()
         config = _load_config(config_path)
-        if args.control_plane_audit:
+        assertion_requested = any(
+            (
+                args.assert_authoritative_capability_matrix,
+                args.assert_command_intake_boundary,
+                args.assert_dispatch_boundary,
+                args.assert_api_storage_roots,
+                args.assert_publisher_credential,
+                args.assert_guarded_drill_control,
+            )
+        )
+        if args.control_plane_audit or assertion_requested:
             state_path = Path(
                 _required(args.terraform_state, "AIOPS_TERRAFORM_STATE")
             ).expanduser()

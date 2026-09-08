@@ -2218,6 +2218,8 @@ export interface NetworkSummary {
   resource_counts: Record<string, number>;
   /** Exact de-duplicated node count produced by a full-detail projection. */
   projected_full_node_count: number;
+  /** Time spent resolving and projecting the topology response on the server. */
+  topology_build_duration_ms?: number;
 }
 
 export interface NetworkGap {

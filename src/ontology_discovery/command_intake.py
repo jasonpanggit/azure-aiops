@@ -98,6 +98,16 @@ class CommandIntakeService:
             "reason": reason,
         }
         if command_type == MARK_FULL_RECONCILIATION_DUE:
+            revision = values.get("expected_cadence_revision")
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 0
+            ):
+                raise ValueError(
+                    "expected_cadence_revision must be a non-negative integer"
+                )
+            envelope["expected_cadence_revision"] = revision
             cadence = values.get("cadence_seconds")
             if cadence is not None and (
                 isinstance(cadence, bool) or not 60 <= int(cadence) <= 2_592_000
@@ -115,7 +125,15 @@ class CommandIntakeService:
             envelope["observed_pointer_etag"] = _required(
                 values.get("observed_pointer_etag"), "observed_pointer_etag"
             )
-        identity = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        identity = json.dumps(
+            {
+                "type": command_type,
+                "connection_id": envelope["connection_id"],
+                "idempotency_key": envelope["idempotency_key"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         command_id = "ODC-" + hashlib.sha256(identity.encode()).hexdigest()[:24].upper()
         command = {
             "command_id": command_id,
@@ -395,10 +413,9 @@ def _immutable(row: Mapping[str, Any]) -> dict[str, Any]:
             "effective_scope_hash",
             "connection_id",
             "action",
-            "issued_at",
-            "expires_at",
             "idempotency_key",
             "reason",
+            "expected_cadence_revision",
             "cadence_seconds",
             "target_generation_id",
             "observed_active_generation",

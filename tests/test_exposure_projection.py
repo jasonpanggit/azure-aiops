@@ -423,6 +423,47 @@ def test_projection_builds_generation_pinned_scoped_facts_facets_and_summaries()
     assert tenant_summary["unknown_workload_count"] == 3
 
 
+def test_collapsed_source_families_retain_operation_specific_status() -> None:
+    datasets = _datasets()
+    current = datasets["gold_exposure_current"][0]
+    current["active_source_families"] = ["aum", "defender"]
+    current["source_states_json"] = json.dumps(
+        {"aum": "missing", "defender": "unhealthy"},
+        sort_keys=True,
+    )
+    for row in datasets["metadata_source_status"]:
+        if row["connection_id"] == "connection-a":
+            row["tenant_id"] = "system"
+    datasets["metadata_source_status"].append(
+        {
+            "tenant_id": "tenant-a",
+            "subscription_id": "sub-a",
+            "connection_id": "connection-a",
+            "source_family": "defender_alert",
+            "state": "complete",
+            "completeness": "complete",
+            "last_attempt_at": "2026-09-06T00:00:00Z",
+            "last_success_at": "2026-09-06T00:00:00Z",
+        }
+    )
+
+    projection = project_exposure_gold(
+        datasets,
+        generation_id=GENERATION,
+        projected_at=PROJECTED_AT,
+    )
+
+    server_facts = {
+        row["source_family"]: row
+        for row in projection.facts
+        if row["target_kind"] == "server"
+    }
+    assert server_facts["aum"]["source_status"] == "complete"
+    assert server_facts["aum"]["completeness"] == "complete"
+    assert server_facts["defender"]["source_status"] == "failed-with-lkg"
+    assert server_facts["defender"]["completeness"] == "partial"
+
+
 def test_generation_changes_fact_keys_but_not_scope_keys_and_mapper_matches() -> None:
     datasets = _datasets()
     first = project_exposure_gold(

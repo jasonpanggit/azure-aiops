@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -33,6 +32,7 @@ _VOLATILE_KEYS = {
 
 _POINTER_NAME = "current.json"
 _COMPATIBILITY_ALIAS_VERSION = "ontology-generation-alias/v1"
+_PARQUET_BATCH_SIZE = 512
 
 
 def _is_remote_root(root: object) -> bool:
@@ -597,32 +597,22 @@ class DatasetStore:
         return final
 
     def _write_dataset(self, generation: Path | str, name: str, rows: list[dict]) -> None:
-        jsonl = "".join(
-            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
-        )
-        parquet_rows = [{key: _parquet_value(value) for key, value in row.items()} for row in rows]
-        table = (
-            pa.Table.from_pylist(parquet_rows)
-            if parquet_rows
-            else pa.table({"_empty": pa.array([], type=pa.string())})
-        )
-
         if self.is_remote:
             base = f"{generation}/{name}"
-            self._write_atomic_remote(f"{base}.jsonl", jsonl)
-            buffer = io.BytesIO()
-            pq.write_table(table, buffer, compression="zstd")
-            with self.fs.open(f"{base}.parquet", "wb") as handle:
-                handle.write(buffer.getvalue())
+            self.fs.makedirs(base.rsplit("/", 1)[0], exist_ok=True)
+            with self.fs.open(f"{base}.jsonl", "wt", streaming=True) as handle:
+                _write_jsonl_rows(handle, rows)
+            with self.fs.open(f"{base}.parquet", "wb", streaming=True) as handle:
+                _write_parquet_rows(handle, rows)
             return
 
         base = generation / name
         _secure_mkdir(base.parent)
-        _secure_text(base.with_suffix(".jsonl"), jsonl)
+        _secure_jsonl(base.with_suffix(".jsonl"), rows)
 
         parquet_path = base.with_suffix(".parquet")
         temporary = parquet_path.with_name(f".{parquet_path.name}.{uuid.uuid4().hex}.tmp")
-        pq.write_table(table, temporary, compression="zstd")
+        _write_parquet_rows(temporary, rows)
         os.chmod(temporary, 0o600)
         temporary.replace(parquet_path)
 
@@ -726,6 +716,63 @@ def _secure_text(path: Path, content: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     temporary.replace(path)
+
+
+def _secure_jsonl(path: Path, rows: list[dict]) -> None:
+    _secure_mkdir(path.parent)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            _write_jsonl_rows(handle, rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_jsonl_rows(handle: Any, rows: list[dict]) -> None:
+    for row in rows:
+        json.dump(row, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+
+
+def _write_parquet_rows(destination: Any, rows: list[dict]) -> None:
+    if not rows:
+        pq.write_table(
+            pa.table({"_empty": pa.array([], type=pa.string())}),
+            destination,
+            compression="zstd",
+        )
+        return
+
+    schemas = [
+        _parquet_table(rows[offset : offset + _PARQUET_BATCH_SIZE]).schema
+        for offset in range(0, len(rows), _PARQUET_BATCH_SIZE)
+    ]
+    schema = pa.unify_schemas(schemas, promote_options="permissive")
+    with pq.ParquetWriter(destination, schema, compression="zstd") as writer:
+        for offset in range(0, len(rows), _PARQUET_BATCH_SIZE):
+            writer.write_table(
+                _parquet_table(
+                    rows[offset : offset + _PARQUET_BATCH_SIZE],
+                    schema=schema,
+                )
+            )
+
+
+def _parquet_table(
+    rows: list[dict],
+    *,
+    schema: pa.Schema | None = None,
+) -> pa.Table:
+    parquet_rows = [
+        {key: _parquet_value(value) for key, value in row.items()}
+        for row in rows
+    ]
+    return pa.Table.from_pylist(parquet_rows, schema=schema)
 
 
 def _atomic_text(path: Path, content: str) -> None:
@@ -891,8 +938,20 @@ def _sorted_rows(rows: list[dict]) -> list[dict]:
 
 
 def _semantic_hash(rows: list[dict]) -> str:
-    payload = json.dumps(_semantic(rows), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode()).hexdigest()
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    digest.update(b"[")
+    for index, row in enumerate(rows):
+        if index:
+            digest.update(b",")
+        for chunk in encoder.iterencode(_semantic(row)):
+            digest.update(chunk.encode())
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 def _semantic(value: Any) -> Any:

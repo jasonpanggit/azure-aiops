@@ -520,6 +520,49 @@ def test_reconciliation_cadence_watermark_and_drift_survive_restart(tmp_path):
     assert following["selected_mode"] == "incremental"
 
 
+def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
+    from ontology_discovery.runtime import ValidationFixtureLifecycle
+
+    connection_home = str(tmp_path / "connections")
+    fixture_home = str(tmp_path / "fixture")
+    state_home = str(tmp_path / "state")
+    lifecycle = ValidationFixtureLifecycle(
+        connection_home=connection_home,
+        fixture_home=fixture_home,
+        state_home=state_home,
+        environment="validation",
+        owner_id="coordinator-uai",
+        now=lambda: NOW,
+    )
+
+    prepared = lifecycle.prepare()
+    assert prepared["status"] == "prepared"
+    assert len(prepared["connection_ids"]) == 3
+    assert len(ConnectionRegistry(connection_home).list()) == 3
+    assert OntologyRunStore(
+        state_home,
+        document_store=OneLakeDocumentStore(state_home),
+    ).active_or_latest_epoch()["epoch_id"] == prepared["epoch_id"]
+
+    with pytest.raises(RuntimeError, match="active fixture drill"):
+        lifecycle.prepare()
+    cleaned = ValidationFixtureLifecycle(
+        connection_home=connection_home,
+        fixture_home=fixture_home,
+        state_home=state_home,
+        environment="validation",
+        owner_id="coordinator-uai",
+        now=lambda: NOW,
+    ).cleanup()
+    assert cleaned["status"] == "cleaned"
+    assert ConnectionRegistry(connection_home).list() == []
+    assert OntologyRunStore(
+        state_home,
+        document_store=OneLakeDocumentStore(state_home),
+    ).active_or_latest_epoch() is None
+    assert lifecycle.sweep_expired()["swept"] == 0
+
+
 def test_watermark_cannot_advance_before_durable_dispatch(tmp_path):
     store = OntologyRunStore(tmp_path / "state.json")
     store.select_reconciliation_mode(

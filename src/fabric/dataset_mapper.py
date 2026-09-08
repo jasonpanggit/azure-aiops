@@ -281,8 +281,11 @@ def temporal_products_from_legacy(
 ) -> ExposureTemporalProjection:
     """Build additive temporal products while legacy products remain intact."""
 
+    inputs = temporal_inputs_from_legacy(datasets)
+    for row in inputs:
+        row["source_generation"] = generation_id
     return build_temporal_projection(
-        temporal_inputs_from_legacy(datasets),
+        inputs,
         generation_id=generation_id,
         ingested_at=ingested_at,
         run_at=ingested_at,
@@ -724,6 +727,32 @@ class GranularExposureOntologyMapper:
         default_factory=lambda: OntologyGraphSynchronizer(OntologyValidator())
     )
 
+    def build_rows(
+        self,
+        datasets: Mapping[str, list[dict[str, Any]]],
+        *,
+        ontology_generation_id: str,
+        allow_empty: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build unsynchronized granular rows for a shared graph transaction."""
+        logical_images = datasets.get("silver_container_logical_images", ())
+        observations = datasets.get(
+            "silver_container_vulnerability_observations",
+            (),
+        )
+        if allow_empty and not logical_images and not observations:
+            return [], []
+        source_rows = _granular_exposure_ontology_source_rows(datasets)
+        entities = self.entity_builder.build(
+            source_rows,
+            ontology_generation_id,
+        )
+        relationships = self.relationship_builder.build(
+            entities,
+            ontology_generation_id,
+        )
+        return entities, relationships
+
     def project(
         self,
         datasets: Mapping[str, list[dict[str, Any]]],
@@ -737,14 +766,9 @@ class GranularExposureOntologyMapper:
             or not ontology_generation_id.strip()
         ):
             raise ValueError("Ontology generation id must be a non-empty string")
-        source_rows = _granular_exposure_ontology_source_rows(datasets)
-        entities = self.entity_builder.build(
-            source_rows,
-            ontology_generation_id,
-        )
-        relationships = self.relationship_builder.build(
-            entities,
-            ontology_generation_id,
+        entities, relationships = self.build_rows(
+            datasets,
+            ontology_generation_id=ontology_generation_id,
         )
         return self.synchronizer.synchronize(
             entities,
@@ -825,10 +849,9 @@ def _granular_exposure_ontology_source_rows(
     checkpoints = indexed["metadata_workload_source_checkpoints"]
     digest_pattern = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-    if not logical_images or not observations:
+    if not logical_images:
         raise ValueError(
-            "Granular Exposure ontology requires logical image and "
-            "vulnerability observation rows"
+            "Granular Exposure ontology requires logical image rows"
         )
 
     logical_entity_ids: dict[str, str] = {}
@@ -1870,8 +1893,10 @@ def remediation_decision_ontology_rows(
         relationships.append(
             _remediation_ontology_relationship(
                 plan_id,
+                "RemediationPlan",
                 "hasApprovalDecision",
                 decision_id,
+                "ApprovalDecision",
                 ingestion_run_id,
                 str(decision.get("decided_at") or timestamp),
                 payload={"decision": decision.get("decision", "")},
@@ -1901,8 +1926,10 @@ def remediation_plan_ontology_rows(
         relationships.append(
             _remediation_ontology_relationship(
                 str(row.get("subject_id") or ""),
+                str(row.get("subject_type") or ""),
                 str(row.get("relationship_type") or ""),
                 str(row.get("object_id") or ""),
+                str(row.get("object_type") or ""),
                 ingestion_run_id,
                 timestamp,
                 payload={
@@ -1910,7 +1937,6 @@ def remediation_plan_ontology_rows(
                     "confidence": float(row.get("confidence") or compute_confidence("inventory")),
                     "source": str(row.get("source") or "remediation-plan"),
                 },
-                object_type=str(row.get("object_type") or _remediation_object_type(str(row.get("relationship_type") or ""))),
                 confidence=float(row.get("confidence") or compute_confidence("inventory")),
                 source=str(row.get("source") or "remediation-plan"),
             )
@@ -2788,13 +2814,14 @@ def _remediation_ontology_entity(
 
 def _remediation_ontology_relationship(
     subject_id: str,
+    subject_type: str,
     predicate: str,
     object_id: str,
+    object_type: str,
     run_id: str,
     timestamp: str,
     *,
     payload: dict[str, Any],
-    object_type: str = "ApprovalDecision",
     confidence: float = 1.0,
     source: str = "remediation-decision-store",
 ) -> dict[str, Any]:
@@ -2809,7 +2836,7 @@ def _remediation_ontology_relationship(
         "change_version": _version(payload),
         "ingestion_run_id": run_id,
         "subject_id": subject_id,
-        "subject_type": "RemediationPlan",
+        "subject_type": subject_type,
         "predicate": predicate,
         "object_id": object_id,
         "object_type": object_type,
@@ -2822,24 +2849,6 @@ def _remediation_ontology_relationship(
         "retired_at": "",
         "ontology_version": "1",
     }
-
-
-def _remediation_object_type(predicate: str) -> str:
-    return {
-        "hasApprovalDecision": "ApprovalDecision",
-        "addressesFinding": "DefenderAssessment",
-        "addressesAlert": "SecurityAlert",
-        "breaksAttackPath": "AttackPath",
-        "improvesControl": "SecureScoreControl",
-        "requiresApproval": "ApprovalRequirement",
-        "hasStep": "ExecutionStep",
-        "hasRollbackPlan": "RollbackPlan",
-        "hasSimulation": "SimulationResult",
-        "mitigatesRisk": "RiskAssessment",
-        "protectsService": "BusinessService",
-    }.get(predicate, "ApprovalDecision")
-
-
 def _version(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 

@@ -865,9 +865,14 @@ def test_ui_backstops_preserve_zero_values_and_wrap_narrow_surfaces() -> None:
 def test_ui_review_responsive_contract() -> None:
     styles = GLOBAL_STYLES.read_text(encoding="utf-8")
     tablet = _css_at_rule(styles, "@media (max-width: 900px)")
+    tabs = _css_rule(styles, ".workspace-tabs")
 
     assert "flex-direction: column" in _css_rule(tablet, ".topology-stage")
     assert "height: 420px" in _css_rule(tablet, ".topology-canvas-wrap")
+    assert "max-width: 100%" in tabs
+    assert "overflow-x: auto" in tabs
+    assert "scroll-snap-type: x proximity" in tabs
+    assert "flex: 0 0 auto" in _css_rule(styles, ".workspace-tabs button")
     drawer = _css_rule(tablet, ".topology-drawer")
     assert "width: 100%" in drawer
     assert "max-height: 340px" in drawer

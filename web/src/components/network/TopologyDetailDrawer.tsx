@@ -843,7 +843,11 @@ function HubDependents({
     <section className="topology-detail-section">
       <h3>Dependent networks</h3>
       {dependents.loading && <span className="muted">Loading dependencies…</span>}
-      {dependents.error && <span className="muted">Dependencies are unavailable: {dependents.error.message}</span>}
+      {dependents.error && (
+        <div className="callout callout-critical" role="alert">
+          Dependencies are unavailable: {dependents.error.message}
+        </div>
+      )}
       {!dependents.loading && !dependents.error && (
         <div className="topology-dependent-list">
           {(dependents.data?.data.dependent_vnets ?? []).map((item) => (

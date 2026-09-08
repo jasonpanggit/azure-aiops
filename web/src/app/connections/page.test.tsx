@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
+import { ApiError } from "@/lib/types";
 import type {
   Envelope,
   OntologyAutomationStatus,
@@ -109,6 +110,8 @@ vi.mock("@/lib/services", () => ({
 }));
 
 import ConnectionsPage from "./page";
+
+const apiTransportError = new ApiError(0, "unknown", "Network request failed");
 
 function renderConnectionsPage() {
   return render(
@@ -736,6 +739,95 @@ describe("Connections page Fabric Medallion tab", () => {
     });
     expect(screen.queryByText(/Sync in progress:/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Syncing…" })).not.toBeInTheDocument();
+  });
+
+  it("keeps polling through transient sync health transport failures", async () => {
+    const runningConnection = {
+      ...connection,
+      sync_status: "running",
+    };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [runningConnection] });
+    sync.mockResolvedValue({
+      data: {
+        sync_state: {
+          status: "running",
+          stage: "discovering",
+          stage_message: "Running manual discovery",
+          progress_pct: 10,
+          record_count: 12605,
+        },
+      },
+    });
+    health
+      .mockRejectedValueOnce(apiTransportError)
+      .mockResolvedValue({
+        data: {
+          connections: [
+            {
+              connection_id: runningConnection.connection_id,
+              sync: {
+                status: "failed",
+                stage: "failed",
+                stage_message: "Sync interrupted by a service restart or deployment",
+                message: "Sync interrupted by a service restart or deployment",
+                progress_pct: 10,
+                record_count: 12605,
+              },
+            },
+          ],
+        },
+      });
+
+    renderConnectionsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Sync interrupted by a service restart or deployment")).toBeInTheDocument();
+      expect(screen.queryByText("Network request failed")).not.toBeInTheDocument();
+    });
+  });
+
+  it("refreshes the connection row when passive sync polling reaches a terminal state", async () => {
+    const runningConnection = {
+      ...connection,
+      sync_status: "running",
+    };
+    const failedConnection = {
+      ...connection,
+      health_status: "healthy",
+      sync_status: "failed",
+    };
+    list
+      .mockResolvedValueOnce({ ...emptyEnvelope, data: [runningConnection] })
+      .mockResolvedValue({ ...emptyEnvelope, data: [failedConnection] });
+    health.mockResolvedValue({
+      data: {
+        connections: [
+          {
+            connection_id: runningConnection.connection_id,
+            sync: {
+              status: "failed",
+              stage: "failed",
+              stage_message: "Sync interrupted by a service restart or deployment",
+              message: "Sync interrupted by a service restart or deployment",
+              progress_pct: 10,
+              record_count: 12605,
+            },
+          },
+        ],
+      },
+    });
+
+    renderConnectionsPage();
+
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(2);
+      const connectionRow = screen.getByRole("row", { name: /Production/ });
+      expect(within(connectionRow).getByText("failed")).toBeInTheDocument();
+      expect(within(connectionRow).queryByText("running")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Sync in progress:/)).not.toBeInTheDocument();
+    });
   });
 
   it("passes subscription scope to every Fabric Medallion API call", async () => {

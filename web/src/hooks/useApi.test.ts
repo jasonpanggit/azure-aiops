@@ -132,4 +132,72 @@ describe("useApi refetch", () => {
     });
     expect(result.current.data).toBe("narrow-scope-record");
   });
+
+  it("retains loaded data for an explicitly soft dependency change but still clears it across scope", async () => {
+    const full = deferred<string>();
+    const narrow = deferred<string>();
+    const loader = vi
+      .fn<(scope: string, detail: string) => Promise<string>>()
+      .mockResolvedValueOnce("broad-summary")
+      .mockImplementationOnce(() => full.promise)
+      .mockImplementationOnce(() => narrow.promise);
+    const { result, rerender } = renderHook(
+      ({ scope, detail }: { scope: string; detail: string }) =>
+        useApi(() => loader(scope, detail), [scope, detail], {
+          retainDataOnDependencyChange: (previous, next) =>
+            previous[0] === next[0],
+        }),
+      { initialProps: { scope: "broad", detail: "summary" } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    rerender({ scope: "broad", detail: "full" });
+
+    expect(result.current.data).toBe("broad-summary");
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      full.resolve("broad-full");
+      await full.promise;
+    });
+    rerender({ scope: "narrow", detail: "full" });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      narrow.resolve("narrow-full");
+      await narrow.promise;
+    });
+  });
+
+  it("aborts the active request and retains the last successful data when cancelled", async () => {
+    let activeSignal: AbortSignal | undefined;
+    const pending = deferred<string>();
+    const loader = vi
+      .fn<(signal?: AbortSignal) => Promise<string>>()
+      .mockResolvedValueOnce("summary")
+      .mockImplementationOnce((signal) => {
+        activeSignal = signal;
+        return pending.promise;
+      });
+    const { result } = renderHook(() => useApi(loader, []));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      result.current.refetch();
+      vi.advanceTimersByTime(400);
+    });
+    expect(activeSignal?.aborted).toBe(false);
+
+    act(() => result.current.cancel());
+
+    expect(activeSignal?.aborted).toBe(true);
+    expect(result.current.data).toBe("summary");
+    expect(result.current.loading).toBe(false);
+  });
 });

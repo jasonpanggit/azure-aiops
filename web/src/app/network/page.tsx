@@ -22,7 +22,7 @@ import { ApiError } from "@/lib/types";
 import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
-const NETWORK_PAGE_SIZE = 100;
+const NETWORK_PAGE_SIZE = 20;
 
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
@@ -58,9 +58,17 @@ export default function NetworkPage() {
     saved: boolean;
   } | null>(null);
   const topology = useApi(
-    () => networkApi.topology(scope, { detail: topologyDetail }),
-    [scope, topologyDetail],
+    (signal) =>
+      networkApi.topology(scope, { detail: topologyDetail }, { signal }),
+    [scopeKey, topologyDetail],
+    {
+      retainDataOnDependencyChange: (previous, next) =>
+        previous[0] === next[0],
+    },
   );
+  const renderedTopologyDetail =
+    (topology.dataDependencies?.[1] as TopologyDetailLevel | undefined) ??
+    "summary";
   const gaps = useApi(
     () => networkApi.gaps(scope, {
       limit: activeGapPageSize,
@@ -92,6 +100,11 @@ export default function NetworkPage() {
       networkApi.ruleFindings(scope, { offset, limit }),
     [scope],
   );
+
+  const cancelTopologyDetailLoad = useCallback(() => {
+    topology.cancel();
+    setTopologyDetail(renderedTopologyDetail);
+  }, [renderedTopologyDetail, topology]);
 
   useEffect(() => {
     if (paginationScopeKey === scopeKey) return;
@@ -316,7 +329,9 @@ export default function NetworkPage() {
               topology={topology.data?.data.topology ?? null}
               summary={topology.data?.data.summary ?? null}
               detailLevel={topologyDetail}
+              renderedDetailLevel={renderedTopologyDetail}
               onDetailLevelChange={setTopologyDetail}
+              onCancelDetailLoad={cancelTopologyDetailLoad}
               loading={topology.loading}
               error={topology.error}
               gaps={gaps.data?.data.gaps ?? []}

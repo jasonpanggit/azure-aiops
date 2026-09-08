@@ -6,12 +6,16 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
+from ontology_discovery.command_intake import (
+    CommandIntakeService,
+    scope_receipt,
+)
 from ontology_discovery.evaluation import EvaluationSnapshot
 from ontology_discovery.evaluation_store import (
     EvaluationSnapshotStore,
@@ -32,6 +36,7 @@ from ontology_discovery.store import (
 from ..dependencies import (
     ApprovePrincipal,
     Context,
+    MaintainOntologyPrincipal,
     OperatePrincipal,
     Page,
     ReadScope,
@@ -40,12 +45,18 @@ from ..dependencies import (
 from ..errors import ApiError, ErrorCode, scrub
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 from ..models import (
+    OntologyMaintenanceRequest,
     OntologyProposalReviewRequest,
     OntologyRollbackRequest,
     OntologyRunMutationRequest,
     OntologyRunNowRequest,
 )
-from ..rbac import ACTION_APPROVE, ACTION_OPERATE, Principal
+from ..rbac import (
+    ACTION_APPROVE,
+    ACTION_MAINTAIN_ONTOLOGY,
+    ACTION_OPERATE,
+    Principal,
+)
 from ..scope import Scope
 
 router = APIRouter(
@@ -123,6 +134,8 @@ class OntologyDiscoveryApi:
         evaluation_store: EvaluationSnapshotStore | None = None,
         generation_resolver_factory: Callable[[str], Any | None] | None = None,
         rollback_action: Callable[..., Mapping[str, Any]] | None = None,
+        command_intake: CommandIntakeService | None = None,
+        connection_reader: Callable[[str], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.onboarding = onboarding
@@ -130,10 +143,28 @@ class OntologyDiscoveryApi:
         self.evaluation_store = evaluation_store
         self._generation_resolver_factory = generation_resolver_factory
         self._rollback_action = rollback_action
+        self.command_intake = command_intake
+        self._connection_reader = connection_reader
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def connection(self, connection_id: str) -> dict[str, Any]:
+        if self._connection_reader is not None:
+            connection = self._connection_reader(connection_id)
+            if hasattr(connection, "to_dict"):
+                return dict(connection.to_dict())
+            return dict(connection)
         return self.onboarding.detail(connection_id)
+
+    def _command_connection(self, connection_id: str) -> Any:
+        if self._connection_reader is not None:
+            return self._connection_reader(connection_id)
+        return self.onboarding.registry.get(connection_id)
+
+    def command(self, command_id: str) -> dict[str, Any] | None:
+        if self.command_intake is None:
+            return None
+        command = self.command_intake.get(command_id)
+        return self._project_command(command) if command is not None else None
 
     def runs(self, connection_id: str) -> list[dict[str, Any]]:
         return [
@@ -165,6 +196,22 @@ class OntologyDiscoveryApi:
         )
         if active is not None:
             raise RunClaimConflict("active_run_exists", active)
+        if self.command_intake is not None:
+            connection = self._command_connection(connection_id)
+            moment = self._clock()
+            command = self.command_intake.enqueue_manual_run(
+                actor_hash=_opaque_hash(actor),
+                effective_scope_hash=scope_receipt(
+                    connection, "ontology.discovery.run"
+                ),
+                connection_id=connection_id,
+                action="ontology.discovery.run",
+                issued_at=moment,
+                expires_at=moment + timedelta(minutes=15),
+                idempotency_key=idempotency_key,
+                reason=reason,
+            )
+            return self._project_command(command)
         result = self.onboarding.enqueue_ontology_refresh(
             connection_id,
             mode="manual",
@@ -289,14 +336,17 @@ class OntologyDiscoveryApi:
         can_rollback = bool(
             prior_generation
             and selection.pointer_etag
-            and self._rollback_action is not None
+            and (
+                self.command_intake is not None
+                or self._rollback_action is not None
+            )
         )
         reason = ""
         if not prior_generation:
             reason = "prior_generation_unavailable"
         elif not selection.pointer_etag:
             reason = "generation_pointer_etag_unavailable"
-        elif self._rollback_action is None:
+        elif self.command_intake is None and self._rollback_action is None:
             reason = "publisher_action_unavailable"
         return {
             "status": "active",
@@ -348,11 +398,39 @@ class OntologyDiscoveryApi:
                     "current_etag": generation.get("pointer_etag") or "",
                 },
             )
-        if not generation["can_rollback"] or self._rollback_action is None:
+        if not generation["can_rollback"]:
             raise ApiError(
                 ErrorCode.CONFLICT,
                 "Rollback is not currently eligible",
                 {"reason": generation["rollback_disabled_reason"]},
+            )
+        if self.command_intake is not None:
+            connection = self._command_connection(connection_id)
+            moment = self._clock()
+            return self._project_command(
+                self.command_intake.enqueue_rollback(
+                    actor_hash=_opaque_hash(actor),
+                    effective_scope_hash=scope_receipt(
+                        connection, "ontology.publication.rollback"
+                    ),
+                    connection_id=connection_id,
+                    action="ontology.publication.rollback",
+                    issued_at=moment,
+                    expires_at=moment + timedelta(minutes=15),
+                    idempotency_key=idempotency_key,
+                    reason=reason,
+                    target_generation_id=generation_id,
+                    observed_active_generation=str(
+                        generation["active_generation"]
+                    ),
+                    observed_pointer_etag=expected_etag,
+                )
+            )
+        if self._rollback_action is None:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Rollback command intake is unavailable",
+                {"reason": "command_intake_unavailable"},
             )
         return dict(
             self._rollback_action(
@@ -364,6 +442,55 @@ class OntologyDiscoveryApi:
                 idempotency_key=idempotency_key,
             )
         )
+
+    def request_full_reconciliation(
+        self,
+        connection_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+        cadence_seconds: int | None,
+    ) -> dict[str, Any]:
+        if self.command_intake is None:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Ontology maintenance command intake is unavailable",
+            )
+        detail = self.connection(connection_id)
+        environment = str(detail.get("environment") or "").strip().casefold()
+        if not environment or environment == "production":
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Full reconciliation maintenance is non-production only",
+                {"reason": "non_production_environment_required"},
+            )
+        control = self.run_store.get_reconciliation_control(connection_id)
+        current_revision = int((control or {}).get("revision") or 0)
+        if current_revision != expected_revision:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "The reconciliation cadence changed; refresh before acting",
+                {"current_revision": current_revision},
+            )
+        connection = self._command_connection(connection_id)
+        moment = self._clock()
+        command = self.command_intake.enqueue_mark_full_reconciliation_due(
+            actor_hash=_opaque_hash(actor),
+            effective_scope_hash=scope_receipt(
+                connection, "ontology.discovery.maintenance"
+            ),
+            connection_id=connection_id,
+            action="ontology.discovery.maintenance",
+            issued_at=moment,
+            expires_at=moment + timedelta(minutes=15),
+            idempotency_key=idempotency_key,
+            reason=reason,
+            expected_cadence_revision=current_revision,
+            cadence_seconds=cadence_seconds,
+        )
+        return self._project_command(command)
 
     def evaluation(self, connection: Mapping[str, Any]) -> dict[str, Any]:
         if self.evaluation_store is None:
@@ -556,6 +683,26 @@ class OntologyDiscoveryApi:
         }
 
     @staticmethod
+    def _project_command(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: record.get(key)
+            for key in (
+                "command_id",
+                "type",
+                "connection_id",
+                "status",
+                "revision",
+                "reason_code",
+                "created_at",
+                "updated_at",
+                "target_generation_id",
+                "observed_active_generation",
+                "observed_pointer_etag",
+            )
+            if key in record
+        }
+
+    @staticmethod
     def _project_snapshot(snapshot: EvaluationSnapshot) -> dict[str, Any]:
         return snapshot.model_dump(mode="json")
 
@@ -604,6 +751,10 @@ class OntologyDiscoveryApi:
 def _generation_id(value: object) -> str:
     text = str(value or "").rstrip("/")
     return PurePath(text).name if text else ""
+
+
+def _opaque_hash(value: object) -> str:
+    return hashlib.sha256(str(value or "").strip().encode()).hexdigest()
 
 
 def _evaluation_missing(reason: str) -> dict[str, Any]:
@@ -946,6 +1097,33 @@ def rollback_generation(
             ErrorCode.NOT_FOUND,
             "No rollback-eligible ontology generation matches this scope",
         )
+    return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
+
+
+@router.post(
+    "/connections/{connection_id}/maintenance/full-reconciliation-due",
+    summary="Request a non-production full ontology reconciliation",
+)
+def request_full_reconciliation(
+    connection_id: str,
+    payload: OntologyMaintenanceRequest,
+    context: Context,
+    requested: RequestedScope,
+    principal: MaintainOntologyPrincipal,
+) -> dict[str, Any]:
+    scope = context.authorizer.effective_scope(
+        principal, ACTION_MAINTAIN_ONTOLOGY, requested
+    )
+    service = _provider(context)
+    _connection(service, connection_id, scope)
+    result = service.request_full_reconciliation(
+        connection_id,
+        expected_revision=payload.expected_revision,
+        actor=principal.subject,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+        cadence_seconds=payload.cadence_seconds,
+    )
     return envelope(result, evidence=_evidence(connection_id), scope=scope.to_dict())
 
 

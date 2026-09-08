@@ -9,6 +9,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
+import storage.datasets as datasets_module
 from onboarding.graph_normalize import Normalizer
 from onboarding.ingestion_storage import DatasetStore
 from storage.datasets import DatasetStore as NeutralDatasetStore
@@ -33,6 +34,71 @@ def test_store_writes_jsonl_parquet_and_ontology_metadata(tmp_path: Path) -> Non
     assert manifest["datasets"]["entities/VirtualMachine"]["rowCount"] == 1
     assert (tmp_path / "current").is_symlink() or sys.platform == "win32"
     assert not (tmp_path / "current/queries/resources.jsonl").exists()
+
+
+def test_store_converts_parquet_rows_in_bounded_batches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    batch_size = 8
+    rows = [
+        {"id": f"resource-{index}", "payload": {"value": "x" * 128}}
+        for index in range(batch_size * 2 + 3)
+    ]
+    observed_batch_sizes: list[int] = []
+    original = datasets_module._parquet_table
+
+    def recording_table(rows, *, schema=None):
+        observed_batch_sizes.append(len(rows))
+        return original(rows, schema=schema)
+
+    monkeypatch.setattr(datasets_module, "_PARQUET_BATCH_SIZE", batch_size)
+    monkeypatch.setattr(datasets_module, "_parquet_table", recording_table)
+
+    NeutralDatasetStore(tmp_path).publish(
+        {"entities/Resource": rows},
+        {},
+        {"runId": "bounded-parquet"},
+    )
+
+    assert observed_batch_sizes == [
+        batch_size,
+        batch_size,
+        3,
+        batch_size,
+        batch_size,
+        3,
+    ]
+    assert pq.read_table(
+        tmp_path / "current/entities/Resource.parquet"
+    ).num_rows == len(rows)
+
+
+def test_store_unifies_parquet_schema_across_batch_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(datasets_module, "_PARQUET_BATCH_SIZE", 2)
+    rows = [
+        {"id": "one", "score": 1},
+        {"id": "two", "score": 2},
+        {"id": "three", "score": 3.5},
+    ]
+
+    NeutralDatasetStore(tmp_path).publish(
+        {"entities/Resource": rows},
+        {},
+        {"runId": "widened-parquet-schema"},
+    )
+
+    parquet_rows = pq.read_table(
+        tmp_path / "current/entities/Resource.parquet"
+    ).to_pylist()
+    assert {row["id"]: row["score"] for row in parquet_rows} == {
+        "one": 1.0,
+        "two": 2.0,
+        "three": 3.5,
+    }
 
 
 def test_store_is_idempotent_for_same_content(tmp_path: Path) -> None:
