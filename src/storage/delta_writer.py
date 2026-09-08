@@ -129,7 +129,12 @@ class DeltaWriter:
         supports_version_compare = bool(rows) and {"resource_id", "change_version"} <= set(rows[0])
         if mode is DeltaWriteMode.OVERWRITE and exists and supports_version_compare:
             table = DeltaTable(uri, storage_options=self.storage_options)
-            current = table.to_pyarrow_table(columns=["resource_id", "change_version"])
+            # A synchronous scan prevents Arrow workers from outliving short-lived
+            # publication processes during interpreter shutdown.
+            current = table.to_pyarrow_dataset().to_table(
+                columns=["resource_id", "change_version"],
+                use_threads=False,
+            )
             current_versions = sorted(
                 zip(
                     current.column("resource_id").to_pylist(),
