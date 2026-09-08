@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildComplianceCopilotContext,
   buildCveDetailCopilotContext,
+  buildDefenderPostureCopilotContext,
   buildExposureCopilotContext,
   buildInventoryCopilotContext,
+  buildKbDetailCopilotContext,
   buildNetworkCopilotContext,
   buildOverviewCopilotContext,
+  buildPatchPrioritiesCopilotContext,
   buildRemediationCopilotContext,
   buildSituationsCopilotContext,
   canonicalEvidenceStableId,
@@ -1276,6 +1279,397 @@ describe("inventory Copilot page adapter", () => {
       });
       expect(context.snapshot.page_kind).toBe("remediation");
       expect(planRow(context)).toBeUndefined();
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+  });
+
+  describe("defender posture, KB detail, and patch priority Copilot page adapters", () => {
+    type CoreContext = ReturnType<typeof buildDefenderPostureCopilotContext>;
+    const rowByClaim = (ctx: CoreContext, claim: string) =>
+      ctx.snapshot.evidence.filter((row) => row.data.claim_type === claim);
+
+    const defenderInput = {
+      scope: { subscription: ["sub-a"] },
+      selectedAssetId:
+        "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+      overview: {
+        value: {
+          active_alert_count: 7,
+          critical_alert_count: 2,
+          attack_path_count: 3,
+          unhealthy_recommendation_count: 11,
+          vulnerable_container_image_count: 4,
+          container_image_cve_count: 19,
+        },
+        loadedCount: 1,
+        totalCount: 1,
+        freshness: "fresh" as const,
+        available: true,
+        observedAt: "2026-09-07T10:00:00Z",
+        evidence: [
+          {
+            source_engine: "ARG",
+            source_table: "securityresources",
+            timestamp: "2026-09-07T10:00:00Z",
+            confidence: "high" as const,
+            freshness: "fresh" as const,
+          },
+        ],
+      },
+      secureScore: {
+        value: { current: 42, max: 60, percentage: 70 },
+        loadedCount: 1,
+        totalCount: 1,
+        freshness: "fresh" as const,
+        available: true,
+        observedAt: "2026-09-07T09:45:00Z",
+      },
+      findings: {
+        value: [
+          {
+            assessment_id: "assess-1",
+            asset_id:
+              "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+            asset_name: "vm-1",
+            resource_type: "Microsoft.Compute/virtualMachines",
+            defender_plan: "Servers",
+            status: "Unhealthy",
+            severity: "High",
+            recommendation: "Enable endpoint protection",
+            business_service: "Payments",
+            last_assessed_at: "2026-09-07T09:00:00Z",
+          },
+        ],
+        loadedCount: 1,
+        totalCount: 5,
+        freshness: "fresh" as const,
+        available: true,
+        observedAt: "2026-09-07T09:00:00Z",
+      },
+      alerts: {
+        value: [
+          { id: "alert-1", title: "Suspicious sign-in", severity: "High", status: "Active" },
+        ],
+        loadedCount: 1,
+        totalCount: 7,
+        freshness: "partial" as const,
+        available: true,
+        observedAt: "2026-09-07T08:00:00Z",
+      },
+      attackPaths: {
+        value: [
+          { id: "path-1", title: "Internet to DB", potentialImpact: "Data exfiltration", nodeCount: 4 },
+        ],
+        loadedCount: 1,
+        totalCount: 3,
+        freshness: "fresh" as const,
+        available: true,
+        observedAt: "2026-09-07T08:30:00Z",
+      },
+      containers: {
+        value: [],
+        loadedCount: 0,
+        totalCount: 0,
+        freshness: "unavailable" as const,
+        available: false,
+      },
+      evidence: [],
+    };
+
+    it("binds selected Defender asset, posture aggregates, coverage, and unavailable-vs-empty status", () => {
+      const context = buildDefenderPostureCopilotContext(defenderInput);
+      const reordered = buildDefenderPostureCopilotContext({
+        ...defenderInput,
+        findings: {
+          ...defenderInput.findings,
+          value: [...defenderInput.findings.value].reverse(),
+        },
+      });
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "vulnerability",
+        page_id: "defender-posture",
+      });
+      // Selected finding asset is a canonical ARM selected entity.
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "azure",
+          resource_id:
+            "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+        },
+      ]);
+      // Posture aggregate carried as descriptive, non-actionable evidence.
+      expect(rowByClaim(context, "defender_overview")[0]?.data).toMatchObject({
+        active_alert_count: 7,
+        critical_alert_count: 2,
+        attack_path_count: 3,
+        unhealthy_recommendation_count: 11,
+        actionable: false,
+        mutation_authorized: false,
+      });
+      // Visible/total coverage across sections; empty is not truncated.
+      expect(context.coverage).toMatchObject({
+        findings: { visible_count: 1, total_count: 5, complete: false, truncated: true },
+        alerts: { visible_count: 1, total_count: 7, complete: false, truncated: true },
+        attack_paths: { visible_count: 1, total_count: 3, complete: false, truncated: true },
+        containers: { visible_count: 0, total_count: 0, complete: false, truncated: false },
+      });
+      // Unavailable container feed is distinct from a healthy empty result.
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "containers", status: "unavailable" }),
+          expect.objectContaining({ source: "alerts", status: "partial" }),
+          expect.objectContaining({ source: "findings", status: "fresh" }),
+        ]),
+      );
+      // Deterministic identities regardless of input order.
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        reordered.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      // No definitive safety claim: everything non-actionable/non-authorized.
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+      // Advisory specialist hints only.
+      expect(context.starterQuestions.length).toBeGreaterThan(0);
+      expect(context.starterQuestions.every((starter) =>
+        ["vulnerability", "remediation"].includes(starter.specialistId)
+        && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
+    });
+
+    const kbInput = {
+      scope: { subscription: ["sub-a"] },
+      kbId: "KB5001",
+      kb: {
+        kb_id: "KB5001",
+        title: "September cumulative update",
+        severity: "critical",
+        published_at: "2026-09-01T00:00:00Z",
+        cve_ids: ["CVE-2026-0001", "CVE-2026-0002"],
+        affected_servers: ["srv-1", "srv-2"],
+        affected_business_services: ["Payments"],
+      },
+      findings: {
+        rows: [
+          {
+            target_id:
+              "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+            server_id: "srv-1",
+            cve_id: "CVE-2026-0001",
+            application: "Ledger",
+            business_service: "Payments",
+            severity: "critical",
+            reachable: true,
+          },
+        ],
+        loadedCount: 1,
+        totalCount: 4,
+        available: true,
+        freshness: "fresh" as const,
+        observedAt: "2026-09-07T10:00:00Z",
+      },
+      sources: [
+        { key: "msrc", freshness: "fresh" as const, available: true, observedAt: "2026-09-07T08:00:00Z" },
+        { key: "nvd", freshness: "partial" as const, available: true, observedAt: "2026-09-07T07:00:00Z" },
+        { key: "epss", freshness: "unavailable" as const, available: false },
+      ],
+      filters: { target_kind: ["server"], page: ["1"] },
+      evidence: [
+        {
+          source_engine: "Fabric",
+          source_table: "kb_findings",
+          timestamp: "2026-09-07T10:00:00Z",
+          confidence: "high" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+    };
+
+    it("carries the canonical non-ARM KB identity, CVE/machine identities, freshness, and coverage", () => {
+      const context = buildKbDetailCopilotContext(kbInput);
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "vulnerability",
+        page_id: "kb:KB5001",
+      });
+      // KB is a canonical non-ARM (domain) selected identity.
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "domain",
+          namespace: "vulnerability",
+          kind: "kb",
+          source_key: "KB5001",
+        },
+      ]);
+      // KB must not leak into scope-validated resource fields.
+      expect(context.snapshot.selected_resources).toEqual([]);
+      // CVE identities retained.
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              entity: {
+                type: "domain",
+                namespace: "vulnerability",
+                kind: "cve",
+                source_key: "CVE-2026-0001",
+              },
+            }),
+          }),
+          // Affected machine finding is a canonical ARM identity.
+          expect.objectContaining({
+            data: expect.objectContaining({
+              entity: {
+                type: "azure",
+                resource_id:
+                  "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+              },
+            }),
+          }),
+        ]),
+      );
+      expect(context.coverage.findings).toMatchObject({
+        visible_count: 1,
+        total_count: 4,
+        complete: false,
+        truncated: true,
+      });
+      // Lifecycle enrichment freshness downgrades; unavailable distinct.
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "msrc", status: "fresh" }),
+          expect.objectContaining({ source: "nvd", status: "partial" }),
+          expect.objectContaining({ source: "epss", status: "unavailable" }),
+        ]),
+      );
+      expect(context.snapshot.filters).toMatchObject({ target_kind: ["server"], page: ["1"] });
+      // Patch specialist hints, never mutating.
+      expect(context.starterQuestions.every((starter) =>
+        ["vulnerability", "remediation"].includes(starter.specialistId)
+        && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    it("distinguishes an unavailable KB provider from a healthy empty finding set", () => {
+      const unavailable = buildKbDetailCopilotContext({ ...kbInput, kb: null });
+      expect(unavailable.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "kb", status: "unavailable" }),
+        ]),
+      );
+      const empty = buildKbDetailCopilotContext({
+        ...kbInput,
+        findings: { ...kbInput.findings, rows: [], loadedCount: 0, totalCount: 0 },
+      });
+      expect(empty.coverage.findings).toMatchObject({
+        visible_count: 0,
+        total_count: 0,
+        complete: true,
+        truncated: false,
+      });
+    });
+
+    const patchInput = {
+      scope: { subscription: ["sub-a"] },
+      rows: [
+        {
+          exposure_id: "exp-1",
+          target_id:
+            "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+          weakness_id: "CVE-2026-0001",
+          missing_kb: "KB5001",
+          server_id: "srv-1",
+          application: "Ledger",
+          business_service: "Payments",
+          severity: "critical",
+          priority_score: 92,
+          recommendation: "Deploy KB5001",
+          sla_state: "overdue",
+          sla_overdue: true,
+        },
+        {
+          exposure_id: "exp-2",
+          target_id: "srv-2",
+          weakness_id: "CVE-2026-0002",
+          missing_kb: "KB5002",
+          severity: "high",
+          priority_score: 71,
+          sla_state: "open",
+          sla_overdue: false,
+        },
+      ],
+      loadedCount: 2,
+      totalCount: 8,
+      available: true,
+      freshness: "partial" as const,
+      observedAt: "2026-09-07T09:30:00Z",
+      selectedId: "exp-1",
+      filters: { source_family: ["patch"], page: ["1"] },
+      sort: { priority_score: "desc" as const },
+      evidence: [
+        {
+          source_engine: "Fabric",
+          source_table: "patch_priorities",
+          timestamp: "2026-09-07T09:30:00Z",
+          confidence: "high" as const,
+          freshness: "aging" as const,
+        },
+      ],
+      sourceStatuses: [
+        { source: "patch_priorities", freshness: "aging", observedAt: "2026-09-07T09:30:00Z" },
+      ],
+    };
+
+    it("binds patch priority KB/CVE/machine identities, SLA evidence, freshness, and truncation", () => {
+      const context = buildPatchPrioritiesCopilotContext(patchInput);
+      const reordered = buildPatchPrioritiesCopilotContext({
+        ...patchInput,
+        rows: [...patchInput.rows].reverse(),
+      });
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "vulnerability",
+        page_id: "patch-priorities",
+      });
+      // Selected patch row with a canonical ARM machine identity.
+      expect(context.selectedEntities).toEqual([
+        {
+          type: "azure",
+          resource_id:
+            "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+        },
+      ]);
+      // KB/CVE evidence and SLA facts retained and non-actionable.
+      expect(rowByClaim(context, "patch_priority")[0]?.data).toMatchObject({
+        missing_kb: "KB5001",
+        weakness_id: "CVE-2026-0001",
+        priority_score: 92,
+        sla_overdue: true,
+        actionable: false,
+        mutation_authorized: false,
+      });
+      expect(context.coverage.patch_priorities).toMatchObject({
+        visible_count: 2,
+        total_count: 8,
+        complete: false,
+        truncated: true,
+      });
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "patch_priorities", status: "partial" }),
+        ]),
+      );
+      expect(context.uncertainty).toEqual(
+        expect.arrayContaining(["patch_priorities coverage is truncated"]),
+      );
+      // Deterministic identities regardless of input order.
+      expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+        reordered.snapshot.evidence.map((row) => row.evidence_id),
+      );
+      expect(context.starterQuestions.every((starter) =>
+        ["vulnerability", "remediation"].includes(starter.specialistId)
+        && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
