@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Ready for Validation
+Status: Validated
 
 ## Objective
 
@@ -40,28 +40,64 @@ deployments and is not reused as proof for this canary.
 
 ## Phase 11 Validation Checklist
 
-- [ ] All validation checks pass
-  - [ ] Azure CLI installed and authenticated to the configured subscription
-  - [ ] Existing ACR and API/web Container Apps are readable and healthy
-  - [ ] API and web Docker build contexts contain their lock files and build
+- [x] All validation checks pass
+  - [x] Azure CLI installed and authenticated to the configured subscription
+  - [x] Existing ACR and API/web Container Apps are readable and healthy
+  - [x] API and web Docker build contexts contain their lock files and build
         successfully before remote image creation
-  - [ ] Candidate image tags are immutable and unique to the source commit
-  - [ ] Planned `az containerapp update` commands change only API/web image
+  - [x] Candidate image tags are immutable and unique to the source commit
+  - [x] Planned `az containerapp update` commands change only API/web image
         references and Phase 11 rollout environment variables
-  - [ ] Existing Container App identities, secrets, ingress, scaling, and RBAC
+  - [x] Existing Container App identities, secrets, ingress, scaling, and RBAC
         remain unchanged
-  - [ ] Previous API/web revisions remain available for compatibility rollback
-  - [ ] Offline specialist parity passes
-  - [ ] Focused Phase 11 evaluation and rollout-control tests pass
-  - [ ] Static managed-identity/RBAC review confirms existing least-privilege
+  - [x] Previous API/web revisions remain available for compatibility rollback
+  - [x] Offline specialist parity passes
+  - [x] Focused Phase 11 evaluation and rollout-control tests pass
+  - [x] Static managed-identity/RBAC review confirms existing least-privilege
         roles remain sufficient and unchanged
-  - [ ] Assigned Azure policies do not conflict with the additive revision
-- [ ] Validation Proof records exact commands, timestamp, plan summary, and
+  - [x] Assigned Azure policies do not conflict with the additive revision
+- [x] Validation Proof records exact commands, timestamp, plan summary, and
       resolved target before deployment
 
 Phase 11 execution uses `az acr build` with commit-derived immutable API/web
 tags and `az containerapp update` against the existing apps. It does not create,
 delete, or replace Azure resources and does not modify Terraform state.
+
+## Phase 11 Validation Proof
+
+- Validated at: `2026-09-08T07:19:40Z`
+- Source revision: `33843c214b5067a72ed3e9907b294be455c5c7d3`
+- Target: subscription `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`,
+  resource group `aiops-dev-rg`, region `australiaeast`
+- Azure preflight: `az account show`, `az acr show`, and
+  `az containerapp show` confirmed an Enabled subscription, succeeded ACR with
+  admin credentials disabled, and healthy running API/web apps.
+- Policy validation: `az policy assignment list --disable-scope-strict-match`
+  returned no applicable assignments at the resource-group scope;
+  `az policy state summarize --resource-group aiops-dev-rg` returned no
+  non-compliant policy or resource count.
+- Container validation:
+  `docker build -t aiops-api:phase11-validation .` and
+  `docker build -t aiops-web:phase11-validation web` both passed; `uv.lock`
+  and `web/package-lock.json` are present.
+- Backend: 351 passed, 1 skipped across the Phase 11 orchestration, evaluation,
+  manifest, policy, page-context, API, and thread-store suites; relevant Ruff
+  checks passed.
+- Web: ESLint passed; 59 files and 661 tests passed; Next.js production build
+  and `tsc --noEmit` passed.
+- Specialist parity: all eight offline parity checks passed for 12 specialists,
+  contract `1.0`, including runtime, MCP grants, API/page mappings, Terraform,
+  model, package, and rollout projections.
+- Static RBAC: Phase 11 adds only three API environment values in
+  `container_apps.tf`; it does not add or alter role assignments. Existing
+  app `AcrPull`, Operations MCP Reader/Key Vault, and Azure MCP Reader/
+  Monitoring Reader assignments remain unchanged. Direct app updates preserve
+  identity, secrets, ingress, and scaling.
+- Change preview: API/web image references plus
+  `AIOPS_COPILOT_ROLLOUT_MODE`,
+  `AIOPS_COPILOT_CANARY_PERCENTAGE`, and
+  `AIOPS_COPILOT_ROLLBACK_MODE` only. No Azure resource create, delete,
+  replacement, RBAC, or Terraform-state operation is planned.
 
 Build and push the API and web container images to Azure Container Registry,
 then update the existing Azure Container Apps deployment.
