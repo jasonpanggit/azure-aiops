@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import logging
 from pathlib import Path
 
 import pytest
 from test_incremental_sync import _source_snapshot
 
+import fabric.sync_service as sync_module
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import GranularExposureOntologyMapper
 from fabric.sync_service import (
@@ -71,6 +74,266 @@ def test_sync_ignores_progress_callback_errors(tmp_path: Path) -> None:
 
     assert result.status == "completed"
     assert calls == len(result.tables)
+
+
+def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
+    tmp_path: Path,
+) -> None:
+    stage_events: list[dict[str, object]] = []
+    table_events: list[FabricTableWriteProgress] = []
+
+    result = _service(tmp_path).sync(
+        progress_callback=table_events.append,
+        stage_progress_callback=stage_events.append,
+        exposure_pointer_store=OneLakeDocumentStore(tmp_path / "registry"),
+    )
+
+    assert result.status == "completed"
+    lifecycle_stages = [
+        event["stage"]
+        for event in stage_events
+        if event["status"] == "started"
+    ]
+    assert lifecycle_stages == [
+        "dataset_mapping",
+        "workload_projection",
+        "temporal_projection",
+        "container_projection",
+        "ontology_construction",
+        "ontology_validation",
+        "table_publication",
+        "fabric_asset_registration",
+        "ontology_publication",
+        "gold_staging",
+        "fabric_asset_registration",
+        "shortcut_finalization",
+        "pointer_activation",
+    ]
+    completion_fields = {
+        "dataset_mapping": {"dataset_count", "failure_count"},
+        "workload_projection": {
+            "entity_count",
+            "relationship_count",
+            "failure_count",
+        },
+        "temporal_projection": {
+            "entity_count",
+            "relationship_count",
+            "failure_count",
+        },
+        "container_projection": {
+            "entity_count",
+            "relationship_count",
+            "failure_count",
+        },
+        "ontology_construction": {
+            "entity_count",
+            "relationship_count",
+            "failure_count",
+        },
+        "ontology_validation": {
+            "entity_count",
+            "relationship_count",
+            "failure_count",
+        },
+        "table_publication": set(),
+        "fabric_asset_registration": set(),
+        "ontology_publication": set(),
+        "gold_staging": set(),
+        "shortcut_finalization": set(),
+        "pointer_activation": set(),
+    }
+    for event in stage_events:
+        assert set(event) >= {"stage", "status"}
+        expected_fields = {"stage", "status"}
+        if event["status"] == "completed":
+            expected_fields |= completion_fields[event["stage"]]
+        assert set(event) == expected_fields
+        if event["status"] == "completed":
+            for field in completion_fields[event["stage"]]:
+                assert isinstance(event[field], int)
+                assert not isinstance(event[field], bool)
+                assert 0 <= event[field] <= 2_147_483_647
+    assert table_events
+    assert [event.completed_tables for event in table_events] == list(
+        range(1, len(table_events) + 1)
+    )
+    assert all(event.total_tables == len(table_events) for event in table_events)
+    assert all(event.result.rows_processed >= 0 for event in table_events)
+
+
+@pytest.mark.parametrize(
+    ("callback_name", "message", "error_code"),
+    [
+        (
+            "progress_callback",
+            "fabric_table_progress_callback_failed",
+            "FABRIC_TABLE_PROGRESS_CALLBACK_FAILED",
+        ),
+        (
+            "stage_progress_callback",
+            "fabric_stage_progress_callback_failed",
+            "FABRIC_STAGE_PROGRESS_CALLBACK_FAILED",
+        ),
+    ],
+)
+def test_sync_callback_failures_log_only_fixed_safe_contract(
+    tmp_path: Path,
+    caplog,
+    callback_name: str,
+    message: str,
+    error_code: str,
+) -> None:
+    secret = "credential=planted-secret"
+    resource_id = "/subscriptions/sub/resourceGroups/rg/providers/x/y"
+
+    def broken_callback(_event) -> None:
+        raise RuntimeError(f"{secret} {resource_id}")
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s %(error_code)s"))
+    logger = logging.getLogger("fabric.sync_service")
+    logger.addHandler(handler)
+    caplog.set_level(logging.WARNING, logger="fabric.sync_service")
+    try:
+        result = _service(tmp_path).sync(**{callback_name: broken_callback})
+    finally:
+        logger.removeHandler(handler)
+
+    assert result.status == "completed"
+    assert caplog.records
+    assert {record.getMessage() for record in caplog.records} == {message}
+    assert {record.error_code for record in caplog.records} == {error_code}
+    assert all(record.exc_info is None for record in caplog.records)
+    rendered = caplog.text + stream.getvalue()
+    assert secret not in rendered
+    assert resource_id not in rendered
+    assert "RuntimeError" not in rendered
+    assert "Traceback" not in rendered
+
+
+def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = []
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    service.sync(
+        stage_progress_callback=events.append,
+        exposure_pointer_store=pointer_store,
+    )
+
+    completed = [
+        event["stage"]
+        for event in events
+        if event["status"] == "completed"
+    ]
+    assert completed.index("ontology_publication") < completed.index("gold_staging")
+    assert completed.index("gold_staging") < completed.index("shortcut_finalization")
+    assert completed.index("shortcut_finalization") < completed.index(
+        "pointer_activation"
+    )
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+
+@pytest.mark.parametrize(
+    "failpoint",
+    [
+        "normal_write",
+        "first_registration",
+        "normal_catalog",
+        "ontology_publication",
+        "gold_stage",
+        "gold_write",
+        "second_registration",
+        "gold_catalog",
+        "completed_state",
+        "shortcut_finalization",
+    ],
+)
+def test_every_pre_activation_failpoint_leaves_gold_pointer_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failpoint: str,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    original_delta_write = service.delta.write
+    original_register = service._register_fabric_assets
+    original_catalog_write = service.onelake.write_json
+    original_publish = service._publish_ontology
+    original_stage = sync_module.ExposureGoldFabricPublisher.stage
+    original_state = service._write_state
+    original_shortcuts = service._create_shortcuts
+    registrations = 0
+    catalogs = 0
+    failed_once = False
+
+    def should_fail(category: str) -> bool:
+        nonlocal failed_once
+        if failpoint == category and not failed_once:
+            failed_once = True
+            return True
+        return False
+
+    def delta_write(uri, rows, **kwargs):
+        text = str(uri)
+        if "bronze_resources" in text and should_fail("normal_write"):
+            raise RuntimeError("injected safe failpoint")
+        if "gold_exposure_facts" in text and should_fail("gold_write"):
+            raise RuntimeError("injected safe failpoint")
+        return original_delta_write(uri, rows, **kwargs)
+
+    def register(tables):
+        nonlocal registrations
+        registrations += 1
+        category = "first_registration" if registrations == 1 else "second_registration"
+        if should_fail(category):
+            raise RuntimeError("injected safe failpoint")
+        return original_register(tables)
+
+    def write_json(path, payload):
+        nonlocal catalogs
+        if path == "ontology/metadata/catalog.json":
+            catalogs += 1
+            category = "normal_catalog" if catalogs == 1 else "gold_catalog"
+            if should_fail(category):
+                raise RuntimeError("injected safe failpoint")
+        return original_catalog_write(path, payload)
+
+    def publish(datasets):
+        if should_fail("ontology_publication"):
+            raise RuntimeError("injected safe failpoint")
+        return original_publish(datasets)
+
+    def stage(publisher, *args, **kwargs):
+        if should_fail("gold_stage"):
+            raise RuntimeError("injected safe failpoint")
+        return original_stage(publisher, *args, **kwargs)
+
+    def write_state(row):
+        if row.get("status") == "completed" and should_fail("completed_state"):
+            raise RuntimeError("injected safe failpoint")
+        return original_state(row)
+
+    def shortcuts():
+        if should_fail("shortcut_finalization"):
+            raise RuntimeError("injected safe failpoint")
+        return original_shortcuts()
+
+    monkeypatch.setattr(service.delta, "write", delta_write)
+    monkeypatch.setattr(service, "_register_fabric_assets", register)
+    monkeypatch.setattr(service.onelake, "write_json", write_json)
+    monkeypatch.setattr(service, "_publish_ontology", publish)
+    monkeypatch.setattr(sync_module.ExposureGoldFabricPublisher, "stage", stage)
+    monkeypatch.setattr(service, "_write_state", write_state)
+    monkeypatch.setattr(service, "_create_shortcuts", shortcuts)
+
+    with pytest.raises(RuntimeError, match="injected safe failpoint"):
+        service.sync(exposure_pointer_store=pointer_store)
+
+    assert failed_once is True
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
 
 
 def test_sync_publishes_repeatable_exposure_generation_and_pointer(
