@@ -20,6 +20,11 @@ from scripts.validate_ontology_discovery_live import (
     assert_fixed_template,
     assert_stage_transition,
     build_job_start_command,
+    derive_cleanup_evidence,
+    derive_coordinator_selection_receipt,
+    derive_injection_evidence,
+    derive_maintenance_evidence,
+    derive_prepare_evidence,
     evaluate_lifecycle_evidence,
     evaluate_publication_evidence,
     expand_role_actions,
@@ -121,6 +126,248 @@ def _complete_lifecycle() -> dict[str, object]:
                 "after": f"sha256:{index:064x}",
                 "override_fields": [],
             }
+
+
+def _snapshot(
+            *,
+            cursor: int,
+            outcomes: tuple[str, str, str],
+            attempts: tuple[int, int, int],
+            fixture_status: str = "prepared",
+            active_records: int = 3,
+            active_epochs: int = 1,
+) -> dict[str, object]:
+            records = ["sha256:" + char * 64 for char in ("1", "2", "3")]
+            return {
+                "facts": {
+                    "fixture": {
+                        "drill_count": 1,
+                        "active_drill_count": int(fixture_status == "prepared"),
+                        "status": fixture_status,
+                        "drill_hash": "sha256:" + "a" * 64,
+                        "owner_hash": "sha256:" + "b" * 64,
+                        "fence_hash": "sha256:" + "c" * 64,
+                        "epoch_hash": "sha256:" + "d" * 64,
+                        "record_count": 3,
+                        "record_hashes": records,
+                        "ttl_bounded": True,
+                        "receipt_events": (
+                            ["prepared"]
+                            if fixture_status == "prepared"
+                            else ["prepared", "cleaned"]
+                        ),
+                        "receipt_count": 1 if fixture_status == "prepared" else 2,
+                        "audit_hash": "sha256:" + "e" * 64,
+                    },
+                    "registry": {
+                        "revision": 7,
+                        "active_fixture_count": active_records,
+                        "fixture_record_hashes": records if active_records else [],
+                    },
+                    "epoch": {
+                        "active_epoch_count": active_epochs,
+                        "epoch_count": 1 if active_epochs else 0,
+                        "epoch_hash": "sha256:" + "d" * 64 if active_epochs else "",
+                        "snapshot_hash": "sha256:" + "f" * 64 if active_epochs else "",
+                        "status": "active" if active_epochs else "absent",
+                        "cursor": cursor,
+                        "revision": sum(attempts),
+                        "member_count": 3 if active_epochs else 0,
+                        "members": (
+                            [
+                                {
+                                    "record_hash": record_hash,
+                                    "outcome": outcome,
+                                    "attempt_count": attempt,
+                                    "reason_hash": "sha256:" + str(index + 4) * 64,
+                                    "updated_at_hash": "sha256:" + str(index + 7) * 64,
+                                    "authorization_hash": "sha256:" + str(index) * 64,
+                                }
+                                for index, (record_hash, outcome, attempt) in enumerate(
+                                    zip(records, outcomes, attempts, strict=True),
+                                    start=1,
+                                )
+                            ]
+                            if active_epochs
+                            else []
+                        ),
+                    },
+                    "runs": {"count": 3, "records": []},
+                    "evidence_batches": {
+                        "count": 1,
+                        "injection_match_count": 1,
+                        "injection_resource_hash": "sha256:" + "9" * 64,
+                        "injection_tag_hash": "sha256:" + "8" * 64,
+                        "injection_scope_hash": "sha256:" + "7" * 64,
+                        "records": [],
+                    },
+                    "dispatch": {
+                        "count": 1,
+                        "model_edge_counts": {
+                            "candidate": 0,
+                            "stage": 0,
+                            "active": 0,
+                            "consumer": 0,
+                        },
+                        "records": [],
+                    },
+                    "arg": {
+                        "matching_tag_count": 1,
+                        "resource_hash": "sha256:" + "9" * 64,
+                        "tag_hash": "sha256:" + "8" * 64,
+                        "scope_hash": "sha256:" + "7" * 64,
+                    },
+                }
+            }
+
+
+def test_prepare_and_cleanup_are_derived_from_successive_closed_snapshots() -> None:
+            prepared = _snapshot(
+                cursor=0,
+                outcomes=("pending", "pending", "pending"),
+                attempts=(0, 0, 0),
+            )
+            prepare = derive_prepare_evidence(prepared)
+            assert prepare["status"] == "PASS"
+            assert prepare["active_record_count_after_exit"] == 3
+            assert prepare["audit_create_only"] is True
+
+            cleaned = _snapshot(
+                cursor=0,
+                outcomes=("pending", "pending", "pending"),
+                attempts=(0, 0, 0),
+                fixture_status="cleaned",
+                active_records=0,
+                active_epochs=0,
+            )
+            cleanup = derive_cleanup_evidence(prepared, cleaned)
+            assert cleanup["status"] == "PASS"
+            assert cleanup["deleted_record_hashes"] == prepare["record_hashes"]
+            assert cleanup["retained_receipts"] == ["prepare", "cleanup"]
+
+            malformed = json.loads(json.dumps(prepared))
+            malformed["facts"]["registry"]["active_fixture_count"] = 2
+            with pytest.raises(EvidenceError, match="prepare_exact_three_records"):
+                derive_prepare_evidence(malformed)
+
+
+def test_selection_receipts_are_snapshot_diffs_not_synthesized_flags() -> None:
+            before = _snapshot(
+                cursor=0,
+                outcomes=("pending", "pending", "pending"),
+                attempts=(0, 0, 0),
+            )
+            after = _snapshot(
+                cursor=1,
+                outcomes=("duplicate", "pending", "pending"),
+                attempts=(1, 0, 0),
+            )
+            receipt = derive_coordinator_selection_receipt(
+                before,
+                after,
+                {"execution_hash": "sha256:" + "a" * 64},
+            )
+            assert receipt["record_hash"] == "sha256:" + "1" * 64
+            assert receipt["outcome"] == "duplicate"
+            assert receipt["cursor_before"] == 0
+            assert receipt["cursor_after"] == 1
+
+            two_changes = json.loads(json.dumps(after))
+            two_changes["facts"]["epoch"]["members"][1]["attempt_count"] = 1
+            two_changes["facts"]["epoch"]["members"][1]["outcome"] = "succeeded"
+            with pytest.raises(EvidenceError, match="coordinator_exactly_one_member"):
+                derive_coordinator_selection_receipt(
+                    before,
+                    two_changes,
+                    {"execution_hash": "sha256:" + "b" * 64},
+                )
+
+            drifted = json.loads(json.dumps(after))
+            drifted["facts"]["epoch"]["snapshot_hash"] = "sha256:" + "0" * 64
+            with pytest.raises(EvidenceError, match="coordinator_snapshot_lineage"):
+                derive_coordinator_selection_receipt(
+                    before,
+                    drifted,
+                    {"execution_hash": "sha256:" + "b" * 64},
+                )
+
+
+def test_injection_derivation_requires_direct_arg_batch_dispatch_and_tool_facts() -> None:
+            observed = _snapshot(
+                cursor=0,
+                outcomes=("duplicate", "exhausted_failure", "succeeded"),
+                attempts=(1, 2, 1),
+            )
+            preflight = {
+                "injection_contract": {
+                    "resource_hash": "sha256:" + "9" * 64,
+                    "tag_hash": "sha256:" + "8" * 64,
+                    "scope_hash": "sha256:" + "7" * 64,
+                    "configured_tools": list(EXPECTED_CURATOR_TOOLS),
+                    "curator_source_class": "OntologyCurator",
+                }
+            }
+
+            injection = derive_injection_evidence(preflight, observed)
+
+            assert injection["status"] == "PASS"
+            assert injection["lineage"] == [
+                "terraform",
+                "arg",
+                "inventory",
+                "evidence",
+                "curator",
+            ]
+            assert injection["authoritative_model_edges"] == {
+                "candidate": 0,
+                "stage": 0,
+                "active": 0,
+                "consumer": 0,
+            }
+
+            no_arg = json.loads(json.dumps(observed))
+            no_arg["facts"]["arg"]["matching_tag_count"] = 0
+            with pytest.raises(EvidenceError, match="injection_arg_exact_match"):
+                derive_injection_evidence(preflight, no_arg)
+
+            no_tools = json.loads(json.dumps(preflight))
+            del no_tools["injection_contract"]["configured_tools"]
+            with pytest.raises(
+                EvidenceError,
+                match="injection_configured_tools_unavailable",
+            ):
+                derive_injection_evidence(no_tools, observed)
+
+
+def test_maintenance_evidence_boundary_fails_closed_without_direct_api_receipts() -> None:
+            with pytest.raises(
+                EvidenceError,
+                match="maintenance_authenticated_api_evidence_required",
+            ):
+                derive_maintenance_evidence(None)
+
+            direct = {
+                "source": "authenticated_api",
+                "general_operator_status": 403,
+                "maintenance_status": 200,
+                "command_authorization": "authorized",
+                "next_run": "full",
+                "following_run": "incremental",
+            }
+            assert derive_maintenance_evidence(direct) == {
+                "general_operator_denied": True,
+                "maintenance_principal_accepted": True,
+                "coordinator_reauthorized": True,
+                "next_run": "full",
+                "following_run": "incremental",
+            }
+
+            fabricated = {**direct, "source": "local_contract"}
+            with pytest.raises(
+                EvidenceError,
+                match="maintenance_authenticated_api_evidence_required",
+            ):
+                derive_maintenance_evidence(fabricated)
             for index, name in enumerate(FIXED_JOB_NAMES, start=1)
         },
         "prepare": {
