@@ -2904,6 +2904,22 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
     return _attach_defender_correlator(planner, runtime)
 
 
+def _fabric_remediation_catalog(runtime: FabricRuntime) -> dict[str, int]:
+    """Validate the lightweight governed catalog readiness dependency."""
+    snapshot = runtime.service.remediation_planning_snapshot()
+    actions = snapshot["action_catalog"]
+    policies = snapshot["approval_policies"]
+    if not actions or not policies:
+        raise RuntimeError(
+            "Governed remediation catalog is empty; deployment must publish "
+            "the versioned action catalog and approval policies"
+        )
+    return {
+        "action_count": len(actions),
+        "policy_count": len(policies),
+    }
+
+
 def _attach_live_defender_correlator(
     planner: Any, vulnerability_service: Any
 ) -> Any:
@@ -3075,6 +3091,9 @@ def _build_provider_runtime(
                 lambda item: _fabric_exposure_query_service(item, onboarding)
             ),
             "incidents": lambda: with_fabric(_fabric_incident_engine),
+            "remediation_catalog": lambda: with_fabric(
+                _fabric_remediation_catalog
+            ),
             "remediation": lambda: with_fabric(_fabric_remediation_planner),
             "change": lambda: with_fabric(_fabric_change_intelligence),
         }
@@ -3118,11 +3137,13 @@ def _build_provider_runtime(
         name: ProviderSpec(
             loader=loader,
             configured=not (
-                name == "remediation" and use_fabric and not remediation_enabled
+                name in {"remediation", "remediation_catalog"}
+                and use_fabric
+                and not remediation_enabled
             ),
             required=(
                 (name in core_readiness_providers and not bootstrap)
-                or (name == "remediation" and remediation_required)
+                or (name == "remediation_catalog" and remediation_required)
             ),
             cache_key=(
                 (lambda provider_name=name: fabric_provider_cache_key(provider_name))
