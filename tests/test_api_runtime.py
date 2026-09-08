@@ -18,10 +18,11 @@ from api.auth import (
     StaticTokenAuthenticator,
 )
 from api.exposure_query import ExposureQueryUnavailableError
-from api.providers import STALE, ProviderRuntime, ProviderSpec
+from api.providers import STALE, ProviderRuntime, ProviderSpec, ProviderValue
 from api.runtime import (
     _HYBRID_NETWORK_CACHE_TTL_SECONDS,
     _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
+    _build_provider_runtime,
     _defender_configuration_adapter,
     _execution_verifier,
     _exposure_generation_window,
@@ -95,6 +96,71 @@ def test_exposure_generation_window_reports_unavailable_without_a_generation(
         match="Exposure readable generation is unavailable",
     ):
         _exposure_generation_window()
+
+
+def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    class _Service:
+        def semantic_version(self) -> str:
+            return "semantic-generation-7"
+
+        def semantic_snapshot(self) -> dict:
+            raise AssertionError("provider wrapper must not pre-read the full snapshot")
+
+    class _Runtime:
+        service = _Service()
+
+        def semantic_engine(self) -> object:
+            return type(
+                "_Semantic",
+                (),
+                {
+                    "freshness": "2026-09-08T00:00:00Z",
+                    "knowledge_version": "semantic-generation-7",
+                },
+            )()
+
+    class _PolicyStore:
+        def revision_or_raise(self) -> int:
+            return 11
+
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+    monkeypatch.setattr(
+        runtime_module,
+        "_fabric_runtime_from_environment",
+        lambda: _Runtime(),
+    )
+    monkeypatch.setattr(runtime_module, "_network_policy_store", _PolicyStore)
+
+    providers = _build_provider_runtime(object())
+    semantic = providers.specs["semantic"].loader()
+
+    assert isinstance(semantic, ProviderValue)
+    assert semantic.ontology_version == "semantic-generation-7"
+    for name in (
+        "semantic",
+        "semantic_graph",
+        "vulnerability",
+        "exposure_query",
+        "incidents",
+        "remediation",
+        "change",
+    ):
+        assert providers.specs[name].cache_key is not None
+        assert providers.specs[name].cache_key() == (
+            "fabric-generation",
+            "semantic-generation-7",
+        )
+    assert providers.specs["network"].cache_key is not None
+    assert providers.specs["network"].cache_key() == (
+        "fabric-generation",
+        "semantic-generation-7",
+        "network-policy",
+        11,
+    )
 
 
 def test_managed_network_provider_analyzes_ingested_flow_observations(

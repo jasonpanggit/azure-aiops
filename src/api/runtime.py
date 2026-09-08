@@ -2942,15 +2942,14 @@ def _build_provider_runtime(
         runtime = fabric()
         if runtime is None:
             return None
-        snapshot = runtime.service.semantic_snapshot()
-        freshness = str(snapshot.get("freshness") or "")
-        if not freshness:
+        ontology_version = runtime.service.semantic_version()
+        if ontology_version == "semantic-unversioned":
             if _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT"):
                 # A newly created validation lakehouse is intentionally empty
                 # until the first activation sync completes.
                 return None
             raise RuntimeError(
-                "Fabric semantic snapshot has no freshness; publish the ontology "
+                "Fabric semantic snapshot has no version; publish the ontology "
                 "and ingestion state before activating providers"
             )
         try:
@@ -2960,9 +2959,24 @@ def _build_provider_runtime(
             raise
         return ProviderValue(
             instance,
-            freshness=freshness,
-            ontology_version=str(snapshot.get("knowledge_version") or ""),
+            ontology_version=ontology_version,
         )
+
+    def fabric_provider_cache_key(name: str) -> tuple[object, ...]:
+        runtime = fabric()
+        if runtime is None:
+            raise RuntimeError("Fabric runtime is unavailable")
+        generation_key: tuple[object, ...] = (
+            "fabric-generation",
+            runtime.service.semantic_version(),
+        )
+        if name == "network":
+            return (
+                *generation_key,
+                "network-policy",
+                _network_policy_store().revision_or_raise(),
+            )
+        return generation_key
 
     if use_fabric:
         loaders: dict[str, Callable[[], Any]] = {
@@ -3014,13 +3028,8 @@ def _build_provider_runtime(
             configured=True,
             required=(name in core_readiness_providers and not bootstrap),
             cache_key=(
-                (
-                    lambda: (
-                        "network-policy",
-                        _network_policy_store().revision_or_raise(),
-                    )
-                )
-                if name == "network"
+                (lambda provider_name=name: fabric_provider_cache_key(provider_name))
+                if use_fabric
                 else None
             ),
         )
