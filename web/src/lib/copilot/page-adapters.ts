@@ -132,6 +132,7 @@ const PAGE_DISPOSITIONS = {
   "/exposure": "integrated",
   "/inventory": "integrated",
   "/network": "integrated",
+  "/remediation": "integrated",
   "/situations": "integrated",
 } as const satisfies Record<string, CopilotPageDisposition>;
 
@@ -1202,6 +1203,96 @@ export interface SituationsCopilotPageInput {
   sourceStatuses?: SituationSourceStatusFields[];
 }
 
+/** Selected governed remediation plan/action identity fields (read-only). */
+export interface RemediationCopilotPlanFields {
+  plan_id: string;
+  action_id?: string;
+  action_version?: string;
+  title: string;
+  status: string;
+  family: string;
+  resource_id?: string;
+  resource_type?: string;
+  resource_name?: string;
+  snapshot_hash?: string;
+}
+
+/**
+ * Current server-projected eligibility. These are descriptive mirrors of the
+ * authoritative workflow projection -- they never grant Copilot any authority
+ * and are re-read from the live workflow on every render.
+ */
+export interface RemediationCopilotEligibility {
+  plan_executable: boolean;
+  plan_ineligibility_reason?: string;
+  can_operate: boolean;
+  operate_ineligible_reason?: string;
+  can_approve: boolean;
+  approve_ineligible_reason?: string;
+  approval_current: boolean;
+  approval_status: string;
+  has_executable_preview: boolean;
+  recommended_step: string;
+}
+
+/** One current approval requirement row projected into the read context. */
+export interface RemediationCopilotRequirementFields {
+  policy_id: string;
+  role: string;
+  stage: string;
+  satisfied: boolean;
+  unmet_reason?: string;
+}
+
+/** Current execution lifecycle facts (recovery controls stay server-bound). */
+export interface RemediationCopilotExecutionFields {
+  execution_id: string;
+  status: string;
+  retryable: boolean;
+  cancellable: boolean;
+  supersedable: boolean;
+  remaining_attempts?: number;
+}
+
+/** Source availability/freshness carried independently of row order. */
+export interface RemediationCopilotSourceFreshness {
+  source: string;
+  availability?: "available" | "degraded" | "unavailable" | "partial";
+  freshness?: string;
+  observedAt?: string;
+}
+
+/**
+ * Evidence carried from a prior investigation thread. It is always labeled
+ * non-current and inert -- it can inform explanation but can never replace the
+ * current server eligibility facts (D-08, D-09).
+ */
+export interface RemediationCopilotHistoricalEvidence {
+  key: string;
+  summary?: string;
+  observedAt?: string;
+  data?: Record<string, unknown>;
+}
+
+/** Visible-versus-total coverage for the loaded governed plan list. */
+export interface RemediationCopilotCoverageInput {
+  visiblePlanCount: number;
+  totalPlanCount: number;
+}
+
+/** Already-loaded remediation workflow projection consumed by the adapter. */
+export interface RemediationCopilotPageInput {
+  scope: ScopeSelection;
+  selectedPlan: RemediationCopilotPlanFields | null;
+  eligibility: RemediationCopilotEligibility | null;
+  requirements: RemediationCopilotRequirementFields[];
+  execution: RemediationCopilotExecutionFields | null;
+  evidence: EvidenceItem[];
+  historicalEvidence?: RemediationCopilotHistoricalEvidence[];
+  coverage: RemediationCopilotCoverageInput;
+  sourceStatuses: RemediationCopilotSourceFreshness[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -1222,6 +1313,10 @@ const CORE_PAGE_CONFIG = {
   situations: {
     pageKind: "incident",
     pageId: "situations",
+  },
+  remediation: {
+    pageKind: "remediation",
+    pageId: "remediation",
   },
 } as const;
 
@@ -1325,6 +1420,29 @@ const SITUATIONS_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "What changed before the outage?",
     specialistId: "incident",
     tool: "incidents",
+    toolArguments: {},
+  },
+];
+
+// Advisory explanation/handoff hints only. None of these tools mutate state;
+// approval and execution remain existing server-side workflows (D-10).
+const REMEDIATION_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Explain this remediation plan and its current blockers.",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+  {
+    label: "What must be approved before this plan can run?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+  {
+    label: "What is the safest next governed step?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
     toolArguments: {},
   },
 ];
@@ -2430,6 +2548,124 @@ function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdap
   };
 }
 
+function remediationCoreInput(input: RemediationCopilotPageInput): CoreCopilotAdapterInput {
+  const plan = input.selectedPlan;
+  const eligibility = input.eligibility;
+  const records: CoreCopilotRecord[] = [];
+  if (plan) {
+    records.push({
+      identity: plan.plan_id,
+      namespace: "remediation",
+      kind: "remediation_plan",
+      source: "remediation/plan",
+      resourceId: plan.resource_id,
+      resourceType: plan.resource_type,
+      name: plan.resource_name,
+      selected: true,
+      priority: 0,
+      data: {
+        title: plan.title,
+        status: plan.status,
+        family: plan.family,
+        action_id: plan.action_id,
+        action_version: plan.action_version,
+        snapshot_hash: plan.snapshot_hash,
+        current: true,
+        // Descriptive, read-only mirrors of the current server projection.
+        plan_executable: eligibility?.plan_executable ?? false,
+        plan_ineligibility_reason: eligibility?.plan_ineligibility_reason,
+        can_operate: eligibility?.can_operate ?? false,
+        operate_ineligible_reason: eligibility?.operate_ineligible_reason,
+        can_approve: eligibility?.can_approve ?? false,
+        approve_ineligible_reason: eligibility?.approve_ineligible_reason,
+        approval_current: eligibility?.approval_current ?? false,
+        approval_status: eligibility?.approval_status ?? "none",
+        has_executable_preview: eligibility?.has_executable_preview ?? false,
+        recommended_step: eligibility?.recommended_step ?? "",
+      },
+    });
+  }
+  if (input.execution) {
+    records.push({
+      identity: input.execution.execution_id,
+      namespace: "remediation",
+      kind: "remediation_execution",
+      source: "remediation/execution",
+      priority: 5,
+      data: {
+        current: true,
+        status: input.execution.status,
+        retryable: input.execution.retryable,
+        cancellable: input.execution.cancellable,
+        supersedable: input.execution.supersedable,
+        remaining_attempts: input.execution.remaining_attempts,
+      },
+    });
+  }
+  records.push(
+    ...input.requirements.slice(0, 50).map((requirement, index) => ({
+      identity: `${requirement.policy_id}:${requirement.role}:${requirement.stage}`,
+      namespace: "remediation",
+      kind: "approval_requirement",
+      source: "remediation/approval",
+      priority: 10 + index,
+      data: {
+        current: true,
+        policy_id: requirement.policy_id,
+        role: requirement.role,
+        stage: requirement.stage,
+        satisfied: requirement.satisfied,
+        unmet_reason: requirement.unmet_reason,
+      },
+    })),
+  );
+  // Carried thread evidence is inert and explicitly non-current: it can never
+  // stand in for the current server eligibility facts above (D-08, D-09).
+  records.push(
+    ...(input.historicalEvidence ?? []).slice(0, 50).map((item, index) => ({
+      identity: item.key,
+      namespace: "history",
+      kind: "historical_finding",
+      source: "remediation/thread-history",
+      observedAt: item.observedAt,
+      status: "unavailable" as CopilotSnapshotStatus,
+      priority: 90 + index,
+      data: {
+        ...(item.data ?? {}),
+        summary: item.summary,
+        current: false,
+        superseded_by_current_state: true,
+      },
+    })),
+  );
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses.map((status) => ({
+    source: status.source,
+    observedAt: status.observedAt,
+    status: status.availability === "unavailable"
+      ? "unavailable"
+      : freshnessStatus(status.freshness ?? "unknown"),
+  }));
+  return {
+    scope: input.scope,
+    filters: {
+      view: ["remediation"],
+      plan: plan ? [plan.plan_id] : [],
+    },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "plans",
+        visibleCount: input.coverage.visiblePlanCount,
+        totalCount: Math.max(input.coverage.visiblePlanCount, input.coverage.totalPlanCount),
+        truncated: input.coverage.visiblePlanCount < input.coverage.totalPlanCount,
+        available: true,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
 /** Builds the typed Overview context from loaded records or loaded envelopes. */
 export function buildOverviewCopilotContext(
   input: CoreCopilotAdapterInput | OverviewCopilotPageInput,
@@ -2512,11 +2748,28 @@ export function buildSituationsCopilotContext(
   );
 }
 
+/**
+ * Builds the typed, read-only Remediation context from the loaded governed
+ * workflow projection. Approval and execution remain existing server-side
+ * workflows; this adapter only explains and prepares a governed handoff and
+ * never carries mutation authority into Copilot (D-10).
+ */
+export function buildRemediationCopilotContext(
+  input: CoreCopilotAdapterInput | RemediationCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    CORE_PAGE_CONFIG.remediation,
+    isCoreCopilotInput(input) ? input : remediationCoreInput(input),
+    REMEDIATION_STARTERS,
+  );
+}
+
 /** Registry of contextual routes migrated by Plan 11-07. */
 export const CORE_COPILOT_PAGE_ADAPTERS = {
   "/": buildOverviewCopilotContext,
   "/compliance": buildComplianceCopilotContext,
   "/exposure": buildExposureCopilotContext,
   "/network": buildNetworkCopilotContext,
+  "/remediation": buildRemediationCopilotContext,
   "/situations": buildSituationsCopilotContext,
 } as const;
