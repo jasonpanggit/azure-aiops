@@ -1489,6 +1489,12 @@ def _has_resource(resource_ids: set[str], resource_id: str) -> bool:
     return bool(resource_id and resource_id.casefold() in resource_ids)
 
 
+def _cross_subscription_resource(left_id: str, right_id: str) -> bool:
+    left = _subscription_group_id(left_id)
+    right = _subscription_group_id(right_id)
+    return bool(left and right and left != right)
+
+
 def _topology_relationships(
     topology: NetworkTopology,
     *,
@@ -1677,14 +1683,34 @@ def _topology_relationships(
     # by relationship identity, so an equivalent semantic edge collapses
     # without suppressing the inventory-only hosting and attachment edges.
     for lb in snapshot.load_balancers:
-        add_hosted(lb, "hosts load balancer")
-        add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
+        managed_owner = lb.managed_resource_id
+        if not (
+            managed_owner
+            and _cross_subscription_resource(managed_owner, lb.vnet_id)
+        ):
+            add_hosted(lb, "hosts load balancer")
+        if not (
+            managed_owner
+            and _cross_subscription_resource(managed_owner, lb.subnet_id)
+        ):
+            add(lb.resource_id, lb.subnet_id, "attached_to", label="attached to subnet")
         for backend_id in lb.backend_resource_ids:
-            add(lb.resource_id, backend_id, "load_balances", label="load balances")
+            if not (
+                managed_owner
+                and _cross_subscription_resource(managed_owner, backend_id)
+            ):
+                add(lb.resource_id, backend_id, "load_balances", label="load balances")
         for backend_subnet_id in lb.backend_subnet_ids:
-            add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
-        if lb.managed_resource_id:
-            add(lb.managed_resource_id, lb.resource_id, "hosts", label="uses internal load balancer")
+            if not (
+                managed_owner
+                and _cross_subscription_resource(
+                    managed_owner,
+                    backend_subnet_id,
+                )
+            ):
+                add(lb.resource_id, backend_subnet_id, "load_balances", label="load balances subnet")
+        if managed_owner:
+            add(managed_owner, lb.resource_id, "hosts", label="uses internal load balancer")
 
     for service in topology.shared_services:
         for consumer_id in service.consumer_vnet_ids:

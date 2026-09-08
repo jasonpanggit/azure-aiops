@@ -936,6 +936,47 @@ class TestResourceTopologyProjection:
             for item in payload["relationships"]
         )
 
+    def test_container_apps_lb_ignores_provider_managed_network_endpoints(self) -> None:
+        """ACA implementation VNets must not look like missing customer topology."""
+        owner_subscription = "sub-a"
+        managed_subscription = "managed-sub"
+        managed_vnet = (
+            f"/subscriptions/{managed_subscription}/resourcegroups/managed-rg"
+            "/providers/microsoft.network/virtualnetworks/managed-vnet"
+        )
+        managed_subnet = f"{managed_vnet}/subnets/legion"
+        env = (
+            f"/subscriptions/{owner_subscription}/resourcegroups/app-rg"
+            "/providers/microsoft.app/managedenvironments/cae"
+        )
+        lb = (
+            f"/subscriptions/{owner_subscription}/resourcegroups/managed-rg"
+            "/providers/microsoft.network/loadbalancers/capp-svc-lb"
+        )
+        rows = [
+            {
+                "entity_type": "LoadBalancer",
+                "resource_id": lb,
+                "name": "capp-svc-lb",
+                "payload_json": {
+                    "vnetId": managed_vnet,
+                    "subnetId": managed_subnet,
+                    "backendSubnetIds": [managed_subnet],
+                    "tags": {"aca-managed-env-id": env},
+                },
+            },
+        ]
+
+        payload = build_topology(load_network_snapshot(rows)).to_dict()
+
+        assert payload["counts"]["dropped_relationships"] == {}
+        assert any(
+            item["source"] == env.casefold()
+            and item["target"] == lb.casefold()
+            and item["relationship_type"] == "hosts"
+            for item in payload["relationships"]
+        )
+
     def test_load_balancers_with_the_same_name_are_disambiguated(self) -> None:
         """Azure lets unrelated LBs across resource groups share a name; the canvas must not."""
         lb_a = "/subscriptions/sub-a/resourcegroups/rg-one/providers/microsoft.network/loadbalancers/capp-svc-lb"
