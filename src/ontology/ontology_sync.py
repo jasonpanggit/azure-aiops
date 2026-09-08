@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,7 +29,13 @@ class OntologyGraphResult:
 
 
 class OntologyGraphSynchronizer:
-    """Versions graph snapshots and preserves removed entities as retired records."""
+    """Version graph snapshots with one-generation retirement tombstones.
+
+    Rows retired by the preceding synchronization are historical evidence, not
+    members of the next current snapshot. The storage layer may retain prior
+    snapshot versions according to its configured retention policy; this class
+    keeps only the newest retirement transition in the live bounded graph.
+    """
 
     def __init__(
         self,
@@ -75,8 +81,29 @@ class OntologyGraphSynchronizer:
     ) -> OntologyGraphResult:
         current_entity_rows = list(current_entities)
         current_relationship_rows = list(current_relationships)
-        previous_entity_rows = list(previous_entities)
-        previous_relationship_rows = list(previous_relationships)
+        raw_previous_entity_rows = list(previous_entities)
+        raw_previous_relationship_rows = list(previous_relationships)
+        if raw_previous_entity_rows or raw_previous_relationship_rows:
+            previous_report = self.validator.validate(
+                raw_previous_entity_rows,
+                raw_previous_relationship_rows,
+            )
+            if not previous_report.passed:
+                raise ValueError(
+                    "Invalid ontology graph: previous snapshot validation failed"
+                )
+        previous_entity_rows = [
+            row
+            for row in raw_previous_entity_rows
+            if not isinstance(row, Mapping)
+            or row.get("lifecycle_status") != "retired"
+        ]
+        previous_relationship_rows = [
+            row
+            for row in raw_previous_relationship_rows
+            if not isinstance(row, Mapping)
+            or row.get("lifecycle_status") != "retired"
+        ]
         if any(
             len(rows) > bound
             for rows, bound in (
@@ -93,6 +120,59 @@ class OntologyGraphSynchronizer:
             )
         ):
             raise ValueError("Ontology synchronization relationship source exceeds bound")
+
+        retired_entity_ids = {
+            _canonical_id(row["resource_id"])
+            for row in raw_previous_entity_rows
+            if isinstance(row, Mapping)
+            and row.get("lifecycle_status") == "retired"
+        }
+        retired_relationship_ids = {
+            _canonical_id(row["resource_id"])
+            for row in raw_previous_relationship_rows
+            if isinstance(row, Mapping)
+            and row.get("lifecycle_status") == "retired"
+        }
+        current_entity_ids = {
+            _canonical_id(row.get("resource_id")) for row in current_entity_rows
+        }
+        current_relationship_ids = {
+            _canonical_id(row.get("resource_id"))
+            for row in current_relationship_rows
+        }
+        current_active_entity_ids = {
+            _canonical_id(row.get("resource_id"))
+            for row in current_entity_rows
+            if row.get("lifecycle_status") == "active"
+        }
+        current_active_relationship_ids = {
+            _canonical_id(row.get("resource_id"))
+            for row in current_relationship_rows
+            if row.get("lifecycle_status") == "active"
+        }
+        has_lifecycle_transition = bool(
+            (
+                {
+                    _canonical_id(row.get("resource_id"))
+                    for row in previous_entity_rows
+                }
+                - current_entity_ids
+            )
+            or (
+                {
+                    _canonical_id(row.get("resource_id"))
+                    for row in previous_relationship_rows
+                }
+                - current_relationship_ids
+            )
+            or (retired_entity_ids & current_active_entity_ids)
+            or (retired_relationship_ids & current_active_relationship_ids)
+        )
+        effective_timestamp = str(timestamp or "").strip()
+        if has_lifecycle_transition and not effective_timestamp:
+            raise ValueError(
+                "Ontology synchronization timestamp is required for lifecycle transitions"
+            )
 
         # Deferred/retry edges: relationships whose subject or object isn't
         # in *this* sync's entity snapshot yet would make the current-graph
@@ -121,13 +201,6 @@ class OntologyGraphSynchronizer:
         )
         if not current_report.passed:
             raise ValueError("Invalid ontology graph: current snapshot validation failed")
-        if previous_entity_rows or previous_relationship_rows:
-            previous_report = self.validator.validate(
-                previous_entity_rows, previous_relationship_rows
-            )
-            if not previous_report.passed:
-                raise ValueError("Invalid ontology graph: previous snapshot validation failed")
-
         entities = {
             _canonical_id(row["resource_id"]): _normalize_entity(row)
             for row in current_entity_rows
@@ -149,11 +222,21 @@ class OntologyGraphSynchronizer:
             previous = previous_entity_index.get(row["resource_id"])
             if previous:
                 row["valid_from"] = previous.get("valid_from") or row["valid_from"]
+            elif (
+                row.get("lifecycle_status") == "active"
+                and row["resource_id"] in retired_entity_ids
+            ):
+                row["valid_from"] = effective_timestamp
         for row in relationships.values():
             row["ontology_version"] = ontology_version
             previous = previous_relationship_index.get(row["resource_id"])
             if previous:
                 row["valid_from"] = previous.get("valid_from") or row["valid_from"]
+            elif (
+                row.get("lifecycle_status") == "active"
+                and row["resource_id"] in retired_relationship_ids
+            ):
+                row["valid_from"] = effective_timestamp
         for previous in previous_entity_index.values():
             if previous["resource_id"] not in entities:
                 entities[previous["resource_id"]] = _retire(previous, ontology_version, timestamp)

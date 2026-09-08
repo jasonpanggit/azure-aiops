@@ -635,6 +635,7 @@ class ExposureOntologyMapper:
         tenant_id: str = "",
         previous_entities: list[dict[str, Any]] | None = None,
         previous_relationships: list[dict[str, Any]] | None = None,
+        timestamp: str = "",
     ) -> OntologyGraphResult:
         page = self.read_port.list_exposures(
             scope,
@@ -693,6 +694,7 @@ class ExposureOntologyMapper:
             previous_entities=previous_entities or (),
             previous_relationships=previous_relationships or (),
             ontology_version=TYPED_IMAGE_ONTOLOGY_VERSION,
+            timestamp=timestamp,
         )
 
 
@@ -764,6 +766,7 @@ class GranularExposureOntologyMapper:
         ontology_generation_id: str,
         previous_entities: list[dict[str, Any]] | None = None,
         previous_relationships: list[dict[str, Any]] | None = None,
+        timestamp: str = "",
     ) -> OntologyGraphResult:
         if (
             not isinstance(ontology_generation_id, str)
@@ -780,6 +783,7 @@ class GranularExposureOntologyMapper:
             previous_entities=previous_entities or (),
             previous_relationships=previous_relationships or (),
             ontology_version=TYPED_IMAGE_ONTOLOGY_VERSION,
+            timestamp=timestamp,
         )
 
     def to_fabric(

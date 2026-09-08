@@ -7,6 +7,7 @@ import pytest
 
 from fabric.dataset_mapper import (
     GRANULAR_EXPOSURE_MAX_SOURCE_ROWS,
+    ExposureOntologyMapper,
     GranularExposureOntologyMapper,
     filter_legacy_granular_exposure_graph,
 )
@@ -15,6 +16,8 @@ from fabric_pipelines.vulnerability_pipeline import (
     materialize_container_exposure_tables,
 )
 from ontology.entity_builder import typed_image_semantic_id
+from ontology.ontology_sync import OntologyGraphSynchronizer
+from ontology.ontology_validator import OntologyValidator
 
 DIGEST = f"sha256:{'a' * 64}"
 TENANT_ID = "tenant-1"
@@ -30,6 +33,52 @@ IMAGE_DIGEST_ID = f"image-digest:v1:{DIGEST}"
 OBSERVATION_ID = "vulnerability-observation:v1:defender-event-7:cve-2026-4242"
 DEPLOYMENT_ID = f"workload-deployment:v1:{DIGEST}:deployment-7"
 CHECKPOINT_ID = "workload-checkpoint:v1:container-images"
+
+
+class _CapturingSynchronizer:
+    def __init__(self) -> None:
+        self.timestamp = ""
+
+    def synchronize(self, entities, relationships, **kwargs):
+        self.timestamp = str(kwargs.get("timestamp") or "")
+        return OntologyGraphSynchronizer(OntologyValidator()).synchronize(
+            entities,
+            relationships,
+            **kwargs,
+        )
+
+
+class _EmptyExposureReadPort:
+    def list_exposures(self, *_args, **_kwargs):
+        return {
+            "total_count": 0,
+            "findings": [],
+            "read_model_generation_id": "generation-1",
+        }
+
+
+def test_exposure_mappers_forward_synchronization_timestamp() -> None:
+    summarized_sync = _CapturingSynchronizer()
+    ExposureOntologyMapper(
+        _EmptyExposureReadPort(),  # type: ignore[arg-type]
+        synchronizer=summarized_sync,  # type: ignore[arg-type]
+    ).project(
+        {},
+        tenant_id=TENANT_ID,
+        timestamp=OBSERVED_AT,
+    )
+
+    granular_sync = _CapturingSynchronizer()
+    GranularExposureOntologyMapper(
+        synchronizer=granular_sync,  # type: ignore[arg-type]
+    ).project(
+        fabric_products(),
+        ontology_generation_id="ontology-generation-1",
+        timestamp=OBSERVED_AT,
+    )
+
+    assert summarized_sync.timestamp == OBSERVED_AT
+    assert granular_sync.timestamp == OBSERVED_AT
 
 
 def _base(resource_id: str, *, generation: str = SOURCE_GENERATION) -> dict:

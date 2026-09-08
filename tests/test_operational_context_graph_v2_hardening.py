@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import UserDict
 
 import pytest
 
@@ -9,6 +10,7 @@ from ontology.entity_builder import EntityBuilder
 from ontology.graph_queries import OntologyQueryService
 from ontology.ontology_publisher import OntologyPublisher
 from ontology.ontology_sync import OntologyGraphSynchronizer
+from ontology.pending_relationships import PendingRelationshipStore
 from ontology.relationship_builder import RelationshipBuilder
 from ontology.sync_validator import SyncValidator
 
@@ -105,6 +107,185 @@ def test_incremental_sync_is_case_canonical_and_retires_missing_records():
     assert active["valid_from"] == "2026-01-01T00:00:00Z"
     assert retired["lifecycle_status"] == "retired"
     assert retired["retired_at"] == "2026-08-19T01:00:00Z"
+
+
+def test_incremental_sync_does_not_accumulate_prior_retirement_tombstones():
+    synchronizer = OntologyGraphSynchronizer(SyncValidator())
+    current = entity("a", entity_type="Application")
+    removed = entity("b", entity_type="Application")
+    removed_edge = relationship(
+        "edge",
+        "a",
+        "b",
+        subject_type="Application",
+        object_type="Application",
+    )
+
+    first = synchronizer.synchronize(
+        [current],
+        [],
+        previous_entities=[current, removed],
+        previous_relationships=[removed_edge],
+        ontology_version="2",
+        timestamp="2026-08-19T01:00:00Z",
+    )
+    assert {row["resource_id"] for row in first.entities} == {"a", "b"}
+    assert first.relationships[0]["lifecycle_status"] == "retired"
+
+    second = synchronizer.synchronize(
+        [current],
+        [],
+        previous_entities=[UserDict(row) for row in first.entities],
+        previous_relationships=[
+            UserDict(row) for row in first.relationships
+        ],
+        ontology_version="2",
+        timestamp="2026-08-19T02:00:00Z",
+    )
+
+    assert [row["resource_id"] for row in second.entities] == ["a"]
+    assert second.relationships == []
+
+
+def test_sync_validates_retired_predecessors_before_excluding_them():
+    malformed = entity("retired")
+    malformed.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+    malformed.pop("change_version")
+
+    with pytest.raises(ValueError, match="previous snapshot"):
+        OntologyGraphSynchronizer(SyncValidator()).synchronize(
+            [entity("current")],
+            [],
+            previous_entities=[malformed],
+        )
+
+
+def test_invalid_retired_predecessor_does_not_mutate_pending_store():
+    pending = PendingRelationshipStore()
+    malformed = entity("retired")
+    malformed.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+    malformed.pop("change_version")
+
+    with pytest.raises(ValueError, match="previous snapshot"):
+        OntologyGraphSynchronizer(
+            SyncValidator(),
+            pending_relationships=pending,
+        ).synchronize(
+            [entity("current")],
+            [relationship("dangling", "current", "missing")],
+            previous_entities=[malformed],
+        )
+
+    assert len(pending) == 0
+
+
+def test_reactivated_rows_start_a_new_lifecycle_interval():
+    retired_a = entity("a", entity_type="Application")
+    retired_b = entity("b", entity_type="Application")
+    for row in (retired_a, retired_b):
+        row.update(
+            lifecycle_status="retired",
+            retired_at="2026-08-19T01:00:00Z",
+        )
+    retired_edge = relationship(
+        "edge",
+        "a",
+        "b",
+        subject_type="Application",
+        object_type="Application",
+    )
+    retired_edge.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+
+    result = OntologyGraphSynchronizer(SyncValidator()).synchronize(
+        [
+            entity("a", entity_type="Application"),
+            entity("b", entity_type="Application"),
+        ],
+        [
+            relationship(
+                "edge",
+                "a",
+                "b",
+                subject_type="Application",
+                object_type="Application",
+            )
+        ],
+        previous_entities=[retired_a, retired_b],
+        previous_relationships=[retired_edge],
+        timestamp="2026-08-19T02:00:00Z",
+    )
+
+    assert {row["valid_from"] for row in result.entities} == {
+        "2026-08-19T02:00:00Z"
+    }
+    assert result.relationships[0]["valid_from"] == "2026-08-19T02:00:00Z"
+
+
+def test_reactivation_requires_explicit_synchronization_timestamp():
+    retired = entity("a")
+    retired.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="timestamp is required for lifecycle transitions",
+    ):
+        OntologyGraphSynchronizer(SyncValidator()).synchronize(
+            [entity("a")],
+            [],
+            previous_entities=[retired],
+        )
+
+
+def test_missing_transition_timestamp_does_not_mutate_pending_store():
+    pending = PendingRelationshipStore()
+    retired = entity("retired")
+    retired.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="timestamp is required for lifecycle transitions",
+    ):
+        OntologyGraphSynchronizer(
+            SyncValidator(),
+            pending_relationships=pending,
+        ).synchronize(
+            [entity("retired")],
+            [relationship("dangling", "retired", "missing")],
+            previous_entities=[retired],
+        )
+
+    assert len(pending) == 0
+
+
+def test_retired_to_retired_row_keeps_its_existing_interval():
+    retired = entity("a")
+    retired.update(
+        lifecycle_status="retired",
+        retired_at="2026-08-19T01:00:00Z",
+    )
+
+    result = OntologyGraphSynchronizer(SyncValidator()).synchronize(
+        [retired],
+        [],
+        previous_entities=[UserDict(retired)],
+    )
+
+    assert result.entities[0]["valid_from"] == "2026-08-19T00:00:00Z"
 
 
 def test_retired_relationship_with_reclassified_endpoint_type_passes_validation():
