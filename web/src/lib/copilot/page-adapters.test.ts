@@ -6,6 +6,7 @@ import {
   buildInventoryCopilotContext,
   buildNetworkCopilotContext,
   buildOverviewCopilotContext,
+  buildRemediationCopilotContext,
   buildSituationsCopilotContext,
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
@@ -133,12 +134,13 @@ describe("inventory Copilot page adapter", () => {
   };
 
   describe("core Copilot page adapters", () => {
-    it("registers Overview, Network, Compliance, Exposure, and Situations as integrated routes", () => {
+    it("registers Overview, Network, Compliance, Exposure, Situations, and Remediation as integrated routes", () => {
       expect(Object.keys(CORE_COPILOT_PAGE_ADAPTERS)).toEqual([
         "/",
         "/compliance",
         "/exposure",
         "/network",
+        "/remediation",
         "/situations",
       ]);
       expect(copilotPageDisposition("/")).toBe("integrated");
@@ -146,6 +148,7 @@ describe("inventory Copilot page adapter", () => {
       expect(copilotPageDisposition("/compliance")).toBe("integrated");
       expect(copilotPageDisposition("/exposure")).toBe("integrated");
       expect(copilotPageDisposition("/situations")).toBe("integrated");
+      expect(copilotPageDisposition("/remediation")).toBe("integrated");
     });
 
     it("builds bounded Overview evidence with stable domain identities and conditional executive intent", () => {
@@ -1038,6 +1041,243 @@ describe("inventory Copilot page adapter", () => {
           expect.objectContaining({ source: "situations", status: "unavailable" }),
         ]),
       );
+    });
+  });
+
+  describe("remediation Copilot page adapter", () => {
+    type RemediationContext = ReturnType<typeof buildRemediationCopilotContext>;
+    const planRow = (ctx: RemediationContext) =>
+      ctx.snapshot.evidence.find((row) => row.data.claim_type === "remediation_plan");
+    const historicalRows = (ctx: RemediationContext) =>
+      ctx.snapshot.evidence.filter((row) => row.data.claim_type === "historical_finding");
+
+    const remediationInput = {
+      scope: { subscription: ["sub-a"] },
+      selectedPlan: {
+        plan_id: "plan-1",
+        action_id: "controlled-patch-recovery",
+        action_version: "version-1",
+        title: "Patch payroll database",
+        status: "Draft - Approval Required",
+        family: "patch",
+        resource_id:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+        resource_type: "Microsoft.Compute/virtualMachines",
+        resource_name: "vm-1",
+        snapshot_hash: "snapshot-hash-1",
+      },
+      eligibility: {
+        plan_executable: false,
+        plan_ineligibility_reason: "not_approved",
+        can_operate: false,
+        operate_ineligible_reason: "approval_not_current",
+        can_approve: true,
+        approval_current: false,
+        approval_status: "none",
+        has_executable_preview: true,
+        recommended_step: "approve",
+      },
+      requirements: [
+        {
+          policy_id: "change-control",
+          role: "Change Manager",
+          stage: "Planning",
+          satisfied: false,
+          unmet_reason: "pending",
+        },
+      ],
+      execution: null,
+      evidence: [
+        {
+          source_engine: "ARG",
+          source_table: "securityresources",
+          timestamp: "2026-09-07T10:00:00Z",
+          confidence: "high" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+      historicalEvidence: [
+        {
+          key: "thread-finding-1",
+          summary: "Earlier thread said this was already runnable",
+          observedAt: "2026-09-01T00:00:00Z",
+        },
+      ],
+      coverage: { visiblePlanCount: 2, totalPlanCount: 6 },
+      sourceStatuses: [
+        {
+          source: "plans",
+          availability: "available" as const,
+          freshness: "fresh",
+          observedAt: "2026-09-07T10:00:00Z",
+        },
+        { source: "assessment", availability: "degraded" as const, freshness: "stale" },
+      ],
+    };
+
+    it("binds current server plan identity, eligibility, coverage, and freshness, labeling carried history non-current", () => {
+      const context = buildRemediationCopilotContext(remediationInput);
+
+      expect(context.snapshot).toMatchObject({
+        page_kind: "remediation",
+        page_id: "remediation",
+      });
+      // Selected plan carried with current, read-only server eligibility facts.
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              claim_type: "remediation_plan",
+              current: true,
+              actionable: false,
+              mutation_authorized: false,
+              plan_executable: false,
+              can_operate: false,
+              can_approve: true,
+              approval_current: false,
+              approval_status: "none",
+              has_executable_preview: true,
+              recommended_step: "approve",
+            }),
+          }),
+        ]),
+      );
+      // Plan resource identity is a canonical ARM entity.
+      expect(planRow(context)?.data.entity).toMatchObject({
+        type: "azure",
+        resource_id:
+          "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+      });
+      // Approval requirement lifecycle is carried as current context.
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              claim_type: "approval_requirement",
+              current: true,
+              satisfied: false,
+              role: "Change Manager",
+            }),
+          }),
+        ]),
+      );
+      // Historical carried evidence is explicitly non-current and inert.
+      expect(historicalRows(context)).toHaveLength(1);
+      expect(historicalRows(context).every((row) =>
+        row.data.current === false
+        && row.data.actionable === false
+        && row.data.mutation_authorized === false)).toBe(true);
+      // Visible/total plan coverage and degraded freshness are projected.
+      expect(context.coverage).toMatchObject({
+        plans: { visible_count: 2, total_count: 6, complete: false, truncated: true },
+      });
+      expect(context.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "assessment", status: "stale" }),
+        ]),
+      );
+      expect(context.uncertainty).toEqual(
+        expect.arrayContaining(["plans coverage is truncated"]),
+      );
+    });
+
+    it("lets current server eligibility override historical thread context", () => {
+      const withoutHistory = buildRemediationCopilotContext({
+        ...remediationInput,
+        historicalEvidence: [],
+      });
+      const withStaleOperableClaim = buildRemediationCopilotContext({
+        ...remediationInput,
+        historicalEvidence: [
+          {
+            key: "thread-finding-1",
+            summary: "Copilot previously reported can_operate:true",
+            observedAt: "2026-09-01T00:00:00Z",
+          },
+          {
+            key: "thread-finding-2",
+            summary: "approved earlier in the thread",
+            observedAt: "2026-09-02T00:00:00Z",
+          },
+        ],
+      });
+
+      // Eligibility facts come only from the current server projection.
+      expect(planRow(withStaleOperableClaim)?.data).toMatchObject({
+        can_operate: false,
+        can_approve: true,
+        approval_current: false,
+        plan_executable: false,
+      });
+      expect(planRow(withStaleOperableClaim)?.data.can_operate).toEqual(
+        planRow(withoutHistory)?.data.can_operate,
+      );
+      // No carried history row is ever actionable or mutation-authorized.
+      expect(historicalRows(withStaleOperableClaim).every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    it("exposes no Copilot mutation path across plan, approval, execution, or history evidence", () => {
+      const context = buildRemediationCopilotContext({
+        ...remediationInput,
+        execution: {
+          execution_id: "RME-1",
+          status: "running",
+          retryable: false,
+          cancellable: false,
+          supersedable: false,
+          remaining_attempts: 2,
+        },
+      });
+
+      expect(context.snapshot.evidence.length).toBeGreaterThan(0);
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+      // Execution state is descriptive, current, and non-authorizing.
+      expect(context.snapshot.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              claim_type: "remediation_execution",
+              current: true,
+              status: "running",
+              actionable: false,
+              mutation_authorized: false,
+            }),
+          }),
+        ]),
+      );
+      // Advisory starter hints only: no approve/execute/run/write tool.
+      expect(context.starterQuestions.length).toBeGreaterThan(0);
+      expect(context.starterQuestions.every((starter) =>
+        starter.specialistId === "remediation"
+        && !/approve|execute|run|write|update|delete|remediate|cancel|retry|supersede/i.test(
+          starter.tool ?? "",
+        ))).toBe(true);
+    });
+
+    it("retains deterministic cited server evidence independent of optional narration", () => {
+      const context = buildRemediationCopilotContext(remediationInput);
+      expect(context.snapshot.evidence.some((row) =>
+        row.data.claim_type === "source_observation")).toBe(true);
+      expect(context.snapshot.evidence.some((row) =>
+        row.data.claim_type === "remediation_plan")).toBe(true);
+    });
+
+    it("keeps a bounded context when no plan is selected yet", () => {
+      const context = buildRemediationCopilotContext({
+        ...remediationInput,
+        selectedPlan: null,
+        eligibility: null,
+        requirements: [],
+        execution: null,
+        historicalEvidence: [],
+        coverage: { visiblePlanCount: 0, totalPlanCount: 0 },
+      });
+      expect(context.snapshot.page_kind).toBe("remediation");
+      expect(planRow(context)).toBeUndefined();
+      expect(context.snapshot.evidence.every((row) =>
+        row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
   });
 
