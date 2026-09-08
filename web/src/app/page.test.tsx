@@ -124,11 +124,12 @@ describe("Overview Copilot adapter integration", () => {
       </ScopeProvider>,
     );
 
-    await waitFor(() => expect(mocks.buildOverviewCopilotContext).toHaveBeenCalled());
-    expect(mocks.buildOverviewCopilotContext).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        visibleSituationIds: ["p1-ranked-first", "p3-raw-first"],
-      }),
+    await waitFor(() =>
+      expect(mocks.buildOverviewCopilotContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          visibleSituationIds: ["p1-ranked-first", "p3-raw-first"],
+        }),
+      ),
     );
   });
 });
