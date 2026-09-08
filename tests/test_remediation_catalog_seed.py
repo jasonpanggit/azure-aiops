@@ -14,7 +14,7 @@ from intelligence.remediation.remediation_opportunity_engine import (
     RemediationOpportunityEngine,
 )
 
-FIXTURE_PATH = Path("tests/fixtures/governed_remediation_catalog.json")
+FIXTURE_PATH = Path("src/fabric/catalogs/governed_remediation_catalog.v1.json")
 SEEDER_PATH = Path("scripts/seed_remediation_catalog.py")
 
 _COMMAND_PATTERN = re.compile(
@@ -148,6 +148,16 @@ def test_seeder_requires_explicit_target(tmp_path: Path) -> None:
     result = _run_seeder()
     assert result.returncode != 0
     assert "target" in (result.stdout + result.stderr).lower()
+
+
+def test_seeder_rejects_remote_onelake_target() -> None:
+    result = _run_seeder(
+        "--target",
+        "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse",
+    )
+
+    assert result.returncode != 0
+    assert "local paths only" in result.stdout
 
 
 def test_seeder_dry_run_reports_and_writes_nothing(tmp_path: Path) -> None:

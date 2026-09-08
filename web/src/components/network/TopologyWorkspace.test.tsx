@@ -630,6 +630,59 @@ describe("TopologyWorkspace badge coverage", () => {
     expect(screen.queryByText("Badge coverage is partial.")).not.toBeInTheDocument();
     expect(screen.getByText("Badges: 600 of 600 findings")).toBeInTheDocument();
   });
+
+  it("confirms a resource clean after exhaustive badge loading despite visible-page truncation", async () => {
+    const topology = buildTopologyEnvelope().data.topology;
+    const routeTableId =
+      "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt-clean";
+    topology.resources = [
+      {
+        ...topology.resources![0],
+        id: routeTableId.toLowerCase(),
+        name: "rt-clean",
+        entity_type: "RouteTable",
+      },
+    ];
+    const loadGapsPage = vi.fn(
+      (offset: number, limit: number) =>
+        Promise.resolve(buildGapsEnvelope(0, offset, limit)),
+    );
+    const loadRuleFindingsPage = vi.fn(
+      (offset: number, limit: number) =>
+        Promise.resolve(buildRuleFindingsEnvelope(83, offset, limit)),
+    );
+
+    renderWorkspace({
+      topology,
+      summary: buildNetworkSummary({
+        gap_count: 0,
+        rule_finding_count: 83,
+      }),
+      gaps: [],
+      ruleFindings: buildRuleFindingsEnvelope(83, 0, 20).data.findings,
+      loadGapsPage,
+      loadRuleFindingsPage,
+    });
+
+    await waitFor(() => expect(loadRuleFindingsPage).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText("Badges: 83 of 83 findings"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select first graph node" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Open findings (0)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "No open findings for this resource. All 0 gaps and 83 rule findings in scope were checked.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/not confirmed clean/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("TopologyWorkspace export and selection honesty", () => {

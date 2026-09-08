@@ -49,6 +49,10 @@ gates:
   merged_backend: "2,989 passed / 11 skipped / 3,000 collected / 0 failed"
   merged_web: "369 passed / 15 todo / 44 files / 0 failed"
   merged_build: clean
+  corrective_network: "159 backend / 199 web / 3 mocked Chromium / independent source review confirmed"
+corrective_network_source_verified: 2026-09-08T15:36:10.121+08:00
+corrective_network_live_recheck: not_run_no_deployment
+corrective_network_debug_session: .planning/debug/resolved/network-summary-messages-links.md
 ---
 
 # Phase 12: Network Topology Integrity and Scale — Final Verification
@@ -58,8 +62,46 @@ network topology experience whose nodes, relationships, findings, policy
 changes, freshness, and evidence coverage remain accurate from inventory
 ingestion through API, web, agents, MCP, and export.
 
-**Status:** passed; source and deployed authenticated runtime verification are
-complete.
+**Status:** passed; original source and deployed authenticated runtime
+verification are complete. The corrective addendum below is source-confirmed
+and was not deployed or rechecked live.
+
+## Corrective Network Message and Summary-Link Addendum — 2026-09-08
+
+A post-deployment corrective source pass closed three deterministic boundary
+defects without changing the Phase 12 requirement set:
+
+- ordinary 20-row server pagination no longer produces a permanent page-level
+  incomplete-results warning; each owning tab retains its exact visible range;
+- Summary continues to omit Route nodes while preserving an observed
+  `RouteTable → Route → AzureFirewall` path as a contracted
+  `RouteTable → AzureFirewall` next-hop relationship; and
+- exhaustive badge coverage, rather than the visible page's truncation flag,
+  now determines whether a selected resource can be confirmed clean.
+
+The three specified regressions were RED before the source changes and GREEN
+after them. A scoped production-source revert restored all three defects, and
+reapplication restored all three fixes. Final corrective evidence is:
+
+| Check | Result |
+|---|---|
+| Adjacent backend network suites | **PASS — 159 tests** |
+| Adjacent web network suites | **PASS — 8 files / 199 tests** |
+| Mocked Chromium Phase 12 regressions | **PASS — 3 scenarios** |
+| TypeScript, Next ESLint, scoped Ruff | **PASS** |
+| Next.js production build | **PASS — 28 routes** |
+| Python source and wheel build | **PASS** |
+| Independent source review | **CONFIRMED FIXED by the user** |
+
+The broader web sweep passed 594 tests and exposed one unrelated existing
+Compliance-page test-mock defect; no out-of-scope source was changed. This
+corrective pass strengthens the existing TOPO-03 pagination, bounded-summary,
+and semantic-relationship evidence, so the roadmap score remains **5/5** with
+no new requirement or behavior gap.
+
+No deployment, push, or authenticated live recheck was performed for this
+corrective pass. The deployed results below remain the authoritative live
+evidence; this addendum records source closure only.
 
 ## Final Deployed Result — 2026-09-08
 

@@ -99,8 +99,6 @@ export default function NetworkPage() {
   const summary = topology.data?.data.summary;
   const gapTotal = gaps.data?.data.summary.gap_count;
   const findingTotal = findings.data?.data.summary.rule_finding_count;
-  const gapCoverage = gaps.data?.data.coverage;
-  const findingCoverage = findings.data?.data.coverage;
   const flowLogProvenance = topology.data?.data.topology.flow_log_provenance;
   const loadBadgeGapsPage = useCallback(
     (offset: number, limit: number) => networkApi.gaps(scope, { offset, limit }),
@@ -207,19 +205,10 @@ export default function NetworkPage() {
     ...(topology.data?.warnings ?? []),
     ...(topology.data?.data.topology.warnings ?? []),
   ]));
-  const contextualCoverageOwnsPagination = Boolean(
-    gaps.data &&
-      findings.data &&
-      (gapCoverage?.truncated || findingCoverage?.truncated),
-  );
   const collectionWarnings = [
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
-  ].filter(
-    (warning) =>
-      !contextualCoverageOwnsPagination ||
-      !isCollectionPaginationWarning(warning),
-  );
+  ].filter((warning) => !isCollectionPaginationWarning(warning));
   const warnings = Array.from(new Set([
     ...topologyWarnings,
     ...collectionWarnings,
@@ -299,23 +288,6 @@ export default function NetworkPage() {
         </div>
       )}
 
-      {contextualCoverageOwnsPagination && (
-        <div
-          className="callout callout-warning topology-coverage"
-          role="status"
-          aria-live="polite"
-          aria-label="Incomplete network analysis results"
-        >
-          <strong>Results are incomplete.</strong>
-          <span>
-            Showing {gapCoverage?.returned ?? gaps.data?.data.gaps.length ?? 0} of{" "}
-            {gapCoverage?.total ?? gapTotal ?? 0} inspection gaps and{" "}
-            {findingCoverage?.returned ?? findings.data?.data.findings.length ?? 0} of{" "}
-            {findingCoverage?.total ?? findingTotal ?? 0} rule findings. Metric totals are complete; the lists below are not.
-          </span>
-        </div>
-      )}
-
       <div className="workspace-tabs" role="tablist" aria-label="Network analysis views">
         {(
           [
@@ -365,10 +337,6 @@ export default function NetworkPage() {
               loadRuleFindingsPage={loadBadgeRuleFindingsPage}
               findingsLoading={gaps.loading || findings.loading}
               findingsError={gaps.error ?? findings.error}
-              findingsTruncated={Boolean(
-                gaps.data?.data.coverage?.truncated ||
-                  findings.data?.data.coverage?.truncated,
-              )}
               onRetryFindings={
                 gaps.error ? gaps.refetch : findings.error ? findings.refetch : gaps.refetch
               }

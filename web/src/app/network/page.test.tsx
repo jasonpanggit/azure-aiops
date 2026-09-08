@@ -48,18 +48,25 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
     ruleFindings,
     detailLevel,
     onDetailLevelChange,
+    findingsTruncated,
   }: {
     topology: unknown;
     gaps: unknown[];
     ruleFindings: unknown[];
     detailLevel: "summary" | "full";
     onDetailLevelChange: (detail: "summary" | "full") => void;
+    findingsTruncated?: boolean;
   }) => (
     <div data-testid="topology-workspace">
       <span>{topology ? "Topology canvas" : "No topology"}</span>
       <span>{gaps.length} topology gaps</span>
       <span>{ruleFindings.length} topology findings</span>
       <span>Detail: {detailLevel}</span>
+      <span data-testid="topology-workspace-page-truncation">
+        {findingsTruncated === undefined
+          ? "Page truncation not forwarded"
+          : `Page truncation forwarded: ${String(findingsTruncated)}`}
+      </span>
       <button type="button" onClick={() => onDetailLevelChange("full")}>
         Test full detail
       </button>
@@ -280,7 +287,7 @@ describe("Network page honest totals and server pagination", () => {
     });
   });
 
-  it("renders summary totals rather than capped array lengths and discloses both incomplete collections", async () => {
+  it("keeps ordinary server-page ranges inside their owning tabs without a page warning", async () => {
     renderPage();
 
     const riskyRules = await screen.findByText("Broad or risky rules");
@@ -288,19 +295,34 @@ describe("Network page honest totals and server pagination", () => {
     expect(metric).not.toBeNull();
     expect(within(metric!).getByText("620")).toBeInTheDocument();
     expect(within(metric!).getByText("340 structural or design gaps")).toBeInTheDocument();
-    const incomplete = screen.getByRole("status", {
-      name: "Incomplete network analysis results",
-    });
-    expect(incomplete).toHaveAttribute("aria-live", "polite");
-    expect(within(incomplete).getByText("Results are incomplete.")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Showing 20 of 340 inspection gaps and 20 of 620 rule findings. Metric totals are complete; the lists below are not.",
-      ),
+      screen.queryByRole("status", {
+        name: "Incomplete network analysis results",
+      }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 340 inspection gaps"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rule findings" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 620 rule findings"),
     ).toBeInTheDocument();
   });
 
-  it("keeps owned pagination copy in the contextual callout, not global provenance", async () => {
+  it("does not forward visible-page truncation into exhaustive topology finding coverage", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Topology" }));
+
+    expect(
+      screen.getByTestId("topology-workspace-page-truncation"),
+    ).toHaveTextContent("Page truncation not forwarded");
+  });
+
+  it("keeps backend pagination warnings out of provenance because the owning tabs show ranges", async () => {
     const gapEnvelope = buildGapsEnvelope(77, 0, 20);
     gapEnvelope.warnings = [
       "Results are truncated; narrow the scope or use pagination for a complete view.",
@@ -315,13 +337,21 @@ describe("Network page honest totals and server pagination", () => {
     expect(provenance).not.toHaveTextContent("Results are truncated");
     expect(provenance).not.toHaveTextContent("Showing 20 of 77 inspection gaps");
     expect(
-      screen.getByRole("status", { name: "Incomplete network analysis results" }),
-    ).toHaveTextContent(
-      "Showing 20 of 77 inspection gaps and 6 of 6 rule findings.",
-    );
+      screen.queryByRole("status", { name: "Incomplete network analysis results" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 77 inspection gaps"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rule findings" }));
+    expect(
+      await screen.findByText("Showing 1–6 of 6 rule findings"),
+    ).toBeInTheDocument();
   });
 
-  it("retains a collection pagination warning when the contextual owner is unavailable", async () => {
+  it("keeps an available collection range in its tab when the companion collection is unavailable", async () => {
     const gapEnvelope = buildGapsEnvelope(77, 0, 20);
     gapEnvelope.warnings = [
       "Showing 20 of 77 inspection gaps; use pagination for the complete result",
@@ -331,10 +361,15 @@ describe("Network page honest totals and server pagination", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Data trust and provenance")).toHaveTextContent(
-      "Showing 20 of 77 inspection gaps",
-    );
+    expect(
+      await screen.findByLabelText("Data trust and provenance"),
+    ).not.toHaveTextContent("Showing 20 of 77 inspection gaps");
     expect(screen.queryByText("Results are incomplete.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inspection gaps" }));
+    expect(
+      await screen.findByText("Showing 1–20 of 77 inspection gaps"),
+    ).toBeInTheDocument();
   });
 
   it("qualifies trust dimensions and describes the bypass finding population", async () => {

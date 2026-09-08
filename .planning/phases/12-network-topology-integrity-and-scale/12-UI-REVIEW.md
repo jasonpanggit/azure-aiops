@@ -2,7 +2,7 @@
 phase: 12-network-topology-integrity-and-scale
 reviewed: 2026-09-08T13:05:00+08:00
 status: passed
-verdict: PASS — deployed topology findings resolved; message-semantics follow-up source-confirmed
+verdict: PASS — deployed topology findings resolved; message-semantics and corrective summary-link follow-ups source-confirmed
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
@@ -25,6 +25,9 @@ final_live_verified: 2026-09-08T04:47:00Z
 message_semantics_source_verified: 2026-09-08T14:37:07.284+08:00
 message_semantics_live_recheck: not_run_no_deployment
 message_semantics_debug_session: .planning/debug/resolved/network-message-semantics.md
+corrective_network_source_verified: 2026-09-08T15:36:10.121+08:00
+corrective_network_live_recheck: not_run_no_deployment
+corrective_network_debug_session: .planning/debug/resolved/network-summary-messages-links.md
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -874,3 +877,45 @@ cd web && npm run lint
 #### Unresolved Items
 
 None within the eight-warning remediation scope.
+
+## Corrective Network Message and Summary-Link Addendum — 2026-09-08
+
+**Local source status:** PASS. **Independent source review:** confirmed fixed.
+**Deployment/live workflow status:** not run; this corrective pass did not
+deploy or push.
+
+Three post-deployment presentation defects were reproduced with specified,
+failing-first regressions and corrected:
+
+- ordinary server pagination no longer creates a permanent page-level
+  incomplete-results warning; the Inspection gaps and Rule findings tabs own
+  their exact `Showing X–Y of N` ranges;
+- summary topology still omits route-level nodes, but now contracts an observed
+  `RouteTable → Route → AzureFirewall` virtual-appliance path into a meaningful
+  `RouteTable → AzureFirewall` next-hop relationship;
+- exhaustive topology badge loading is the drawer completeness authority, so a
+  clean resource is confirmed after all 83 of 83 findings are checked even
+  when the visible list remains on a truncated 20-row server page.
+
+Corrective verification:
+
+| Check | Result |
+|---|---|
+| Three exact failing-first regressions | **RED before source changes; GREEN after** |
+| Scoped source revert and reapply | **All three defects returned; all three fixes reconfirmed** |
+| Adjacent backend network suites | **PASS — 159 tests** |
+| Adjacent web network suites | **PASS — 8 files, 199 tests** |
+| Mocked Chromium Phase 12 regressions | **PASS — 3 scenarios** |
+| TypeScript, Next ESLint, scoped Ruff | **PASS** |
+| Next.js production build | **PASS — 28 routes** |
+| Python source and wheel build | **PASS** |
+| Independent source review | **CONFIRMED FIXED by the user** |
+
+An additional full-web sweep passed 594 tests in 57 files and exposed one
+unrelated existing Compliance-page test-mock defect
+(`isCanonicalAzureResourceId` missing from that test's `@/lib/services` mock).
+That out-of-scope file was not changed.
+
+This addendum is source-verification evidence only. No deployment or
+authenticated live recheck was performed, so the earlier deployed-runtime
+evidence remains the authoritative live result.

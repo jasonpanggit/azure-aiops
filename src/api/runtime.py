@@ -2591,6 +2591,14 @@ def _fabric_is_configured() -> bool:
     )
 
 
+def _fabric_remediation_enabled() -> bool:
+    """Whether the configured Fabric runtime enables remediation planning."""
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if not config_path:
+        return True
+    return FabricRuntimeConfig.load(config_path).remediation.enabled
+
+
 def _fabric_runtime_from_environment() -> FabricRuntime | None:
     """Build the authoritative Fabric reader from a file or Container Apps env."""
     config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
@@ -2880,6 +2888,19 @@ def _fabric_remediation_planner(runtime: FabricRuntime) -> Any:
     planner = _attach_remediation_decisions(
         getattr(runtime.operations_agent(), "remediation_planner", None)
     )
+    if planner is None:
+        return None
+    catalog = getattr(getattr(planner, "opportunities", None), "catalog", ())
+    policies = getattr(
+        getattr(getattr(planner, "generator", None), "approval_engine", None),
+        "policies",
+        (),
+    )
+    if not catalog or not policies:
+        raise RuntimeError(
+            "Governed remediation catalog is empty; deployment must publish "
+            "the versioned action catalog and approval policies"
+        )
     return _attach_defender_correlator(planner, runtime)
 
 
@@ -3086,11 +3107,23 @@ def _build_provider_runtime(
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     core_readiness_providers = {"semantic", "semantic_graph"}
+    remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
+    remediation_required = (
+        use_fabric
+        and remediation_enabled
+        and mode == "production"
+        and not bootstrap
+    )
     specs = {
         name: ProviderSpec(
             loader=loader,
-            configured=True,
-            required=(name in core_readiness_providers and not bootstrap),
+            configured=not (
+                name == "remediation" and use_fabric and not remediation_enabled
+            ),
+            required=(
+                (name in core_readiness_providers and not bootstrap)
+                or (name == "remediation" and remediation_required)
+            ),
             cache_key=(
                 (lambda provider_name=name: fabric_provider_cache_key(provider_name))
                 if use_fabric
