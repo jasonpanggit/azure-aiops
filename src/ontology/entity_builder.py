@@ -151,6 +151,11 @@ def stable_version(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 
 
+def entity_change_version(row: dict[str, Any]) -> str:
+    """Return the stable semantic version for an ontology entity row."""
+    return stable_version(_semantic(row))
+
+
 class EntityBuilder:
     """Builds structural and tag-derived ontology entities without fixed tag values."""
 
@@ -441,7 +446,7 @@ class EntityBuilder:
         for entity_id, source_ids in lineage.items():
             row = candidates[entity_id]
             row["lineage_json"] = _canonical({"source_resource_ids": sorted(source_ids)})
-            row["change_version"] = stable_version(_semantic(row))
+            row["change_version"] = entity_change_version(row)
         return sorted(candidates.values(), key=lambda row: (row["entity_type"], row["resource_id"]))
 
     def _entity(
@@ -484,7 +489,7 @@ class EntityBuilder:
             "retired_at": "",
             "ontology_version": "1",
         }
-        row["change_version"] = stable_version(_semantic(row))
+        row["change_version"] = entity_change_version(row)
         return row
 
 

@@ -2,37 +2,24 @@
 status: diagnosed
 trigger: "Diagnose the Phase 03.1 Plan 19 live activation OOM scientifically, without modifying code. Repo: /Users/jasonmba/workspace/azure-aiops, branch main. Integrated image aiops-api:phase031-integrated-20260907-2240 ran `python -m onboarding.cli activate --config /app/config.yaml --fabric-config /app/fabric.config.yaml --connection-id demo` in Azure Container Apps Job with 2 CPU/4Gi. Execution aiops-dev-exposure-publication-ows94mn ran 2026-09-07 14:54-14:58 UTC and terminated exit 137. Console logs only show Cost Management 429 handled as non-fatal; no subsequent logs. Prior 1Gi job also OOM'd. Live ARG has ~21k microsoft.security/assessments. Need identify likely exact memory amplification/retained-object path in activation -> ingestion -> snapshot -> Fabric sync/ontology. Inspect code and existing tests only; report evidence with file/line references, primary root cause, minimal production-safe fix, and targeted tests. Respect concurrent ownership: do not edit src/fabric/dataset_mapper.py, src/fabric/sync_service.py, src/fabric/runtime.py, remediation files. Do not modify any files."
 created: 2026-09-07T23:02:19.059+08:00
-updated: 2026-09-08T21:02:00+08:00
+updated: 2026-09-08T21:12:00+08:00
 ---
 
 ## Current Focus
 
-hypothesis: confirmed — the exact recovery is an image-only update of the already-correct 4 CPU/8 GiB persistent Job template to target digest `sha256:29c8c203...`, followed by one plain no-override start; a successful full activation stages `exposure-gold-*` and performs the first pointer CAS
-test: complete — source contracts, active registry, target ancestry/digest, frozen Job template, execution override failure, pointer state, and legacy staged metadata were checked read-only
-expecting: owner preflight sees active set exactly `demo`, zero running executions, absent pointer, legacy empty `inventory-refresh` metadata allowed, and the exact frozen template; success yields one Succeeded execution and pointer revision 1 to the same generation returned by the Exposure API
-next_action: return the exact bounded Topology-owner command sequence with every cloud mutation clearly labeled; do not execute it
+hypothesis: confirmed separately — Exposure Gold 503 remains the blocking missing-readable-generation lifecycle issue; Foundry provider emptiness is the intended fail-closed `legacy_unversioned`/`compatibility` release state, so inventory correctly returns deterministic fact-only narration
+test: complete — source/provider/activation call graphs, Terraform deployment and promotion contracts, Phase 11 release intent, sanitized live revision metadata, focused tests, history, and working-tree ownership all agree
+expecting: no Foundry mutation is included in bounded Gold recovery; any future Foundry activation follows its independently governed publish/validate/promote deployment workflow
+next_action: return diagnose-only root cause and classification with no source/config/cloud mutation
 bug_class: bohrbug
-known_pattern_candidate: none found in .planning/debug/knowledge-base.md
+known_pattern_candidate: `foundry-portal-model-support` — prior Foundry setup required a portal-compatible model/tool combination, but this is only a candidate and does not establish that this release owns agent creation
 candidate_causes:
-  - code/lifecycle: final Gold-capable source was deployed to the API but no successful publisher execution initialized its readable pointer
-  - config/environment: API and Job root/identity/cursor wiring drifted
-  - data: Gold pointer and fallback Exposure metadata are absent
-  - code: another generation-window dependency maps to the same 503
-and_gate: no for the current 503 — one absent readable pointer is sufficient; unsuccessful publication is the leading cause, while root drift has been eliminated
-reasoning_checkpoint:
-  hypothesis: "The overview 503 persists because no full final-image activation has completed the Gold pointer CAS; updating only the correct persistent Job template image and starting that template once addresses the missing lifecycle transition."
-  confirming_evidence:
-    - "Direct OneLake GET returns 404 for the Gold pointer and the active DatasetStore generation has no fallback generation."
-    - "Source activates the pointer only after complete Fabric/ontology/shortcut finalization, and the only final-tag execution ran at 0.5 CPU/1 GiB with null activation command/args."
-    - "The persistent Job already has the exact demo selector, identity/root, 4 CPU/8 GiB, one replica, zero retries, and 3600-second timeout."
-  falsification_test: "A preflight-readable Gold pointer, a non-demo active connection set, any running publication, or a Succeeded exact-template final-image execution without pointer revision 1 would falsify this bounded initial-activation plan and requires stopping rather than starting."
-  fix_rationale: "The image-only template update preserves every validated operational field; the plain start avoids the partial-start override defaults and invokes the only source-owned full activation path that can legally stage and CAS Gold."
-  blind_spots: "The owner must still observe live execution success and Fabric SQL propagation; local/read-only evidence cannot prove the future provider run will complete within its 3600-second boundary."
-  candidate_causes:
-    - "code/lifecycle: no exact-template final-image activation reached pointer CAS"
-    - "environment/config: a partial start override discarded the persistent command and 4 CPU/8 GiB sizing"
-    - "data: pointer and fallback generation remain absent"
-  and_gate: "yes for recovery safety — missing pointer causes the 503, while final source plus the preserved full Job template are both required to initialize it safely"
+  - code/lifecycle: post-deploy activation owns Foundry prompt-agent creation or restoration but has not completed
+  - config/environment: operations-copilot and specialist provider IDs are intentionally or accidentally absent from the API revision
+  - release contract: Foundry is optional and deterministic compatibility fallback is the intended unconfigured behavior
+  - data/state: a prompt agent exists externally but its identifier is not wired into API configuration
+and_gate: no for symptom production — an empty optional provider is sufficient to select fallback; whether configuration is a release defect depends independently on the documented deployment/activation contract
+blocking_issue: Exposure Gold 503 remains the release blocker with its already-confirmed missing readable-generation lifecycle state; Foundry narration is being classified independently and will not be included in bounded Gold recovery unless source proves a shared required activation contract
 
 ## Symptoms
 
@@ -51,6 +38,14 @@ started: Phase 03.1 Plan 19 live activation execution at 2026-09-07 14:54–14:5
 - hypothesis: API cursor-secret/KID Terraform drift causes the exact readable-generation 503.
   evidence: deployed API metadata shows both Key Vault-backed secret refs and distinct KIDs exactly wired; source produces the observed message before cursor processing and only from generation resolution.
   timestamp: 2026-09-08T20:04:00+08:00
+
+- hypothesis: Bounded onboarding/Gold activation is expected to create, restore, or configure the Foundry operations-copilot prompt agent.
+  evidence: `activate_runtime` contains only connection validation/discovery, combined snapshot publication, Fabric sync/Exposure pointer activation, and semantic verification; all Foundry creation/promotion is isolated in Terraform plus a data-plane POST script and requires separate staged applies.
+  timestamp: 2026-09-08T21:12:00+08:00
+
+- hypothesis: Empty copilot and specialist providers indicate accidental endpoint/name deployment drift.
+  evidence: the live revision has a configured Foundry endpoint, coordinator name, and eight specialist names, but intentionally reports `legacy_unversioned`, version pinning `true`, zero version IDs, and Copilot rollout `compatibility`; this exact state is required by Phase 11-05 and focused tests.
+  timestamp: 2026-09-08T21:12:00+08:00
 
 ## Evidence
 
@@ -329,9 +324,103 @@ started: Phase 03.1 Plan 19 live activation execution at 2026-09-07 14:54–14:5
   found: memory fix `88ad45393` is an ancestor of target commit `b2ba7558`; successful current source emits `exposure-gold-` plus 24 hex characters, writes five Gold product tables and generation metadata, then creates schema 1.0.0 pointer revision 1 with null previous generation, two-generation/seven-day retention policy, and zero activation conflicts
   implication: exact success can be asserted without guessing row count by matching execution image/resources, pointer schema/revision/generation, and API `knowledge_version`/`data.generation`
 
+- timestamp: 2026-09-08T21:03:00+08:00
+  checked: user-provided additional live evidence
+  found: inventory is healthy with 2 machines and 35 software observations, while narration reports `no Foundry prompt agent is configured`; API logs report empty copilot and all specialist agent providers
+  implication: inventory acquisition health is independent of Foundry provider construction; the narration fallback must be classified from the optional-provider/deployment contract rather than conflated with the separately blocking Exposure Gold 503
+
+- timestamp: 2026-09-08T21:04:00+08:00
+  checked: knowledge base, initial exact-text/provider search, and working-tree ownership
+  found: the knowledge base has a prior `foundry-portal-model-support` entry showing Foundry setup has an external model/tool compatibility constraint; the exact provider seam is declared in `src/api/dependencies.py`; pre-existing `.azure/deployment-plan.md` and `.azure/validate-status.json` changes remain untouched, and this continuation has changed only the permitted debug document
+  implication: external Foundry provisioning is a plausible independent lifecycle, but the prior match is only a hypothesis candidate; source and release contracts must establish whether post-deploy activation owns it
+
+- timestamp: 2026-09-08T21:05:00+08:00
+  checked: targeted Foundry provisioning and Terraform wiring search
+  found: `infra/scripts/create-foundry-agent.sh` explicitly describes an idempotent create/update of a data-plane-only prompt agent invoked by a Terraform `local-exec` provisioner; `infra/terraform/container_apps.tf` wires dynamic specialist environment values from a Foundry promotion/rollback activation map
+  implication: agent provisioning is a distinct cloud mutation seam owned by deployment infrastructure, not yet evidence of an onboarding activation side effect; empty API providers can result from promotion/configuration state independently of Exposure Gold
+
+- timestamp: 2026-09-08T21:06:00+08:00
+  checked: API composition and Foundry client construction
+  found: `ApiContext` documents the narrator as optional by design and missing specialists as optional; `FoundryPromptAgent.from_env` and the MAF adapter both return `None` when endpoint/name are absent, explicitly to allow retrieval-only operation; `_load_foundry_agent` logs that outcome and memoizes it rather than trying to provision anything
+  implication: empty providers are a supported deterministic runtime state, not an initialization exception; runtime provider construction is read-only and cannot restore an agent
+
+- timestamp: 2026-09-08T21:06:00+08:00
+  checked: exact live fallback text
+  found: the literal `Risk narrative unavailable: no Foundry prompt agent is configured` is emitted only by `src/intelligence/inventory/narrative.py`, not by the blocking Exposure generation path
+  implication: the reported narration symptom is the inventory narrative's explicit compatibility branch and is causally separate from Exposure Gold 503
+
+- timestamp: 2026-09-08T21:07:00+08:00
+  checked: complete inventory narrative fallback implementation
+  found: the route always computes deterministic scoped facts, citations, confidence, and source status first; when the optional Foundry agent is `None`, it returns `status: fact_only`, leaves `narrated_summary` empty, and appends the exact warning without turning healthy inventory into an error
+  implication: the observed 2-machine/35-software response plus warning is the specified successful compatibility behavior, not partial inventory activation
+
+- timestamp: 2026-09-08T21:07:00+08:00
+  checked: onboarding activation implementation
+  found: `activate_runtime` validates selected connections, performs discovery, publishes the combined snapshot, runs Fabric sync with the Exposure pointer store, and reads semantic readiness; it imports or invokes no Foundry client, Terraform, provisioning script, agent endpoint, or API environment update
+  implication: bounded Gold recovery cannot create, restore, promote, or configure an operations-copilot prompt agent
+
+- timestamp: 2026-09-08T21:07:00+08:00
+  checked: Terraform Foundry promotion and API wiring contracts
+  found: candidate agent publication requires `create_foundry_agent && enable_foundry_specialist_candidate_publish`, version-pinning verification, and a persistent promotion artifact; it POSTs immutable versions through `local-exec`, validates parity, and only a later Terraform plan may activate provider IDs. Defaults retain `legacy` unversioned names and `compatibility` Copilot rollout, while runtime version pinning deliberately converts an unversioned selection into unavailable providers
+  implication: any attempt to restore/configure Foundry is an independent cloud mutation and staged deployment decision, not a side effect or prerequisite of the one bounded Exposure publication
+
+- timestamp: 2026-09-08T21:08:00+08:00
+  checked: focused inventory and agent contract tests
+  found: tests require an unconfigured inventory narrative to return HTTP 200 with scoped source counts, `status: fact_only`, deterministic facts, and the `no Foundry` warning; separate tests require provider construction to return `None` when version pinning is required but legacy names have no provider version IDs
+  implication: the exact live behavior has executable regression coverage and is not an accidental error-handling path
+
+- timestamp: 2026-09-08T21:08:00+08:00
+  checked: committed Terraform deployment inputs
+  found: `infra/terraform/terraform.tfvars` explicitly sets `foundry_version_pinning_runtime_verified = true` and supplies no override for `foundry_specialist_activation_target`, `enable_foundry_specialist_candidate_publish`, or the promotion artifact; their defaults are respectively `legacy`, `false`, and empty
+  implication: the committed release intentionally combines fail-closed version pinning with an unpromoted legacy mapping, which makes all unversioned Foundry providers unavailable while retaining deterministic compatibility behavior
+
+- timestamp: 2026-09-08T21:09:00+08:00
+  checked: Phase 11-05 release summary and introducing history
+  found: the closeout states verbatim that `legacy` activation omits versions and fails closed to deterministic evidence, candidate publication is disabled by default, live specialist parity is BLOCKED with promotion held, and staged adoption requires a later opt-in publication/validation apply followed by another reviewed activation apply
+  implication: unavailable Foundry providers are the declared current release posture, not a failed bounded post-deploy activation; full Foundry enablement is pending a separately governed multi-apply rollout
+
+- timestamp: 2026-09-08T21:10:00+08:00
+  checked: sanitized read-only live API revision environment
+  found: active revision `aiops-dev-api--0000268` reports activation source `legacy_unversioned`, version pinning `true`, orchestration mode `maf`, Copilot rollout `compatibility`, configured project endpoint and `operations-copilot` name, but no coordinator version and zero specialist version variables (eight legacy specialist names remain)
+  implication: live provider emptiness is exactly the intentional fail-closed staged-adoption state; it is not endpoint/name drift and cannot be repaired by onboarding activation
+
+- timestamp: 2026-09-08T21:11:00+08:00
+  checked: focused local verification
+  found: seven tests passed covering inventory HTTP-200 fact-only fallback, unversioned rejection under required pinning, acceptance of a pinned coordinator, complete synthesis without Foundry, legacy activation fallback, opt-in candidate publication, and omission of synthetic legacy versions
+  implication: source, infrastructure contract, and live revision state agree; no code/config mutation is warranted for the current Foundry behavior
+
+- timestamp: 2026-09-08T21:12:00+08:00
+  checked: final scope and mutation consistency
+  found: `.planning/STATE.md` still identifies Plan 03.1-19 Exposure live evidence as the active blocker; Phase 11-05 explicitly records that no live agent version was promoted and deterministic fallback is preserved; pre-existing `.azure` changes remain untouched and this investigation changed only the permitted debug document
+  implication: Foundry must remain a non-blocking separately staged capability, while the bounded recovery scope stays limited to successful Exposure Gold publication
+
+- timestamp: 2026-09-08T21:20:00+08:00
+  checked: failed exact-template execution and Log Analytics
+  found: execution `aiops-dev-exposure-publication-xejd3lo` ran the final image with the intended activation command, `demo` connection, managed identity, and 4 CPU / 8 GiB; Cost Management HTTP 429 degraded non-fatally, then activation terminated after approximately 35 minutes with `Invalid ontology graph: current snapshot validation failed`
+  implication: missing pointer initialization remained the serving symptom, but the immediate publication blocker was deterministic ontology validation rather than memory, cursor, identity, or Fabric root drift
+
+- timestamp: 2026-09-08T21:24:00+08:00
+  checked: read-only reconstruction from the durable live `demo` connection generation
+  found: the base graph passed at 1,979 entities / 882 relationships and the granular Exposure graph passed at 78,720 / 232,337; their raw union failed with 8 duplicate entity IDs and 7 duplicate relationship IDs/keys for tenant, subscription, three resource groups, and three container registries
+  implication: `FabricSyncService` raw-extended two independently valid projections that intentionally share canonical scope/resource identities; live data was valid and the merge seam was defective
+
+- timestamp: 2026-09-08T21:30:00+08:00
+  checked: collision-preserving source fix and reconstructed live graph
+  found: granular entity collisions now require compatible scope/type/lifecycle, preserve canonical inventory representation, merge non-conflicting embedded Fabric rows, union lineage, and recompute stable versions; relationship collisions require semantic equivalence, union lineage, and otherwise fail closed. The reconstructed graph passes at 80,691 entities / 233,212 relationships with all validator categories zero, and all 3 source registry rows round-trip exactly from ontology.
+  implication: the fix removes the production blocker without discarding inventory context, granular Fabric reconstruction evidence, or conflicting relationship evidence
+
+- timestamp: 2026-09-08T21:34:00+08:00
+  checked: automated regression and independent review
+  found: Ruff passed, the full backend suite passed with 3,947 tests, focused ontology tests passed, `git diff --check` passed, and final independent review found no blocking correctness issue after relationship evidence-conflict and lineage/version tests were added
+  implication: source is ready for stabilization and a new immutable build, but the live blocker remains open until a successful publication creates the readable Gold pointer and the API returns 200
+
 ## Resolution
 
-root_cause: "The API is correctly failing closed because both readable-generation sources are absent: `Files/aiops/exposure/gold-generation-pointer.json` does not exist, and the active DatasetStore generation has neither `vulnerability/exposure_metadata.jsonl` nor a manifest `readModelGenerationId`. The causal lifecycle gap is that no execution containing the Sep 8 Gold activation wiring completed: older successful Jobs predate commit 89201567e, while the sole Gold-capable ac556cc26 execution is Stopped. This is initial Gold activation/publication missing state (A leading to C), not a migration, cursor-secret drift, stale pointer, or another source bug."
-fix: "Not applied (diagnose-only). Owner-only recovery: first assert registry active set is exactly `demo`, no publication is Running, the Gold pointer is still absent, and the persistent Job remains the validated 4 CPU/8 GiB/3600s/retry-0/parallelism-1 activation template. Then CLOUD MUTATION update only its image to `aiopsdevacrg6ludc.azurecr.io/aiops-api@sha256:29c8c2038052367b5b21984c668d8975313550b4015e22b5279178c706b06cd8`; re-read and assert the full template; CLOUD MUTATION start once with no overrides. Require Succeeded and pointer revision 1/readable `exposure-gold-*`, then require the scoped overview's `knowledge_version` and `data.generation` to equal that pointer. Never use `job start --image` alone."
-verification: "Diagnosis/runbook verified read-only: exact target digest and memory-fix ancestry resolved; durable registry has only active `demo`; no execution was Running; persistent Job contract is 4 CPU/8 GiB, 3600 seconds, retry 0, parallelism/completion 1, correct identity/root/args; final-tag partial override execution failed at 0.5 CPU/1 GiB with null command/args; pointer/fallback remain absent; actual flat Gold paths contain only a legacy empty reconciled `inventory-refresh` baseline; source pointer/API invariants were traced and focused contract tests had passed."
-files_changed: []
+root_cause: "BLOCKING — Exposure Gold: `FabricSyncService` combined the independently valid base inventory ontology and granular Exposure ontology with raw list extension. Canonical tenant/subscription/resource-group/registry scope rows intentionally overlap, producing 8 duplicate entities and 7 duplicate relationships in the live graph. Validation failed before Gold stage/pointer CAS, leaving both readable-generation sources absent and the overview correctly fail-closed at 503. SEPARATE/NON-BLOCKING — Foundry narration remains the intentional `legacy_unversioned` compatibility posture."
+fix: "Applied locally, not yet deployed: replace raw granular extension with explicit collision-aware merges. Compatible entity collisions retain canonical inventory fields, merge lossless granular Fabric payloads and lineage, and recompute stable versions; compatible relationship collisions union lineage and recompute versions, while identity/evidence conflicts fail closed. Foundry remains outside this recovery boundary."
+verification: "Rebuilt the failed live input read-only from the durable `demo` generation. The fixed combined graph passes at 80,691 entities / 233,212 relationships with zero duplicates, dangling/self links, or invalid rows; all 3 registry rows round-trip exactly. Ruff, 3,947 backend tests, focused ontology regressions, whitespace checks, and independent correctness review passed. Live resolution still requires a new immutable image, one exact-template 4 CPU / 8 GiB publication, pointer/Gold verification, and overview 200."
+files_changed:
+  - "src/fabric/sync_service.py"
+  - "src/ontology/entity_builder.py"
+  - "src/ontology/relationship_builder.py"
+  - "tests/test_fabric_sync_service.py"

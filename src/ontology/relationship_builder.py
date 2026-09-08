@@ -12,6 +12,25 @@ from .entity_builder import PAAS_ENTITY_TYPES, scoped_semantic_id, stable_versio
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
 
+def relationship_change_version(row: dict[str, Any]) -> str:
+    """Return the stable semantic version for an ontology relationship row."""
+    return stable_version(
+        {
+            key: value
+            for key, value in row.items()
+            if key
+            not in {
+                "timestamp",
+                "ingestion_run_id",
+                "change_version",
+                "valid_from",
+                "retired_at",
+                "ontology_version",
+            }
+        }
+    )
+
+
 class RelationshipBuilder:
     """Infers deterministic structural, operational, and tag-derived relationships."""
 
@@ -91,21 +110,7 @@ class RelationshipBuilder:
                 "retired_at": "",
                 "ontology_version": "1",
             }
-            row["change_version"] = stable_version(
-                {
-                    key: value
-                    for key, value in row.items()
-                    if key
-                    not in {
-                        "timestamp",
-                        "ingestion_run_id",
-                        "change_version",
-                        "valid_from",
-                        "retired_at",
-                        "ontology_version",
-                    }
-                }
-            )
+            row["change_version"] = relationship_change_version(row)
             relationships[relationship_id] = row
 
         tenants = {row["tenant_id"]: row for row in by_type["Tenant"]}

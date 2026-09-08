@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 from test_incremental_sync import _source_snapshot
 
 from fabric.data_quality import DataQualityValidator
+from fabric.dataset_mapper import GranularExposureOntologyMapper
 from fabric.sync_service import (
     DedicatedOntologyPublisherAdapter,
     FabricSyncService,
     FabricTableWriteProgress,
     _exposure_gold_generation_id,
+    _merge_granular_ontology_entities,
+    _merge_granular_ontology_relationships,
     _observation_rows_at_or_before,
 )
 from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_GOLD_POINTER_DOCUMENT,
     EXPOSURE_GOLD_TABLES,
 )
+from ontology.entity_builder import entity_change_version
+from ontology.ontology_sync import OntologyGraphResult
+from ontology.relationship_builder import relationship_change_version
 from ontology_discovery.publisher import OntologyGenerationCandidate
 from storage.delta_writer import DeltaWriter
 from storage.onelake_documents import OneLakeDocumentStore
@@ -147,6 +154,231 @@ def test_identical_source_produces_identical_gold_in_clean_lakehouses(
     ) == second_service.delta.read(
         second_service.onelake.table_uri("gold", "exposure_facts")
     )
+
+
+def test_sync_deduplicates_granular_ontology_scope_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_build_rows = GranularExposureOntologyMapper.build_rows
+
+    def build_overlapping_rows(self, datasets, **kwargs):
+        entities, relationships = original_build_rows(
+            self,
+            datasets,
+            **kwargs,
+        )
+        overlapping_entity = dict(datasets["ontology_entities"][0])
+        base_payload = json.loads(overlapping_entity["payload_json"])
+        overlapping_entity["payload_json"] = json.dumps(
+            {
+                "fabric_key": "container-registry:v1:overlap",
+                "fabric_row": {"registry_id": "registry-overlap"},
+                "fabric_table": "silver_container_registries",
+                **{
+                    key: value
+                    for key, value in base_payload.items()
+                    if key not in {"fabric_key", "fabric_row", "fabric_table"}
+                },
+            },
+            sort_keys=True,
+        )
+        return (
+            [overlapping_entity, *entities],
+            [dict(datasets["ontology_relationships"][0]), *relationships],
+        )
+
+    monkeypatch.setattr(
+        GranularExposureOntologyMapper,
+        "build_rows",
+        build_overlapping_rows,
+    )
+    service = _service(tmp_path)
+
+    result = service.sync(
+        exposure_pointer_store=OneLakeDocumentStore(tmp_path / "registry")
+    )
+
+    assert result.status == "completed"
+    entity_rows = service.delta.read(
+        service.onelake.table_uri("ontology", "entities")
+    )
+    relationship_rows = service.delta.read(
+        service.onelake.table_uri("ontology", "relationships")
+    )
+    assert len(entity_rows) == len(
+        {str(row["resource_id"]).strip().casefold() for row in entity_rows}
+    )
+    assert len(relationship_rows) == len(
+        {str(row["resource_id"]).strip().casefold() for row in relationship_rows}
+    )
+    restored = GranularExposureOntologyMapper().to_fabric(
+        OntologyGraphResult(
+            entities=entity_rows,
+            relationships=relationship_rows,
+            views={},
+            health={},
+            quality_report={},
+        )
+    )
+    assert restored["silver_container_registries"] == [
+        {"registry_id": "registry-overlap"}
+    ]
+
+
+def test_granular_entity_merge_is_lossless_and_preserves_primary_casing() -> None:
+    primary = {
+        "tenant_id": "tenant-a",
+        "subscription_id": "sub-a",
+        "resource_id": "/Subscriptions/Sub-A/registry",
+        "entity_type": "ContainerRegistry",
+        "lifecycle_status": "active",
+        "payload_json": json.dumps(
+            {
+                "id": "/Subscriptions/Sub-A/registry",
+                "resourceType": "Microsoft.ContainerRegistry/registries",
+                "sourceSystem": "AzureResourceGraph",
+            }
+        ),
+        "lineage_json": json.dumps({"source_resource_ids": ["inventory"]}),
+        "semantic_metadata_json": json.dumps({"discovery": "inventory"}),
+        "change_version": "old",
+    }
+    granular = {
+        **primary,
+        "resource_id": "/subscriptions/sub-a/registry",
+        "payload_json": json.dumps(
+            {
+                "id": "/subscriptions/sub-a/registry",
+                "resourceType": "microsoft.containerregistry/registries",
+                "fabric_table": "silver_container_registries",
+                "fabric_row": {"registry_id": "registry-a"},
+            }
+        ),
+        "lineage_json": json.dumps({"source_resource_ids": ["granular"]}),
+    }
+    rows = [primary]
+
+    _merge_granular_ontology_entities(rows, [granular])
+
+    payload = json.loads(rows[0]["payload_json"])
+    assert payload["id"] == "/Subscriptions/Sub-A/registry"
+    assert payload["resourceType"] == "Microsoft.ContainerRegistry/registries"
+    assert payload["sourceSystem"] == "AzureResourceGraph"
+    assert payload["fabric_row"] == {"registry_id": "registry-a"}
+    assert json.loads(rows[0]["lineage_json"])["source_resource_ids"] == [
+        "granular",
+        "inventory",
+    ]
+    assert rows[0]["semantic_metadata_json"] == primary["semantic_metadata_json"]
+    assert rows[0]["change_version"] == entity_change_version(rows[0])
+
+
+def test_granular_relationship_merge_rejects_conflicting_identity() -> None:
+    primary = {
+        "tenant_id": "tenant-a",
+        "subscription_id": "sub-a",
+        "resource_id": "relationship://contains",
+        "subject_id": "/subscriptions/sub-a",
+        "subject_type": "Subscription",
+        "predicate": "contains",
+        "object_id": "/subscriptions/sub-a/resourceGroups/one",
+        "object_type": "ResourceGroup",
+        "source": "inventory",
+        "scope": "",
+        "lifecycle_status": "active",
+        "confidence": 1.0,
+        "payload_json": "{}",
+        "lineage_json": json.dumps(
+            {"source_entity_ids": ["subscription", "group-one"]}
+        ),
+        "change_version": "",
+    }
+    primary["change_version"] = relationship_change_version(primary)
+    conflict = {
+        **primary,
+        "object_id": "/subscriptions/sub-a/resourceGroups/two",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Conflicting granular ontology relationship .*: object_id",
+    ):
+        _merge_granular_ontology_relationships([primary], [conflict])
+
+
+def test_granular_relationship_merge_rejects_conflicting_payload() -> None:
+    primary = {
+        "tenant_id": "tenant-a",
+        "subscription_id": "sub-a",
+        "resource_id": "relationship://contains",
+        "subject_id": "/subscriptions/sub-a",
+        "subject_type": "Subscription",
+        "predicate": "contains",
+        "object_id": "/subscriptions/sub-a/resourceGroups/one",
+        "object_type": "ResourceGroup",
+        "source": "inventory",
+        "scope": "",
+        "lifecycle_status": "active",
+        "confidence": 1.0,
+        "payload_json": json.dumps({"evidence": "inventory"}),
+        "lineage_json": json.dumps(
+            {"source_entity_ids": ["subscription", "group-one"]}
+        ),
+        "change_version": "",
+    }
+    primary["change_version"] = relationship_change_version(primary)
+    conflict = {
+        **primary,
+        "payload_json": json.dumps({"evidence": "granular"}),
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Conflicting granular ontology entity payload_json.evidence",
+    ):
+        _merge_granular_ontology_relationships([primary], [conflict])
+
+
+def test_granular_relationship_merge_unions_lineage_and_versions_row() -> None:
+    primary = {
+        "tenant_id": "tenant-a",
+        "subscription_id": "sub-a",
+        "resource_id": "relationship://contains",
+        "subject_id": "/Subscriptions/Sub-A",
+        "subject_type": "Subscription",
+        "predicate": "contains",
+        "object_id": "/Subscriptions/Sub-A/resourceGroups/one",
+        "object_type": "ResourceGroup",
+        "source": "inventory",
+        "scope": "",
+        "lifecycle_status": "active",
+        "confidence": 1.0,
+        "payload_json": "{}",
+        "lineage_json": json.dumps(
+            {"source_entity_ids": ["subscription"]}
+        ),
+        "change_version": "old",
+    }
+    granular = {
+        **primary,
+        "subject_id": "/subscriptions/sub-a",
+        "object_id": "/subscriptions/sub-a/resourcegroups/one",
+        "lineage_json": json.dumps({"source_entity_ids": ["group-one"]}),
+    }
+    rows = [primary]
+
+    _merge_granular_ontology_relationships(rows, [granular])
+
+    assert rows[0]["subject_id"] == "/Subscriptions/Sub-A"
+    assert rows[0]["object_id"] == (
+        "/Subscriptions/Sub-A/resourceGroups/one"
+    )
+    assert json.loads(rows[0]["lineage_json"])["source_entity_ids"] == [
+        "group-one",
+        "subscription",
+    ]
+    assert rows[0]["change_version"] == relationship_change_version(rows[0])
 
 
 def test_sync_does_not_activate_gold_pointer_before_finalization(

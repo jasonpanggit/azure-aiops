@@ -25,9 +25,11 @@ from fabric_pipelines.vulnerability_pipeline import (
     materialize_container_exposure_tables,
     materialize_temporal_exposure_tables,
 )
+from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
 from ontology.publication_manifest import PublicationManifestStore
+from ontology.relationship_builder import relationship_change_version
 from ontology_discovery.publisher import (
     OntologyGenerationCandidate,
     OntologyGenerationPublisher,
@@ -436,9 +438,13 @@ class FabricSyncService:
                         allow_empty=True,
                     )
                 )
-                datasets["ontology_entities"].extend(granular_entities)
-                datasets["ontology_relationships"].extend(
-                    granular_relationships
+                _merge_granular_ontology_entities(
+                    datasets["ontology_entities"],
+                    granular_entities,
+                )
+                _merge_granular_ontology_relationships(
+                    datasets["ontology_relationships"],
+                    granular_relationships,
                 )
                 exposure_gold_datasets = {
                     **datasets,
@@ -2814,6 +2820,191 @@ def _extend_unique_ontology_rows(
             continue
         target.append(row)
         known_ids.add(resource_id)
+
+
+def _merge_granular_ontology_entities(
+    target: list[dict[str, Any]],
+    additions: list[dict[str, Any]],
+) -> None:
+    index = {
+        str(row.get("resource_id") or "").strip().casefold(): position
+        for position, row in enumerate(target)
+        if str(row.get("resource_id") or "").strip()
+    }
+    for addition in additions:
+        resource_id = str(addition.get("resource_id") or "").strip().casefold()
+        if not resource_id or resource_id not in index:
+            target.append(addition)
+            if resource_id:
+                index[resource_id] = len(target) - 1
+            continue
+
+        position = index[resource_id]
+        existing = target[position]
+        for field in (
+            "tenant_id",
+            "subscription_id",
+            "entity_type",
+            "lifecycle_status",
+        ):
+            if str(existing.get(field) or "").casefold() != str(
+                addition.get(field) or ""
+            ).casefold():
+                raise ValueError(
+                    "Conflicting granular ontology entity "
+                    f"{resource_id}: {field}"
+                )
+
+        payload = _merge_ontology_json_objects(
+            existing.get("payload_json"),
+            addition.get("payload_json"),
+            field_name="payload_json",
+        )
+        lineage = _merge_ontology_json_objects(
+            existing.get("lineage_json"),
+            addition.get("lineage_json"),
+            field_name="lineage_json",
+            merge_list_keys=frozenset({"source_resource_ids"}),
+        )
+        merged = {
+            **existing,
+            "payload_json": json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "lineage_json": json.dumps(
+                lineage,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        merged["change_version"] = entity_change_version(merged)
+        target[position] = merged
+
+
+def _merge_granular_ontology_relationships(
+    target: list[dict[str, Any]],
+    additions: list[dict[str, Any]],
+) -> None:
+    index = {
+        str(row.get("resource_id") or "").strip().casefold(): position
+        for position, row in enumerate(target)
+        if str(row.get("resource_id") or "").strip()
+    }
+    for addition in additions:
+        resource_id = str(addition.get("resource_id") or "").strip().casefold()
+        if not resource_id or resource_id not in index:
+            target.append(addition)
+            if resource_id:
+                index[resource_id] = len(target) - 1
+            continue
+
+        position = index[resource_id]
+        existing = target[position]
+        for field in (
+            "tenant_id",
+            "subscription_id",
+            "subject_id",
+            "subject_type",
+            "predicate",
+            "object_id",
+            "object_type",
+            "source",
+            "scope",
+            "lifecycle_status",
+        ):
+            if str(existing.get(field) or "").casefold() != str(
+                addition.get(field) or ""
+            ).casefold():
+                raise ValueError(
+                    "Conflicting granular ontology relationship "
+                    f"{resource_id}: {field}"
+                )
+        if existing.get("confidence") != addition.get("confidence"):
+            raise ValueError(
+                "Conflicting granular ontology relationship "
+                f"{resource_id}: confidence"
+            )
+
+        payload = _merge_ontology_json_objects(
+            existing.get("payload_json"),
+            addition.get("payload_json"),
+            field_name="payload_json",
+        )
+        lineage = _merge_ontology_json_objects(
+            existing.get("lineage_json"),
+            addition.get("lineage_json"),
+            field_name="lineage_json",
+            merge_list_keys=frozenset({"source_entity_ids"}),
+        )
+        merged = {
+            **existing,
+            "payload_json": json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "lineage_json": json.dumps(
+                lineage,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        merged["change_version"] = relationship_change_version(merged)
+        target[position] = merged
+
+
+def _merge_ontology_json_objects(
+    primary: Any,
+    supplement: Any,
+    *,
+    field_name: str,
+    merge_list_keys: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    values: list[dict[str, Any]] = []
+    for value in (primary, supplement):
+        try:
+            parsed = json.loads(str(value))
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(
+                f"Granular ontology entity {field_name} must be a JSON object"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise TypeError(
+                f"Granular ontology entity {field_name} must be a JSON object"
+            )
+        values.append(parsed)
+
+    merged = dict(values[0])
+    for key, value in values[1].items():
+        if key in merge_list_keys:
+            current = merged.get(key, [])
+            if not isinstance(current, list) or not isinstance(value, list):
+                raise ValueError(
+                    f"Granular ontology entity {field_name}.{key} must be a list"
+                )
+            merged[key] = sorted(
+                {
+                    str(item)
+                    for item in [*current, *value]
+                    if str(item)
+                }
+            )
+        elif key not in merged:
+            merged[key] = value
+        elif merged[key] == value or (
+            key.casefold() in {"id", "resourcetype"}
+            and isinstance(merged[key], str)
+            and isinstance(value, str)
+            and merged[key].casefold() == value.casefold()
+        ):
+            continue
+        else:
+            raise ValueError(
+                f"Conflicting granular ontology entity {field_name}.{key}"
+            )
+    return merged
 
 
 def _dedupe_changes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
