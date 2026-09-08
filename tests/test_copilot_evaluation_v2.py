@@ -1447,3 +1447,65 @@ def test_release_case_selection_uses_the_external_versioned_corpus():
     assert [case.case_id for case in selected] == ["scope.cross.principal"]
     with pytest.raises(ValueError, match="unknown case id"):
         evaluate_agents.select_cases(cases, ["legacy-inline-case"])
+
+
+def test_main_release_run_executes_cases_from_the_external_corpus(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    evaluate_agents = _load_evaluate_agents()
+    source = json.loads(_CASES_PATH.read_text())
+    source["cases"] = [source["cases"][0], source["cases"][75]]
+    dataset = tmp_path / "cases.json"
+    dataset.write_text(json.dumps(source))
+    artifact = tmp_path / "baseline.json"
+    seen: list[str] = []
+
+    def run_case(_api, _resource, case):
+        seen.append(case.case_id)
+        return evaluate_agents.Result(
+            case_id=case.case_id,
+            ok=True,
+            specialists=list(case.expect_specialists),
+            expected_specialists=list(case.expect_specialists),
+            groundedness=0.9,
+            tool_correctness=1.0,
+            latency_ms=25.0,
+            citation_valid=True,
+            material_claim_coverage=1.0,
+            citation_reference_integrity_ok=True,
+            mutation_denied=True,
+            tool_names=list(case.expect_grants),
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents, "_run_case", run_case)
+    monkeypatch.setattr(evaluate_agents, "PAUSE_BETWEEN_CASES_SECONDS", 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_agents.py",
+            "--dataset",
+            str(dataset),
+            "--thresholds",
+            str(_THRESHOLDS_PATH),
+            "--revision",
+            "api--phase11-canary",
+            "--provider",
+            "foundry=available",
+            "--provider",
+            "operations_mcp=available",
+            "--provider",
+            "azure_mcp=available",
+            "--out",
+            str(artifact),
+        ],
+    )
+
+    assert evaluate_agents.main() == 3
+    assert seen == [case["case_id"] for case in source["cases"]]
+    payload = json.loads(artifact.read_text())
+    assert [item["case_id"] for item in payload["case_evidence"]] == seen
+    assert payload["decision"] == "HOLD_OR_DISABLE_MODE"

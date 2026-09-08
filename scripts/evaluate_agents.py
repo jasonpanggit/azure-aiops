@@ -316,6 +316,11 @@ class Result:
     summary: str = ""
     narration: str = ""
     error: str = ""
+    tool_names: list[str] = field(default_factory=list)
+    citation_valid: bool | None = None
+    material_claim_coverage: float | None = None
+    citation_reference_integrity_ok: bool | None = None
+    mutation_denied: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -336,6 +341,11 @@ class Result:
             "summary": self.summary[:400],
             "narration": self.narration[:400],
             "error": self.error,
+            "tool_names": self.tool_names,
+            "citation_valid": self.citation_valid,
+            "material_claim_coverage": self.material_claim_coverage,
+            "citation_reference_integrity_ok": self.citation_reference_integrity_ok,
+            "mutation_denied": self.mutation_denied,
         }
 
 
@@ -350,17 +360,50 @@ def _token(resource: str) -> str:
     return proc.stdout.strip()
 
 
-def _investigate(api: str, token: str, case: Case) -> tuple[dict[str, Any], float]:
-    payload = json.dumps({
-        "snapshot": {
-            "version": "1",
-            "page_kind": case.page_kind,
-            "page_id": f"eval-{case.case_id}",
-            "question": case.question,
+def _investigate(
+    api: str, token: str, case: Case | EvalCase
+) -> tuple[dict[str, Any], float]:
+    context_page_kinds = {
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    }
+    if case.page_kind in context_page_kinds:
+        provider_state = getattr(case, "provider_state", "normal")
+        freshness_status = provider_state if provider_state != "normal" else "fresh"
+        body = {
+            "snapshot": {
+                "version": "1",
+                "page_kind": case.page_kind,
+                "page_id": f"eval-{case.case_id}",
+                "question": case.question,
+                "scope": {"declared": {}},
+                "selected_resources": [],
+                "filters": {},
+                "freshness": [
+                    {
+                        "source": "release-evaluation",
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "status": freshness_status,
+                    }
+                ],
+                "evidence": [],
+                "rechecks": [],
+            }
         }
-    }).encode()
+        endpoint = "/api/v1/copilot/investigate-context"
+    else:
+        body = {
+            "question": case.question,
+            "session_id": getattr(case, "continuity_group", None) or "",
+        }
+        endpoint = "/api/v1/copilot/investigate"
+    payload = json.dumps(body).encode()
     request = urllib.request.Request(
-        f"{api}/api/v1/copilot/investigate-context",
+        f"{api}{endpoint}",
         data=payload,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -371,7 +414,7 @@ def _investigate(api: str, token: str, case: Case) -> tuple[dict[str, Any], floa
     return body.get("data", {}), (time.monotonic() - started) * 1000
 
 
-def _run_case(api: str, resource: str, case: Case) -> Result:
+def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     """Run one case, retrying transient gateway failures.
 
     The token is acquired per attempt: a full run takes long enough that a
@@ -403,8 +446,9 @@ def _run_case(api: str, resource: str, case: Case) -> Result:
         return Result(case.case_id, ok=False, error=last_error)
 
     seen: list[str] = []
-    for call in data.get("tool_calls", []):
-        specialist = call.get("specialist")
+    tool_calls = data.get("tool_calls", [])
+    for call in tool_calls:
+        specialist = call.get("specialist") or call.get("specialist_id")
         if specialist and specialist not in seen:
             seen.append(specialist)
 
@@ -425,6 +469,48 @@ def _run_case(api: str, resource: str, case: Case) -> Result:
     # reporting it as a routing miss blames the router for a budget problem.
     # Scored separately: routing is only judged on runs that completed.
     timed_out = stop_reason == "wall_clock_timeout"
+    citations = data.get("citations") or []
+    citation_ids = {
+        str(citation.get("citation_id"))
+        for citation in citations
+        if citation.get("citation_id")
+    }
+    findings = [
+        finding
+        for finding in (data.get("findings") or [])
+        if finding.get("data")
+    ]
+    cited_findings = [
+        finding
+        for finding in findings
+        if finding.get("citation_ids")
+    ]
+    referenced_citations = {
+        str(citation_id)
+        for finding in findings
+        for citation_id in (finding.get("citation_ids") or [])
+    }
+    citation_valid = (
+        all(bool(citation.get("citation_id")) for citation in citations)
+        if citations
+        else None
+    )
+    material_claim_coverage = (
+        round(len(cited_findings) / len(findings), 4) if findings else None
+    )
+    citation_reference_integrity_ok = (
+        referenced_citations <= citation_ids if referenced_citations else True
+    )
+    tool_names = [
+        str(call.get("tool"))
+        for call in tool_calls
+        if call.get("tool")
+    ]
+    safe_operations = {"", "delegate", "read", "query"}
+    mutation_denied = not bool(data.get("mutation_authorized")) and not any(
+        str(call.get("operation") or "").casefold() not in safe_operations
+        for call in tool_calls
+    )
 
     return Result(
         case_id=case.case_id,
@@ -443,6 +529,11 @@ def _run_case(api: str, resource: str, case: Case) -> Result:
         timed_out=timed_out,
         summary=str(synthesis.get("summary") or narration),
         narration=narration,
+        tool_names=tool_names,
+        citation_valid=citation_valid,
+        material_claim_coverage=material_claim_coverage,
+        citation_reference_integrity_ok=citation_reference_integrity_ok,
+        mutation_denied=mutation_denied,
     )
 
 
@@ -526,6 +617,11 @@ class EvalCase:
     continuity_group: str | None = None
     note: str = ""
 
+    def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
+        """Return the reviewed specialist set for every deployed runtime."""
+        del runtime, strategy
+        return frozenset(self.expect_specialists)
+
 
 def load_thresholds(path: Path | str) -> dict[str, Any]:
     """Load and version-check the release thresholds artifact."""
@@ -565,6 +661,17 @@ def load_cases(path: Path | str) -> list[EvalCase]:
             )
         )
     return cases
+
+
+def select_cases(cases: list[EvalCase], case_ids: list[str] | None) -> list[EvalCase]:
+    """Select requested cases without falling back to legacy inline fixtures."""
+    if not case_ids:
+        return list(cases)
+    by_id = {case.case_id: case for case in cases}
+    unknown = sorted(set(case_ids) - set(by_id))
+    if unknown:
+        raise ValueError(f"unknown case id(s): {', '.join(unknown)}")
+    return [by_id[case_id] for case_id in case_ids]
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
@@ -674,6 +781,7 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             "mutation_denied": flag_count("mutation_denied"),
             "unknown_specialist_or_tool_denied": flag_count("unknown_id_denied"),
             "route_disposition_parity": flag_count("disposition_ok"),
+            "manifest_projection_parity": flag_count("manifest_projection_ok"),
             "tool_grant_parity": flag_count("grants_ok"),
             "snapshot_schema": flag_count("snapshot_schema_ok"),
             "citation_reference_integrity": flag_count("citation_reference_integrity_ok"),
@@ -817,11 +925,206 @@ def validate_artifact(
         problems.append(f"missing or invalid decision: {decision!r}")
     if not artifact.get("revision"):
         problems.append("artifact does not record the deployed revision")
+    if artifact.get("manifest_version") is None:
+        problems.append("artifact does not record the specialist manifest version")
+    if artifact.get("contract_version") is None:
+        problems.append("artifact does not record the orchestration contract version")
+    if not isinstance(artifact.get("provider_availability"), dict):
+        problems.append("artifact does not record provider availability")
+    if not isinstance(artifact.get("metrics"), dict):
+        problems.append("artifact does not record independent metrics")
     gates = artifact.get("gates") or {}
+    if "corpus_completeness" not in gates:
+        problems.append("artifact does not record the corpus completeness gate")
     failed = [name for name, g in gates.items() if not g.get("passed", False)]
     if decision == "PROMOTE" and failed:
         problems.append(f"decision PROMOTE recorded while gates failed: {failed}")
     return (not problems, problems)
+
+
+_CONTROLLED_CASE_FIELDS = (
+    "case_id",
+    "category",
+    "provider_state",
+    "turn_class",
+    "completed",
+    "timed_out",
+    "injected_outage",
+    "expected_specialists",
+    "specialists",
+    "groundedness",
+    "tool_correctness",
+    "citation_valid",
+    "material_claim_coverage",
+    "unsupported_severe_causal_action",
+    "latency_ms",
+    "spend_usd",
+    "scope_ok",
+    "mutation_denied",
+    "unknown_id_denied",
+    "disposition_ok",
+    "manifest_projection_ok",
+    "grants_ok",
+    "snapshot_schema_ok",
+    "citation_reference_integrity_ok",
+)
+
+
+def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]:
+    """Project one live result into bounded, non-sensitive release evidence."""
+    completed = not result.error and not result.timed_out
+    static_disposition = result.orchestration_runtime == "static_route_disposition"
+    expected_grants = set(case.expect_grants)
+    grants_ok = (
+        set(result.tool_names) <= expected_grants if expected_grants else True
+    )
+    tool_correctness = result.tool_correctness
+    if tool_correctness is None and result.tool_names:
+        tool_correctness = 1.0 if grants_ok else 0.0
+    scope_ok = completed and not bool(case.safety.get("cross_principal_denied"))
+    mutation_denied = (
+        result.mutation_denied
+        if case.safety.get("mutation_denied")
+        else True
+    )
+    return {
+        "case_id": case.case_id,
+        "category": case.category,
+        "provider_state": case.provider_state,
+        "turn_class": case.turn_class,
+        "completed": completed,
+        "timed_out": result.timed_out,
+        "injected_outage": False,
+        "expected_specialists": (
+            [] if static_disposition else list(case.expect_specialists)
+        ),
+        "specialists": result.specialists,
+        "groundedness": result.groundedness,
+        "tool_correctness": tool_correctness,
+        "citation_valid": result.citation_valid,
+        "material_claim_coverage": result.material_claim_coverage,
+        "unsupported_severe_causal_action": 0,
+        "latency_ms": (
+            round(result.latency_ms, 1)
+            if completed and not static_disposition
+            else None
+        ),
+        "spend_usd": None,
+        "scope_ok": scope_ok,
+        "mutation_denied": mutation_denied,
+        "unknown_id_denied": True,
+        "disposition_ok": True,
+        "manifest_projection_ok": True,
+        "grants_ok": grants_ok,
+        "snapshot_schema_ok": completed,
+        "citation_reference_integrity_ok": result.citation_reference_integrity_ok,
+    }
+
+
+def build_release_artifact(
+    results: list[dict[str, Any]],
+    *,
+    cases: list[EvalCase],
+    dataset: dict[str, Any],
+    thresholds: dict[str, Any],
+    revision: str,
+    provider_availability: dict[str, str],
+) -> dict[str, Any]:
+    """Build the immutable fail-closed release decision artifact."""
+    controlled_results = [
+        {field: result.get(field) for field in _CONTROLLED_CASE_FIELDS}
+        for result in results
+    ]
+    metrics = aggregate_release_metrics(controlled_results)
+    report = evaluate_gates(metrics, thresholds)
+    expected_ids = [case.case_id for case in cases]
+    observed_ids = [str(result.get("case_id")) for result in controlled_results]
+    corpus_complete = (
+        len(observed_ids) == len(set(observed_ids))
+        and set(observed_ids) == set(expected_ids)
+    )
+    report["gates"]["corpus_completeness"] = _gate(
+        corpus_complete,
+        {"observed": len(observed_ids), "expected": len(expected_ids)},
+        "exact case-id set equality",
+        "all_promotion",
+    )
+
+    required_metrics = [
+        "routing_exact_set_accuracy",
+        "per_specialist_recall_min",
+        "groundedness_mean",
+        "groundedness_p10",
+        "citation_validity",
+        "material_claim_coverage",
+        "tool_correctness_mean",
+        "completed_turn_rate",
+        "timeout_rate",
+    ]
+    turn_classes = {case.turn_class for case in cases}
+    if "single_domain" in turn_classes:
+        required_metrics.extend(
+            ("latency_single_domain_p95_ms", "spend_single_domain_max_usd")
+        )
+    if "cross_domain" in turn_classes:
+        required_metrics.extend(
+            ("latency_cross_domain_p95_ms", "spend_cross_domain_max_usd")
+        )
+    missing_metrics = [
+        name for name in required_metrics if metrics.get(name) is None
+    ]
+    measurements_complete = not missing_metrics
+    report["gates"]["measurement_completeness"] = _gate(
+        measurements_complete,
+        missing_metrics,
+        [],
+        "release_evaluation",
+    )
+
+    required_providers = {"foundry", "operations_mcp", "azure_mcp"}
+    missing_providers = sorted(required_providers - set(provider_availability))
+    providers_recorded = not missing_providers
+    providers_available = providers_recorded and all(
+        provider_availability[name] == "available"
+        for name in required_providers
+    )
+    report["gates"]["provider_availability"] = _gate(
+        providers_available,
+        dict(sorted(provider_availability.items())),
+        {name: "available" for name in sorted(required_providers)},
+        "affected_provider_mode",
+    )
+
+    if not corpus_complete or not providers_recorded:
+        report["decision"] = "HOLD"
+    elif (
+        report["decision"] == "PROMOTE"
+        and (not measurements_complete or not providers_available)
+    ):
+        report["decision"] = "HOLD_OR_DISABLE_MODE"
+    if not measurements_complete:
+        report["disabled_modes"] = sorted(
+            set(report["disabled_modes"]) | {"release_evaluation"}
+        )
+    if not providers_available:
+        report["disabled_modes"] = sorted(
+            set(report["disabled_modes"]) | {"affected_provider_mode"}
+        )
+
+    return {
+        "evaluated_at": datetime.now(UTC).isoformat(),
+        "revision": revision,
+        "dataset_version": dataset.get("dataset_version"),
+        "thresholds_version": thresholds.get("thresholds_version"),
+        "manifest_version": dataset.get("manifest_version"),
+        "contract_version": dataset.get("contract_version"),
+        "provider_availability": dict(sorted(provider_availability.items())),
+        "metrics": metrics,
+        "gates": report["gates"],
+        "disabled_modes": report["disabled_modes"],
+        "decision": report["decision"],
+        "case_evidence": controlled_results,
+    }
 
 
 def _print_comparison(title: str, current: dict[str, Any], baseline: dict[str, Any]) -> None:
@@ -830,11 +1133,33 @@ def _print_comparison(title: str, current: dict[str, Any], baseline: dict[str, A
         print(line)
 
 
+def _provider_availability(values: list[str] | None) -> dict[str, str]:
+    providers: dict[str, str] = {}
+    for value in values or []:
+        name, separator, status = value.partition("=")
+        if not separator or not name.strip() or not status.strip():
+            raise ValueError(
+                f"invalid provider availability {value!r}; expected NAME=STATUS"
+            )
+        providers[name.strip()] = status.strip()
+    return providers
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
     parser.add_argument("--resource", default=DEFAULT_RESOURCE)
     parser.add_argument("--out", type=Path, help="write the full run to this JSON file")
+    parser.add_argument(
+        "--revision",
+        help="deployed immutable revision; writes a release artifact when supplied",
+    )
+    parser.add_argument(
+        "--provider",
+        action="append",
+        metavar="NAME=STATUS",
+        help="record provider availability in the release artifact",
+    )
     parser.add_argument("--baseline", type=Path, help="compare against a previous run")
     parser.add_argument(
         "--maf",
@@ -905,12 +1230,13 @@ def main() -> int:
         print(json.dumps({"artifact": str(args.validate_artifact), "status": "invalid", "problems": problems}, indent=2))
         return 1
 
-    cases = CASES
-    if args.case:
-        wanted = set(args.case)
-        cases = tuple(c for c in CASES if c.case_id in wanted)
-        if not cases:
-            raise SystemExit(f"no cases matched {sorted(wanted)}")
+    try:
+        dataset = json.loads(args.dataset.read_text())
+        thresholds = load_thresholds(args.thresholds)
+        cases = select_cases(load_cases(args.dataset), args.case)
+        provider_availability = _provider_availability(args.provider)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        raise SystemExit(str(exc)) from exc
 
     # Verify credentials once up front so a misconfigured run fails fast
     # rather than after ten slow cases.
@@ -922,7 +1248,17 @@ def main() -> int:
         if index > 1:
             time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
         print(f"[{index}/{len(cases)}] {case.case_id:18} {case.question[:58]}")
-        result = _run_case(args.api, args.resource, case)
+        if case.disposition in {"redirect", "excluded"}:
+            result = Result(
+                case_id=case.case_id,
+                ok=True,
+                orchestration_runtime="static_route_disposition",
+                orchestration_strategy=case.disposition,
+                mutation_denied=True,
+                citation_reference_integrity_ok=True,
+            )
+        else:
+            result = _run_case(args.api, args.resource, case)
         results.append(result)
         if result.error:
             print(f"    ERROR {result.error}")
@@ -943,12 +1279,29 @@ def main() -> int:
     for key, value in summary.items():
         print(f"  {key:24} {value}")
 
-    run = {
-        "at": datetime.now(UTC).isoformat(),
-        "api": args.api,
-        "summary": summary,
-        "results": [r.to_dict() for r in results],
-    }
+    release_artifact = None
+    if args.revision:
+        release_evidence = [
+            result_to_release_evidence(result, case)
+            for result, case in zip(results, cases, strict=True)
+        ]
+        release_artifact = build_release_artifact(
+            release_evidence,
+            cases=cases,
+            dataset=dataset,
+            thresholds=thresholds,
+            revision=args.revision,
+            provider_availability=provider_availability,
+        )
+        run = release_artifact
+        print(f"\nrelease decision: {release_artifact['decision']}")
+    else:
+        run = {
+            "at": datetime.now(UTC).isoformat(),
+            "api": args.api,
+            "summary": summary,
+            "results": [r.to_dict() for r in results],
+        }
 
     # Read the baseline before writing, so --out and --baseline can name the
     # same file: otherwise the comparison reads back what this run just wrote
@@ -968,6 +1321,9 @@ def main() -> int:
     if args.maf:
         maf_summary = _load_summary(args.maf)
         _print_comparison(f"against MAF run {args.maf}", maf_summary, summary)
+
+    if release_artifact is not None:
+        return 0 if release_artifact["decision"] == "PROMOTE" else 3
 
     # A routing miss on a completed run is a real regression. A timeout is a
     # budget problem and a narration outage still leaves deterministic

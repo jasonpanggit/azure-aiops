@@ -182,7 +182,6 @@ print(
         {
             "status": "passed",
             "promotion": promotion,
-            "rollout_mode": rollout_mode,
             "parity_status": parity_status,
             "specialist_count": parity["specialist_count"],
             "ontology_version": ready["ontology_version"],
