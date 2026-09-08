@@ -525,10 +525,12 @@ class TestGaps:
         }
         assert second["data"]["gaps"] == complete["data"]["gaps"][1:2]
         assert second["pagination"]["next_offset"] == 2
-        assert any(
-            f"Showing 1 of {total} inspection gaps" in warning
-            for warning in first["warnings"]
-        )
+        assert first["warnings"] == [
+            (
+                f"Showing 1 of {total} inspection gaps; "
+                "use pagination for the complete result"
+            )
+        ]
 
 
 class TestRuleFindings:
@@ -627,17 +629,21 @@ class TestRuleFindings:
         }
         assert second["data"]["findings"] == complete["data"]["findings"][1:2]
         assert second["pagination"]["next_offset"] == 2
-        assert any(
-            f"Showing 1 of {total} rule findings" in warning
-            for warning in first["warnings"]
-        )
+        assert first["warnings"] == [
+            (
+                f"Showing 1 of {total} rule findings; "
+                "use pagination for the complete result"
+            )
+        ]
 
 
 class TestFirewallBypass:
-    def test_answers_which_spokes_bypass_the_firewall(self, client):
+    def test_returns_a_count_of_bypass_findings(self, client):
         response = client.get("/api/v1/network/firewall-bypass", headers=_auth())
         assert response.status_code == 200
-        assert response.json()["data"]["count"] >= 1
+        data = response.json()["data"]
+        assert data["count"] == len(data["gaps"])
+        assert data["count"] >= 1
 
 
 class TestUnavailableSnapshot:

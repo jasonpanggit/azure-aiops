@@ -345,6 +345,20 @@ class TestEvidence:
             "Results are truncated; narrow the scope or use pagination for a complete view."
         ]
 
+    def test_explicit_pagination_warning_can_own_truncation_copy(self):
+        warning = (
+            "Showing 20 of 77 inspection gaps; "
+            "use pagination for the complete result"
+        )
+
+        body = envelope(
+            {"coverage": {"total": 77, "returned": 20, "truncated": True}},
+            warnings=[warning],
+            automatic_truncation_warning=False,
+        )
+
+        assert body["warnings"] == [warning]
+
     def test_envelope_promotes_hybrid_freshness_metadata(self):
         body = envelope(
             {

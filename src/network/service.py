@@ -212,6 +212,7 @@ class NetworkIntelligenceService:
         semantic_relationships: Iterable[Mapping[str, Any]] = (),
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
         peer_resolutions: Mapping[str, str] | None = None,
+        scope_excluded_resource_ids: Iterable[str] = (),
         topology_build_duration_ms: int | None = None,
     ) -> None:
         self.snapshot = snapshot
@@ -236,6 +237,11 @@ class NetworkIntelligenceService:
                 str(peer_id or "").casefold(): str(resolution or "")
                 for peer_id, resolution in peer_resolutions.items()
             }
+        )
+        self.scope_excluded_resource_ids = frozenset(
+            str(resource_id or "").casefold()
+            for resource_id in scope_excluded_resource_ids
+            if resource_id
         )
         self.topology_build_duration_ms = topology_build_duration_ms
         self._topology: NetworkTopology | None = None
@@ -343,6 +349,7 @@ class NetworkIntelligenceService:
                 self.semantic_relationships,
                 flow_log_provenance=self.flow_log_provenance,
                 peer_resolutions=self.peer_resolutions,
+                scope_excluded_resource_ids=self.scope_excluded_resource_ids,
             )
         return self._topology
 
@@ -412,6 +419,10 @@ class NetworkIntelligenceService:
                 peer_resolutions[peer_id] = "excluded_by_scope"
             else:
                 peer_resolutions[peer_id] = "not_ingested"
+        scope_excluded_resource_ids = set(self.scope_excluded_resource_ids)
+        scope_excluded_resource_ids.update(
+            _snapshot_resource_ids(self.snapshot) - _snapshot_resource_ids(snapshot)
+        )
         return NetworkIntelligenceService(
             snapshot,
             policy=self.policy,
@@ -428,6 +439,7 @@ class NetworkIntelligenceService:
                 )
             ),
             peer_resolutions=peer_resolutions,
+            scope_excluded_resource_ids=scope_excluded_resource_ids,
             topology_build_duration_ms=self.topology_build_duration_ms,
         )
 
@@ -468,7 +480,7 @@ class NetworkIntelligenceService:
         }
 
     def firewall_bypass_spokes(self) -> tuple[NetworkGap, ...]:
-        """Answers "which spokes bypass the firewall?"."""
+        """Return every route or public-IP finding that can bypass inspection."""
         return tuple(gap for gap in self.gaps if gap.category == "firewall_bypass")
 
 def build_service(

@@ -300,6 +300,68 @@ describe("Network page honest totals and server pagination", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps owned pagination copy in the contextual callout, not global provenance", async () => {
+    const gapEnvelope = buildGapsEnvelope(77, 0, 20);
+    gapEnvelope.warnings = [
+      "Results are truncated; narrow the scope or use pagination for a complete view.",
+      "Showing 20 of 77 inspection gaps; use pagination for the complete result",
+    ];
+    mocks.gaps.mockResolvedValue(gapEnvelope);
+    mocks.ruleFindings.mockResolvedValue(buildRuleFindingsEnvelope(6, 0, 20));
+
+    renderPage();
+
+    const provenance = await screen.findByLabelText("Data trust and provenance");
+    expect(provenance).not.toHaveTextContent("Results are truncated");
+    expect(provenance).not.toHaveTextContent("Showing 20 of 77 inspection gaps");
+    expect(
+      screen.getByRole("status", { name: "Incomplete network analysis results" }),
+    ).toHaveTextContent(
+      "Showing 20 of 77 inspection gaps and 6 of 6 rule findings.",
+    );
+  });
+
+  it("retains a collection pagination warning when the contextual owner is unavailable", async () => {
+    const gapEnvelope = buildGapsEnvelope(77, 0, 20);
+    gapEnvelope.warnings = [
+      "Showing 20 of 77 inspection gaps; use pagination for the complete result",
+    ];
+    mocks.gaps.mockResolvedValue(gapEnvelope);
+    mocks.ruleFindings.mockRejectedValue(new Error("rule findings unavailable"));
+
+    renderPage();
+
+    expect(await screen.findByLabelText("Data trust and provenance")).toHaveTextContent(
+      "Showing 20 of 77 inspection gaps",
+    );
+    expect(screen.queryByText("Results are incomplete.")).not.toBeInTheDocument();
+  });
+
+  it("qualifies trust dimensions and describes the bypass finding population", async () => {
+    const topology = buildTopologyEnvelope(1, 1);
+    topology.data.summary = buildNetworkSummary({
+      hub_count: 1,
+      spoke_count: 0,
+    });
+    const bypass = bypassEnvelope();
+    bypass.data.count = 2;
+    mocks.topology.mockResolvedValue(topology);
+    mocks.firewallBypass.mockResolvedValue(bypass);
+
+    renderPage();
+
+    const provenance = await screen.findByLabelText("Data trust and provenance");
+    expect(provenance).toHaveTextContent("Topology evidence · high confidence");
+    expect(provenance).toHaveTextContent("Topology graph observed Unknown");
+    const bypassMetric = screen.getByText("Inspection bypass findings").closest("article");
+    expect(bypassMetric).not.toBeNull();
+    expect(bypassMetric).toHaveTextContent("2");
+    expect(bypassMetric).toHaveTextContent(
+      "Subnet route and public-IP findings that may avoid firewall inspection",
+    );
+    expect(bypassMetric).not.toHaveTextContent("Spokes");
+  });
+
   it("renders server-authored topology integrity warnings", async () => {
     const topology = buildTopologyEnvelope();
     topology.data.topology.warnings = [

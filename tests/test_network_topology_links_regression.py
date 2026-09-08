@@ -9,6 +9,7 @@ from api.evidence import classify_freshness
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 from network import NetworkIntelligenceService, load_network_snapshot
 from network.models import NetworkSnapshot, PrivateDnsZone
+from network.service import NetworkScope
 from onboarding.graph_normalize import Normalizer
 from onboarding.query_catalog import NETWORK_RESOURCE_TYPES
 
@@ -341,6 +342,7 @@ def test_consistent_topology_reports_no_dropped_relationships() -> None:
     payload = NetworkIntelligenceService(small_estate()).topology.to_dict()
 
     assert payload["counts"]["dropped_relationships"] == {}
+    assert payload["counts"].get("dropped_relationship_reasons", {}) == {}
     assert payload.get("warnings", []) == []
 
 
@@ -359,10 +361,57 @@ def test_dangling_relationship_is_counted_without_disclosing_endpoint_ids() -> N
     payload = NetworkIntelligenceService(snapshot).topology.to_dict()
 
     assert payload["counts"]["dropped_relationships"]["hosts"] == 1
-    assert payload["warnings"]
-    warning_text = " ".join(payload["warnings"])
-    assert "hosts" in warning_text
+    assert payload["counts"]["dropped_relationship_reasons"] == {
+        "missing_or_unprojected": {"hosts": 1}
+    }
+    assert payload["warnings"] == [
+        (
+            "1 topology relationship omitted because an endpoint was missing "
+            "or not projected in this topology (hosts=1)"
+        )
+    ]
+    warning_text = payload["warnings"][0]
     assert missing_endpoint_id.casefold() not in warning_text.casefold()
+
+
+def test_scope_excluded_endpoint_has_a_distinct_drop_reason() -> None:
+    snapshot = small_estate()
+    endpoint = snapshot.private_endpoints[0]
+    subnet = snapshot.subnets[0]
+    referencing_subnet = replace(
+        subnet,
+        private_endpoint_ids=(endpoint.resource_id,),
+    )
+    foreign_endpoint = replace(
+        endpoint,
+        subscription_id="scope-excluded-subscription",
+    )
+    snapshot = replace(
+        snapshot,
+        subnets=(referencing_subnet, *snapshot.subnets[1:]),
+        private_endpoints=tuple(
+            foreign_endpoint
+            if item.resource_id == endpoint.resource_id
+            else item
+            for item in snapshot.private_endpoints
+        ),
+    )
+
+    payload = NetworkIntelligenceService(snapshot).scoped(
+        NetworkScope(subscription_ids=(subnet.subscription_id,))
+    ).topology.to_dict()
+
+    assert payload["counts"]["dropped_relationships"] == {"hosts": 1}
+    assert payload["counts"]["dropped_relationship_reasons"] == {
+        "excluded_by_scope": {"hosts": 1}
+    }
+    assert payload["warnings"] == [
+        (
+            "1 topology relationship omitted because an endpoint was outside "
+            "the selected scope (hosts=1)"
+        )
+    ]
+    assert endpoint.resource_id.casefold() not in payload["warnings"][0].casefold()
 
 
 def test_snapshot_observation_backfills_unstamped_ontology_rows() -> None:

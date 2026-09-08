@@ -23,6 +23,17 @@ import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, Networ
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 const NETWORK_PAGE_SIZE = 20;
+const GENERIC_TRUNCATION_WARNING =
+  "Results are truncated; narrow the scope or use pagination for a complete view.";
+
+function isCollectionPaginationWarning(warning: string): boolean {
+  return (
+    warning === GENERIC_TRUNCATION_WARNING ||
+    /^Showing \d+ of \d+ (inspection gaps|rule findings); use pagination for the complete result$/.test(
+      warning,
+    )
+  );
+}
 
 /** Network decision workspace for cross-environment reachability, inspection, and rule analysis. */
 export default function NetworkPage() {
@@ -196,10 +207,22 @@ export default function NetworkPage() {
     ...(topology.data?.warnings ?? []),
     ...(topology.data?.data.topology.warnings ?? []),
   ]));
-  const warnings = Array.from(new Set([
-    ...topologyWarnings,
+  const contextualCoverageOwnsPagination = Boolean(
+    gaps.data &&
+      findings.data &&
+      (gapCoverage?.truncated || findingCoverage?.truncated),
+  );
+  const collectionWarnings = [
     ...(gaps.data?.warnings ?? []),
     ...(findings.data?.warnings ?? []),
+  ].filter(
+    (warning) =>
+      !contextualCoverageOwnsPagination ||
+      !isCollectionPaginationWarning(warning),
+  );
+  const warnings = Array.from(new Set([
+    ...topologyWarnings,
+    ...collectionWarnings,
     ...(bypass.data?.warnings ?? []),
   ]));
   const networkCopilot = buildNetworkCopilotContext({
@@ -236,6 +259,8 @@ export default function NetworkPage() {
         knowledgeVersion={topology.data?.knowledge_version}
         graphFreshness={topology.data?.graph_freshness}
         warnings={warnings}
+        confidenceSubject="Topology evidence"
+        graphTimestampLabel="Topology graph observed"
       />
 
       <div className="metric-grid network-metrics">
@@ -245,9 +270,9 @@ export default function NetworkPage() {
           detail="Hub / spoke VNets across the current scope"
         />
         <MetricCard
-          label="Inspection bypass"
+          label="Inspection bypass findings"
           value={bypass.data?.data.count ?? "—"}
-          detail="Spokes with a path that may avoid firewall inspection"
+          detail="Subnet route and public-IP findings that may avoid firewall inspection"
           tone={bypass.data ? (bypass.data.data.count > 0 ? "critical" : "success") : "default"}
         />
         <MetricCard
@@ -274,7 +299,7 @@ export default function NetworkPage() {
         </div>
       )}
 
-      {gaps.data && findings.data && (gapCoverage?.truncated || findingCoverage?.truncated) && (
+      {contextualCoverageOwnsPagination && (
         <div
           className="callout callout-warning topology-coverage"
           role="status"
