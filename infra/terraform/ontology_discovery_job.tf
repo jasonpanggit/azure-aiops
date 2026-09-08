@@ -18,7 +18,7 @@ variable "ontology_discovery_schedule" {
 }
 
 locals {
-  ontology_discovery_image = var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image)
+  ontology_discovery_image = var.ontology_discovery_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_discovery_image_digest}" : (var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image))
 
   ontology_connection_home            = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections" : "/tmp/aiops/connections"
   ontology_command_home               = var.enable_fabric ? "abfss://${fabric_workspace.ontology_command[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.ontology_command[0].id}/Files/aiops/ontology/commands" : "/tmp/aiops/ontology/commands"
@@ -404,6 +404,119 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
     fabric_workspace_role_assignment.ontology_publisher,
     terraform_data.foundry_ontology_curator_agent,
   ]
+}
+
+resource "azurerm_container_app_job" "ontology_evidence_read" {
+  count = var.ontology_discovery_environment == "validation" && var.enable_fabric ? 1 : 0
+
+  name                         = "ontology-evidence-read"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+  replica_timeout_in_seconds   = 600
+  replica_retry_limit          = 0
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.azure_mcp.id]
+  }
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.azure_mcp.id
+  }
+  manual_trigger_config {
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+  template {
+    container {
+      name    = "ontology-evidence-read"
+      image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
+      cpu     = var.api_cpu
+      memory  = var.api_memory
+      command = ["python", "/app/scripts/collect_ontology_evidence.py"]
+      args    = ["--emit-console-record"]
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.azure_mcp.client_id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_OBJECT_ID"
+        value = azurerm_user_assigned_identity.azure_mcp.principal_id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_SUBSCRIPTION_ID"
+        value = var.subscription_id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_RESOURCE_GROUP"
+        value = azurerm_resource_group.main.name
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_API_URL"
+        value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_API_SCOPE"
+        value = "${var.entra_api_audience}/.default"
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_STATE_WORKSPACE_ID"
+        value = fabric_workspace.ontology_discovery_state[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_STATE_LAKEHOUSE_ID"
+        value = fabric_lakehouse.ontology_discovery_state[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_COMMAND_WORKSPACE_ID"
+        value = fabric_workspace.ontology_command[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_COMMAND_LAKEHOUSE_ID"
+        value = fabric_lakehouse.ontology_command[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_DISPATCH_WORKSPACE_ID"
+        value = fabric_workspace.ontology_dispatch[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_DISPATCH_LAKEHOUSE_ID"
+        value = fabric_lakehouse.ontology_dispatch[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_PUBLICATION_WORKSPACE_ID"
+        value = fabric_workspace.ontology_publication[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_PUBLICATION_LAKEHOUSE_ID"
+        value = fabric_lakehouse.ontology_publication[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_VALIDATION_WORKSPACE_ID"
+        value = fabric_workspace.ontology_rbac_validation[0].id
+      }
+      env {
+        name  = "AIOPS_EVIDENCE_VALIDATION_LAKEHOUSE_ID"
+        value = fabric_lakehouse.ontology_rbac_validation[0].id
+      }
+    }
+  }
+
+  # OneLake data-access roles (Phase13EvidenceRead) are managed outside
+  # Terraform by scripts/reconcile_onelake_data_access_roles.py. The operator
+  # must run that script before starting this Job for the first time.
+  depends_on = [
+    azurerm_role_assignment.azure_mcp_acr_pull,
+    fabric_workspace_role_assignment.ontology_evidence_ontology_discovery_state,
+    fabric_workspace_role_assignment.ontology_evidence_ontology_command,
+    fabric_workspace_role_assignment.ontology_evidence_ontology_dispatch,
+    fabric_workspace_role_assignment.ontology_evidence_ontology_publication,
+    fabric_workspace_role_assignment.ontology_evidence_ontology_rbac_validation,
+  ]
+  tags = local.tags
 }
 
 resource "azurerm_container_app_job" "ontology_fixture_prepare" {
