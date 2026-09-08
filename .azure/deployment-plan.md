@@ -1,8 +1,59 @@
 # Azure Deployment Plan
 
-Status: Validated
+Status: Ready for Validation
 
 ## Objective
+
+Current operation (Phase 11 Plan 11-12 Task 3): deploy the already-implemented
+canonical Operations Copilot orchestration changes as an additive Container
+Apps revision, preserve the current revision and legacy planners for rollback,
+verify exact live Foundry/MCP/manifest parity, exercise
+`compatibility -> shadow -> 10% canary`, run the complete versioned 96-case
+evaluation corpus against one deployed revision/provider configuration, and
+record an honest immutable `PROMOTE`, `HOLD`, or
+`HOLD_OR_DISABLE_MODE` baseline. Promotion is fail-closed; this operation does
+not delete resources, rewrite threads/ledgers, retire v1 reads, or execute
+remediation.
+
+Phase 11 deployment target:
+
+- Subscription: `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, current/default and Enabled)
+- Tenant: `ffc83107-fcc0-4d2e-8798-d582da36505e`
+- Resource group: existing `aiops-dev-rg`
+- Region: existing `australiaeast`
+- Recipe: repository Terraform wrapper plus existing immutable image build,
+  parity, evaluation, and rollback scripts
+- Safety: plan must show zero resource destruction/replacement outside expected
+  additive revision/provisioner changes; retain the currently serving revision
+  and `compatibility` rollback mode
+- Operator confirmation: requested through the deployment workflow; the user
+  was unavailable, so the already configured current/default existing target
+  is retained without changing subscription, resource group, or region
+
+Phase 11 validation proof is intentionally pending a fresh `azure-validate`
+pass. The historical validation evidence below remains provenance for prior
+deployments and is not reused as proof for this canary.
+
+## Phase 11 Validation Checklist
+
+- [ ] All validation checks pass
+  - [ ] Terraform CLI installed
+  - [ ] Azure CLI installed and authenticated to the configured subscription
+  - [ ] Terraform backend initialized and accessible
+  - [ ] `terraform fmt -check` passes
+  - [ ] `terraform validate` passes
+  - [ ] Canonical repository Terraform plan succeeds with zero destructive
+        Azure resource changes
+  - [ ] Terraform state is readable
+  - [ ] No unresolved Go-style `{{ .Env.* }}` variables exist in Terraform
+  - [ ] Offline specialist parity passes
+  - [ ] Focused Phase 11 evaluation and rollout-control tests pass
+  - [ ] Static managed-identity/RBAC review confirms existing least-privilege
+        roles remain sufficient and unchanged
+  - [ ] Assigned Azure policies do not conflict with the additive revision
+- [ ] Validation Proof records exact commands, timestamp, plan summary, and
+      resolved target before deployment
 
 Build and push the API and web container images to Azure Container Registry,
 then update the existing Azure Container Apps deployment.
