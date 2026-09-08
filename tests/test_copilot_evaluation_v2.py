@@ -1252,6 +1252,7 @@ def _passing_result(**overrides):
         "mutation_denied": True,
         "unknown_id_denied": True,
         "disposition_ok": True,
+        "manifest_projection_ok": True,
         "grants_ok": True,
         "snapshot_schema_ok": True,
         "citation_reference_integrity_ok": True,
@@ -1464,6 +1465,27 @@ def test_release_evidence_requires_exact_tool_grant_parity():
     assert evidence["tool_correctness"] == 0.0
 
 
+def test_zero_grant_case_rejects_an_executed_tool():
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if not case.expect_grants and case.disposition == "integrated"
+    )
+    result = evaluate_agents.Result(
+        case_id=case.case_id,
+        ok=True,
+        specialists=list(case.expect_specialists),
+        tool_names=["unexpected_tool"],
+        mutation_denied=True,
+    )
+
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+
+    assert evidence["grants_ok"] is False
+    assert evidence["tool_correctness"] == 0.0
+
+
 def test_release_case_selection_uses_the_external_versioned_corpus():
     evaluate_agents = _load_evaluate_agents()
     cases = evaluate_agents.load_cases(_CASES_PATH)
@@ -1634,6 +1656,42 @@ def test_release_artifact_holds_when_any_live_case_lacks_spend():
     ] == [cases[0].case_id]
 
 
+def test_release_artifact_rejects_boolean_spend_values():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            spend_usd=False,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert artifact["gates"]["measurement_completeness"]["passed"] is False
+
+
 def test_external_boolean_cannot_override_missing_scope_case_evidence():
     evaluate_agents = _load_evaluate_agents()
     dataset = json.loads(_CASES_PATH.read_text())
@@ -1715,3 +1773,26 @@ def test_validate_artifact_recomputes_decision_from_case_evidence():
 
     assert ok is False
     assert any("recomputed evidence" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("case_evidence", [None]), ("gates", {"routing": None})],
+)
+def test_validate_artifact_rejects_malformed_nested_values(field, value):
+    evaluate_agents = _load_evaluate_agents()
+    artifact = {
+        "dataset_version": "1",
+        "thresholds_version": "1",
+        "revision": "api--phase11-canary",
+        "case_evidence": [],
+        "gates": {},
+    }
+    artifact[field] = value
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("malformed" in problem for problem in problems)

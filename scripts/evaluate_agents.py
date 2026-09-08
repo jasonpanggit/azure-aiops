@@ -783,8 +783,20 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         else None
     )
 
-    single_spend = [r["spend_usd"] for r in results if r.get("turn_class") == "single_domain" and r.get("spend_usd") is not None]
-    cross_spend = [r["spend_usd"] for r in results if r.get("turn_class") == "cross_domain" and r.get("spend_usd") is not None]
+    single_spend = [
+        r["spend_usd"]
+        for r in results
+        if r.get("turn_class") == "single_domain"
+        and isinstance(r.get("spend_usd"), (int, float))
+        and not isinstance(r.get("spend_usd"), bool)
+    ]
+    cross_spend = [
+        r["spend_usd"]
+        for r in results
+        if r.get("turn_class") == "cross_domain"
+        and isinstance(r.get("spend_usd"), (int, float))
+        and not isinstance(r.get("spend_usd"), bool)
+    ]
 
     return {
         "turns": len(results),
@@ -1008,6 +1020,9 @@ def validate_artifact(
     if not isinstance(artifact.get("validation_evidence"), dict):
         problems.append("artifact does not record deterministic validation evidence")
     gates = artifact.get("gates") or {}
+    if not isinstance(gates, dict):
+        problems.append("artifact gates must be an object")
+        gates = {}
     deterministic_gate_names = set(
         json.loads(DEFAULT_THRESHOLDS.read_text())["deterministic_gates"]
     )
@@ -1017,15 +1032,38 @@ def validate_artifact(
     missing_gates = sorted(required_gates - set(gates))
     if missing_gates:
         problems.append(f"artifact is missing required gates: {missing_gates}")
-    failed = [name for name, g in gates.items() if not g.get("passed", False)]
+    malformed_gates = [
+        name for name, gate in gates.items() if not isinstance(gate, dict)
+    ]
+    if malformed_gates:
+        problems.append(f"artifact has malformed gates: {sorted(malformed_gates)}")
+    failed = [
+        name
+        for name, gate in gates.items()
+        if isinstance(gate, dict) and not gate.get("passed", False)
+    ]
     if decision == "PROMOTE" and failed:
         problems.append(f"decision PROMOTE recorded while gates failed: {failed}")
     canonical_case_ids = {
         str(case["case_id"]) for case in canonical_dataset["cases"]
     }
     case_evidence = artifact.get("case_evidence") or []
+    case_evidence_is_list = isinstance(case_evidence, list)
+    if not case_evidence_is_list:
+        case_evidence = []
+    malformed_case_indexes = [
+        index
+        for index, case in enumerate(case_evidence)
+        if not isinstance(case, dict)
+    ]
+    if malformed_case_indexes:
+        problems.append(
+            f"artifact has malformed case evidence at indexes: {malformed_case_indexes}"
+        )
     observed_case_id_list = [
-        str(case.get("case_id")) for case in case_evidence
+        str(case.get("case_id"))
+        for case in case_evidence
+        if isinstance(case, dict)
     ]
     observed_case_ids = set(observed_case_id_list)
     if (
@@ -1043,7 +1081,8 @@ def validate_artifact(
             problems.append("PROMOTE artifact has unavailable or missing providers")
     if (
         isinstance(artifact.get("metrics"), dict)
-        and isinstance(case_evidence, list)
+        and case_evidence_is_list
+        and not malformed_case_indexes
         and isinstance(artifact.get("provider_availability"), dict)
         and isinstance(artifact.get("validation_evidence"), dict)
     ):
@@ -1114,11 +1153,11 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
         "resource",
     }
     snapshot_schema_ok = None
-    if not static_disposition:
+    if not static_disposition and case.page_kind in context_snapshot_pages:
         snapshot_schema_ok = (
             result.snapshot_schema_ok
             if result.snapshot_schema_ok is not None
-            else completed and case.page_kind in context_snapshot_pages
+            else completed
         )
     return {
         "case_id": case.case_id,
@@ -1178,6 +1217,19 @@ def build_release_artifact(
     result_by_id = {
         str(result.get("case_id")): result for result in controlled_results
     }
+    live_case_ids = [
+        case.case_id
+        for case in cases
+        if case.disposition not in {"redirect", "excluded"}
+    ]
+    context_snapshot_pages = {
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    }
     applicable_case_ids = {
         "scope_isolation": [
             case.case_id
@@ -1190,16 +1242,15 @@ def build_release_artifact(
             for case in cases
             if case.safety.get("mutation_denied")
         ],
-        "unknown_specialist_or_tool_denied": [],
+        "unknown_specialist_or_tool_denied": live_case_ids,
         "route_disposition_parity": [case.case_id for case in cases],
-        "manifest_projection_parity": [],
-        "tool_grant_parity": [
-            case.case_id for case in cases if case.expect_grants
-        ],
+        "manifest_projection_parity": live_case_ids,
+        "tool_grant_parity": live_case_ids,
         "snapshot_schema": [
             case.case_id
             for case in cases
             if case.disposition == "integrated"
+            and case.page_kind in context_snapshot_pages
         ],
         "citation_reference_integrity": [
             case.case_id
@@ -1330,6 +1381,9 @@ def build_release_artifact(
         if (
             not isinstance(
                 result_by_id.get(case_id, {}).get("spend_usd"), (int, float)
+            )
+            or isinstance(
+                result_by_id.get(case_id, {}).get("spend_usd"), bool
             )
             or not math.isfinite(
                 float(result_by_id.get(case_id, {}).get("spend_usd") or 0)
