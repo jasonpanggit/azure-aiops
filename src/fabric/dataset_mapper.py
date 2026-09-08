@@ -707,6 +707,10 @@ _GRANULAR_EXPOSURE_TABLE_KEYS = {
     "metadata_workload_source_checkpoints": "checkpoint_key",
 }
 
+GRANULAR_EXPOSURE_MAX_SOURCE_ROWS = 250_000
+GRANULAR_EXPOSURE_MAX_ENTITIES = 300_000
+GRANULAR_EXPOSURE_MAX_RELATIONSHIPS = 1_000_000
+
 
 @dataclass
 class GranularExposureOntologyMapper:
@@ -719,12 +723,24 @@ class GranularExposureOntologyMapper:
     can be reconstructed without reinterpretation.
     """
 
-    entity_builder: EntityBuilder = field(default_factory=EntityBuilder)
+    entity_builder: EntityBuilder = field(
+        default_factory=lambda: EntityBuilder(
+            max_source_rows=GRANULAR_EXPOSURE_MAX_SOURCE_ROWS,
+            max_entities=GRANULAR_EXPOSURE_MAX_ENTITIES,
+        )
+    )
     relationship_builder: RelationshipBuilder = field(
-        default_factory=RelationshipBuilder
+        default_factory=lambda: RelationshipBuilder(
+            max_entities=GRANULAR_EXPOSURE_MAX_ENTITIES,
+            max_relationships=GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
+        )
     )
     synchronizer: OntologyGraphSynchronizer = field(
-        default_factory=lambda: OntologyGraphSynchronizer(OntologyValidator())
+        default_factory=lambda: OntologyGraphSynchronizer(
+            OntologyValidator(),
+            max_entities=GRANULAR_EXPOSURE_MAX_ENTITIES,
+            max_relationships=GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
+        )
     )
 
     def build_rows(

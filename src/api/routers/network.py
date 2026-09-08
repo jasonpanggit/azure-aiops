@@ -297,9 +297,9 @@ def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str
     return _hub_dependents(vnet_id, context, scope)
 
 
-@router.get("/firewall-bypass", summary="Spokes that bypass the hub firewall")
+@router.get("/firewall-bypass", summary="Firewall-inspection bypass findings")
 def firewall_bypass(context: Context, scope: ReadScope) -> dict[str, Any]:
-    """Answers "which spokes bypass the firewall?"."""
+    """Return route and public-IP findings that can bypass firewall inspection."""
     service = _service(context, scope)
     gaps = service.firewall_bypass_spokes()
     return envelope(
@@ -396,6 +396,7 @@ def network_gaps(
             if coverage["truncated"]
             else []
         ),
+        automatic_truncation_warning=False,
     )
 
 
@@ -453,6 +454,7 @@ def rule_findings(
             if coverage["truncated"]
             else []
         ),
+        automatic_truncation_warning=False,
     )
 
 

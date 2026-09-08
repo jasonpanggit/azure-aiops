@@ -5,7 +5,12 @@ from copy import deepcopy
 
 import pytest
 
-from fabric.dataset_mapper import GranularExposureOntologyMapper
+from fabric.dataset_mapper import (
+    GRANULAR_EXPOSURE_MAX_ENTITIES,
+    GRANULAR_EXPOSURE_MAX_RELATIONSHIPS,
+    GRANULAR_EXPOSURE_MAX_SOURCE_ROWS,
+    GranularExposureOntologyMapper,
+)
 from ontology.entity_builder import typed_image_semantic_id
 
 DIGEST = f"sha256:{'a' * 64}"
@@ -230,6 +235,26 @@ def test_granular_mapper_accepts_images_without_vulnerability_observations() -> 
         row["entity_type"] for row in entities
     }
     assert relationships
+
+
+def test_granular_mapper_has_bounded_defender_scale_capacity() -> None:
+    mapper = GranularExposureOntologyMapper()
+
+    assert GRANULAR_EXPOSURE_MAX_SOURCE_ROWS >= 200_000
+    assert GRANULAR_EXPOSURE_MAX_ENTITIES >= 250_000
+    assert GRANULAR_EXPOSURE_MAX_RELATIONSHIPS >= 750_000
+    assert mapper.entity_builder.max_source_rows == (
+        GRANULAR_EXPOSURE_MAX_SOURCE_ROWS
+    )
+    assert mapper.entity_builder.max_entities == (
+        GRANULAR_EXPOSURE_MAX_ENTITIES
+    )
+    assert mapper.relationship_builder.max_relationships == (
+        GRANULAR_EXPOSURE_MAX_RELATIONSHIPS
+    )
+    assert mapper.synchronizer.max_entities == (
+        GRANULAR_EXPOSURE_MAX_ENTITIES
+    )
 
 
 def test_granular_fabric_ontology_fabric_round_trip_is_lossless_and_idempotent() -> None:
