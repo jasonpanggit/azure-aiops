@@ -2,7 +2,7 @@
 phase: 12-network-topology-integrity-and-scale
 reviewed: 2026-09-08T13:05:00+08:00
 status: passed
-verdict: PASS — all deployed runtime findings resolved
+verdict: PASS — deployed topology findings resolved; message-semantics follow-up source-confirmed
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
@@ -22,6 +22,9 @@ final_server_handler_p95_gate: "<1000ms over five samples"
 final_end_to_end_http_p95_gate: "<3000ms over the same five samples"
 final_timing_source_commit: 935e956c6adb5f76f47f302dd4319fee164b4f60
 final_live_verified: 2026-09-08T04:47:00Z
+message_semantics_source_verified: 2026-09-08T14:37:07.284+08:00
+message_semantics_live_recheck: not_run_no_deployment
+message_semantics_debug_session: .planning/debug/resolved/network-message-semantics.md
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -31,7 +34,54 @@ supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 
 **Baseline:** approved `12-UI-SPEC.md` design contract
 
-**Verdict:** **PASS after deployed remediation — 24/24, 0 blockers, 0 warnings.**
+**Verdict:** **PASS after deployed topology remediation — 24/24. The
+message-semantics follow-up is source-confirmed and has no open source finding;
+it was not deployed or rechecked live in this debug session.**
+
+## Follow-up Message-Semantics Remediation — 2026-09-08
+
+A post-remediation Network screenshot exposed four deterministic presentation
+defects that did not change the 24/24 topology interaction score but weakened
+the page's honesty:
+
+1. The global provenance bar repeated pagination state already owned by the
+   contextual incomplete-results callout.
+2. Every dropped topology relationship said an endpoint was outside scope,
+   even when the endpoint was missing or not projected.
+3. `high confidence` and `Graph Unknown` omitted the dimensions they described,
+   allowing topology-evidence confidence to read as confidence in the complete
+   page result.
+4. The firewall-bypass metric counted finding rows while its API and UI copy
+   described the value as spokes.
+
+The source remediation assigns precise ownership to pagination copy, keeps
+collection-pagination warnings out of global provenance only when the
+contextual callout can render them, and retains the warning when that companion
+surface is unavailable. Topology projection now preserves privacy-safe
+cause-specific diagnostics for `excluded_by_scope` versus
+`missing_or_unprojected` endpoints while retaining the legacy aggregate drop
+counts. Trust labels explicitly name topology evidence and graph observation,
+and firewall-bypass values are consistently labelled as finding counts rather
+than spoke counts.
+
+Verification was failing-first and causal:
+
+| Check | Result |
+|---|---|
+| Backend target and boundary regressions | **PASS — 8/8** |
+| Frontend target and adjacent regressions | **PASS — 43/43** |
+| Adjacent Network/envelope/downstream backend suite | **PASS — 275/275** |
+| Applicable EvidenceBar/Network/Inventory frontend import graph | **PASS — 59/59** |
+| TypeScript, scoped Ruff, scoped ESLint, and `git diff --check` | **PASS** |
+| Revert and reconfirm | **PASS — five backend and three frontend causal failures returned on implementation-only revert and returned to green on reapply** |
+| Independent source review | **CONFIRMED FIXED by the user** |
+
+The broader web run recorded 592 passing tests and one unrelated concurrent
+failure outside the applicable Network import graph. It was not modified or
+used to weaken this acceptance. No deployment or push was performed, so this
+section records source closure only; a normal authorized release must recheck
+the remediated copy in the live Network page before claiming live confirmation
+for this follow-up.
 
 ## Final Authenticated Deployment Verification — 2026-09-08
 
