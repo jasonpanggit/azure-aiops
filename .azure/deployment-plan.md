@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-Status: Ready for Validation
+Status: Validated
 
 ## Objective
 
@@ -34,9 +34,9 @@ Phase 11 deployment target:
   was unavailable, so the already configured current/default existing target
   is retained without changing subscription, resource group, or region
 
-Phase 11 validation proof is intentionally pending a fresh `azure-validate`
-pass. The historical validation evidence below remains provenance for prior
-deployments and is not reused as proof for this canary.
+Phase 11 validation proof was refreshed after reconciling the latest
+`origin/main`. Historical validation evidence below remains provenance for
+prior deployments and is not reused as proof for this canary.
 
 ## Phase 11 Validation Checklist
 
@@ -65,8 +65,8 @@ delete, or replace Azure resources and does not modify Terraform state.
 
 ## Phase 11 Validation Proof
 
-- Validated at: `2026-09-08T07:19:40Z`
-- Source revision: `33843c214b5067a72ed3e9907b294be455c5c7d3`
+- Validated at: `2026-09-08T07:44:06Z`
+- Source revision: `9c9f1f97417556ef7311bf8eff1fbeb94894d307`
 - Target: subscription `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`,
   resource group `aiops-dev-rg`, region `australiaeast`
 - Azure preflight: `az account show`, `az acr show`, and
@@ -80,9 +80,8 @@ delete, or replace Azure resources and does not modify Terraform state.
   `docker build -t aiops-api:phase11-validation .` and
   `docker build -t aiops-web:phase11-validation web` both passed; `uv.lock`
   and `web/package-lock.json` are present.
-- Backend: 351 passed, 1 skipped across the Phase 11 orchestration, evaluation,
-  manifest, policy, page-context, API, and thread-store suites; relevant Ruff
-  checks passed.
+- Backend: the complete `uv run pytest -q` suite passed (3,883 passed,
+  1 skipped); relevant Ruff checks passed.
 - Web: ESLint passed; 59 files and 661 tests passed; Next.js production build
   and `tsc --noEmit` passed.
 - Specialist parity: all eight offline parity checks passed for 12 specialists,
