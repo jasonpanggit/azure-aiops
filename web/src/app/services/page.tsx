@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { OperationsSignalChart } from "@/components/ui/OperationsSignalChart";
@@ -14,6 +16,7 @@ import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, operationsApi } from "@/lib/services";
+import { buildServicesCopilotContext } from "@/lib/copilot/page-adapters";
 import { rankSituations } from "@/lib/situations";
 
 interface ServiceRow {
@@ -82,7 +85,41 @@ export default function ServicesPage() {
   ]);
   const servicesPaging = useTablePagination(filteredServices);
 
+  const [copilotOpen, setCopilotOpen] = useState(false);
+
   const error = connections.error ?? incidents.error;
+
+  const connectionsAvailable = !connections.error && Boolean(connections.data);
+  const incidentsAvailable = !incidents.error && Boolean(incidents.data);
+  // Read-only contextual Copilot over the already-loaded, authorized catalog.
+  // Visible services, ownership/scope, active-situation counts, health risk,
+  // and honest visible/total coverage stay bound; no row is actionable (D-03, D-08).
+  const servicesCopilot = buildServicesCopilotContext({
+    scope,
+    services: filteredServices.map((service) => ({
+      name: service.name,
+      environments: Array.from(service.environments),
+      subscriptionCount: service.subscriptions.size,
+      situationCount: service.situationCount,
+      criticalCount: service.criticalCount,
+      healthRisk: service.healthRisk,
+      operationalState: service.criticalCount
+        ? "Critical attention"
+        : service.situationCount
+          ? "At risk"
+          : "No active situation",
+    })),
+    visibleCount: filteredServices.length,
+    totalCount: services.length,
+    filters: Object.fromEntries(
+      serviceFilters
+        .filter((filter) => filter.value !== "all")
+        .map((filter) => [filter.id, [filter.value]]),
+    ),
+    connectionsAvailable,
+    incidentsAvailable,
+    evidence: [...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])],
+  });
 
   return (
     <div className="page-container">
@@ -90,6 +127,7 @@ export default function ServicesPage() {
         eyebrow="Service operations"
         title="Which services need attention?"
         description="Compare business services by ownership, scope, active situations, and evidence coverage before opening a service brief."
+        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about services" />}
       />
       <EvidenceBar
         evidence={[...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])]}
@@ -176,6 +214,15 @@ export default function ServicesPage() {
           </div>
         </>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Services"
+        requestedScope={servicesCopilot.requestedScope}
+        snapshot={servicesCopilot.snapshot}
+        starterQuestions={servicesCopilot.starterQuestions}
+      />
     </div>
   );
 }

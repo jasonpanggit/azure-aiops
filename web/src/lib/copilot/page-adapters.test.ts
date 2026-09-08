@@ -3276,17 +3276,17 @@ describe("situation detail and service Copilot page adapters", () => {
         source_key: "situation://one",
       },
     ]);
-    // Affected resource is retained as a canonical ARM entity.
+    // Affected resource is retained as a canonical (normalized) ARM entity.
     expect(context.snapshot.evidence.some((row) =>
       row.resource_id
-        === "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db")).toBe(true);
+        === "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.sql/servers/db")).toBe(true);
     // Evidence source trust is retained per row.
     expect(context.snapshot.evidence.some((row) =>
       row.data.source_family === "defender" && row.data.quality === "contradictory")).toBe(true);
     // Every row is forced non-actionable / non-mutation-authorized.
     expect(context.snapshot.evidence.every((row) =>
       row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
-    expect(context.coverage.evidence).toMatchObject({ visible_count: 1, available: true });
+    expect(context.coverage.evidence).toMatchObject({ visible_count: 1, complete: true });
     expect(context.coverage.links).toMatchObject({ visible_count: 1 });
     expect(context.starterQuestions.length).toBeGreaterThan(0);
     expect(context.starterQuestions.every((q) => q.specialistId === "incident")).toBe(true);
@@ -3466,13 +3466,14 @@ describe("situation detail and service Copilot page adapters", () => {
         source_key: "Payments",
       },
     ]);
-    // The canonical ARM dependency is retained as an azure entity.
+    // The canonical ARM dependency is retained as a normalized azure entity.
     expect(context.snapshot.evidence.some((row) =>
       row.resource_id
-        === "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Sql/servers/db")).toBe(true);
+        === "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.sql/servers/db")).toBe(true);
     // The non-ARM dependency stays a domain entity.
     expect(context.snapshot.evidence.some((row) =>
-      row.data.relation === "serves" && row.data.entity?.type === "domain")).toBe(true);
+      row.data.relation === "serves"
+      && (row.data.entity as { type?: string } | undefined)?.type === "domain")).toBe(true);
     expect(context.snapshot.evidence.some((row) => row.data.owner === "Payments SRE")).toBe(true);
     expect(context.starterQuestions.every((q) => q.specialistId === "resource_health_observability")).toBe(true);
     expect(context.starterQuestions.some((q) => q.label.includes("Payments"))).toBe(true);

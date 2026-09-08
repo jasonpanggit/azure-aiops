@@ -1,13 +1,51 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { contextApi } from "@/lib/services";
+import { buildServiceDetailCopilotContext, type ServiceDependencyObservation } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
+import type { CopilotFreshnessStatusV2, SemanticContext } from "@/lib/types";
+
+const DEPENDENCY_SECTION_KEYS = [
+  "impacted_resources",
+  "impacted_applications",
+  "impacted_services",
+  "impacted_business_services",
+  "upstream_dependencies",
+  "downstream_dependents",
+] as const;
+
+/** Collects bounded dependency/blast-radius names from typed semantic sections. */
+function collectDependencies(...contexts: (SemanticContext | undefined)[]): ServiceDependencyObservation[] {
+  const seen = new Set<string>();
+  const dependencies: ServiceDependencyObservation[] = [];
+  for (const context of contexts) {
+    const sections = (context?.sections ?? {}) as Record<string, unknown>;
+    for (const key of DEPENDENCY_SECTION_KEYS) {
+      const value = sections[key];
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (typeof item !== "string" || !item || seen.has(item)) continue;
+        seen.add(item);
+        dependencies.push({
+          id: item,
+          name: item,
+          relation: key,
+          resource_id: item.startsWith("/subscriptions/") ? item : undefined,
+        });
+      }
+    }
+  }
+  return dependencies.slice(0, 50);
+}
 
 /** Business service operating view with semantic context, risk, and blast radius. */
 export default function ServiceDetailPage({ params }: { params: { name: string } }) {
@@ -16,11 +54,52 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
   const context = useApi(() => contextApi.businessService(name, scope), [name, scope]);
   const risk = useApi(() => contextApi.risk(name, scope), [name, scope]);
   const impact = useApi(() => contextApi.impact(name, scope), [name, scope]);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const error = context.error ?? risk.error ?? impact.error;
 
   if (error) {
     return <div className="page-container"><StatePanel title="Service view is unavailable" message={error.message} tone="error" /></div>;
   }
+
+  const sectionKeys = (context?: SemanticContext): string[] => Object.keys(context?.sections ?? {});
+  const sectionState = (
+    api: { data?: { data?: SemanticContext } | null; error?: Error | null },
+  ) => {
+    const available = !api.error && Boolean(api.data);
+    return {
+      subject: api.data?.data?.subject
+        ? {
+            entity_type: api.data.data.subject.entity_type,
+            name: api.data.data.subject.name,
+            lifecycle_status: api.data.data.subject.lifecycle_status,
+            owner: api.data.data.subject.owner,
+            support_team: api.data.data.subject.support_team,
+            business_service: api.data.data.subject.business_service,
+            application: api.data.data.subject.application,
+            environment: api.data.data.subject.environment,
+            criticality: api.data.data.subject.criticality,
+            resource_id: api.data.data.subject.resource_id,
+          }
+        : null,
+      available,
+      freshness: (available ? "fresh" : "unavailable") as CopilotFreshnessStatusV2,
+      observedAt: api.data?.data?.live_observed_at,
+      sections: sectionKeys(api.data?.data ?? undefined),
+    };
+  };
+
+  // Read-only contextual Copilot over the already-loaded semantic sections.
+  // Selected service identity, ownership, dependencies, and independent
+  // per-section availability stay bound; no row is actionable (D-03, D-04, D-08).
+  const serviceCopilot = buildServiceDetailCopilotContext({
+    scope,
+    name,
+    context: sectionState(context),
+    risk: sectionState(risk),
+    impact: sectionState(impact),
+    dependencies: collectDependencies(context.data?.data ?? undefined, impact.data?.data ?? undefined),
+    evidence: [...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])],
+  });
 
   return (
     <div className="page-container">
@@ -29,7 +108,7 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
         eyebrow="Business service"
         title={name}
         description="What is affected in this business capability, which evidence supports it, and where ownership or dependency context is still missing."
-        actions={<Link className="button button-primary" href={`/copilot?service=${encodeURIComponent(name)}`}>Ask Copilot</Link>}
+        actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label={`Ask Copilot about ${name}`} />}
       />
       <EvidenceBar
         evidence={[...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])]}
@@ -48,6 +127,15 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
           <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body"><StructuredData value={impact.data?.data ?? {}} /></div></section>
         </div>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel={name}
+        requestedScope={serviceCopilot.requestedScope}
+        snapshot={serviceCopilot.snapshot}
+        starterQuestions={serviceCopilot.starterQuestions}
+      />
     </div>
   );
 }

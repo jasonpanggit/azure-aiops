@@ -1833,6 +1833,221 @@ export interface ResourceHealthCopilotPageInput {
   evidence: EvidenceItem[];
 }
 
+/** Durable evidence fields the Situation detail adapter cites. */
+export interface SituationDetailEvidenceObservation {
+  evidence_id: string;
+  source_family: string;
+  source_object_id: string;
+  assertion?: string;
+  quality: string;
+  availability: string;
+  freshness: string;
+  observed_at?: string;
+  resource_ids?: string[];
+}
+
+/** Durable source-trust fields the Situation detail adapter cites. */
+export interface SituationDetailSourceStatus {
+  source_family: string;
+  availability: string;
+  freshness: string;
+  observed_at?: string;
+}
+
+/** Bounded linked-entity fields the Situation detail adapter cites. */
+export interface SituationDetailLinkObservation {
+  link_id: string;
+  entity_type: string;
+  entity_id: string;
+  relation: string;
+  quality: string;
+}
+
+/** Recorded service audit fields the Situation detail adapter cites. */
+export interface SituationDetailAuditObservation {
+  event_id: string;
+  actor: string;
+  action: string;
+  timestamp: string;
+}
+
+/** Selected Situation identity fields the detail adapter cites. */
+export interface SituationDetailFields {
+  situation_id: string;
+  title?: string;
+  severity?: string;
+  priority?: string;
+  lifecycle_state?: string;
+  situation_type?: string;
+  owner?: string;
+  support_team?: string;
+  evidence_state?: string;
+  affected_resource_ids?: string[];
+  unknowns?: string[];
+  started_at?: string;
+  last_observed_at?: string;
+}
+
+/** Already-loaded Situation detail sections and evaluated page state. */
+export interface SituationDetailCopilotPageInput {
+  scope: ScopeSelection;
+  situationId: string;
+  situation?: SituationDetailFields | null;
+  evidence: SituationDetailEvidenceObservation[];
+  links: SituationDetailLinkObservation[];
+  sourceStatuses: SituationDetailSourceStatus[];
+  auditEvents?: SituationDetailAuditObservation[];
+  auditAvailable?: boolean;
+  available: boolean;
+  observedAt?: string;
+  citations: EvidenceItem[];
+}
+
+/** Synthesized business-service catalog row the Services adapter cites. */
+export interface ServicesCatalogObservation {
+  name: string;
+  environments: string[];
+  subscriptionCount: number;
+  situationCount: number;
+  criticalCount: number;
+  healthRisk: number;
+  operationalState: string;
+}
+
+/** Already-loaded Services catalog page and evaluated page state. */
+export interface ServicesCopilotPageInput {
+  scope: ScopeSelection;
+  services: ServicesCatalogObservation[];
+  visibleCount: number;
+  totalCount: number;
+  filters?: Record<string, string[]>;
+  selectedServiceName?: string | null;
+  connectionsAvailable: boolean;
+  incidentsAvailable: boolean;
+  connectionsObservedAt?: string;
+  incidentsObservedAt?: string;
+  connectionsFreshness?: CopilotFreshnessStatusV2;
+  incidentsFreshness?: CopilotFreshnessStatusV2;
+  evidence: EvidenceItem[];
+}
+
+/** Semantic subject fields the Service detail adapter cites (non-ARM by default). */
+export interface ServiceDetailSubjectFields {
+  entity_type?: string;
+  name?: string;
+  lifecycle_status?: string;
+  owner?: string | null;
+  support_team?: string | null;
+  business_service?: string | null;
+  application?: string | null;
+  environment?: string | null;
+  criticality?: string | null;
+  resource_id?: string | null;
+}
+
+/** One independently-available service context section (context, risk, or impact). */
+export interface ServiceDetailSection {
+  subject?: ServiceDetailSubjectFields | null;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  sections?: string[];
+}
+
+/** Bounded dependency/blast-radius entity the Service detail adapter cites. */
+export interface ServiceDependencyObservation {
+  id: string;
+  name?: string;
+  relation?: string;
+  resource_id?: string;
+}
+
+/** Already-loaded Service detail sections and evaluated page state. */
+export interface ServiceDetailCopilotPageInput {
+  scope: ScopeSelection;
+  name: string;
+  context: ServiceDetailSection;
+  risk: ServiceDetailSection;
+  impact: ServiceDetailSection;
+  dependencies?: ServiceDependencyObservation[];
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
+/** Twin entity fields the operational-twin adapter cites. */
+export interface TwinEntityObservation {
+  id: string;
+  kind: string;
+  name?: string;
+  version?: string;
+  state?: string;
+  confidence?: string;
+  business_service?: string;
+  resource_id?: string;
+}
+
+/** Twin relationship fields the operational-twin adapter cites. */
+export interface TwinRelationshipObservation {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  confidence?: string;
+  supported?: boolean;
+}
+
+/** Twin temporal event fields the operational-twin adapter cites. */
+export interface TwinTimelineObservation {
+  timestamp: string;
+  type: string;
+  entity: string;
+  summary?: string;
+}
+
+/** Twin traversal fields the operational-twin adapter cites. */
+export interface TwinTraversalObservation {
+  resource_id: string;
+  path: Array<{ id: string; kind: string; name?: string }>;
+  business_consequence: string[];
+}
+
+/** Twin scenario fields the operational-twin adapter cites (scenario, not observed). */
+export interface TwinScenarioObservation {
+  scenario: string;
+  target: string;
+  likely_impact?: string;
+  risk_delta?: number;
+  impacted_count?: number;
+  assumptions?: string[];
+}
+
+/** Already-loaded operational-twin sections and evaluated page state. */
+export interface TwinCopilotPageInput {
+  scope: ScopeSelection;
+  twinId: string;
+  version?: string;
+  previousVersion?: string;
+  observedAt?: string;
+  liveObservedAt?: string;
+  confidence?: string;
+  entities: TwinEntityObservation[];
+  entitiesTotal: number;
+  relationships: TwinRelationshipObservation[];
+  relationshipsTotal: number;
+  timeline: TwinTimelineObservation[];
+  timelineTotal: number;
+  traversal?: TwinTraversalObservation | null;
+  scenario?: TwinScenarioObservation | null;
+  selectedResourceId?: string | null;
+  available: boolean;
+  freshness?: CopilotFreshnessStatusV2;
+  sourceStatus?: Record<string, string>;
+  unsupportedRelationships?: string[];
+  staleTemporalEvidence?: string[];
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -2191,6 +2406,101 @@ const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "Search resource utilization anomalies.",
     specialistId: "resource_health_observability",
     tool: "search",
+    toolArguments: {},
+  },
+];
+
+// Situation detail hints stay on the incident specialist that owns the
+// situation_detail page mapping; every tool exists in the manifest catalog and
+// none mutate state (D-03, D-05).
+const SITUATION_DETAIL_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Summarize this situation and its evidence.",
+    specialistId: "incident",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "Which business services are affected?",
+    specialistId: "incident",
+    tool: "business_service_context",
+    toolArguments: {},
+  },
+  {
+    label: "What is the blast radius?",
+    specialistId: "incident",
+    tool: "impact_context",
+    toolArguments: {},
+  },
+];
+
+// Services list/detail hints stay on the resource_health_observability
+// specialist that owns the services/service_detail page mappings.
+const SERVICES_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which services need attention?",
+    specialistId: "resource_health_observability",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "What is the operational impact across services?",
+    specialistId: "resource_health_observability",
+    tool: "impact_context",
+    toolArguments: {},
+  },
+  {
+    label: "Find a specific service.",
+    specialistId: "resource_health_observability",
+    tool: "search",
+    toolArguments: {},
+  },
+];
+
+// Service detail hints stay on the resource_health_observability specialist and
+// carry the selected service name for a same-tab, in-place investigation.
+function serviceDetailStarters(name: string): CoreCopilotStarterQuestion[] {
+  return [
+    {
+      label: `Summarize the operational health of ${name}.`,
+      specialistId: "resource_health_observability",
+      tool: "incidents",
+      toolArguments: { business_service: name },
+    },
+    {
+      label: `What depends on ${name}?`,
+      specialistId: "resource_health_observability",
+      tool: "impact_context",
+      toolArguments: { business_service: name },
+    },
+    {
+      label: `Search related evidence for ${name}.`,
+      specialistId: "resource_health_observability",
+      tool: "search",
+      toolArguments: { q: name },
+    },
+  ];
+}
+
+// Operational twin hints stay on the network specialist that owns the twin
+// page mapping; every tool exists in the manifest catalog (D-03, D-05).
+const TWIN_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which business services are affected if this changes?",
+    specialistId: "network",
+    tool: "impact_context",
+    toolArguments: {},
+  },
+  {
+    label: "Show the topology and dependencies for this resource.",
+    specialistId: "network",
+    tool: "network_topology",
+    toolArguments: {},
+  },
+  {
+    label: "What depends on this hub or resource?",
+    specialistId: "network",
+    tool: "hub_dependents",
     toolArguments: {},
   },
 ];
@@ -4250,6 +4560,411 @@ function resourceHealthCoreInput(input: ResourceHealthCopilotPageInput): CoreCop
   };
 }
 
+function situationDetailCoreInput(
+  input: SituationDetailCopilotPageInput,
+): CoreCopilotAdapterInput {
+  const situation = input.situation ?? null;
+  const affected = situation?.affected_resource_ids ?? [];
+  const evidenceRows = input.evidence ?? [];
+  const links = input.links ?? [];
+  const auditEvents = input.auditEvents ?? [];
+  const records: CoreCopilotRecord[] = [
+    ...(situation ? [{
+      identity: situation.situation_id,
+      namespace: "operations",
+      kind: "situation",
+      source: "situations/detail",
+      selected: true,
+      priority: 0,
+      data: {
+        title: situation.title,
+        severity: situation.severity,
+        priority: situation.priority,
+        lifecycle_state: situation.lifecycle_state,
+        situation_type: situation.situation_type,
+        owner: situation.owner,
+        support_team: situation.support_team,
+        evidence_state: situation.evidence_state,
+        started_at: situation.started_at,
+        last_observed_at: situation.last_observed_at,
+        unknown_count: situation.unknowns?.length ?? 0,
+      },
+    }] : []),
+    ...affected.slice(0, 50).map((resourceId, index) => ({
+      identity: resourceId,
+      namespace: "operations",
+      kind: "affected_resource",
+      source: "situations/affected",
+      resourceId,
+      observedAt: situation?.last_observed_at,
+      priority: 10 + index,
+      data: {},
+    })),
+    ...evidenceRows.slice(0, 50).map((item, index) => ({
+      identity: item.evidence_id,
+      namespace: "operations",
+      kind: "situation_evidence",
+      source: `situations/${item.source_family}`,
+      resourceId: (item.resource_ids ?? []).find((value) =>
+        isCanonicalAzureResourceId(value)),
+      observedAt: item.observed_at,
+      priority: 30 + index,
+      data: {
+        source_family: item.source_family,
+        source_object_id: item.source_object_id,
+        assertion: item.assertion,
+        quality: item.quality,
+        availability: item.availability,
+        freshness: item.freshness,
+      },
+    })),
+    ...links.slice(0, 50).map((link, index) => ({
+      identity: link.link_id,
+      namespace: "operations",
+      kind: "linked_entity",
+      source: "situations/links",
+      priority: 60 + index,
+      data: {
+        entity_type: link.entity_type,
+        entity_id: link.entity_id,
+        relation: link.relation,
+        quality: link.quality,
+      },
+    })),
+    ...auditEvents.slice(0, 50).map((event, index) => ({
+      identity: event.event_id,
+      namespace: "operations",
+      kind: "audit_event",
+      source: "situations/audit",
+      observedAt: event.timestamp,
+      priority: 80 + index,
+      data: {
+        actor: event.actor,
+        action: event.action,
+      },
+    })),
+  ];
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
+    ? input.sourceStatuses.map((status) => ({
+      source: status.source_family,
+      observedAt: status.observed_at,
+      status: status.availability === "unavailable"
+        ? "unavailable"
+        : freshnessStatus(status.freshness),
+    }))
+    : [{
+      source: "situations",
+      observedAt: input.observedAt,
+      status: (input.available ? "fresh" : "unavailable") as CopilotFreshnessStatusV2,
+    }];
+  return {
+    scope: input.scope,
+    filters: {},
+    records,
+    evidence: input.citations,
+    coverage: [
+      {
+        key: "evidence",
+        visibleCount: evidenceRows.length,
+        totalCount: evidenceRows.length,
+        available: input.available,
+      },
+      {
+        key: "affected_resources",
+        visibleCount: affected.length,
+        totalCount: affected.length,
+        available: input.available,
+      },
+      {
+        key: "links",
+        visibleCount: links.length,
+        totalCount: links.length,
+        available: input.available,
+      },
+      {
+        key: "audit",
+        visibleCount: auditEvents.length,
+        totalCount: auditEvents.length,
+        available: input.auditAvailable !== false,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
+function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterInput {
+  const records: CoreCopilotRecord[] = input.services.slice(0, 50).map((service, index) => ({
+    identity: service.name,
+    namespace: "operations",
+    kind: "business_service",
+    source: "services/catalog",
+    selected: input.selectedServiceName != null
+      && service.name === input.selectedServiceName,
+    priority: index,
+    data: {
+      service: service.name,
+      operational_state: service.operationalState,
+      environments: service.environments,
+      subscription_count: service.subscriptionCount,
+      situation_count: service.situationCount,
+      critical_count: service.criticalCount,
+      health_risk: service.healthRisk,
+    },
+  }));
+  return {
+    scope: input.scope,
+    filters: input.filters ?? {},
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "services",
+        visibleCount: input.visibleCount,
+        totalCount: Math.max(input.visibleCount, input.totalCount),
+        truncated: input.visibleCount < input.totalCount,
+        available: input.connectionsAvailable || input.incidentsAvailable,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "connections",
+        observedAt: input.connectionsObservedAt,
+        status: (input.connectionsAvailable
+          ? (input.connectionsFreshness ?? "fresh")
+          : "unavailable") as CopilotFreshnessStatusV2,
+      },
+      {
+        source: "incidents",
+        observedAt: input.incidentsObservedAt,
+        status: (input.incidentsAvailable
+          ? (input.incidentsFreshness ?? "fresh")
+          : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
+function serviceDetailCoreInput(
+  input: ServiceDetailCopilotPageInput,
+): CoreCopilotAdapterInput {
+  const subject = input.context.subject ?? null;
+  const dependencies = input.dependencies ?? [];
+  const sectionCount = (section: ServiceDetailSection): number =>
+    section.sections?.length ?? 0;
+  const records: CoreCopilotRecord[] = [
+    {
+      identity: input.name,
+      namespace: "operations",
+      kind: "business_service",
+      source: "services/context",
+      selected: true,
+      priority: 0,
+      data: {
+        owner: subject?.owner ?? undefined,
+        support_team: subject?.support_team ?? undefined,
+        environment: subject?.environment ?? undefined,
+        criticality: subject?.criticality ?? undefined,
+        lifecycle_status: subject?.lifecycle_status ?? undefined,
+        application: subject?.application ?? undefined,
+      },
+    },
+    ...dependencies.slice(0, 50).map((dependency, index) => ({
+      identity: dependency.id,
+      namespace: "operations",
+      kind: "service_dependency",
+      source: "services/impact",
+      resourceId: isCanonicalAzureResourceId(dependency.resource_id)
+        ? dependency.resource_id
+        : undefined,
+      priority: 10 + index,
+      data: {
+        name: dependency.name,
+        relation: dependency.relation,
+      },
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? {},
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "context_sections",
+        visibleCount: sectionCount(input.context),
+        totalCount: sectionCount(input.context),
+        available: input.context.available,
+      },
+      {
+        key: "risk_sections",
+        visibleCount: sectionCount(input.risk),
+        totalCount: sectionCount(input.risk),
+        available: input.risk.available,
+      },
+      {
+        key: "dependencies",
+        visibleCount: dependencies.length,
+        totalCount: dependencies.length,
+        available: input.impact.available,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "context",
+        observedAt: input.context.observedAt,
+        status: (input.context.available
+          ? input.context.freshness
+          : "unavailable") as CopilotFreshnessStatusV2,
+      },
+      {
+        source: "risk",
+        observedAt: input.risk.observedAt,
+        status: (input.risk.available
+          ? input.risk.freshness
+          : "unavailable") as CopilotFreshnessStatusV2,
+      },
+      {
+        source: "impact",
+        observedAt: input.impact.observedAt,
+        status: (input.impact.available
+          ? input.impact.freshness
+          : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
+function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
+  const selectedId = input.selectedResourceId
+    ?? (input.traversal ? input.traversal.resource_id : null);
+  const records: CoreCopilotRecord[] = [
+    ...input.entities.slice(0, 50).map((entity, index) => ({
+      identity: entity.id,
+      namespace: "operations",
+      kind: boundedString("twin entity kind", entity.kind || "entity", 1, 64),
+      source: "twin/entities",
+      resourceId: isCanonicalAzureResourceId(entity.resource_id)
+        ? entity.resource_id
+        : undefined,
+      selected: selectedId != null
+        && (entity.id === selectedId || entity.id === `resource:${selectedId}`),
+      priority: index,
+      data: {
+        name: entity.name,
+        version: entity.version,
+        state: entity.state,
+        confidence: entity.confidence,
+        business_service: entity.business_service,
+        observed: true,
+      },
+    })),
+    ...input.relationships.slice(0, 50).map((relationship, index) => ({
+      identity: relationship.id,
+      namespace: "operations",
+      kind: "twin_relationship",
+      source: "twin/relationships",
+      priority: 60 + index,
+      data: {
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        confidence: relationship.confidence,
+        // Unsupported edges stay uncertain rather than asserted.
+        supported: relationship.supported ?? true,
+      },
+    })),
+    ...input.timeline.slice(0, 50).map((event, index) => ({
+      identity: `${event.type}:${event.timestamp}:${event.entity}`,
+      namespace: "operations",
+      kind: "twin_event",
+      source: "twin/timeline",
+      observedAt: event.timestamp,
+      priority: 120 + index,
+      data: {
+        type: event.type,
+        entity: event.entity,
+        summary: event.summary,
+      },
+    })),
+    ...(input.traversal ? [{
+      identity: `traversal:${input.traversal.resource_id}`,
+      namespace: "operations",
+      kind: "twin_traversal",
+      source: "twin/traversal",
+      resourceId: isCanonicalAzureResourceId(input.traversal.resource_id)
+        ? input.traversal.resource_id
+        : undefined,
+      priority: 180,
+      data: {
+        resource_id: input.traversal.resource_id,
+        path: input.traversal.path.map((entity) => entity.id),
+        business_consequence: input.traversal.business_consequence,
+      },
+    }] : []),
+    ...(input.scenario ? [{
+      identity: `scenario:${input.scenario.scenario}:${input.scenario.target}`,
+      namespace: "operations",
+      kind: "twin_scenario",
+      source: "twin/scenario",
+      priority: 190,
+      data: {
+        scenario: input.scenario.scenario,
+        target: input.scenario.target,
+        likely_impact: input.scenario.likely_impact,
+        risk_delta: input.scenario.risk_delta,
+        impacted_count: input.scenario.impacted_count,
+        assumptions: input.scenario.assumptions,
+        // Scenario projections are hypothetical, never observed reality.
+        observed: false,
+      },
+    }] : []),
+  ];
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatus
+    && Object.keys(input.sourceStatus).length
+    ? Object.entries(input.sourceStatus).map(([source, status]) => ({
+      source,
+      observedAt: input.liveObservedAt ?? input.observedAt,
+      status: freshnessStatus(status),
+    }))
+    : [{
+      source: "twin",
+      observedAt: input.liveObservedAt ?? input.observedAt,
+      status: (input.available
+        ? (input.freshness ?? "fresh")
+        : "unavailable") as CopilotFreshnessStatusV2,
+    }];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? {},
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "entities",
+        visibleCount: input.entities.length,
+        totalCount: Math.max(input.entities.length, input.entitiesTotal),
+        truncated: input.entities.length < input.entitiesTotal,
+        available: input.available,
+      },
+      {
+        key: "relationships",
+        visibleCount: input.relationships.length,
+        totalCount: Math.max(input.relationships.length, input.relationshipsTotal),
+        truncated: input.relationships.length < input.relationshipsTotal,
+        available: input.available,
+      },
+      {
+        key: "timeline",
+        visibleCount: input.timeline.length,
+        totalCount: Math.max(input.timeline.length, input.timelineTotal),
+        truncated: input.timeline.length < input.timelineTotal,
+        available: input.available,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
 function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.situations.slice(0, 50).map((situation, index) => ({
     identity: situation.situation_id,
@@ -4685,6 +5400,66 @@ export function buildResourceHealthCopilotContext(
         ...input.unavailableMetrics.map((metric) => `${metric} series is unavailable`),
       ],
     };
+  }
+  return context;
+}
+
+/** Builds the typed Situation detail context from the loaded durable brief. */
+export function buildSituationDetailCopilotContext(
+  input: SituationDetailCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "incident", pageId: `situation:${input.situationId}` },
+    situationDetailCoreInput(input),
+    SITUATION_DETAIL_STARTERS,
+  );
+}
+
+/** Builds the typed Services catalog context from the loaded service list. */
+export function buildServicesCopilotContext(
+  input: CoreCopilotAdapterInput | ServicesCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "resource", pageId: "services" },
+    isCoreCopilotInput(input) ? input : servicesCoreInput(input),
+    SERVICES_STARTERS,
+  );
+}
+
+/** Builds the typed Service detail context from the loaded semantic sections. */
+export function buildServiceDetailCopilotContext(
+  input: ServiceDetailCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "resource", pageId: `service:${input.name}` },
+    serviceDetailCoreInput(input),
+    serviceDetailStarters(input.name),
+  );
+}
+
+/**
+ * Builds the typed operational-twin context from the loaded snapshot,
+ * traversal, and scenario. Unsupported relationships and stale temporal
+ * evidence stay uncertain rather than asserted (D-03, D-04, D-08, D-09).
+ */
+export function buildTwinCopilotContext(
+  input: TwinCopilotPageInput,
+): CoreCopilotContext {
+  const context = buildCoreCopilotContext(
+    { pageKind: "network", pageId: "twin" },
+    twinCoreInput(input),
+    TWIN_STARTERS,
+  );
+  const extraUncertainty = [
+    ...(input.unsupportedRelationships ?? []).map(
+      (type) => `${type} is not a supported twin relationship; treat as uncertain`,
+    ),
+    ...(input.staleTemporalEvidence ?? []).map(
+      (note) => `${note} is historical evidence and is not asserted as current`,
+    ),
+  ];
+  if (extraUncertainty.length) {
+    return { ...context, uncertainty: [...context.uncertainty, ...extraUncertainty] };
   }
   return context;
 }
