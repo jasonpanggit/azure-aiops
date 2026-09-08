@@ -126,15 +126,67 @@ type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   quality: CopilotSnapshotEvidenceV2["quality"];
 };
 
-const PAGE_DISPOSITIONS = {
-  "/": "integrated",
-  "/compliance": "integrated",
-  "/exposure": "integrated",
-  "/inventory": "integrated",
-  "/network": "integrated",
-  "/remediation": "integrated",
-  "/situations": "integrated",
-} as const satisfies Record<string, CopilotPageDisposition>;
+/** The page-kind a route anchors on; `inventory` is the V2 inventory kind. */
+export type CopilotRouteAnchorPageKind = CopilotPageKind | "inventory";
+
+/** Exactly one reviewed Copilot disposition per Next.js route (D-03, locked page policy). */
+export type CopilotRouteDisposition =
+  | { kind: "integrated"; pageKind: CopilotRouteAnchorPageKind }
+  | { kind: "dedicated"; surface: string }
+  | { kind: "redirect"; target: string }
+  | { kind: "excluded"; reason: string };
+
+/**
+ * Exhaustive disposition for all 28 reviewed routes.
+ *
+ * The Plan 11-16 filesystem gate compares these keys to
+ * `web/src/app/**\/page.tsx` so no route can ship without exactly one reviewed
+ * disposition, and the manifest-parity gate reads each integrated `pageKind`
+ * as the route's authoritative specialist anchor (D-03, D-05, D-06). Every
+ * integrated `pageKind` mirrors the page kind its adapter emits, and each is a
+ * key in the versioned specialist manifest's page mapping.
+ */
+export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition> = {
+  // 23 integrated routes -- each renders the shared CopilotDrawerButton and a
+  // typed page adapter over already-loaded, authorized evidence.
+  "/": { kind: "integrated", pageKind: "resource" },
+  "/network": { kind: "integrated", pageKind: "network" },
+  "/compliance": { kind: "integrated", pageKind: "governance" },
+  "/exposure": { kind: "integrated", pageKind: "vulnerability" },
+  "/exposure/cves/[id]": { kind: "integrated", pageKind: "vulnerability" },
+  "/exposure/defender-posture": { kind: "integrated", pageKind: "vulnerability" },
+  "/exposure/kbs/[id]": { kind: "integrated", pageKind: "vulnerability" },
+  "/exposure/patch-priorities": { kind: "integrated", pageKind: "vulnerability" },
+  "/situations": { kind: "integrated", pageKind: "incident" },
+  "/situations/[id]": { kind: "integrated", pageKind: "incident" },
+  "/changes": { kind: "integrated", pageKind: "incident" },
+  "/changes/predeploy": { kind: "integrated", pageKind: "governance" },
+  "/inventory": { kind: "integrated", pageKind: "inventory" },
+  "/connections": { kind: "integrated", pageKind: "resource" },
+  "/connections/fabric": { kind: "integrated", pageKind: "resource" },
+  "/governance": { kind: "integrated", pageKind: "governance" },
+  "/identity": { kind: "integrated", pageKind: "governance" },
+  "/finops": { kind: "integrated", pageKind: "governance" },
+  "/remediation": { kind: "integrated", pageKind: "remediation" },
+  "/resource-health": { kind: "integrated", pageKind: "resource" },
+  "/services": { kind: "integrated", pageKind: "resource" },
+  "/services/[name]": { kind: "integrated", pageKind: "resource" },
+  "/twin": { kind: "integrated", pageKind: "network" },
+  // 3 dedicated Copilot/investigation surfaces -- they are the reasoning
+  // destination itself and never embed a second contextual launcher.
+  "/copilot": { kind: "dedicated", surface: "operations-copilot" },
+  "/investigate": { kind: "dedicated", surface: "guided-investigation" },
+  "/agents": { kind: "dedicated", surface: "multi-agent-investigation" },
+  // 1 redirect -- the legacy vulnerability alias consolidated under Exposure.
+  "/vulnerabilities": { kind: "redirect", target: "/exposure" },
+  // 1 excluded -- pure navigation/query aggregation with no stable retained
+  // evidence snapshot contract in Phase 11.
+  "/search": {
+    kind: "excluded",
+    reason:
+      "Navigation and query aggregation only; Phase 11 defines no stable retained evidence snapshot contract for search results, so results deep-link to eligible detail pages instead of being carried as Copilot evidence.",
+  },
+};
 
 const SHA256_CONSTANTS = [
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -189,7 +241,12 @@ const PYTHON_312_UNCASED_CODE_POINTS = new Set([
 
 /** Returns the reviewed Copilot integration disposition for a route. */
 export function copilotPageDisposition(pathname: string): CopilotPageDisposition {
-  return PAGE_DISPOSITIONS[pathname as keyof typeof PAGE_DISPOSITIONS] ?? "deferred";
+  const disposition = COPILOT_ROUTE_DISPOSITIONS[pathname];
+  if (!disposition) return "deferred";
+  if (disposition.kind === "integrated") return "integrated";
+  if (disposition.kind === "excluded") return "excluded";
+  // Dedicated surfaces and redirects have no embedded contextual adapter.
+  return "deferred";
 }
 
 /** Compatibility entry point for the canonical API client now owned by services. */

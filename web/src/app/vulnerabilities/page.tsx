@@ -25,7 +25,15 @@ const CANONICAL_QUERY_KEYS = new Set([
   "generation",
 ]);
 
-/** Preserves the legacy vulnerability route while consolidating the product under Exposure. */
+/**
+ * Preserves the legacy vulnerability route while consolidating the product
+ * under Exposure.
+ *
+ * Copilot disposition (Plan 11-16): `redirect`. This alias hosts no Copilot
+ * page adapter and never renders the shared contextual launcher -- it resolves
+ * only to the canonical Exposure product, so the reviewed 28-route disposition
+ * gate keeps it from silently duplicating an integrated adapter (D-03).
+ */
 export default function VulnerabilitiesPage({
   searchParams = {},
 }: {
