@@ -1617,8 +1617,13 @@ def _topology_relationships(
         for route in table.routes:
             add(table.resource_id, route.resource_id, "has_route", label="has route", details=route.to_dict())
             next_hop_id = firewall_by_private_ip.get(route.next_hop_ip, "")
+            next_hop_source = (
+                table.resource_id
+                if route.resource_id.casefold() in intentionally_omitted_ids
+                else route.resource_id
+            )
             add(
-                route.resource_id,
+                next_hop_source,
                 next_hop_id,
                 "next_hop",
                 label=f"next hop {route.next_hop_ip}",

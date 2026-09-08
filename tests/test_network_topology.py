@@ -677,12 +677,24 @@ class TestResourceTopologyProjection:
                 },
             },
         ]
-        relationships = build_topology(load_network_snapshot(rows)).to_dict()["relationships"]
+        topology = build_topology(load_network_snapshot(rows))
+        relationships = topology.to_dict()["relationships"]
         assert any(
             item["source"] == route.casefold()
             and item["target"] == firewall.casefold()
             and item["relationship_type"] == "next_hop"
             for item in relationships
+        )
+
+        summary = topology.to_dict(detail="summary")
+        assert route.casefold() not in {
+            item["id"] for item in summary["resources"]
+        }
+        assert any(
+            item["source"] == table.casefold()
+            and item["target"] == firewall.casefold()
+            and item["relationship_type"] == "next_hop"
+            for item in summary["relationships"]
         )
 
     def test_nic_and_private_endpoint_link_to_the_workloads_they_serve(self) -> None:
