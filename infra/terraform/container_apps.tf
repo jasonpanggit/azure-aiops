@@ -26,6 +26,49 @@ locals {
 
   api_base_url = "https://${local.api_fqdn}"
   web_base_url = "https://${local.web_fqdn}"
+
+  # Staged rollout of the canonical OrchestrationService (Plan 11-12 Task 2).
+  #
+  #   compatibility -> serve legacy projections, record canonical decisions
+  #   shadow        -> compare canonical vs fallback without double-running
+  #                    external tools/models or exposing any mutation
+  #   canary        -> canonical default for a bounded traffic share, with an
+  #                    automatic hold on any predetermined threshold failure
+  #   default       -> canonical default for all traffic
+  #
+  # Canary traffic is bounded only in canary mode; every other mode is 0% or
+  # 100% and never a partial split. Rollback restores the prior revision/mode
+  # without rewriting threads or ledgers, so the fallback mode is retained
+  # alongside the active mode.
+  copilot_canary_percentage = (
+    var.copilot_rollout_mode == "canary" ? var.copilot_canary_percentage :
+    var.copilot_rollout_mode == "default" ? 100 : 0
+  )
+  # Deterministic rollback target: the governed page-anchored fallback that
+  # remains selectable throughout Phase 11. Never a big-bang cutover.
+  copilot_rollback_mode = "compatibility"
+}
+
+variable "copilot_rollout_mode" {
+  description = "Staged rollout mode for the canonical Operations Copilot orchestrator: compatibility, shadow, canary, or default. Introduces the canonical service without a big-bang break and is reversible to the prior mode/revision."
+  type        = string
+  default     = "compatibility"
+
+  validation {
+    condition     = contains(["compatibility", "shadow", "canary", "default"], var.copilot_rollout_mode)
+    error_message = "copilot_rollout_mode must be one of compatibility, shadow, canary, default."
+  }
+}
+
+variable "copilot_canary_percentage" {
+  description = "Bounded share of traffic the canonical orchestrator serves as default while copilot_rollout_mode is 'canary'. Ignored in other modes."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.copilot_canary_percentage >= 0 && var.copilot_canary_percentage <= 100
+    error_message = "copilot_canary_percentage must be between 0 and 100."
+  }
 }
 
 resource "azurerm_container_app_environment" "main" {
@@ -373,6 +416,28 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AIOPS_AGENT_ORCHESTRATION_MODE"
         value = lower(var.agent_orchestration_mode)
+      }
+
+      # Staged rollout controls for the canonical orchestrator (Plan 11-12).
+      # The application reads the mode to serve compatibility/shadow/canary/
+      # default behaviour at the request boundary -- shadow compares decisions
+      # without double-running tools/models, canary defaults canonical for a
+      # bounded traffic share and holds automatically on any predetermined
+      # threshold failure, and rollback flips back to the retained fallback
+      # mode without rewriting threads or ledgers.
+      env {
+        name  = "AIOPS_COPILOT_ROLLOUT_MODE"
+        value = var.copilot_rollout_mode
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_CANARY_PERCENTAGE"
+        value = tostring(local.copilot_canary_percentage)
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_ROLLBACK_MODE"
+        value = local.copilot_rollback_mode
       }
 
       # Selects the user-assigned identity for DefaultAzureCredential, which

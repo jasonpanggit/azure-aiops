@@ -72,6 +72,7 @@ const {
 }));
 
 vi.mock("@/lib/services", () => ({
+  buildCopilotSnapshot: (input: unknown) => input,
   connectionsApi: {
     create,
     get: getConnection,

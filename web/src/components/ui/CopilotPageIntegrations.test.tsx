@@ -1,5 +1,41 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { buildCopilotSnapshot, copilotEvidenceRows } from "@/lib/services";
+import { COPILOT_ROUTE_DISPOSITIONS } from "@/lib/copilot/page-adapters";
+
+const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "app");
+
+function routeSourceFor(route: string): string {
+  return readFileSync(join(APP_DIR, route === "/" ? "" : route, "page.tsx"), "utf8");
+}
+
+describe("integrated route launcher coverage (COP-02)", () => {
+  const routes = Object.entries(COPILOT_ROUTE_DISPOSITIONS);
+
+  it("renders the shared CopilotDrawerButton entry point on every integrated route", () => {
+    const integrated = routes.filter(([, disposition]) => disposition.kind === "integrated");
+    expect(integrated).toHaveLength(23);
+    for (const [route] of integrated) {
+      expect(
+        routeSourceFor(route),
+        `${route} must render the shared Copilot entry point`,
+      ).toContain("CopilotDrawerButton");
+    }
+  });
+
+  it("keeps dedicated, redirect, and excluded routes free of an embedded launcher", () => {
+    const nonIntegrated = routes.filter(([, disposition]) => disposition.kind !== "integrated");
+    expect(nonIntegrated).toHaveLength(5);
+    for (const [route] of nonIntegrated) {
+      expect(
+        routeSourceFor(route),
+        `${route} must not embed the shared Copilot launcher`,
+      ).not.toContain("CopilotDrawerButton");
+    }
+  });
+});
 
 describe("supported Copilot page contracts", () => {
   it("uses a named page kind and preserves filters, visible evidence, and source availability", () => {

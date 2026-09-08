@@ -88,11 +88,19 @@ export default function MultiAgentInvestigationPage() {
             <textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={3} />
           </label>
           <div className="entity-pill-row" aria-label="Available specialized agents">
-            {catalog.map((agent) => (
-              <span key={agent.id} className="entity-pill" title={agent.role}>
-                {agent.name}
-              </span>
-            ))}
+            {catalog.map((agent) => {
+              const configured = agent.foundry?.configured ?? false;
+              return (
+                <span key={agent.id} className="entity-pill" title={agent.role}>
+                  {agent.name}
+                  <StatusBadge
+                    label={configured ? "Ready" : "Unavailable"}
+                    tone={configured ? "success" : "neutral"}
+                    compact
+                  />
+                </span>
+              );
+            })}
           </div>
         </div>
       </section>

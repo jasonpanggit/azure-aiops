@@ -12,6 +12,8 @@ const { compare, graph, scenario, traverse, twinExport } = vi.hoisted(() => ({
 
 vi.mock("@/lib/services", () => ({
   twinApi: { compare, graph, scenario, traverse, export: twinExport },
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+  copilotEvidenceRows: () => [],
 }));
 
 import OperationalTwinPage from "./page";
@@ -101,5 +103,12 @@ describe("Operational Digital Twin workspace", () => {
 
     fireEvent.change(screen.getByLabelText("Scenario"), { target: { value: "cve_exploitation" } });
     await waitFor(() => expect(scenario).toHaveBeenLastCalledWith("cve_exploitation", "vm-payroll-1", {}));
+  });
+
+  it("offers a read-only Copilot entry point that opens the shared drawer in place", async () => {
+    renderPage();
+    const trigger = await screen.findByRole("button", { name: "Ask Copilot about the twin" });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("dialog", { name: "Operations Copilot" })).toBeInTheDocument();
   });
 });

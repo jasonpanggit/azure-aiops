@@ -66,7 +66,18 @@ function scopeLabel(scope: Record<string, string[]>): string {
   return values.join(", ") || "Current authorized scope";
 }
 
-/** Intent-driven search that presents semantic entities instead of raw payloads. */
+/**
+ * Intent-driven search that presents semantic entities instead of raw payloads.
+ *
+ * Copilot disposition (Plan 11-16): `excluded`. Search is a pure
+ * navigation/query aggregation surface -- Phase 11 defines no stable retained
+ * evidence snapshot contract for search results, so this page renders no shared
+ * Copilot launcher and carries no page adapter. Results deep-link to eligible
+ * detail pages (situations, exposure, services, guided investigation) where a
+ * reviewed adapter carries the evidence instead. Adding a stable retained
+ * search-result snapshot later would require promoting this route to
+ * `integrated` in the disposition registry (D-03).
+ */
 export default function SearchPage() {
   return (
     <Suspense fallback={null}>

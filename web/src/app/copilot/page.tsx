@@ -8,9 +8,15 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
-import { copilotApi, SUPPORTED_SEARCH_PHRASES } from "@/lib/services";
+import {
+  askCanonicalInvestigation,
+  toCanonicalInvestigationView,
+  ROOT_COPILOT_SESSION,
+  SUPPORTED_SEARCH_PHRASES,
+} from "@/lib/services";
+import type { CanonicalCopilotCitation, EvidenceItem } from "@/lib/types";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
-import type { EvidenceItem } from "@/lib/types";
+import { useOptionalThreadContinuity } from "@/lib/copilot/thread-context";
 
 interface ChatTurn {
   question: string;
@@ -19,6 +25,10 @@ interface ChatTurn {
   evidence?: EvidenceItem[];
   knowledgeVersion?: string;
   warnings?: string[];
+  degraded?: boolean;
+  degradationNote?: string;
+  citations?: CanonicalCopilotCitation[];
+  uncertainty?: string[];
   error?: string;
 }
 
@@ -41,11 +51,11 @@ export default function CopilotPage() {
 function CopilotContent() {
   const { scope } = useScope();
   const searchParams = useSearchParams();
+  const threadContinuity = useOptionalThreadContinuity();
   const contextLabel = searchParams.get("situation") ?? searchParams.get("service");
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
-  const sessionId = useRef(`web-${Math.random().toString(36).slice(2)}-${Date.now()}`);
 
   const starterPrompts = useMemo(
     () =>
@@ -61,18 +71,29 @@ function CopilotContent() {
     setQuestion("");
     setLoading(true);
     try {
-      const envelope = await copilotApi.investigate(nextQuestion, scope, {
-        sessionId: sessionId.current,
+      // Standalone requests may omit page context; the shared canonical helper
+      // submits through the root thread so this surface shares one authorized,
+      // principal-scoped thread with the workspace and drawer.
+      const envelope = await askCanonicalInvestigation(nextQuestion, scope, {
+        sessionId: ROOT_COPILOT_SESSION,
       });
+      const view = toCanonicalInvestigationView(envelope.data);
+      if (view.threadId && view.threadRevision) {
+        threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision });
+      }
       setTurns((current) => [
         ...current,
         {
           question: nextQuestion,
-          toolCalls: envelope.data.tool_calls,
-          narration: envelope.data.answer,
+          toolCalls: view.toolCalls,
+          narration: view.narration,
           evidence: envelope.evidence,
           knowledgeVersion: envelope.knowledge_version,
           warnings: envelope.warnings,
+          degraded: view.degraded,
+          degradationNote: view.degradationNote,
+          citations: view.citations,
+          uncertainty: view.uncertainty,
         },
       ]);
     } catch (reason) {
@@ -158,6 +179,32 @@ function CopilotContent() {
                     )}
                   </>
                 )}
+                {!turn.error && turn.degraded && turn.degradationNote && (
+                  <p className="copilot-fallback-note" role="alert" aria-label="Copilot degradation">
+                    {turn.degradationNote}
+                  </p>
+                )}
+                {!turn.error && turn.uncertainty?.length ? (
+                  <div className="copilot-uncertainty" aria-label="Copilot uncertainty">
+                    <StatusBadge label="Uncertainty" tone="warning" compact />
+                    <ul>
+                      {turn.uncertainty.map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  </div>
+                ) : null}
+                {!turn.error && turn.citations?.length ? (
+                  <div className="copilot-citations" aria-label="Copilot citations">
+                    <StatusBadge label="Citations" tone="info" compact />
+                    <ul>
+                      {turn.citations.map((citation) => (
+                        <li key={citation.citation_id}>
+                          {citation.source}
+                          {citation.status ? <span className="muted"> — {citation.status}</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {!turn.error && (
                   <EvidenceBar
                     evidence={turn.evidence}

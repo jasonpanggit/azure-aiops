@@ -519,7 +519,9 @@ describe("ExposurePage Defender posture", () => {
     const headerStatus = await screen.findByRole("status", {
       name: "Which exposure should be reduced first? evidence status",
     });
-    expect(headerStatus).toHaveTextContent("Partial operational context");
+    await waitFor(() =>
+      expect(headerStatus).toHaveTextContent("Partial operational context"),
+    );
     expect(headerStatus).toHaveTextContent("1 of 2 connections represented");
     expect(headerStatus).toHaveTextContent("3 represented");
     expect(headerStatus).toHaveTextContent("4 total");

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
@@ -14,6 +16,7 @@ import {
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
+import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
@@ -66,6 +69,7 @@ export default function ConnectionsPage() {
   const [runningAction, setRunningAction] = useState("");
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">("subscriptions");
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
   const [ontologyRefreshKey, setOntologyRefreshKey] = useState(0);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
@@ -263,6 +267,30 @@ export default function ConnectionsPage() {
     }
   }
 
+  const connectionsCopilot = buildConnectionsCopilotContext({
+    scope,
+    connections: rows.map((connection) => ({
+      connection_id: connection.connection_id,
+      name: connection.name,
+      subscription_id: connection.subscription_id,
+      business_service: connection.business_service,
+      environment: connection.environment,
+      criticality: connection.criticality,
+      health_status: connection.health_status,
+      sync_status: connection.sync_status,
+      sync_record_count: connection.sync_record_count,
+      last_successful_sync_at: connection.last_successful_sync_at,
+      is_active: connection.is_active,
+    })),
+    loadedCount: rows.length,
+    totalCount: connections.data?.pagination?.total ?? rows.length,
+    available: !connections.error && Boolean(connections.data),
+    freshness: connections.error || !connections.data ? "unavailable" : "fresh",
+    selectedConnectionId:
+      rows.find((connection) => connection.subscription_id === selectedSubscriptionId)?.connection_id ?? null,
+    evidence: connections.data?.evidence ?? [],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
@@ -282,7 +310,12 @@ export default function ConnectionsPage() {
               : "Monitor scheduled discovery, review proposed relationships, and manage validated Fabric ontology generations for one onboarded connection."
         }
         actions={
-          tab === "fabric-medallion" ? (
+          <div className="page-header-actions-group">
+            <CopilotDrawerButton
+              onClick={() => setCopilotOpen(true)}
+              label="Ask Copilot about data health"
+            />
+            {tab === "fabric-medallion" ? (
             <div className="page-header-actions-group">
               <select 
                 name="subscriptionId"
@@ -342,7 +375,8 @@ export default function ConnectionsPage() {
                 <span>Uses the same durable coordinator as scheduled discovery. Closing this page does not stop the run.</span>
               </div>
             </div>
-          ) : null
+          ) : null}
+          </div>
         }
       />
 
@@ -512,6 +546,15 @@ export default function ConnectionsPage() {
           onRefresh={() => setOntologyRefreshKey((value) => value + 1)}
         />
       ))}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Data & integrations"
+        requestedScope={connectionsCopilot.requestedScope}
+        snapshot={connectionsCopilot.snapshot}
+        starterQuestions={connectionsCopilot.starterQuestions}
+      />
     </div>
   );
 }
