@@ -1020,20 +1020,51 @@ def validate_artifact(
     failed = [name for name, g in gates.items() if not g.get("passed", False)]
     if decision == "PROMOTE" and failed:
         problems.append(f"decision PROMOTE recorded while gates failed: {failed}")
+    canonical_case_ids = {
+        str(case["case_id"]) for case in canonical_dataset["cases"]
+    }
+    case_evidence = artifact.get("case_evidence") or []
+    observed_case_id_list = [
+        str(case.get("case_id")) for case in case_evidence
+    ]
+    observed_case_ids = set(observed_case_id_list)
+    if (
+        len(observed_case_id_list) != len(canonical_case_ids)
+        or len(observed_case_id_list) != len(observed_case_ids)
+        or observed_case_ids != canonical_case_ids
+    ):
+        problems.append(
+            "artifact does not contain the complete duplicate-free canonical case-id set"
+        )
     if decision == "PROMOTE":
-        canonical_case_ids = {
-            str(case["case_id"]) for case in canonical_dataset["cases"]
-        }
-        observed_case_ids = {
-            str(case.get("case_id"))
-            for case in artifact.get("case_evidence") or []
-        }
-        if observed_case_ids != canonical_case_ids:
-            problems.append("PROMOTE artifact does not contain the canonical case-id set")
         required_providers = {"foundry", "operations_mcp", "azure_mcp"}
         availability = artifact.get("provider_availability") or {}
         if any(availability.get(name) != "available" for name in required_providers):
             problems.append("PROMOTE artifact has unavailable or missing providers")
+    if (
+        isinstance(artifact.get("metrics"), dict)
+        and isinstance(case_evidence, list)
+        and isinstance(artifact.get("provider_availability"), dict)
+        and isinstance(artifact.get("validation_evidence"), dict)
+    ):
+        try:
+            recomputed = build_release_artifact(
+                case_evidence,
+                cases=load_cases(DEFAULT_DATASET),
+                dataset=canonical_dataset,
+                thresholds=canonical_thresholds,
+                revision=str(artifact.get("revision") or ""),
+                provider_availability=artifact["provider_availability"],
+                validation_evidence=artifact["validation_evidence"],
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            problems.append(f"artifact evidence cannot be recomputed: {exc}")
+        else:
+            for field in ("metrics", "gates", "disabled_modes", "decision"):
+                if artifact.get(field) != recomputed[field]:
+                    problems.append(
+                        f"artifact {field} does not match recomputed evidence"
+                    )
     return (not problems, problems)
 
 
@@ -1144,19 +1175,75 @@ def build_release_artifact(
     metrics = aggregate_release_metrics(controlled_results)
     report = evaluate_gates(metrics, thresholds)
     deterministic_gate_names = tuple(thresholds["deterministic_gates"])
+    result_by_id = {
+        str(result.get("case_id")): result for result in controlled_results
+    }
+    applicable_case_ids = {
+        "scope_isolation": [
+            case.case_id
+            for case in cases
+            if case.safety.get("scope_isolation")
+            or case.safety.get("cross_principal_denied")
+        ],
+        "mutation_denied": [
+            case.case_id
+            for case in cases
+            if case.safety.get("mutation_denied")
+        ],
+        "unknown_specialist_or_tool_denied": [],
+        "route_disposition_parity": [case.case_id for case in cases],
+        "manifest_projection_parity": [],
+        "tool_grant_parity": [
+            case.case_id for case in cases if case.expect_grants
+        ],
+        "snapshot_schema": [
+            case.case_id
+            for case in cases
+            if case.disposition == "integrated"
+        ],
+        "citation_reference_integrity": [
+            case.case_id
+            for case in cases
+            if case.disposition in {"integrated", "dedicated"}
+        ],
+    }
+    result_fields = {
+        "scope_isolation": "scope_ok",
+        "mutation_denied": "mutation_denied",
+        "unknown_specialist_or_tool_denied": "unknown_id_denied",
+        "route_disposition_parity": "disposition_ok",
+        "manifest_projection_parity": "manifest_projection_ok",
+        "tool_grant_parity": "grants_ok",
+        "snapshot_schema": "snapshot_schema_ok",
+        "citation_reference_integrity": "citation_reference_integrity_ok",
+    }
     for name in deterministic_gate_names:
         aggregate_gate = report["gates"][name]
         evidence_value = validation_evidence.get(name)
-        passed = aggregate_gate["passed"] and evidence_value is True
+        field_name = result_fields[name]
+        missing_case_ids = [
+            case_id
+            for case_id in applicable_case_ids[name]
+            if not isinstance(
+                result_by_id.get(case_id, {}).get(field_name), bool
+            )
+        ]
+        passed = (
+            aggregate_gate["passed"]
+            and evidence_value is True
+            and not missing_case_ids
+        )
         report["gates"][name] = _gate(
             passed,
             {
                 "violations": aggregate_gate["observed"],
                 "validation_evidence": evidence_value,
+                "missing_case_ids": missing_case_ids,
             },
             {
                 "max_violations": aggregate_gate["threshold"],
                 "validation_evidence": True,
+                "missing_case_ids": [],
             },
             aggregate_gate["note"],
         )
@@ -1232,14 +1319,35 @@ def build_release_artifact(
         required_metrics.extend(
             ("latency_cross_domain_p95_ms", "spend_cross_domain_max_usd")
         )
+    non_static_case_ids = {
+        case.case_id
+        for case in cases
+        if case.disposition not in {"redirect", "excluded"}
+    }
+    missing_spend_case_ids = sorted(
+        case_id
+        for case_id in non_static_case_ids
+        if (
+            not isinstance(
+                result_by_id.get(case_id, {}).get("spend_usd"), (int, float)
+            )
+            or not math.isfinite(
+                float(result_by_id.get(case_id, {}).get("spend_usd") or 0)
+            )
+            or float(result_by_id[case_id]["spend_usd"]) < 0
+        )
+    )
     missing_metrics = [
         name for name in required_metrics if metrics.get(name) is None
     ]
-    measurements_complete = not missing_metrics
+    measurements_complete = not missing_metrics and not missing_spend_case_ids
     report["gates"]["measurement_completeness"] = _gate(
         measurements_complete,
-        missing_metrics,
-        [],
+        {
+            "missing_metrics": missing_metrics,
+            "missing_spend_case_ids": missing_spend_case_ids,
+        },
+        {"missing_metrics": [], "missing_spend_case_ids": []},
         "release_evaluation",
     )
 

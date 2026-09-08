@@ -1425,7 +1425,7 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
     evaluate_agents = _load_evaluate_agents()
     dataset = json.loads(_CASES_PATH.read_text())
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
-    cases = evaluate_agents.load_cases(_CASES_PATH)[:2]
+    cases = evaluate_agents.load_cases(_CASES_PATH)
 
     artifact = evaluate_agents.build_release_artifact(
         [_passing_result(case_id=cases[0].case_id)],
@@ -1442,7 +1442,8 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
     ok, problems = evaluate_agents.validate_artifact(
         artifact, dataset_version="1", thresholds_version="1"
     )
-    assert ok is True, problems
+    assert ok is False
+    assert any("canonical case-id set" in problem for problem in problems)
 
 
 def test_release_evidence_requires_exact_tool_grant_parity():
@@ -1592,3 +1593,125 @@ def test_validate_artifact_rejects_promote_with_omitted_release_gates():
 
     assert ok is False
     assert any("missing required gates" in problem for problem in problems)
+
+
+def test_release_artifact_holds_when_any_live_case_lacks_spend():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            spend_usd=None if index == 0 else 0.05,
+        )
+        for index, case in enumerate(cases)
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert artifact["gates"]["measurement_completeness"]["passed"] is False
+    assert artifact["gates"]["measurement_completeness"]["observed"][
+        "missing_spend_case_ids"
+    ] == [cases[0].case_id]
+
+
+def test_external_boolean_cannot_override_missing_scope_case_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            scope_ok=None if case.case_id == "scope.cross.principal" else True,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD"
+    assert artifact["gates"]["scope_isolation"]["passed"] is False
+    assert artifact["gates"]["scope_isolation"]["observed"]["missing_case_ids"] == [
+        "scope.cross.principal"
+    ]
+
+
+def test_validate_artifact_recomputes_decision_from_case_evidence():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+        )
+        for case in cases
+    ]
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+    scope_case = next(
+        item
+        for item in artifact["case_evidence"]
+        if item["case_id"] == "scope.cross.subscription"
+    )
+    scope_case["scope_ok"] = False
+
+    ok, problems = evaluate_agents.validate_artifact(
+        artifact, dataset_version="1", thresholds_version="1"
+    )
+
+    assert ok is False
+    assert any("recomputed evidence" in problem for problem in problems)
