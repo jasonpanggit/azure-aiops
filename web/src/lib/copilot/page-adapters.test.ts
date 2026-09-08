@@ -1617,7 +1617,7 @@ describe("inventory Copilot page adapter", () => {
         },
       ],
       sourceStatuses: [
-        { source: "patch_priorities", freshness: "aging", observedAt: "2026-09-07T09:30:00Z" },
+        { source: "patch_priorities", freshness: "partial", observedAt: "2026-09-07T09:30:00Z" },
       ],
     };
 
@@ -1641,7 +1641,10 @@ describe("inventory Copilot page adapter", () => {
         },
       ]);
       // KB/CVE evidence and SLA facts retained and non-actionable.
-      expect(rowByClaim(context, "patch_priority")[0]?.data).toMatchObject({
+      const selectedPatch = rowByClaim(context, "patch_priority").find(
+        (row) => row.data.exposure_id === "exp-1",
+      );
+      expect(selectedPatch?.data).toMatchObject({
         missing_kb: "KB5001",
         weakness_id: "CVE-2026-0001",
         priority_score: 92,

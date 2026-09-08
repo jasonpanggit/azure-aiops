@@ -31,6 +31,7 @@ vi.mock("@/lib/services", () => ({
     exposureOverview: api.exposureOverview,
     exposureItems: api.exposureItems,
   },
+  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
 }));
 
 import KbDetailPage from "./page";

@@ -1293,6 +1293,162 @@ export interface RemediationCopilotPageInput {
   sourceStatuses: RemediationCopilotSourceFreshness[];
 }
 
+/** Defender posture aggregate counts the adapter cites (read-only). */
+export interface DefenderOverviewCopilotFields {
+  active_alert_count: number;
+  critical_alert_count: number;
+  attack_path_count: number;
+  unhealthy_recommendation_count: number;
+  vulnerable_container_image_count: number;
+  container_image_cve_count: number;
+}
+
+/** Defender secure-score aggregate the adapter cites. */
+export interface DefenderSecureScoreCopilotFields {
+  current: number;
+  max: number;
+  percentage: number | null;
+}
+
+/** Defender posture finding row projected before adapter typing. */
+export interface DefenderPostureFindingFields {
+  assessment_id: string;
+  asset_id: string;
+  asset_name?: string;
+  resource_type?: string;
+  defender_plan?: string;
+  status?: string;
+  severity?: string;
+  recommendation?: string;
+  business_service?: string;
+  application?: string;
+  last_assessed_at?: string;
+}
+
+/** Defender alert row the adapter cites. */
+export interface DefenderAlertCopilotFields {
+  id: string;
+  title?: string;
+  severity?: string;
+  status?: string;
+  timeGenerated?: string;
+}
+
+/** Defender attack-path row the adapter cites. */
+export interface DefenderAttackPathCopilotFields {
+  id: string;
+  title?: string;
+  potentialImpact?: string;
+  nodeCount?: number;
+}
+
+/** Defender container-image exposure row the adapter cites. */
+export interface DefenderContainerCopilotFields {
+  id: string;
+  target_resource_id?: string;
+  repository?: string;
+  severity?: string;
+  critical_count?: number;
+  cve_count?: number;
+}
+
+/** Already-loaded Defender posture sections; no adapter performs data access. */
+export interface DefenderPostureCopilotPageInput {
+  scope: ScopeSelection;
+  selectedAssetId?: string | null;
+  overview?: ExposureCopilotSection<DefenderOverviewCopilotFields | null> | null;
+  secureScore?: ExposureCopilotSection<DefenderSecureScoreCopilotFields | null> | null;
+  findings?: ExposureCopilotSection<DefenderPostureFindingFields[]> | null;
+  alerts?: ExposureCopilotSection<DefenderAlertCopilotFields[]> | null;
+  attackPaths?: ExposureCopilotSection<DefenderAttackPathCopilotFields[]> | null;
+  containers?: ExposureCopilotSection<DefenderContainerCopilotFields[]> | null;
+  evidence: EvidenceItem[];
+}
+
+/** KB record fields the KB detail adapter cites. */
+export interface KbSummaryFields {
+  kb_id: string;
+  title?: string;
+  severity?: string;
+  published_at?: string;
+  cve_ids: string[];
+  affected_servers: string[];
+  affected_business_services: string[];
+}
+
+/** A KB finding row projected by the detail page before adapter typing. */
+export interface KbFindingObservation {
+  target_id?: string;
+  server_id?: string;
+  cve_id?: string;
+  application?: string;
+  business_service?: string;
+  environment?: string;
+  severity?: string;
+  reachable?: boolean;
+  network_exposure?: string;
+  missing_kb?: string;
+}
+
+/** Already-loaded KB detail sections and evaluated page state. */
+export interface KbDetailCopilotPageInput {
+  scope: ScopeSelection;
+  kbId: string;
+  kb?: KbSummaryFields | null;
+  findings: {
+    rows: KbFindingObservation[];
+    loadedCount: number;
+    totalCount: number;
+    available: boolean;
+    freshness: CopilotFreshnessStatusV2;
+    observedAt?: string;
+  };
+  sources: CveDetailCopilotSource[];
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
+/** A patch-priority finding row projected before adapter typing. */
+export interface PatchPriorityObservation {
+  exposure_id?: string;
+  target_id?: string;
+  weakness_id?: string;
+  missing_kb?: string;
+  kb_id?: string;
+  server_id?: string;
+  application?: string;
+  business_service?: string;
+  severity?: string;
+  priority_score?: number | null;
+  recommendation?: string;
+  sla_state?: string;
+  sla_overdue?: boolean | null;
+}
+
+/** Source availability/freshness carried independently of row order. */
+export interface PatchPrioritySourceStatus {
+  source: string;
+  freshness?: string;
+  observedAt?: string;
+  availability?: string;
+}
+
+/** Already-loaded patch-priority queue and evaluated page state. */
+export interface PatchPrioritiesCopilotPageInput {
+  scope: ScopeSelection;
+  rows: PatchPriorityObservation[];
+  loadedCount: number;
+  totalCount: number;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  selectedId?: string | null;
+  filters?: Record<string, string[]>;
+  sort?: Record<string, string>;
+  evidence: EvidenceItem[];
+  sourceStatuses?: PatchPrioritySourceStatus[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -1441,6 +1597,50 @@ const REMEDIATION_STARTERS: CoreCopilotStarterQuestion[] = [
   },
   {
     label: "What is the safest next governed step?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+];
+
+// Advisory Defender/patch explanation hints only. None of these tools mutate
+// state; approval and execution remain existing server-side workflows (D-10).
+const DEFENDER_POSTURE_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which Defender findings expose our critical services?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "Which attack paths reach reachable assets?",
+    specialistId: "vulnerability",
+    tool: "cve_attack_path",
+    toolArguments: {},
+  },
+  {
+    label: "What should we remediate first?",
+    specialistId: "remediation",
+    tool: "remediation_opportunities",
+    toolArguments: {},
+  },
+];
+
+const PATCH_PRIORITIES_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which patches reduce the most risk first?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "Which overdue patches breach SLA?",
+    specialistId: "vulnerability",
+    tool: "cve_exposure",
+    toolArguments: {},
+  },
+  {
+    label: "What is the safest governed remediation path?",
     specialistId: "remediation",
     tool: "remediation_opportunities",
     toolArguments: {},
@@ -2491,6 +2691,311 @@ function cveDetailStarters(input: CveDetailCopilotPageInput): CoreCopilotStarter
   ];
 }
 
+function defenderPostureCoreInput(
+  input: DefenderPostureCopilotPageInput,
+): CoreCopilotAdapterInput {
+  const overviewValue = input.overview?.value ?? null;
+  const scoreValue = input.secureScore?.value ?? null;
+  const findingRows = input.findings?.value ?? [];
+  const alertRows = input.alerts?.value ?? [];
+  const attackRows = input.attackPaths?.value ?? [];
+  const containerRows = input.containers?.value ?? [];
+  const selectedAssetId = input.selectedAssetId ?? null;
+  const records: CoreCopilotRecord[] = [
+    ...(overviewValue ? [{
+      identity: "defender-overview",
+      namespace: "vulnerability",
+      kind: "defender_overview",
+      source: "defender/overview",
+      observedAt: input.overview?.observedAt,
+      priority: 0,
+      data: {
+        active_alert_count: overviewValue.active_alert_count,
+        critical_alert_count: overviewValue.critical_alert_count,
+        attack_path_count: overviewValue.attack_path_count,
+        unhealthy_recommendation_count: overviewValue.unhealthy_recommendation_count,
+        vulnerable_container_image_count: overviewValue.vulnerable_container_image_count,
+        container_image_cve_count: overviewValue.container_image_cve_count,
+      },
+    }] : []),
+    ...(scoreValue ? [{
+      identity: "defender-secure-score",
+      namespace: "vulnerability",
+      kind: "defender_secure_score",
+      source: "defender/secure-score",
+      observedAt: input.secureScore?.observedAt,
+      priority: 2,
+      data: {
+        current: scoreValue.current,
+        max: scoreValue.max,
+        percentage: scoreValue.percentage,
+      },
+    }] : []),
+    ...findingRows.slice(0, 50).map((finding, index) => ({
+      identity: finding.assessment_id,
+      namespace: "vulnerability",
+      kind: "defender_finding",
+      source: "defender/recommendations",
+      resourceId: finding.asset_id,
+      resourceType: finding.resource_type,
+      name: finding.asset_name,
+      observedAt: finding.last_assessed_at ?? input.findings?.observedAt,
+      selected: selectedAssetId != null && finding.asset_id === selectedAssetId,
+      priority: 10 + index,
+      data: {
+        asset_name: finding.asset_name,
+        defender_plan: finding.defender_plan,
+        status: finding.status,
+        severity: finding.severity,
+        recommendation: finding.recommendation,
+        business_service: finding.business_service,
+        application: finding.application,
+      },
+    })),
+    ...alertRows.slice(0, 50).map((alert, index) => ({
+      identity: alert.id,
+      namespace: "vulnerability",
+      kind: "defender_alert",
+      source: "defender/alerts",
+      observedAt: alert.timeGenerated ?? input.alerts?.observedAt,
+      priority: 30 + index,
+      data: {
+        title: alert.title,
+        severity: alert.severity,
+        status: alert.status,
+      },
+    })),
+    ...attackRows.slice(0, 50).map((path, index) => ({
+      identity: path.id,
+      namespace: "vulnerability",
+      kind: "defender_attack_path",
+      source: "defender/attack-paths",
+      observedAt: input.attackPaths?.observedAt,
+      priority: 40 + index,
+      data: {
+        title: path.title,
+        potential_impact: path.potentialImpact,
+        node_count: path.nodeCount,
+      },
+    })),
+    ...containerRows.slice(0, 50).map((image, index) => ({
+      identity: image.id,
+      namespace: "vulnerability",
+      kind: "container_image_exposure",
+      source: "defender/container-images",
+      resourceId: image.target_resource_id,
+      observedAt: input.containers?.observedAt,
+      priority: 50 + index,
+      data: {
+        repository: image.repository,
+        severity: image.severity,
+        critical_count: image.critical_count,
+        cve_count: image.cve_count,
+      },
+    })),
+  ];
+  const sourceStatuses = [
+    exposureSectionStatus("overview", input.overview),
+    exposureSectionStatus("secure_score", input.secureScore),
+    exposureSectionStatus("findings", input.findings),
+    exposureSectionStatus("alerts", input.alerts),
+    exposureSectionStatus("attack_paths", input.attackPaths),
+    exposureSectionStatus("containers", input.containers),
+  ].filter((status): status is CoreCopilotSourceStatus => status !== null);
+  return {
+    scope: input.scope,
+    filters: {
+      view: ["defender-posture"],
+      ...(selectedAssetId && isCanonicalAzureResourceId(selectedAssetId)
+        ? { selected: [boundedCoreSourceKey(selectedAssetId)] }
+        : {}),
+    },
+    records,
+    evidence: [
+      ...input.evidence,
+      ...(input.overview?.evidence ?? []),
+      ...(input.findings?.evidence ?? []),
+      ...(input.alerts?.evidence ?? []),
+      ...(input.attackPaths?.evidence ?? []),
+      ...(input.containers?.evidence ?? []),
+    ],
+    coverage: [
+      exposureCoverage("findings", input.findings),
+      exposureCoverage("alerts", input.alerts),
+      exposureCoverage("attack_paths", input.attackPaths),
+      exposureCoverage("containers", input.containers),
+    ],
+    sourceStatuses,
+  };
+}
+
+function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterInput {
+  const kb = input.kb ?? null;
+  const findingRows = input.findings.rows ?? [];
+  const records: CoreCopilotRecord[] = [
+    ...(kb ? [{
+      identity: kb.kb_id,
+      namespace: "vulnerability",
+      kind: "kb",
+      source: "exposure/kb",
+      observedAt: input.findings.observedAt,
+      selected: true,
+      priority: 0,
+      data: {
+        title: kb.title,
+        severity: kb.severity,
+        published_at: kb.published_at,
+        affected_server_count: kb.affected_servers.length,
+        affected_business_services: kb.affected_business_services,
+      },
+    }] : []),
+    ...(kb?.cve_ids ?? []).slice(0, 50).map((cveId, index) => ({
+      identity: cveId,
+      namespace: "vulnerability",
+      kind: "cve",
+      source: "exposure/kb-cves",
+      priority: 5 + index,
+      data: { cve_id: cveId, kb_id: kb?.kb_id },
+    })),
+    ...findingRows.slice(0, 50).map((finding, index) => ({
+      identity: finding.target_id ?? finding.server_id ?? `finding-${index}`,
+      namespace: "vulnerability",
+      kind: "kb_finding",
+      source: "exposure/kb-findings",
+      resourceId: finding.target_id,
+      observedAt: input.findings.observedAt,
+      priority: 20 + index,
+      data: {
+        server_id: finding.server_id,
+        cve_id: finding.cve_id,
+        application: finding.application,
+        business_service: finding.business_service,
+        environment: finding.environment,
+        severity: finding.severity,
+        reachable: finding.reachable,
+        network_exposure: finding.network_exposure,
+        missing_kb: finding.missing_kb,
+      },
+    })),
+  ];
+  const sourceStatuses: CoreCopilotSourceStatus[] = [
+    {
+      source: "kb",
+      observedAt: input.findings.observedAt,
+      status: kb ? "fresh" : "unavailable",
+    },
+    {
+      source: "findings",
+      observedAt: input.findings.observedAt,
+      status: input.findings.available ? input.findings.freshness : "unavailable",
+    },
+    ...input.sources.map((source) => ({
+      source: source.key,
+      observedAt: source.observedAt,
+      status: (source.available ? source.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? {},
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "findings",
+        visibleCount: input.findings.loadedCount,
+        totalCount: Math.max(input.findings.loadedCount, input.findings.totalCount),
+        truncated: input.findings.loadedCount < input.findings.totalCount,
+        available: input.findings.available,
+      },
+      {
+        key: "associated_cves",
+        visibleCount: kb?.cve_ids.length ?? 0,
+        totalCount: kb?.cve_ids.length ?? 0,
+        available: Boolean(kb),
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
+function kbDetailStarters(input: KbDetailCopilotPageInput): CoreCopilotStarterQuestion[] {
+  const kbId = input.kb?.kb_id ?? input.kbId;
+  return [
+    {
+      label: `Explain ${kbId} and the CVEs it remediates`,
+      specialistId: "vulnerability",
+      tool: "cve_detail",
+      toolArguments: { kb_id: kbId },
+    },
+    {
+      label: `What should we patch first for ${kbId}?`,
+      specialistId: "remediation",
+      tool: "remediation_opportunities",
+      toolArguments: {},
+    },
+  ];
+}
+
+function patchPrioritiesCoreInput(
+  input: PatchPrioritiesCopilotPageInput,
+): CoreCopilotAdapterInput {
+  const selectedId = input.selectedId ?? null;
+  const records: CoreCopilotRecord[] = input.rows.slice(0, 50).map((row, index) => ({
+    identity: row.exposure_id ?? row.target_id ?? `patch-${index}`,
+    namespace: "vulnerability",
+    kind: "patch_priority",
+    source: "exposure/patch-priorities",
+    resourceId: row.target_id,
+    observedAt: input.observedAt,
+    selected: selectedId != null && row.exposure_id === selectedId,
+    priority: index,
+    data: {
+      exposure_id: row.exposure_id,
+      weakness_id: row.weakness_id,
+      missing_kb: row.missing_kb ?? row.kb_id,
+      server_id: row.server_id,
+      application: row.application,
+      business_service: row.business_service,
+      severity: row.severity,
+      priority_score: row.priority_score,
+      recommendation: row.recommendation,
+      sla_state: row.sla_state,
+      sla_overdue: row.sla_overdue,
+    },
+  }));
+  const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
+    ? input.sourceStatuses.map((status) => ({
+      source: status.source,
+      observedAt: status.observedAt,
+      status: status.availability === "unavailable"
+        ? "unavailable"
+        : freshnessStatus(status.freshness ?? "unknown"),
+    }))
+    : [{
+      source: "patch_priorities",
+      observedAt: input.observedAt,
+      status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+    }];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["patch-priorities"] },
+    sort: input.sort,
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "patch_priorities",
+        visibleCount: input.loadedCount,
+        totalCount: Math.max(input.loadedCount, input.totalCount),
+        truncated: input.loadedCount < input.totalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses,
+  };
+}
+
 function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.situations.slice(0, 50).map((situation, index) => ({
     identity: situation.situation_id,
@@ -2734,6 +3239,39 @@ export function buildCveDetailCopilotContext(
     { pageKind: "vulnerability", pageId: `cve:${input.cveId}` },
     cveDetailCoreInput(input),
     cveDetailStarters(input),
+  );
+}
+
+/** Builds the typed Defender posture context from loaded posture sections. */
+export function buildDefenderPostureCopilotContext(
+  input: CoreCopilotAdapterInput | DefenderPostureCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "vulnerability", pageId: "defender-posture" },
+    isCoreCopilotInput(input) ? input : defenderPostureCoreInput(input),
+    DEFENDER_POSTURE_STARTERS,
+  );
+}
+
+/** Builds the typed KB detail context from loaded patch/CVE evidence. */
+export function buildKbDetailCopilotContext(
+  input: KbDetailCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "vulnerability", pageId: `kb:${input.kbId}` },
+    kbDetailCoreInput(input),
+    kbDetailStarters(input),
+  );
+}
+
+/** Builds the typed patch-priority context from the loaded priority queue. */
+export function buildPatchPrioritiesCopilotContext(
+  input: CoreCopilotAdapterInput | PatchPrioritiesCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "vulnerability", pageId: "patch-priorities" },
+    isCoreCopilotInput(input) ? input : patchPrioritiesCoreInput(input),
+    PATCH_PRIORITIES_STARTERS,
   );
 }
 
