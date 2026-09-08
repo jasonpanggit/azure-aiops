@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
@@ -20,6 +20,13 @@ const envelope = <T,>(data: T) => ({
   scope: {},
   knowledge_version: "graph-1",
 });
+
+// Manifest-backed catalog: each agent carries its own deployment status, so the
+// UI renders configured/unavailable from the API rather than a local card list.
+const catalogAgents = [
+  { id: "network", name: "Network Agent", role: "Network", tools: ["network_topology"], keywords: ["network"], depends_on: [], foundry: { id: "network", name: "network-agent", version: "1", model: "gpt-4o", status: "ready", configured: true } },
+  { id: "vulnerability", name: "Vulnerability Agent", role: "Vulnerability", tools: ["vulnerability_exposure"], keywords: ["cve"], depends_on: [], foundry: { id: "vulnerability", name: "", version: "", model: "gpt-4o", status: "unavailable", configured: false } },
+];
 
 const ledger = {
   ledger_id: "mai-123",
@@ -63,7 +70,7 @@ function renderPage() {
 
 describe("Multi-Agent Autonomous Investigation workspace", () => {
   beforeEach(() => {
-    catalog.mockResolvedValue(envelope({ agents: ledger.selected_agents }));
+    catalog.mockResolvedValue(envelope({ agents: catalogAgents }));
     investigate.mockResolvedValue(envelope(ledger));
     action.mockImplementation((_ledgerId, actionName, payload) => Promise.resolve(envelope({
       ...ledger,
@@ -87,5 +94,39 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Finance Ops" } });
     fireEvent.click(screen.getByRole("button", { name: "Assign owner" }));
     await waitFor(() => expect(action).toHaveBeenCalledWith("mai-123", "assign_owner", { owner: "Finance Ops" }, {}));
+  });
+
+  it("renders the manifest-backed catalog with explicit configured/unavailable status", async () => {
+    renderPage();
+
+    const readyAgent = await screen.findByText("Network Agent");
+    const unavailableAgent = await screen.findByText("Vulnerability Agent");
+
+    // The configured agent shows a Ready deployment status; the unconfigured one
+    // is explicitly Unavailable — both derived from the API catalog, not the UI.
+    const readyStatus = within(readyAgent.closest(".entity-pill") as HTMLElement).getByText(/ready/i);
+    const unavailableStatus = within(unavailableAgent.closest(".entity-pill") as HTMLElement).getByText(/unavailable/i);
+    expect(readyStatus).toBeInTheDocument();
+    expect(unavailableStatus).toBeInTheDocument();
+  });
+
+  it("keeps ledger decisions principal-scoped and confers no execution authority", async () => {
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run investigation" }));
+    expect(await screen.findByRole("heading", { name: "Human-in-the-loop controls" })).toBeInTheDocument();
+
+    // Approving the plan is a governed handoff only — the ledger decision never
+    // authorizes a production mutation.
+    fireEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await waitFor(() => expect(action).toHaveBeenCalledWith(
+      "mai-123",
+      "approve_plan",
+      expect.objectContaining({ guardrail: "governed handoff only" }),
+      {},
+    ));
+
+    // No control on this dedicated surface executes or applies remediation.
+    expect(screen.queryByRole("button", { name: /execute|apply remediation|run remediation/i })).toBeNull();
   });
 });
