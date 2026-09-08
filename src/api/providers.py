@@ -317,98 +317,18 @@ class ProviderRuntime:
             )
             return _CACHE_KEY_UNAVAILABLE
 
-    def _refresh_changed_cache_key(self, name: str) -> None:
-        spec = self.specs.get(name)
-        if spec is None or spec.cache_key is None or not spec.configured:
-            return
-        current = self._read_cache_key(name, spec)
-        if current is _CACHE_KEY_UNAVAILABLE:
-            return
-        now = self.clock().astimezone(UTC)
-        with self._state_lock:
-            loaded = name in self._instances
-            unchanged = loaded and self._cache_keys.get(name) == current
-            state = self._states[name]
-            retry_at = _parse(state.next_retry_at)
-            retry_pending = (
-                loaded
-                and state.cache_key_stale
-                and retry_at is not None
-                and now < retry_at
-            )
-            if loaded and not unchanged:
-                state.cache_key_stale = True
-        if not loaded or unchanged or retry_pending:
-            return
-
-        if not self._refresh_lock.acquire(blocking=False):
-            return
-        try:
-            current = self._read_cache_key(name, spec)
-            if current is _CACHE_KEY_UNAVAILABLE:
-                return
-            now = self.clock().astimezone(UTC)
-            with self._state_lock:
-                loaded = name in self._instances
-                unchanged = loaded and self._cache_keys.get(name) == current
-                state = self._states[name]
-                retry_at = _parse(state.next_retry_at)
-                retry_pending = (
-                    loaded
-                    and state.cache_key_stale
-                    and retry_at is not None
-                    and now < retry_at
-                )
-                if loaded and not unchanged:
-                    state.cache_key_stale = True
-            if not loaded or unchanged or retry_pending:
-                return
-            self._refresh_provider(
-                name,
-                spec,
-                now=now,
-                now_iso=_iso(now),
-                force=True,
-            )
-        finally:
-            self._refresh_lock.release()
-
     def get(self, name: str, *, optional: bool = False) -> Any:
         """Resolve the current provider instance from the last completed refresh.
 
-        Never blocks a request thread behind loader I/O: the dedicated
-        background timer thread (see `_start_background_refresh` in
-        `api.app`) is the only caller that performs blocking refreshes.
-        Here we opportunistically nudge a refresh with `blocking=False`
-        (a no-op if the timer is already running or not yet due) purely so
-        a request arriving right after startup does not need to wait a
-        full `refresh_interval_seconds` for the timer's next tick, then
-        immediately serve whatever the last completed refresh published.
+        This is a strict last-known-good read. It performs no cache-key,
+        freshness, metadata, or loader I/O on the calling thread. The
+        dedicated startup/background timer in :mod:`api.app` exclusively owns
+        refresh work and atomically publishes completed provider instances.
         """
-        self._refresh_changed_cache_key(name)
-        self.refresh(blocking=False)
-        # A revision can advance while the ordinary refresh is loading. Check
-        # once more, but retain an explicitly degraded last-good instance when
-        # the newer body cannot be loaded.
-        self._refresh_changed_cache_key(name)
-        spec = self.specs.get(name)
-        current_cache_key = self._read_cache_key(name, spec)
         with self._state_lock:
             instance = self._instances.get(name)
-            cache_key_matches = (
-                spec is None
-                or spec.cache_key is None
-                or current_cache_key is _CACHE_KEY_UNAVAILABLE
-                or self._cache_keys.get(name) == current_cache_key
-            )
             state = self._states.get(name)
-            serving_last_good = bool(
-                state is not None
-                and state.cache_key_stale
-            )
-            if instance is not None and (
-                cache_key_matches or serving_last_good
-            ):
+            if instance is not None:
                 return instance
             if optional or state is None or not state.configured:
                 return None

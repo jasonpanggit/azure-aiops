@@ -1,8 +1,9 @@
 ---
-status: resolved
+status: awaiting_human_verify
 trigger: "Troubleshoot and fix all findings and errors from the authenticated Playwright review of the deployed /network experience."
 created: 2026-09-08T01:10:00+08:00
-updated: 2026-09-08T10:27:00+08:00
+updated: 2026-09-08T11:52:00+08:00
+reopened: 2026-09-08T11:13:42.686+08:00
 ---
 
 # Debug Session: Network Topology Live UI
@@ -57,31 +58,59 @@ updated: 2026-09-08T10:27:00+08:00
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed: all requested source fixes satisfy the user-defined source-readiness terminal criterion; deployment and authenticated live execution belong to the later post-deploy gate."
-test: "Completed focused/full local gates, final diff hygiene, scoped unsafe-pattern checks, deployed-suite structure checks, and cross-artifact review."
-expecting: "Complete — the source-ready result is closed without claiming deployment, while the authenticated runtime suite remains explicitly pending post-deploy."
-next_action: "None in this session. A later authorized deployment process owns the documented authenticated Playwright gate."
+hypothesis: "Confirmed: request-time ProviderRuntime.get I/O caused the repeated warm endpoint latency, and wildcard-path ARM-id transport caused the deployed hub 404."
+test: "All source-readiness and guardrail checks are complete; the remaining check requires a later authorized redeploy and authenticated execution of the unchanged p95/routing acceptance."
+expecting: "After redeploy, five immediate full-detail samples have p95 <1,000 ms and the first summary hub id returns a 200 empty/non-empty envelope through the query route."
+next_action: "Await human confirmation of the source remediation, or later redeploy through the authorized process and report the authenticated p95 and hub-route results. Do not deploy or push from this session."
+known_pattern_candidate: "none — MemPalace is unavailable and the durable knowledge base has no two-token match for ProviderRuntime.get request-thread I/O or slash-losing hub routes."
+candidate_causes:
+  - "code: ProviderRuntime.get refreshes cache identity and reads loader state synchronously; path transport embeds a slash-prefixed ARM id in a route wildcard"
+  - "config/environment: one API replica and slow Fabric semantic-version access amplify any synchronous request-thread work"
+  - "data: slash-prefixed ARM hub ids expose route normalization while simple policy requests do not"
+and_gate: "under investigation — latency may require synchronous request-time freshness I/O plus slow deployed Fabric access; the hub 404 may require a slash-prefixed ARM id plus path normalization."
 reasoning_checkpoint:
-  hypothesis: "The five pre-deployment findings came from an unconditional retained-error replacement, unscoped pending confirmation plus a partial numeric branch, exact-only ignore config, non-behavioral source tests, and monolithic conditional live acceptance."
+  hypothesis: "ProviderRuntime.get causes repeated network endpoint latency because it performs Fabric semantic-version/cache-key reads and can execute provider loaders on the request thread; the hub 404 persists because a slash-prefixed ARM identifier is transported through a path wildcard whose deployed normalization is lossy."
   confirming_evidence:
-    - "Three agent-authored workspace regressions failed before the fixes and passed afterward; the synthetic timestamped-state ignore probe likewise changed from exit 1 to exit 0."
-    - "Mounted graph tests execute all four required observer/options behaviors, and Playwright discovery now exposes ten independent finding-labelled tests with three explicit data-precondition skip reasons."
-    - "Focused and full backend/web/type/lint/Playwright/build gates pass; diff checks show no forbidden source-test, non-null duration, or custom wheel-option pattern."
-  falsification_test: "A deployed run that loses retained canvas state, emits NaN/wheel warnings, misses resize fit, silently bypasses a data disposition, or fails any unconditional latency/canvas/mobile/console check would invalidate source readiness."
-  fix_rationale: "Each production change is at its state/config boundary, and each test change executes observable behavior or isolates one live disposition instead of scanning implementation text or aggregating failures."
-  blind_spots: "The working tree has not been deployed and this session has no authenticated storage state, so real-estate latency and visuals remain a required post-deployment checkpoint."
+    - "Direct code tracing shows get() calls _refresh_changed_cache_key twice, refresh(blocking=False), and _read_cache_key; both refresh helpers execute I/O after a nonblocking lock acquisition, and the network cache key calls Fabric semantic_version()."
+    - "Agent-authored regressions are RED: one get produced seven I/O calls, four concurrent gets added twelve I/O calls during a background refresh, and an initial-startup get added three I/O calls."
+    - "The FastAPI TestClient query-route regression returns 404 and the web client regression still observes the encoded path contract; deployed evidence independently shows the same hub id losing its leading slash."
+    - "Authenticated endpoint differential is specific: topology/gaps/rule-findings, which resolve the managed network provider, take 9–22 seconds while /network/policy, which bypasses it, takes about 0.8 seconds."
+  falsification_test: "The hypothesis would be false if get() could be observed making zero cache-key/loader calls before the fix, if slow network routes bypassed ProviderRuntime.get, or if an exact slash-prefixed query parameter still arrived corrupted through TestClient."
+  fix_rationale: "A state-only get() enforces the documented LKG boundary rather than masking latency, while the already-existing immediate startup and periodic background thread remains the sole refresh owner. A query parameter delegates slash encoding/decoding to URL query semantics and preserves exact ARM identity; sharing the membership helper retains honest 404/empty behavior and legacy compatibility."
+  blind_spots: "This environment cannot redeploy or repeat authenticated production timing, so the unchanged live p95 <1s gate remains pending after source verification. The hybrid ARG cache and Fabric latency could still contribute after request-time provider I/O is removed, although five-minute cached rows and the endpoint differential argue against them as the repeated warm-request cause."
   candidate_causes:
-    - "code: unconditional error rendering, stale local state, unsafe assertion, and weak test control flow"
-    - "config: exact-only Terraform state ignore rules"
-    - "environment: deployed auth/data/timing determine which live preconditions are available"
-    - "data: retained topology plus a failed request, and replacement summaries with absent duration, expose the state defects"
-  and_gate: "yes — the destructive error requires retained data plus a failed refresh; NaN required stale confirmation plus an absent replacement duration. The ignore/test-structure findings are independent."
-review_follow_up:
-  - "Retain topology on full-detail error and show a non-destructive alert."
-  - "Reset fullDetailPending on scope/summary changes and remove the topologyBuildDurationMs non-null NaN path."
-  - "Ignore infra/terraform/*.tfstate* without touching existing state backups."
-  - "Replace source-string resize/wheel tests with behavioral ResizeObserver/fake-timer coverage."
-  - "Split and harden deployed Playwright findings with explicit precondition skips."
+    - "code: get() executes cache-key and loader paths; client/server use a lossy path-wildcard identifier contract"
+    - "config/environment: one replica and 9–22 second deployed Fabric semantic-version latency amplify the request-thread code path"
+    - "data: slash-prefixed ARM identifiers trigger normalization loss; ordinary policy payloads do not"
+  and_gate: "yes for observed severity: synchronous get() I/O plus slow deployed Fabric access produces the multi-second warm latency, and path transport plus slash-prefixed ARM data produces the 404. The two top-level failures are otherwise independent and both require separate fixes."
+
+## Post-Deployment Reopen Symptoms
+
+### Expected behavior
+
+- Five immediate authenticated full-detail samples preserve the unchanged deployed acceptance gate: observed p95 must be below 1 second.
+- `ProviderRuntime.get()` returns the last-known-good provider without loader or freshness I/O on the request thread; startup/background refresh owns cache-key and loader work.
+- A hub ARM id returned by topology summary round-trips through the public API and returns 200 with dependents or an honest empty envelope.
+
+### Actual behavior
+
+- After deployment tag `network-topology-fix-20260908-0115`, authenticated Playwright passed 8 checks and failed 2.
+- Five-sample full-detail p95 was 14,397 ms. Authenticated summary/full/gaps/rule-findings requests each took approximately 9–22 seconds on every request, while `/network/policy` took approximately 0.8 seconds.
+- The API has `min=max=1` replica.
+- `ProviderRuntime.get()` still invokes `_refresh_changed_cache_key`, `refresh(blocking=False)`, and `_read_cache_key`, even though its docstring promises no request-thread loader/freshness I/O. The network cache key invokes Fabric `semantic_version()` plus policy revision.
+- Hub dependents returned 404 for a hub id present in the same summary; the live response still omitted the leading slash.
+
+### Reproduction
+
+1. Run the authenticated deployed Playwright suite against deployment tag `network-topology-fix-20260908-0115`.
+2. Observe 8 passed and 2 failed.
+3. Sample full-detail five times; observed p95 is 14,397 ms rather than below 1 second.
+4. Issue authenticated requests to summary/full/gaps/rule-findings; each remains approximately 9–22 seconds, while `/network/policy` is approximately 0.8 seconds.
+5. Select a hub ARM id from summary and request dependents through the deployed route; observe 404 and a response id without the leading slash.
+
+### Started
+
+- Observed after deployment tag `network-topology-fix-20260908-0115` during the required authenticated post-deployment acceptance run.
 
 ## Evidence
 
@@ -281,9 +310,86 @@ review_follow_up:
   checked: "Terminal-criterion reconciliation against the debug record, authoritative UI review, scoped diff, and current repository status."
   found: "git diff --check exits 0; the topology source contains no asserted-duration, custom wheel-option, or source-string graph-test pattern; the deployed spec still exposes 10 independent finding-labelled tests, with one suite-level live/auth gate and exactly three data-precondition skips; the timestamped Terraform-state ignore probe exits 0. Unrelated concurrent Phase 03.1 work remains present and untouched."
   implication: "No source inconsistency requires another code change. The user-defined terminal criterion is met: close this source-debug session without deploying, committing, or pushing, and retain authenticated runtime acceptance as pending post-deploy evidence."
+- timestamp: 2026-09-08T11:13:42.686+08:00
+  checked: "Authenticated post-deployment acceptance for tag network-topology-fix-20260908-0115."
+  found: "The deployed suite passed 8 checks and failed 2: five-sample full-detail p95 was 14,397 ms, and the hub-dependents request returned 404 for a hub present in the same summary. Direct authenticated requests kept summary/full/gaps/rule-findings at approximately 9–22 seconds while /network/policy was approximately 0.8 seconds."
+  implication: "The preserved p95 <1s gate is genuinely red after deployment; both failures are deterministic enough for failing-first Bohrbug regressions rather than acceptance-gate relaxation."
+- timestamp: 2026-09-08T11:14:00+08:00
+  checked: "Repository status, recent commits, active scope, and concurrent work before reopening."
+  found: "HEAD is 76df9c420 on main. Phase 03.1 remains active, but the user explicitly authorizes this Phase 12 post-deployment remediation. .azure/deployment-plan.md and web/e2e/network-topology-deployed.spec.ts already contain unstaged concurrent edits; neither may be overwritten or broadly staged."
+  implication: "Move the resolved record to the canonical active path, preserve unrelated hunks, and stage only exact owned paths/hunks after all gates pass."
+- timestamp: 2026-09-08T11:14:20+08:00
+  checked: "Semantic/durable knowledge recall and SBFL prerequisites."
+  found: "MemPalace is unavailable; keyword fallback in knowledge-base.md has no two-token match for ProviderRuntime.get request-thread I/O or slash-losing ARM hub routes. Existing suites are green and no failing per-test coverage spectrum exists yet, so SBFL is skipped."
+  implication: "No known resolution is assumed. Use failing-first focused regressions, working backwards from the slow request and actual ASGI route."
+- timestamp: 2026-09-08T11:16:00+08:00
+  checked: "Current hub route, service canonicalization, web client contract, and deployed Playwright route construction."
+  found: "The server still exposes /topology/hubs/{vnet_id:path}/dependents; both the web client and deployed acceptance strip the leading slash and percent-encode the remainder into that path. The service re-adds a slash, but the live route still delivers an identifier without it and returns 404."
+  implication: "The previous strip-and-readd compatibility fix did not make the public contract robust across the deployed route stack. A query-param route must be exercised through FastAPI TestClient, with the path form retained only as a legacy adapter if compatibility requires."
+- timestamp: 2026-09-08T11:19:00+08:00
+  checked: "Complete ProviderRuntime implementation, network provider cache-key construction, background startup loop, and provider lifecycle tests."
+  found: "ProviderRuntime.get calls _refresh_changed_cache_key twice, refresh(blocking=False) once, and _read_cache_key once. _refresh_changed_cache_key can acquire _refresh_lock and call _refresh_provider synchronously; refresh(blocking=False) also runs every provider loader synchronously whenever the lock is free and the interval is due. Each network cache-key read calls Fabric semantic_version() and policy revision. The dedicated app thread already force-refreshes immediately at startup and periodically thereafter."
+  implication: "The get() docstring's nonblocking guarantee is false: blocking=False controls lock acquisition, not loader/cache-key I/O after acquisition. The deployed endpoint differential is explained because topology/gaps/findings resolve the managed network provider while /network/policy does not. get() must become a state-only LKG read; startup/background refresh already owns the required freshness work."
+- timestamp: 2026-09-08T11:19:30+08:00
+  checked: "Existing provider regressions."
+  found: "The suite currently pins the defect: changed cache keys are expected to rebuild from get(), including one test where a get() caller becomes the refresh owner and blocks in the loader. No startup test proves an unloaded request remains I/O-free while the initial background refresh is in flight."
+  implication: "Replace the defect-pinning expectations with specified LKG/nonblocking concurrency and startup contracts, then confirm they fail before changing ProviderRuntime."
+- timestamp: 2026-09-08T11:22:00+08:00
+  checked: "Failing-first provider, startup, routing, and web client regressions."
+  found: "All five intended assertions failed before production edits. A single changed-key get made seven cache-key/loader calls; four concurrent gets added twelve calls while a background refresh owned the lock; an initial get during background startup added three cache-key calls; the FastAPI query route returned 404; and the web client still built /hubs/{encoded-id}/dependents."
+  implication: "Both post-deployment failures are reproduced at their causal boundaries with specified-contract oracles. The root causes are confirmed; proceed to surgical fixes."
+- timestamp: 2026-09-08T11:24:00+08:00
+  checked: "First GREEN run of the exact failing-first regressions."
+  found: "All four Python provider/startup/TestClient route tests passed, and all 10 web network client tests passed. The p95 assertion remains unchanged at less than 1,000 ms; the legacy hub path remains registered."
+  implication: "The minimal code changes satisfy both causal regressions. Adjacent provider refresh, runtime, API, client, and browser structure suites must now confirm no collateral regression."
+- timestamp: 2026-09-08T11:26:00+08:00
+  checked: "Complete focused provider/runtime/network suites plus focused web, type, and changed-path lint."
+  found: "Web passed 100 tests, TypeScript passed, and Ruff passed. Python passed 129 tests but exposed two old lifecycle assumptions: build_context was expected to lazy-load without app startup, and a policy request was expected to synchronously rebuild the provider on the next request."
+  implication: "These assertions conflict with the confirmed strict-LKG contract. Preserve their underlying behavior by moving loading/invalidation to explicit startup/background refresh in the tests; do not regress to request-thread I/O."
+- timestamp: 2026-09-08T11:28:00+08:00
+  checked: "Focused rerun after aligning lifecycle tests with startup/background ownership."
+  found: "Backend provider/runtime/network suites passed 131 tests; focused web passed 100 tests; changed-path Ruff and TypeScript passed; Playwright discovery lists all 10 independent deployed checks, including the unchanged five-sample p95 <1,000 ms test and the query-based hub check."
+  implication: "Focused and adjacent verification is clean. Proceed to the full source-readiness and anti-overfitting guardrails."
+- timestamp: 2026-09-08T11:34:00+08:00
+  checked: "First full backend/web and repository lint gates."
+  found: "Full Vitest passed 57 files and 583 tests. Full pytest passed 3,825 tests but six tests in test_exposure_consumer_parity.py failed because their production_consumers fixture resolved exposure_read_port from a freshly built context before any API startup/background refresh. Repository-wide Ruff remains at the same 27 unrelated infra/scripts findings recorded before this remediation."
+  implication: "The product fix is not accepted yet. Align the isolated direct-context fixture with the new startup lifecycle, rerun its module, then rerun full pytest. Do not touch the unrelated Ruff baseline."
+- timestamp: 2026-09-08T11:36:00+08:00
+  checked: "Phase 03.1 exposure consumer parity after fixture lifecycle alignment."
+  found: "All 11 tests passed and Ruff is clean for the adjusted fixture. The domain assertions are unchanged; setup now explicitly runs the startup refresh that create_app normally starts."
+  implication: "The full-suite failures were isolated to test lifecycle setup and are corrected without altering Phase 03.1 behavior. Rerun the definitive full backend gate."
+- timestamp: 2026-09-08T11:43:00+08:00
+  checked: "Definitive full backend, full web, ESLint, TypeScript, production build, and changed-path Ruff gates."
+  found: "Full pytest passed 3,831 tests; full Vitest passed 57 files and 583 tests; TypeScript, ESLint, production build, and Ruff on every changed Python path passed. The build emitted only the previously documented non-fatal MSAL server-render logs. Repository-wide Ruff remains the unchanged 27 unrelated infra/scripts findings."
+  implication: "All application source-readiness gates run so far are clean. Complete local browser acceptance and anti-overfitting/revert proof next."
+- timestamp: 2026-09-08T11:45:00+08:00
+  checked: "Complete local Playwright invocation."
+  found: "All 3 local topology scenarios passed and all 10 authenticated deployed topology checks skipped behind their explicit live gate. The overall command reported 10 passed, 10 skipped, and one unrelated pre-existing Phase 13 ontology test failure because that test requires an https deployed URL while the local runner uses http://127.0.0.1."
+  implication: "Phase 12 browser source readiness is clean; the repository-wide Playwright baseline has one out-of-scope environment-contract failure in an untouched file. Preserve it and record the exact exception rather than editing concurrent Phase 13 scope."
+- timestamp: 2026-09-08T11:48:00+08:00
+  checked: "Fix-acceptance revert-and-reconfirm."
+  found: "With only src/api/providers.py, src/api/routers/network.py, and web/src/lib/services.ts restored to HEAD, all four backend causal tests and the web query-contract test returned to RED. Reapplying the exact minimal source hunks restored 4/4 backend and 10/10 web tests to GREEN; focused Phase 12 Playwright passed 3 local tests with 10 deployment-gated skips."
+  implication: "The production changes, rather than test weakening or ambient state, cause both fixes. Guardrail signal 5 passes."
+- timestamp: 2026-09-08T11:50:00+08:00
+  checked: "Authoritative Phase 12 readiness and review records."
+  found: "12-UI-REVIEW.md and 12-VERIFICATION.md now record the 8-pass/2-fail deployed result, p95 14,397 ms, exact two root causes, RED-to-GREEN evidence, full gate results, pending redeploy status, and the unchanged p95 <1,000 ms acceptance criterion."
+  implication: "Planning evidence no longer presents the failed deployment as merely pending or live-passing; source readiness and remaining live verification are separated explicitly."
+- timestamp: 2026-09-08T11:52:00+08:00
+  checked: "Final source and scope hygiene."
+  found: "git diff --check passed; the deployed acceptance still asserts p95 <1,000 ms; no _refresh_changed_cache_key, request-time refresh(blocking=False), or request-time cache-key read remains in ProviderRuntime.get; query route/client/test references agree. No Stryker dependency or configuration exists."
+  implication: "The source fix passes the acceptance guardrail. Commit only owned paths and only the route hunk from the concurrently modified deployed spec; leave .azure/deployment-plan.md and session-storage edits unstaged."
 
 ## Eliminated
 
+- hypothesis: "The five-minute hybrid ARG cache TTL or topology serialization is the primary cause of every 9–22 second warm request."
+  evidence: "The cache already reuses completed ARG rows for five minutes, in-memory scale gates are sub-second, and the slow endpoints all execute ProviderRuntime.get cache-key I/O while the fast policy endpoint bypasses it."
+  timestamp: 2026-09-08T11:22:00+08:00
+- hypothesis: "One API replica alone causes the latency."
+  evidence: "Replica count can amplify contention but cannot explain deterministic cache-key/loader calls in get(); the policy route on the same replica remains approximately 0.8 seconds."
+  timestamp: 2026-09-08T11:22:00+08:00
+- hypothesis: "Server-side slash re-addition makes the current hub path contract safe."
+  evidence: "The deployed response still loses the leading slash and 404s, while the new TestClient query route is absent and RED. Canonicalization after a lossy transport cannot recover an identifier that routing changed ambiguously."
+  timestamp: 2026-09-08T11:22:00+08:00
 - hypothesis: The 349KB topology payload or in-memory projection algorithm is the primary cause of the 146-second response.
   evidence: Enterprise TopologyBuilder remains below the one-second gate; detail does not alter live ARG acquisition, while both slow endpoints cross the stale-at-insertion cache path.
   timestamp: 2026-09-08T01:23:00+08:00
@@ -307,6 +413,9 @@ root_cause:
   - Terraform ignore configuration enumerates fixed state filenames but omits timestamp-suffixed `.tfstate` backups.
   - Resize/wheel regressions inspect source strings rather than executing observer, timer, teardown, and constructor-option behavior.
   - The deployed acceptance combines every finding into one test and silently bypasses data-dependent branches.
+post_deployment_root_cause:
+  - "ProviderRuntime.get was not a last-known-good read: it synchronously resolved cache keys up to three times and could execute provider loaders after acquiring a nonblocking refresh lock. For the network provider, every cache-key resolution called Fabric semantic_version() plus policy revision, putting 9–22 second freshness I/O on each request thread."
+  - "Hub ARM identity was still transported in a wildcard path segment. The deployed route stack normalized the slash-bearing value and the service received a non-identical id, so membership validation returned 404 even though the summary contained the hub."
 fix:
   - Added scoped dependency retention and AbortController cancellation to useApi; the network detail request retains summary data only when the canonical scope key is unchanged, tracks rendered detail separately, and exposes elapsed full-detail progress plus Cancel.
   - Timestamped the hybrid network cache after live ARG completion, extended only that scoped cache to a five-minute operator window, and added measured topology build duration to the summary for a latency-aware full-detail guard.
@@ -317,6 +426,46 @@ fix:
   - Added the directory-scoped `infra/terraform/*.tfstate*` ignore rule without accessing existing state artifacts.
   - Replaced source-string graph assertions with four mounted ResizeObserver/fake-timer/Cytoscape-option tests.
   - Split deployed acceptance into ten independent finding-labelled tests with explicit live-data skips and unconditional latency/canvas/mobile/console checks.
+post_deployment_fix:
+  - "Made ProviderRuntime.get a state-lock-only last-known-good read with no cache-key, metadata, freshness, or loader calls; the existing immediate-startup and periodic background refresh loop remains the sole refresh owner."
+  - "Added GET /api/v1/network/topology/hubs/dependents?vnet_id=... with exact query transport and shared membership/empty-envelope behavior, retained the legacy wildcard route, and switched the web client and deployed acceptance to the query route."
+post_deployment_verification:
+  target_test:
+    result: pass
+    details: "4 backend causal regressions and 10 web client assertions pass; the three provider tests cover ordinary, concurrent, and initial-startup reads, and FastAPI TestClient covers actual query routing."
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No Stryker dependency or configuration is present."
+    mutant_killed: null
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: true
+    details: "Deleting request-triggered refresh/cache-key logic is the causal fix; background refresh remains intact and is directly covered. Routing adds a query contract while retaining the legacy path."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "focused provider/runtime/network backend — 131 passed"
+      - "focused network web — 4 files, 100 passed"
+      - "full pytest — 3,831 passed"
+      - "full Vitest — 57 files, 583 passed"
+      - "TypeScript noEmit"
+      - "Next ESLint"
+      - "Next production build"
+      - "Phase 12 local Playwright — 3 passed, 10 deployment-gated skipped"
+      - "Ruff on every changed Python path"
+    caveat: "Complete local Playwright has one unrelated pre-existing Phase 13 HTTPS-only failure; repository-wide Ruff retains 27 unrelated infra/scripts findings."
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+    details: "Restoring only the three causal production files made all four backend and the web client regression fail; reapplying restored every test to green."
+  guardrail_verdict: accepted
+  deployed_live:
+    result: pending_redeploy
+    details: "No deployment or push was performed. The unchanged five-sample p95 <1,000 ms and query-route hub 200 checks require a later authorized deployment."
+  source_ready_terminal:
+    result: pass
+    details: "Both post-deployment failures are regression-covered and all Phase 12 source-readiness gates are clean."
 verification:
   target_test:
     result: pass
@@ -384,7 +533,13 @@ files_changed:
   - web/playwright.config.ts
   - .planning/phases/12-network-topology-integrity-and-scale/12-UI-SPEC.md
   - .planning/phases/12-network-topology-integrity-and-scale/12-UI-REVIEW.md
-oracle_type: specified and derived-contract, to be recorded per focused regression
+  - src/api/providers.py
+  - tests/test_api_providers.py
+  - src/api/app.py
+  - tests/test_exposure_consumer_parity.py
+  - .planning/phases/12-network-topology-integrity-and-scale/12-VERIFICATION.md
+oracle_type: specified and derived-contract
+post_deployment_oracle_type: specified
 
 ## Prevention
 

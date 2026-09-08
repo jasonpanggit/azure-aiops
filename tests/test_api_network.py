@@ -284,6 +284,16 @@ class TestTopology:
 
 
 class TestHubDependents:
+    def test_query_route_preserves_the_exact_slash_prefixed_arm_id(self, client):
+        response = client.get(
+            "/api/v1/network/topology/hubs/dependents",
+            params={"vnet_id": HUB_VNET},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["hub_vnet_id"] == HUB_VNET
+
     def test_answers_what_depends_on_the_hub(self, client):
         response = client.get(
             f"/api/v1/network/topology/hubs/{HUB_VNET}/dependents", headers=_auth()
@@ -945,6 +955,9 @@ class TestPolicy:
             headers=_auth(),
             json={"require_private_dns_zone_link": False},
         )
+        # Provider cache keys and loaders are evaluated only by startup/
+        # background refresh, never by the following request thread.
+        runtime.refresh(force=True)
         after = client.get("/api/v1/network/gaps", headers=_auth())
 
         assert patched.status_code == 200

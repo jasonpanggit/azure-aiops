@@ -212,9 +212,12 @@ def topology_resource_details(
     )
 
 
-@router.get("/topology/hubs/{vnet_id:path}/dependents", summary="Hub dependents")
-def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    """Answers "what depends on the hub?"."""
+def _hub_dependents(
+    vnet_id: str,
+    context: Context,
+    scope: Scope,
+) -> dict[str, Any]:
+    """Resolve one exact hub identity against the authorized snapshot."""
     service = _service(context, scope)
     canonical_vnet_id = f"/{vnet_id.lstrip('/')}".casefold()
     if not any(
@@ -232,6 +235,25 @@ def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str
         evidence=_evidence(service, resource_id=canonical_vnet_id),
         scope=scope.to_dict(),
     )
+
+
+@router.get("/topology/hubs/dependents", summary="Hub dependents")
+def hub_dependents_query(
+    context: Context,
+    scope: ReadScope,
+    vnet_id: Annotated[str, Query(min_length=1, max_length=2048)],
+) -> dict[str, Any]:
+    """Answers "what depends on the hub?" with a slash-safe query id."""
+    return _hub_dependents(vnet_id, context, scope)
+
+
+@router.get(
+    "/topology/hubs/{vnet_id:path}/dependents",
+    summary="Hub dependents (legacy path)",
+)
+def hub_dependents(vnet_id: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Compatibility adapter for clients using the legacy path contract."""
+    return _hub_dependents(vnet_id, context, scope)
 
 
 @router.get("/firewall-bypass", summary="Spokes that bypass the hub firewall")

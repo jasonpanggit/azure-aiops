@@ -565,6 +565,8 @@ def test_context_loads_local_seeded_snapshot(monkeypatch, tmp_path):
     context = build_context()
 
     assert context.semantic_provider is not None
+    assert context.provider_runtime is not None
+    context.provider_runtime.refresh(force=True)
     assert context.semantic_provider() is not None
     assert context.network_provider is not None
     assert context.network_provider() is not None

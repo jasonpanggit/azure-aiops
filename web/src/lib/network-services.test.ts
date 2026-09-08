@@ -33,12 +33,6 @@ function calledUrl(spy: ReturnType<typeof captureFetch>): URL {
   return new URL(String(apiCall[0]));
 }
 
-function calledPath(spy: ReturnType<typeof captureFetch>): string {
-  const apiCall = spy.mock.calls.find(([input]) => String(input).includes("/api/v1/"));
-  if (!apiCall) throw new Error("Expected an Operations API request");
-  return String(apiCall[0]);
-}
-
 describe("networkApi", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -87,13 +81,14 @@ describe("networkApi", () => {
     expect(calledUrl(spy).searchParams.has("port")).toBe(false);
   });
 
-  it("uses a routable hub path without encoding a leading empty segment", async () => {
+  it("sends the exact slash-prefixed hub ARM id in a query parameter", async () => {
     const spy = captureFetch({ dependent_count: 0 });
     await networkApi.hubDependents("/subscriptions/s/providers/microsoft.network/virtualnetworks/v");
-    expect(calledPath(spy)).toContain(
-      "/network/topology/hubs/subscriptions%2Fs%2Fproviders%2F",
+    const url = calledUrl(spy);
+    expect(url.pathname).toBe("/api/v1/network/topology/hubs/dependents");
+    expect(url.searchParams.get("vnet_id")).toBe(
+      "/subscriptions/s/providers/microsoft.network/virtualnetworks/v",
     );
-    expect(calledPath(spy)).not.toContain("/hubs/%2Fsubscriptions");
   });
 
   it("applies severity and category filters to gaps", async () => {

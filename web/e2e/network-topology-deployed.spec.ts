@@ -267,11 +267,10 @@ test.describe("deployed Phase 12 network topology acceptance", () => {
 
     const topologyUrl = fullDetailUrl(response);
     const hubUrl = new URL(
-      `/api/v1/network/topology/hubs/${encodeURIComponent(
-        hubId.replace(/^\/+/, ""),
-      )}/dependents`,
+      "/api/v1/network/topology/hubs/dependents",
       topologyUrl.origin,
     );
+    hubUrl.searchParams.set("vnet_id", hubId);
     topologyUrl.searchParams.forEach((value, key) => {
       if (key !== "detail") hubUrl.searchParams.append(key, value);
     });

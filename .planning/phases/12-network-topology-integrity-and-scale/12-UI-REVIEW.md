@@ -1,8 +1,8 @@
 ---
 phase: 12-network-topology-integrity-and-scale
-reviewed: 2026-09-08T10:27:00+08:00
-status: source-ready-complete-post-deploy-gate-pending
-verdict: SOURCE READY — local acceptance pass; authenticated runtime suite retained as a post-deploy gate
+reviewed: 2026-09-08T11:50:00+08:00
+status: source-ready-post-deployment-remediation-pending-redeploy
+verdict: SOURCE READY FOR REDEPLOY — two authenticated runtime failures are regression-covered; live p95 and routing recheck pending
 baseline: 12-UI-SPEC.md
 audit_mode: live_deployed_runtime
 deployment: https://aiops-dev-web.greenpond-732382e3.australiaeast.azurecontainerapps.io/network
@@ -13,6 +13,9 @@ original_score: 13/24
 original_weighted_score: 46.25/100
 open_source_findings: 0
 live_recheck_findings: 9
+post_deployment_failures: 2
+post_deployment_tag: network-topology-fix-20260908-0115
+remediation_base_head: 76df9c420
 supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 ---
 
@@ -24,10 +27,61 @@ supersedes: 2026-09-06 source-contract audit (24/24) — retained as Appendix A
 
 **Verdict:** **FAIL — 13/24 (weighted 46.25/100). 4 blockers, 5 warnings.**
 
+## Authenticated Post-Deployment Recheck — 2026-09-08
+
+Deployment tag `network-topology-fix-20260908-0115` passed eight of the ten
+authenticated checks and exposed two deterministic residual defects:
+
+1. Five immediate full-detail samples produced **p95 14,397 ms**, still above
+   the unchanged **p95 <1,000 ms** acceptance gate. Direct authenticated
+   summary, full-detail, gaps, and rule-findings requests each took
+   approximately 9–22 seconds, while `/network/policy` took approximately
+   0.8 seconds.
+2. Hub dependents still returned 404 for an ARM id present in the same topology
+   summary; the live failure continued to show the leading slash missing.
+
+Both failures are now fixed and regression-covered in source, but this
+remediation has **not** been redeployed:
+
+- `ProviderRuntime.get()` is a strict state-lock-only last-known-good read. It
+  performs no cache-key, freshness, metadata, or loader I/O. The existing
+  immediate startup refresh and periodic `provider-refresh` thread exclusively
+  own those operations. Failing-first tests cover a normal changed key, four
+  concurrent readers during refresh, and an initial request while startup
+  loading is blocked.
+- Hub identity now uses
+  `GET /api/v1/network/topology/hubs/dependents?vnet_id=<exact ARM id>`. The web
+  client and authenticated deployed test use this query contract; the legacy
+  path route remains as a compatibility adapter. A FastAPI `TestClient`
+  regression proves the exact slash-prefixed id traverses actual routing and
+  returns the matching envelope.
+
+### Post-deployment remediation gates
+
+| Check | Result |
+|---|---|
+| Failing-first causal regressions | **PASS after fix — 4 backend + 1 web; all five RED before source edits** |
+| Focused provider/runtime/network API | **PASS — 131 tests** |
+| Focused network web | **PASS — 4 files, 100 tests** |
+| Full backend pytest | **PASS — 3,831 tests** |
+| Full web Vitest | **PASS — 57 files, 583 tests** |
+| TypeScript / ESLint / production build | **PASS** |
+| Ruff on every changed Python path | **PASS** |
+| Phase 12 local Playwright | **PASS — 3 local scenarios; 10 authenticated checks explicitly skipped without live mode** |
+| Complete local Playwright invocation | **Phase 12 clean; one unrelated pre-existing Phase 13 ontology test requires an HTTPS deployed URL and fails against the local HTTP server** |
+| Repository-wide Ruff | **PRE-EXISTING RED — unchanged 27 findings under unrelated `infra/scripts/` and `scripts/`** |
+| Revert-and-reconfirm | **PASS — all 4 backend and 1 web causal regressions returned to RED on source-only revert and GREEN on reapply** |
+
+The source is ready for a normal redeployment, but the live acceptance remains
+open until that later authorized deployment. **Do not relax or reinterpret the
+p95 gate:** five immediate authenticated full-detail samples must still observe
+p95 below 1 second, and the summary-provided hub id must return 200 through the
+query route.
+
 ## Remediation Update — 2026-09-08
 
-**Current verdict:** **SOURCE READY — local acceptance pass; authenticated
-runtime suite retained as a post-deploy gate.**
+**Historical pre-deployment verdict:** **SOURCE READY — local acceptance pass;
+authenticated runtime suite retained as a post-deploy gate.**
 
 All nine findings below are fixed in the working tree and covered by focused
 regressions. The implementation has not been pushed or deployed, so the

@@ -5,9 +5,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 
+from api.app import _start_background_refresh
 from api.providers import DEGRADED, READY, STALE, ProviderRuntime, ProviderSpec
 
 
@@ -91,6 +94,133 @@ def test_cache_key_read_failure_retains_last_good_provider():
 
     assert runtime.get("network") is first
     assert attempts == 1
+
+
+def test_get_is_a_strict_last_known_good_read_without_refresh_io() -> None:
+    revision = 7
+    io_calls: list[str] = []
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def cache_key() -> tuple[str, int]:
+        io_calls.append("cache-key")
+        return ("network-policy", revision)
+
+    def load() -> SnapshotProvider:
+        io_calls.append("loader")
+        return first
+
+    runtime = ProviderRuntime(
+        {"network": ProviderSpec(load, cache_key=cache_key)},
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    io_calls.clear()
+    revision = 8
+
+    assert runtime.get("network") is first
+    assert io_calls == []
+
+
+def test_concurrent_gets_do_no_io_during_background_refresh() -> None:
+    revision = 7
+    io_calls: list[str] = []
+    refresh_started = Event()
+    release_refresh = Event()
+    first = SnapshotProvider(
+        version="policy-v7",
+        freshness="2026-08-22T00:00:00Z",
+    )
+    replacement = SnapshotProvider(
+        version="policy-v8",
+        freshness="2026-08-22T00:01:00Z",
+    )
+
+    def cache_key() -> tuple[str, int]:
+        io_calls.append("cache-key")
+        return ("network-policy", revision)
+
+    def load() -> SnapshotProvider:
+        io_calls.append("loader")
+        if revision == 8:
+            refresh_started.set()
+            assert release_refresh.wait(timeout=2)
+            return replacement
+        return first
+
+    runtime = ProviderRuntime(
+        {"network": ProviderSpec(load, cache_key=cache_key)},
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+    runtime.refresh(force=True)
+    revision = 8
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        refresh = pool.submit(runtime.refresh, force=True)
+        assert refresh_started.wait(timeout=1)
+        calls_before_reads = len(io_calls)
+        try:
+            readers = [pool.submit(runtime.get, "network") for _ in range(4)]
+            assert [reader.result(timeout=0.5) for reader in readers] == [
+                first,
+                first,
+                first,
+                first,
+            ]
+            assert len(io_calls) == calls_before_reads
+        finally:
+            release_refresh.set()
+        refresh.result(timeout=1)
+
+    assert runtime.get("network") is replacement
+
+
+def test_initial_get_during_background_startup_does_not_duplicate_io() -> None:
+    io_calls: list[str] = []
+    startup_refresh_started = Event()
+    release_startup_refresh = Event()
+    provider = SnapshotProvider(
+        version="ontology-v1",
+        freshness="2026-08-22T00:00:00Z",
+    )
+
+    def cache_key() -> tuple[str, int]:
+        io_calls.append("cache-key")
+        return ("fabric-generation", 1)
+
+    def load() -> SnapshotProvider:
+        io_calls.append("loader")
+        startup_refresh_started.set()
+        assert release_startup_refresh.wait(timeout=2)
+        return provider
+
+    runtime = ProviderRuntime(
+        {"network": ProviderSpec(load, cache_key=cache_key)},
+        clock=lambda: datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+        monotonic=lambda: 0.0,
+    )
+
+    app = FastAPI()
+    _start_background_refresh(
+        app,
+        SimpleNamespace(provider_runtime=runtime),
+    )
+    assert startup_refresh_started.wait(timeout=1)
+    calls_before_get = len(io_calls)
+    try:
+        assert runtime.get("network", optional=True) is None
+        assert len(io_calls) == calls_before_get
+    finally:
+        app.state.provider_refresh_stop.set()
+        release_startup_refresh.set()
+        app.state.provider_refresh_thread.join(timeout=1)
+
+    assert not app.state.provider_refresh_thread.is_alive()
+    assert runtime.get("network") is provider
 
 
 def test_unchanged_cache_key_skips_periodic_provider_rebuild() -> None:
@@ -191,6 +321,7 @@ def test_known_newer_key_with_failed_body_serves_last_good_once():
     revision = 8
     body_available = False
 
+    runtime.refresh(force=True)
     assert runtime.get("network") is first
 
     health = runtime.health(refresh=False)["providers"]["network"]
@@ -201,7 +332,7 @@ def test_known_newer_key_with_failed_body_serves_last_good_once():
     assert health["retry"]["attempts"] == 1
 
 
-def test_concurrent_changed_key_failure_has_one_nonblocking_refresh_owner():
+def test_concurrent_changed_key_failure_has_one_background_refresh_owner():
     attempts = 0
     revision = 7
     body_available = True
@@ -236,18 +367,18 @@ def test_concurrent_changed_key_failure_has_one_nonblocking_refresh_owner():
     body_available = False
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        refresh_owner = pool.submit(runtime.get, "network")
+        refresh_owner = pool.submit(runtime.refresh, force=True)
         assert failed_load_started.wait(timeout=1)
         concurrent_reader = pool.submit(runtime.get, "network")
         try:
             retained = concurrent_reader.result(timeout=0.5)
         finally:
             release_failed_load.set()
-        owner_result = refresh_owner.result(timeout=1)
+        refresh_owner.result(timeout=1)
 
     health = runtime.health(refresh=False)["providers"]["network"]
     assert retained is first
-    assert owner_result is first
+    assert runtime.get("network") is first
     assert attempts == 2
     assert health["cache_key_stale"] is True
     assert health["retry"]["attempts"] == 1
