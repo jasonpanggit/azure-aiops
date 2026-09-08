@@ -625,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     args = _parser().parse_args(argv)
     items, object_id, tenant_id = parse_contract(json.load(args.contract_file))
     dry_run = not args.apply
