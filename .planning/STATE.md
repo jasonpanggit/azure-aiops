@@ -139,9 +139,12 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Quick Tasks Completed
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 260903-rkn | Add detailed sync progress reporting for Fabric table writes, including written count out of total and useful in-progress status when a sync remains active | 2026-09-03 | ca708add | [260903-rkn-add-detailed-sync-progress-reporting-for](./quick/260903-rkn-add-detailed-sync-progress-reporting-for/) |
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260903-rkn | Add detailed sync progress reporting for Fabric table writes, including written count out of total and useful in-progress status when a sync remains active | 2026-09-03 | ca708add |  | [260903-rkn-add-detailed-sync-progress-reporting-for](./quick/260903-rkn-add-detailed-sync-progress-reporting-for/) |
+| 260909-032 | Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication | 2026-09-09 | f34fde19b | Verified | [260909-032-add-stage-level-progress-logging-and-bou](./quick/260909-032-add-stage-level-progress-logging-and-bou/) |
+
+Last activity: 2026-09-09 - Completed quick task 260909-032: Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication
 
 ## Performance Metrics
 
@@ -343,5 +346,4 @@ current_phase_name: Exposure Reliability and Scale
 
 ### Pending Todos
 
-- 2 pending — includes activation/publication progress logging captured during
-  the Plan 03.1-19 live Gold initialization.
+- 1 pending.
