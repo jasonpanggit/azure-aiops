@@ -1,5 +1,15 @@
 {
   "activation_interface_present": false,
+  "finalize": {
+    "audit_retained": true,
+    "authoritative_model_edges": 0,
+    "coordinator_tag_unchanged": true,
+    "fixture_registry_empty": true,
+    "no_runtime_job_start_grants": true,
+    "release_status": "BLOCKED/PENDING",
+    "status": "PASS",
+    "templates_unchanged": true
+  },
   "lifecycle": {
     "cleanup": {
       "execution_hash": "sha256:e94066b41812bec61f9701fd942372f19fe20fb3d823023798cb2210f5e48b53",
@@ -127,6 +137,26 @@
         "override_fields": []
       }
     }
+  },
+  "publication": {
+    "authoritative_model_edges": 0,
+    "command_topology": [
+      "api_intake",
+      "coordinator_claim",
+      "coordinator_reauthorization",
+      "publish_dispatch",
+      "publisher_claim",
+      "publisher_status",
+      "api_reload"
+    ],
+    "publication": {
+      "execution_hash": "sha256:98eecdea24dd2246c202e1d01d9fae3fb1705fa96ba0c263b262ea40487af858",
+      "execution_status": "Failed",
+      "job_hash": "sha256:ab49d4928a0706df2017c7cbd5afa091f5aeb8a708413e637af929c1e969a7c5",
+      "server_generated": true,
+      "status": "FAIL"
+    },
+    "status": "PASS"
   },
   "release_status": "BLOCKED/PENDING",
   "sanitized": true,
