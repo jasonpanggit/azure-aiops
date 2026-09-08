@@ -7,7 +7,9 @@ import {
   buildDefenderPostureCopilotContext,
   buildExposureCopilotContext,
   buildFabricMedallionCopilotContext,
+  buildFinOpsCopilotContext,
   buildGovernanceCopilotContext,
+  buildIdentityCopilotContext,
   buildInventoryCopilotContext,
   buildKbDetailCopilotContext,
   buildNetworkCopilotContext,
@@ -15,6 +17,7 @@ import {
   buildPatchPrioritiesCopilotContext,
   buildPredeployCopilotContext,
   buildRemediationCopilotContext,
+  buildResourceHealthCopilotContext,
   buildSituationsCopilotContext,
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
@@ -2749,6 +2752,439 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     );
     expect(context.uncertainty).not.toEqual(
       expect.arrayContaining(["settings freshness is unavailable"]),
+    );
+  });
+});
+
+describe("identity, FinOps, and resource-health Copilot page adapters", () => {
+  type CoreContext = ReturnType<typeof buildIdentityCopilotContext>;
+  const rowByClaim = (ctx: CoreContext, claim: string) =>
+    ctx.snapshot.evidence.filter((row) => row.data.claim_type === claim);
+
+  const identityInput = {
+    scope: { subscription: ["sub-a"] },
+    summary: {
+      principal_count: 42,
+      privileged_principal_count: 3,
+      stale_assignment_count: 5,
+      non_human_principal_count: 8,
+      assignment_count: 120,
+    },
+    principals: [
+      {
+        principal_id: "11111111-1111-1111-1111-111111111111",
+        principal_type: "User",
+        privileged: true,
+        stale: false,
+        widest_scope_breadth: "subscription",
+        assignment_count: 6,
+        roles: ["Owner", "Contributor"],
+      },
+      {
+        principal_id: "22222222-2222-2222-2222-222222222222",
+        principal_type: "ServicePrincipal",
+        privileged: false,
+        stale: true,
+        widest_scope_breadth: "resource_group",
+        assignment_count: 1,
+        roles: ["Reader"],
+      },
+    ],
+    principalsTotalCount: 42,
+    owners: [
+      {
+        principal_id: "33333333-3333-3333-3333-333333333333",
+        principal_type: "User",
+        subscription_id: "00000000-0000-0000-0000-000000000001",
+        scope_breadth: "subscription",
+        stale: false,
+      },
+    ],
+    ownersTotalCount: 1,
+    staleAccess: [
+      {
+        assignment_id: "assign-1",
+        principal_id: "22222222-2222-2222-2222-222222222222",
+        role: "Reader",
+        privileged: false,
+      },
+    ],
+    staleTotalCount: 5,
+    spnCredentials: [
+      {
+        credential_id: "cred-1",
+        connection_name: "Production",
+        rotation_status: "expiring_soon",
+        days_to_expiry: 12,
+        issues_count: 1,
+      },
+    ],
+    spnTotalCount: 2,
+    available: true,
+    freshness: "fresh" as const,
+    observedAt: "2026-09-07T10:00:00Z",
+    selectedPrincipalId: "11111111-1111-1111-1111-111111111111",
+    filters: { view: ["principals"] },
+    evidence: [
+      {
+        source_engine: "Governance",
+        source_table: "identity_assignments",
+        timestamp: "2026-09-07T10:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds principal, owner, access-review, and SPN identities as scope-safe domain identities", () => {
+    const context = buildIdentityCopilotContext(identityInput);
+    const reordered = buildIdentityCopilotContext({
+      ...identityInput,
+      principals: [...identityInput.principals].reverse(),
+    });
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "governance",
+      page_id: "identity",
+    });
+    // Every principal is a non-ARM domain identity: the principal id is never
+    // leaked into a scope-validated Azure resource field (T-11-29 redaction).
+    const principalRows = rowByClaim(context, "identity_principal");
+    expect(principalRows.length).toBe(2);
+    expect(principalRows.every((row) => row.resource_id === undefined)).toBe(true);
+    expect(principalRows.every((row) => row.data.entity.type === "domain")).toBe(true);
+    const selected = principalRows.find(
+      (row) => row.data.entity.source_key === "11111111-1111-1111-1111-111111111111",
+    );
+    expect(selected?.data).toMatchObject({
+      entity: {
+        type: "domain",
+        namespace: "identity",
+        kind: "identity_principal",
+        source_key: "11111111-1111-1111-1111-111111111111",
+      },
+      principal_type: "User",
+      privileged: true,
+      widest_scope_breadth: "subscription",
+      selected: true,
+      actionable: false,
+      mutation_authorized: false,
+    });
+    expect(rowByClaim(context, "subscription_owner").length).toBe(1);
+    expect(rowByClaim(context, "stale_access").length).toBe(1);
+    expect(rowByClaim(context, "spn_credential").length).toBe(1);
+    expect(context.coverage.principals).toMatchObject({
+      visible_count: 2,
+      total_count: 42,
+      truncated: true,
+    });
+    // Deterministic identities regardless of input order.
+    expect(context.snapshot.evidence.map((row) => row.evidence_id)).toEqual(
+      reordered.snapshot.evidence.map((row) => row.evidence_id),
+    );
+    // Identity hints stay within the identity_access specialist and never mutate.
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "identity_access"
+      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+  });
+
+  it("distinguishes an unavailable identity provider from a healthy-empty scope", () => {
+    const healthyEmpty = buildIdentityCopilotContext({
+      ...identityInput,
+      principals: [],
+      owners: [],
+      staleAccess: [],
+      spnCredentials: [],
+      principalsTotalCount: 0,
+      ownersTotalCount: 0,
+      staleTotalCount: 0,
+      spnTotalCount: 0,
+      selectedPrincipalId: null,
+      available: true,
+      freshness: "fresh" as const,
+    });
+    expect(healthyEmpty.coverage.principals).toMatchObject({
+      visible_count: 0,
+      total_count: 0,
+      complete: true,
+    });
+    expect(healthyEmpty.uncertainty).not.toEqual(
+      expect.arrayContaining(["identity freshness is unavailable"]),
+    );
+
+    const unavailable = buildIdentityCopilotContext({
+      ...identityInput,
+      principals: [],
+      owners: [],
+      staleAccess: [],
+      spnCredentials: [],
+      principalsTotalCount: 0,
+      ownersTotalCount: 0,
+      staleTotalCount: 0,
+      spnTotalCount: 0,
+      selectedPrincipalId: null,
+      available: false,
+      freshness: "unavailable" as const,
+    });
+    expect(unavailable.uncertainty).toEqual(
+      expect.arrayContaining(["identity freshness is unavailable"]),
+    );
+  });
+
+  const finopsInput = {
+    scope: { subscription: ["sub-a"] },
+    summary: {
+      identified_annual_savings: 125000,
+      currency: "USD",
+      savings_opportunity_count: 10,
+      quantified_opportunity_count: 7,
+      waste_item_count: 4,
+      actual_spend: 98000,
+      actual_spend_currency: "USD",
+      actual_spend_period_start: "2026-08-01",
+      actual_spend_period_end: "2026-08-31",
+      unavailable_metrics: [
+        { metric: "forecast_spend", reason: "Cost Management forecast not enabled" },
+      ],
+    },
+    dimension: "business_service",
+    attribution: [
+      {
+        dimension: "business_service",
+        group: "Payments",
+        identified_annual_savings: 60000,
+        savings_opportunity_count: 4,
+        waste_item_count: 2,
+      },
+    ],
+    attributionTotalCount: 3,
+    opportunities: [
+      {
+        recommendation_id: "rec-1",
+        resource_id:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+        problem: "Right-size underused VM",
+        impact: "high",
+        annual_savings: 24000,
+        currency: "USD",
+        owner: "team-payments",
+        business_service: "Payments",
+      },
+      {
+        recommendation_id: "rec-2",
+        problem: "Unquantified recommendation",
+        impact: "medium",
+        annual_savings: null,
+        currency: "USD",
+        business_service: "Networking",
+      },
+    ],
+    opportunitiesTotalCount: 10,
+    waste: [
+      {
+        resource_id:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/disks/disk-1",
+        resource_type: "Microsoft.Compute/disks",
+        reason: "unattached",
+        annual_savings: 1200,
+        currency: "USD",
+        owner: "team-payments",
+      },
+    ],
+    wasteTotalCount: 4,
+    available: true,
+    freshness: "fresh" as const,
+    observedAt: "2026-09-07T10:00:00Z",
+    evidence: [
+      {
+        source_engine: "Advisor",
+        source_table: "cost_recommendations",
+        timestamp: "2026-09-07T10:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds FinOps attribution, opportunity, and waste with currency, window, totals, and uncertainty", () => {
+    const context = buildFinOpsCopilotContext(finopsInput);
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "governance",
+      page_id: "finops",
+    });
+    // Cost summary carries currency and observation window.
+    const summary = rowByClaim(context, "finops_summary")[0]?.data;
+    expect(summary).toMatchObject({
+      currency: "USD",
+      actual_spend_period_start: "2026-08-01",
+      actual_spend_period_end: "2026-08-31",
+      actionable: false,
+      mutation_authorized: false,
+    });
+    // A quantified opportunity resource is a canonical ARM identity.
+    const opportunity = rowByClaim(context, "savings_opportunity").find(
+      (row) => row.data.recommendation_id === "rec-1",
+    );
+    expect(opportunity?.data.entity).toEqual({
+      type: "azure",
+      resource_id:
+        "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+    });
+    // A null saving is preserved as "not quantified", never coerced to zero.
+    const unquantified = rowByClaim(context, "savings_opportunity").find(
+      (row) => row.data.recommendation_id === "rec-2",
+    );
+    expect(unquantified?.data.annual_savings).toBeNull();
+    expect(rowByClaim(context, "cost_attribution").length).toBe(1);
+    expect(rowByClaim(context, "waste_item").length).toBe(1);
+    expect(context.coverage.opportunities).toMatchObject({
+      visible_count: 2,
+      total_count: 10,
+      truncated: true,
+    });
+    // Genuinely unavailable metrics are surfaced as uncertainty.
+    expect(context.uncertainty).toEqual(
+      expect.arrayContaining(["forecast_spend is unavailable: Cost Management forecast not enabled"]),
+    );
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "finops"
+      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+  });
+
+  const healthInput = {
+    scope: { subscription: ["sub-a"] },
+    resources: [
+      {
+        resource_id:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+        resource_name: "vm-1",
+        resource_type: "Microsoft.Compute/virtualMachines",
+        status: "critical",
+        cpu_percent: 94.2,
+        memory_percent: null,
+        disk_free_percent: null,
+        observed_at: "2026-09-07T10:00:00Z",
+        unavailable_metrics: ["memory_percent", "disk_free_percent"],
+        series_point_count: 12,
+      },
+      {
+        resource_id:
+          "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.HybridCompute/machines/arc-1",
+        resource_name: "arc-1",
+        resource_type: "Microsoft.HybridCompute/machines",
+        status: "healthy",
+        cpu_percent: 21.0,
+        memory_percent: 40.0,
+        disk_free_percent: 55.0,
+        observed_at: "2026-09-07T10:00:00Z",
+        unavailable_metrics: [],
+        series_point_count: 12,
+      },
+    ],
+    loadedCount: 2,
+    totalCount: 2,
+    summary: { total: 2, critical: 1, warning: 0, healthy: 1, unknown: 0 },
+    available: true,
+    cached: true,
+    observedAt: "2026-09-07T10:00:00Z",
+    freshness: "fresh" as const,
+    unavailableMetrics: ["memory_percent", "disk_free_percent"],
+    warnings: ["No Log Analytics workspace discovered for guest counters"],
+    selectedResourceId:
+      "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
+    evidence: [
+      {
+        source_engine: "AzureMonitor",
+        source_table: "resource_metrics",
+        timestamp: "2026-09-07T10:00:00Z",
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      },
+    ],
+  };
+
+  it("binds resource-health identities, observation windows, and missing-series status", () => {
+    const context = buildResourceHealthCopilotContext(healthInput);
+
+    expect(context.snapshot).toMatchObject({
+      page_kind: "resource",
+      page_id: "resource-health",
+    });
+    // Each resource is a canonical ARM identity.
+    const resourceRows = rowByClaim(context, "resource_utilization");
+    expect(resourceRows.length).toBe(2);
+    const selected = context.snapshot.evidence.find(
+      (row) => row.resource_id ===
+        "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1",
+    );
+    expect(selected?.data).toMatchObject({
+      claim_type: "resource_utilization",
+      status: "critical",
+      series_point_count: 12,
+      actionable: false,
+      mutation_authorized: false,
+    });
+    // Missing series/metrics are stated, never fabricated as zero.
+    expect(selected?.data.unavailable_metrics).toEqual(["memory_percent", "disk_free_percent"]);
+    expect(context.coverage.resources).toMatchObject({
+      visible_count: 2,
+      total_count: 2,
+      complete: true,
+    });
+    // Page-level missing metrics surface as uncertainty.
+    expect(context.uncertainty).toEqual(
+      expect.arrayContaining([
+        "memory_percent series is unavailable",
+        "disk_free_percent series is unavailable",
+      ]),
+    );
+    expect(context.starterQuestions.every((starter) =>
+      starter.specialistId === "resource_health_observability"
+      && ["incidents", "impact_context", "search"].includes(starter.tool ?? "")
+      && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+  });
+
+  it("keeps an unavailable resource-health provider distinct from an empty scope", () => {
+    const unavailable = buildResourceHealthCopilotContext({
+      ...healthInput,
+      resources: [],
+      loadedCount: 0,
+      totalCount: 0,
+      summary: { total: 0, critical: 0, warning: 0, healthy: 0, unknown: 0 },
+      unavailableMetrics: [],
+      warnings: [],
+      selectedResourceId: null,
+      available: false,
+      cached: false,
+      freshness: "unavailable" as const,
+    });
+    expect(unavailable.uncertainty).toEqual(
+      expect.arrayContaining(["resource_health freshness is unavailable"]),
+    );
+
+    const empty = buildResourceHealthCopilotContext({
+      ...healthInput,
+      resources: [],
+      loadedCount: 0,
+      totalCount: 0,
+      summary: { total: 0, critical: 0, warning: 0, healthy: 0, unknown: 0 },
+      unavailableMetrics: [],
+      warnings: [],
+      selectedResourceId: null,
+      available: true,
+      cached: false,
+      freshness: "fresh" as const,
+    });
+    expect(empty.coverage.resources).toMatchObject({
+      visible_count: 0,
+      total_count: 0,
+      complete: true,
+    });
+    expect(empty.uncertainty).not.toEqual(
+      expect.arrayContaining(["resource_health freshness is unavailable"]),
     );
   });
 });
