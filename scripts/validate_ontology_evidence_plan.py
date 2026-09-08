@@ -207,6 +207,7 @@ def validate_targeted_plan(
         raise EvidencePlanError("expected API digest is invalid")
     changes: dict[str, tuple[str, ...]] = {}
     rows: dict[str, Mapping[str, Any]] = {}
+    all_rows: dict[str, Mapping[str, Any]] = {}
     for row in plan.get("resource_changes") or ():
         if not isinstance(row, Mapping):
             continue
@@ -214,20 +215,39 @@ def validate_targeted_plan(
         change = row.get("change")
         change = change if isinstance(change, Mapping) else {}
         actions = tuple(str(value) for value in change.get("actions") or ())
+        all_rows[address] = change
         if actions and actions != ("no-op",):
             changes[address] = actions
             rows[address] = change
 
-    if set(changes) != CREATE_ADDRESSES | UPDATE_ADDRESSES:
+    missing_contract = sorted(CREATE_ADDRESSES - set(all_rows))
+    invalid_contract = sorted(
+        address
+        for address in CREATE_ADDRESSES
+        if tuple(all_rows.get(address, {}).get("actions") or ())
+        not in {("create",), ("no-op",)}
+    )
+    required_changes = {
+        "azurerm_container_app_job.ontology_evidence_read[0]",
+        *UPDATE_ADDRESSES,
+    }
+    if (
+        missing_contract
+        or invalid_contract
+        or not required_changes.issubset(changes)
+        or set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES
+    ):
         unexpected = sorted(set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES)
-        missing = sorted(CREATE_ADDRESSES | UPDATE_ADDRESSES - set(changes))
+        missing = sorted(required_changes - set(changes))
         raise EvidencePlanError(
             "targeted plan must contain the exact evidence rollout "
-            f"(unexpected={unexpected}, missing={missing})"
+            f"(unexpected={unexpected}, missing={missing}, "
+            f"contract_missing={missing_contract}, invalid={invalid_contract})"
         )
-    for address in CREATE_ADDRESSES:
-        if changes[address] != ("create",):
-            raise EvidencePlanError(f"{address} must be create-only")
+    if changes["azurerm_container_app_job.ontology_evidence_read[0]"] != (
+        "create",
+    ):
+        raise EvidencePlanError("evidence Job must be create-only")
     _validate_evidence_job(
         rows["azurerm_container_app_job.ontology_evidence_read[0]"].get(
             "after", {}
@@ -236,7 +256,7 @@ def validate_targeted_plan(
         expected_identity_id=expected_identity_id,
     )
     _validate_evidence_roles(
-        rows,
+        all_rows,
         expected_principal_id=expected_principal_id,
         production_workspace_id=production_workspace_id,
     )
@@ -260,7 +280,11 @@ def validate_targeted_plan(
     return {
         "status": "PASS",
         "sanitized": True,
-        "create_addresses": sorted(CREATE_ADDRESSES),
+        "create_addresses": sorted(
+            address
+            for address, actions in changes.items()
+            if actions == ("create",)
+        ),
         "update_addresses": sorted(UPDATE_ADDRESSES),
         "delete_count": 0,
         "replace_count": 0,

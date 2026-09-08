@@ -133,6 +133,31 @@ def test_targeted_plan_accepts_only_evidence_resources_and_phase13_images() -> N
     )
 
 
+def test_targeted_plan_accepts_existing_noop_viewer_roles() -> None:
+    plan = _plan()
+    for row in plan["resource_changes"]:
+        if (
+            row["address"].startswith("fabric_workspace_role_assignment.")
+            and not row["address"].endswith(
+                "ontology_evidence_ontology_rbac_validation[0]"
+            )
+        ):
+            row["change"]["actions"] = ["no-op"]
+            row["change"]["before"] = row["change"]["after"]
+
+    result = _validate(plan)
+
+    assert result["delete_count"] == 0
+    assert result["replace_count"] == 0
+    assert result["create_addresses"] == [
+        "azurerm_container_app_job.ontology_evidence_read[0]",
+        (
+            "fabric_workspace_role_assignment."
+            "ontology_evidence_ontology_rbac_validation[0]"
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
     ("address", "actions"),
     [
