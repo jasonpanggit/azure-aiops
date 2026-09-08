@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC
 from pathlib import Path
 
@@ -270,7 +271,7 @@ def cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     if action == "activate":
-        from onboarding.activation import activate_runtime
+        from onboarding.activation import ActivationFailure, activate_runtime
         from onboarding.runtime import build_onboarding_service
 
         try:
@@ -278,7 +279,26 @@ def cli_command(args: argparse.Namespace) -> int:
                 build_onboarding_service(ConnectorConfig.load(args.config)),
                 fabric_config=args.fabric_config,
                 connection_ids=args.connection_id or None,
+                progress_callback=lambda event: print(
+                    json.dumps(event, separators=(",", ":"), sort_keys=True),
+                    file=sys.stderr,
+                    flush=True,
+                ),
             )
+        except ActivationFailure as exc:
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "stage": exc.stage,
+                        "error_code": exc.error_code,
+                        "elapsed_seconds": exc.elapsed_seconds,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 1
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             print(
                 json.dumps(

@@ -294,7 +294,6 @@ def test_activation_progress_failure_schema_is_sanitized() -> None:
 
 def test_reporter_emits_bounded_heartbeat_and_joins_worker() -> None:
     now = [0.0]
-    release = threading.Event()
     heartbeat_seen = threading.Event()
     events: list[dict[str, object]] = []
 
@@ -304,12 +303,10 @@ def test_reporter_emits_bounded_heartbeat_and_joins_worker() -> None:
             heartbeat_seen.set()
 
     def wait(stop: threading.Event, interval: float) -> bool:
-        release.wait()
-        release.clear()
-        if stop.is_set():
-            return True
-        now[0] += interval
-        return False
+        if not heartbeat_seen.is_set():
+            now[0] += interval
+            return False
+        return stop.wait()
 
     reporter = ActivationProgressReporter(
         sink,
@@ -318,7 +315,6 @@ def test_reporter_emits_bounded_heartbeat_and_joins_worker() -> None:
         wait=wait,
     )
     reporter.start("combined_snapshot")
-    release.set()
     assert heartbeat_seen.wait(timeout=1)
     reporter.complete("combined_snapshot", dataset_count=17, failure_count=0)
     reporter.close()

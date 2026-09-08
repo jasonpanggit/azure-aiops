@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
+import re
+import threading
+import time
 import uuid
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
@@ -16,6 +22,56 @@ from storage.onelake_documents import OneLakeDocumentStore
 
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
 
+if TYPE_CHECKING:
+    from fabric.sync_service import FabricTableWriteProgress
+
+_LOGGER = logging.getLogger(__name__)
+_MAX_PROGRESS_COUNT = 2_147_483_647
+_PROGRESS_STATUSES = frozenset({"started", "heartbeat", "completed", "failed"})
+_COMPLETION_FIELDS: dict[str, frozenset[str]] = {
+    "connection_validation": frozenset({"completed", "total"}),
+    "connection_discovery": frozenset({"completed", "total"}),
+    "combined_snapshot": frozenset({"dataset_count", "failure_count"}),
+    "dataset_mapping": frozenset({"dataset_count", "failure_count"}),
+    "workload_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "temporal_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "container_projection": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "ontology_construction": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "ontology_validation": frozenset(
+        {"entity_count", "relationship_count", "failure_count"}
+    ),
+    "table_publication": frozenset(
+        {"table_name", "row_count", "completed", "total"}
+    ),
+    "fabric_asset_registration": frozenset(),
+    "ontology_publication": frozenset(),
+    "gold_staging": frozenset(),
+    "shortcut_finalization": frozenset(),
+    "pointer_activation": frozenset(),
+    "fabric_publication": frozenset(),
+    "activation": frozenset(),
+}
+_COUNT_FIELDS = frozenset(
+    {
+        "completed",
+        "total",
+        "row_count",
+        "dataset_count",
+        "entity_count",
+        "relationship_count",
+        "failure_count",
+    }
+)
+_SAFE_ERROR_CODES = frozenset({"ACTIVATION_FAILED"})
+_TABLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _EXPOSURE_PASSTHROUGH_KEYS = {
     "exposure/source_partition_rows": "row_key",
     "exposure/workload_observations": "observation_id",
@@ -23,6 +79,284 @@ _EXPOSURE_PASSTHROUGH_KEYS = {
     "exposure/workload_source_checkpoints": "checkpoint_key",
     "situations/source_status": "partition_key",
 }
+
+
+class ActivationFailure(RuntimeError):
+    """Expose only a safe activation stage, code, and elapsed duration.
+
+    The originating exception remains available through normal exception
+    chaining for in-process diagnosis. Its text is deliberately excluded from
+    this exception so CLI and progress output cannot disclose provider data.
+    """
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        error_code: str,
+        elapsed_seconds: float,
+    ) -> None:
+        """Initialize a sanitized failure using elapsed seconds."""
+        super().__init__("Activation failed")
+        self.stage = stage
+        self.error_code = error_code
+        self.elapsed_seconds = elapsed_seconds
+
+
+def build_activation_progress_event(
+    stage: str,
+    status: str,
+    *,
+    elapsed_seconds: float,
+    **payload: object,
+) -> dict[str, object]:
+    """Build one exact-schema, low-cardinality activation progress event.
+
+    Completion payloads are fixed per stage. Counts are non-boolean integers
+    in the inclusive range 0..2,147,483,647, table names are bounded logical
+    names, and failed events contain only ``error_code``. Elapsed time is in
+    monotonic seconds.
+    """
+    if stage not in _COMPLETION_FIELDS:
+        raise ValueError("Unknown activation progress stage")
+    if status not in _PROGRESS_STATUSES:
+        raise ValueError("Unknown activation progress status")
+    if (
+        isinstance(elapsed_seconds, bool)
+        or not isinstance(elapsed_seconds, (int, float))
+        or not math.isfinite(float(elapsed_seconds))
+        or float(elapsed_seconds) < 0
+    ):
+        raise ValueError("elapsed_seconds must be finite and non-negative")
+
+    expected_fields = (
+        _COMPLETION_FIELDS[stage]
+        if status == "completed"
+        else frozenset({"error_code"})
+        if status == "failed"
+        else frozenset()
+    )
+    if frozenset(payload) != expected_fields:
+        raise ValueError("Progress payload does not match stage and status")
+    for field in _COUNT_FIELDS & payload.keys():
+        value = payload[field]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= _MAX_PROGRESS_COUNT
+        ):
+            raise ValueError(f"{field} must be a bounded non-negative integer")
+    if "table_name" in payload:
+        table_name = payload["table_name"]
+        if not isinstance(table_name, str) or not _TABLE_NAME_PATTERN.fullmatch(
+            table_name
+        ):
+            raise ValueError("table_name must be a bounded logical table name")
+    if "error_code" in payload and payload["error_code"] not in _SAFE_ERROR_CODES:
+        raise ValueError("error_code is not allowlisted")
+    return {
+        "event": "activation_progress",
+        "stage": stage,
+        "status": status,
+        "elapsed_seconds": float(elapsed_seconds),
+        **payload,
+    }
+
+
+class ActivationProgressReporter:
+    """Emit exact activation progress with one bounded heartbeat worker.
+
+    The sink is best-effort: callback exceptions are replaced by a fixed safe
+    log record and never change activation outcomes. Stage completion payloads
+    follow :func:`build_activation_progress_event`; elapsed values and the
+    positive heartbeat interval are expressed in monotonic seconds.
+    """
+
+    def __init__(
+        self,
+        sink: Callable[[Mapping[str, object]], None] | None,
+        *,
+        heartbeat_interval: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+        wait: Callable[[threading.Event, float], bool] | None = None,
+    ) -> None:
+        """Initialize the reporter with injectable monotonic clock and wait."""
+        if (
+            isinstance(heartbeat_interval, bool)
+            or not isinstance(heartbeat_interval, (int, float))
+            or not math.isfinite(float(heartbeat_interval))
+            or heartbeat_interval <= 0
+        ):
+            raise ValueError("heartbeat_interval must be finite and positive")
+        self._sink = sink
+        self._heartbeat_interval = float(heartbeat_interval)
+        self._clock = clock
+        self._wait = wait or (lambda stop, interval: stop.wait(interval))
+        self._lock = threading.RLock()
+        self._reporter_started = self._clock()
+        self._stage_started: dict[str, float] = {}
+        self._current_stage: str | None = None
+        self._heartbeat_stop: threading.Event | None = None
+        self._heartbeat_worker: threading.Thread | None = None
+        self._closed = False
+
+    @property
+    def current_stage(self) -> str:
+        """Return the active safe stage name, falling back to activation."""
+        with self._lock:
+            return self._current_stage or "activation"
+
+    @property
+    def heartbeat_thread_alive(self) -> bool:
+        """Return whether the current daemon heartbeat worker is alive."""
+        with self._lock:
+            worker = self._heartbeat_worker
+        return bool(worker and worker.is_alive())
+
+    def elapsed(self, stage: str | None = None) -> float:
+        """Return non-negative monotonic seconds for a stage or whole run."""
+        with self._lock:
+            started = self._stage_started.get(stage or "", self._reporter_started)
+        return max(0.0, float(self._clock() - started))
+
+    def start(self, stage: str) -> None:
+        """Start an allowlisted stage and its bounded heartbeat lifecycle."""
+        if stage not in _COMPLETION_FIELDS:
+            raise ValueError("Unknown activation progress stage")
+        self._stop_heartbeat()
+        with self._lock:
+            if self._closed:
+                return
+            started = self._clock()
+            self._stage_started[stage] = started
+            self._current_stage = stage
+            stop = threading.Event()
+            worker = threading.Thread(
+                target=self._heartbeat_loop,
+                args=(stage, started, stop),
+                name=f"activation-progress-{stage}",
+                daemon=True,
+            )
+            self._heartbeat_stop = stop
+            self._heartbeat_worker = worker
+        self._emit(stage, "started", elapsed_seconds=0.0)
+        worker.start()
+
+    def complete(self, stage: str, **payload: object) -> None:
+        """Complete a stage using its exact allowlisted aggregate payload."""
+        self._stop_heartbeat(stage)
+        self._emit(stage, "completed", elapsed_seconds=self.elapsed(stage), **payload)
+        with self._lock:
+            self._stage_started.pop(stage, None)
+            if self._current_stage == stage:
+                self._current_stage = None
+
+    def fail(self, stage: str, *, error_code: str = "ACTIVATION_FAILED") -> None:
+        """Fail a stage with only an allowlisted stable error code."""
+        self._stop_heartbeat()
+        self._emit(
+            stage,
+            "failed",
+            elapsed_seconds=self.elapsed(stage),
+            error_code=error_code,
+        )
+
+    def fabric_table_progress(self, progress: FabricTableWriteProgress) -> None:
+        """Translate an existing FabricTableWriteProgress after a successful write."""
+        self._emit(
+            "table_publication",
+            "completed",
+            elapsed_seconds=self.elapsed("table_publication"),
+            table_name=progress.table_name,
+            row_count=progress.result.rows_processed,
+            completed=progress.completed_tables,
+            total=progress.total_tables,
+        )
+
+    def fabric_stage_progress(self, progress: Mapping[str, object]) -> None:
+        """Consume a typed Fabric stage mapping through the shared event schema."""
+        stage = progress.get("stage")
+        status = progress.get("status")
+        if not isinstance(stage, str) or not isinstance(status, str):
+            return
+        payload = {
+            key: value
+            for key, value in progress.items()
+            if key not in {"stage", "status"}
+        }
+        try:
+            if status == "started":
+                self.start(stage)
+            elif status == "completed":
+                self.complete(stage, **payload)
+            elif status == "failed":
+                self.fail(stage, error_code=str(payload.get("error_code") or ""))
+        except (TypeError, ValueError):
+            # Invalid producer telemetry is ignored so observability cannot
+            # alter a successful publication.
+            return
+
+    def close(self) -> None:
+        """Stop and join the heartbeat worker without emitting another event."""
+        with self._lock:
+            self._closed = True
+        self._stop_heartbeat()
+
+    def _emit(
+        self,
+        stage: str,
+        status: str,
+        *,
+        elapsed_seconds: float,
+        **payload: object,
+    ) -> None:
+        try:
+            event = build_activation_progress_event(
+                stage,
+                status,
+                elapsed_seconds=elapsed_seconds,
+                **payload,
+            )
+        except (TypeError, ValueError):
+            return
+        if self._sink is None:
+            return
+        try:
+            self._sink(event)
+        except Exception:  # noqa: BLE001 - observability must remain best-effort.
+            _LOGGER.warning(
+                "activation_progress_callback_failed",
+                extra={"error_code": "ACTIVATION_PROGRESS_CALLBACK_FAILED"},
+            )
+
+    def _heartbeat_loop(
+        self,
+        stage: str,
+        started: float,
+        stop: threading.Event,
+    ) -> None:
+        while not self._wait(stop, self._heartbeat_interval):
+            with self._lock:
+                if self._closed or self._current_stage != stage or stop.is_set():
+                    return
+            self._emit(
+                stage,
+                "heartbeat",
+                elapsed_seconds=max(0.0, self._clock() - started),
+            )
+
+    def _stop_heartbeat(self, stage: str | None = None) -> None:
+        with self._lock:
+            if stage is not None and self._current_stage != stage:
+                return
+            stop = self._heartbeat_stop
+            worker = self._heartbeat_worker
+            self._heartbeat_stop = None
+            self._heartbeat_worker = None
+        if stop is not None:
+            stop.set()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join()
 
 
 def publish_combined_snapshot(
@@ -171,54 +505,110 @@ def activate_runtime(
     *,
     fabric_config: str | Path,
     connection_ids: list[str] | None = None,
+    progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    heartbeat_interval: float = 60.0,
+    progress_clock: Callable[[], float] = time.monotonic,
+    progress_wait: Callable[[threading.Event, float], bool] | None = None,
 ) -> dict[str, Any]:
-    """Validate, discover, publish, and verify a production Fabric snapshot."""
-    selected = connection_ids or [
-        connection.connection_id
-        for connection in service.registry.list(include_disabled=False)
-    ]
-    if not selected:
-        raise ValueError("No active subscription connections are registered")
+    """Validate, discover, publish, and verify a production Fabric snapshot.
 
-    validations: dict[str, Any] = {}
-    syncs: dict[str, Any] = {}
-    for connection_id in selected:
-        validation = service.validate(connection_id)
-        validations[connection_id] = validation
-        if not validation.get("passed"):
-            raise ValueError(
-                f"Connection '{connection_id}' failed SPN access validation"
-            )
-        sync = service.sync(connection_id, mode="manual")
-        syncs[connection_id] = sync
-        if sync.get("status") != "succeeded":
-            raise RuntimeError(f"Connection '{connection_id}' discovery failed")
-
-    from fabric.config import FabricRuntimeConfig
-    from fabric.runtime import build_runtime
-
-    config = FabricRuntimeConfig.load(fabric_config)
-    combined = publish_combined_snapshot(service, selected, config.source_data_root)
-    runtime = build_runtime(config)
-    publication = runtime.service.sync(
-        exposure_pointer_store=OneLakeDocumentStore(service.registry.root)
+    Progress callbacks are best-effort and receive exact-schema mappings.
+    Heartbeat and elapsed values use monotonic seconds; injectable clock/wait
+    seams support deterministic local tests without changing result fields.
+    """
+    reporter = ActivationProgressReporter(
+        progress_callback,
+        heartbeat_interval=heartbeat_interval,
+        clock=progress_clock,
+        wait=progress_wait,
     )
-    semantic = runtime.semantic_engine()
-    return {
-        "status": "activated",
-        "connections": sorted(selected),
-        "validations": validations,
-        "discovery_syncs": syncs,
-        "combined_snapshot": combined,
-        "fabric_publication": {
-            "run_id": publication.run_id,
-            "source_run_id": publication.source_run_id,
-            "status": publication.status,
-            "tables": list(publication.tables),
-        },
-        "ontology_version": semantic.knowledge_version,
-        "freshness": semantic.freshness,
-    }
+    reporter.start("activation")
+    try:
+        selected = connection_ids or [
+            connection.connection_id
+            for connection in service.registry.list(include_disabled=False)
+        ]
+        if not selected:
+            raise ValueError("No active subscription connections are registered")
+
+        validations: dict[str, Any] = {}
+        syncs: dict[str, Any] = {}
+        total_connections = len(selected)
+        for position, connection_id in enumerate(selected, start=1):
+            reporter.start("connection_validation")
+            validation = service.validate(connection_id)
+            validations[connection_id] = validation
+            if not validation.get("passed"):
+                raise ValueError("Connection failed SPN access validation")
+            reporter.complete(
+                "connection_validation",
+                completed=position,
+                total=total_connections,
+            )
+
+            reporter.start("connection_discovery")
+            sync = service.sync(connection_id, mode="manual")
+            syncs[connection_id] = sync
+            if sync.get("status") != "succeeded":
+                raise RuntimeError("Connection discovery failed")
+            reporter.complete(
+                "connection_discovery",
+                completed=position,
+                total=total_connections,
+            )
+
+        from fabric.config import FabricRuntimeConfig
+        from fabric.runtime import build_runtime
+
+        reporter.start("combined_snapshot")
+        config = FabricRuntimeConfig.load(fabric_config)
+        combined = publish_combined_snapshot(
+            service,
+            selected,
+            config.source_data_root,
+        )
+        reporter.complete(
+            "combined_snapshot",
+            dataset_count=len(combined.get("datasets") or {}),
+            failure_count=0,
+        )
+        reporter.start("fabric_publication")
+        runtime = build_runtime(config)
+        publication = runtime.service.sync(
+            progress_callback=reporter.fabric_table_progress,
+            stage_progress_callback=reporter.fabric_stage_progress,
+            exposure_pointer_store=OneLakeDocumentStore(service.registry.root),
+        )
+        semantic = runtime.semantic_engine()
+        reporter.complete("fabric_publication")
+        result = {
+            "status": "activated",
+            "connections": sorted(selected),
+            "validations": validations,
+            "discovery_syncs": syncs,
+            "combined_snapshot": combined,
+            "fabric_publication": {
+                "run_id": publication.run_id,
+                "source_run_id": publication.source_run_id,
+                "status": publication.status,
+                "tables": list(publication.tables),
+            },
+            "ontology_version": semantic.knowledge_version,
+            "freshness": semantic.freshness,
+        }
+        reporter.complete("activation")
+        return result
+    except Exception as exc:
+        stage = reporter.current_stage
+        elapsed_seconds = reporter.elapsed(stage)
+        reporter.fail(stage)
+        raise ActivationFailure(
+            stage=stage,
+            error_code="ACTIVATION_FAILED",
+            elapsed_seconds=elapsed_seconds,
+        ) from exc
+    finally:
+        reporter.close()
 
 
 def _read_manifest(store: DatasetStore, generation: str) -> dict[str, Any]:
@@ -236,4 +626,10 @@ def _read_manifest(store: DatasetStore, generation: str) -> dict[str, Any]:
     return payload
 
 
-__all__ = ["activate_runtime", "publish_combined_snapshot"]
+__all__ = [
+    "ActivationFailure",
+    "ActivationProgressReporter",
+    "activate_runtime",
+    "build_activation_progress_event",
+    "publish_combined_snapshot",
+]
