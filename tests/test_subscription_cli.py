@@ -211,3 +211,78 @@ def test_cli_local_spn_can_sync_after_injection(tmp_path, monkeypatch, capsys) -
         "status": "succeeded",
         "mode": "initial",
     }
+
+
+def test_cli_activate_streams_progress_to_stderr_and_terminal_json_to_stdout(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    _patch_service(monkeypatch, object())
+
+    def fake_activate_runtime(service, **kwargs):
+        kwargs["progress_callback"](
+            {
+                "event": "activation_progress",
+                "stage": "activation",
+                "status": "started",
+                "elapsed_seconds": 0.0,
+            }
+        )
+        return {"status": "activated", "connections": ["hub"]}
+
+    monkeypatch.setattr(
+        "onboarding.activation.activate_runtime",
+        fake_activate_runtime,
+    )
+
+    assert _run(["activate", "--config", _config(tmp_path)]) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "activated",
+        "connections": ["hub"],
+    }
+    assert json.loads(captured.err) == {
+        "event": "activation_progress",
+        "stage": "activation",
+        "status": "started",
+        "elapsed_seconds": 0.0,
+    }
+
+
+def test_cli_activate_renders_only_sanitized_failure_fields(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from onboarding.activation import ActivationFailure
+
+    _patch_service(monkeypatch, object())
+    secret = "credential=planted-secret"
+    resource_id = "/subscriptions/sub/resourceGroups/rg/providers/x/y"
+
+    def fail_activation(*args, **kwargs):
+        raise ActivationFailure(
+            stage="connection_discovery",
+            error_code="ACTIVATION_FAILED",
+            elapsed_seconds=7.5,
+        ) from RuntimeError(f"{secret} {resource_id}")
+
+    monkeypatch.setattr(
+        "onboarding.activation.activate_runtime",
+        fail_activation,
+    )
+
+    assert _run(["activate", "--config", _config(tmp_path)]) == 1
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "error",
+        "stage": "connection_discovery",
+        "error_code": "ACTIVATION_FAILED",
+        "elapsed_seconds": 7.5,
+    }
+    assert captured.err == ""
+    assert secret not in captured.out
+    assert resource_id not in captured.out
