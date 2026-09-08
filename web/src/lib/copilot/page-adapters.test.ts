@@ -2852,9 +2852,11 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     const principalRows = rowByClaim(context, "identity_principal");
     expect(principalRows.length).toBe(2);
     expect(principalRows.every((row) => row.resource_id === undefined)).toBe(true);
-    expect(principalRows.every((row) => row.data.entity.type === "domain")).toBe(true);
+    expect(principalRows.every((row) =>
+      (row.data.entity as { type: string }).type === "domain")).toBe(true);
     const selected = principalRows.find(
-      (row) => row.data.entity.source_key === "11111111-1111-1111-1111-111111111111",
+      (row) => (row.data.entity as { source_key: string }).source_key
+        === "11111111-1111-1111-1111-111111111111",
     );
     expect(selected?.data).toMatchObject({
       entity: {

@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -11,6 +13,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
+import { buildIdentityCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
@@ -33,6 +36,7 @@ function blastRadius(radius: Record<string, number>): string {
 
 export default function IdentityPage() {
   const { scope } = useScope();
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const summary = useApi(() => governanceApi.identitySummary(scope), [scope]);
   const principals = useApi(() => governanceApi.identityPrincipals(scope), [scope]);
@@ -87,12 +91,71 @@ export default function IdentityPage() {
     ...(principals.data?.warnings ?? []),
   ];
 
+  // Read-only contextual Copilot over already-loaded, server-authorized
+  // identity evidence. Principals stay scope-safe domain identities; no
+  // mutation path is exposed (D-03, D-05, D-06, D-08, D-09).
+  const identityAvailable = !error && Boolean(summary.data);
+  const identityCopilot = buildIdentityCopilotContext({
+    scope,
+    summary: totals
+      ? {
+          principal_count: totals.principal_count,
+          privileged_principal_count: totals.privileged_principal_count,
+          stale_assignment_count: totals.stale_assignment_count,
+          non_human_principal_count: totals.non_human_principal_count,
+          assignment_count: totals.assignment_count,
+        }
+      : null,
+    principals: principalRows.map((principal) => ({
+      principal_id: principal.principal_id,
+      principal_type: principal.principal_type,
+      privileged: principal.privileged,
+      stale: principal.stale,
+      widest_scope_breadth: principal.widest_scope_breadth,
+      assignment_count: principal.assignment_count,
+      roles: principal.roles,
+    })),
+    principalsTotalCount: principals.data?.data.count ?? principalRows.length,
+    owners: ownerRows.map((owner) => ({
+      principal_id: owner.principal_id,
+      principal_type: owner.principal_type,
+      subscription_id: owner.subscription_id,
+      scope_breadth: owner.scope_breadth,
+      stale: owner.stale,
+    })),
+    ownersTotalCount: owners.data?.data.count ?? ownerRows.length,
+    staleAccess: staleRows.map((assignment) => ({
+      assignment_id: assignment.assignment_id,
+      principal_id: assignment.principal_id,
+      role: assignment.role,
+      privileged: assignment.privileged,
+    })),
+    staleTotalCount: stale.data?.data.count ?? staleRows.length,
+    spnCredentials: spnRows.map((credential) => ({
+      credential_id: credential.credential_id,
+      connection_name: credential.connection_name,
+      rotation_status: credential.rotation_status,
+      days_to_expiry: credential.days_to_expiry,
+      issues_count: credential.issues?.length ?? 0,
+    })),
+    spnTotalCount: spn.data?.data.count ?? spnRows.length,
+    available: identityAvailable,
+    freshness: identityAvailable ? "fresh" : "unavailable",
+    evidence: [...(summary.data?.evidence ?? []), ...(principals.data?.evidence ?? [])],
+  });
+
   return (
     <div className="page-container">
       <PageHeader
         eyebrow="Access governance"
         title="Who has access, and how wide is it?"
         description="Review observed RBAC assignments, subscription owners, non-human identities, and credential coverage within the authorized scope."
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about identity access"
+          />
+        }
         metadata={
           <>
             <span>Derived from observed RBAC assignments</span>
@@ -582,6 +645,15 @@ export default function IdentityPage() {
           </section>
         </>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Access governance"
+        requestedScope={identityCopilot.requestedScope}
+        snapshot={identityCopilot.snapshot}
+        starterQuestions={identityCopilot.starterQuestions}
+      />
     </div>
   );
 }

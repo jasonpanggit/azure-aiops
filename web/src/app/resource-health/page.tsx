@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { MetricSparkline } from "@/components/ui/MetricSparkline";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -8,6 +10,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { UtilizationBarChart } from "@/components/ui/UtilizationBarChart";
 import { useApi } from "@/hooks/useApi";
+import { buildResourceHealthCopilotContext } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import { resourceHealthApi } from "@/lib/services";
 import type { ResourceUtilization } from "@/lib/types";
@@ -89,10 +92,49 @@ export default function ResourceHealthPage() {
   const resources = useMemo(() => data?.resources ?? [], [data]);
   const summary = data?.summary;
 
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const handleRefresh = useCallback(() => {
     forceRefreshRef.current = true;
     setRefreshToken((token) => token + 1);
   }, []);
+
+  // Read-only contextual Copilot over the already-loaded utilization snapshot.
+  // Resource/metric identities, observation windows, and missing-series status
+  // stay explicit; a cached read is still fresh evidence (D-03, D-06, D-09).
+  const healthAvailable = !health.error && Boolean(health.data);
+  const resourceHealthCopilot = buildResourceHealthCopilotContext({
+    scope,
+    resources: resources.map((resource) => ({
+      resource_id: resource.resource_id,
+      resource_name: resource.resource_name,
+      resource_type: resource.resource_type,
+      status: resource.status,
+      cpu_percent: resource.cpu_percent,
+      memory_percent: resource.memory_percent,
+      disk_free_percent: resource.disk_free_percent,
+      observed_at: resource.observed_at,
+      unavailable_metrics: resource.unavailable_metrics ?? [],
+      series_point_count: resource.cpu_series?.length ?? 0,
+    })),
+    loadedCount: resources.length,
+    totalCount: summary?.total ?? resources.length,
+    summary: summary
+      ? {
+          total: summary.total,
+          critical: summary.critical,
+          warning: summary.warning,
+          healthy: summary.healthy,
+          unknown: summary.unknown,
+        }
+      : null,
+    available: healthAvailable,
+    cached: data?.cached,
+    observedAt: data?.observed_at,
+    freshness: healthAvailable ? "fresh" : "unavailable",
+    unavailableMetrics: data?.unavailable_metrics ?? [],
+    warnings: data?.warnings ?? [],
+    evidence: health.data?.evidence ?? [],
+  });
 
   return (
     <div className="page-container">
@@ -113,14 +155,20 @@ export default function ResourceHealthPage() {
           </>
         }
         actions={
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={handleRefresh}
-            disabled={health.loading}
-          >
-            {health.loading && refreshToken > 0 ? "Refreshing…" : "Refresh now"}
-          </button>
+          <div className="page-header-actions-group">
+            <CopilotDrawerButton
+              onClick={() => setCopilotOpen(true)}
+              label="Ask Copilot about resource health"
+            />
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={handleRefresh}
+              disabled={health.loading}
+            >
+              {health.loading && refreshToken > 0 ? "Refreshing…" : "Refresh now"}
+            </button>
+          </div>
         }
       />
 
@@ -211,6 +259,15 @@ export default function ResourceHealthPage() {
           </div>
         </>
       )}
+
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Resource health"
+        requestedScope={resourceHealthCopilot.requestedScope}
+        snapshot={resourceHealthCopilot.snapshot}
+        starterQuestions={resourceHealthCopilot.starterQuestions}
+      />
     </div>
   );
 }

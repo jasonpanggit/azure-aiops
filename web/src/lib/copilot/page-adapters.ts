@@ -1661,6 +1661,178 @@ export interface GovernanceCopilotPageInput {
   evidence: EvidenceItem[];
 }
 
+/** A principal risk row projected before adapter typing. */
+export interface IdentityPrincipalObservation {
+  principal_id: string;
+  principal_type?: string;
+  privileged?: boolean;
+  stale?: boolean;
+  widest_scope_breadth?: string;
+  assignment_count?: number;
+  roles?: string[];
+}
+
+/** A subscription-owner row projected before adapter typing. */
+export interface IdentityOwnerObservation {
+  principal_id: string;
+  principal_type?: string;
+  subscription_id?: string;
+  scope_breadth?: string;
+  stale?: boolean;
+}
+
+/** A stale access-review assignment projected before adapter typing. */
+export interface IdentityAccessReviewObservation {
+  assignment_id: string;
+  principal_id: string;
+  role?: string;
+  privileged?: boolean;
+}
+
+/** A service-principal credential row projected before adapter typing. */
+export interface IdentitySpnObservation {
+  credential_id: string;
+  connection_name?: string;
+  rotation_status: string;
+  days_to_expiry?: number | null;
+  issues_count: number;
+}
+
+/** Identity summary aggregate the adapter cites. */
+export interface IdentitySummaryCopilotFields {
+  principal_count: number;
+  privileged_principal_count: number;
+  stale_assignment_count: number;
+  non_human_principal_count: number;
+  assignment_count: number;
+}
+
+/** Already-loaded identity governance sections and evaluated page state. */
+export interface IdentityCopilotPageInput {
+  scope: ScopeSelection;
+  summary?: IdentitySummaryCopilotFields | null;
+  principals: IdentityPrincipalObservation[];
+  principalsTotalCount: number;
+  owners: IdentityOwnerObservation[];
+  ownersTotalCount: number;
+  staleAccess: IdentityAccessReviewObservation[];
+  staleTotalCount: number;
+  spnCredentials: IdentitySpnObservation[];
+  spnTotalCount: number;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  selectedPrincipalId?: string | null;
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
+/** A cost savings opportunity projected before adapter typing. */
+export interface FinOpsOpportunityObservation {
+  recommendation_id?: string;
+  resource_id?: string;
+  problem?: string;
+  impact?: string;
+  annual_savings: number | null;
+  currency: string;
+  owner?: string;
+  business_service?: string;
+  subscription?: string;
+}
+
+/** A waste item projected before adapter typing. */
+export interface FinOpsWasteObservation {
+  resource_id?: string;
+  resource_type?: string;
+  reason?: string;
+  annual_savings: number | null;
+  currency: string;
+  owner?: string;
+  business_service?: string;
+}
+
+/** A cost attribution group projected before adapter typing. */
+export interface FinOpsAttributionObservation {
+  dimension: string;
+  group: string;
+  identified_annual_savings: number;
+  savings_opportunity_count: number;
+  waste_item_count: number;
+}
+
+/** FinOps summary aggregate the adapter cites (currency + observation window). */
+export interface FinOpsSummaryCopilotFields {
+  identified_annual_savings: number;
+  currency: string;
+  savings_opportunity_count: number;
+  quantified_opportunity_count: number;
+  waste_item_count: number;
+  actual_spend?: number;
+  actual_spend_currency?: string;
+  actual_spend_period_start?: string;
+  actual_spend_period_end?: string;
+  unavailable_metrics: { metric: string; reason: string }[];
+}
+
+/** Already-loaded FinOps sections and evaluated page state. */
+export interface FinOpsCopilotPageInput {
+  scope: ScopeSelection;
+  summary?: FinOpsSummaryCopilotFields | null;
+  dimension: string;
+  attribution: FinOpsAttributionObservation[];
+  attributionTotalCount: number;
+  opportunities: FinOpsOpportunityObservation[];
+  opportunitiesTotalCount: number;
+  waste: FinOpsWasteObservation[];
+  wasteTotalCount: number;
+  available: boolean;
+  freshness: CopilotFreshnessStatusV2;
+  observedAt?: string;
+  filters?: Record<string, string[]>;
+  evidence: EvidenceItem[];
+}
+
+/** A resource utilization row projected before adapter typing. */
+export interface ResourceHealthObservation {
+  resource_id: string;
+  resource_name?: string;
+  resource_type?: string;
+  status: string;
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  disk_free_percent: number | null;
+  observed_at?: string;
+  unavailable_metrics: string[];
+  series_point_count: number;
+}
+
+/** Resource-health summary aggregate the adapter cites. */
+export interface ResourceHealthSummaryCopilotFields {
+  total: number;
+  critical: number;
+  warning: number;
+  healthy: number;
+  unknown: number;
+}
+
+/** Already-loaded resource-health snapshot and evaluated page state. */
+export interface ResourceHealthCopilotPageInput {
+  scope: ScopeSelection;
+  resources: ResourceHealthObservation[];
+  loadedCount: number;
+  totalCount: number;
+  summary?: ResourceHealthSummaryCopilotFields | null;
+  available: boolean;
+  cached?: boolean;
+  observedAt?: string;
+  freshness: CopilotFreshnessStatusV2;
+  unavailableMetrics?: string[];
+  warnings?: string[];
+  filters?: Record<string, string[]>;
+  selectedResourceId?: string | null;
+  evidence: EvidenceItem[];
+}
+
 const CORE_PAGE_CONFIG = {
   overview: {
     pageKind: "resource",
@@ -1953,6 +2125,72 @@ const GOVERNANCE_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "Which services need governance attention?",
     specialistId: "governance",
     tool: "impact_context",
+    toolArguments: {},
+  },
+];
+
+// Identity hints stay within the identity_access specialist's read-only toolset.
+const IDENTITY_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which principals hold the widest access?",
+    specialistId: "identity_access",
+    tool: "risk_context",
+    toolArguments: {},
+  },
+  {
+    label: "Who owns access in this business service?",
+    specialistId: "identity_access",
+    tool: "business_service_context",
+    toolArguments: {},
+  },
+  {
+    label: "Search for stale or unused access.",
+    specialistId: "identity_access",
+    tool: "search",
+    toolArguments: {},
+  },
+];
+
+// FinOps hints stay within the finops specialist's read-only toolset.
+const FINOPS_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "Which business services own the most savings?",
+    specialistId: "finops",
+    tool: "business_service_context",
+    toolArguments: {},
+  },
+  {
+    label: "Where is spend attribution missing or uncertain?",
+    specialistId: "finops",
+    tool: "risk_context",
+    toolArguments: {},
+  },
+  {
+    label: "Search cost opportunities by owner.",
+    specialistId: "finops",
+    tool: "search",
+    toolArguments: {},
+  },
+];
+
+// Resource-health hints stay within the resource_health_observability specialist.
+const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
+  {
+    label: "What incidents relate to these resources?",
+    specialistId: "resource_health_observability",
+    tool: "incidents",
+    toolArguments: {},
+  },
+  {
+    label: "Which services are impacted by resource pressure?",
+    specialistId: "resource_health_observability",
+    tool: "impact_context",
+    toolArguments: {},
+  },
+  {
+    label: "Search resource utilization anomalies.",
+    specialistId: "resource_health_observability",
+    tool: "search",
     toolArguments: {},
   },
 ];
@@ -3739,6 +3977,279 @@ function governanceCoreInput(input: GovernanceCopilotPageInput): CoreCopilotAdap
   };
 }
 
+function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterInput {
+  const selectedId = input.selectedPrincipalId ?? null;
+  const records: CoreCopilotRecord[] = [
+    // Principals are non-ARM domain identities; the principal id is redacted
+    // from every scope-validated Azure resource field (T-11-29).
+    ...input.principals.slice(0, 50).map((principal, index) => ({
+      identity: principal.principal_id,
+      namespace: "identity",
+      kind: "identity_principal",
+      source: "identity/principals",
+      observedAt: input.observedAt,
+      selected: selectedId != null && principal.principal_id === selectedId,
+      priority: index,
+      data: {
+        principal_type: principal.principal_type,
+        privileged: principal.privileged ?? false,
+        stale: principal.stale ?? false,
+        widest_scope_breadth: principal.widest_scope_breadth,
+        assignment_count: principal.assignment_count ?? 0,
+        role_count: principal.roles?.length ?? 0,
+        roles: (principal.roles ?? []).slice(0, 20),
+      },
+    })),
+    ...input.owners.slice(0, 50).map((owner, index) => ({
+      identity: owner.principal_id,
+      namespace: "identity",
+      kind: "subscription_owner",
+      source: "identity/subscription-owners",
+      observedAt: input.observedAt,
+      priority: 100 + index,
+      data: {
+        principal_type: owner.principal_type,
+        subscription_id: owner.subscription_id,
+        scope_breadth: owner.scope_breadth,
+        stale: owner.stale ?? false,
+      },
+    })),
+    ...input.staleAccess.slice(0, 50).map((assignment, index) => ({
+      identity: assignment.assignment_id,
+      namespace: "identity",
+      kind: "stale_access",
+      source: "identity/stale-access",
+      observedAt: input.observedAt,
+      priority: 200 + index,
+      data: {
+        principal_id_ref: assignment.principal_id,
+        role: assignment.role,
+        privileged: assignment.privileged ?? false,
+      },
+    })),
+    ...input.spnCredentials.slice(0, 50).map((credential, index) => ({
+      identity: credential.credential_id,
+      namespace: "identity",
+      kind: "spn_credential",
+      source: "identity/spn-credentials",
+      observedAt: input.observedAt,
+      priority: 300 + index,
+      data: {
+        connection_name: credential.connection_name,
+        rotation_status: credential.rotation_status,
+        days_to_expiry: credential.days_to_expiry ?? null,
+        issues_count: credential.issues_count,
+      },
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["identity"] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "principals",
+        visibleCount: input.principals.length,
+        totalCount: Math.max(input.principals.length, input.principalsTotalCount),
+        truncated: input.principals.length < input.principalsTotalCount,
+        available: input.available,
+      },
+      {
+        key: "subscription_owners",
+        visibleCount: input.owners.length,
+        totalCount: Math.max(input.owners.length, input.ownersTotalCount),
+        truncated: input.owners.length < input.ownersTotalCount,
+        available: input.available,
+      },
+      {
+        key: "stale_access",
+        visibleCount: input.staleAccess.length,
+        totalCount: Math.max(input.staleAccess.length, input.staleTotalCount),
+        truncated: input.staleAccess.length < input.staleTotalCount,
+        available: input.available,
+      },
+      {
+        key: "spn_credentials",
+        visibleCount: input.spnCredentials.length,
+        totalCount: Math.max(input.spnCredentials.length, input.spnTotalCount),
+        truncated: input.spnCredentials.length < input.spnTotalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "identity",
+        observedAt: input.observedAt,
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
+function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput {
+  const summary = input.summary ?? null;
+  const records: CoreCopilotRecord[] = [
+    ...(summary ? [{
+      identity: "finops-summary",
+      namespace: "finops",
+      kind: "finops_summary",
+      source: "finops/summary",
+      observedAt: input.observedAt,
+      priority: 0,
+      data: {
+        identified_annual_savings: summary.identified_annual_savings,
+        currency: summary.currency,
+        savings_opportunity_count: summary.savings_opportunity_count,
+        quantified_opportunity_count: summary.quantified_opportunity_count,
+        waste_item_count: summary.waste_item_count,
+        actual_spend: summary.actual_spend ?? null,
+        actual_spend_currency: summary.actual_spend_currency,
+        actual_spend_period_start: summary.actual_spend_period_start,
+        actual_spend_period_end: summary.actual_spend_period_end,
+      },
+    }] : []),
+    ...input.attribution.slice(0, 50).map((group, index) => ({
+      identity: `${group.dimension}:${group.group}`,
+      namespace: "finops",
+      kind: "cost_attribution",
+      source: "finops/attribution",
+      observedAt: input.observedAt,
+      priority: 10 + index,
+      data: {
+        dimension: group.dimension,
+        group: group.group,
+        identified_annual_savings: group.identified_annual_savings,
+        savings_opportunity_count: group.savings_opportunity_count,
+        waste_item_count: group.waste_item_count,
+      },
+    })),
+    ...input.opportunities.slice(0, 50).map((opportunity, index) => ({
+      identity: opportunity.recommendation_id ?? opportunity.resource_id ?? `opportunity-${index}`,
+      namespace: "finops",
+      kind: "savings_opportunity",
+      source: "finops/opportunities",
+      resourceId: opportunity.resource_id,
+      observedAt: input.observedAt,
+      priority: 100 + index,
+      data: {
+        recommendation_id: opportunity.recommendation_id,
+        problem: opportunity.problem,
+        impact: opportunity.impact,
+        // Null is preserved as "not quantified", never coerced to zero.
+        annual_savings: opportunity.annual_savings,
+        currency: opportunity.currency,
+        owner: opportunity.owner,
+        business_service: opportunity.business_service,
+        subscription: opportunity.subscription,
+      },
+    })),
+    ...input.waste.slice(0, 50).map((waste, index) => ({
+      identity: waste.resource_id ?? `waste-${index}`,
+      namespace: "finops",
+      kind: "waste_item",
+      source: "finops/waste",
+      resourceId: waste.resource_id,
+      observedAt: input.observedAt,
+      priority: 200 + index,
+      data: {
+        resource_type: waste.resource_type,
+        reason: waste.reason,
+        annual_savings: waste.annual_savings,
+        currency: waste.currency,
+        owner: waste.owner,
+        business_service: waste.business_service,
+      },
+    })),
+  ];
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["finops"], dimension: [input.dimension] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "opportunities",
+        visibleCount: input.opportunities.length,
+        totalCount: Math.max(input.opportunities.length, input.opportunitiesTotalCount),
+        truncated: input.opportunities.length < input.opportunitiesTotalCount,
+        available: input.available,
+      },
+      {
+        key: "waste",
+        visibleCount: input.waste.length,
+        totalCount: Math.max(input.waste.length, input.wasteTotalCount),
+        truncated: input.waste.length < input.wasteTotalCount,
+        available: input.available,
+      },
+      {
+        key: "attribution",
+        visibleCount: input.attribution.length,
+        totalCount: Math.max(input.attribution.length, input.attributionTotalCount),
+        truncated: input.attribution.length < input.attributionTotalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "finops",
+        observedAt: input.observedAt,
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
+function resourceHealthCoreInput(input: ResourceHealthCopilotPageInput): CoreCopilotAdapterInput {
+  const selectedId = input.selectedResourceId ?? null;
+  const records: CoreCopilotRecord[] = input.resources.slice(0, 50).map((resource, index) => ({
+    identity: resource.resource_id,
+    namespace: "observability",
+    kind: "resource_utilization",
+    source: "resource-health/metrics",
+    resourceId: resource.resource_id,
+    name: resource.resource_name,
+    observedAt: resource.observed_at ?? input.observedAt,
+    selected: selectedId != null && resource.resource_id === selectedId,
+    priority: index,
+    data: {
+      resource_name: resource.resource_name,
+      resource_type: resource.resource_type,
+      status: resource.status,
+      cpu_percent: resource.cpu_percent,
+      memory_percent: resource.memory_percent,
+      disk_free_percent: resource.disk_free_percent,
+      // Missing series are stated, never fabricated as zero.
+      unavailable_metrics: resource.unavailable_metrics,
+      series_point_count: resource.series_point_count,
+      observed_at: resource.observed_at,
+    },
+  }));
+  return {
+    scope: input.scope,
+    filters: input.filters ?? { view: ["resource-health"] },
+    records,
+    evidence: input.evidence,
+    coverage: [
+      {
+        key: "resources",
+        visibleCount: input.loadedCount,
+        totalCount: Math.max(input.loadedCount, input.totalCount),
+        truncated: input.loadedCount < input.totalCount,
+        available: input.available,
+      },
+    ],
+    sourceStatuses: [
+      {
+        source: "resource_health",
+        observedAt: input.observedAt,
+        // A cached snapshot is still fresh evidence, not a degraded source.
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
+    ],
+  };
+}
+
 function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.situations.slice(0, 50).map((situation, index) => ({
     identity: situation.situation_id,
@@ -4112,6 +4623,70 @@ export function buildGovernanceCopilotContext(
     isCoreCopilotInput(input) ? input : governanceCoreInput(input),
     GOVERNANCE_STARTERS,
   );
+}
+
+/**
+ * Builds the typed identity access context from loaded governance sections.
+ * Principals stay non-ARM domain identities and the server reauthorizes every
+ * scope; this adapter carries only bounded, already-authorized fields and no
+ * mutation path (D-03, D-05, D-06, D-08, D-09).
+ */
+export function buildIdentityCopilotContext(
+  input: CoreCopilotAdapterInput | IdentityCopilotPageInput,
+): CoreCopilotContext {
+  return buildCoreCopilotContext(
+    { pageKind: "governance", pageId: "identity" },
+    isCoreCopilotInput(input) ? input : identityCoreInput(input),
+    IDENTITY_STARTERS,
+  );
+}
+
+/** Builds the typed FinOps context from loaded attribution/opportunity/waste. */
+export function buildFinOpsCopilotContext(
+  input: CoreCopilotAdapterInput | FinOpsCopilotPageInput,
+): CoreCopilotContext {
+  const context = buildCoreCopilotContext(
+    { pageKind: "governance", pageId: "finops" },
+    isCoreCopilotInput(input) ? input : finopsCoreInput(input),
+    FINOPS_STARTERS,
+  );
+  // Genuinely unobservable figures are stated as uncertainty rather than
+  // implied as zero spend (D-09).
+  if (!isCoreCopilotInput(input) && input.summary?.unavailable_metrics.length) {
+    return {
+      ...context,
+      uncertainty: [
+        ...context.uncertainty,
+        ...input.summary.unavailable_metrics.map(
+          (item) => `${item.metric} is unavailable: ${item.reason}`,
+        ),
+      ],
+    };
+  }
+  return context;
+}
+
+/** Builds the typed resource-health context from the loaded utilization snapshot. */
+export function buildResourceHealthCopilotContext(
+  input: CoreCopilotAdapterInput | ResourceHealthCopilotPageInput,
+): CoreCopilotContext {
+  const context = buildCoreCopilotContext(
+    { pageKind: "resource", pageId: "resource-health" },
+    isCoreCopilotInput(input) ? input : resourceHealthCoreInput(input),
+    RESOURCE_HEALTH_STARTERS,
+  );
+  // Missing metric series are named explicitly so absent data never reads as a
+  // healthy zero (D-09).
+  if (!isCoreCopilotInput(input) && input.unavailableMetrics?.length) {
+    return {
+      ...context,
+      uncertainty: [
+        ...context.uncertainty,
+        ...input.unavailableMetrics.map((metric) => `${metric} series is unavailable`),
+      ],
+    };
+  }
+  return context;
 }
 
 /** Registry of contextual routes migrated by Plan 11-07. */
