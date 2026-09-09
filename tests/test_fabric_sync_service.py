@@ -4,11 +4,13 @@ import asyncio
 import io
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 
 import pytest
-from test_incremental_sync import _source_snapshot
+from test_container_image_exposure import REGISTRY, _granular_image_row
+from test_incremental_sync import FIXTURE, _source_snapshot
 
 import fabric.sync_service as sync_module
 from fabric.config import FabricRuntimeConfig
@@ -32,6 +34,8 @@ from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_OBSERVATIONS_TABLE,
     TemporalExposureMaterialization,
 )
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
 from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphResult
 from ontology.relationship_builder import relationship_change_version
@@ -50,6 +54,110 @@ def _service(tmp_path: Path) -> FabricSyncService:
         delta_writer=DeltaWriter(),
         validator=DataQualityValidator(),
     )
+
+
+def _container_source_snapshot(
+    root: Path,
+    *,
+    observed_at: datetime,
+    run_id: str,
+    severity: str = "Critical",
+) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload["resources"].append(
+        {
+            "id": REGISTRY,
+            "name": "acr1",
+            "type": "Microsoft.ContainerRegistry/registries",
+            "location": "australiaeast",
+            "subscriptionId": "sub1",
+            "resourceGroup": "rg1",
+            "tenantId": "tenant1",
+        }
+    )
+    image_assessment = _granular_image_row(
+        "openssl",
+        [severity],
+        ["CVE-2026-1001"],
+    )
+    image_assessment["tenantId"] = "tenant1"
+    payload["defender_assessments"].append(image_assessment)
+    graph = Normalizer(
+        {"connection_id": "connection-1"}
+    ).normalize(
+        payload,
+        observed_at,
+        run_id=run_id,
+    )
+    DatasetStore(root).publish(
+        graph,
+        payload,
+        {
+            "runId": run_id,
+            "startedAt": observed_at.isoformat().replace("+00:00", "Z"),
+            "status": "completed",
+        },
+    )
+
+
+def test_sync_deduplicates_unchanged_container_observation_across_source_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="source-generation-1",
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=lakehouse,
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    monkeypatch.setattr(service, "_validate", lambda _datasets: [])
+    write_mode_for_table = service._write_mode_for_table
+    monkeypatch.setattr(
+        service,
+        "_write_mode_for_table",
+        lambda table_name: (
+            DeltaWriteMode.OVERWRITE
+            if table_name == "metadata_audit_events"
+            else write_mode_for_table(table_name)
+        ),
+    )
+
+    first = service.sync()
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+        run_id="source-generation-2",
+    )
+    second = service.sync()
+
+    observations = service.delta.read(
+        lakehouse / "Tables/silver_container_vulnerability_observations"
+    )
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert len(observations) == 1
+    observation_key = (observations[0]["resource_id"],)
+
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 4, tzinfo=UTC),
+        run_id="source-generation-3",
+        severity="Low",
+    )
+    with pytest.raises(ValueError) as error:
+        service.sync()
+    assert str(error.value) == f"Append row mutation for key {observation_key}"
 
 
 def test_sync_reports_successful_table_writes_in_completion_order(

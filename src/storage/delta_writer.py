@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice
@@ -79,6 +79,8 @@ class DeltaWriter:
         partition_by: tuple[str, ...] = (),
         schema: pa.Schema | None = None,
         required_columns: frozenset[str] | tuple[str, ...] | None = REQUIRED_COLUMNS,
+        append_replay_columns: Collection[str] = (),
+        append_replay_json_fields: Mapping[str, Collection[str]] | None = None,
     ) -> DeltaWriteResult:
         write_mode = DeltaWriteMode(mode)
         if write_mode is DeltaWriteMode.APPEND:
@@ -93,6 +95,13 @@ class DeltaWriter:
                 key_columns=key_columns,
                 partition_by=partition_by,
                 schema=schema,
+                replay_columns=frozenset(append_replay_columns),
+                replay_json_fields={
+                    column: frozenset(fields)
+                    for column, fields in (
+                        append_replay_json_fields or {}
+                    ).items()
+                },
             )
 
         normalized = [dict(row) for row in rows]
@@ -121,6 +130,8 @@ class DeltaWriter:
         key_columns: tuple[str, ...],
         partition_by: tuple[str, ...],
         schema: pa.Schema | None,
+        replay_columns: frozenset[str],
+        replay_json_fields: Mapping[str, frozenset[str]],
     ) -> DeltaWriteResult:
         batch_size = self.append_batch_size
         if (
@@ -136,7 +147,16 @@ class DeltaWriter:
             previous_index = incoming_indices.get(key)
             if (
                 previous_index is not None
-                and _canonical_row(rows[previous_index]) != _canonical_row(row)
+                and _canonical_row(
+                    rows[previous_index],
+                    replay_columns=replay_columns,
+                    replay_json_fields=replay_json_fields,
+                )
+                != _canonical_row(
+                    row,
+                    replay_columns=replay_columns,
+                    replay_json_fields=replay_json_fields,
+                )
             ):
                 raise ValueError(f"Append row mutation for key {key}")
             # Preserve the previous implementation's last-row-wins behavior
@@ -152,6 +172,8 @@ class DeltaWriter:
                 incoming_indices=unique_indices,
                 key_columns=key_columns,
                 batch_size=batch_size,
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
             )
         )
 
@@ -178,6 +200,8 @@ class DeltaWriter:
                 batch_size=batch_size,
                 invocation_id=invocation_id,
                 recover_committed=attempt > 1,
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
             )
 
         result = self._retry(append_once)
@@ -196,6 +220,8 @@ class DeltaWriter:
         incoming_indices: Sequence[int],
         key_columns: tuple[str, ...],
         batch_size: int,
+        replay_columns: frozenset[str],
+        replay_json_fields: Mapping[str, frozenset[str]],
     ) -> tuple[int | None, list[int]]:
         if not self.exists(uri):
             return None, list(incoming_indices)
@@ -211,6 +237,8 @@ class DeltaWriter:
                     table,
                     incoming,
                     key_columns,
+                    replay_columns=replay_columns,
+                    replay_json_fields=replay_json_fields,
                 )
                 pending_indices.extend(
                     index
@@ -233,6 +261,8 @@ class DeltaWriter:
         batch_size: int,
         invocation_id: str,
         recover_committed: bool,
+        replay_columns: frozenset[str],
+        replay_json_fields: Mapping[str, frozenset[str]],
     ) -> DeltaWriteResult:
         if recover_committed:
             committed = self._committed_append_result(uri, invocation_id)
@@ -261,6 +291,8 @@ class DeltaWriter:
                         table,
                         incoming,
                         key_columns,
+                        replay_columns=replay_columns,
+                        replay_json_fields=replay_json_fields,
                     )
                     pending_indices.extend(
                         index
@@ -338,6 +370,9 @@ class DeltaWriter:
         table: DeltaTable,
         incoming_rows: Sequence[Mapping[str, Any]],
         key_columns: tuple[str, ...],
+        *,
+        replay_columns: frozenset[str],
+        replay_json_fields: Mapping[str, frozenset[str]],
     ) -> set[tuple[str, ...]]:
         incoming_by_key = {
             _row_key(row, key_columns): row
@@ -368,7 +403,15 @@ class DeltaWriter:
             incoming = incoming_by_key.get(key)
             if incoming is None:
                 continue
-            if _canonical_row(existing) != _canonical_row(incoming):
+            if _canonical_row(
+                existing,
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
+            ) != _canonical_row(
+                incoming,
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
+            ):
                 raise ValueError(f"Append row mutation for key {key}")
             existing_keys.add(key)
         return existing_keys
@@ -571,11 +614,37 @@ def _row_key(row: Mapping[str, Any], key_columns: tuple[str, ...]) -> tuple[str,
     return tuple(str(row[column]) for column in key_columns)
 
 
-def _canonical_row(row: Mapping[str, Any]) -> str:
+def _canonical_row(
+    row: Mapping[str, Any],
+    *,
+    replay_columns: Collection[str] = (),
+    replay_json_fields: Mapping[str, Collection[str]] | None = None,
+) -> str:
     # The physical ingestion run is write metadata, not event content. A
     # replay of the same stable event must remain idempotent across runs.
+    excluded_columns = {"ingestion_run_id", *replay_columns}
+    content = {
+        key: value
+        for key, value in row.items()
+        if key not in excluded_columns
+    }
+    for column, excluded_fields in (replay_json_fields or {}).items():
+        value = content.get(column)
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, Mapping):
+            continue
+        content[column] = {
+            key: item
+            for key, item in parsed.items()
+            if key not in excluded_fields
+        }
     return json.dumps(
-        {key: value for key, value in row.items() if key != "ingestion_run_id"},
+        content,
         sort_keys=True,
         separators=(",", ":"),
         default=str,

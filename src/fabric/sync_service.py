@@ -325,6 +325,21 @@ class FabricSyncService:
         "silver_container_vulnerability_observations",
         "silver_workload_observations",
     })
+    _APPEND_REPLAY_COLUMNS: Mapping[str, frozenset[str]] = {
+        "silver_container_vulnerability_observations": frozenset({
+            "timestamp",
+            "change_version",
+            "ingested_at",
+        }),
+    }
+    _APPEND_REPLAY_JSON_FIELDS: Mapping[
+        str,
+        Mapping[str, frozenset[str]],
+    ] = {
+        "silver_container_vulnerability_observations": {
+            "provenance_json": frozenset({"ingested_at"}),
+        },
+    }
     _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
         "silver_container_image_digests",
         "silver_container_logical_images",
@@ -866,6 +881,13 @@ class FabricSyncService:
                     else ("resource_id",),
                     partition_by=self.partitioning.columns_for(table_name),
                     schema=schema_for(table_name),
+                    append_replay_columns=self._APPEND_REPLAY_COLUMNS.get(
+                        table_name,
+                        (),
+                    ),
+                    append_replay_json_fields=(
+                        self._APPEND_REPLAY_JSON_FIELDS.get(table_name)
+                    ),
                 )
                 assert_lock_held()
                 return table_name, table_uri, before_version, result
