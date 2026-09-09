@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: "Phase 03.1 Plan 19 initial Gold publication is not retry-safe after a hard process death: canonical ontology tables can be partially replaced before the authoritative Gold pointer exists, and the next service instance may consume that non-authoritative head as its predecessor."
 created: 2026-09-09T14:01:04.955+08:00
-updated: 2026-09-09T19:35:00+08:00
+updated: 2026-09-09T19:45:00+08:00
 ---
 
 # Phase 03.1 Plan 19 Publication Atomicity
@@ -353,8 +353,13 @@ active_publication: none; the initial Gold pointer is `{}`/absent and Exposure G
 
 - timestamp: 2026-09-09T19:35:00+08:00
   checked: atomic code/test commit
-  found: commit `1132705ff94a8d02c1e91205ecf11e5c634e8943` contains exactly the 12 owned production/test paths, 872 insertions and 89 deletions, conventional subject `fix(fabric): make ontology predecessor publication atomic`, and the required `Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>` trailer. Protected and unrelated paths remain unstaged; no push occurred.
+  found: commit `1132705ff003d969af4c1c57699402169ffe6ce4` contains exactly the 12 owned production/test paths, 872 insertions and 89 deletions, conventional subject `fix(fabric): make ontology predecessor publication atomic`, and the required `Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>` trailer. Protected and unrelated paths remain unstaged; no push occurred.
   implication: the validated implementation is durably isolated in one atomic commit and the live debug record can be committed separately without mixing concurrent work.
+
+- timestamp: 2026-09-09T19:45:00+08:00
+  checked: post-commit identity and ownership verification
+  found: `git show` confirms code/test commit `1132705ff003d969af4c1c57699402169ffe6ce4` and initial debug-record commit `044f1115aa09986e6c2aff6e098b91b81774ed9d`, both with the required trailer. All 12 owned code/test paths and this debug path are clean against HEAD; only the same pre-existing unrelated changes remain; branch is ahead by local commits and nothing was pushed.
+  implication: commit identity, atomic scope, trailer, preserved working tree, and no-push constraints are directly verified.
 
 ## Resolution
 
@@ -403,8 +408,8 @@ remaining_risks:
 safe_to_build: "yes — local source/test/lint/review gates pass; no build was started under the freeze"
 safe_to_run: "implementation is retry-safe, but cloud execution remains NOT AUTHORIZED while the global cloud/source freeze is active; a future run requires freeze release and normal immutable-image/template preflight"
 commits:
-  code_and_tests: "1132705ff94a8d02c1e91205ecf11e5c634e8943"
-  debug_record: "separate path-scoped documentation commit follows this record update; exact hash is reported at the human checkpoint"
+  code_and_tests: "1132705ff003d969af4c1c57699402169ffe6ce4"
+  debug_record: "044f1115aa09986e6c2aff6e098b91b81774ed9d (initial complete verification record; exact-hash correction committed separately and reported at the human checkpoint)"
 oracle_type: specified
 files_changed:
   - "src/fabric/schema_registry.py"
