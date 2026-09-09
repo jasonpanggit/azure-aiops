@@ -213,16 +213,26 @@ started: first full-cardinality live run after commit 1361b1c42 removed the earl
   found: schema inference, Arrow record batches, initial preflight, and retry preflight are byte-bounded; payload size is estimated once per unique row; 100 adjacent tests and the full 4046-test backend suite pass with one pre-existing skip; scoped Ruff, diff hygiene, and source/wheel builds pass; independent review reports no blocking issue
   implication: all known payload-proportional APPEND allocations are now governed by the same bounded contract and the retry may proceed through the controlled immutable deployment workflow
 
+- timestamp: 2026-09-10T04:15:00+08:00
+  checked: exact live Delta filtered-read and per-file Parquet profiles after a second 8 GiB exit 137
+  found: requesting only 100 keys and returning 253 KiB through DeltaTable.to_pyarrow_table increased RSS by 718 MiB because the single 149899-row Parquet row group was decoded; iterating that exact file with ParquetFile.iter_batches increased RSS by 76.6 MiB and completed all rows in 7 seconds
+  implication: caller-side byte batches cannot constrain Delta's filtered to_pyarrow_table allocation; large replay validation must stream within the active Parquet file instead
+
+- timestamp: 2026-09-10T04:45:00+08:00
+  checked: converged per-file streaming implementation, schema/partition/version invariants, adjacent/full tests, package build, lint, and code review
+  found: every active file is scanned in row batches bounded by target uncompressed row width; evolved columns are normalized to the Delta schema; encoded partition paths and typed partition values are preserved; every duplicate occurrence is checked; an unchanged target version skips a redundant second scan while a changed version revalidates; 108 adjacent tests and the full backend suite pass; final code review found no significant issue
+  implication: the actual row-group decoder amplification and the prior semantic/order edge cases are covered before another controlled live retry
+
 ## Resolution
 
-root_cause: the replay-aware APPEND preflight is bounded only by 10000 rows, not payload bytes; valid high-byte container source-event/provenance data and the 8 GiB job's roughly 1.5 GiB remaining headroom jointly turn its filtered Arrow table, wholesale Python conversion, and canonical JSON copies into a fatal transient allocation
+root_cause: the replay-aware APPEND preflight used DeltaTable.to_pyarrow_table filters that decoded the target's entire 149899-row Parquet row group for every incoming-key batch; each nominal 100-key lookup allocated 718 MiB, and repeated decoder allocations plus a roughly 6.55 GiB resident publication graph exceeded the 8 GiB cgroup
 fix:
-  DeltaWriter now defaults every payload-proportional APPEND materialization to a 32 MiB serialized-payload estimate in addition to the existing 10000-row ceiling; one cached estimate per unique row drives both preflight validation passes, schema inference, and Arrow record-batch construction, permits only indivisible oversized single rows, and leaves immutable replay comparison and atomic write behavior unchanged.
+  DeltaWriter retains the 32 MiB/10000-row bounds for incoming materialization and uses a single true per-file Parquet batch scan for large target replays; target batches derive from uncompressed row-group width, partition values are reattached from Delta actions, schema-evolved columns are normalized, all duplicate occurrences are checked, and redundant revalidation is skipped only while the Delta version is unchanged.
 verification:
   target_test: {result: pass}
   mutation_check: {result: skipped, reason_if_skipped: "no Stryker or other mutation runner is configured", mutant_killed: null}
   no_op_deletion: {result: pass, deletion_justified_by_rca: false}
-  adjacent_tests: {result: pass, suites_run: ["Delta/container/Fabric adjacent suites (100 passed)", "full project pytest suite (4046 passed, one pre-existing skip)", "ruff check src/storage/delta_writer.py tests/test_delta_tables.py", "git diff --check", "uv build"]}
+  adjacent_tests: {result: pass, suites_run: ["Delta/container/Fabric adjacent suites (108 passed)", "full project pytest suite (zero failures, one pre-existing skip)", "exact live OneLake read profile (76.6 MiB incremental peak, 149899 rows, 7 seconds)", "ruff check src/storage/delta_writer.py tests/test_delta_tables.py", "git diff --check", "uv build", "final code review"]}
   revert_and_reconfirm: {result: pass, bug_returned_on_revert: true, fixed_on_reapply: true}
   human_verification: {result: pass, scope: "local"}
   production_scale_verification: {result: deferred, scope: "later authorized controlled immutable build/deploy/retry on 4 CPU / 8 GiB", reason: "cloud operations are excluded from this debug session"}

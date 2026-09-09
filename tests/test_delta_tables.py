@@ -526,7 +526,7 @@ def test_delta_writer_append_preflight_payload_byte_boundary(
     assert result.skipped is True
 
 
-def test_delta_writer_append_bounds_retry_preflight_by_payload_bytes(
+def test_delta_writer_append_bounds_initial_preflight_by_payload_bytes(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -561,9 +561,253 @@ def test_delta_writer_append_bounds_retry_preflight_by_payload_bytes(
         mode=DeltaWriteMode.APPEND,
     )
 
-    assert compared_key_counts == [1, 1, 1]
+    assert compared_key_counts == [1, 1]
     assert result.rows_added == 1
     assert result.skipped is False
+
+
+def test_delta_writer_append_revalidates_after_target_version_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(1)[0]
+    incoming = _append_rows(2)[1]
+    concurrent = _append_rows(3)[2]
+    writer = DeltaWriter()
+    writer.write(table, [existing], mode=DeltaWriteMode.OVERWRITE)
+    original_preflight = writer._append_preflight_once
+    target_changed = False
+
+    def change_target_after_preflight(*args, **kwargs):
+        nonlocal target_changed
+        result = original_preflight(*args, **kwargs)
+        if not target_changed:
+            target_changed = True
+            delta_writer_module.write_deltalake(
+                str(table),
+                pa.Table.from_pylist([concurrent]),
+                mode="append",
+            )
+        return result
+
+    monkeypatch.setattr(
+        writer,
+        "_append_preflight_once",
+        change_target_after_preflight,
+    )
+
+    result = writer.write(
+        table,
+        [incoming],
+        mode=DeltaWriteMode.APPEND,
+    )
+
+    assert result.rows_added == 1
+    assert {row["resource_id"] for row in _rows(table)} == {
+        "resource-0",
+        "resource-1",
+        "resource-2",
+    }
+
+
+def test_delta_writer_append_streams_large_replay_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(3)
+    writer = DeltaWriter(append_batch_size=2)
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    original_read = DeltaTable.to_pyarrow_table
+
+    def reject_filtered_read(self, *args, **kwargs):
+        if kwargs.get("filters") is not None:
+            raise AssertionError("large replay must not materialize a filtered table")
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaTable, "to_pyarrow_table", reject_filtered_read)
+
+    result = writer.write(
+        table,
+        [dict(row) for row in existing],
+        mode=DeltaWriteMode.APPEND,
+    )
+
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
+def test_delta_writer_append_streams_partitioned_large_replay_target(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    existing = [
+        {
+            **row,
+            "tenant_id": "tenant a/b",
+            "subscription_id": "subscription=1%",
+        }
+        for row in _append_rows(3)
+    ]
+    writer = DeltaWriter(append_batch_size=2)
+    writer.write(
+        table,
+        existing,
+        mode=DeltaWriteMode.OVERWRITE,
+        partition_by=("tenant_id", "subscription_id"),
+    )
+
+    result = writer.write(
+        table,
+        [dict(row) for row in existing],
+        mode=DeltaWriteMode.APPEND,
+        partition_by=("tenant_id", "subscription_id"),
+    )
+
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
+def test_delta_writer_append_streaming_supports_composite_keys(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(3)
+    writer = DeltaWriter(append_batch_size=2)
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+
+    result = writer.write(
+        table,
+        [dict(row) for row in existing],
+        mode=DeltaWriteMode.APPEND,
+        key_columns=("tenant_id", "resource_id"),
+    )
+
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
+def test_delta_writer_append_streaming_normalizes_schema_evolution(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(3)
+    writer = DeltaWriter(append_batch_size=2)
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    added = {
+        **_append_rows(4)[-1],
+        "optional": "present",
+    }
+    writer.write(
+        table,
+        [added],
+        mode=DeltaWriteMode.APPEND,
+    )
+    replay = [
+        {**row, "optional": None}
+        for row in existing
+    ]
+    replay.append(added)
+
+    result = writer.write(
+        table,
+        replay,
+        mode=DeltaWriteMode.APPEND,
+    )
+
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
+def test_delta_writer_append_streaming_rejects_late_semantic_mutation(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(3)
+    writer = DeltaWriter(append_batch_size=2)
+    writer.APPEND_TARGET_SCAN_BATCH_SIZE = 1
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    replay = [dict(row) for row in existing]
+    replay[-1]["name"] = "mutated"
+
+    with pytest.raises(
+        ValueError,
+        match=r"Append row mutation for key \('resource-2',\)",
+    ):
+        writer.write(
+            table,
+            replay,
+            mode=DeltaWriteMode.APPEND,
+        )
+
+    assert _rows(table) == existing
+
+
+def test_delta_writer_append_streaming_checks_later_duplicate_mutation(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(2)
+    writer = DeltaWriter(append_batch_size=1)
+    writer.APPEND_TARGET_SCAN_BATCH_SIZE = 1
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    delta_writer_module.write_deltalake(
+        str(table),
+        pa.Table.from_pylist([
+            {
+                **existing[0],
+                "name": "mutated duplicate",
+            }
+        ]),
+        mode="append",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Append row mutation for key \('resource-0',\)",
+    ):
+        writer.write(
+            table,
+            [dict(row) for row in existing],
+            mode=DeltaWriteMode.APPEND,
+        )
+
+
+def test_delta_writer_append_streams_large_mixed_replay_before_atomic_append(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    table = tmp_path / "table"
+    existing = _append_rows(3)
+    new = _append_rows(4)[-1]
+    writer = DeltaWriter(append_batch_size=2)
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    original_read = DeltaTable.to_pyarrow_table
+    filtered_key_counts: list[int] = []
+
+    def capture_filtered_read(self, *args, **kwargs):
+        filters = kwargs.get("filters")
+        if filters is not None:
+            filtered_key_counts.append(len(filters[0][2]))
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaTable, "to_pyarrow_table", capture_filtered_read)
+
+    result = writer.write(
+        table,
+        [*existing, new],
+        mode=DeltaWriteMode.APPEND,
+    )
+
+    assert filtered_key_counts == []
+    assert result.rows_added == 1
+    assert {row["resource_id"] for row in _rows(table)} == {
+        "resource-0",
+        "resource-1",
+        "resource-2",
+        "resource-3",
+    }
 
 
 def test_delta_writer_append_rejects_conflict_when_active_file_lacks_statistics(
