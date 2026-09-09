@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import logging
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
+
+import pyarrow as pa
 
 from fabric_pipelines import (
     change_pipeline,
@@ -132,6 +135,11 @@ _MAX_PROGRESS_COUNT = 2_147_483_647
 
 def _bounded_progress_count(value: int) -> int:
     return min(max(int(value), 0), _MAX_PROGRESS_COUNT)
+
+
+def _release_transient_publication_memory() -> None:
+    gc.collect()
+    pa.default_memory_pool().release_unused()
 
 
 def _notify_stage_progress(
@@ -584,7 +592,8 @@ class FabricSyncService:
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
                 )
-                temporal_tables = temporal.write_tables()
+                del persisted_observations, existing_observations
+                temporal_tables = temporal.write_tables(copy_rows=False)
                 datasets.update(temporal_tables)
                 _notify_stage_progress(
                     stage_progress_callback,
@@ -634,10 +643,18 @@ class FabricSyncService:
                 )
                 exposure_gold_datasets = {
                     **datasets,
-                    "silver_exposure_observations": [
-                        dict(row) for row in temporal.all_observation_rows
-                    ],
+                    "silver_exposure_observations": list(
+                        temporal.all_observation_rows
+                    ),
                 }
+                del (
+                    container_tables,
+                    granular_entities,
+                    granular_relationships,
+                    temporal,
+                    temporal_tables,
+                )
+            del workload_products
             _notify_stage_progress(
                 stage_progress_callback,
                 "ontology_construction",
@@ -853,6 +870,8 @@ class FabricSyncService:
                 if raise_on_quality_failure:
                     raise ValueError(f"Fabric data quality validation failed: {failed_records} records")
                 return result
+
+            _release_transient_publication_memory()
 
             def write_table(
                 item: tuple[str, list[dict[str, Any]]],

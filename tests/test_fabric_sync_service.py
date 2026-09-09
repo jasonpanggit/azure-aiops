@@ -195,6 +195,26 @@ def test_sync_reports_successful_table_writes_in_completion_order(
     ).exists()
 
 
+def test_sync_releases_transient_memory_before_table_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sequence: list[str] = []
+    monkeypatch.setattr(
+        sync_module,
+        "_release_transient_publication_memory",
+        lambda: sequence.append("release"),
+    )
+
+    result = _service(tmp_path).sync(
+        progress_callback=lambda _event: sequence.append("table"),
+    )
+
+    assert result.status == "completed"
+    assert sequence[0] == "release"
+    assert "table" in sequence
+
+
 def test_deployed_publication_orders_observations_after_workload_checkpoint(
     tmp_path: Path,
 ) -> None:
