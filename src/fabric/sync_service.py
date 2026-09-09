@@ -844,6 +844,13 @@ class FabricSyncService:
             ) -> tuple[str, str, int | None, DeltaWriteResult]:
                 assert_lock_held()
                 table_name, rows = item
+                _LOGGER.info(
+                    "fabric_table_write_started",
+                    extra={
+                        "table_name": table_name,
+                        "row_count": _bounded_progress_count(len(rows)),
+                    },
+                )
                 layer, logical_name = table_name.split("_", 1)
                 mode = self._write_mode_for_table(table_name)
                 table_uri = self.onelake.table_uri(layer, logical_name)

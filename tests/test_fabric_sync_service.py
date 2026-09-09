@@ -11,6 +11,7 @@ import pytest
 from test_incremental_sync import _source_snapshot
 
 import fabric.sync_service as sync_module
+from fabric.config import FabricRuntimeConfig
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import GranularExposureOntologyMapper
 from fabric.schema_registry import schema_for
@@ -28,6 +29,8 @@ from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_GOLD_GENERATIONS_TABLE,
     EXPOSURE_GOLD_POINTER_DOCUMENT,
     EXPOSURE_GOLD_TABLES,
+    EXPOSURE_OBSERVATIONS_TABLE,
+    TemporalExposureMaterialization,
 )
 from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphResult
@@ -49,11 +52,20 @@ def _service(tmp_path: Path) -> FabricSyncService:
     )
 
 
-def test_sync_reports_successful_table_writes_in_completion_order(tmp_path: Path) -> None:
+def test_sync_reports_successful_table_writes_in_completion_order(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     events: list[FabricTableWriteProgress] = []
+    caplog.set_level(logging.INFO, logger=sync_module.__name__)
 
     service = _service(tmp_path)
     result = service.sync(progress_callback=events.append)
+    started = [
+        record
+        for record in caplog.records
+        if record.message == "fabric_table_write_started"
+    ]
 
     assert result.status == "completed"
     assert events
@@ -61,9 +73,46 @@ def test_sync_reports_successful_table_writes_in_completion_order(tmp_path: Path
     assert all(event.total_tables == len(events) for event in events)
     assert {event.table_name for event in events} == set(result.tables)
     assert all(event.result is not None for event in events)
+    assert {record.table_name for record in started} == {
+        event.table_name for event in events
+    }
+    assert all(
+        isinstance(record.row_count, int)
+        and not isinstance(record.row_count, bool)
+        and 0 <= record.row_count <= 2_147_483_647
+        for record in started
+    )
     assert not (
         tmp_path / "lakehouse" / "Tables" / "bronze_container_image_exposure"
     ).exists()
+
+
+def test_deployed_publication_orders_observations_after_workload_checkpoint(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    snapshot = Path(service._resolve_snapshot(""))
+    product_dir = snapshot / "exposure"
+    product_dir.mkdir(parents=True, exist_ok=True)
+    (product_dir / "workload_source_checkpoints.jsonl").write_text(
+        json.dumps({"checkpoint_key": "checkpoint-1"}) + "\n"
+    )
+    datasets = {"prior_table": [{"resource_id": "prior"}]}
+    datasets.update(service._load_workload_products(snapshot))
+    datasets.update(
+        TemporalExposureMaterialization(
+            observation_rows=({"resource_id": "observation-1"},),
+            current_rows=(),
+            all_observation_rows=({"resource_id": "observation-1"},),
+        ).write_tables()
+    )
+    table_names = list(datasets)
+    checkpoint_index = table_names.index(
+        "metadata_workload_source_checkpoints"
+    )
+
+    assert FabricRuntimeConfig.load("fabric.config.deploy.yaml").write_workers == 1
+    assert table_names[checkpoint_index + 1] == EXPOSURE_OBSERVATIONS_TABLE
 
 
 def test_sync_ignores_progress_callback_errors(tmp_path: Path) -> None:

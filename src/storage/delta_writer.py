@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Mapping, Sequence
+import uuid
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import islice
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlparse
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from deltalake import DeltaTable, write_deltalake
+from deltalake import CommitProperties, DeltaTable, write_deltalake
+
+_T = TypeVar("_T")
+_APPEND_INVOCATION_ID = "delta_writer_append_invocation_id"
+_APPEND_ROWS_ADDED = "delta_writer_append_rows_added"
+_APPEND_HISTORY_LIMIT = 32
 
 
 class DeltaWriteMode(StrEnum):
@@ -37,6 +44,7 @@ class DeltaWriteResult:
 
 
 class DeltaWriter:
+    APPEND_BATCH_SIZE: ClassVar[int] = 10_000
     REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset({
         "tenant_id",
         "subscription_id",
@@ -53,11 +61,13 @@ class DeltaWriter:
         storage_options_provider: Callable[[], Mapping[str, str]] | None = None,
         max_attempts: int = 4,
         sleep: Callable[[float], None] = time.sleep,
+        append_batch_size: int = APPEND_BATCH_SIZE,
     ) -> None:
         self.storage_options = dict(storage_options or {})
         self.storage_options_provider = storage_options_provider
         self.max_attempts = max_attempts
         self.sleep = sleep
+        self.append_batch_size = append_batch_size
 
     def write(
         self,
@@ -70,13 +80,27 @@ class DeltaWriter:
         schema: pa.Schema | None = None,
         required_columns: frozenset[str] | tuple[str, ...] | None = REQUIRED_COLUMNS,
     ) -> DeltaWriteResult:
+        write_mode = DeltaWriteMode(mode)
+        if write_mode is DeltaWriteMode.APPEND:
+            if not rows and schema is None:
+                return DeltaWriteResult(rows_processed=0, skipped=True)
+            if rows and required_columns:
+                self._validate_columns(rows, frozenset(required_columns))
+            self._refresh_storage_options()
+            return self._write_append(
+                str(table_uri),
+                rows,
+                key_columns=key_columns,
+                partition_by=partition_by,
+                schema=schema,
+            )
+
         normalized = [dict(row) for row in rows]
         if not normalized and schema is None:
             return DeltaWriteResult(rows_processed=0, skipped=True)
         if normalized and required_columns:
             self._validate_columns(normalized, frozenset(required_columns))
         self._refresh_storage_options()
-        write_mode = DeltaWriteMode(mode)
         uri = str(table_uri)
         return self._retry(
             lambda: self._write_once(
@@ -88,6 +112,266 @@ class DeltaWriter:
                 schema=schema,
             )
         )
+
+    def _write_append(
+        self,
+        uri: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        key_columns: tuple[str, ...],
+        partition_by: tuple[str, ...],
+        schema: pa.Schema | None,
+    ) -> DeltaWriteResult:
+        batch_size = self.append_batch_size
+        if (
+            isinstance(batch_size, bool)
+            or not isinstance(batch_size, int)
+            or batch_size < 1
+        ):
+            raise ValueError("append_batch_size must be a positive integer")
+
+        incoming_indices: dict[tuple[str, ...], int] = {}
+        for index, row in enumerate(rows):
+            key = _row_key(row, key_columns)
+            previous_index = incoming_indices.get(key)
+            if (
+                previous_index is not None
+                and _canonical_row(rows[previous_index]) != _canonical_row(row)
+            ):
+                raise ValueError(f"Append row mutation for key {key}")
+            # Preserve the previous implementation's last-row-wins behavior
+            # for physically duplicated but canonically identical events.
+            incoming_indices[key] = index
+
+        unique_indices = tuple(incoming_indices.values())
+        del incoming_indices
+        version, pending_indices = self._retry(
+            lambda: self._append_preflight_once(
+                uri,
+                rows,
+                incoming_indices=unique_indices,
+                key_columns=key_columns,
+                batch_size=batch_size,
+            )
+        )
+
+        if unique_indices and not pending_indices:
+            return DeltaWriteResult(
+                rows_processed=len(rows),
+                skipped=True,
+                version=version,
+            )
+
+        invocation_id = uuid.uuid4().hex
+        attempt = 0
+
+        def append_once() -> DeltaWriteResult:
+            nonlocal attempt
+            attempt += 1
+            return self._write_append_once(
+                uri,
+                rows,
+                incoming_indices=pending_indices,
+                key_columns=key_columns,
+                partition_by=partition_by,
+                schema=schema,
+                batch_size=batch_size,
+                invocation_id=invocation_id,
+                recover_committed=attempt > 1,
+            )
+
+        result = self._retry(append_once)
+        return DeltaWriteResult(
+            rows_processed=len(rows),
+            rows_added=result.rows_added,
+            skipped=result.skipped,
+            version=result.version,
+        )
+
+    def _append_preflight_once(
+        self,
+        uri: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        incoming_indices: Sequence[int],
+        key_columns: tuple[str, ...],
+        batch_size: int,
+    ) -> tuple[int | None, list[int]]:
+        if not self.exists(uri):
+            return None, list(incoming_indices)
+        table = DeltaTable(uri, storage_options=self.storage_options)
+        pending_indices: list[int] = []
+        if incoming_indices and _has_active_files(table):
+            # Validate every immutable conflict before the first chunk is
+            # committed. Only rows matching this bounded incoming-key batch
+            # are materialized from the target.
+            for indices in _batched_indices(incoming_indices, batch_size):
+                incoming = [rows[index] for index in indices]
+                existing_keys = self._validate_append_target(
+                    table,
+                    incoming,
+                    key_columns,
+                )
+                pending_indices.extend(
+                    index
+                    for index in indices
+                    if _row_key(rows[index], key_columns) not in existing_keys
+                )
+        else:
+            pending_indices.extend(incoming_indices)
+        return table.version(), pending_indices
+
+    def _write_append_once(
+        self,
+        uri: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        incoming_indices: Sequence[int],
+        key_columns: tuple[str, ...],
+        partition_by: tuple[str, ...],
+        schema: pa.Schema | None,
+        batch_size: int,
+        invocation_id: str,
+        recover_committed: bool,
+    ) -> DeltaWriteResult:
+        if recover_committed:
+            committed = self._committed_append_result(uri, invocation_id)
+            if committed is not None:
+                return committed
+
+        exists = self.exists(uri)
+        table = (
+            DeltaTable(uri, storage_options=self.storage_options)
+            if exists
+            else None
+        )
+        pending_indices = list(incoming_indices)
+        if table is not None:
+            if not incoming_indices:
+                return DeltaWriteResult(
+                    rows_processed=0,
+                    skipped=True,
+                    version=table.version(),
+                )
+            if _has_active_files(table):
+                pending_indices = []
+                for indices in _batched_indices(incoming_indices, batch_size):
+                    incoming = [rows[index] for index in indices]
+                    existing_keys = self._validate_append_target(
+                        table,
+                        incoming,
+                        key_columns,
+                    )
+                    pending_indices.extend(
+                        index
+                        for index in indices
+                        if _row_key(rows[index], key_columns) not in existing_keys
+                    )
+            if not pending_indices:
+                return DeltaWriteResult(
+                    rows_processed=len(incoming_indices),
+                    skipped=True,
+                    version=table.version(),
+                )
+
+        source_schema = schema or _infer_append_schema(
+            rows,
+            pending_indices,
+            batch_size,
+        )
+        source = pa.RecordBatchReader.from_batches(
+            source_schema,
+            _append_record_batches(
+                rows,
+                pending_indices,
+                batch_size,
+                source_schema,
+            ),
+        )
+        rows_added = len(pending_indices)
+        write_deltalake(
+            uri,
+            source,
+            mode="append",
+            partition_by=list(partition_by) or None,
+            schema_mode="merge",
+            storage_options=self.storage_options,
+            commit_properties=CommitProperties(
+                custom_metadata={
+                    _APPEND_INVOCATION_ID: invocation_id,
+                    _APPEND_ROWS_ADDED: str(rows_added),
+                }
+            ),
+        )
+        table = DeltaTable(uri, storage_options=self.storage_options)
+        return DeltaWriteResult(
+            rows_processed=len(incoming_indices),
+            rows_added=rows_added,
+            version=table.version(),
+        )
+
+    def _committed_append_result(
+        self,
+        uri: str,
+        invocation_id: str,
+    ) -> DeltaWriteResult | None:
+        if not self.exists(uri):
+            return None
+        table = DeltaTable(uri, storage_options=self.storage_options)
+        for commit in table.history(limit=_APPEND_HISTORY_LIMIT):
+            if commit.get(_APPEND_INVOCATION_ID) != invocation_id:
+                continue
+            rows_added = int(commit[_APPEND_ROWS_ADDED])
+            version = int(commit["version"])
+            if rows_added < 0 or version < 0:
+                raise RuntimeError("Invalid Delta APPEND commit metadata")
+            return DeltaWriteResult(
+                rows_processed=rows_added,
+                rows_added=rows_added,
+                skipped=False,
+                version=version,
+            )
+        return None
+
+    def _validate_append_target(
+        self,
+        table: DeltaTable,
+        incoming_rows: Sequence[Mapping[str, Any]],
+        key_columns: tuple[str, ...],
+    ) -> set[tuple[str, ...]]:
+        incoming_by_key = {
+            _row_key(row, key_columns): row
+            for row in incoming_rows
+        }
+        filters: Any
+        if len(key_columns) == 1:
+            column = key_columns[0]
+            filters = [
+                (
+                    column,
+                    "in",
+                    [row[column] for row in incoming_rows],
+                )
+            ]
+        else:
+            filters = [
+                [
+                    (column, "=", row[column])
+                    for column in key_columns
+                ]
+                for row in incoming_rows
+            ]
+        existing_rows = table.to_pyarrow_table(filters=filters).to_pylist()
+        existing_keys: set[tuple[str, ...]] = set()
+        for existing in existing_rows:
+            key = _row_key(existing, key_columns)
+            incoming = incoming_by_key.get(key)
+            if incoming is None:
+                continue
+            if _canonical_row(existing) != _canonical_row(incoming):
+                raise ValueError(f"Append row mutation for key {key}")
+            existing_keys.add(key)
+        return existing_keys
 
     def read(
         self,
@@ -146,6 +430,8 @@ class DeltaWriter:
         partition_by: tuple[str, ...],
         schema: pa.Schema | None,
     ) -> DeltaWriteResult:
+        if mode is DeltaWriteMode.APPEND:
+            raise AssertionError("APPEND must use the bounded append path")
         processed_count = len(rows)
         exists = self.exists(uri)
         supports_version_compare = bool(rows) and {"resource_id", "change_version"} <= set(rows[0])
@@ -173,40 +459,6 @@ class DeltaWriter:
                     skipped=True,
                     version=table.version(),
                 )
-        if mode is DeltaWriteMode.APPEND and exists:
-            table = DeltaTable(uri, storage_options=self.storage_options)
-            existing_rows = table.to_pyarrow_table().to_pylist()
-            existing_by_key = {_row_key(row, key_columns): row for row in existing_rows}
-            incoming_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
-            for row in rows:
-                key = _row_key(row, key_columns)
-                previous = incoming_by_key.get(key)
-                if previous is not None and _canonical_row(previous) != _canonical_row(row):
-                    raise ValueError(f"Append row mutation for key {key}")
-                incoming_by_key[key] = row
-            rows = []
-            for key, row in incoming_by_key.items():
-                previous = existing_by_key.get(key)
-                if previous is not None:
-                    if _canonical_row(previous) != _canonical_row(row):
-                        raise ValueError(f"Append row mutation for key {key}")
-                    continue
-                rows.append(row)
-        if mode is DeltaWriteMode.APPEND:
-            unique_rows: dict[tuple[str, ...], dict[str, Any]] = {}
-            for row in rows:
-                key = _row_key(row, key_columns)
-                previous = unique_rows.get(key)
-                if previous is not None and _canonical_row(previous) != _canonical_row(row):
-                    raise ValueError(f"Append row mutation for key {key}")
-                unique_rows[key] = row
-            rows = list(unique_rows.values())
-        if mode is DeltaWriteMode.APPEND and exists and not rows:
-            return DeltaWriteResult(
-                rows_processed=processed_count,
-                skipped=True,
-                version=table.version(),
-            )
         source = pa.Table.from_pylist(rows, schema=schema)
         if mode in (DeltaWriteMode.MERGE, DeltaWriteMode.SNAPSHOT_MERGE) and exists:
             if not key_columns:
@@ -248,18 +500,13 @@ class DeltaWriter:
                 version=table.version(),
             )
 
-        actual_mode = (
-            "overwrite"
-            if mode in {DeltaWriteMode.OVERWRITE, DeltaWriteMode.MERGE, DeltaWriteMode.SNAPSHOT_MERGE}
-            else "append"
-        )
         previous_count = 0
-        if exists and actual_mode == "overwrite":
+        if exists:
             previous_count = DeltaTable(uri, storage_options=self.storage_options).count()
         write_deltalake(
             uri,
             source,
-            mode=actual_mode,
+            mode="overwrite",
             partition_by=list(partition_by) or None,
             schema_mode="merge",
             storage_options=self.storage_options,
@@ -272,18 +519,23 @@ class DeltaWriter:
             version=table.version(),
         )
 
-    def _validate_columns(self, rows: list[dict[str, Any]], required_columns: frozenset[str]) -> None:
+    def _validate_columns(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        required_columns: frozenset[str],
+    ) -> None:
         missing = sorted(required_columns - set(rows[0]))
         if missing:
             raise ValueError("Delta row is missing required columns: " + ", ".join(missing))
-        for index, row in enumerate(rows[1:], start=1):
+        for index in range(1, len(rows)):
+            row = rows[index]
             row_missing = sorted(required_columns - set(row))
             if row_missing:
                 raise ValueError(
                     f"Delta row {index} is missing required columns: " + ", ".join(row_missing)
                 )
 
-    def _retry(self, operation: Callable[[], DeltaWriteResult]) -> DeltaWriteResult:
+    def _retry(self, operation: Callable[[], _T]) -> _T:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return operation()
@@ -328,3 +580,53 @@ def _canonical_row(row: Mapping[str, Any]) -> str:
         separators=(",", ":"),
         default=str,
     )
+
+
+def _has_active_files(table: DeltaTable) -> bool:
+    return bool(table.file_uris())
+
+
+def _batched_indices(indices: Iterable[int], size: int) -> Iterator[list[int]]:
+    iterator = iter(indices)
+    while batch := list(islice(iterator, size)):
+        yield batch
+
+
+def _infer_append_schema(
+    rows: Sequence[Mapping[str, Any]],
+    indices: Sequence[int],
+    batch_size: int,
+) -> pa.Schema:
+    inferred: pa.Schema | None = None
+    for batch in _batched_indices(indices, batch_size):
+        batch_schema = pa.Table.from_pylist(
+            [dict(rows[index]) for index in batch]
+        ).schema
+        inferred = (
+            batch_schema
+            if inferred is None
+            else pa.unify_schemas(
+                [inferred, batch_schema],
+                promote_options="permissive",
+            )
+        )
+    if inferred is None:
+        raise ValueError("Cannot infer an APPEND schema without rows")
+    return inferred
+
+
+def _append_record_batches(
+    rows: Sequence[Mapping[str, Any]],
+    indices: Sequence[int],
+    batch_size: int,
+    schema: pa.Schema,
+) -> Iterator[pa.RecordBatch]:
+    emitted = False
+    for batch in _batched_indices(indices, batch_size):
+        emitted = True
+        yield pa.RecordBatch.from_pylist(
+            [dict(rows[index]) for index in batch],
+            schema=schema,
+        )
+    if not emitted:
+        yield pa.RecordBatch.from_pylist([], schema=schema)
