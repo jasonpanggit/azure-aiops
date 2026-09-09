@@ -110,16 +110,24 @@ def activate_source_partitions(
                 for outcome in partition_outcomes
                 if isinstance(outcome, AcquisitionSuccess)
             ]
-            partition_rows = [
-                _source_partition_row(
-                    partition_key=partition_key,
-                    outcome=outcome,
-                    row=row,
-                    effective_generation=attempted_generation,
-                )
-                for outcome in successes
-                for row in outcome.rows
-            ]
+            partition_rows: list[dict[str, Any]] = []
+            seen_partition_rows: set[tuple[str, str]] = set()
+            for outcome in successes:
+                for row in outcome.rows:
+                    partition_row = _source_partition_row(
+                        partition_key=partition_key,
+                        outcome=outcome,
+                        row=row,
+                        effective_generation=attempted_generation,
+                    )
+                    identity = (
+                        str(partition_row["query_name"]),
+                        str(partition_row["row_key"]),
+                    )
+                    if identity in seen_partition_rows:
+                        continue
+                    seen_partition_rows.add(identity)
+                    partition_rows.append(partition_row)
             effective_rows.extend(partition_rows)
             for row in partition_rows:
                 rows_by_query.setdefault(str(row["query_name"]), []).append(
