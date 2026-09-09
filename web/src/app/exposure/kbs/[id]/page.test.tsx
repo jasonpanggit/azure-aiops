@@ -293,7 +293,7 @@ describe("KB detail", () => {
     const region = await screen.findByRole("region", {
       name: "MSRC CVE associations section",
     });
-    const retry = within(region).getByRole("button", {
+    const retry = await within(region).findByRole("button", {
       name: "Retry MSRC CVE associations",
     });
     retry.focus();
