@@ -62,11 +62,10 @@ fabric:
 
   source_data_root: "/data/inventory-source"
   registration_attempts: 20
-  # Most of the ~60 published tables are OVERWRITE-mode and independent of
-  # each other, so raising worker count directly cuts wall-clock publish
-  # time; 4 workers left the sync serialized into 15+ batches against
-  # publish_timeout_seconds=120 (see arg.config.deploy.yaml).
-  write_workers: 12
+  # Keep concurrent Arrow/Delta buffers within the 8 GiB publication Job.
+  # Twelve workers peaked above the cgroup limit while publishing the live
+  # 83k-entity/235k-relationship graph; four preserves bounded parallelism.
+  write_workers: 4
   patch_policies:
     - name: "Production baseline"
       environment: "Production"

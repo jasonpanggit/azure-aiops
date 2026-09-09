@@ -242,6 +242,7 @@ def test_deployed_semantic_source_bound_supports_full_ontology_graph():
     assert config.semantic.max_source_rows == 50_000
     assert config.semantic.max_entity_rows == 100_000
     assert config.semantic.max_relationship_rows == 250_000
+    assert config.write_workers == 4
 
 
 def test_semantic_rejects_malformed_freshness_and_fact_types():
