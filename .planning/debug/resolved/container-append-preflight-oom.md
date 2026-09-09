@@ -203,16 +203,26 @@ started: first full-cardinality live run after commit 1361b1c42 removed the earl
   found: MemPalace is neither configured nor installed, while the durable knowledge-base entry was written and committed successfully
   implication: semantic indexing is skipped explicitly; .planning/debug/knowledge-base.md remains the durable keyword-recall fallback
 
+- timestamp: 2026-09-10T03:10:00+08:00
+  checked: independent post-resolution review and live payload sample
+  found: review confirmed the preflight ceiling preserves atomicity and immutable semantics but found write-side Arrow/schema materialization remained row-only bounded; 1000 live rows averaged 3046 bytes, projecting 14 filtered scans at the 32 MiB ceiling
+  implication: extend the same byte ceiling to every payload-proportional APPEND materialization before another live retry, while retaining a practical remote-scan count
+
+- timestamp: 2026-09-10T03:25:00+08:00
+  checked: follow-up hardening tests, full backend suite, lint, package build, and second independent review
+  found: schema inference, Arrow record batches, initial preflight, and retry preflight are byte-bounded; payload size is estimated once per unique row; 100 adjacent tests and the full 4046-test backend suite pass with one pre-existing skip; scoped Ruff, diff hygiene, and source/wheel builds pass; independent review reports no blocking issue
+  implication: all known payload-proportional APPEND allocations are now governed by the same bounded contract and the retry may proceed through the controlled immutable deployment workflow
+
 ## Resolution
 
 root_cause: the replay-aware APPEND preflight is bounded only by 10000 rows, not payload bytes; valid high-byte container source-event/provenance data and the 8 GiB job's roughly 1.5 GiB remaining headroom jointly turn its filtered Arrow table, wholesale Python conversion, and canonical JSON copies into a fatal transient allocation
 fix:
-  DeltaWriter now defaults APPEND target comparison to a 32 MiB serialized-payload estimate in addition to the existing 10000-row ceiling; a one-row-at-a-time sizing iterator drives both preflight validation passes, permits only indivisible oversized single rows, and leaves immutable replay comparison and atomic write behavior unchanged.
+  DeltaWriter now defaults every payload-proportional APPEND materialization to a 32 MiB serialized-payload estimate in addition to the existing 10000-row ceiling; one cached estimate per unique row drives both preflight validation passes, schema inference, and Arrow record-batch construction, permits only indivisible oversized single rows, and leaves immutable replay comparison and atomic write behavior unchanged.
 verification:
   target_test: {result: pass}
   mutation_check: {result: skipped, reason_if_skipped: "no Stryker or other mutation runner is configured", mutant_killed: null}
   no_op_deletion: {result: pass, deletion_justified_by_rca: false}
-  adjacent_tests: {result: pass, suites_run: ["tests/test_delta_tables.py (38 passed)", "tests/test_fabric_sync_service.py::test_sync_deduplicates_unchanged_container_observation_across_source_generations (1 passed)", "full project pytest suite (100%, zero failures, one pre-existing skip)", "ruff check src/storage/delta_writer.py tests/test_delta_tables.py", "git diff --check"]}
+  adjacent_tests: {result: pass, suites_run: ["Delta/container/Fabric adjacent suites (100 passed)", "full project pytest suite (4046 passed, one pre-existing skip)", "ruff check src/storage/delta_writer.py tests/test_delta_tables.py", "git diff --check", "uv build"]}
   revert_and_reconfirm: {result: pass, bug_returned_on_revert: true, fixed_on_reapply: true}
   human_verification: {result: pass, scope: "local"}
   production_scale_verification: {result: deferred, scope: "later authorized controlled immutable build/deploy/retry on 4 CPU / 8 GiB", reason: "cloud operations are excluded from this debug session"}

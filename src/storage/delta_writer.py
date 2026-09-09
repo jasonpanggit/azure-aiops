@@ -6,7 +6,6 @@ import uuid
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from itertools import islice
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlparse
@@ -45,6 +44,9 @@ class DeltaWriteResult:
 
 class DeltaWriter:
     APPEND_BATCH_SIZE: ClassVar[int] = 10_000
+    # Bounds payload-proportional materialization in both conflict preflight
+    # and Arrow record-batch construction. Actual peak memory is higher than
+    # this estimate because Arrow and Python representations coexist briefly.
     APPEND_PREFLIGHT_BATCH_BYTES: ClassVar[int] = 32 * 1024 * 1024
     REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset({
         "tenant_id",
@@ -177,11 +179,15 @@ class DeltaWriter:
 
         unique_indices = tuple(incoming_indices.values())
         del incoming_indices
+        payload_bytes = [0] * len(rows)
+        for index in unique_indices:
+            payload_bytes[index] = _estimate_row_payload_bytes(rows[index])
         version, pending_indices = self._retry(
             lambda: self._append_preflight_once(
                 uri,
                 rows,
                 incoming_indices=unique_indices,
+                payload_bytes=payload_bytes,
                 key_columns=key_columns,
                 batch_size=batch_size,
                 batch_bytes=preflight_batch_bytes,
@@ -207,6 +213,7 @@ class DeltaWriter:
                 uri,
                 rows,
                 incoming_indices=pending_indices,
+                payload_bytes=payload_bytes,
                 key_columns=key_columns,
                 partition_by=partition_by,
                 schema=schema,
@@ -232,6 +239,7 @@ class DeltaWriter:
         rows: Sequence[Mapping[str, Any]],
         *,
         incoming_indices: Sequence[int],
+        payload_bytes: Sequence[int],
         key_columns: tuple[str, ...],
         batch_size: int,
         batch_bytes: int,
@@ -246,9 +254,9 @@ class DeltaWriter:
             # Validate every immutable conflict before the first chunk is
             # committed. Only rows matching this bounded incoming-key batch
             # are materialized from the target.
-            for indices in _batched_preflight_indices(
-                rows,
+            for indices in _batched_payload_indices(
                 incoming_indices,
+                payload_bytes,
                 max_rows=batch_size,
                 max_bytes=batch_bytes,
             ):
@@ -275,6 +283,7 @@ class DeltaWriter:
         rows: Sequence[Mapping[str, Any]],
         *,
         incoming_indices: Sequence[int],
+        payload_bytes: Sequence[int],
         key_columns: tuple[str, ...],
         partition_by: tuple[str, ...],
         schema: pa.Schema | None,
@@ -306,9 +315,9 @@ class DeltaWriter:
                 )
             if _has_active_files(table):
                 pending_indices = []
-                for indices in _batched_preflight_indices(
-                    rows,
+                for indices in _batched_payload_indices(
                     incoming_indices,
+                    payload_bytes,
                     max_rows=batch_size,
                     max_bytes=preflight_batch_bytes,
                 ):
@@ -335,14 +344,18 @@ class DeltaWriter:
         source_schema = schema or _infer_append_schema(
             rows,
             pending_indices,
+            payload_bytes,
             batch_size,
+            preflight_batch_bytes,
         )
         source = pa.RecordBatchReader.from_batches(
             source_schema,
             _append_record_batches(
                 rows,
                 pending_indices,
+                payload_bytes,
                 batch_size,
+                preflight_batch_bytes,
                 source_schema,
             ),
         )
@@ -681,15 +694,9 @@ def _has_active_files(table: DeltaTable) -> bool:
     return bool(table.file_uris())
 
 
-def _batched_indices(indices: Iterable[int], size: int) -> Iterator[list[int]]:
-    iterator = iter(indices)
-    while batch := list(islice(iterator, size)):
-        yield batch
-
-
-def _batched_preflight_indices(
-    rows: Sequence[Mapping[str, Any]],
+def _batched_payload_indices(
     indices: Iterable[int],
+    payload_bytes: Sequence[int],
     *,
     max_rows: int,
     max_bytes: int,
@@ -697,7 +704,7 @@ def _batched_preflight_indices(
     batch: list[int] = []
     batch_bytes = 0
     for index in indices:
-        row_bytes = _estimate_row_payload_bytes(rows[index])
+        row_bytes = payload_bytes[index]
         if batch and (
             len(batch) >= max_rows
             or batch_bytes + row_bytes > max_bytes
@@ -713,27 +720,47 @@ def _batched_preflight_indices(
 
 def _estimate_row_payload_bytes(row: Mapping[str, Any]) -> int:
     # Estimate one row at a time so sizing does not introduce another
-    # aggregate allocation. JSON's escaping is conservative for persisted
-    # JSON strings and mirrors the later canonical comparison representation.
-    return max(
-        1,
-        len(
+    # aggregate allocation. Iterate the mapping directly instead of copying
+    # it so sizing cannot mask failures in later Arrow materialization.
+    size = 2
+    first = True
+    for key in row:
+        if not first:
+            size += 1
+        first = False
+        size += len(
             json.dumps(
-                dict(row),
+                str(key),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        size += 1
+        size += len(
+            json.dumps(
+                row[key],
+                ensure_ascii=False,
                 separators=(",", ":"),
                 default=str,
-            )
-        ),
-    )
+            ).encode("utf-8")
+        )
+    return max(1, size)
 
 
 def _infer_append_schema(
     rows: Sequence[Mapping[str, Any]],
     indices: Sequence[int],
+    payload_bytes: Sequence[int],
     batch_size: int,
+    batch_bytes: int,
 ) -> pa.Schema:
     inferred: pa.Schema | None = None
-    for batch in _batched_indices(indices, batch_size):
+    for batch in _batched_payload_indices(
+        indices,
+        payload_bytes,
+        max_rows=batch_size,
+        max_bytes=batch_bytes,
+    ):
         batch_schema = pa.Table.from_pylist(
             [dict(rows[index]) for index in batch]
         ).schema
@@ -753,11 +780,18 @@ def _infer_append_schema(
 def _append_record_batches(
     rows: Sequence[Mapping[str, Any]],
     indices: Sequence[int],
+    payload_bytes: Sequence[int],
     batch_size: int,
+    batch_bytes: int,
     schema: pa.Schema,
 ) -> Iterator[pa.RecordBatch]:
     emitted = False
-    for batch in _batched_indices(indices, batch_size):
+    for batch in _batched_payload_indices(
+        indices,
+        payload_bytes,
+        max_rows=batch_size,
+        max_bytes=batch_bytes,
+    ):
         emitted = True
         yield pa.RecordBatch.from_pylist(
             [dict(rows[index]) for index in batch],
