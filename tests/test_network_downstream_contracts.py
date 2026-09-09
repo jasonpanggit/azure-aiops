@@ -134,7 +134,8 @@ EXPECTED_EXPORT_KEYS = (
     "topology",
 )
 G3_PLAN_12_02_BASELINE_SECONDS = 0.882940
-G3_SAMPLE_COUNT = 7
+G3_SAMPLE_COUNT = 20
+G3_WARMUP_COUNT = 2
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -312,6 +313,8 @@ def measure_scale_gates(
     enterprise_payload = build_topology(enterprise_snapshot).to_dict(
         detail="summary"
     )
+    for _ in range(G3_WARMUP_COUNT):
+        build_topology(enterprise_snapshot).to_dict(detail="summary")
     latencies: list[float] = []
     for _ in range(G3_SAMPLE_COUNT):
         started = perf_counter()
