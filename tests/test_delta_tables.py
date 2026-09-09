@@ -304,6 +304,115 @@ def test_delta_writer_append_filters_target_reads_to_incoming_keys(
     assert result.rows_added == 1
 
 
+def test_delta_writer_append_bounds_replay_preflight_by_payload_bytes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    table = tmp_path / "table"
+    payload = "x" * 1_024
+    existing = [
+        {
+            **row,
+            "source_event_payload_json": payload,
+        }
+        for row in _append_rows(2)
+    ]
+    writer = DeltaWriter(append_batch_size=10)
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    writer.append_preflight_batch_bytes = 1
+    original_read = DeltaTable.to_pyarrow_table
+    compared_key_counts: list[int] = []
+
+    def capture_read(self, *args, **kwargs):
+        filters = kwargs.get("filters")
+        assert filters is not None
+        compared_key_counts.append(len(filters[0][2]))
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaTable, "to_pyarrow_table", capture_read)
+    replay = [
+        {
+            **row,
+            "timestamp": "2026-09-10T00:00:00Z",
+            "ingestion_run_id": "run-2",
+        }
+        for row in existing
+    ]
+
+    result = writer.write(
+        table,
+        replay,
+        mode=DeltaWriteMode.APPEND,
+        append_replay_columns=("timestamp",),
+    )
+
+    assert compared_key_counts == [1, 1]
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
+@pytest.mark.parametrize(
+    ("budget_adjustment", "expected_key_counts"),
+    [
+        (-1, [1, 1]),
+        (0, [2]),
+        (1, [2]),
+    ],
+)
+def test_delta_writer_append_preflight_payload_byte_boundary(
+    tmp_path: Path,
+    monkeypatch,
+    budget_adjustment: int,
+    expected_key_counts: list[int],
+) -> None:
+    table = tmp_path / "table"
+    existing = [
+        {
+            **row,
+            "source_event_payload_json": "x" * 1_024,
+        }
+        for row in _append_rows(2)
+    ]
+    replay = [
+        {
+            **row,
+            "timestamp": "2026-09-10T00:00:00Z",
+            "ingestion_run_id": "run-2",
+        }
+        for row in existing
+    ]
+    exact_pair_bytes = sum(
+        delta_writer_module._estimate_row_payload_bytes(row)
+        for row in replay
+    )
+    writer = DeltaWriter(
+        append_batch_size=10,
+        append_preflight_batch_bytes=exact_pair_bytes + budget_adjustment,
+    )
+    writer.write(table, existing, mode=DeltaWriteMode.OVERWRITE)
+    original_read = DeltaTable.to_pyarrow_table
+    compared_key_counts: list[int] = []
+
+    def capture_read(self, *args, **kwargs):
+        filters = kwargs.get("filters")
+        assert filters is not None
+        compared_key_counts.append(len(filters[0][2]))
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaTable, "to_pyarrow_table", capture_read)
+
+    result = writer.write(
+        table,
+        replay,
+        mode=DeltaWriteMode.APPEND,
+        append_replay_columns=("timestamp",),
+    )
+
+    assert compared_key_counts == expected_key_counts
+    assert result.rows_added == 0
+    assert result.skipped is True
+
+
 def test_delta_writer_append_rejects_conflict_when_active_file_lacks_statistics(
     tmp_path: Path,
 ) -> None:

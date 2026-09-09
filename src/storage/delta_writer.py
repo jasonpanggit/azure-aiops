@@ -45,6 +45,7 @@ class DeltaWriteResult:
 
 class DeltaWriter:
     APPEND_BATCH_SIZE: ClassVar[int] = 10_000
+    APPEND_PREFLIGHT_BATCH_BYTES: ClassVar[int] = 32 * 1024 * 1024
     REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset({
         "tenant_id",
         "subscription_id",
@@ -62,12 +63,14 @@ class DeltaWriter:
         max_attempts: int = 4,
         sleep: Callable[[float], None] = time.sleep,
         append_batch_size: int = APPEND_BATCH_SIZE,
+        append_preflight_batch_bytes: int = APPEND_PREFLIGHT_BATCH_BYTES,
     ) -> None:
         self.storage_options = dict(storage_options or {})
         self.storage_options_provider = storage_options_provider
         self.max_attempts = max_attempts
         self.sleep = sleep
         self.append_batch_size = append_batch_size
+        self.append_preflight_batch_bytes = append_preflight_batch_bytes
 
     def write(
         self,
@@ -140,6 +143,15 @@ class DeltaWriter:
             or batch_size < 1
         ):
             raise ValueError("append_batch_size must be a positive integer")
+        preflight_batch_bytes = self.append_preflight_batch_bytes
+        if (
+            isinstance(preflight_batch_bytes, bool)
+            or not isinstance(preflight_batch_bytes, int)
+            or preflight_batch_bytes < 1
+        ):
+            raise ValueError(
+                "append_preflight_batch_bytes must be a positive integer"
+            )
 
         incoming_indices: dict[tuple[str, ...], int] = {}
         for index, row in enumerate(rows):
@@ -172,6 +184,7 @@ class DeltaWriter:
                 incoming_indices=unique_indices,
                 key_columns=key_columns,
                 batch_size=batch_size,
+                batch_bytes=preflight_batch_bytes,
                 replay_columns=replay_columns,
                 replay_json_fields=replay_json_fields,
             )
@@ -198,6 +211,7 @@ class DeltaWriter:
                 partition_by=partition_by,
                 schema=schema,
                 batch_size=batch_size,
+                preflight_batch_bytes=preflight_batch_bytes,
                 invocation_id=invocation_id,
                 recover_committed=attempt > 1,
                 replay_columns=replay_columns,
@@ -220,6 +234,7 @@ class DeltaWriter:
         incoming_indices: Sequence[int],
         key_columns: tuple[str, ...],
         batch_size: int,
+        batch_bytes: int,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
     ) -> tuple[int | None, list[int]]:
@@ -231,7 +246,12 @@ class DeltaWriter:
             # Validate every immutable conflict before the first chunk is
             # committed. Only rows matching this bounded incoming-key batch
             # are materialized from the target.
-            for indices in _batched_indices(incoming_indices, batch_size):
+            for indices in _batched_preflight_indices(
+                rows,
+                incoming_indices,
+                max_rows=batch_size,
+                max_bytes=batch_bytes,
+            ):
                 incoming = [rows[index] for index in indices]
                 existing_keys = self._validate_append_target(
                     table,
@@ -259,6 +279,7 @@ class DeltaWriter:
         partition_by: tuple[str, ...],
         schema: pa.Schema | None,
         batch_size: int,
+        preflight_batch_bytes: int,
         invocation_id: str,
         recover_committed: bool,
         replay_columns: frozenset[str],
@@ -285,7 +306,12 @@ class DeltaWriter:
                 )
             if _has_active_files(table):
                 pending_indices = []
-                for indices in _batched_indices(incoming_indices, batch_size):
+                for indices in _batched_preflight_indices(
+                    rows,
+                    incoming_indices,
+                    max_rows=batch_size,
+                    max_bytes=preflight_batch_bytes,
+                ):
                     incoming = [rows[index] for index in indices]
                     existing_keys = self._validate_append_target(
                         table,
@@ -659,6 +685,46 @@ def _batched_indices(indices: Iterable[int], size: int) -> Iterator[list[int]]:
     iterator = iter(indices)
     while batch := list(islice(iterator, size)):
         yield batch
+
+
+def _batched_preflight_indices(
+    rows: Sequence[Mapping[str, Any]],
+    indices: Iterable[int],
+    *,
+    max_rows: int,
+    max_bytes: int,
+) -> Iterator[list[int]]:
+    batch: list[int] = []
+    batch_bytes = 0
+    for index in indices:
+        row_bytes = _estimate_row_payload_bytes(rows[index])
+        if batch and (
+            len(batch) >= max_rows
+            or batch_bytes + row_bytes > max_bytes
+        ):
+            yield batch
+            batch = []
+            batch_bytes = 0
+        batch.append(index)
+        batch_bytes += row_bytes
+    if batch:
+        yield batch
+
+
+def _estimate_row_payload_bytes(row: Mapping[str, Any]) -> int:
+    # Estimate one row at a time so sizing does not introduce another
+    # aggregate allocation. JSON's escaping is conservative for persisted
+    # JSON strings and mirrors the later canonical comparison representation.
+    return max(
+        1,
+        len(
+            json.dumps(
+                dict(row),
+                separators=(",", ":"),
+                default=str,
+            )
+        ),
+    )
 
 
 def _infer_append_schema(
