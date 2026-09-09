@@ -62,10 +62,10 @@ fabric:
 
   source_data_root: "/data/inventory-source"
   registration_attempts: 20
-  # Keep concurrent Arrow/Delta buffers within the 8 GiB publication Job.
-  # Twelve workers peaked above the cgroup limit while publishing the live
-  # 83k-entity/235k-relationship graph; four preserves bounded parallelism.
-  write_workers: 4
+  # Serialize Arrow/Delta buffers within the 8 GiB publication Job. Four
+  # workers still exited 137 while the 83k-entity/235k-relationship graph and
+  # temporal history remained resident; one prioritizes completion over speed.
+  write_workers: 1
   patch_policies:
     - name: "Production baseline"
       environment: "Production"
