@@ -131,6 +131,15 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
     "pointer_activation": frozenset(),
 }
 _MAX_PROGRESS_COUNT = 2_147_483_647
+_EXPOSURE_GOLD_INPUT_TABLES = (
+    "gold_exposure_current",
+    "silver_exposure_observations",
+    "gold_container_exposure_current",
+    "silver_container_vulnerability_observations",
+    "metadata_source_status",
+    "silver_exposure_enrichment",
+    "silver_defender_secure_scores",
+)
 
 
 def _bounded_progress_count(value: int) -> int:
@@ -513,7 +522,7 @@ class FabricSyncService:
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
-        exposure_gold_datasets: dict[str, list[dict[str, Any]]] | None = None
+        exposure_gold_observation_rows: list[dict[str, Any]] | None = None
         exposure_gold_publisher: ExposureGoldFabricPublisher | None = None
         exposure_gold_stage = None
         data_committed = False
@@ -641,12 +650,9 @@ class FabricSyncService:
                     datasets["ontology_relationships"],
                     granular_relationships,
                 )
-                exposure_gold_datasets = {
-                    **datasets,
-                    "silver_exposure_observations": list(
-                        temporal.all_observation_rows
-                    ),
-                }
+                exposure_gold_observation_rows = list(
+                    temporal.all_observation_rows
+                )
                 del (
                     container_tables,
                     granular_entities,
@@ -824,10 +830,6 @@ class FabricSyncService:
                 ),
             ]
             datasets["metadata_source_status"] = source_status_rows
-            if exposure_gold_datasets is not None:
-                exposure_gold_datasets["metadata_source_status"] = [
-                    dict(row) for row in source_status_rows
-                ]
             if source_status_rows:
                 assert_lock_held()
                 table_uri = self.onelake.table_uri("metadata", "source_status")
@@ -938,7 +940,7 @@ class FabricSyncService:
             )
             gold_table_count = (
                 len(EXPOSURE_GOLD_TABLES) + 1
-                if exposure_gold_datasets is not None
+                if exposure_gold_observation_rows is not None
                 and exposure_pointer_store is not None
                 else 0
             )
@@ -1016,9 +1018,17 @@ class FabricSyncService:
                 "completed",
             )
             if (
-                exposure_gold_datasets is not None
+                exposure_gold_observation_rows is not None
                 and exposure_pointer_store is not None
             ):
+                exposure_gold_datasets = {
+                    table_name: (
+                        exposure_gold_observation_rows
+                        if table_name == "silver_exposure_observations"
+                        else datasets.get(table_name, [])
+                    )
+                    for table_name in _EXPOSURE_GOLD_INPUT_TABLES
+                }
                 sample_table_uri = self.onelake.table_uri(
                     "gold",
                     "exposure_facts",

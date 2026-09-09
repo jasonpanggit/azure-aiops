@@ -4,9 +4,11 @@ import asyncio
 import io
 import json
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import pytest
 from test_container_image_exposure import REGISTRY, _granular_image_row
@@ -213,6 +215,40 @@ def test_sync_releases_transient_memory_before_table_publication(
     assert result.status == "completed"
     assert sequence[0] == "release"
     assert "table" in sequence
+
+
+def test_exposure_gold_input_view_retains_only_projection_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_keys: set[str] = set()
+
+    def capture_generation(
+        _source_run_id: str,
+        datasets: Mapping[str, list[dict[str, Any]]],
+    ) -> str:
+        captured_keys.update(datasets)
+        raise RuntimeError("stop after Gold input construction")
+
+    monkeypatch.setattr(
+        sync_module,
+        "_exposure_gold_generation_id",
+        capture_generation,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="stop after Gold input construction",
+    ):
+        _service(tmp_path).sync(
+            exposure_pointer_store=OneLakeDocumentStore(
+                str(tmp_path / "pointer")
+            )
+        )
+
+    assert captured_keys == set(sync_module._EXPOSURE_GOLD_INPUT_TABLES)
+    assert "ontology_entities" not in captured_keys
+    assert "ontology_relationships" not in captured_keys
 
 
 def test_deployed_publication_orders_observations_after_workload_checkpoint(
