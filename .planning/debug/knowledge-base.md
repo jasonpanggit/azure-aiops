@@ -93,3 +93,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** Existing APPEND and container tests covered same-generation idempotency and semantic mutation, but no integration gate replayed one unchanged provider observation across acquisition generations through the full Normalizer-to-Delta path.
 - **Recurrence guard:** `tests/test_fabric_sync_service.py::test_sync_deduplicates_unchanged_container_observation_across_source_generations` proves unchanged generation N/N+1 replay deduplicates to one retained row and a severity mutation on the same identity still fails. End-to-end live publication verification remains explicitly required during the later authorized controlled build/deploy/retry phase.
 ---
+
+## container-append-preflight-oom — High-payload replay preflight exceeded the 8 GiB publication job
+- **Date:** 2026-09-10
+- **Error patterns:** exit 137, silver_container_vulnerability_observations, APPEND preflight, 151561 rows, source_event_payload_json, provenance_json, 8 GiB
+- **Root cause(s):** The replay-aware APPEND preflight was bounded only by 10000 rows, not payload bytes; valid high-byte container source-event/provenance data and the 8 GiB job's roughly 1.5 GiB remaining headroom jointly turned its filtered Arrow table, wholesale Python conversion, and canonical JSON copies into a fatal transient allocation.
+- **Fix:** DeltaWriter now defaults APPEND target comparison to a 32 MiB serialized-payload estimate in addition to the existing 10000-row ceiling; a one-row-at-a-time sizing iterator drives both preflight validation passes, permits only indivisible oversized single rows, and leaves immutable replay comparison and atomic write behavior unchanged.
+- **Files changed:** src/storage/delta_writer.py, tests/test_delta_tables.py
+- **Why not caught:** No existing test or verify gate asserted payload-byte boundaries for replay preflight; prior APPEND tests covered row-count bounds, atomicity, retries, and immutable semantics only with small rows.
+- **Recurrence guard:** The 32 MiB safe default in `src/storage/delta_writer.py` and `tests/test_delta_tables.py::{test_delta_writer_append_bounds_replay_preflight_by_payload_bytes,test_delta_writer_append_preflight_payload_byte_boundary}` lock indivisible-row behavior and exact N-1/N/N+1 aggregate-byte boundaries. Production-scale evidence remains deferred to the later authorized controlled immutable build/deploy/retry.
+---
