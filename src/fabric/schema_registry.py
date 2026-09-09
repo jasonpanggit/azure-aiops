@@ -839,6 +839,12 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("watermark", pa.string(), nullable=False),
             pa.field("error", pa.string(), nullable=False),
             pa.field("replay", pa.bool_(), nullable=False),
+            pa.field("ontology_entity_version", pa.int64(), nullable=True),
+            pa.field(
+                "ontology_relationship_version",
+                pa.int64(),
+                nullable=True,
+            ),
         ]
     ),
     "metadata_quality_reports": pa.schema(

@@ -258,9 +258,20 @@ class OntologyGraphSynchronizer:
                 relationships[resolved["resource_id"]] = resolved
 
         if len(entities) > self.max_entities:
-            raise ValueError("Ontology synchronized entity graph exceeds bound")
+            raise ValueError(
+                "Ontology synchronized entity graph exceeds bound "
+                f"(current={len(current_entity_rows)}, "
+                f"previous_active={len(previous_entity_rows)}, "
+                f"synchronized={len(entities)}, limit={self.max_entities})"
+            )
         if len(relationships) > self.max_relationships:
-            raise ValueError("Ontology synchronized relationship graph exceeds bound")
+            raise ValueError(
+                "Ontology synchronized relationship graph exceeds bound "
+                f"(current={len(current_relationship_rows)}, "
+                f"previous_active={len(previous_relationship_rows)}, "
+                f"synchronized={len(relationships)}, "
+                f"limit={self.max_relationships})"
+            )
 
         entity_rows = sorted(entities.values(), key=lambda row: row["resource_id"])
         relationship_rows = sorted(relationships.values(), key=lambda row: row["resource_id"])

@@ -89,12 +89,34 @@ class DeltaWriter:
             )
         )
 
-    def read(self, table_uri: str | Path) -> list[dict[str, Any]]:
+    def read(
+        self,
+        table_uri: str | Path,
+        *,
+        version: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if (
+            version is not None
+            and (
+                isinstance(version, bool)
+                or not isinstance(version, int)
+                or version < 0
+            )
+        ):
+            raise ValueError("Delta read version must be a non-negative integer")
         self._refresh_storage_options()
         if not self.exists(table_uri):
+            if version is not None:
+                raise ValueError(
+                    "Version-qualified Delta table does not exist"
+                )
             return []
         uri = str(table_uri)
-        table = DeltaTable(uri, storage_options=self.storage_options)
+        table = DeltaTable(
+            uri,
+            version=version,
+            storage_options=self.storage_options,
+        )
         if urlparse(uri).scheme in {"", "file"}:
             actions = pa.table(table.get_add_actions(flatten=True))
             files = [str(Path(uri) / path) for path in actions.column("path").to_pylist()]

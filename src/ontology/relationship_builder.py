@@ -78,8 +78,6 @@ class RelationshipBuilder:
                 subject["resource_id"],
                 predicate,
                 obj["resource_id"],
-                evidence_identity=str(evidence.get("evidence_identity") or ""),
-                event_interval=evidence.get("event_interval"),
             )
             if (
                 relationship_id not in relationships
@@ -747,18 +745,14 @@ def _relationship_id(
     subject: str,
     predicate: str,
     obj: str,
-    *,
-    evidence_identity: str = "",
-    event_interval: Any = None,
 ) -> str:
+    """Return the stable semantic identity for one endpoint triple.
+
+    Mutable evidence remains in ``payload_json`` and therefore contributes to
+    ``change_version`` and Delta history, but it must not manufacture a new
+    lifecycle identity for an otherwise unchanged relationship.
+    """
     identity = [subject.casefold(), predicate, obj.casefold()]
-    if evidence_identity or event_interval:
-        identity.extend(
-            [
-                evidence_identity,
-                event_interval if isinstance(event_interval, Mapping) else {},
-            ]
-        )
     return "relationship://" + stable_version(identity)[:40]
 
 

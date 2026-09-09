@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
+import pytest
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
 
+from storage.locking import LEASE_DURATION_SECONDS, LeaseLostError
 from storage.onelake_writer import LAKEHOUSE_FOLDERS, OneLakeWriter
 
 
@@ -111,7 +114,7 @@ def _lease_error(code: str) -> HttpResponseError:
     return error
 
 
-def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
+def test_cloud_sync_lock_refuses_active_lease_without_breaking() -> None:
     events: list[str] = []
 
     class Directory:
@@ -135,17 +138,14 @@ def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
 
     class Lease:
         def __init__(self, _file_client):
-            self._first = True
+            pass
 
         def acquire(self, *, lease_duration):
             events.append(f"acquire:{lease_duration}")
-            if self._first:
-                self._first = False
-                raise _lease_error("LeaseAlreadyPresent")
+            raise _lease_error("LeaseAlreadyPresent")
 
         def break_lease(self, *, lease_break_period):
-            events.append(f"break:{lease_break_period}")
-            return 0
+            raise AssertionError("an active lease must never be broken")
 
         def release(self):
             events.append("release")
@@ -155,7 +155,14 @@ def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
     original = module.DataLakeLeaseClient
     module.DataLakeLeaseClient = Lease
     try:
-        with OneLakeWriter("workspace", "lakehouse", service_client=Service()).sync_lock():
+        with pytest.raises(
+            RuntimeError,
+            match="Fabric synchronization is already running",
+        ), OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            service_client=Service(),
+        ).sync_lock():
             events.append("inside")
     finally:
         module.DataLakeLeaseClient = original
@@ -163,11 +170,7 @@ def test_cloud_sync_lock_breaks_stale_lease_when_already_present() -> None:
     assert events == [
         "create_directory",
         "create_file",
-        "acquire:-1",
-        "break:0",
-        "acquire:-1",
-        "inside",
-        "release",
+        f"acquire:{LEASE_DURATION_SECONDS}",
     ]
 
 
@@ -205,6 +208,9 @@ def test_cloud_sync_lock_tolerates_lease_id_mismatch_on_release() -> None:
         def acquire(self, *, lease_duration):
             pass
 
+        def renew(self):
+            pass
+
         def release(self):
             raise _lease_error("LeaseIdMismatchWithLeaseOperation")
 
@@ -220,3 +226,116 @@ def test_cloud_sync_lock_tolerates_lease_id_mismatch_on_release() -> None:
         module.DataLakeLeaseClient = original
 
     assert completed
+
+
+def test_cloud_sync_lock_renews_finite_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renewed = threading.Event()
+    durations: list[int] = []
+
+    class Directory:
+        def create_directory(self):
+            pass
+
+    class File:
+        def create_file(self):
+            pass
+
+    class FileSystem:
+        def get_directory_client(self, _path):
+            return Directory()
+
+        def get_file_client(self, _path):
+            return File()
+
+    class Service:
+        def get_file_system_client(self, _name):
+            return FileSystem()
+
+    class Lease:
+        def __init__(self, _file_client):
+            pass
+
+        def acquire(self, *, lease_duration):
+            durations.append(lease_duration)
+
+        def renew(self):
+            renewed.set()
+
+        def release(self):
+            pass
+
+    import storage.onelake_writer as module
+
+    monkeypatch.setattr(module, "DataLakeLeaseClient", Lease)
+    monkeypatch.setattr(
+        module,
+        "_SYNC_LEASE_RENEW_INTERVAL_SECONDS",
+        0.001,
+    )
+
+    with OneLakeWriter(
+        "workspace",
+        "lakehouse",
+        service_client=Service(),
+    ).sync_lock() as lock:
+        assert renewed.wait(timeout=1)
+        lock.assert_held()
+
+    assert durations == [LEASE_DURATION_SECONDS]
+
+
+def test_cloud_sync_lock_fails_closed_after_renewal_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renewal_attempted = threading.Event()
+
+    class Directory:
+        def create_directory(self):
+            pass
+
+    class File:
+        def create_file(self):
+            pass
+
+    class FileSystem:
+        def get_directory_client(self, _path):
+            return Directory()
+
+        def get_file_client(self, _path):
+            return File()
+
+    class Service:
+        def get_file_system_client(self, _name):
+            return FileSystem()
+
+    class Lease:
+        def __init__(self, _file_client):
+            pass
+
+        def acquire(self, *, lease_duration):
+            pass
+
+        def renew(self):
+            renewal_attempted.set()
+            raise _lease_error("LeaseLost")
+
+        def release(self):
+            raise AssertionError("a lost lease must not release a peer")
+
+    import storage.onelake_writer as module
+
+    monkeypatch.setattr(module, "DataLakeLeaseClient", Lease)
+    monkeypatch.setattr(
+        module,
+        "_SYNC_LEASE_RENEW_INTERVAL_SECONDS",
+        0.001,
+    )
+
+    with pytest.raises(LeaseLostError), OneLakeWriter(
+        "workspace",
+        "lakehouse",
+        service_client=Service(),
+    ).sync_lock():
+        assert renewal_attempted.wait(timeout=1)

@@ -46,6 +46,35 @@ def test_delta_writer_overwrite_and_append_are_idempotent_by_run(tmp_path: Path)
     assert {row["name"] for row in _rows(table)} == {"first", "second"}
 
 
+def test_delta_writer_reads_exact_historical_version(tmp_path: Path) -> None:
+    table = tmp_path / "table"
+    writer = DeltaWriter()
+    first = writer.write(
+        table,
+        [{**REQUIRED, "name": "first"}],
+        mode=DeltaWriteMode.OVERWRITE,
+    )
+    second = writer.write(
+        table,
+        [{**REQUIRED, "name": "second", "change_version": "v2"}],
+        mode=DeltaWriteMode.OVERWRITE,
+    )
+
+    assert first.version == 0
+    assert second.version == 1
+    assert writer.read(table, version=first.version)[0]["name"] == "first"
+    assert writer.read(table, version=second.version)[0]["name"] == "second"
+
+
+@pytest.mark.parametrize("version", [-1, True, 1.5, "1"])
+def test_delta_writer_rejects_invalid_historical_version(
+    tmp_path: Path,
+    version: object,
+) -> None:
+    with pytest.raises(ValueError, match="non-negative integer"):
+        DeltaWriter().read(tmp_path / "table", version=version)  # type: ignore[arg-type]
+
+
 def test_delta_writer_append_deduplicates_keys_within_incoming_batch(tmp_path: Path) -> None:
     table = tmp_path / "table"
     writer = DeltaWriter()

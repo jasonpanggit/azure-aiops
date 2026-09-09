@@ -13,6 +13,7 @@ from test_incremental_sync import _source_snapshot
 import fabric.sync_service as sync_module
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import GranularExposureOntologyMapper
+from fabric.schema_registry import schema_for
 from fabric.sync_service import (
     DedicatedOntologyPublisherAdapter,
     FabricSyncService,
@@ -21,6 +22,7 @@ from fabric.sync_service import (
     _merge_granular_ontology_entities,
     _merge_granular_ontology_relationships,
     _observation_rows_at_or_before,
+    _state_row,
 )
 from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_GOLD_GENERATIONS_TABLE,
@@ -31,7 +33,7 @@ from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphResult
 from ontology.relationship_builder import relationship_change_version
 from ontology_discovery.publisher import OntologyGenerationCandidate
-from storage.delta_writer import DeltaWriter
+from storage.delta_writer import DeltaWriteMode, DeltaWriter
 from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 
@@ -357,8 +359,8 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
         *(["gold_write"] * len(gold_tables)),
         "second_registration",
         "gold_catalog",
-        "completed_state",
         "shortcut_finalization",
+        "completed_state",
         "pointer_activation",
     ]
     assert trace.count("pointer_activation") == 1
@@ -377,8 +379,8 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
         "gold_write",
         "second_registration",
         "gold_catalog",
-        "completed_state",
         "shortcut_finalization",
+        "completed_state",
     ],
 )
 def test_every_pre_activation_failpoint_leaves_gold_pointer_empty(
@@ -464,6 +466,74 @@ def test_every_pre_activation_failpoint_leaves_gold_pointer_empty(
 
     assert failed_once is True
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+
+
+def test_completed_version_marker_is_written_before_pointer_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    original_state = service._write_state
+    pointer_at_completed_state: list[dict] = []
+
+    def write_state(row):
+        if row.get("status") == "completed":
+            pointer_at_completed_state.append(
+                pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+            )
+        return original_state(row)
+
+    monkeypatch.setattr(service, "_write_state", write_state)
+
+    service.sync(exposure_pointer_store=pointer_store)
+
+    assert len(pointer_at_completed_state) == 1
+    assert pointer_at_completed_state == [{}]
+    marker = max(
+        (
+            row
+            for row in service.status()
+            if row.get("status") == "completed"
+        ),
+        key=lambda row: str(row.get("timestamp") or ""),
+    )
+    assert marker["ontology_entity_version"] == service.delta.version(
+        service.onelake.table_uri("ontology", "entities")
+    )
+    assert marker[
+        "ontology_relationship_version"
+    ] == service.delta.version(
+        service.onelake.table_uri("ontology", "relationships")
+    )
+
+
+def test_pointer_activation_failure_publishes_no_completed_version_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    def fail_activation(_publisher, _stage):
+        raise RuntimeError("injected pointer activation failure")
+
+    monkeypatch.setattr(
+        sync_module.ExposureGoldFabricPublisher,
+        "activate",
+        fail_activation,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected pointer activation failure",
+    ):
+        service.sync(exposure_pointer_store=pointer_store)
+
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert not any(
+        row.get("status") == "completed" for row in service.status()
+    )
 
 
 def test_sync_publishes_repeatable_exposure_generation_and_pointer(
@@ -789,10 +859,220 @@ def test_sync_does_not_activate_gold_pointer_before_finalization(
         service.sync(exposure_pointer_store=pointer_store)
 
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert not any(
+        row.get("status") == "completed" for row in service.status()
+    )
     assert max(
         service.status(),
         key=lambda row: str(row.get("timestamp") or ""),
     )["status"] == "failed"
+
+
+def _persist_uncommitted_canonical_head(
+    service: FabricSyncService,
+    *,
+    entities: list[dict],
+    relationships: list[dict],
+) -> None:
+    """Model writes that survived SIGKILL without running exception rollback."""
+    service.onelake.ensure_standard_structure()
+    service._write_state(
+        _state_row(
+            "dead-fabric-run",
+            "dead-source-run",
+            status="started",
+            timestamp="2026-09-09T00:00:00Z",
+            replay=False,
+        )
+    )
+    service.delta.write(
+        service.onelake.table_uri("ontology", "entities"),
+        entities,
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("ontology_entities"),
+    )
+    service.delta.write(
+        service.onelake.table_uri("ontology", "relationships"),
+        relationships,
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("ontology_relationships"),
+    )
+
+
+def test_initial_gold_retry_ignores_partial_canonical_head_from_dead_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = _service(tmp_path / "seed")
+    seed.sync()
+    partial_entities = seed.delta.read(
+        seed.onelake.table_uri("ontology", "entities")
+    )
+    partial_relationships = seed.delta.read(
+        seed.onelake.table_uri("ontology", "relationships")
+    )[:-1]
+
+    crashed = _service(tmp_path / "target")
+    _persist_uncommitted_canonical_head(
+        crashed,
+        entities=partial_entities,
+        relationships=partial_relationships,
+    )
+    pointer_store = OneLakeDocumentStore(tmp_path / "target" / "registry")
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert _service(tmp_path / "target").semantic_graph_snapshot() == {
+        "entities": [],
+        "relationships": [],
+        "knowledge_version": "semantic-unversioned",
+        "freshness": "",
+        "ontology_synchronized_at": "",
+    }
+
+    synchronizer_type = sync_module.OntologyGraphSynchronizer
+
+    class NoUncommittedPredecessor(synchronizer_type):
+        def synchronize(self, *args, **kwargs):
+            previous_entities = list(kwargs.get("previous_entities", ()))
+            previous_relationships = list(
+                kwargs.get("previous_relationships", ())
+            )
+            assert previous_entities == [], (
+                "process-death partial canonical entities became predecessor"
+            )
+            assert previous_relationships == [], (
+                "process-death partial canonical relationships became predecessor"
+            )
+            kwargs["previous_entities"] = previous_entities
+            kwargs["previous_relationships"] = previous_relationships
+            return super().synchronize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sync_module,
+        "OntologyGraphSynchronizer",
+        NoUncommittedPredecessor,
+    )
+
+    result = _service(tmp_path / "target").sync(
+        exposure_pointer_store=pointer_store
+    )
+
+    assert result.status == "completed"
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+
+def test_fresh_service_reads_finalized_canonical_versions_before_first_pointer(
+    tmp_path: Path,
+) -> None:
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    completed = _service(tmp_path)
+    completed.sync()
+    expected_entities = {
+        row["resource_id"]
+        for row in completed.delta.read(
+            completed.onelake.table_uri("ontology", "entities")
+        )
+    }
+    expected_relationships = {
+        row["resource_id"]
+        for row in completed.delta.read(
+            completed.onelake.table_uri("ontology", "relationships")
+        )
+    }
+
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    authoritative = _service(tmp_path).semantic_graph_snapshot()
+    assert {
+        row["resource_id"] for row in authoritative["entities"]
+    } == expected_entities
+    assert {
+        row["resource_id"] for row in authoritative["relationships"]
+    } == expected_relationships
+
+
+def test_post_pointer_retry_reads_last_completed_versions_after_partial_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    completed = _service(tmp_path)
+    completed.sync(exposure_pointer_store=pointer_store)
+    completed_entities = completed.delta.read(
+        completed.onelake.table_uri("ontology", "entities")
+    )
+    completed_relationships = completed.delta.read(
+        completed.onelake.table_uri("ontology", "relationships")
+    )
+    pointer_before_death = pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+    # A later process replaces only one canonical table and dies before any
+    # finalization marker or Gold pointer activation.
+    crashed = _service(tmp_path)
+    crashed._write_state(
+        _state_row(
+            "later-dead-fabric-run",
+            "later-dead-source-run",
+            status="started",
+            timestamp="2026-09-09T00:01:00Z",
+            replay=False,
+        )
+    )
+    crashed.delta.write(
+        crashed.onelake.table_uri("ontology", "relationships"),
+        completed_relationships[:-1],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("ontology_relationships"),
+    )
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == (
+        pointer_before_death
+    )
+
+    expected_entity_ids = {
+        row["resource_id"] for row in completed_entities
+    }
+    expected_relationship_ids = {
+        row["resource_id"] for row in completed_relationships
+    }
+    authoritative = _service(tmp_path).semantic_graph_snapshot()
+    assert {
+        row["resource_id"] for row in authoritative["entities"]
+    } == expected_entity_ids
+    assert {
+        row["resource_id"] for row in authoritative["relationships"]
+    } == expected_relationship_ids
+    compatibility = _service(tmp_path).semantic_snapshot()
+    assert {
+        row["resource_id"] for row in compatibility["entities"]
+    } == expected_entity_ids
+    assert {
+        row["resource_id"] for row in compatibility["relationships"]
+    } == expected_relationship_ids
+    synchronizer_type = sync_module.OntologyGraphSynchronizer
+
+    class ExactCompletedPredecessor(synchronizer_type):
+        def synchronize(self, *args, **kwargs):
+            previous_entities = list(kwargs.get("previous_entities", ()))
+            previous_relationships = list(
+                kwargs.get("previous_relationships", ())
+            )
+            assert {
+                row["resource_id"] for row in previous_entities
+            } == expected_entity_ids
+            assert {
+                row["resource_id"] for row in previous_relationships
+            } == expected_relationship_ids
+            kwargs["previous_entities"] = previous_entities
+            kwargs["previous_relationships"] = previous_relationships
+            return super().synchronize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sync_module,
+        "OntologyGraphSynchronizer",
+        ExactCompletedPredecessor,
+    )
+
+    result = _service(tmp_path).sync(exposure_pointer_store=pointer_store)
+
+    assert result.status == "completed"
 
 
 def test_replayed_generation_excludes_later_observation_history() -> None:

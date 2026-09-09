@@ -36,6 +36,7 @@ from ontology_discovery.publisher import (
     PublicationSafetyError,
 )
 from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.locking import LeaseLostError
 from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 from storage.partitioning import PartitioningPolicy
@@ -434,7 +435,7 @@ class FabricSyncService:
         counts; callback failures never affect publication or expose dynamic
         exception data.
         """
-        with self.onelake.sync_lock():
+        with self.onelake.sync_lock() as sync_lock:
             return self._sync_locked(
                 replay_source_run_id=replay_source_run_id,
                 raise_on_quality_failure=raise_on_quality_failure,
@@ -442,6 +443,7 @@ class FabricSyncService:
                 progress_callback=progress_callback,
                 stage_progress_callback=stage_progress_callback,
                 exposure_pointer_store=exposure_pointer_store,
+                assert_lock_held=sync_lock.assert_held,
             )
 
     def _sync_locked(
@@ -453,7 +455,9 @@ class FabricSyncService:
         progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
         stage_progress_callback: Callable[[FabricStageProgress], None] | None = None,
         exposure_pointer_store: OneLakeDocumentStore | None = None,
+        assert_lock_held: Callable[[], None],
     ) -> FabricSyncResult:
+        assert_lock_held()
         started_clock = self.clock()
         run_id = str(uuid.uuid4())
         snapshot = self._resolve_snapshot(replay_source_run_id)
@@ -466,7 +470,9 @@ class FabricSyncService:
             or manifest.get("startedAt")
             or started_at
         )
+        assert_lock_held()
         self.onelake.ensure_standard_structure()
+        assert_lock_held()
         self._write_state(
             _state_row(
                 run_id,
@@ -476,6 +482,7 @@ class FabricSyncService:
                 replay=replay,
             )
         )
+        assert_lock_held()
 
         table_results: dict[str, DeltaWriteResult] = {}
         written_versions: dict[str, tuple[str, int | None]] = {}
@@ -717,7 +724,11 @@ class FabricSyncService:
             )
             datasets["ontology_entities"].extend(incident_pipeline_result.entities)
             datasets["ontology_relationships"].extend(incident_pipeline_result.relationships)
-            datasets = self._synchronize_ontology(datasets, source_run_id, started_at)
+            datasets = self._synchronize_ontology(
+                datasets,
+                source_run_id,
+                started_at,
+            )
             ontology_entity_count = _bounded_progress_count(
                 len(datasets.get("ontology_entities", ()))
             )
@@ -766,6 +777,7 @@ class FabricSyncService:
                 reports,
                 started_at,
             )
+            assert_lock_held()
             source_status_rows = [
                 *datasets.get("metadata_source_status", []),
                 *_table_source_status_rows(
@@ -785,6 +797,7 @@ class FabricSyncService:
                     dict(row) for row in source_status_rows
                 ]
             if source_status_rows:
+                assert_lock_held()
                 table_uri = self.onelake.table_uri("metadata", "source_status")
                 before_version = self.delta.version(table_uri)
                 result = self.delta.write(
@@ -798,7 +811,9 @@ class FabricSyncService:
                 if result.version != before_version:
                     written_versions["metadata_source_status"] = (table_uri, before_version)
                 self.metrics.record_table("metadata_source_status", result)
+                assert_lock_held()
             if failed_records:
+                assert_lock_held()
                 failed = _state_row(
                     run_id,
                     source_run_id,
@@ -827,6 +842,7 @@ class FabricSyncService:
             def write_table(
                 item: tuple[str, list[dict[str, Any]]],
             ) -> tuple[str, str, int | None, DeltaWriteResult]:
+                assert_lock_held()
                 table_name, rows = item
                 layer, logical_name = table_name.split("_", 1)
                 mode = self._write_mode_for_table(table_name)
@@ -844,6 +860,7 @@ class FabricSyncService:
                     partition_by=self.partitioning.columns_for(table_name),
                     schema=schema_for(table_name),
                 )
+                assert_lock_held()
                 return table_name, table_uri, before_version, result
 
             # Empty projections do not need a Fabric transaction unless the
@@ -851,7 +868,10 @@ class FabricSyncService:
             known_versions: dict[str, int | None] = {}
             publish_items: list[tuple[str, list[dict[str, Any]]]] = []
             for table_name, rows in datasets.items():
-                if rows:
+                if rows or table_name in {
+                    "ontology_entities",
+                    "ontology_relationships",
+                }:
                     publish_items.append((table_name, rows))
                     continue
                 table_uri = self.onelake.table_uri(
@@ -919,7 +939,9 @@ class FabricSyncService:
                 "fabric_asset_registration",
                 "started",
             )
+            assert_lock_held()
             self._register_fabric_assets(set(table_results))
+            assert_lock_held()
             _notify_stage_progress(
                 stage_progress_callback,
                 "fabric_asset_registration",
@@ -931,6 +953,7 @@ class FabricSyncService:
                     observed_at=started_at,
                 )
             self.onelake.write_json("ontology/metadata/catalog.json", catalog)
+            assert_lock_held()
             data_committed = True
             _notify_stage_progress(
                 stage_progress_callback,
@@ -938,6 +961,7 @@ class FabricSyncService:
                 "started",
             )
             self._publish_ontology(datasets)
+            assert_lock_held()
             _notify_stage_progress(
                 stage_progress_callback,
                 "ontology_publication",
@@ -981,6 +1005,7 @@ class FabricSyncService:
                     projected_at=source_projected_at,
                     published_at=started_at,
                 )
+                assert_lock_held()
                 _notify_stage_progress(
                     stage_progress_callback,
                     "gold_staging",
@@ -1006,9 +1031,11 @@ class FabricSyncService:
                     "fabric_asset_registration",
                     "started",
                 )
+                assert_lock_held()
                 self._register_fabric_assets(
                     set(exposure_gold_stage.table_writes)
                 )
+                assert_lock_held()
                 _notify_stage_progress(
                     stage_progress_callback,
                     "fabric_asset_registration",
@@ -1023,6 +1050,16 @@ class FabricSyncService:
                         source_run_id,
                     ),
                 )
+                assert_lock_held()
+            assert_lock_held()
+            ontology_entity_version = _required_table_version(
+                table_results,
+                "ontology_entities",
+            )
+            ontology_relationship_version = _required_table_version(
+                table_results,
+                "ontology_relationships",
+            )
             completed = _state_row(
                 run_id,
                 source_run_id,
@@ -1034,19 +1071,24 @@ class FabricSyncService:
                 rows_changed=sum(value.rows_changed for value in table_results.values()),
                 rows_removed=sum(value.rows_removed for value in table_results.values()),
                 watermark=source_watermark,
+                ontology_entity_version=ontology_entity_version,
+                ontology_relationship_version=ontology_relationship_version,
             )
-            self._write_state(completed)
             _notify_stage_progress(
                 stage_progress_callback,
                 "shortcut_finalization",
                 "started",
             )
             self._create_shortcuts()
+            assert_lock_held()
             _notify_stage_progress(
                 stage_progress_callback,
                 "shortcut_finalization",
                 "completed",
             )
+            assert_lock_held()
+            self._write_state(completed)
+            assert_lock_held()
             if (
                 exposure_gold_publisher is not None
                 and exposure_gold_stage is not None
@@ -1056,7 +1098,9 @@ class FabricSyncService:
                     "pointer_activation",
                     "started",
                 )
+                assert_lock_held()
                 exposure_gold_publisher.activate(exposure_gold_stage)
+                assert_lock_held()
                 _notify_stage_progress(
                     stage_progress_callback,
                     "pointer_activation",
@@ -1080,25 +1124,37 @@ class FabricSyncService:
             self.metrics.record_ontology(
                 ontology_health, self.clock() - ontology_started, errors=1
             )
-            rollback_errors = [] if data_committed else self._rollback(written_versions)
+            lock_error: Exception | None = None
+            try:
+                assert_lock_held()
+            except LeaseLostError as lost:
+                lock_error = lost
+            rollback_errors = (
+                []
+                if data_committed or lock_error is not None
+                else self._rollback(written_versions)
+            )
             if not isinstance(exc, ValueError) or "data quality validation failed" not in str(exc).lower():
                 error_message = str(exc)
                 if data_committed:
                     error_message += "; committed graph tables were retained for idempotent retry"
                 if rollback_errors:
                     error_message += "; rollback incomplete: " + " | ".join(rollback_errors)
-                self._write_state(
-                    _state_row(
-                        run_id,
-                        source_run_id,
-                        status="failed",
-                        timestamp=_utc_now(),
-                        replay=replay,
-                        failed_records=max(failed_records, 1),
-                        error=error_message[:2048],
+                if lock_error is None:
+                    self._write_state(
+                        _state_row(
+                            run_id,
+                            source_run_id,
+                            status="failed",
+                            timestamp=_utc_now(),
+                            replay=replay,
+                            failed_records=max(failed_records, 1),
+                            error=error_message[:2048],
+                        )
                     )
-                )
                 self.metrics.record_run(self.clock() - started_clock, max(failed_records, 1), "failed")
+            if lock_error is not None:
+                raise lock_error from exc
             if rollback_errors:
                 raise RuntimeError(
                     "Fabric sync failed and rollback was incomplete: " + " | ".join(rollback_errors)
@@ -1129,8 +1185,7 @@ class FabricSyncService:
     def ontology_query(self, question: str, *, entity: str = "") -> dict[str, Any]:
         from ontology.graph_queries import OntologyQueryService
 
-        entities = self.delta.read(self.onelake.table_uri("ontology", "entities"))
-        relationships = self.delta.read(self.onelake.table_uri("ontology", "relationships"))
+        entities, relationships = self._read_authoritative_ontology()
         return OntologyQueryService(entities, relationships).answer(question, entity=entity)
 
     def ontology_health(self) -> dict[str, Any]:
@@ -1218,10 +1273,10 @@ class FabricSyncService:
             uri = self.onelake.table_uri(layer, name)
             return self.delta.read(uri) if self.delta.version(uri) is not None else []
 
-        states = [row for row in self.status() if row.get("status") == "completed"]
-        latest = max(states, key=lambda row: str(row.get("timestamp") or ""), default={})
-        entities = read("ontology", "entities")
-        relationships = read("ontology", "relationships")
+        latest = self._latest_completed_ontology_state()
+        entities, relationships = self._read_authoritative_ontology(
+            marker=latest,
+        )
         # A published ontology can outlive its ingestion-state rows (for example
         # when the metadata table was truncated or written by an earlier run).
         # Fall back to the newest published entity timestamp so downstream
@@ -1341,10 +1396,10 @@ class FabricSyncService:
             uri = self.onelake.table_uri(layer, name)
             return self.delta.read(uri) if self.delta.version(uri) is not None else []
 
-        states = [row for row in self.status() if row.get("status") == "completed"]
-        latest = max(states, key=lambda row: str(row.get("timestamp") or ""), default={})
-        entities = read("ontology", "entities")
-        relationships = read("ontology", "relationships")
+        latest = self._latest_completed_ontology_state()
+        entities, relationships = self._read_authoritative_ontology(
+            marker=latest,
+        )
         entity_watermark = max(
             (str(row.get("timestamp") or "") for row in entities), default=""
         )
@@ -1375,8 +1430,7 @@ class FabricSyncService:
         }
 
     def semantic_version(self) -> str:
-        states = [row for row in self.status() if row.get("status") == "completed"]
-        latest = max(states, key=lambda row: str(row.get("timestamp") or ""), default={})
+        latest = self._latest_completed_ontology_state()
         raw_version = str(
             latest.get("source_run_id") or latest.get("change_version") or ""
         )
@@ -1384,8 +1438,9 @@ class FabricSyncService:
             # Mirror semantic_snapshot()'s fallback so the cached engine version
             # matches the snapshot version and the engine is not rebuilt on
             # every call when ingestion state is missing.
-            uri = self.onelake.table_uri("ontology", "entities")
-            entities = self.delta.read(uri) if self.delta.version(uri) is not None else []
+            entities, _relationships = self._read_authoritative_ontology(
+                marker=latest,
+            )
             raw_version = max(
                 (str(row.get("ingestion_run_id") or "") for row in entities),
                 default="",
@@ -2060,13 +2115,8 @@ class FabricSyncService:
         ontology_version: str,
         timestamp: str,
     ) -> dict[str, list[dict[str, Any]]]:
-        entity_uri = self.onelake.table_uri("ontology", "entities")
-        relationship_uri = self.onelake.table_uri("ontology", "relationships")
-        previous_entities = self.delta.read(entity_uri) if self.delta.version(entity_uri) is not None else []
-        previous_relationships = (
-            self.delta.read(relationship_uri)
-            if self.delta.version(relationship_uri) is not None
-            else []
+        previous_entities, previous_relationships = (
+            self._authoritative_ontology_predecessor()
         )
         previous_entities, previous_relationships = (
             filter_legacy_granular_exposure_graph(
@@ -2108,6 +2158,65 @@ class FabricSyncService:
         for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
             datasets.setdefault(ontology_relationship_table(*relationship_type), [])
         return datasets
+
+    def _authoritative_ontology_predecessor(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Read only the canonical versions recorded by a completed sync.
+
+        Per-table Delta overwrites are individually atomic but a process can
+        die between the entity and relationship writes. The completed
+        ingestion-state row is deliberately published only after every
+        finalization step, so a missing marker means there is no authoritative
+        predecessor and a later partial head can never be consumed.
+        """
+        return self._read_authoritative_ontology()
+
+    def _latest_completed_ontology_state(self) -> dict[str, Any]:
+        completed = [
+            row
+            for row in self.status()
+            if row.get("status") == "completed"
+            and row.get("ontology_entity_version") is not None
+            and row.get("ontology_relationship_version") is not None
+        ]
+        if not completed:
+            return {}
+        return max(
+            completed,
+            key=lambda row: str(row.get("timestamp") or ""),
+        )
+
+    def _read_authoritative_ontology(
+        self,
+        *,
+        marker: Mapping[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        selected = (
+            dict(marker)
+            if marker is not None
+            else self._latest_completed_ontology_state()
+        )
+        if not selected:
+            return [], []
+        entity_version = _validated_delta_version(
+            selected.get("ontology_entity_version"),
+            field_name="ontology_entity_version",
+        )
+        relationship_version = _validated_delta_version(
+            selected.get("ontology_relationship_version"),
+            field_name="ontology_relationship_version",
+        )
+        return (
+            self.delta.read(
+                self.onelake.table_uri("ontology", "entities"),
+                version=entity_version,
+            ),
+            self.delta.read(
+                self.onelake.table_uri("ontology", "relationships"),
+                version=relationship_version,
+            ),
+        )
 
     def _publish_ontology(self, datasets: dict[str, list[dict[str, Any]]]) -> None:
         if self.ontology_publisher is None:
@@ -2689,6 +2798,8 @@ def _state_row(
     rows_removed: int = 0,
     watermark: str = "",
     error: str = "",
+    ontology_entity_version: int | None = None,
+    ontology_relationship_version: int | None = None,
 ) -> dict[str, Any]:
     content = {
         "status": status,
@@ -2701,6 +2812,8 @@ def _state_row(
         "watermark": watermark,
         "error": error,
         "replay": replay,
+        "ontology_entity_version": ontology_entity_version,
+        "ontology_relationship_version": ontology_relationship_version,
     }
     return {
         "tenant_id": "system",
@@ -2711,6 +2824,27 @@ def _state_row(
         "ingestion_run_id": run_id,
         **content,
     }
+
+
+def _required_table_version(
+    results: Mapping[str, DeltaWriteResult],
+    table_name: str,
+) -> int:
+    result = results.get(table_name)
+    if result is None or result.version is None:
+        raise RuntimeError(
+            f"Completed Fabric publication is missing {table_name} Delta version"
+        )
+    return _validated_delta_version(
+        result.version,
+        field_name=f"{table_name} version",
+    )
+
+
+def _validated_delta_version(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
 
 
 def _catalog_metadata(

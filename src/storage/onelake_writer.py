@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -10,7 +11,35 @@ from typing import Any
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
 from azure.storage.filedatalake import DataLakeLeaseClient, DataLakeServiceClient
 
-from storage.locking import RunLock
+from storage.locking import LEASE_DURATION_SECONDS, LeaseLostError, RunLock
+
+_SYNC_LEASE_RENEW_INTERVAL_SECONDS = LEASE_DURATION_SECONDS / 3
+
+
+class _RenewableSyncLease:
+    """Thread-safe lease-loss signal shared with the sync body."""
+
+    def __init__(self) -> None:
+        self._error: BaseException | None = None
+        self._lock = threading.Lock()
+
+    def mark_lost(self, error: BaseException) -> None:
+        with self._lock:
+            self._error = error
+
+    @property
+    def lost(self) -> bool:
+        with self._lock:
+            return self._error is not None
+
+    def assert_held(self) -> None:
+        with self._lock:
+            error = self._error
+        if error is not None:
+            raise LeaseLostError(
+                "Fabric synchronization lease was lost"
+            ) from error
+
 
 LAKEHOUSE_FOLDERS = (
     "bronze/resources",
@@ -131,8 +160,8 @@ class OneLakeWriter:
     @contextmanager
     def sync_lock(self):
         if self.local_root is not None:
-            with RunLock(self.local_root / ".fabric-sync"):
-                yield
+            with RunLock(self.local_root / ".fabric-sync") as lock:
+                yield lock
             return
         file_system = self.service.get_file_system_client(self.workspace_id)
         metadata = file_system.get_directory_client(
@@ -157,32 +186,46 @@ class OneLakeWriter:
                 raise
         lease = DataLakeLeaseClient(file_client)
         try:
-            lease.acquire(lease_duration=-1)
+            lease.acquire(lease_duration=LEASE_DURATION_SECONDS)
         except HttpResponseError as error:
-            # A prior run crashed/was interrupted while holding the lease,
-            # leaving it orphaned indefinitely (lease_duration=-1 never
-            # expires on its own). Break it and retry once rather than
-            # requiring manual intervention.
-            if getattr(error, "error_code", "") not in {
+            if getattr(error, "error_code", "") in {
                 "LeaseIdMissing",
                 "LeaseAlreadyPresent",
             }:
-                raise
-            lease.break_lease(lease_break_period=0)
-            lease.acquire(lease_duration=-1)
+                raise RuntimeError(
+                    "Fabric synchronization is already running"
+                ) from error
+            raise
+        guard = _RenewableSyncLease()
+        stop = threading.Event()
+
+        def renew() -> None:
+            while not stop.wait(_SYNC_LEASE_RENEW_INTERVAL_SECONDS):
+                try:
+                    lease.renew()
+                except Exception as error:  # noqa: BLE001 - reported to the owner thread.
+                    guard.mark_lost(error)
+                    stop.set()
+                    return
+
+        worker = threading.Thread(
+            target=renew,
+            name="fabric-sync-lease-renewal",
+            daemon=True,
+        )
+        worker.start()
         try:
-            yield
+            yield guard
+            guard.assert_held()
         finally:
+            stop.set()
+            worker.join()
             try:
-                lease.release()
+                if not guard.lost:
+                    lease.release()
             except HttpResponseError:
-                # A concurrent sync can have broken and re-acquired this
-                # lease while we were running (see the LeaseAlreadyPresent
-                # recovery above), leaving our lease ID stale by the time we
-                # get here. That is not actionable from this side: the lock
-                # is either held by that other run or has already expired,
-                # so failing the whole sync over a release mismatch would
-                # only mask a publish that otherwise completed successfully.
+                # A finite lease expires without manual recovery if release
+                # cannot be observed, so do not mask the publication outcome.
                 pass
 
 

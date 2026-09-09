@@ -582,6 +582,7 @@ def activate_runtime(
         reporter.start("fabric_publication")
         runtime = build_runtime(config)
         publication = runtime.service.sync(
+            replay_source_run_id=str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
             stage_progress_callback=reporter.fabric_stage_progress,
             exposure_pointer_store=OneLakeDocumentStore(service.registry.root),

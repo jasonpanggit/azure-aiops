@@ -70,6 +70,57 @@ def relationship(
     }
 
 
+def test_relationship_identity_excludes_mutable_evidence_interval() -> None:
+    def graph(interval_end: str) -> list[dict]:
+        target = entity("digest-1", entity_type="ImageDigest")
+        weakness = entity("cve-1", entity_type="CVE")
+        observation = entity(
+            "observation-1",
+            entity_type="VulnerabilityObservation",
+        )
+        observation["payload_json"] = json.dumps(
+            {
+                "ontology_target_id": target["resource_id"],
+                "weakness_entity_id": weakness["resource_id"],
+                "source_families": ["defender"],
+                "evidence_identity": "exposure-1",
+                "event_interval": {
+                    "from": "2026-09-09T00:00:00Z",
+                    "to": interval_end,
+                },
+            },
+            sort_keys=True,
+        )
+        return RelationshipBuilder().build(
+            [target, weakness, observation],
+            f"run-{interval_end}",
+        )
+
+    first = graph("2026-09-09T01:00:00Z")
+    updated = graph("2026-09-09T02:00:00Z")
+    key = lambda row: (
+        row["subject_id"],
+        row["predicate"],
+        row["object_id"],
+    )
+    first_by_key = {key(row): row for row in first}
+    updated_by_key = {key(row): row for row in updated}
+
+    assert set(first_by_key) == set(updated_by_key)
+    assert {
+        relationship_key: row["resource_id"]
+        for relationship_key, row in first_by_key.items()
+    } == {
+        relationship_key: row["resource_id"]
+        for relationship_key, row in updated_by_key.items()
+    }
+    assert any(
+        first_by_key[relationship_key]["change_version"]
+        != updated_by_key[relationship_key]["change_version"]
+        for relationship_key in first_by_key
+    )
+
+
 def test_sync_validator_rejects_canonical_duplicates_and_malformed_rows():
     validator = SyncValidator()
     assert not validator.validate([entity("A"), entity("a")], []).passed
@@ -390,6 +441,94 @@ def test_relationship_and_synchronization_source_bounds_fail_closed():
         OntologyGraphSynchronizer(SyncValidator(), max_entities=1).synchronize(
             [entity("a"), entity("b")], []
         )
+
+
+def test_relationship_overflow_reports_counts_without_resource_ids() -> None:
+    entities = [
+        entity("a", entity_type="Application"),
+        entity("b", entity_type="Application"),
+        entity("c", entity_type="Application"),
+    ]
+    current = [
+        relationship(
+            "current-ab",
+            "a",
+            "b",
+            subject_type="Application",
+            object_type="Application",
+        ),
+        relationship(
+            "shared-bc",
+            "b",
+            "c",
+            subject_type="Application",
+            object_type="Application",
+        ),
+    ]
+    previous = [
+        relationship(
+            "previous-ac",
+            "a",
+            "c",
+            subject_type="Application",
+            object_type="Application",
+        ),
+        relationship(
+            "shared-bc",
+            "b",
+            "c",
+            subject_type="Application",
+            object_type="Application",
+        ),
+    ]
+
+    with pytest.raises(ValueError) as captured:
+        OntologyGraphSynchronizer(
+            SyncValidator(),
+            max_relationships=2,
+        ).synchronize(
+            entities,
+            current,
+            previous_entities=entities,
+            previous_relationships=previous,
+            ontology_version="2",
+            timestamp="2026-09-09T00:00:00Z",
+        )
+
+    assert str(captured.value) == (
+        "Ontology synchronized relationship graph exceeds bound "
+        "(current=2, previous_active=2, synchronized=3, limit=2)"
+    )
+    assert all(
+        resource_id not in str(captured.value)
+        for resource_id in ("current-ab", "shared-bc", "previous-ac")
+    )
+
+
+def test_entity_overflow_reports_counts_without_resource_ids() -> None:
+    current = [entity("current-a"), entity("shared-b")]
+    previous = [entity("previous-c"), entity("shared-b")]
+
+    with pytest.raises(ValueError) as captured:
+        OntologyGraphSynchronizer(
+            SyncValidator(),
+            max_entities=2,
+        ).synchronize(
+            current,
+            [],
+            previous_entities=previous,
+            ontology_version="2",
+            timestamp="2026-09-09T00:00:00Z",
+        )
+
+    assert str(captured.value) == (
+        "Ontology synchronized entity graph exceeds bound "
+        "(current=2, previous_active=2, synchronized=3, limit=2)"
+    )
+    assert all(
+        resource_id not in str(captured.value)
+        for resource_id in ("current-a", "shared-b", "previous-c")
+    )
 
 
 def test_graph_queries_bound_source_results_and_cyclic_traversal():

@@ -422,9 +422,11 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     service = _Service(roots)
     service.registry.root = tmp_path / "registry"
     events: list[dict[str, object]] = []
+    replay_source_run_ids: list[str] = []
 
     class FabricService:
         def sync(self, **kwargs):
+            replay_source_run_ids.append(kwargs["replay_source_run_id"])
             kwargs["stage_progress_callback"](
                 {"stage": "dataset_mapping", "status": "started"}
             )
@@ -498,6 +500,9 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert table_event["row_count"] == 123
     assert table_event["completed"] == table_event["total"] == 1
     assert "hub" not in json.dumps(events)
+    assert replay_source_run_ids == [
+        str(result["combined_snapshot"]["runId"])
+    ]
 
 
 def test_activate_runtime_failure_uses_same_sanitized_elapsed_value(
