@@ -2,7 +2,7 @@
 status: resolved
 trigger: "Corrected execution aiops-dev-exposure-publication-j40c4yc passed ontology validation and completed 53/458 tables, then exited 137 while entering the 151,561-row silver_container_vulnerability_observations APPEND preflight."
 created: 2026-09-10T01:30:00+08:00
-updated: 2026-09-10T02:31:00+08:00
+updated: 2026-09-10T02:32:00+08:00
 ---
 
 ## Current Focus
@@ -12,7 +12,7 @@ known_pattern_candidate: phase031-plan19-delta-append-memory and exposure-observ
 bug_class: heisenbug-mandelbug
 test: TDD RED/GREEN, boundary, adjacent, full-suite, revert-and-reconfirm, and local human verification all pass
 expecting: the later authorized controlled immutable build/deploy/retry supplies the intentionally deferred production-scale 4 CPU / 8 GiB evidence
-next_action: archived locally; do not perform cloud operations from this debug session
+next_action: archived locally with durable knowledge-base fallback; do not perform cloud operations from this debug session
 reasoning_checkpoint:
   hypothesis: "DeltaWriter groups replay comparison solely by append_batch_size=10000; because container observations retain large source_event_payload_json and provenance_json as immutable semantics, one filtered target read plus to_pylist and dual canonical JSON construction creates a payload-proportional transient working set that crosses the job's roughly 1.5 GiB remaining headroom."
   confirming_evidence:
@@ -197,6 +197,11 @@ started: first full-cardinality live run after commit 1361b1c42 removed the earl
   checked: human-verification checkpoint response
   found: the user confirmed the fix locally and authorized only a later controlled immutable build/deploy/retry after Fabric restart
   implication: resolve and archive the local debug session without cloud operations; preserve production-scale 4 CPU / 8 GiB verification as deferred evidence rather than claiming it passed
+
+- timestamp: 2026-09-10T02:32:00+08:00
+  checked: archive semantic indexing
+  found: MemPalace is neither configured nor installed, while the durable knowledge-base entry was written and committed successfully
+  implication: semantic indexing is skipped explicitly; .planning/debug/knowledge-base.md remains the durable keyword-recall fallback
 
 ## Resolution
 
