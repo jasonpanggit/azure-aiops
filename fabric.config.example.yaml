@@ -4,6 +4,8 @@ fabric:
     max_traversal_nodes: 500
     max_traversal_depth: 32
     max_source_rows: 50000
+    max_entity_rows: 100000
+    max_relationship_rows: 250000
     max_serialized_bytes: 1000000
   operations_agent:
     max_output_items: 100

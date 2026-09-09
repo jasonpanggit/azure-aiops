@@ -227,7 +227,9 @@ class SemanticRuntimeConfig:
     max_results: int = 50
     max_traversal_nodes: int = 500
     max_traversal_depth: int = 32
-    max_source_rows: int = 50000
+    max_source_rows: int = 50_000
+    max_entity_rows: int = 100_000
+    max_relationship_rows: int = 250_000
     max_serialized_bytes: int = 1_000_000
 
 
@@ -600,7 +602,22 @@ class FabricRuntimeConfig:
                     32,
                 ),
                 max_source_rows=_strict_section_int(
-                    raw_semantic_payload, "semantic", "max_source_rows", 50000
+                    raw_semantic_payload,
+                    "semantic",
+                    "max_source_rows",
+                    50_000,
+                ),
+                max_entity_rows=_strict_section_int(
+                    raw_semantic_payload,
+                    "semantic",
+                    "max_entity_rows",
+                    100_000,
+                ),
+                max_relationship_rows=_strict_section_int(
+                    raw_semantic_payload,
+                    "semantic",
+                    "max_relationship_rows",
+                    250_000,
                 ),
                 max_serialized_bytes=_strict_section_int(
                     raw_semantic_payload,
@@ -735,6 +752,8 @@ class FabricRuntimeConfig:
                 self.semantic.max_traversal_nodes,
                 self.semantic.max_traversal_depth,
                 self.semantic.max_source_rows,
+                self.semantic.max_entity_rows,
+                self.semantic.max_relationship_rows,
             )
             < 1
             or self.semantic.max_serialized_bytes < 1024

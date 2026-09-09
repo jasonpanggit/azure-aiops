@@ -9,7 +9,12 @@ import pytest
 from fabric.config import FabricRuntimeConfig
 from intelligence.incident.incident_intelligence import IncidentIntelligence
 from semantic.query_cache import QueryCache
-from semantic.semantic_engine import SemanticEngine
+from semantic.semantic_engine import (
+    DEFAULT_SEMANTIC_ENTITY_ROWS,
+    DEFAULT_SEMANTIC_RELATIONSHIP_ROWS,
+    DEFAULT_SEMANTIC_SOURCE_ROWS,
+    SemanticEngine,
+)
 from semantic.semantic_models import (
     RiskAssessment,
     RiskInputs,
@@ -34,10 +39,23 @@ def test_semantic_engine_bounds_require_exact_positive_integers():
         ("max_traversal_depth", 0),
         ("max_traversal_depth", 257),
         ("max_source_rows", 0),
+        ("max_entity_rows", 0),
+        ("max_relationship_rows", True),
         ("max_serialized_bytes", -1),
     ):
         with pytest.raises((TypeError, ValueError)):
             SemanticEngine.from_rows(**scenario, **{name: value})
+
+
+def test_semantic_default_source_bounds_match_each_collection_contract():
+    semantic = SemanticEngine.from_rows(entities=[], relationships=[])
+
+    assert DEFAULT_SEMANTIC_SOURCE_ROWS == 50_000
+    assert DEFAULT_SEMANTIC_ENTITY_ROWS == 100_000
+    assert DEFAULT_SEMANTIC_RELATIONSHIP_ROWS == 250_000
+    assert semantic.max_source_rows == DEFAULT_SEMANTIC_SOURCE_ROWS
+    assert semantic.max_entity_rows == DEFAULT_SEMANTIC_ENTITY_ROWS
+    assert semantic.max_relationship_rows == DEFAULT_SEMANTIC_RELATIONSHIP_ROWS
 
 
 def test_semantic_cache_rejects_boolean_fractional_and_nonfinite_bounds():
@@ -191,6 +209,8 @@ fabric:
     max_traversal_nodes: 750
     max_traversal_depth: 24
     max_source_rows: 75000
+    max_entity_rows: 90000
+    max_relationship_rows: 225000
     max_serialized_bytes: 750000
 """
     )
@@ -199,6 +219,8 @@ fabric:
     assert config.max_traversal_nodes == 750
     assert config.max_traversal_depth == 24
     assert config.max_source_rows == 75000
+    assert config.max_entity_rows == 90000
+    assert config.max_relationship_rows == 225000
     assert config.max_serialized_bytes == 750000
 
     path.write_text(
@@ -212,6 +234,14 @@ fabric:
     )
     with pytest.raises((TypeError, ValueError)):
         FabricRuntimeConfig.load(path)
+
+
+def test_deployed_semantic_source_bound_supports_full_ontology_graph():
+    config = FabricRuntimeConfig.load("fabric.config.deploy.yaml")
+
+    assert config.semantic.max_source_rows == 50_000
+    assert config.semantic.max_entity_rows == 100_000
+    assert config.semantic.max_relationship_rows == 250_000
 
 
 def test_semantic_rejects_malformed_freshness_and_fact_types():

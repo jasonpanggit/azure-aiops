@@ -98,12 +98,19 @@ fabric:
     max_traversal_nodes: 500
     max_traversal_depth: 32
     max_source_rows: 50000
+    max_entity_rows: 100000
+    max_relationship_rows: 250000
     max_serialized_bytes: 1000000
 ```
 
 `max_traversal_depth` must be between 1 and 256 to keep impact-tree construction below Python recursion limits.
 
-All values are exact positive integers and the serialized ceiling must be at least 1024 bytes. Exceeding source, traversal, result, or byte bounds fails closed rather than bypassing the Semantic Layer.
+`max_source_rows` bounds each non-graph fact collection. Entity and relationship
+collections use their separate limits so the semantic layer can represent the
+bounded ontology without widening inventory, compliance, security, or cost.
+All values are exact positive integers and the serialized ceiling must be at
+least 1024 bytes. Exceeding source, traversal, result, or byte bounds fails
+closed rather than bypassing the Semantic Layer.
 
 ## Failure response
 

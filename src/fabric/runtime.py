@@ -94,7 +94,15 @@ class FabricRuntime:
                 semantic_config.max_traversal_depth if semantic_config else 32
             ),
             max_source_rows=(
-                semantic_config.max_source_rows if semantic_config else 50000
+                semantic_config.max_source_rows if semantic_config else 50_000
+            ),
+            max_entity_rows=(
+                semantic_config.max_entity_rows if semantic_config else 100_000
+            ),
+            max_relationship_rows=(
+                semantic_config.max_relationship_rows
+                if semantic_config
+                else 250_000
             ),
             max_serialized_bytes=(
                 semantic_config.max_serialized_bytes
@@ -129,7 +137,17 @@ class FabricRuntime:
             max_source_rows=(
                 self.config.semantic.max_source_rows
                 if self.config is not None
-                else 50000
+                else 50_000
+            ),
+            max_entity_rows=(
+                self.config.semantic.max_entity_rows
+                if self.config is not None
+                else 100_000
+            ),
+            max_relationship_rows=(
+                self.config.semantic.max_relationship_rows
+                if self.config is not None
+                else 250_000
             ),
             max_serialized_bytes=(
                 self.config.semantic.max_serialized_bytes

@@ -25,6 +25,10 @@ from .semantic_query import SemanticIntent, SemanticQuery
 from .semantic_registry import SemanticRegistry
 from .semantic_validator import SemanticValidator
 
+DEFAULT_SEMANTIC_SOURCE_ROWS = 50_000
+DEFAULT_SEMANTIC_ENTITY_ROWS = 100_000
+DEFAULT_SEMANTIC_RELATIONSHIP_ROWS = 250_000
+
 
 class _SemanticTelemetry:
     def __init__(self, meter=None) -> None:
@@ -62,7 +66,9 @@ class SemanticEngine:
         max_results: int = 50,
         max_traversal_nodes: int = 500,
         max_traversal_depth: int = 32,
-        max_source_rows: int = 50000,
+        max_source_rows: int = DEFAULT_SEMANTIC_SOURCE_ROWS,
+        max_entity_rows: int = DEFAULT_SEMANTIC_ENTITY_ROWS,
+        max_relationship_rows: int = DEFAULT_SEMANTIC_RELATIONSHIP_ROWS,
         max_serialized_bytes: int = 1_000_000,
     ) -> None:
         if any(
@@ -72,6 +78,8 @@ class SemanticEngine:
                 max_traversal_nodes,
                 max_traversal_depth,
                 max_source_rows,
+                max_entity_rows,
+                max_relationship_rows,
             )
         ):
             raise ValueError("Semantic limits must be positive integers")
@@ -103,23 +111,27 @@ class SemanticEngine:
         self.max_traversal_nodes = max_traversal_nodes
         self.max_traversal_depth = max_traversal_depth
         self.max_source_rows = max_source_rows
+        self.max_entity_rows = max_entity_rows
+        self.max_relationship_rows = max_relationship_rows
         self.max_serialized_bytes = max_serialized_bytes
-        snapshot_fingerprint = json.dumps(
-            {
-                "entities": self.indexes.entities,
-                "relationships": self.indexes.relationships,
-                "inventory": self.indexes.inventory,
-                "compliance": self.indexes.compliance,
-                "security": self.indexes.security,
-                "cost": self.indexes.cost,
-            },
+        snapshot = {
+            "entities": self.indexes.entities,
+            "relationships": self.indexes.relationships,
+            "inventory": self.indexes.inventory,
+            "compliance": self.indexes.compliance,
+            "security": self.indexes.security,
+            "cost": self.indexes.cost,
+        }
+        fingerprint = hashlib.sha256()
+        encoder = json.JSONEncoder(
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
-        self.cache_namespace = hashlib.sha256(
-            f"{snapshot_fingerprint}:{id(self.scorer)}".encode()
-        ).hexdigest()[:24]
+        for chunk in encoder.iterencode(snapshot):
+            fingerprint.update(chunk.encode())
+        fingerprint.update(f":{id(self.scorer)}".encode())
+        self.cache_namespace = fingerprint.hexdigest()[:24]
 
     @property
     def knowledge_version(self) -> str:
@@ -150,13 +162,29 @@ class SemanticEngine:
         ontology_synchronized_at: str = "",
         **kwargs,
     ) -> SemanticEngine:
-        max_source_rows = kwargs.get("max_source_rows", 50000)
-        if (
-            isinstance(max_source_rows, bool)
-            or not isinstance(max_source_rows, int)
-            or max_source_rows < 1
+        max_source_rows = kwargs.get(
+            "max_source_rows",
+            DEFAULT_SEMANTIC_SOURCE_ROWS,
+        )
+        max_entity_rows = kwargs.get(
+            "max_entity_rows",
+            DEFAULT_SEMANTIC_ENTITY_ROWS,
+        )
+        max_relationship_rows = kwargs.get(
+            "max_relationship_rows",
+            DEFAULT_SEMANTIC_RELATIONSHIP_ROWS,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 1
+            for value in (
+                max_source_rows,
+                max_entity_rows,
+                max_relationship_rows,
+            )
         ):
-            raise ValueError("Semantic max_source_rows must be a positive integer")
+            raise ValueError("Semantic source limits must be positive integers")
         collections = {
             "entities": entities,
             "relationships": relationships,
@@ -167,10 +195,18 @@ class SemanticEngine:
         }
         if any(not isinstance(rows, list) for rows in collections.values()):
             raise TypeError("Semantic snapshot collections must be lists")
+        limits = {
+            "entities": max_entity_rows,
+            "relationships": max_relationship_rows,
+            "inventory": max_source_rows,
+            "compliance": max_source_rows,
+            "security": max_source_rows,
+            "cost": max_source_rows,
+        }
         for name, rows in collections.items():
             if any(not isinstance(row, dict) for row in rows):
                 raise TypeError(f"Semantic {name} rows must be mappings")
-            if len(rows) > max_source_rows:
+            if len(rows) > limits[name]:
                 raise ValueError(f"Semantic {name} exceeds configured source bound")
         semantic_validator = kwargs.pop("validator", None) or SemanticValidator()
         report = semantic_validator.validate_snapshot(
