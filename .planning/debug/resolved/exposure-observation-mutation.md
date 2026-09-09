@@ -2,7 +2,7 @@
 status: resolved
 trigger: "The first bounded-append live Exposure Gold publication completed 451 of 452 base Delta tables but failed before Gold staging with `Append row mutation for key ('vulnerability-observation:v1:32c17d9c20aeb31ed18ad544817820ee375ebf97471efdcc5183b28fc40d7310',)`."
 created: 2026-09-09T21:18:46+08:00
-updated: 2026-09-09T23:05:00+08:00
+updated: 2026-09-09T23:06:00+08:00
 ---
 
 ## Current Focus
@@ -235,6 +235,11 @@ started: observed in the live publication on 2026-09-09 at 13:45:47Z after earli
   checked: human-verification checkpoint response
   found: the user confirmed the locally verified source fix and explicitly prohibited deployment, Azure mutation, publication retry, Gold pointer changes, schedule changes, and unrelated dirty-file changes
   implication: the local debug session may be finalized, while end-to-end live verification remains deferred to the later controlled build/deploy/retry phase
+
+- timestamp: 2026-09-09T23:06:00+08:00
+  checked: semantic knowledge-base indexing availability
+  found: the `mempalace` CLI is unavailable in this environment; the durable knowledge-base entry was written successfully
+  implication: semantic indexing was skipped explicitly and `.planning/debug/knowledge-base.md` remains the fallback for future recall
 
 ## Resolution
 
