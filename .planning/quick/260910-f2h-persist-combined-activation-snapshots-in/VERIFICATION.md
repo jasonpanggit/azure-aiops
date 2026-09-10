@@ -1,6 +1,6 @@
 ---
 phase: quick-260910-f2h
-verified: 2026-09-10T03:58:43Z
+verified: 2026-09-10T04:04:18Z
 status: human_needed
 score: 7/8 must-haves verified
 behavior_unverified: 0
@@ -25,9 +25,9 @@ human_verification:
 # Quick Task 260910-f2h Verification Report
 
 **Task Goal:** Persist combined activation snapshots in OneLake and add exact generation replay that skips connection validation, discovery, and recombination while preserving Fabric publication, Gold staging, completed marker, shortcuts, and pointer activation.
-**Verified:** 2026-09-10T03:58:43Z
+**Verified:** 2026-09-10T04:04:18Z
 **Status:** human_needed
-**Re-verification:** Yes — final code-review closure after TDD commits `80bbc4e98` and `89fcb0102`
+**Re-verification:** Yes — independent final regression at `78bcb7553`, after TDD commits `80bbc4e98` and `89fcb0102`
 
 ## Goal Achievement
 
@@ -133,13 +133,13 @@ The PLAN's stale literal `generation_path` pattern does not match the stronger h
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Complete quick regression set | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_storage.py tests/test_onelake_fs.py tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` | 176 tests collected across the six files; all passed; exit 0 | ✓ PASS |
+| Complete quick regression set | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_storage.py tests/test_onelake_fs.py tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` | Fresh verifier run: 176 tests across the six files; all passed; exit 0 | ✓ PASS |
 | Provenance and artifact corruption matrix | Included in the complete run: `test_activate_runtime_replay_refuses_corrupt_generation_before_runtime` | All 39 variants passed, including legacy no-integrity input, volatile-only row changes, valid immutable metadata changes, source provenance, artifact, ontology, count, semantic-hash, and overall-integrity cases | ✓ PASS |
 | Retention and pre-sync race checks | `test_remote_dataset_store_retains_all_immutable_generations`, both local cleanup tests, and `test_activate_runtime_reverifies_exact_generation_before_sync` | Remote retained five exact generations, local retained three, and mutation during runtime construction failed before sync | ✓ PASS |
 | Exact no-latest/no-upstream replay | Included in the complete run: `test_activate_runtime_replays_exact_generation_without_upstream_work` and `test_missing_exact_replay_does_not_fallback_or_activate_pointer` | Both passed; fail-on-call doubles reject registry enumeration, validation, discovery, and `current_generation`; exact missing ID leaves pointer empty | ✓ PASS |
 | Full replay transaction | Included in the complete run: `test_exact_historical_replay_runs_full_finalization_transaction`, `test_successful_publication_hooks_follow_exact_side_effect_order`, and pre-activation failpoint matrix | Historical generation selected while a different generation is current; normal/ontology/Gold writes, registration/catalog, shortcuts, completed state, and final pointer activation passed | ✓ PASS |
-| Scoped code quality | `UV_OFFLINE=1 uv run ruff check ...` | `All checks passed!` | ✓ PASS |
-| Python compilation | `UV_OFFLINE=1 uv run python -m compileall -q ...` | No output; exit 0 | ✓ PASS |
+| Scoped code quality | `UV_OFFLINE=1 uv run ruff check ...` | Fresh verifier run: `All checks passed!` | ✓ PASS |
+| Python compilation | `UV_OFFLINE=1 uv run python -m compileall -q ...` | Fresh verifier run: no output; exit 0 | ✓ PASS |
 | Committed task diff integrity | `git diff --check 80bbc4e98^..89fcb0102`, twelve-commit path inspection, and `git status --short` | No whitespace errors or staged files; final review commits contain only scoped source/test paths; unrelated pre-existing dirty files remain separate | ✓ PASS |
 
 ## Probe Execution
@@ -188,5 +188,5 @@ The report remains `human_needed` only for the explicitly prohibited live OneLak
 
 ---
 
-_Verified: 2026-09-10T03:58:43Z_
+_Verified: 2026-09-10T04:04:18Z_
 _Verifier: the agent (gsd-verifier)_

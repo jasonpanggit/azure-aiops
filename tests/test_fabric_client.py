@@ -256,6 +256,53 @@ def test_fabric_client_follows_operation_location_on_analysis_windows_net() -> N
     assert result["id"] == "o1"
 
 
+def test_fabric_client_reads_blob_backed_operation_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getDefinition"):
+            return httpx.Response(
+                202,
+                request=request,
+                headers={
+                    "Location": (
+                        "https://wabi-west-us3-a-primary-redirect.analysis.windows.net"
+                        "/v1/operations/op1"
+                    ),
+                    "Retry-After": "0",
+                },
+            )
+        if request.url.path.endswith("/operations/op1/result"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={"definition": {"parts": [{"path": "data_agent.json"}]}},
+            )
+        if request.url.path.endswith("/operations/op1"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "status": "Succeeded",
+                    "blobInfoId": "blob-1",
+                    "resultContentType": "application/json",
+                },
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    client = FabricClient(
+        FakeCredential(),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _: None,
+    )
+
+    result = client.request(
+        "POST",
+        "/workspaces/w/items/a/getDefinition",
+        json_body={"format": "Default"},
+    )
+
+    assert result["definition"]["parts"][0]["path"] == "data_agent.json"
+
+
 @pytest.mark.parametrize(
     "url",
     (

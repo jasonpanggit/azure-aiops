@@ -24,7 +24,7 @@ from operations.foundry_agent import (
 )
 from operations.gold_grounding_metrics import GoldGroundingMetrics
 
-_DEFAULT_GOLD_TOOL_NAME = "DataAgent_gold_grounding_agent"
+_DEFAULT_GOLD_TOOL_NAME = "DataAgent_AI_Ops_Data_Agent"
 _GOLD_CONTEXT_BUDGET_CHARS = 6_000
 
 

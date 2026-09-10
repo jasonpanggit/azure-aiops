@@ -110,6 +110,43 @@ def test_build_data_agent_definition_stages_lakehouse_datasource_and_instruction
     assert {"ontology_entities", "ontology_relationships"} <= selected_names
 
 
+def test_build_data_agent_definition_stages_data_source_instructions_and_few_shots():
+    import base64
+    import json
+
+    definition = build_data_agent_definition(
+        lakehouse_id="lakehouse-id-123",
+        lakehouse_workspace_id="workspace-id-456",
+        lakehouse_display_name="operational_context_graph",
+        ai_instructions=RELATIONSHIP_SUGGESTION_INSTRUCTIONS,
+        data_source_instructions="Use exact identifiers.",
+        few_shots=(
+            {
+                "id": "8d6d2622-38aa-4b54-8fb3-f5de9e3f9a88",
+                "question": "Show active relationships.",
+                "query": "SELECT subject_id FROM ontology_relationships",
+            },
+        ),
+    )
+    parts_by_path = {part["path"]: part for part in definition["parts"]}
+    datasource_path = next(
+        path for path in parts_by_path if path.endswith("/datasource.json")
+    )
+    fewshots_path = next(
+        path for path in parts_by_path if path.endswith("/fewshots.json")
+    )
+    datasource = json.loads(
+        base64.b64decode(parts_by_path[datasource_path]["payload"])
+    )
+    fewshots = json.loads(
+        base64.b64decode(parts_by_path[fewshots_path]["payload"])
+    )
+
+    assert datasource["dataSourceInstructions"] == "Use exact identifiers."
+    assert fewshots["fewShots"][0]["question"] == "Show active relationships."
+    assert fewshots["fewShots"][0]["query"].startswith("SELECT")
+
+
 def test_parse_suggestions_extracts_json_lines_and_ignores_prose():
     response_text = "\n".join(  # noqa: FLY002 - multi-line list is clearer than a long f-string
         [

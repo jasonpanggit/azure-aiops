@@ -44,9 +44,11 @@ for the honest write-up of what is/isn't automatable today."""
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from .fabric_client import FabricClient
 
@@ -65,6 +67,7 @@ ITEM_TYPE = "DataAgent"
 #: ``stage_config.json``/``datasource.json``/``fewshots.json`` parts.
 _DATA_AGENT_SCHEMA_VERSION = "2.1.0"
 _DATASOURCE_SCHEMA_VERSION = "1.0.0"
+_FEW_SHOTS_SCHEMA_VERSION = "1.0.0"
 _STAGE_CONFIG_SCHEMA_VERSION = "1.0.0"
 
 #: Fixed AI instructions steering the Data Agent toward proposing candidate
@@ -124,6 +127,9 @@ class DataAgentManager:
         lakehouse_display_name: str,
         description: str = "",
         ai_instructions: str = RELATIONSHIP_SUGGESTION_INSTRUCTIONS,
+        table_names: tuple[str, ...] = ("ontology_entities", "ontology_relationships"),
+        data_source_instructions: str = "",
+        few_shots: tuple[Mapping[str, str], ...] = (),
     ) -> dict[str, Any]:
         """Creates a DataAgent item with a public definition (per Microsoft
         Learn's "Data Agent item definition" article) that already stages a
@@ -136,6 +142,9 @@ class DataAgentManager:
             lakehouse_workspace_id=lakehouse_workspace_id,
             lakehouse_display_name=lakehouse_display_name,
             ai_instructions=ai_instructions,
+            table_names=table_names,
+            data_source_instructions=data_source_instructions,
+            few_shots=few_shots,
         )
         return self.client.request(
             "POST",
@@ -149,16 +158,36 @@ class DataAgentManager:
             },
         )
 
-    def update_definition(self, item_id: str, definition: dict[str, Any]) -> dict[str, Any]:
+    def update_definition(
+        self,
+        item_id: str,
+        definition: dict[str, Any],
+        *,
+        existing_definition: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Updates an existing DataAgent item's staged definition via the
         generic Items API's ``updateDefinition`` operation (unlike
         ``publish``, this one *is* the standard generic-Items-API path and
         is shared across item types, including Notebook/Environment
-        elsewhere in this repo)."""
+        elsewhere in this repo).
+
+        Existing published and platform parts are preserved so staging a new
+        draft never silently withdraws the currently published agent."""
+        if existing_definition is None:
+            existing_definition = self.get_definition(item_id)
+        definition = _preserve_server_parts(definition, existing_definition)
         return self.client.request(
             "POST",
             f"{self.base_path}/{item_id}/updateDefinition",
             json_body={"definition": definition},
+        )
+
+    def get_definition(self, item_id: str) -> dict[str, Any]:
+        """Returns the complete draft and published Data Agent definition."""
+        return self.client.request(
+            "POST",
+            f"{self.base_path}/{item_id}/getDefinition",
+            json_body={"format": "Default"},
         )
 
     def publish(self, item_id: str, *, published_description: str = "") -> dict[str, Any]:
@@ -196,6 +225,8 @@ def build_data_agent_definition(
     table_names: tuple[str, ...] = ("ontology_entities", "ontology_relationships"),
     generation: GenerationSelection | None = None,
     table_aliases: Mapping[str, CompatibilityAlias] | None = None,
+    data_source_instructions: str = "",
+    few_shots: tuple[Mapping[str, str], ...] = (),
 ) -> dict[str, Any]:
     """Builds the DataAgent item definition ``parts`` payload per Microsoft
     Learn's "Data Agent item definition" article (fetched live during this
@@ -223,6 +254,10 @@ def build_data_agent_definition(
 
     if table_aliases is not None:
         table_names = _bound_alias_names(table_names, generation, table_aliases)
+    if not table_names or any(not name.strip() for name in table_names):
+        raise ValueError("Data Agent definitions require at least one named table")
+    if len(set(table_names)) != len(table_names):
+        raise ValueError("Data Agent table names must be unique")
     datasource_name = lakehouse_display_name or "ontology_lakehouse"
     datasource_part_prefix = f"Files/Config/draft/lakehouse_tables-{datasource_name}"
 
@@ -251,26 +286,164 @@ def build_data_agent_definition(
             for table_name in table_names
         ],
     }
+    if data_source_instructions.strip():
+        datasource_json["dataSourceInstructions"] = data_source_instructions.strip()
 
-    return {
-        "parts": [
+    parts = [
+        {
+            "path": "Files/Config/data_agent.json",
+            "payload": _b64(data_agent_json),
+            "payloadType": "InlineBase64",
+        },
+        {
+            "path": "Files/Config/draft/stage_config.json",
+            "payload": _b64(stage_config_json),
+            "payloadType": "InlineBase64",
+        },
+        {
+            "path": f"{datasource_part_prefix}/datasource.json",
+            "payload": _b64(datasource_json),
+            "payloadType": "InlineBase64",
+        },
+    ]
+    if few_shots:
+        parts.append(
             {
-                "path": "Files/Config/data_agent.json",
-                "payload": _b64(data_agent_json),
+                "path": f"{datasource_part_prefix}/fewshots.json",
+                "payload": _b64(
+                    {
+                        "$schema": _FEW_SHOTS_SCHEMA_VERSION,
+                        "fewShots": [_normalize_few_shot(item) for item in few_shots],
+                    }
+                ),
                 "payloadType": "InlineBase64",
-            },
-            {
-                "path": "Files/Config/draft/stage_config.json",
-                "payload": _b64(stage_config_json),
-                "payloadType": "InlineBase64",
-            },
-            {
-                "path": f"{datasource_part_prefix}/datasource.json",
-                "payload": _b64(datasource_json),
-                "payloadType": "InlineBase64",
-            },
-        ]
+            }
+        )
+    return {"parts": parts}
+
+
+def _normalize_few_shot(example: Mapping[str, str]) -> dict[str, str]:
+    example_id = str(example.get("id") or "").strip()
+    question = str(example.get("question") or "").strip()
+    query = str(example.get("query") or "").strip()
+    if not example_id or not question or not query:
+        raise ValueError("Each Data Agent few-shot requires id, question, and query")
+    try:
+        UUID(example_id)
+    except ValueError as exc:
+        raise ValueError("Data Agent few-shot id must be a UUID") from exc
+    if not query.casefold().startswith("select"):
+        raise ValueError("Data Agent few-shot queries must be read-only SELECT statements")
+    return {"id": example_id, "question": question, "query": query}
+
+
+def hydrate_data_agent_table_selection(
+    definition: dict[str, Any],
+    live_definition: Mapping[str, Any],
+    table_names: tuple[str, ...],
+) -> dict[str, Any]:
+    """Bind a draft definition to Fabric's live nested table element IDs."""
+    requested = set(table_names)
+    if not requested or len(requested) != len(table_names):
+        raise ValueError("Requested Data Agent tables must be non-empty and unique")
+
+    hydrated = copy.deepcopy(definition)
+    target_part = _single_draft_datasource_part(hydrated)
+    live_parts = (live_definition.get("definition") or live_definition).get("parts")
+    if not isinstance(live_parts, list):
+        raise TypeError("Live Data Agent definition parts are unavailable")
+    live_part = _single_draft_datasource_part({"parts": live_parts})
+    target_payload = _decoded_part(target_part)
+    live_payload = _decoded_part(live_part)
+    for field in ("artifactId", "workspaceId", "displayName", "type"):
+        if target_payload.get(field) != live_payload.get(field):
+            raise ValueError(f"Live Data Agent datasource {field} does not match the target")
+
+    target_path = str(target_part.get("path") or "")
+    live_path = str(live_part.get("path") or "")
+    if target_path != live_path:
+        target_prefix = target_path.removesuffix("/datasource.json")
+        live_prefix = live_path.removesuffix("/datasource.json")
+        for part in hydrated["parts"]:
+            path = str(part.get("path") or "")
+            if path.startswith(f"{target_prefix}/"):
+                part["path"] = f"{live_prefix}{path.removeprefix(target_prefix)}"
+
+    elements = copy.deepcopy(live_payload.get("elements") or [])
+    discovered: set[str] = set()
+
+    def select(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes:
+            if node.get("type") == "lakehouse_tables.table":
+                name = str(node.get("display_name") or "")
+                node["is_selected"] = name in requested
+                if name in requested:
+                    discovered.add(name)
+            children = node.get("children")
+            if isinstance(children, list):
+                select(children)
+
+    select(elements)
+    missing = sorted(requested - discovered)
+    if missing:
+        raise ValueError(f"Fabric Data Agent tables are missing: {missing}")
+    target_payload["elements"] = elements
+    if live_payload.get("metadata") is not None:
+        target_payload["metadata"] = copy.deepcopy(live_payload["metadata"])
+    target_part["payload"] = _b64(target_payload)
+    return _preserve_server_parts(hydrated, live_definition)
+
+
+def _single_draft_datasource_part(definition: dict[str, Any]) -> dict[str, Any]:
+    parts = definition.get("parts")
+    if not isinstance(parts, list):
+        raise TypeError("Data Agent definition parts are unavailable")
+    matches = [
+        part
+        for part in parts
+        if isinstance(part, dict)
+        and "/draft/" in str(part.get("path") or "")
+        and str(part.get("path") or "").endswith("/datasource.json")
+    ]
+    if len(matches) != 1:
+        raise ValueError("Data Agent definition must contain one draft datasource")
+    return matches[0]
+
+
+def _decoded_part(part: Mapping[str, Any]) -> dict[str, Any]:
+    decoded = json.loads(base64.b64decode(str(part.get("payload") or "")))
+    if not isinstance(decoded, dict):
+        raise TypeError("Data Agent definition part must contain a JSON object")
+    return decoded
+
+
+def _preserve_server_parts(
+    definition: dict[str, Any],
+    live_definition: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(definition)
+    target_parts = merged.get("parts")
+    live_parts = (live_definition.get("definition") or live_definition).get("parts")
+    if not isinstance(target_parts, list) or not isinstance(live_parts, list):
+        raise TypeError("Data Agent definition parts are unavailable")
+    target_paths = {
+        str(part.get("path") or "")
+        for part in target_parts
+        if isinstance(part, dict)
     }
+    for part in live_parts:
+        if not isinstance(part, dict):
+            continue
+        path = str(part.get("path") or "")
+        preserve = (
+            path == ".platform"
+            or path == "Files/Config/publish_info.json"
+            or path.startswith("Files/Config/published/")
+        )
+        if preserve and path not in target_paths:
+            target_parts.append(copy.deepcopy(part))
+            target_paths.add(path)
+    return merged
 
 
 def _bound_alias_names(
@@ -337,4 +510,5 @@ __all__ = [
     "DataAgentManager",
     "build_data_agent_definition",
     "ensure_data_agent",
+    "hydrate_data_agent_table_selection",
 ]
