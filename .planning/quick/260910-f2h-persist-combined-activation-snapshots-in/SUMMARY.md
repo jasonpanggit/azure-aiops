@@ -12,11 +12,12 @@ provides:
   - URI-safe Fabric source-root configuration for local paths and OneLake
   - Fail-closed generation and manifest validation before Fabric publication
   - Historical replay coverage through tables, ontology, Gold, completion, shortcuts, and pointer activation
+  - Backward-compatible normal config-load failure attribution to the combined-snapshot stage
 affects: [activation-cli, fabric-publication, exposure-gold, production-recovery]
 actuals:
-  tokens: 6233
+  tokens: 6772
   tasks: 2
-  commits: 5
+  commits: 6
 tech-stack:
   added: []
   patterns:
@@ -38,6 +39,7 @@ key-decisions:
   - "Exact activation replay resolves only generations/<requested-id>; it never consults the current generation pointer."
   - "Replay enters FabricSyncService directly with the activation-owned OneLakeDocumentStore so the established Gold completion and pointer transaction remains authoritative."
   - "Fabric source roots remain resolved Path objects locally and normalized strings for valid OneLake URIs."
+  - "Normal Fabric config loading remains inside the combined_snapshot stage boundary; replay config loading remains outside that skipped stage."
 patterns-established:
   - "Replay provenance: terminal connections come from the persisted combined manifest while skipped validation and discovery results remain empty mappings."
   - "Fail-closed replay: unsafe, absent, unreadable, or malformed generation input is rejected before runtime construction or Fabric publication."
@@ -67,7 +69,7 @@ coverage:
         ref: "tests/test_onboarding_activation.py and tests/test_fabric_sync_service.py"
         status: pass
     human_judgment: false
-duration: 7min
+duration: 10min
 completed: 2026-09-10
 status: complete
 ---
@@ -78,9 +80,9 @@ status: complete
 
 ## Performance
 
-- **Duration:** 7 min
+- **Duration:** 10 min across initial execution and verifier-gap remediation
 - **Started:** 2026-09-10T03:00:39Z
-- **Completed:** 2026-09-10T03:07:10Z
+- **Completed:** 2026-09-10T03:15:01Z
 - **Tasks:** 2
 - **Files modified:** 8
 
@@ -91,6 +93,7 @@ status: complete
 - Bound production combined snapshots to the exact existing workspace/lakehouse OneLake root under `Files/aiops/inventory-source`.
 - Proved a historical generation is used even when a different generation is current, including normal table and ontology publication, Gold staging/writes, shortcut finalization, completed-version state, and final pointer activation.
 - Added fail-closed coverage for traversal-shaped IDs and absent, unreadable, malformed, or provenance-invalid manifests before Fabric runtime construction.
+- Restored the prior normal-mode progress boundary so a Fabric config-load failure emits `combined_snapshot/started` followed by sanitized `combined_snapshot/failed`, while replay still emits no combined-snapshot events.
 
 ## Task Commits
 
@@ -101,6 +104,7 @@ TDD RED and GREEN gates were committed separately:
 3. **Task 2 RED: Cover durable replay finalization** — `48a730dbe`
 4. **Task 2 GREEN: Persist activation snapshots in OneLake** — `d1bc7e6db`
 5. **Task 2 verification closure: Complete replay input safety cases** — `29fe08814`
+6. **Verifier gap remediation: Restore snapshot failure stage** — `132893d3e`
 
 ## Files Created/Modified
 
@@ -115,7 +119,8 @@ TDD RED and GREEN gates were committed separately:
 
 ## Validation
 
-- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — **99 passed**.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_onboarding_activation.py::test_activate_runtime_config_load_failure_is_combined_snapshot_failure tests/test_onboarding_activation.py::test_activate_runtime_replays_exact_generation_without_upstream_work tests/test_onboarding_activation.py::test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest tests/test_onboarding_activation.py::test_activate_runtime_replay_refuses_missing_or_unsafe_exact_generation` — **8 passed**.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — **100 passed**.
 - `uv run ruff check src/fabric/config.py src/onboarding/activation.py src/onboarding/cli.py tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — passed.
 - `git diff --check` — passed.
 - No Azure CLI, Fabric/Azure API, Terraform, deployment, networked test, Container Apps Job/profile/schedule, or D4 operation was invoked.
@@ -125,6 +130,7 @@ TDD RED and GREEN gates were committed separately:
 - Reused `DatasetStore.generation_path()` as the single safe exact-ID resolver and deliberately excluded `current_generation()` from replay.
 - Loaded and validated the persisted combined manifest before runtime construction so malformed or unreadable replay input cannot begin Fabric publication.
 - Kept the normal activation branch's validation, discovery, combined publication, progress order, result fields, and pointer-store behavior unchanged.
+- Kept `FabricRuntimeConfig.load()` inside the normal `combined_snapshot` stage so load failures retain prior stage attribution, without moving replay config validation into a stage replay does not execute.
 
 ## Deviations from Plan
 
@@ -138,12 +144,27 @@ TDD RED and GREEN gates were committed separately:
 - **Verification:** All 99 planned tests pass with repository tests collected normally.
 - **Committed in:** Not applicable (environment-only invocation).
 
-**Total deviations:** 1 auto-fixed Rule 3 blocking issue.
-**Impact on plan:** Verification remained fully local and scoped; production code and test semantics were unaffected.
+**2. [Rule 1 - Bug] Restored normal config-load failure stage attribution**
+- **Found during:** Post-execution verifier
+- **Issue:** Normal mode loaded Fabric configuration before starting `combined_snapshot`, changing config-load failures from `combined_snapshot/failed` to `activation/failed`.
+- **Fix:** Started `combined_snapshot` immediately before the normal-mode config load and added a focused sanitized-failure regression; replay remains on its separate no-combined-snapshot branch.
+- **Files modified:** `src/onboarding/activation.py`, `tests/test_onboarding_activation.py`
+- **Verification:** Focused 8-case replay/stage run, complete 100-test quick-task suite, Ruff, and diff checks passed.
+- **Committed in:** `132893d3e`
+
+**Total deviations:** 2 auto-fixed issues (1 Rule 1 bug, 1 Rule 3 blocking issue).
+**Impact on plan:** The surgical production change restores the locked compatibility contract; replay semantics and all unrelated behavior remain unchanged.
 
 ## Issues Encountered
 
 - The environment's auto-loaded Phoenix pytest plugin is incompatible with the active Python runtime. Disabling external plugin auto-loading allowed the repository's own tests to run without bypassing any project test.
+- Initial verification found one normal-mode progress compatibility regression; `132893d3e` restored the exact pre-task boundary and closed the gap.
+
+## Verification Gap Closure
+
+- Normal mode now starts `combined_snapshot` before the fallible `FabricRuntimeConfig.load()` call, restoring the established started/failed event pair and sanitized `ActivationFailure.stage`.
+- Replay still loads and validates config/source only on its replay branch before Fabric publication and emits no `combined_snapshot` event.
+- Re-verification records no remaining implementation or behavioral gaps; the historical no-cloud/no-D4 claim remains an operator-confirmation warning only.
 
 ## Known Stubs
 
@@ -171,7 +192,7 @@ None — no dependency, credential, or external service change is required.
 
 - The required summary exists at the quick-task path.
 - All eight planned source/config/test files exist.
-- All five recorded task commits exist in Git history.
+- All six recorded task/remediation commits exist in Git history.
 - No tracked file was deleted by a task commit.
 - No unrelated dirty or untracked path was staged or committed.
 
