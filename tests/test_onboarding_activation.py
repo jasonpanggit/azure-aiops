@@ -518,6 +518,8 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
             "runId": "exact-generation",
             "status": "completed",
             "sourceConnectionIds": ["spoke", "hub"],
+            "sourceRunIds": ["run-spoke", "run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
         },
         ontology={},
     )
@@ -666,6 +668,8 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
             "runId": "exact-generation",
             "status": "completed",
             "sourceConnectionIds": ["hub"],
+            "sourceRunIds": ["run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
         },
         ontology={},
     )
@@ -716,8 +720,22 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
         "wrong_overall_hash",
         "incomplete_status",
         "wrong_run_id",
+        "missing_query_version",
+        "wrong_query_version",
+        "wrong_type_query_version",
+        "missing_source_connection_ids",
+        "wrong_type_source_connection_ids",
         "empty_source_connection_ids",
         "invalid_source_connection_ids",
+        "non_string_source_connection_id",
+        "duplicate_source_connection_ids",
+        "missing_source_run_ids",
+        "wrong_type_source_run_ids",
+        "empty_source_run_ids",
+        "blank_source_run_id",
+        "non_string_source_run_id",
+        "duplicate_source_run_ids",
+        "mismatched_source_provenance_cardinality",
         "invalid_dataset_name",
     ],
 )
@@ -734,7 +752,9 @@ def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
         {
             "runId": "exact-generation",
             "status": "completed",
-            "sourceConnectionIds": ["hub"],
+            "sourceConnectionIds": ["hub", "spoke"],
+            "sourceRunIds": ["run-hub", "run-spoke"],
+            "queryVersion": "combined-subscription-connections-v1",
         },
         ontology={"version": "v1"},
     )
@@ -776,11 +796,53 @@ def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
     elif corruption == "wrong_run_id":
         manifest["runId"] = "different-generation"
         manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_query_version":
+        del manifest["queryVersion"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_query_version":
+        manifest["queryVersion"] = "per-connection-discovery-v1"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_query_version":
+        manifest["queryVersion"] = ["combined-subscription-connections-v1"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_source_connection_ids":
+        del manifest["sourceConnectionIds"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_source_connection_ids":
+        manifest["sourceConnectionIds"] = "hub"
+        manifest_path.write_text(json.dumps(manifest))
     elif corruption == "empty_source_connection_ids":
         manifest["sourceConnectionIds"] = []
         manifest_path.write_text(json.dumps(manifest))
     elif corruption == "invalid_source_connection_ids":
         manifest["sourceConnectionIds"] = [" "]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "non_string_source_connection_id":
+        manifest["sourceConnectionIds"] = ["hub", 7]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "duplicate_source_connection_ids":
+        manifest["sourceConnectionIds"] = ["hub", "hub"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_source_run_ids":
+        del manifest["sourceRunIds"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_source_run_ids":
+        manifest["sourceRunIds"] = "run-hub"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "empty_source_run_ids":
+        manifest["sourceRunIds"] = []
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "blank_source_run_id":
+        manifest["sourceRunIds"] = ["run-hub", " "]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "non_string_source_run_id":
+        manifest["sourceRunIds"] = ["run-hub", 7]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "duplicate_source_run_ids":
+        manifest["sourceRunIds"] = ["run-hub", "run-hub"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "mismatched_source_provenance_cardinality":
+        manifest["sourceRunIds"] = ["run-hub"]
         manifest_path.write_text(json.dumps(manifest))
     elif corruption == "invalid_dataset_name":
         manifest["datasets"]["../escape"] = {
