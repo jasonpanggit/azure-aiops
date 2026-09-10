@@ -536,6 +536,7 @@ def activate_runtime(
         from fabric.runtime import build_runtime
 
         exact_generation = str(replay_source_run_id)
+        source_store: DatasetStore | None = None
         if exact_generation:
             config = FabricRuntimeConfig.load(fabric_config)
             source_store = DatasetStore(config.source_data_root)
@@ -594,6 +595,14 @@ def activate_runtime(
 
         reporter.start("fabric_publication")
         runtime = build_runtime(config)
+        if source_store is not None:
+            # Recheck the exact immutable input after runtime construction and
+            # immediately before Fabric mapping. Remote DatasetStore publish
+            # never deletes generations, so normal publication cannot
+            # invalidate this verified path while the replay transaction runs.
+            combined = source_store.verify_combined_activation_generation(
+                exact_generation
+            )
         publication = runtime.service.sync(
             replay_source_run_id=exact_generation or str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
