@@ -583,8 +583,8 @@ def activate_runtime(
                     total=total_connections,
                 )
 
-            config = FabricRuntimeConfig.load(fabric_config)
             reporter.start("combined_snapshot")
+            config = FabricRuntimeConfig.load(fabric_config)
             combined = publish_combined_snapshot(
                 service,
                 selected,

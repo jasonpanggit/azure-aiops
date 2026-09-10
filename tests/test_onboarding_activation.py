@@ -604,6 +604,46 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
     } & set(started)
 
 
+def test_activate_runtime_config_load_failure_is_combined_snapshot_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = _Service({"hub": tmp_path / "hub"})
+    events: list[dict[str, object]] = []
+    secret = "credential=planted-secret"
+
+    def fail_config_load(_path):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(fail_config_load),
+    )
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="missing-fabric.yaml",
+            progress_callback=events.append,
+            heartbeat_interval=3600,
+        )
+
+    failure = captured.value
+    assert failure.stage == "combined_snapshot"
+    assert (events[-2]["stage"], events[-2]["status"]) == (
+        "combined_snapshot",
+        "started",
+    )
+    assert events[-1] == {
+        "event": "activation_progress",
+        "stage": "combined_snapshot",
+        "status": "failed",
+        "elapsed_seconds": failure.elapsed_seconds,
+        "error_code": "ACTIVATION_FAILED",
+    }
+    assert secret not in json.dumps(events) + str(failure)
+
+
 @pytest.mark.parametrize(
     "manifest_body",
     [
