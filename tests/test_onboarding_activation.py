@@ -19,6 +19,7 @@ from onboarding.activation import (
 from onboarding.graph_normalize import ENTITY_TYPES, NormalizedGraph
 from storage.datasets import DatasetStore
 from storage.delta_writer import DeltaWriteResult
+from storage.onelake_documents import OneLakeDocumentStore
 
 
 @dataclass(frozen=True)
@@ -503,6 +504,104 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert replay_source_run_ids == [
         str(result["combined_snapshot"]["runId"])
     ]
+
+
+def test_activate_runtime_replays_exact_generation_without_upstream_work(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "combined"
+    manifest = DatasetStore(source_root).publish(
+        {"entities/Resource": [{"id": "historical-resource"}]},
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["spoke", "hub"],
+        },
+        ontology={},
+    )
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+
+    def unexpected_upstream_call(*_args, **_kwargs):
+        pytest.fail("exact replay must not invoke upstream discovery")
+
+    service.registry.list = unexpected_upstream_call
+    service.validate = unexpected_upstream_call
+    service.sync = unexpected_upstream_call
+    monkeypatch.setattr(DatasetStore, "current_generation", unexpected_upstream_call)
+
+    sync_kwargs: dict[str, object] = {}
+
+    class FabricService:
+        def sync(self, **kwargs):
+            sync_kwargs.update(kwargs)
+            return type(
+                "Publication",
+                (),
+                {
+                    "run_id": "fabric-run",
+                    "source_run_id": "exact-generation",
+                    "status": "completed",
+                    "tables": ("silver_resources",),
+                },
+            )()
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: type(
+                "Semantic",
+                (),
+                {"knowledge_version": "v1", "freshness": "current"},
+            )(),
+        },
+    )()
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+    monkeypatch.setattr("fabric.runtime.build_runtime", lambda _config: runtime)
+    events: list[dict[str, object]] = []
+
+    result = activate_runtime(
+        service,
+        fabric_config="fabric.test.yaml",
+        replay_source_run_id="exact-generation",
+        progress_callback=events.append,
+        heartbeat_interval=3600,
+    )
+
+    assert result == {
+        "status": "activated",
+        "connections": ["hub", "spoke"],
+        "validations": {},
+        "discovery_syncs": {},
+        "combined_snapshot": manifest,
+        "fabric_publication": {
+            "run_id": "fabric-run",
+            "source_run_id": "exact-generation",
+            "status": "completed",
+            "tables": ["silver_resources"],
+        },
+        "ontology_version": "v1",
+        "freshness": "current",
+    }
+    assert sync_kwargs["replay_source_run_id"] == "exact-generation"
+    pointer_store = sync_kwargs["exposure_pointer_store"]
+    assert isinstance(pointer_store, OneLakeDocumentStore)
+    assert pointer_store.root == str(service.registry.root)
+    started = [event["stage"] for event in events if event["status"] == "started"]
+    assert started == ["activation", "fabric_publication"]
+    assert not {
+        "connection_validation",
+        "connection_discovery",
+        "combined_snapshot",
+    } & set(started)
 
 
 def test_activate_runtime_failure_uses_same_sanitized_elapsed_value(
