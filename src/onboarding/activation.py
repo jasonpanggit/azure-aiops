@@ -539,14 +539,8 @@ def activate_runtime(
         if exact_generation:
             config = FabricRuntimeConfig.load(fabric_config)
             source_store = DatasetStore(config.source_data_root)
-            generation = source_store.generation_path(exact_generation)
-            if generation is None:
-                raise ValueError("Requested activation generation does not exist")
-            combined = _read_manifest(source_store, generation)
-            selected = _manifest_source_connection_ids(
-                combined,
-                expected_run_id=exact_generation,
-            )
+            combined = source_store.verify_exact_generation(exact_generation)
+            selected = sorted(combined["sourceConnectionIds"])
             validations: dict[str, Any] = {}
             syncs: dict[str, Any] = {}
         else:
@@ -648,22 +642,6 @@ def _read_manifest(store: DatasetStore, generation: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"Discovery manifest is invalid for {generation}")
     return payload
-
-
-def _manifest_source_connection_ids(
-    manifest: dict[str, Any],
-    *,
-    expected_run_id: str,
-) -> list[str]:
-    if str(manifest.get("runId") or "") != expected_run_id:
-        raise ValueError("Activation generation manifest does not match requested ID")
-    source_ids = manifest.get("sourceConnectionIds")
-    if not isinstance(source_ids, list) or not all(
-        isinstance(connection_id, str) and connection_id
-        for connection_id in source_ids
-    ):
-        raise TypeError("Activation generation manifest provenance is invalid")
-    return sorted(source_ids)
 
 
 __all__ = [

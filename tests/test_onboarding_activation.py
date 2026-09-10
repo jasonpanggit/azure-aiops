@@ -711,8 +711,13 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
         "invalid_ontology",
         "wrong_row_count",
         "wrong_content_hash",
+        "wrong_ontology_row_count",
+        "wrong_ontology_content_hash",
         "wrong_overall_hash",
         "incomplete_status",
+        "wrong_run_id",
+        "empty_source_connection_ids",
+        "invalid_source_connection_ids",
         "invalid_dataset_name",
     ],
 )
@@ -756,11 +761,26 @@ def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
     elif corruption == "wrong_content_hash":
         manifest["datasets"]["entities/Resource"]["contentHash"] = "0" * 64
         manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_ontology_row_count":
+        manifest["datasets"]["ontology/ontology"]["rowCount"] = 0
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_ontology_content_hash":
+        manifest["datasets"]["ontology/ontology"]["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
     elif corruption == "wrong_overall_hash":
         manifest["contentHash"] = "0" * 64
         manifest_path.write_text(json.dumps(manifest))
     elif corruption == "incomplete_status":
         manifest["status"] = "started"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_run_id":
+        manifest["runId"] = "different-generation"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "empty_source_connection_ids":
+        manifest["sourceConnectionIds"] = []
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "invalid_source_connection_ids":
+        manifest["sourceConnectionIds"] = [" "]
         manifest_path.write_text(json.dumps(manifest))
     elif corruption == "invalid_dataset_name":
         manifest["datasets"]["../escape"] = {

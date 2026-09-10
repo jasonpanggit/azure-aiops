@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -555,6 +555,151 @@ class DatasetStore:
                 return path
         return None
 
+    def verify_exact_generation(self, generation_id: str) -> dict[str, Any]:
+        """Verify one immutable generation and return its trusted manifest.
+
+        Exact replay callers use this before constructing any publication
+        runtime. Resolution is pinned to ``generations/<generation_id>`` and
+        never consults the mutable current pointer.
+        """
+        name = _safe_generation_id(generation_id)
+        generation = self.generation_path(name)
+        if generation is None:
+            raise FileNotFoundError(
+                f"Requested dataset generation does not exist: {name}"
+            )
+
+        manifest = self._read_required_json_object(
+            generation,
+            "manifest.json",
+        )
+        if manifest.get("status") != "completed":
+            raise ValueError("Dataset generation is not completed")
+        if manifest.get("runId") != name:
+            raise ValueError("Dataset generation manifest does not match requested ID")
+
+        source_ids = manifest.get("sourceConnectionIds")
+        if (
+            not isinstance(source_ids, list)
+            or not source_ids
+            or not all(
+                isinstance(connection_id, str) and bool(connection_id.strip())
+                for connection_id in source_ids
+            )
+        ):
+            raise TypeError("Dataset generation source connection IDs are invalid")
+
+        declared = manifest.get("datasets")
+        if not isinstance(declared, Mapping) or not declared:
+            raise TypeError("Dataset generation manifest datasets are invalid")
+        _validate_dataset_names({str(dataset_name): [] for dataset_name in declared})
+        if "ontology/ontology" not in declared:
+            raise ValueError("Dataset generation ontology declaration is missing")
+
+        declared_hashes: dict[str, str] = {}
+        for dataset_name, details in sorted(declared.items()):
+            if not isinstance(dataset_name, str) or not isinstance(details, Mapping):
+                raise TypeError("Dataset generation declaration is invalid")
+            expected_count, expected_hash = _declared_artifact_integrity(
+                details,
+                artifact_name=dataset_name,
+            )
+            if dataset_name == "ontology/ontology":
+                ontology = self._read_required_json_object(
+                    generation,
+                    "ontology/ontology.json",
+                )
+                rows = [ontology]
+            else:
+                rows = self._read_required_jsonl(
+                    generation,
+                    f"{dataset_name}.jsonl",
+                )
+            if len(rows) != expected_count:
+                raise ValueError(
+                    f"Dataset generation artifact row count mismatch: {dataset_name}"
+                )
+            actual_hash = _semantic_hash(_sorted_rows(rows))
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"Dataset generation artifact hash mismatch: {dataset_name}"
+                )
+            declared_hashes[dataset_name] = expected_hash
+
+        expected_overall = hashlib.sha256(
+            json.dumps(declared_hashes, sort_keys=True).encode()
+        ).hexdigest()
+        if manifest.get("contentHash") != expected_overall:
+            raise ValueError("Dataset generation overall hash mismatch")
+        return manifest
+
+    def _read_required_text(
+        self,
+        generation: Path | str,
+        relative_path: str,
+    ) -> str:
+        if self.is_remote:
+            path = f"{generation}/{relative_path}"
+            if not self.fs.exists(path):
+                raise FileNotFoundError(
+                    f"Dataset generation artifact is missing: {relative_path}"
+                )
+            with self.fs.open(path, "rt") as handle:
+                return handle.read()
+
+        path = Path(generation) / relative_path
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Dataset generation artifact is missing: {relative_path}"
+            )
+        return path.read_text(encoding="utf-8")
+
+    def _read_required_json_object(
+        self,
+        generation: Path | str,
+        relative_path: str,
+    ) -> dict[str, Any]:
+        try:
+            payload = json.loads(
+                self._read_required_text(generation, relative_path)
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Dataset generation artifact is invalid JSON: {relative_path}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"Dataset generation artifact is not an object: {relative_path}"
+            )
+        return payload
+
+    def _read_required_jsonl(
+        self,
+        generation: Path | str,
+        relative_path: str,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for line_number, line in enumerate(
+            self._read_required_text(generation, relative_path).splitlines(),
+            start=1,
+        ):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Dataset generation artifact contains invalid JSONL: "
+                    f"{relative_path}:{line_number}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise TypeError(
+                    "Dataset generation artifact row is not an object: "
+                    f"{relative_path}:{line_number}"
+                )
+            rows.append(row)
+        return rows
+
     def current_generation(self) -> str | None:
         """Return the absolute path/URI of the active generation, or ``None``.
 
@@ -896,10 +1041,46 @@ def _pointer_matches(
 
 def _validate_dataset_names(datasets: dict[str, list[dict]]) -> None:
     for name in datasets:
+        if not isinstance(name, str):
+            raise TypeError("Dataset name must be a string")
         text = str(name).strip()
         path = PurePosixPath(text)
-        if not text or path.is_absolute() or ".." in path.parts:
+        if (
+            not text
+            or text != name
+            or path.is_absolute()
+            or not path.parts
+            or any(part in {".", ".."} for part in path.parts)
+            or path.as_posix() != text
+            or "\\" in text
+        ):
             raise ValueError(f"Dataset name must be relative and contained: {name}")
+
+
+def _declared_artifact_integrity(
+    details: Mapping[str, Any],
+    *,
+    artifact_name: str,
+) -> tuple[int, str]:
+    row_count = details.get("rowCount")
+    content_hash = details.get("contentHash")
+    if (
+        isinstance(row_count, bool)
+        or not isinstance(row_count, int)
+        or row_count < 0
+    ):
+        raise TypeError(
+            f"Dataset generation row count is invalid: {artifact_name}"
+        )
+    if (
+        not isinstance(content_hash, str)
+        or len(content_hash) != 64
+        or any(character not in "0123456789abcdef" for character in content_hash)
+    ):
+        raise TypeError(
+            f"Dataset generation content hash is invalid: {artifact_name}"
+        )
+    return row_count, content_hash
 
 
 def _validate_source_partitions(datasets: dict[str, list[dict]]) -> None:
