@@ -10,23 +10,25 @@ provides:
   - Durable combined activation generations in the production OneLake lakehouse
   - Exact activate replay without Azure connection validation or discovery
   - URI-safe Fabric source-root configuration for local paths and OneLake
-  - Fail-closed generation and manifest validation before Fabric publication
+  - Fail-closed manifest, dataset, ontology, row-count, and semantic-hash validation before Fabric publication
   - Historical replay coverage through tables, ontology, Gold, completion, shortcuts, and pointer activation
   - Backward-compatible normal config-load failure attribution to the combined-snapshot stage
 affects: [activation-cli, fabric-publication, exposure-gold, production-recovery]
 actuals:
-  tokens: 6772
+  tokens: 9479
   tasks: 2
-  commits: 6
+  commits: 8
 tech-stack:
   added: []
   patterns:
     - Exact immutable generation replay through DatasetStore.generation_path
+    - Centralized exact-generation integrity verification through DatasetStore.verify_exact_generation
     - URI-preserving source-root configuration with local Path compatibility
     - Activation-owned Exposure pointer-store forwarding
 key-files:
   created: []
   modified:
+    - src/storage/datasets.py
     - src/fabric/config.py
     - src/onboarding/activation.py
     - src/onboarding/cli.py
@@ -40,9 +42,10 @@ key-decisions:
   - "Replay enters FabricSyncService directly with the activation-owned OneLakeDocumentStore so the established Gold completion and pointer transaction remains authoritative."
   - "Fabric source roots remain resolved Path objects locally and normalized strings for valid OneLake URIs."
   - "Normal Fabric config loading remains inside the combined_snapshot stage boundary; replay config loading remains outside that skipped stage."
+  - "Exact replay trusts a generation only after DatasetStore verifies every declared JSONL/ontology artifact and the manifest's complete semantic hash chain."
 patterns-established:
   - "Replay provenance: terminal connections come from the persisted combined manifest while skipped validation and discovery results remain empty mappings."
-  - "Fail-closed replay: unsafe, absent, unreadable, or malformed generation input is rejected before runtime construction or Fabric publication."
+  - "Fail-closed replay: unsafe, absent, incomplete, unreadable, malformed, truncated, or hash-mismatched generation input is rejected before runtime construction or Fabric publication."
 requirements-completed: [QUICK-260910-F2H]
 coverage:
   - id: D1
@@ -69,7 +72,7 @@ coverage:
         ref: "tests/test_onboarding_activation.py and tests/test_fabric_sync_service.py"
         status: pass
     human_judgment: false
-duration: 10min
+duration: 31min
 completed: 2026-09-10
 status: complete
 ---
@@ -80,11 +83,11 @@ status: complete
 
 ## Performance
 
-- **Duration:** 10 min across initial execution and verifier-gap remediation
+- **Duration:** 31 min across initial execution, verifier-gap remediation, and post-verification review closure
 - **Started:** 2026-09-10T03:00:39Z
-- **Completed:** 2026-09-10T03:15:01Z
+- **Completed:** 2026-09-10T03:31:33Z
 - **Tasks:** 2
-- **Files modified:** 8
+- **Files modified:** 9
 
 ## Accomplishments
 
@@ -93,6 +96,8 @@ status: complete
 - Bound production combined snapshots to the exact existing workspace/lakehouse OneLake root under `Files/aiops/inventory-source`.
 - Proved a historical generation is used even when a different generation is current, including normal table and ontology publication, Gold staging/writes, shortcut finalization, completed-version state, and final pointer activation.
 - Added fail-closed coverage for traversal-shaped IDs and absent, unreadable, malformed, or provenance-invalid manifests before Fabric runtime construction.
+- Added centralized `DatasetStore.verify_exact_generation()` validation for completed status, exact run identity, source provenance, declared dataset names/artifacts, ontology shape, row counts, per-artifact semantic hashes, and the overall manifest hash before runtime construction.
+- Added local corruption coverage for missing/malformed/altered datasets, missing/invalid ontology, dataset and ontology count/hash mismatches, overall hash mismatch, incomplete status, wrong run ID, invalid source IDs, and invalid dataset names; all assert no runtime or pointer construction.
 - Restored the prior normal-mode progress boundary so a Fabric config-load failure emits `combined_snapshot/started` followed by sanitized `combined_snapshot/failed`, while replay still emits no combined-snapshot events.
 
 ## Task Commits
@@ -105,23 +110,28 @@ TDD RED and GREEN gates were committed separately:
 4. **Task 2 GREEN: Persist activation snapshots in OneLake** — `d1bc7e6db`
 5. **Task 2 verification closure: Complete replay input safety cases** — `29fe08814`
 6. **Verifier gap remediation: Restore snapshot failure stage** — `132893d3e`
+7. **Code-review RED: Expose corrupt replay artifacts** — `faeaa5db1`
+8. **Code-review GREEN: Verify exact replay integrity** — `29591f64e`
 
 ## Files Created/Modified
 
 - `src/fabric/config.py` — Preserves OneLake source URIs while retaining config-relative local path resolution.
+- `src/storage/datasets.py` — Centrally verifies exact immutable generation manifests and every declared JSONL/ontology artifact against the publication semantic-hash contract.
 - `src/onboarding/activation.py` — Adds exact replay resolution, manifest provenance validation, truthful progress, and direct Fabric transaction invocation.
 - `src/onboarding/cli.py` — Parses and conditionally forwards `--replay-source-run-id`.
 - `fabric.config.deploy.yaml` — Uses the production OneLake combined-snapshot root.
 - `tests/test_fabric_commands.py` — Covers local/OneLake runtime config types and the production URI.
 - `tests/test_fabric_sync_service.py` — Proves historical selection and the full Fabric/Gold/finalization/pointer transaction.
-- `tests/test_onboarding_activation.py` — Covers no-upstream replay, pointer-store forwarding, result/progress compatibility, and fail-closed inputs.
+- `tests/test_onboarding_activation.py` — Covers no-upstream replay, pointer-store forwarding, result/progress compatibility, and fail-closed manifest/artifact corruption.
 - `tests/test_subscription_cli.py` — Covers exact replay argument forwarding and terminal output compatibility.
 
 ## Validation
 
 - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_onboarding_activation.py::test_activate_runtime_config_load_failure_is_combined_snapshot_failure tests/test_onboarding_activation.py::test_activate_runtime_replays_exact_generation_without_upstream_work tests/test_onboarding_activation.py::test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest tests/test_onboarding_activation.py::test_activate_runtime_replay_refuses_missing_or_unsafe_exact_generation` — **8 passed**.
-- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — **100 passed**.
-- `uv run ruff check src/fabric/config.py src/onboarding/activation.py src/onboarding/cli.py tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — passed.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_onboarding_activation.py::test_activate_runtime_replay_refuses_corrupt_generation_before_runtime tests/test_onboarding_activation.py::test_activate_runtime_replays_exact_generation_without_upstream_work` — all 16 parameterized/focused cases passed.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_storage.py` — all DatasetStore regression tests passed.
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 UV_OFFLINE=1 uv run pytest -q tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — all collected task tests passed.
+- `UV_OFFLINE=1 uv run ruff check src/storage/datasets.py src/fabric/config.py src/onboarding/activation.py src/onboarding/cli.py tests/test_fabric_commands.py tests/test_fabric_sync_service.py tests/test_onboarding_activation.py tests/test_subscription_cli.py` — passed.
 - `git diff --check` — passed.
 - No Azure CLI, Fabric/Azure API, Terraform, deployment, networked test, Container Apps Job/profile/schedule, or D4 operation was invoked.
 
@@ -131,6 +141,7 @@ TDD RED and GREEN gates were committed separately:
 - Loaded and validated the persisted combined manifest before runtime construction so malformed or unreadable replay input cannot begin Fabric publication.
 - Kept the normal activation branch's validation, discovery, combined publication, progress order, result fields, and pointer-store behavior unchanged.
 - Kept `FabricRuntimeConfig.load()` inside the normal `combined_snapshot` stage so load failures retain prior stage attribution, without moving replay config validation into a stage replay does not execute.
+- Reused the publication `_sorted_rows()` and `_semantic_hash()` implementation in the verifier so integrity checks follow the exact semantic contract that produced each manifest hash.
 
 ## Deviations from Plan
 
@@ -152,18 +163,28 @@ TDD RED and GREEN gates were committed separately:
 - **Verification:** Focused 8-case replay/stage run, complete 100-test quick-task suite, Ruff, and diff checks passed.
 - **Committed in:** `132893d3e`
 
-**Total deviations:** 2 auto-fixed issues (1 Rule 1 bug, 1 Rule 3 blocking issue).
-**Impact on plan:** The surgical production change restores the locked compatibility contract; replay semantics and all unrelated behavior remain unchanged.
+**3. [Rule 1 - Security bug] Closed incomplete exact-generation integrity validation**
+- **Found during:** Post-verification code review
+- **Issue:** Replay validated only manifest shape, run ID, and source IDs, allowing missing, malformed, truncated, or hash-mismatched declared artifacts to reach Fabric mapping as empty or modified rows.
+- **Fix:** Added centralized exact-generation verification in `DatasetStore` and made activation require it before `build_runtime`; Fabric sync remains pinned to the requested immutable generation ID.
+- **Files modified:** `src/storage/datasets.py`, `src/onboarding/activation.py`, `tests/test_onboarding_activation.py`
+- **Verification:** Focused corruption tests, DatasetStore tests, the complete quick-task suite, Ruff, Python compilation, and diff checks passed.
+- **Committed in:** `faeaa5db1`, `29591f64e`
+
+**Total deviations:** 3 auto-fixed issues (2 Rule 1 bugs, 1 Rule 3 blocking issue).
+**Impact on plan:** The additional fail-closed check fulfills the original exact-replay threat model without changing normal activation, replay results/progress, or publication ordering.
 
 ## Issues Encountered
 
 - The environment's auto-loaded Phoenix pytest plugin is incompatible with the active Python runtime. Disabling external plugin auto-loading allowed the repository's own tests to run without bypassing any project test.
 - Initial verification found one normal-mode progress compatibility regression; `132893d3e` restored the exact pre-task boundary and closed the gap.
+- Post-verification review found artifact integrity was not enforced before runtime construction; `29591f64e` now rejects every tested corruption class locally.
 
 ## Verification Gap Closure
 
 - Normal mode now starts `combined_snapshot` before the fallible `FabricRuntimeConfig.load()` call, restoring the established started/failed event pair and sanitized `ActivationFailure.stage`.
 - Replay still loads and validates config/source only on its replay branch before Fabric publication and emits no `combined_snapshot` event.
+- Replay now obtains its returned manifest from `DatasetStore.verify_exact_generation()`, which resolves only the requested immutable path and verifies every declared artifact before `build_runtime`.
 - Re-verification records no remaining implementation or behavioral gaps; the historical no-cloud/no-D4 claim remains an operator-confirmation warning only.
 
 ## Known Stubs
@@ -173,7 +194,7 @@ None.
 ## Security and Threat Review
 
 - Replay IDs pass through the existing safe single-segment generation validator.
-- Exact replay never falls back to `current`, and malformed persisted provenance fails before runtime construction.
+- Exact replay never falls back to `current`; incomplete status, malformed provenance, unsafe dataset names, missing/invalid artifacts, count mismatches, per-artifact semantic-hash mismatches, and overall-hash mismatches fail before runtime construction.
 - The production configuration contains only a non-secret OneLake URI.
 - Exposure pointer authority remains in the existing transaction and activates only after publication, Gold staging, shortcut finalization, and completed state.
 - No security-relevant surface outside the plan threat model was introduced.
@@ -191,8 +212,8 @@ None — no dependency, credential, or external service change is required.
 ## Self-Check: PASSED
 
 - The required summary exists at the quick-task path.
-- All eight planned source/config/test files exist.
-- All six recorded task/remediation commits exist in Git history.
+- All nine scoped source/config/test files exist.
+- All eight recorded task/remediation commits exist in Git history.
 - No tracked file was deleted by a task commit.
 - No unrelated dirty or untracked path was staged or committed.
 
