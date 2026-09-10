@@ -702,6 +702,110 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
 
 
 @pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_dataset",
+        "malformed_dataset",
+        "altered_dataset_row",
+        "missing_ontology",
+        "invalid_ontology",
+        "wrong_row_count",
+        "wrong_content_hash",
+        "wrong_overall_hash",
+        "incomplete_status",
+        "invalid_dataset_name",
+    ],
+)
+def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
+    tmp_path,
+    monkeypatch,
+    corruption: str,
+) -> None:
+    source_root = tmp_path / "combined"
+    store = DatasetStore(source_root)
+    store.publish(
+        {"entities/Resource": [{"id": "historical-resource"}]},
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["hub"],
+        },
+        ontology={"version": "v1"},
+    )
+    generation = store.generation_path("exact-generation")
+    assert isinstance(generation, type(tmp_path))
+    manifest_path = generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    dataset_path = generation / "entities" / "Resource.jsonl"
+    ontology_path = generation / "ontology" / "ontology.json"
+
+    if corruption == "missing_dataset":
+        dataset_path.unlink()
+    elif corruption == "malformed_dataset":
+        dataset_path.write_text("{not-json\n")
+    elif corruption == "altered_dataset_row":
+        dataset_path.write_text('{"id":"tampered-resource"}\n')
+    elif corruption == "missing_ontology":
+        ontology_path.unlink()
+    elif corruption == "invalid_ontology":
+        ontology_path.write_text("[]\n")
+    elif corruption == "wrong_row_count":
+        manifest["datasets"]["entities/Resource"]["rowCount"] = 2
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_content_hash":
+        manifest["datasets"]["entities/Resource"]["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_overall_hash":
+        manifest["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "incomplete_status":
+        manifest["status"] = "started"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "invalid_dataset_name":
+        manifest["datasets"]["../escape"] = {
+            "rowCount": 0,
+            "contentHash": "0" * 64,
+        }
+        manifest_path.write_text(json.dumps(manifest))
+    else:
+        raise AssertionError(f"Unhandled corruption case: {corruption}")
+
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_runtime_or_pointer(*_args, **_kwargs):
+        pytest.fail(
+            "corrupt replay input must fail before runtime or pointer construction"
+        )
+
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        unexpected_runtime_or_pointer,
+    )
+    monkeypatch.setattr(
+        "onboarding.activation.OneLakeDocumentStore",
+        unexpected_runtime_or_pointer,
+    )
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
+
+
+@pytest.mark.parametrize(
     "replay_source_run_id",
     ["missing-generation", "../current"],
 )
