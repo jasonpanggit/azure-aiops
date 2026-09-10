@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
-from storage.datasets import DatasetStore
+from storage.datasets import COMBINED_ACTIVATION_QUERY_VERSION, DatasetStore
 from storage.onelake_documents import OneLakeDocumentStore
 
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
@@ -499,7 +499,7 @@ def publish_combined_snapshot(
             "status": "completed",
             "startedAt": latest_started_at or now,
             "completedAt": now,
-            "queryVersion": "combined-subscription-connections-v1",
+            "queryVersion": COMBINED_ACTIVATION_QUERY_VERSION,
             "sourceConnectionIds": sorted(connection_ids),
             "sourceRunIds": sorted(source_runs),
         },
@@ -539,7 +539,9 @@ def activate_runtime(
         if exact_generation:
             config = FabricRuntimeConfig.load(fabric_config)
             source_store = DatasetStore(config.source_data_root)
-            combined = source_store.verify_exact_generation(exact_generation)
+            combined = source_store.verify_combined_activation_generation(
+                exact_generation
+            )
             selected = sorted(combined["sourceConnectionIds"])
             validations: dict[str, Any] = {}
             syncs: dict[str, Any] = {}

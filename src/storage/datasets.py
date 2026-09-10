@@ -34,6 +34,7 @@ _VOLATILE_KEYS = {
 _POINTER_NAME = "current.json"
 _COMPATIBILITY_ALIAS_VERSION = "ontology-generation-alias/v1"
 _PARQUET_BATCH_SIZE = 512
+COMBINED_ACTIVATION_QUERY_VERSION = "combined-subscription-connections-v1"
 
 
 def _is_remote_root(root: object) -> bool:
@@ -555,12 +556,17 @@ class DatasetStore:
                 return path
         return None
 
-    def verify_exact_generation(self, generation_id: str) -> dict[str, Any]:
-        """Verify one immutable generation and return its trusted manifest.
+    def verify_combined_activation_generation(
+        self,
+        generation_id: str,
+    ) -> dict[str, Any]:
+        """Verify one immutable combined activation generation.
 
-        Exact replay callers use this before constructing any publication
-        runtime. Resolution is pinned to ``generations/<generation_id>`` and
-        never consults the mutable current pointer.
+        Activation replay callers use this before constructing any publication
+        runtime. The activation-specific name prevents unrelated DatasetStore
+        generations from inheriting the combined-snapshot provenance contract.
+        Resolution is pinned to ``generations/<generation_id>`` and never
+        consults the mutable current pointer.
         """
         name = _safe_generation_id(generation_id)
         generation = self.generation_path(name)
@@ -578,16 +584,20 @@ class DatasetStore:
         if manifest.get("runId") != name:
             raise ValueError("Dataset generation manifest does not match requested ID")
 
-        source_ids = manifest.get("sourceConnectionIds")
-        if (
-            not isinstance(source_ids, list)
-            or not source_ids
-            or not all(
-                isinstance(connection_id, str) and bool(connection_id.strip())
-                for connection_id in source_ids
+        if manifest.get("queryVersion") != COMBINED_ACTIVATION_QUERY_VERSION:
+            raise ValueError("Dataset generation query version is invalid")
+        source_ids = _required_unique_nonempty_strings(
+            manifest,
+            "sourceConnectionIds",
+        )
+        source_run_ids = _required_unique_nonempty_strings(
+            manifest,
+            "sourceRunIds",
+        )
+        if len(source_run_ids) != len(source_ids):
+            raise ValueError(
+                "Dataset generation source provenance cardinality is invalid"
             )
-        ):
-            raise TypeError("Dataset generation source connection IDs are invalid")
 
         declared = manifest.get("datasets")
         if not isinstance(declared, Mapping) or not declared:
@@ -1081,6 +1091,22 @@ def _declared_artifact_integrity(
             f"Dataset generation content hash is invalid: {artifact_name}"
         )
     return row_count, content_hash
+
+
+def _required_unique_nonempty_strings(
+    manifest: Mapping[str, Any],
+    field: str,
+) -> list[str]:
+    values = manifest.get(field)
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(value, str) and bool(value.strip()) for value in values)
+    ):
+        raise TypeError(f"Dataset generation {field} are invalid")
+    if len(values) != len(set(values)):
+        raise ValueError(f"Dataset generation {field} contain duplicates")
+    return values
 
 
 def _validate_source_partitions(datasets: dict[str, list[dict]]) -> None:
