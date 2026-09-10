@@ -107,6 +107,7 @@ export interface ExposureRestartState {
 }
 
 export const EXPOSURE_DETAIL_ORIGINS = [
+  "/exposure",
   "/exposure/defender-posture",
   "/exposure/patch-priorities",
 ] as const;
@@ -319,9 +320,10 @@ export function exposureDetailReturnHref(
 
 export function exposureDetailParentLabel(
   origin: ExposureDetailOrigin,
-): "Defender posture" | "Patch priorities" {
+): "Overview" | "Defender exposure" | "Patch priorities" {
+  if (origin === "/exposure") return "Overview";
   return origin === "/exposure/defender-posture"
-    ? "Defender posture"
+    ? "Defender exposure"
     : "Patch priorities";
 }
 
@@ -559,6 +561,7 @@ export function toExposureApiSearchParams(
     params.set("page_size", String(state.pageSize));
     if (state.cursor) params.set("cursor", state.cursor);
   }
+  if (state.generation) params.set("generation", state.generation);
   return params;
 }
 

@@ -205,6 +205,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
         "/api/v1/vulnerabilities/exposure/items",
         params={
             "subscription": "subscription-scale",
+            "generation": "generation-100k",
             "severity": "critical",
             "facet": ["severity", "target_kind"],
             "page_size": 25,
@@ -255,6 +256,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
     }
     assert body["evidence"][0]["source_engine"] == "fabric_sql"
     assert service.calls[0]["query"].facets == ("severity", "target_kind")
+    assert service.calls[0]["generation_id"] == "generation-100k"
 
 
 @pytest.mark.parametrize(
@@ -276,6 +278,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
             {
                 "total_count",
                 "facets",
+                "items",
                 "generation",
                 "completeness",
                 "freshness",

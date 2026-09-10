@@ -8,6 +8,7 @@ import {
   exposureRestartFromError,
   parseExposureQueryState,
   retreatExposureCursor,
+  toExposureApiSearchParams,
   updateExposureQueryState,
 } from "@/lib/exposure-query-state";
 import { vulnerabilityApi } from "@/lib/services";
@@ -241,6 +242,24 @@ describe("Exposure query state", () => {
     expect(url.searchParams.has("drawer")).toBe(false);
     expect(url.searchParams.has("generation")).toBe(false);
     expect(url.searchParams.get("page_size")).toBe("50");
+  });
+
+  it("forwards a validated generation to the bounded API", () => {
+    const state = parseExposureQueryState(
+      new URLSearchParams({ generation: scenario.read_model_generation_id }),
+      { authorizedScope: AUTHORIZED_SCOPE },
+    );
+
+    expect(toExposureApiSearchParams(state).get("generation")).toBe(
+      scenario.read_model_generation_id,
+    );
+  });
+
+  it("labels Overview as the parent of Overview-origin details", async () => {
+    const { exposureDetailParentLabel } = await import(
+      "@/lib/exposure-query-state"
+    );
+    expect(exposureDetailParentLabel("/exposure")).toBe("Overview");
   });
 
   it.each([

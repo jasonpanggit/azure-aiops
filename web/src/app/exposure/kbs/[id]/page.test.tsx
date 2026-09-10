@@ -259,7 +259,7 @@ describe("KB detail", () => {
   it("preserves safe parent and CVE round-trip context", async () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
-    const back = await screen.findByRole("link", { name: "Back to Defender posture" });
+    const back = await screen.findByRole("link", { name: "Back to Defender exposure" });
     const backUrl = new URL(back.getAttribute("href")!, "https://aiops.example");
     expect(backUrl.pathname).toBe("/exposure/defender-posture");
     expect(backUrl.searchParams.get("q")).toBe("kernel");

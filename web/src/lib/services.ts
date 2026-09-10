@@ -1423,7 +1423,14 @@ export const vulnerabilityApi = {
     ),
   exposureFacets: (
     queryState: ExposureQueryState,
-    facets: Array<"severity" | "target_kind" | "source_family" | "completeness"> = [],
+    facets: Array<
+      | "severity"
+      | "target_kind"
+      | "source_family"
+      | "sla_state"
+      | "completeness"
+      | "current_state"
+    > = [],
     options: { signal?: AbortSignal } = {},
   ): Promise<ExposureEnvelope<ExposureFacets>> => {
     const query = toExposureApiSearchParams(queryState, {

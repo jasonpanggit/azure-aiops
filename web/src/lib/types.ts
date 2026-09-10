@@ -718,6 +718,7 @@ export interface ExposureFacetValue {
 }
 
 export interface ExposureFacets extends ExposureOverview {
+  items: ExposureFinding[];
   facets: Record<string, ExposureFacetValue[]>;
 }
 
