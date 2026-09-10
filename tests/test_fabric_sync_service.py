@@ -64,6 +64,7 @@ def _container_source_snapshot(
     observed_at: datetime,
     run_id: str,
     severity: str = "Critical",
+    provider_event_time: bool = True,
 ) -> None:
     payload = json.loads(FIXTURE.read_text())
     payload["resources"].append(
@@ -82,6 +83,8 @@ def _container_source_snapshot(
         [severity],
         ["CVE-2026-1001"],
     )
+    if not provider_event_time:
+        image_assessment["properties"].pop("timeGenerated", None)
     image_assessment["tenantId"] = "tenant1"
     payload["defender_assessments"].append(image_assessment)
     graph = Normalizer(
@@ -112,6 +115,7 @@ def test_sync_deduplicates_unchanged_container_observation_across_source_generat
         source,
         observed_at=datetime(2026, 9, 2, tzinfo=UTC),
         run_id="source-generation-1",
+        provider_event_time=False,
     )
     service = FabricSyncService(
         source_root=source,
@@ -140,6 +144,7 @@ def test_sync_deduplicates_unchanged_container_observation_across_source_generat
         source,
         observed_at=datetime(2026, 9, 3, tzinfo=UTC),
         run_id="source-generation-2",
+        provider_event_time=False,
     )
     second = service.sync()
 
@@ -156,6 +161,7 @@ def test_sync_deduplicates_unchanged_container_observation_across_source_generat
         observed_at=datetime(2026, 9, 4, tzinfo=UTC),
         run_id="source-generation-3",
         severity="Low",
+        provider_event_time=False,
     )
     with pytest.raises(ValueError) as error:
         service.sync()

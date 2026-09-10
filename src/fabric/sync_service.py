@@ -346,6 +346,7 @@ class FabricSyncService:
         "silver_container_vulnerability_observations": frozenset({
             "timestamp",
             "change_version",
+            "observed_at",
             "ingested_at",
         }),
     }
