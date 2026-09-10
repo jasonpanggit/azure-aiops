@@ -607,14 +607,16 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
 @pytest.mark.parametrize(
     "manifest_body",
     [
+        None,
         "{not-json",
         '["not", "an", "object"]',
+        '{"runId":"exact-generation","sourceConnectionIds":"hub"}',
     ],
 )
 def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
     tmp_path,
     monkeypatch,
-    manifest_body: str,
+    manifest_body: str | None,
 ) -> None:
     source_root = tmp_path / "combined"
     DatasetStore(source_root).publish(
@@ -629,7 +631,11 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
     )
     generation = DatasetStore(source_root).generation_path("exact-generation")
     assert generation is not None
-    (generation / "manifest.json").write_text(manifest_body)
+    manifest_path = generation / "manifest.json"
+    if manifest_body is None:
+        manifest_path.unlink()
+    else:
+        manifest_path.write_text(manifest_body)
     service = _Service({})
     service.registry.root = tmp_path / "registry"
     config = type("Config", (), {"source_data_root": source_root})()
@@ -655,9 +661,14 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
     assert not (tmp_path / "registry").exists()
 
 
-def test_activate_runtime_replay_refuses_missing_exact_generation(
+@pytest.mark.parametrize(
+    "replay_source_run_id",
+    ["missing-generation", "../current"],
+)
+def test_activate_runtime_replay_refuses_missing_or_unsafe_exact_generation(
     tmp_path,
     monkeypatch,
+    replay_source_run_id: str,
 ) -> None:
     source_root = tmp_path / "combined"
     DatasetStore(source_root)
@@ -678,7 +689,7 @@ def test_activate_runtime_replay_refuses_missing_exact_generation(
         activate_runtime(
             service,
             fabric_config="fabric.test.yaml",
-            replay_source_run_id="missing-generation",
+            replay_source_run_id=replay_source_run_id,
             heartbeat_interval=3600,
         )
 
