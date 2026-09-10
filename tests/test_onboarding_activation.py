@@ -606,6 +606,76 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
     } & set(started)
 
 
+def test_activate_runtime_reverifies_exact_generation_before_sync(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "combined"
+    store = DatasetStore(source_root)
+    store.publish(
+        {
+            "entities/Resource": [
+                {
+                    "id": "historical-resource",
+                    "observed_at": "2026-09-10T00:00:00Z",
+                }
+            ]
+        },
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["hub"],
+            "sourceRunIds": ["run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
+        },
+        ontology={},
+    )
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    generation = store.generation_path("exact-generation")
+    assert isinstance(generation, type(tmp_path))
+    dataset_path = generation / "entities" / "Resource.jsonl"
+
+    class FabricService:
+        def sync(self, **_kwargs):
+            pytest.fail("second verification must fail before Fabric sync")
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: None,
+        },
+    )()
+
+    def build_runtime_and_tamper(_config):
+        row = json.loads(dataset_path.read_text())
+        row["observed_at"] = "2026-09-10T00:01:00Z"
+        dataset_path.write_text(json.dumps(row) + "\n")
+        return runtime
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", build_runtime_and_tamper)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "fabric_publication"
+    assert not (tmp_path / "registry").exists()
+
+
 def test_activate_runtime_config_load_failure_is_combined_snapshot_failure(
     tmp_path,
     monkeypatch,
@@ -736,6 +806,16 @@ def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
         "non_string_source_run_id",
         "duplicate_source_run_ids",
         "mismatched_source_provenance_cardinality",
+        "altered_source_connection_ids",
+        "altered_source_run_ids",
+        "altered_started_at",
+        "altered_completed_at",
+        "altered_subscription_scope",
+        "altered_observed_at",
+        "altered_ingested_at",
+        "altered_row_run_id",
+        "altered_last_observed_timestamp",
+        "legacy_no_integrity_contract",
         "invalid_dataset_name",
     ],
 )
@@ -747,13 +827,28 @@ def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
     source_root = tmp_path / "combined"
     store = DatasetStore(source_root)
     store.publish(
-        {"entities/Resource": [{"id": "historical-resource"}]},
+        {
+            "entities/Resource": [
+                {
+                    "id": "historical-resource",
+                    "observed_at": "2026-09-09T00:00:00Z",
+                    "ingested_at": "2026-09-09T00:01:00Z",
+                    "run_id": "source-run-original",
+                    "lastObservedTimestamp": "2026-09-09T00:02:00Z",
+                }
+            ]
+        },
         {},
         {
             "runId": "exact-generation",
             "status": "completed",
+            "startedAt": "2026-09-09T00:00:00Z",
+            "completedAt": "2026-09-09T00:05:00Z",
             "sourceConnectionIds": ["hub", "spoke"],
             "sourceRunIds": ["run-hub", "run-spoke"],
+            "subscriptionScope": {
+                "subscriptionIds": ["subscription-hub", "subscription-spoke"]
+            },
             "queryVersion": "combined-subscription-connections-v1",
         },
         ontology={"version": "v1"},
@@ -844,10 +939,48 @@ def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
     elif corruption == "mismatched_source_provenance_cardinality":
         manifest["sourceRunIds"] = ["run-hub"]
         manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_source_connection_ids":
+        manifest["sourceConnectionIds"] = ["hub", "other-spoke"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_source_run_ids":
+        manifest["sourceRunIds"] = ["run-hub", "run-other-spoke"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_started_at":
+        manifest["startedAt"] = "2026-09-09T00:00:01Z"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_completed_at":
+        manifest["completedAt"] = "2026-09-09T00:05:01Z"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_subscription_scope":
+        manifest["subscriptionScope"] = {
+            "subscriptionIds": ["subscription-hub", "subscription-other-spoke"]
+        }
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption in {
+        "altered_observed_at",
+        "altered_ingested_at",
+        "altered_row_run_id",
+        "altered_last_observed_timestamp",
+    }:
+        row = json.loads(dataset_path.read_text())
+        field = {
+            "altered_observed_at": "observed_at",
+            "altered_ingested_at": "ingested_at",
+            "altered_row_run_id": "run_id",
+            "altered_last_observed_timestamp": "lastObservedTimestamp",
+        }[corruption]
+        row[field] = f"tampered-{field}"
+        dataset_path.write_text(json.dumps(row) + "\n")
+    elif corruption == "legacy_no_integrity_contract":
+        manifest.pop("integrityHash", None)
+        for details in manifest["datasets"].values():
+            details.pop("integrityHash", None)
+        manifest_path.write_text(json.dumps(manifest))
     elif corruption == "invalid_dataset_name":
         manifest["datasets"]["../escape"] = {
             "rowCount": 0,
             "contentHash": "0" * 64,
+            "integrityHash": "0" * 64,
         }
         manifest_path.write_text(json.dumps(manifest))
     else:
