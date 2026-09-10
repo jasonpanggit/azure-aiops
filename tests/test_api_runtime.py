@@ -198,6 +198,66 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
     )
 
 
+def test_fabric_runtime_shares_semantic_engine_with_graph_provider(
+) -> None:
+    from fabric.runtime import FabricRuntime
+
+    class Service:
+        semantic_snapshot_calls = 0
+        semantic_graph_snapshot_calls = 0
+
+        def semantic_version(self) -> str:
+            return "semantic-generation-7"
+
+        def semantic_snapshot(self) -> dict:
+            self.semantic_snapshot_calls += 1
+            return {
+                "entities": [],
+                "relationships": [],
+                "inventory": [],
+                "compliance": [],
+                "security": [],
+                "cost": [],
+                "knowledge_version": "semantic-generation-7",
+                "freshness": "2026-09-10T00:00:00Z",
+                "ontology_synchronized_at": "2026-09-10T00:00:00Z",
+            }
+
+        def semantic_graph_snapshot(self) -> dict:
+            self.semantic_graph_snapshot_calls += 1
+            raise AssertionError("graph provider must not rebuild the shared graph")
+
+    service = Service()
+    runtime = FabricRuntime(
+        config=None,  # type: ignore[arg-type]
+        workspace={},
+        lakehouse={},
+        service=service,  # type: ignore[arg-type]
+    )
+
+    semantic = runtime.semantic_engine()
+    semantic.indexes.inventory["resource-1"] = {"status": "running"}
+    semantic.indexes.compliance["resource-1"] = {"compliant": True}
+    semantic.indexes.security["resource-1"].append({"severity": "High"})
+    semantic.indexes.cost["resource-1"].append({"cost": 1.0})
+    graph = runtime.semantic_graph_engine()
+
+    assert graph is not semantic
+    assert graph.indexes.entities is semantic.indexes.entities
+    assert graph.indexes.relationships is semantic.indexes.relationships
+    assert semantic.indexes.inventory
+    assert semantic.indexes.compliance
+    assert semantic.indexes.security
+    assert semantic.indexes.cost
+    assert graph.indexes.inventory == {}
+    assert graph.indexes.compliance == {}
+    assert dict(graph.indexes.security) == {}
+    assert dict(graph.indexes.cost) == {}
+    assert runtime.semantic_graph_engine() is graph
+    assert service.semantic_snapshot_calls == 1
+    assert service.semantic_graph_snapshot_calls == 0
+
+
 def test_fabric_remediation_provider_rejects_empty_governed_catalog() -> None:
     planner = SimpleNamespace(
         opportunities=SimpleNamespace(catalog=[]),

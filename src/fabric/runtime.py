@@ -68,6 +68,10 @@ class FabricRuntime:
     remediation_repository: PlanRepository | None = None
     _semantic: Any = field(default=None, init=False, repr=False, compare=False)
     _semantic_version: str = field(default="", init=False, repr=False, compare=False)
+    _semantic_graph: Any = field(default=None, init=False, repr=False, compare=False)
+    _semantic_graph_version: str = field(
+        default="", init=False, repr=False, compare=False
+    )
     _operations: Any = field(default=None, init=False, repr=False, compare=False)
     _operations_semantic: Any = field(default=None, init=False, repr=False, compare=False)
 
@@ -115,46 +119,35 @@ class FabricRuntime:
         return engine
 
     def semantic_graph_engine(self):
-        """Build the graph-only semantic engine for live-source composition."""
+        """Share graph indexes without exposing mutable operational snapshots."""
         from semantic.semantic_engine import SemanticEngine
 
-        snapshot = self.service.semantic_graph_snapshot()
-        return SemanticEngine.from_graph_rows(
-            **snapshot,
-            max_results=(
-                self.config.semantic.max_results if self.config is not None else 50
-            ),
-            max_traversal_nodes=(
-                self.config.semantic.max_traversal_nodes
-                if self.config is not None
-                else 500
-            ),
-            max_traversal_depth=(
-                self.config.semantic.max_traversal_depth
-                if self.config is not None
-                else 32
-            ),
-            max_source_rows=(
-                self.config.semantic.max_source_rows
-                if self.config is not None
-                else 50_000
-            ),
-            max_entity_rows=(
-                self.config.semantic.max_entity_rows
-                if self.config is not None
-                else 100_000
-            ),
-            max_relationship_rows=(
-                self.config.semantic.max_relationship_rows
-                if self.config is not None
-                else 250_000
-            ),
-            max_serialized_bytes=(
-                self.config.semantic.max_serialized_bytes
-                if self.config is not None
-                else 1_000_000
-            ),
+        semantic = self.semantic_engine()
+        version = semantic.knowledge_version
+        if (
+            self._semantic_graph is not None
+            and self._semantic_graph_version == version
+        ):
+            return self._semantic_graph
+        graph = SemanticEngine(
+            semantic.indexes.graph_only_view(),
+            knowledge_version=semantic.knowledge_version,
+            freshness=semantic.freshness,
+            ontology_synchronized_at=semantic.ontology_synchronized_at,
+            registry=semantic.registry,
+            scorer=semantic.scorer,
+            validator=semantic.validator,
+            max_results=semantic.max_results,
+            max_traversal_nodes=semantic.max_traversal_nodes,
+            max_traversal_depth=semantic.max_traversal_depth,
+            max_source_rows=semantic.max_source_rows,
+            max_entity_rows=semantic.max_entity_rows,
+            max_relationship_rows=semantic.max_relationship_rows,
+            max_serialized_bytes=semantic.max_serialized_bytes,
         )
+        object.__setattr__(self, "_semantic_graph", graph)
+        object.__setattr__(self, "_semantic_graph_version", version)
+        return graph
 
     def operations_agent(self):
         from agents.operations import OperationsAgent
