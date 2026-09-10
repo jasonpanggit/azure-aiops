@@ -143,9 +143,9 @@ current_phase_name: Exposure Reliability and Scale
 |---|-------------|------|--------|--------|-----------|
 | 260903-rkn | Add detailed sync progress reporting for Fabric table writes, including written count out of total and useful in-progress status when a sync remains active | 2026-09-03 | ca708add |  | [260903-rkn-add-detailed-sync-progress-reporting-for](./quick/260903-rkn-add-detailed-sync-progress-reporting-for/) |
 | 260909-032 | Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication | 2026-09-09 | f34fde19b | Verified | [260909-032-add-stage-level-progress-logging-and-bou](./quick/260909-032-add-stage-level-progress-logging-and-bou/) |
-| 260910-f2h | Persist combined activation snapshots in OneLake and replay one exact generation without upstream discovery | 2026-09-10 | 29591f64e | Verified | [260910-f2h-persist-combined-activation-snapshots-in](./quick/260910-f2h-persist-combined-activation-snapshots-in/) |
+| 260910-f2h | Persist combined activation snapshots in OneLake and replay one exact generation without upstream discovery | 2026-09-10 | 6c93a8fd1 | Verified | [260910-f2h-persist-combined-activation-snapshots-in](./quick/260910-f2h-persist-combined-activation-snapshots-in/) |
 
-Last activity: 2026-09-10 - Closed quick task 260910-f2h code-review finding with fail-closed exact-generation artifact integrity verification
+Last activity: 2026-09-10 - Closed quick task 260910-f2h final verifier gap with fail-closed combined provenance validation
 
 ## Performance Metrics
 
