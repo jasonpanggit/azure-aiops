@@ -60,7 +60,7 @@ fabric:
     adapter: fabric_sql
     rollback_mode: false
 
-  source_data_root: "/data/inventory-source"
+  source_data_root: "abfss://1c328da7-2490-48dc-9ba6-de8c1f333756@onelake.dfs.fabric.microsoft.com/6317eaf6-e597-4b4e-a07d-c53027c01feb/Files/aiops/inventory-source"
   registration_attempts: 20
   # Serialize Arrow/Delta buffers within the 8 GiB publication Job. Four
   # workers still exited 137 while the 83k-entity/235k-relationship graph and
