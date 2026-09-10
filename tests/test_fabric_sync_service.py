@@ -462,6 +462,124 @@ def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> Non
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
 
 
+def test_exact_historical_replay_runs_full_finalization_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    first_payload = json.loads(FIXTURE.read_text())
+    first_payload["resources"][0]["name"] = "historical-resource"
+    first_graph = Normalizer().normalize(
+        first_payload,
+        datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    DatasetStore(source).publish(
+        first_graph,
+        first_payload,
+        {
+            "runId": "historical-generation",
+            "startedAt": "2026-09-08T00:00:00Z",
+            "status": "completed",
+        },
+    )
+    current_payload = json.loads(FIXTURE.read_text())
+    current_payload["resources"][0]["name"] = "current-resource"
+    current_graph = Normalizer().normalize(
+        current_payload,
+        datetime(2026, 9, 9, tzinfo=UTC),
+    )
+    DatasetStore(source).publish(
+        current_graph,
+        current_payload,
+        {
+            "runId": "current-generation",
+            "startedAt": "2026-09-09T00:00:00Z",
+            "status": "completed",
+        },
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=tmp_path / "lakehouse",
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    events: list[dict[str, object]] = []
+    shortcuts: list[str] = []
+    original_shortcuts = service._create_shortcuts
+
+    def record_shortcuts() -> None:
+        shortcuts.append("finalized")
+        original_shortcuts()
+
+    monkeypatch.setattr(service, "_create_shortcuts", record_shortcuts)
+
+    result = service.sync(
+        replay_source_run_id="historical-generation",
+        exposure_pointer_store=pointer_store,
+        stage_progress_callback=events.append,
+    )
+
+    resources = service.delta.read(
+        service.onelake.table_uri("bronze", "resources")
+    )
+    names = {str(row.get("name") or "") for row in resources}
+    assert "historical-resource" in names
+    assert "current-resource" not in names
+    assert result.status == "completed"
+    assert result.replay is True
+    assert result.source_run_id == "historical-generation"
+    assert {
+        "bronze_resources",
+        "ontology_entities",
+        "ontology_relationships",
+        *EXPOSURE_GOLD_TABLES,
+        EXPOSURE_GOLD_GENERATIONS_TABLE,
+    } <= set(result.tables)
+    assert shortcuts == ["finalized"]
+    completed = [
+        event["stage"]
+        for event in events
+        if event["status"] == "completed"
+    ]
+    assert completed.index("shortcut_finalization") < completed.index(
+        "pointer_activation"
+    )
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    marker = max(
+        (
+            row
+            for row in service.status()
+            if row.get("status") == "completed"
+        ),
+        key=lambda row: str(row.get("timestamp") or ""),
+    )
+    assert marker["source_run_id"] == "historical-generation"
+    assert marker["replay"] is True
+
+
+def test_missing_exact_replay_does_not_fallback_or_activate_pointer(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    with pytest.raises(FileNotFoundError):
+        service.sync(
+            replay_source_run_id="missing-generation",
+            exposure_pointer_store=pointer_store,
+        )
+
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert not any(
+        row.get("status") == "completed" for row in service.status()
+    )
+
+
 def test_successful_publication_hooks_follow_exact_side_effect_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

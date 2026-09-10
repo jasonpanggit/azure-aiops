@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from fabric.commands import FabricCommandService
+from fabric.config import FabricRuntimeConfig
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
+
+DEPLOY_SOURCE_ROOT = (
+    "abfss://1c328da7-2490-48dc-9ba6-de8c1f333756"
+    "@onelake.dfs.fabric.microsoft.com/"
+    "6317eaf6-e597-4b4e-a07d-c53027c01feb/Files/aiops/inventory-source"
+)
 
 
 @dataclass
@@ -90,3 +98,47 @@ def test_publish_catalog_command_is_idempotent(tmp_path) -> None:
 def test_unknown_fabric_command_is_rejected() -> None:
     with pytest.raises(ValueError, match="Supported commands"):
         FabricCommandService(FakeSync()).execute("Delete the lakehouse")
+
+
+def test_fabric_runtime_config_resolves_local_source_root_from_config(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "fabric.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "fabric:\n"
+        "  workspace_name: workspace\n"
+        "  lakehouse_name: lakehouse\n"
+        "  source_data_root: ../inventory\n"
+    )
+
+    config = FabricRuntimeConfig.load(config_path)
+
+    assert isinstance(config.source_data_root, Path)
+    assert config.source_data_root == (tmp_path / "inventory").resolve()
+
+
+def test_fabric_runtime_config_preserves_onelake_source_root(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "fabric.yaml"
+    config_path.write_text(
+        "fabric:\n"
+        "  workspace_name: workspace\n"
+        "  lakehouse_name: lakehouse\n"
+        f"  source_data_root: {DEPLOY_SOURCE_ROOT}/\n"
+    )
+
+    config = FabricRuntimeConfig.load(config_path)
+
+    assert isinstance(config.source_data_root, str)
+    assert config.source_data_root == DEPLOY_SOURCE_ROOT
+
+
+def test_deploy_config_uses_durable_combined_snapshot_root() -> None:
+    config = FabricRuntimeConfig.load(
+        Path(__file__).parents[1] / "fabric.config.deploy.yaml"
+    )
+
+    assert isinstance(config.source_data_root, str)
+    assert config.source_data_root == DEPLOY_SOURCE_ROOT

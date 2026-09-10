@@ -604,6 +604,88 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
     } & set(started)
 
 
+@pytest.mark.parametrize(
+    "manifest_body",
+    [
+        "{not-json",
+        '["not", "an", "object"]',
+    ],
+)
+def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
+    tmp_path,
+    monkeypatch,
+    manifest_body: str,
+) -> None:
+    source_root = tmp_path / "combined"
+    DatasetStore(source_root).publish(
+        {"entities/Resource": [{"id": "historical-resource"}]},
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["hub"],
+        },
+        ontology={},
+    )
+    generation = DatasetStore(source_root).generation_path("exact-generation")
+    assert generation is not None
+    (generation / "manifest.json").write_text(manifest_body)
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_publication(*_args, **_kwargs):
+        pytest.fail("invalid replay input must fail before Fabric publication")
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", unexpected_publication)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
+
+
+def test_activate_runtime_replay_refuses_missing_exact_generation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "combined"
+    DatasetStore(source_root)
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_publication(*_args, **_kwargs):
+        pytest.fail("missing replay input must fail before Fabric publication")
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", unexpected_publication)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="missing-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
+
+
 def test_activate_runtime_failure_uses_same_sanitized_elapsed_value(
     tmp_path,
 ) -> None:
