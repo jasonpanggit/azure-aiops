@@ -19,6 +19,7 @@ DEGRADED = "degraded"
 UNAVAILABLE = "unavailable"
 DISABLED = "disabled"
 LOADING = "loading"
+DEFERRED = "deferred"
 
 _CACHE_KEY_UNAVAILABLE = object()
 
@@ -42,6 +43,7 @@ class ProviderSpec:
     configured: bool = True
     required: bool = True
     cache_key: Callable[[], Any] | None = None
+    scheduled: bool = True
 
 
 @dataclass
@@ -133,7 +135,13 @@ class ProviderRuntime:
                 name=name,
                 configured=spec.configured,
                 required=spec.required,
-                state=LOADING if spec.configured else DISABLED,
+                state=(
+                    LOADING
+                    if spec.configured and spec.scheduled
+                    else DEFERRED
+                    if spec.configured
+                    else DISABLED
+                ),
             )
             for name, spec in self.specs.items()
         }
@@ -173,6 +181,8 @@ class ProviderRuntime:
         now_iso = _iso(now)
 
         for name, spec in self.specs.items():
+            if not spec.scheduled:
+                continue
             self._refresh_provider(name, spec, now=now, now_iso=now_iso, force=force)
 
         if self.metadata_loader is not None:
@@ -350,7 +360,7 @@ class ProviderRuntime:
             unavailable = [
                 state.name
                 for state in required
-                if state.state in {UNAVAILABLE, DEGRADED, LOADING}
+                if state.state in {UNAVAILABLE, DEGRADED, LOADING, DEFERRED}
             ]
             stale = [state.name for state in required if state.state == STALE]
             partial = [state.name for state in required if state.state == PARTIAL]

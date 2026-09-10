@@ -27,6 +27,7 @@ from api.runtime import (
     _defender_configuration_adapter,
     _execution_verifier,
     _exposure_generation_window,
+    _fabric_exposure_query_service,
     _fabric_remediation_catalog,
     _fabric_remediation_planner,
     _hybrid_network_cache,
@@ -34,6 +35,7 @@ from api.runtime import (
     _load_fabric_iq_adapter,
     _load_network_service,
     _patch_execution_adapter,
+    _runtime_metadata,
     _traffic_analysis_observations,
     _ttl_cached_value,
     aiops_home,
@@ -78,6 +80,61 @@ def test_home_follows_aiops_home(monkeypatch, tmp_path):
     assert aiops_home() == tmp_path / "custom"
 
 
+def test_runtime_metadata_never_instantiates_semantic_engine() -> None:
+    class _Service:
+        def semantic_version(self) -> str:
+            return "semantic-generation-7"
+
+        def ontology_health(self) -> dict[str, str]:
+            return {"timestamp": "2026-09-10T00:00:00Z"}
+
+    class _Runtime:
+        service = _Service()
+
+        def semantic_engine(self) -> object:
+            raise AssertionError("metadata must not hydrate the semantic engine")
+
+    onboarding = SimpleNamespace(registry=SimpleNamespace(list=list))
+
+    metadata = _runtime_metadata(onboarding, lambda: _Runtime())
+
+    assert metadata == {
+        "ontology_version": "semantic-generation-7",
+        "freshness": "2026-09-10T00:00:00Z",
+        "last_discovery_run": "",
+        "last_ontology_publication": "2026-09-10T00:00:00Z",
+    }
+
+
+def test_configured_fabric_metadata_failure_never_loads_local_snapshot(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_load_semantic_snapshot",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("configured Fabric must not load a local snapshot")
+        ),
+    )
+    onboarding = SimpleNamespace(registry=SimpleNamespace(list=list))
+
+    metadata = _runtime_metadata(
+        onboarding,
+        lambda: None,
+        fabric_configured=True,
+    )
+
+    assert metadata == {
+        "ontology_version": "",
+        "freshness": "",
+        "last_discovery_run": "",
+        "last_ontology_publication": "",
+        "degraded_reason": "Fabric runtime is unavailable",
+    }
+
+
 def test_exposure_generation_window_reports_unavailable_without_a_generation(
     monkeypatch,
 ) -> None:
@@ -99,6 +156,66 @@ def test_exposure_generation_window_reports_unavailable_without_a_generation(
         match="Exposure readable generation is unavailable",
     ):
         _exposure_generation_window()
+
+
+def test_exposure_query_provider_requires_validated_sql_reader() -> None:
+    runtime = SimpleNamespace(service=SimpleNamespace(sql_reader=None))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Fabric SQL Exposure reader is unavailable",
+    ):
+        _fabric_exposure_query_service(runtime, object())
+
+
+def test_exposure_query_provider_probes_sql_reader_before_publication() -> None:
+    class _Reader:
+        def query(
+            self,
+            _sql: str,
+            _parameters: tuple[object, ...] = (),
+            *,
+            max_rows: int | None = None,
+        ) -> list[dict[str, object]]:
+            assert max_rows == 1
+            raise OSError("Fabric SQL unavailable")
+
+    runtime = SimpleNamespace(service=SimpleNamespace(sql_reader=_Reader()))
+
+    with pytest.raises(OSError, match="Fabric SQL unavailable"):
+        _fabric_exposure_query_service(runtime, object())
+
+
+def test_exposure_query_provider_requires_readable_generation(monkeypatch) -> None:
+    import api.runtime as runtime_module
+
+    class _Reader:
+        def query(
+            self,
+            _sql: str,
+            _parameters: tuple[object, ...] = (),
+            *,
+            max_rows: int | None = None,
+        ) -> list[dict[str, int]]:
+            assert max_rows == 1
+            return [{"probe": 1}]
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_exposure_generation_window",
+        lambda: (_ for _ in ()).throw(
+            ExposureQueryUnavailableError(
+                "Exposure readable generation is unavailable"
+            )
+        ),
+    )
+    runtime = SimpleNamespace(service=SimpleNamespace(sql_reader=_Reader()))
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="Exposure readable generation is unavailable",
+    ):
+        _fabric_exposure_query_service(runtime, object())
 
 
 def test_exposure_generation_window_reads_api_home_pointer(
@@ -172,13 +289,29 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
-    assert providers.specs["remediation_catalog"].required is True
+    assert providers.specs["exposure_query"].required is True
+    assert providers.specs["exposure_read_port"].required is False
+    assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False
     for name in (
         "semantic",
         "semantic_graph",
+        "network",
         "vulnerability",
-        "exposure_query",
+        "incidents",
+        "remediation",
+        "remediation_catalog",
+        "change",
+        "patching",
+    ):
+        assert providers.specs[name].scheduled is False
+    assert providers.specs["exposure_query"].scheduled is True
+    assert providers.specs["exposure_read_port"].scheduled is True
+    assert providers.specs["exposure_query"].cache_key is None
+    for name in (
+        "semantic",
+        "semantic_graph",
+        "vulnerability",
         "incidents",
         "remediation_catalog",
         "remediation",

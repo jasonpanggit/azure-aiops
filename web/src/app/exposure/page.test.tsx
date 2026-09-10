@@ -652,7 +652,7 @@ describe("ExposurePage Defender posture", () => {
     expect(card).not.toHaveTextContent("0 CVEs");
   });
 
-  it("shows whole-page unavailability only when every authorized section has failed", async () => {
+  it("keeps authoritative SQL exposure content visible when every rich provider fails", async () => {
     for (const method of [
       "summary",
       "patchPriorities",
@@ -669,8 +669,14 @@ describe("ExposurePage Defender posture", () => {
       </ScopeProvider>,
     );
 
+    const currentExposures = await screen.findByText("Current exposures");
+    const card = currentExposures.closest("article");
+    expect(card).not.toBeNull();
     expect(
-      await screen.findByText("Exposure intelligence is unavailable"),
-    ).toBeInTheDocument();
+      within(card as HTMLElement).getByLabelText("Current exposures value"),
+    ).toHaveTextContent("4");
+    expect(
+      screen.queryByText("Exposure intelligence is unavailable"),
+    ).not.toBeInTheDocument();
   });
 });

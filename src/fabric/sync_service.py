@@ -1494,16 +1494,10 @@ class FabricSyncService:
             latest.get("source_run_id") or latest.get("change_version") or ""
         )
         if not raw_version:
-            # Mirror semantic_snapshot()'s fallback so the cached engine version
-            # matches the snapshot version and the engine is not rebuilt on
-            # every call when ingestion state is missing.
-            entities, _relationships = self._read_authoritative_ontology(
-                marker=latest,
-            )
-            raw_version = max(
-                (str(row.get("ingestion_run_id") or "") for row in entities),
-                default="",
-            )
+            entity_version = latest.get("ontology_entity_version")
+            relationship_version = latest.get("ontology_relationship_version")
+            if entity_version is not None and relationship_version is not None:
+                raw_version = f"ontology:{entity_version}:{relationship_version}"
         return (
             f"semantic-{_hash_json(raw_version)[:16]}"
             if raw_version

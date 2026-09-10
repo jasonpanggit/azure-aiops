@@ -35,6 +35,7 @@ import type {
   Envelope,
   ExposureCommonContract,
   ExposureCursorPagination,
+  ExposureOverview,
 } from "@/lib/types";
 
 interface OverviewSectionData<T> {
@@ -90,6 +91,39 @@ async function overviewSectionEnvelope<T>(
       next_cursor: null,
     },
   };
+}
+
+async function authoritativeOverviewEnvelope(
+  queryState: ExposureQueryState,
+  signal: AbortSignal,
+): Promise<
+  Envelope<OverviewSectionData<ExposureOverview>, ExposureCursorPagination>
+> {
+  const overview = await vulnerabilityApi.exposureOverview(queryState, {
+    signal,
+  });
+  return {
+    ...overview,
+    data: {
+      value: overview.data,
+      loaded_count: 1,
+      total_count: overview.data.total_count,
+      contract: overview.data.contract,
+    },
+  };
+}
+
+function useAuthoritativeOverview(
+  queryState: ExposureQueryState,
+): ExposureSectionResult<OverviewSectionData<ExposureOverview>> {
+  return useExposureSection<OverviewSectionData<ExposureOverview>>({
+    queryKey: `${exposureQueryKey(queryState)}|overview-section=inventory`,
+    retentionKey: `${exposureRetentionKey(
+      queryState,
+    )}|overview-section=inventory`,
+    load: ({ signal }) => authoritativeOverviewEnvelope(queryState, signal),
+    isEmpty: (data) => data.total_count === 0,
+  });
 }
 
 function useOverviewSection<T>(
@@ -331,6 +365,9 @@ export default function ExposurePage() {
     [scope],
   );
 
+  const authoritative = withLocalMetadata(
+    useAuthoritativeOverview(queryState),
+  );
   const summary = withLocalMetadata(
     useOverviewSection("summary", queryState, () =>
       vulnerabilityApi.summary(scope),
@@ -402,6 +439,7 @@ export default function ExposurePage() {
   }, [exceptionRows, riskExceptions.data]);
 
   const sections = [
+    authoritative,
     summary,
     patches,
     assets,
@@ -421,6 +459,7 @@ export default function ExposurePage() {
   );
   const sourceStatus = Object.fromEntries(
     [
+      ["Exposure inventory", authoritative],
       ["Summary", summary],
       ["Patch priority preview", patches],
       ["Asset counts", assets],
@@ -507,6 +546,28 @@ export default function ExposurePage() {
       )}
 
       <div className="exposure-landing-sections">
+        <OverviewSection
+          title="Exposure inventory"
+          description="Generation-pinned findings from the bounded Fabric SQL read model."
+          sourceName="Exposure inventory"
+          itemLabel="exposures"
+          section={authoritative}
+        >
+          <div className="metric-grid exposure-metrics">
+            <MetricCard
+              label="Current exposures"
+              value={authoritative.data?.value.total_count}
+              detail={
+                authoritative.data
+                  ? `Generation ${authoritative.data.value.generation}`
+                  : "Exposure generation unavailable"
+              }
+              tone="default"
+              completeness={sectionCompleteness(authoritative.status)}
+            />
+          </div>
+        </OverviewSection>
+
         <OverviewSection
           title="Exposure summary"
           description="Scoped vulnerability and reachability totals for the authorized environment."
