@@ -97,6 +97,11 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="Connection to activate; repeat for hub and spoke. Defaults to all active.",
     )
+    activate.add_argument(
+        "--replay-source-run-id",
+        default="",
+        help="Republish one exact persisted activation generation.",
+    )
 
     subscriptions = actions.add_parser(
         "subscriptions", help="Onboard and operate Azure subscription connections"
@@ -284,6 +289,11 @@ def cli_command(args: argparse.Namespace) -> int:
                     json.dumps(event, separators=(",", ":"), sort_keys=True),
                     file=sys.stderr,
                     flush=True,
+                ),
+                **(
+                    {"replay_source_run_id": args.replay_source_run_id}
+                    if args.replay_source_run_id
+                    else {}
                 ),
             )
         except ActivationFailure as exc:

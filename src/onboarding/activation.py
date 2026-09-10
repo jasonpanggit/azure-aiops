@@ -512,6 +512,7 @@ def activate_runtime(
     *,
     fabric_config: str | Path,
     connection_ids: list[str] | None = None,
+    replay_source_run_id: str = "",
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
     heartbeat_interval: float = 60.0,
     progress_clock: Callable[[], float] = time.monotonic,
@@ -531,58 +532,74 @@ def activate_runtime(
     )
     reporter.start("activation")
     try:
-        selected = connection_ids or [
-            connection.connection_id
-            for connection in service.registry.list(include_disabled=False)
-        ]
-        if not selected:
-            raise ValueError("No active subscription connections are registered")
-
-        validations: dict[str, Any] = {}
-        syncs: dict[str, Any] = {}
-        total_connections = len(selected)
-        for position, connection_id in enumerate(selected, start=1):
-            reporter.start("connection_validation")
-            validation = service.validate(connection_id)
-            validations[connection_id] = validation
-            if not validation.get("passed"):
-                raise ValueError("Connection failed SPN access validation")
-            reporter.complete(
-                "connection_validation",
-                completed=position,
-                total=total_connections,
-            )
-
-            reporter.start("connection_discovery")
-            sync = service.sync(connection_id, mode="manual")
-            syncs[connection_id] = sync
-            if sync.get("status") != "succeeded":
-                raise RuntimeError("Connection discovery failed")
-            reporter.complete(
-                "connection_discovery",
-                completed=position,
-                total=total_connections,
-            )
-
         from fabric.config import FabricRuntimeConfig
         from fabric.runtime import build_runtime
 
-        reporter.start("combined_snapshot")
-        config = FabricRuntimeConfig.load(fabric_config)
-        combined = publish_combined_snapshot(
-            service,
-            selected,
-            config.source_data_root,
-        )
-        reporter.complete(
-            "combined_snapshot",
-            dataset_count=len(combined.get("datasets") or {}),
-            failure_count=0,
-        )
+        exact_generation = str(replay_source_run_id)
+        if exact_generation:
+            config = FabricRuntimeConfig.load(fabric_config)
+            source_store = DatasetStore(config.source_data_root)
+            generation = source_store.generation_path(exact_generation)
+            if generation is None:
+                raise ValueError("Requested activation generation does not exist")
+            combined = _read_manifest(source_store, generation)
+            selected = _manifest_source_connection_ids(
+                combined,
+                expected_run_id=exact_generation,
+            )
+            validations: dict[str, Any] = {}
+            syncs: dict[str, Any] = {}
+        else:
+            selected = connection_ids or [
+                connection.connection_id
+                for connection in service.registry.list(include_disabled=False)
+            ]
+            if not selected:
+                raise ValueError("No active subscription connections are registered")
+
+            validations = {}
+            syncs = {}
+            total_connections = len(selected)
+            for position, connection_id in enumerate(selected, start=1):
+                reporter.start("connection_validation")
+                validation = service.validate(connection_id)
+                validations[connection_id] = validation
+                if not validation.get("passed"):
+                    raise ValueError("Connection failed SPN access validation")
+                reporter.complete(
+                    "connection_validation",
+                    completed=position,
+                    total=total_connections,
+                )
+
+                reporter.start("connection_discovery")
+                sync = service.sync(connection_id, mode="manual")
+                syncs[connection_id] = sync
+                if sync.get("status") != "succeeded":
+                    raise RuntimeError("Connection discovery failed")
+                reporter.complete(
+                    "connection_discovery",
+                    completed=position,
+                    total=total_connections,
+                )
+
+            config = FabricRuntimeConfig.load(fabric_config)
+            reporter.start("combined_snapshot")
+            combined = publish_combined_snapshot(
+                service,
+                selected,
+                config.source_data_root,
+            )
+            reporter.complete(
+                "combined_snapshot",
+                dataset_count=len(combined.get("datasets") or {}),
+                failure_count=0,
+            )
+
         reporter.start("fabric_publication")
         runtime = build_runtime(config)
         publication = runtime.service.sync(
-            replay_source_run_id=str(combined["runId"]),
+            replay_source_run_id=exact_generation or str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
             stage_progress_callback=reporter.fabric_stage_progress,
             exposure_pointer_store=OneLakeDocumentStore(service.registry.root),
@@ -631,6 +648,22 @@ def _read_manifest(store: DatasetStore, generation: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"Discovery manifest is invalid for {generation}")
     return payload
+
+
+def _manifest_source_connection_ids(
+    manifest: dict[str, Any],
+    *,
+    expected_run_id: str,
+) -> list[str]:
+    if str(manifest.get("runId") or "") != expected_run_id:
+        raise ValueError("Activation generation manifest does not match requested ID")
+    source_ids = manifest.get("sourceConnectionIds")
+    if not isinstance(source_ids, list) or not all(
+        isinstance(connection_id, str) and connection_id
+        for connection_id in source_ids
+    ):
+        raise TypeError("Activation generation manifest provenance is invalid")
+    return sorted(source_ids)
 
 
 __all__ = [
