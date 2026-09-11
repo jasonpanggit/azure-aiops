@@ -25,7 +25,6 @@ ALLOWED_UPDATE_PATHS = frozenset(
     {
         "configuration.replicaTimeout",
         "template.containers[0].image",
-        "template.containers[0].resources.memory",
     }
 )
 EXPECTED_COMMAND = (
@@ -50,7 +49,7 @@ class RecoveryOptions(NamedTuple):
 
     image: str
     target_timeout: int = 7_200
-    target_memory: str = "16Gi"
+    target_memory: str = "8Gi"
     expected_base_timeout: int = 3_600
     expected_base_memory: str = "8Gi"
     expected_cpu: float = 4.0
@@ -190,8 +189,8 @@ def validate_preflight(config: Mapping[str, Any], options: RecoveryOptions) -> N
         raise RecoveryError("recovery image must be an explicit immutable tag or digest")
     if container.get("image") == options.image:
         raise RecoveryError("recovery image must differ from the persistent baseline")
-    if options.target_memory != "16Gi":
-        raise RecoveryError("first fresh recovery requires the governed 16Gi target")
+    if options.target_memory != options.expected_base_memory:
+        raise RecoveryError("fresh recovery must preserve the governed memory baseline")
     if options.target_timeout != 7_200:
         raise RecoveryError("first fresh recovery requires the governed 7200s timeout")
     if options.poll_seconds < 1 or options.max_wait_seconds <= options.target_timeout:

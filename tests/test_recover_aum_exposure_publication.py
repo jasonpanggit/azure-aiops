@@ -153,7 +153,7 @@ def _options(module: ModuleType) -> Any:
     return module.RecoveryOptions(
         image="registry.azurecr.io/aiops-api:fresh-byte-bound",
         target_timeout=7_200,
-        target_memory="16Gi",
+        target_memory="8Gi",
         expected_base_timeout=3_600,
         expected_base_memory="8Gi",
         expected_cpu=4.0,
@@ -180,7 +180,7 @@ def test_recovery_updates_only_governed_fields_starts_once_restores_and_validate
 
     assert azure.start_count == 1
     assert azure.update_calls == [
-        ("registry.azurecr.io/aiops-api:fresh-byte-bound", 7_200, "16Gi"),
+        ("registry.azurecr.io/aiops-api:fresh-byte-bound", 7_200, "8Gi"),
         ("registry.azurecr.io/aiops-api:old", 3_600, "8Gi"),
     ]
     assert module.normalize_job_config(azure.show_job()) == module.normalize_job_config(
@@ -378,7 +378,7 @@ def test_az_cli_update_changes_only_image_timeout_and_memory_flags(
     client.update_job(
         image="registry.azurecr.io/aiops-api:fresh",
         timeout=7_200,
-        memory="16Gi",
+        memory="8Gi",
     )
 
     command = commands[0]
@@ -391,7 +391,7 @@ def test_az_cli_update_changes_only_image_timeout_and_memory_flags(
         "--set",
         "properties.template.containers[0].image=registry.azurecr.io/aiops-api:fresh",
         "properties.configuration.replicaTimeout=7200",
-        "properties.template.containers[0].resources.memory=16Gi",
+        "properties.template.containers[0].resources.memory=8Gi",
         "--only-show-errors",
         "--output",
         "json",
