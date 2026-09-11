@@ -412,20 +412,25 @@ class AzCliJobClient:
         return [item for item in value if isinstance(item, dict)]
 
     def update_job(self, *, image: str, timeout: int, memory: str) -> None:
+        subscription = self._scope[1]
+        resource_group = self._scope[3]
+        resource_id = (
+            f"/subscriptions/{subscription}/resourceGroups/{resource_group}"
+            "/providers/Microsoft.App/jobs/"
+            f"{self._job_name}"
+        )
         self._json(
             [
-                "containerapp",
-                "job",
+                "resource",
                 "update",
-                "--name",
-                self._job_name,
-                *self._scope,
-                "--image",
-                image,
-                "--replica-timeout",
-                str(timeout),
-                "--memory",
-                memory,
+                "--ids",
+                resource_id,
+                "--api-version",
+                "2024-03-01",
+                "--set",
+                f"properties.template.containers[0].image={image}",
+                f"properties.configuration.replicaTimeout={timeout}",
+                f"properties.template.containers[0].resources.memory={memory}",
             ]
         )
 

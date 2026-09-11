@@ -382,14 +382,16 @@ def test_az_cli_update_changes_only_image_timeout_and_memory_flags(
     )
 
     command = commands[0]
-    assert command[1:4] == ["containerapp", "job", "update"]
-    assert command[command.index("--image") :] == [
-        "--image",
-        "registry.azurecr.io/aiops-api:fresh",
-        "--replica-timeout",
-        "7200",
-        "--memory",
-        "16Gi",
+    assert command[1:3] == ["resource", "update"]
+    assert command[command.index("--ids") :] == [
+        "--ids",
+        "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.App/jobs/job-1",
+        "--api-version",
+        "2024-03-01",
+        "--set",
+        "properties.template.containers[0].image=registry.azurecr.io/aiops-api:fresh",
+        "properties.configuration.replicaTimeout=7200",
+        "properties.template.containers[0].resources.memory=16Gi",
         "--only-show-errors",
         "--output",
         "json",
