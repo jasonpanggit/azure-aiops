@@ -527,6 +527,19 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
     return _provider_result(tool_context, "network", run)
 
 
+def _exposure_query_filter(value: object) -> ExposureFilter | None:
+    query_text = str(value or "").strip()
+    if not query_text:
+        return None
+    if re.fullmatch(
+        r"(?:CVE-\d{4}-\d{4,}|KB\d{4,})",
+        query_text,
+        flags=re.IGNORECASE,
+    ):
+        return ExposureFilter("weakness_id", "eq", query_text.upper())
+    return ExposureFilter("search", "contains", query_text)
+
+
 def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     """CVE/KB exposure, optionally narrowed to a business service."""
     business_service = str(args.get("business_service") or "").strip().casefold()
@@ -550,7 +563,7 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
                 warning="Exposure query requires an authenticated principal",
             )
         try:
-            filters = tuple(
+            optional_filters = [
                 ExposureFilter(field, operator, value)
                 for field, operator, value in (
                     (
@@ -568,13 +581,13 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
                         "eq",
                         str(args.get("source_family") or "").strip(),
                     ),
-                    (
-                        "search",
-                        "contains",
-                        str(args.get("query") or "").strip(),
-                    ),
                 )
                 if value
+            ]
+            query_filter = _exposure_query_filter(args.get("query"))
+            filters = (
+                *optional_filters,
+                *((query_filter,) if query_filter else ()),
             )
             query = ExposureQuery(
                 filters=filters,

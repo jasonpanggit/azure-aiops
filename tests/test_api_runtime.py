@@ -71,6 +71,11 @@ def test_durable_catalog_records_reuse_short_ttl_snapshot(
                 "identifier": "CVE-2026-59873",
                 "payload": {"description": "bounded"},
             },
+            {
+                "source": "msrc",
+                "identifier": "KB6000001",
+                "payload": {"cve_ids": ["CVE-2026-59873"]},
+            },
         )
 
     runtime_module._durable_catalog_cache.clear()
@@ -79,9 +84,10 @@ def test_durable_catalog_records_reuse_short_ttl_snapshot(
     monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 1_000.0)
 
     first = runtime_module._durable_catalog_records("CVE-2026-59873")
-    second = runtime_module._durable_catalog_records("CVE-2026-59873")
+    second = runtime_module._durable_catalog_records("KB6000001")
 
-    assert first == second
+    assert {record["source"] for record in first} == {"nvd", "msrc"}
+    assert {record["source"] for record in second} == {"msrc"}
     assert calls == 1
 
 

@@ -74,7 +74,7 @@ function cursorEnvelope<T>(
 
 function sourceRecord(
   detail: KbDetail | null,
-  source: "msrc",
+  source: string,
 ): ExposureEnrichmentSourceState | null {
   return (
     Object.values(detail?.enrichment?.sources ?? {}).find(
@@ -119,13 +119,6 @@ function presentSection<T>(
     retrying: section.retrying || Boolean(section.loading && section.data),
   };
   if (section.loading && !section.data) return { ...presented, metadata, status: "loading" };
-  if (section.error) {
-    return {
-      ...presented,
-      metadata,
-      status: section.data ? "stale" : "unavailable",
-    };
-  }
   if (source) {
     const succeeded = ["success", "succeeded", "complete"].includes(
       source.status.toLocaleLowerCase("en-US"),
@@ -144,6 +137,13 @@ function presentSection<T>(
       };
     }
   }
+  if (section.error) {
+    return {
+      ...presented,
+      metadata,
+      status: section.data ? "stale" : "unavailable",
+    };
+  }
   if (empty) return { ...presented, metadata, status: "healthy-empty" };
   return {
     ...presented,
@@ -153,6 +153,47 @@ function presentSection<T>(
         ? "current"
         : common.status
       : "partial",
+  };
+}
+
+function qualifySnapshot(
+  state: ExposureSectionPresentation,
+  snapshot: KbDetail["snapshot"],
+): ExposureSectionPresentation {
+  if (!snapshot) {
+    return {
+      ...state,
+      status: ["loading", "unavailable", "stale"].includes(state.status)
+        ? state.status
+        : "partial",
+      metadata: {
+        ...state.metadata,
+        freshnessSourceFamily: "aum",
+        safeErrorMessage:
+          state.metadata.safeErrorMessage || "Silver patch snapshot freshness is unavailable",
+      },
+    };
+  }
+  const completeness = snapshot.completeness.toLocaleLowerCase("en-US");
+  const freshness = snapshot.freshness.toLocaleLowerCase("en-US");
+  const status =
+    completeness === "unavailable"
+      ? "unavailable"
+      : freshness === "stale" || completeness === "stale"
+        ? "stale"
+        : freshness !== "fresh"
+          ? "partial"
+        : completeness === "complete" || completeness === "healthy-empty"
+            ? state.status
+            : "partial";
+  return {
+    ...state,
+    status,
+    metadata: {
+      ...state.metadata,
+      observedAt: snapshot.as_of || state.metadata.observedAt,
+      freshnessSourceFamily: "aum",
+    },
   };
 }
 
@@ -235,8 +276,53 @@ function kbSectionTrust(
   return { available, freshness };
 }
 
+function kbCopilotEnrichmentSources(
+  detail: ExposureSectionResult<KbDetail>,
+  common: ExposureSectionResult<ExposureOverview>,
+) {
+  const priority = { fresh: 0, partial: 1, stale: 2, unavailable: 3 } as const;
+  const grouped = new Map<string, {
+    key: string;
+    available: boolean;
+    freshness: "fresh" | "partial" | "stale" | "unavailable";
+    observedAt?: string;
+  }>();
+  for (const source of Object.values(detail.data?.enrichment?.sources ?? {})) {
+    const state = presentSection(detail, common, { source });
+    const trust = kbSectionTrust(state.status);
+    const key = source.source.toLocaleLowerCase("en-US");
+    const current = grouped.get(key);
+    if (!current || priority[trust.freshness] > priority[current.freshness]) {
+      grouped.set(key, {
+        key,
+        ...trust,
+        observedAt: state.metadata.observedAt,
+      });
+    }
+  }
+  return Array.from(grouped.values()).sort((left, right) =>
+    left.key.localeCompare(right.key, "en-US"));
+}
+
+function qualifyAssociationState(
+  state: ExposureSectionPresentation,
+  enrichmentStates: ExposureSectionPresentation[],
+): ExposureSectionPresentation {
+  if (state.status === "loading" || state.status === "unavailable") return state;
+  if (enrichmentStates.some((item) =>
+    item.status === "unavailable" || item.status === "partial")) {
+    return { ...state, status: "partial" };
+  }
+  if (enrichmentStates.some((item) => item.status === "stale")) {
+    return { ...state, status: "stale" };
+  }
+  return state;
+}
+
 export default function KbDetailPage({ params }: { params: { id: string } }) {
-  const kbId = decodeURIComponent(params.id);
+  const decodedKbId = decodeURIComponent(params.id).trim().toLocaleUpperCase("en-US");
+  const kbMatch = /^(?:KB)?(\d{4,})$/.exec(decodedKbId);
+  const kbId = kbMatch ? `KB${kbMatch[1]}` : decodedKbId;
   const { scope } = useScope();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -266,17 +352,11 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     load: ({ signal }) =>
       vulnerabilityApi.exposureOverview(findingState, { signal }),
   });
-  const metadata = useExposureSection<KbDetail>({
-    queryKey: `${exposureRetentionKey(findingState)}|metadata|${kbId}`,
+  const detail = useExposureSection<KbDetail>({
+    queryKey: `kb-detail|${kbId}|${JSON.stringify(findingState.scope)}`,
     load: ({ signal }) =>
       cursorEnvelope(kbApi.detail(kbId, findingState.scope, { signal })),
     isEmpty: () => false,
-  });
-  const msrc = useExposureSection<KbDetail>({
-    queryKey: `${exposureRetentionKey(findingState)}|msrc|${kbId}`,
-    load: ({ signal }) =>
-      cursorEnvelope(kbApi.detail(kbId, findingState.scope, { signal })),
-    isEmpty: (detail) => detail.cves.length === 0,
   });
   const findings = useExposureSection<ExposurePage<KbFindingRow>>({
     queryKey: `${exposureQueryKey(findingState)}|findings|${kbId}`,
@@ -288,16 +368,23 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     isEmpty: (page) => page.items.length === 0,
   });
 
-  const data = metadata.data;
+  const data = detail.data;
   const rows = findings.data?.items ?? [];
-  const metadataState = presentSection(metadata, common, {
-    loaded: data ? 1 : 0,
-  });
-  const msrcState = presentSection(msrc, common, {
-    loaded: msrc.data?.cves.length ?? 0,
-    empty: Boolean(msrc.data && msrc.data.cves.length === 0),
-    source: sourceRecord(msrc.data, "msrc"),
-  });
+  const metadataState = qualifySnapshot(
+    presentSection(detail, common, { loaded: data ? 1 : 0 }),
+    data?.snapshot,
+  );
+  const enrichmentStates = Object.values(detail.data?.enrichment?.sources ?? {}).map(
+    (source) => presentSection(detail, common, { source }),
+  );
+  const msrcState = qualifyAssociationState(
+    presentSection(detail, common, {
+      loaded: detail.data?.cves.length ?? 0,
+      empty: Boolean(detail.data && detail.data.cves.length === 0),
+      source: sourceRecord(detail.data, "msrc"),
+    }),
+    enrichmentStates,
+  );
   const findingsState = presentSection(findings, common, {
     loaded: rows.length,
     empty: Boolean(findings.data && rows.length === 0),
@@ -305,9 +392,10 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const headerState = aggregateCompleteness([
     metadataState,
     msrcState,
+    ...enrichmentStates,
     findingsState,
   ]);
-  const restartRequired = [common, metadata, msrc, findings].some(
+  const restartRequired = [common, detail, findings].some(
     (section) => section.restart.required,
   );
   const parentLabel = exposureDetailParentLabel(detailContext.origin);
@@ -337,6 +425,8 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
           published_at: data.published_at,
           cve_ids: data.cve_ids,
           affected_servers: data.affected_servers,
+          affected_server_count: data.affected_server_count,
+          affected_servers_truncated: data.affected_servers_truncated,
           affected_business_services: data.affected_business_services,
         }
       : null,
@@ -361,10 +451,11 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     },
     sources: [
       {
-        key: "msrc",
-        ...kbSectionTrust(msrcState.status),
-        observedAt: msrcState.metadata.observedAt,
+        key: "silver_patch_snapshot",
+        ...kbSectionTrust(metadataState.status),
+        observedAt: metadataState.metadata.observedAt,
       },
+      ...kbCopilotEnrichmentSources(detail, common),
     ],
     filters: {
       target_kind: [findingState.filters.target_kind ?? "all"],
@@ -372,7 +463,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     },
     evidence: [
       ...(common.envelope?.evidence ?? []),
-      ...(metadata.envelope?.evidence ?? []),
+      ...(detail.envelope?.evidence ?? []),
     ],
   });
 
@@ -423,9 +514,9 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
         }
       />
       <EvidenceBar
-        evidence={common.envelope?.evidence ?? metadata.envelope?.evidence}
-        knowledgeVersion={common.envelope?.knowledge_version ?? metadata.envelope?.knowledge_version}
-        warnings={common.envelope?.warnings ?? metadata.envelope?.warnings}
+        evidence={common.envelope?.evidence ?? detail.envelope?.evidence}
+        knowledgeVersion={common.envelope?.knowledge_version ?? detail.envelope?.knowledge_version}
+        warnings={common.envelope?.warnings ?? detail.envelope?.warnings}
         aggregateState={headerState}
       />
 
@@ -498,7 +589,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                 <caption>CVEs associated with {kbId} by MSRC</caption>
                 <thead><tr><th>CVE</th><th>Severity</th><th>CVSS score</th><th>CVSS vector</th></tr></thead>
                 <tbody>
-                  {msrc.data?.cves.map((cve) => (
+                  {detail.data?.cves.map((cve) => (
                     <tr key={cve.cve_id}>
                       <td>
                         <Link className="table-primary-link" href={cveHref(cve.cve_id)}>
@@ -507,7 +598,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                         <div className="table-secondary">{cve.title}</div>
                       </td>
                       <td><StatusBadge label={cve.cvss?.severity || cve.severity} tone={statusTone(cve.cvss?.severity || cve.severity)} compact /></td>
-                      <td>{Number.isFinite(cve.cvss?.base_score) ? `${cve.cvss.base_score.toFixed(1)}/10` : "—"}</td>
+                      <td>{typeof cve.cvss?.base_score === "number" && Number.isFinite(cve.cvss.base_score) ? `${cve.cvss.base_score.toFixed(1)}/10` : "—"}</td>
                       <td>{cve.cvss?.vector ? <CvssRadarChart vector={cve.cvss.vector} radius={26} compact /> : "—"}</td>
                     </tr>
                   ))}

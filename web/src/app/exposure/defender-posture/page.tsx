@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
+import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
@@ -24,6 +26,7 @@ import {
 } from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
 import { vulnerabilityApi } from "@/lib/services";
+import { buildDefenderPostureCopilotContext } from "@/lib/copilot/page-adapters";
 import type { ExposureFinding, ExposurePage } from "@/lib/types";
 
 interface DefenderExposureFinding extends ExposureFinding {
@@ -73,6 +76,7 @@ export default function DefenderPosturePage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const cursorHistory = useRef<Array<string | null>>([]);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const queryState = useMemo(() => {
     const parsed = parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
       authorizedScope: scope,
@@ -129,6 +133,55 @@ export default function DefenderPosturePage() {
   ).length;
   const first = rows.length ? (queryState.page - 1) * queryState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
+  const sourceStatus = section.status === "current" || section.status === "healthy-empty"
+    ? "fresh"
+    : section.status === "stale"
+      ? "stale"
+      : section.status === "partial"
+        ? "partial"
+        : "unavailable";
+  const defenderCopilot = buildDefenderPostureCopilotContext({
+    scope: queryState.scope,
+    filters: {
+      source_family: ["defender_image"],
+      target_kind: ["container_image"],
+      page: [String(queryState.page)],
+    },
+    records: rows.map((item, index) => ({
+      identity: item.exposure_id || `${item.weakness_id}-${index}`,
+      namespace: "vulnerability",
+      kind: "defender_image_finding",
+      source: "exposure/defender-image-findings",
+      resourceId: item.target_id,
+      observedAt: section.metadata.observedAt,
+      priority: index,
+      data: {
+        target_id: item.target_id,
+        target_kind: item.target_kind,
+        subscription_id: item.subscription_id,
+        read_model_generation_id: item.read_model_generation_id,
+        weakness_id: item.weakness_id,
+        weakness_kind: item.weakness_kind,
+        severity: item.severity,
+        current_state: item.current_state,
+        priority_score: item.priority_score,
+        recommendation: item.recommendation,
+      },
+    })),
+    evidence: section.envelope?.evidence ?? [],
+    coverage: [{
+      key: "defender_image_findings",
+      visibleCount: rows.length,
+      totalCount: page?.total_count ?? rows.length,
+      truncated: rows.length < (page?.total_count ?? rows.length),
+      available: sourceStatus !== "unavailable",
+    }],
+    sourceStatuses: [{
+      source: "defender_image",
+      observedAt: section.metadata.observedAt,
+      status: sourceStatus,
+    }],
+  });
 
   return (
     <div className="page-container exposure-defender-page">
@@ -137,6 +190,12 @@ export default function DefenderPosturePage() {
         title="Defender image exposure"
         description="Review generation-pinned container image findings sourced from Defender without loading the full ontology or unrelated posture datasets."
         completeness={completeness(page)}
+        actions={
+          <CopilotDrawerButton
+            onClick={() => setCopilotOpen(true)}
+            label="Ask Copilot about Defender image exposure"
+          />
+        }
         metadata={
           <>
             <span>{page?.total_count.toLocaleString("en-US") ?? "Unknown"} Defender image findings</span>
@@ -271,6 +330,14 @@ export default function DefenderPosturePage() {
           </SourceSectionState>
         </div>
       </section>
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextLabel="Defender image exposure"
+        requestedScope={defenderCopilot.requestedScope}
+        snapshot={defenderCopilot.snapshot}
+        starterQuestions={defenderCopilot.starterQuestions}
+      />
     </div>
   );
 }

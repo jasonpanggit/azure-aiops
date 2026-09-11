@@ -754,6 +754,7 @@ def _run_context_via_canonical(
     *,
     context: Any,
     scope: Any,
+    principal: Any,
     principal_subject: str,
 ) -> dict[str, Any]:
     """Thin canonical adapter: route a context investigation through OrchestrationService.
@@ -829,7 +830,13 @@ def _run_context_via_canonical(
         scope: Any,
     ) -> ToolResult:
         try:
-            return call_tool(name, arguments, context=context, scope=scope)
+            return call_tool(
+                name,
+                arguments,
+                context=context,
+                scope=scope,
+                principal=principal,
+            )
         except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
             return ToolResult(
                 status=STATUS_UNAVAILABLE,
@@ -987,6 +994,7 @@ def investigate_context(
                 snapshot,
                 context=context,
                 scope=scope,
+                principal=principal,
                 principal_subject=principal.subject,
             )
         else:
@@ -995,6 +1003,7 @@ def investigate_context(
                 context=context,
                 scope=scope,
                 principal_subject=principal.subject,
+                principal=principal,
             )
             if canonical_orchestration_enabled():
                 ledger.setdefault("warnings", []).append(

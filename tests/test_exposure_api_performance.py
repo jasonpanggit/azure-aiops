@@ -18,6 +18,7 @@ from api.exposure_query import (
     ExposureAuthorization,
     ExposureCursorError,
     ExposureFilter,
+    ExposureKbIdentifierError,
     ExposureQuery,
     ExposureQueryPage,
     ExposureQueryService,
@@ -117,6 +118,7 @@ class ApiExposureService:
         self.error = error
         self.calls: list[dict[str, Any]] = []
         self.catalog_calls: list[dict[str, Any]] = []
+        self.kb_calls: list[dict[str, Any]] = []
 
     def authorization_for(
         self,
@@ -179,6 +181,41 @@ class ApiExposureService:
             "environment_membership_included": False,
             "generation": "generation-100k",
             "item": {"cve_id": "CVE-2026-0001", "sources": {}},
+        }
+
+    def kb_item(
+        self,
+        authorization: ExposureAuthorization,
+        **values: Any,
+    ) -> dict[str, Any]:
+        if self.error is not None:
+            raise self.error
+        self.kb_calls.append({"authorization": authorization, **values})
+        return {
+            "generation": "silver-patch:source-generation-17",
+            "snapshot_freshness_at": "2026-09-10T02:41:10Z",
+            "snapshot": {
+                "completeness": "complete",
+                "freshness": "fresh",
+                "as_of": "2026-09-10T02:41:10Z",
+            },
+            "kb_id": "KB6000001",
+            "title": "Contoso security update",
+            "severity": "Critical",
+            "published_at": "2026-08-01",
+            "cve_ids": ["CVE-2026-0001"],
+            "cves": [],
+            "affected_servers": ["server-1"],
+            "affected_business_services": [],
+            "findings": [],
+            "enrichment": {
+                "status": "complete",
+                "complete": True,
+                "stale": False,
+                "expected_count": 1,
+                "available_count": 1,
+                "sources": {},
+            },
         }
 
 
@@ -299,6 +336,58 @@ def test_external_catalog_uses_authorized_generation_bound_query_service(
     data = response.json()["data"]
     assert data["catalog_scope"] == "external_public_metadata"
     assert data["environment_membership_included"] is False
+
+
+def test_kb_detail_uses_authorized_silver_query_service(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+
+    response = client.get(
+        "/api/v1/kbs/KB6000001",
+        params={"subscription": "subscription-scale"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["kb_id"] == "KB6000001"
+    assert response.json()["knowledge_version"] == (
+        "silver-patch:source-generation-17"
+    )
+    assert response.json()["evidence"][0]["freshness"] == "fresh"
+    assert response.json().get("warnings", []) == []
+    assert service.kb_calls[0]["kb_id"] == "KB6000001"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_message"),
+    [
+        (
+            ExposureKbIdentifierError(
+                "KB detail requires a canonical KB identifier"
+            ),
+            400,
+            "KB detail requires a canonical KB identifier",
+        ),
+        (ValueError("sensitive SQL conversion detail"), 500, "Internal server error"),
+    ],
+)
+def test_kb_detail_maps_only_identifier_errors_to_safe_client_failures(
+    exposure_api: tuple[TestClient, ApiExposureService],
+    error: Exception,
+    expected_status: int,
+    expected_message: str,
+) -> None:
+    client, service = exposure_api
+    service.error = error
+
+    response = client.get(
+        "/api/v1/kbs/KB6000001",
+        params={"subscription": "subscription-scale"},
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["message"] == expected_message
+    assert "sensitive SQL conversion detail" not in response.text
 
 
 @pytest.mark.parametrize(

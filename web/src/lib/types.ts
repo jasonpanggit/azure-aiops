@@ -1284,14 +1284,21 @@ export interface ExposureEnrichmentState {
 }
 
 export interface KbDetail {
+  snapshot?: {
+    completeness: string;
+    freshness: string;
+    as_of: string;
+  };
   kb_id: string;
   title: string;
   severity: string;
   published_at: string;
   enrichment?: ExposureEnrichmentState;
   cve_ids: string[];
-  cves: { cve_id: string; title: string; severity: string; cvss: { base_score: number; vector: string; severity: string } }[];
+  cves: { cve_id: string; title: string; severity: string; cvss: { base_score: number | null; vector: string; severity: string } }[];
   affected_servers: string[];
+  affected_server_count?: number;
+  affected_servers_truncated?: boolean;
   affected_business_services: string[];
   findings: VulnerabilityFinding[];
 }

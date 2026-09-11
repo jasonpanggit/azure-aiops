@@ -14,6 +14,9 @@ const api = vi.hoisted(() => ({
   exposureOverview: vi.fn(),
   exposureItems: vi.fn(),
 }));
+const copilot = vi.hoisted(() => ({
+  inputs: [] as Array<Record<string, unknown>>,
+}));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/exposure/kbs/KB600001",
@@ -33,6 +36,21 @@ vi.mock("@/lib/services", () => ({
   },
   buildCopilotSnapshot: (input: Record<string, unknown>) => input,
 }));
+
+vi.mock("@/lib/copilot/page-adapters", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>(
+    "@/lib/copilot/page-adapters",
+  );
+  return {
+    ...actual,
+    buildKbDetailCopilotContext: (
+      input: Parameters<typeof actual.buildKbDetailCopilotContext>[0],
+    ) => {
+      copilot.inputs.push(input as unknown as Record<string, unknown>);
+      return actual.buildKbDetailCopilotContext(input);
+    },
+  };
+});
 
 import KbDetailPage from "./page";
 
@@ -101,9 +119,19 @@ function overviewEnvelope() {
   };
 }
 
-function kbEnvelope(msrcStatus = "succeeded", publishedAt = "2026-08-01") {
+function kbEnvelope(
+  msrcStatus = "succeeded",
+  publishedAt = "2026-08-01",
+  nvdStatus = "succeeded",
+) {
+  const degraded = msrcStatus === "failed" || nvdStatus === "failed";
   return {
     data: {
+      snapshot: {
+        completeness: "complete",
+        freshness: "fresh",
+        as_of: "2026-09-06T08:00:00Z",
+      },
       kb_id: "KB600001",
       title: "Contoso kernel security update",
       severity: "Critical",
@@ -113,14 +141,14 @@ function kbEnvelope(msrcStatus = "succeeded", publishedAt = "2026-08-01") {
         cve_id: "CVE-2026-0001",
         title: "Kernel remote execution",
         severity: "Critical",
-        cvss: { base_score: 9.8, vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", severity: "Critical" },
+        cvss: { base_score: 9.8 as number | null, vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", severity: "Critical" },
       }],
       enrichment: {
-        status: msrcStatus === "failed" ? "degraded" : "complete",
-        complete: msrcStatus !== "failed",
+        status: degraded ? "degraded" : "complete",
+        complete: !degraded,
         stale: false,
-        expected_count: 4,
-        available_count: msrcStatus === "failed" ? 3 : 4,
+        expected_count: 2,
+        available_count: 2 - Number(msrcStatus === "failed") - Number(nvdStatus === "failed"),
         sources: {
           "msrc:KB600001": {
             source: "msrc",
@@ -131,9 +159,20 @@ function kbEnvelope(msrcStatus = "succeeded", publishedAt = "2026-08-01") {
             safe_error_code: msrcStatus === "failed" ? "provider_unavailable" : "",
             source_at: "2026-09-06T07:40:00Z",
           },
+          "nvd:CVE-2026-0001": {
+            source: "nvd",
+            identifier: "CVE-2026-0001",
+            status: nvdStatus,
+            stale: false,
+            has_last_known_good: false,
+            safe_error_code: nvdStatus === "failed" ? "provider_unavailable" : "",
+            source_at: "2026-09-06T07:35:00Z",
+          },
         },
       },
       affected_servers: ["server-1"],
+      affected_server_count: 137,
+      affected_servers_truncated: true,
       affected_business_services: ["Payments"],
       findings: [],
     },
@@ -189,6 +228,7 @@ function deferred<T>() {
 describe("KB detail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    copilot.inputs.length = 0;
     navigation.params = new URLSearchParams(
       "subscription=sub-1&q=kernel&severity=critical&page_size=25&origin=%2Fexposure%2Fdefender-posture&row=exposure-1&scroll=320&generation=generation-25",
     );
@@ -203,11 +243,43 @@ describe("KB detail", () => {
     for (const heading of ["KB metadata", "MSRC CVE associations", "Affected findings"]) {
       expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
     }
+    expect(api.detail).toHaveBeenCalledTimes(1);
+    const copilotInput = copilot.inputs.at(-1) as {
+      kb: { affected_server_count: number; affected_servers_truncated: boolean };
+      sources: Array<{ key: string }>;
+    };
+    expect(copilotInput.kb).toMatchObject({
+      affected_server_count: 137,
+      affected_servers_truncated: true,
+    });
+    expect(copilotInput.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "msrc" }),
+        expect.objectContaining({ key: "nvd" }),
+      ]),
+    );
     expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText(/1 excluded/).length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText("AUM East connection unavailable").length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText("Published 2026-08-01")).toBeInTheDocument();
     expect(screen.getByText("Showing 1–1 of 3 findings · 1 loaded")).toBeInTheDocument();
+  });
+
+  it("canonicalizes a numeric KB route for detail and findings requests", async () => {
+    render(<KbDetailPage params={{ id: "600001" }} />);
+
+    await screen.findByRole("heading", { name: "KB metadata" });
+    expect(api.detail).toHaveBeenCalledWith(
+      "KB600001",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(api.exposureItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({ weakness_id: "KB600001" }),
+      }),
+      expect.anything(),
+    );
   });
 
   it("keeps metadata and findings usable when MSRC associations are unavailable", async () => {
@@ -217,6 +289,76 @@ describe("KB detail", () => {
     expect(await screen.findByText("MSRC CVE associations is unavailable")).toBeInTheDocument();
     expect(screen.getAllByText("Contoso kernel security update").length).toBeGreaterThan(0);
     expect(screen.getByText("server-1")).toBeInTheDocument();
+  });
+
+  it("degrades aggregate context when NVD metadata is unavailable", async () => {
+    const unavailableNvd = kbEnvelope("succeeded", "2026-08-01", "failed");
+    unavailableNvd.data.cves[0].cvss.base_score = null;
+    unavailableNvd.data.cves[0].cvss.vector = "";
+    api.detail.mockResolvedValue(unavailableNvd);
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(await screen.findByText("Unavailable operational context")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("does not present unknown Silver freshness as current", async () => {
+    const unknownFreshness = kbEnvelope();
+    unknownFreshness.data.snapshot.freshness = "unknown";
+    api.detail.mockResolvedValue(unknownFreshness);
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(await screen.findByText("Partial operational context")).toBeInTheDocument();
+  });
+
+  it("does not reload KB detail when a finding-only filter changes", async () => {
+    const user = userEvent.setup();
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(
+      (await screen.findAllByText("Contoso kernel security update")).length,
+    ).toBeGreaterThan(0);
+    await user.selectOptions(screen.getByLabelText("Target kind"), "server");
+
+    await waitFor(() => expect(api.exposureItems).toHaveBeenCalledTimes(2));
+    expect(api.detail).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds Copilot freshness by source family for many associated CVEs", async () => {
+    const manyCves = kbEnvelope();
+    manyCves.data.enrichment.sources = {
+      ...manyCves.data.enrichment.sources,
+      ...Object.fromEntries(
+        Array.from({ length: 64 }, (_, index) => [
+          `nvd:CVE-2026-${String(index).padStart(4, "0")}`,
+          {
+            source: "nvd",
+            identifier: `CVE-2026-${String(index).padStart(4, "0")}`,
+            status: index === 63 ? "failed" : "succeeded",
+            stale: false,
+            has_last_known_good: index !== 63,
+            safe_error_code: index === 63 ? "provider_unavailable" : "",
+            source_at: "2026-09-06T07:35:00Z",
+          },
+        ]),
+      ),
+    };
+    api.detail.mockResolvedValue(manyCves);
+
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    expect(await screen.findByText("Unavailable operational context")).toBeInTheDocument();
+    const copilotInput = copilot.inputs.at(-1) as {
+      sources: Array<{ key: string; freshness: string }>;
+    };
+    expect(copilotInput.sources).toHaveLength(3);
+    expect(copilotInput.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "silver_patch_snapshot" }),
+        expect.objectContaining({ key: "msrc" }),
+        expect.objectContaining({ key: "nvd", freshness: "unavailable" }),
+      ]),
+    );
   });
 
   it("shows partial and unknown-safe metadata without inventing zero", async () => {

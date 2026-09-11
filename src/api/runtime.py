@@ -983,7 +983,8 @@ def _load_incident_engine() -> IncidentEngine | None:
 _KB_CVE_CACHE_TTL_SECONDS = 6 * 60 * 60
 _DURABLE_CATALOG_CACHE_TTL_SECONDS = 5
 _durable_catalog_cache: dict[
-    tuple[str, tuple[str, ...]], tuple[float, tuple[dict[str, Any], ...]]
+    tuple[str, tuple[str, ...]],
+    tuple[float, dict[str, tuple[dict[str, Any], ...]]],
 ] = {}
 
 
@@ -1021,32 +1022,38 @@ def _durable_enrichment_records() -> tuple[dict[str, Any], ...]:
     ).records()
 
 
-def _durable_catalog_records(cve_id: str) -> tuple[dict[str, Any], ...]:
-    identifier = str(cve_id or "").strip().upper()
+def _durable_catalog_records(item_id: str) -> tuple[dict[str, Any], ...]:
+    identifier = str(item_id or "").strip().upper()
     root = str(aiops_home())
-    records = _ttl_cached_value(
+    index = _ttl_cached_value(
         _durable_catalog_cache,
         (root, ()),
         ttl_seconds=_DURABLE_CATALOG_CACHE_TTL_SECONDS,
         now=time.monotonic(),
-        build=_durable_enrichment_records,
+        build=_durable_catalog_index,
         completion_clock=time.monotonic,
     )
-    selected: list[dict[str, Any]] = []
-    for record in records:
+    return tuple(dict(record) for record in index.get(identifier, ()))
+
+
+def _durable_catalog_index() -> dict[str, tuple[dict[str, Any], ...]]:
+    selected: dict[str, list[dict[str, Any]]] = {}
+    for record in _durable_enrichment_records():
         source = str(record.get("source") or "").casefold()
         record_identifier = str(record.get("identifier") or "").upper()
         payload = record.get("payload")
-        direct = source in {"nvd", "epss", "kev"} and record_identifier == identifier
-        mapped = (
-            source == "msrc"
-            and isinstance(payload, Mapping)
-            and identifier
-            in {str(value).upper() for value in payload.get("cve_ids") or ()}
+        identifiers = (
+            {record_identifier}
+            if source in {"nvd", "epss", "kev", "msrc"} and record_identifier
+            else set()
         )
-        if direct or mapped:
-            selected.append(dict(record))
-    return tuple(selected)
+        if source == "msrc" and isinstance(payload, Mapping):
+            identifiers.update(
+                str(value).upper() for value in payload.get("cve_ids") or ()
+            )
+        for mapped_identifier in identifiers:
+            selected.setdefault(mapped_identifier, []).append(dict(record))
+    return {key: tuple(records) for key, records in selected.items()}
 
 
 def _durable_enrichment_payloads(

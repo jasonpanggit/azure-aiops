@@ -211,7 +211,12 @@ def _select_context_specialists(
     return ordered[:MAX_CONTEXT_SPECIALISTS]
 
 
-def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
+def _tool_args(
+    tool: str,
+    objective: str,
+    subject: str,
+    contextual_subject: str = "",
+) -> dict[str, Any]:
     if tool in {"business_service_context", "application_context"}:
         return {"name": subject} if subject else {}
     if tool in {"risk_context", "impact_context"}:
@@ -219,6 +224,13 @@ def _tool_args(tool: str, objective: str, subject: str) -> dict[str, Any]:
     if tool == "hub_dependents":
         return {"vnet_id": subject} if subject else {}
     if tool == "cve_exposure":
+        match = re.search(
+            r"\b(?:CVE-\d{4}-\d{4,}|KB\d{4,})\b",
+            f"{objective} {contextual_subject}",
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {"query": match.group(0).upper()}
         return {"business_service": subject} if subject else {}
     if tool in {"cve_detail", "cve_attack_path"}:
         match = re.search(r"\bCVE-\d{4}-\d{4,}\b", objective, flags=re.IGNORECASE)
@@ -331,11 +343,91 @@ def _summarize_tool(tool: str, result: Any) -> str:
     return " — ".join(parts)
 
 
+def _snapshot_subject(snapshot: PageSnapshot) -> str:
+    weakness_ids = snapshot.filters.get("weakness_id", ())
+    if weakness_ids:
+        return str(weakness_ids[0]).strip().upper()
+    _, _, page_subject = snapshot.page_id.partition(":")
+    return page_subject.strip().upper()
+
+
 def _snapshot_observations(snapshot: PageSnapshot) -> list[dict[str, Any]]:
     """Summarize visible page evidence for Foundry contextual narration."""
-    observations: list[dict[str, Any]] = []
+    sections: OrderedDict[str, list[Any]] = OrderedDict()
     for row in snapshot.evidence:
-        if row.section == "source":
+        if row.section != "source":
+            sections.setdefault(row.section, []).append(row)
+    coverage = {
+        str(row.data.get("source_key") or ""): row.data.get("coverage")
+        for row in snapshot.evidence
+        if row.section == "coverage" and isinstance(row.data, Mapping)
+    }
+    observations: list[dict[str, Any]] = []
+    for section, rows in sections.items():
+        row = rows[0]
+        if (
+            snapshot.page_kind == "vulnerability"
+            and section == "exposure/cve-findings"
+        ):
+            data_rows = [item.data for item in rows if isinstance(item.data, Mapping)]
+            coverage_key = section.rsplit("/", 1)[-1].replace("cve-", "")
+            section_coverage = coverage.get(coverage_key)
+            visible_count = len(rows)
+            total_count = visible_count
+            if isinstance(section_coverage, Mapping):
+                visible_count = int(
+                    section_coverage.get("visible_count") or visible_count
+                )
+                total_count = int(
+                    section_coverage.get("total_count") or visible_count
+                )
+            subject = _snapshot_subject(snapshot)
+            severity = _severity_breakdown(data_rows)
+            summary = (
+                f"{subject} has {total_count} scoped findings; "
+                f"{visible_count} are visible in this page snapshot"
+            )
+            if severity:
+                summary += f" ({severity})"
+            observations.append(
+                {
+                    "finding_id": f"SNAPSHOT-{section.upper()}:aggregate",
+                    "resource_ids": list(
+                        dict.fromkeys(
+                            item.resource_id for item in rows if item.resource_id
+                        )
+                    )[:10],
+                    "check_id": section,
+                    "policy_id": section,
+                    "source_status": (
+                        STATUS_OK
+                        if all(item.status == STATUS_OK for item in rows)
+                        else "partial"
+                    ),
+                    "status": (
+                        "observed"
+                        if all(item.status == STATUS_OK for item in rows)
+                        else "partial"
+                    ),
+                    "summary": summary,
+                    "evidence_refs": [item.evidence_id for item in rows[:10]],
+                    "confidence": "medium",
+                    "uncertainty": (
+                        ["visible findings are a bounded page sample"]
+                        if total_count > visible_count
+                        else []
+                    ),
+                    "stale": any(item.status == STATUS_UNAVAILABLE for item in rows),
+                    "next_check": "",
+                    "actionable": False,
+                    "page_kind": snapshot.page_kind,
+                    "details": {
+                        "visible_count": visible_count,
+                        "total_count": total_count,
+                        "severity": severity,
+                    },
+                }
+            )
             continue
         data = row.data
         label = _label(data)
@@ -374,7 +466,137 @@ def _snapshot_observations(snapshot: PageSnapshot) -> list[dict[str, Any]]:
     return observations[:MAX_CONTEXT_TOOL_CALLS]
 
 
-def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: Scope) -> dict[str, Any]:
+def _context_warnings(snapshot: PageSnapshot) -> list[str]:
+    if snapshot.page_kind == "vulnerability":
+        unavailable = sorted(
+            record.source
+            for record in snapshot.freshness
+            if record.source != "findings" and record.status == "unavailable"
+        )
+        findings = next(
+            (
+                record
+                for record in snapshot.freshness
+                if record.source == "findings"
+            ),
+            None,
+        )
+        if unavailable and findings and findings.status != "unavailable":
+            return [
+                (
+                    "Vulnerability metadata is unavailable from "
+                    f"{', '.join(unavailable)}; scoped Exposure findings remain "
+                    f"available with {findings.status} coverage"
+                )
+            ]
+    return [
+        f"Source {record.source} is {record.status}; findings are uncertainty-qualified"
+        for record in snapshot.freshness
+        if record.status != "fresh"
+    ]
+
+
+def _deterministic_context_narration(
+    snapshot: PageSnapshot,
+    findings: list[dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    if snapshot.page_kind != "vulnerability":
+        return ""
+    subject = _snapshot_subject(snapshot)
+    scoped_finding = next(
+        (
+            item
+            for item in findings
+            if item.get("check_id") == "exposure/cve-findings"
+        ),
+        None,
+    )
+    if scoped_finding is None:
+        return ""
+    scoped = str(scoped_finding.get("summary") or "")
+    details = scoped_finding.get("details")
+    snapshot_total = (
+        int(details.get("total_count") or 0)
+        if isinstance(details, Mapping)
+        else 0
+    )
+    snapshot_visible = (
+        int(details.get("visible_count") or 0)
+        if isinstance(details, Mapping)
+        else 0
+    )
+    cve_call = next(
+        (call for call in tool_calls if call.get("tool") == "cve_exposure"),
+        None,
+    )
+    if cve_call is None:
+        return ""
+    call_status = str(cve_call.get("status") or "")
+    result = cve_call.get("result")
+    result_data = result.get("data") if isinstance(result, Mapping) else None
+    authoritative_total = (
+        int(result_data.get("total_count") or 0)
+        if isinstance(result_data, Mapping)
+        else 0
+    )
+    if call_status == STATUS_OK:
+        authoritative = (
+            f"The authenticated Exposure query confirms {authoritative_total} "
+            f"scoped findings for {subject}."
+        )
+        if authoritative_total == snapshot_total:
+            snapshot_context = (
+                f"The page shows {snapshot_visible} of those "
+                f"{snapshot_total} findings"
+            )
+        else:
+            snapshot_context = (
+                f"The submitted page snapshot reported {snapshot_total} total "
+                f"and {snapshot_visible} visible findings; because that differs "
+                "from the authenticated recheck, it is treated as stale context"
+            )
+    elif call_status == STATUS_EMPTY:
+        authoritative = (
+            f"The authenticated Exposure query currently reports no scoped "
+            f"findings for {subject}; the submitted page snapshot may be stale."
+        )
+        snapshot_context = (
+            f"The page snapshot reported {snapshot_total} total and "
+            f"{snapshot_visible} visible findings, but it is not used as current truth"
+        )
+    else:
+        authoritative = (
+            f"The authenticated Exposure recheck for {subject} is {call_status}; "
+            "the page snapshot is retained only as qualified visible context."
+        )
+        snapshot_context = scoped
+    metadata_records = [
+        record for record in snapshot.freshness if record.source != "findings"
+    ]
+    if any(record.status == "unavailable" for record in metadata_records):
+        caveat = "External CVE metadata is currently unavailable."
+    elif metadata_records and all(
+        record.status == "fresh" for record in metadata_records
+    ):
+        caveat = "External CVE metadata is current."
+    else:
+        caveat = "External CVE metadata availability is unknown or degraded."
+    return (
+        f"**{subject}**\n\n{authoritative}\n\n"
+        f"{snapshot_context}.\n\n{caveat}"
+    )
+
+
+def _agent_run(
+    agent: AgentDefinition,
+    objective: str,
+    *,
+    context: Any,
+    scope: Scope,
+    principal: Any | None = None,
+    contextual_subject: str = "",
+) -> dict[str, Any]:
     started = time.monotonic()
     subject = _extract_subject(objective)
     calls: list[dict[str, Any]] = []
@@ -398,16 +620,28 @@ def _agent_run(agent: AgentDefinition, objective: str, *, context: Any, scope: S
         }
 
     for tool in agent.tools:
-        args = _tool_args(tool, objective, subject)
+        args = _tool_args(tool, objective, subject, contextual_subject)
         try:
             args, _ = validate_tool_arguments(tool, args)
         except ValueError:
             continue
-        result = call_tool(tool, args, context=context, scope=scope)
+        result = call_tool(
+            tool,
+            args,
+            context=context,
+            scope=scope,
+            principal=principal,
+        )
         attempts = 1
         if result.status == STATUS_UNAVAILABLE:
             for _ in range(MAX_RETRIES):
-                retry = call_tool(tool, args, context=context, scope=scope)
+                retry = call_tool(
+                    tool,
+                    args,
+                    context=context,
+                    scope=scope,
+                    principal=principal,
+                )
                 attempts += 1
                 if retry.status != STATUS_UNAVAILABLE:
                     result = retry
@@ -775,6 +1009,7 @@ def run_context_investigation(
     context: Any,
     scope: Scope,
     principal_subject: str,
+    principal: Any | None = None,
     timeout_seconds: float = AGENT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run a bounded, deterministic-first contextual investigation loop.
@@ -793,11 +1028,7 @@ def run_context_investigation(
     tool_calls: list[dict[str, Any]] = []
     agent_runs: list[dict[str, Any]] = []
     stop_reason = "reassessed"
-    warnings: list[str] = [
-        f"Source {record.source} is {record.status}; findings are uncertainty-qualified"
-        for record in snapshot.freshness
-        if record.status != "fresh"
-    ]
+    warnings = _context_warnings(snapshot)
     # Contextual selection is anchored to the page: the page's own specialist
     # always runs first, so a Network page never stops answering as the
     # network specialist. The operator's question may then pull in additional
@@ -865,12 +1096,27 @@ def run_context_investigation(
             if agent.id == "network"
             else agent.tools
         )
+        if snapshot.page_kind == "vulnerability" and agent.id == "vulnerability":
+            candidates = tuple(
+                tool for tool in candidates if tool == "cve_exposure"
+            )
         allowed = candidates[:tool_budget]
         bounded_agent = AgentDefinition(
             agent.id, agent.name, agent.role, allowed,
             agent.keywords, agent.depends_on,
         )
-        run = _agent_run(bounded_agent, snapshot.question, context=context, scope=scope)
+        run = _agent_run(
+            bounded_agent,
+            snapshot.question,
+            context=context,
+            scope=scope,
+            principal=principal,
+            contextual_subject=(
+                _snapshot_subject(snapshot)
+                if snapshot.page_kind == "vulnerability"
+                else ""
+            ),
+        )
         catalog = next((item for item in specialist_catalog() if item["id"] == agent.id), {})
         run["specialist"] = {
             "id": agent.id,
@@ -906,7 +1152,11 @@ def run_context_investigation(
             except ValueError:
                 continue
             result = call_tool(
-                iq_tool, args, context=context, scope=scope
+                iq_tool,
+                args,
+                context=context,
+                scope=scope,
+                principal=principal,
             )
             tool_calls.append({
                 "tool": iq_tool,
@@ -941,7 +1191,13 @@ def run_context_investigation(
                 status = STATUS_DENIED
                 warning = "Evidence request is not allowlisted"
             else:
-                result = call_tool(tool, {}, context=context, scope=scope)
+                result = call_tool(
+                    tool,
+                    {},
+                    context=context,
+                    scope=scope,
+                    principal=principal,
+                )
                 status = result.status
                 warning = result.warning
             call = {
@@ -1007,8 +1263,22 @@ def run_context_investigation(
             warnings.append(
                 "Foundry narration unavailable; deterministic findings returned"
             )
-    if synthesis_mode == "deterministic" and agent is None:
-        warnings.append("Foundry narration unavailable; deterministic findings returned")
+    if synthesis_mode == "deterministic":
+        narration = _deterministic_context_narration(
+            snapshot,
+            findings,
+            tool_calls,
+        )
+        if narration:
+            warnings = [
+                warning
+                for warning in warnings
+                if not warning.startswith("Foundry narration unavailable")
+            ]
+        elif agent is None:
+            warnings.append(
+                "Foundry narration unavailable; deterministic findings returned"
+            )
     ledger_id = f"ctx-{uuid.uuid4().hex[:12]}"
     ledger = {
         "contract_version": CONTRACT_VERSION,

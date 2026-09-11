@@ -1417,6 +1417,8 @@ export interface KbSummaryFields {
   published_at?: string;
   cve_ids: string[];
   affected_servers: string[];
+  affected_server_count?: number;
+  affected_servers_truncated?: boolean;
   affected_business_services: string[];
 }
 
@@ -3483,6 +3485,7 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
   const cve = input.cve ?? null;
   const findingRows = input.findings.rows ?? [];
   const attackGraph = input.attack?.graph ?? null;
+  const cveSource = input.sources.find((source) => source.key === "nvd");
   const records: CoreCopilotRecord[] = [
     ...(cve ? [{
       identity: cve.cve_id,
@@ -3546,8 +3549,12 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
   const sourceStatuses: CoreCopilotSourceStatus[] = [
     {
       source: "cve",
-      observedAt: input.findings.observedAt,
-      status: cve ? "fresh" : "unavailable",
+      observedAt: cveSource?.observedAt,
+      status: (
+        cve && cveSource?.available
+          ? cveSource.freshness
+          : "unavailable"
+      ) as CopilotFreshnessStatusV2,
     },
     {
       source: "findings",
@@ -3573,21 +3580,23 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
     coverage: [
       {
         key: "findings",
-        visibleCount: input.findings.loadedCount,
+        visibleCount: Math.min(input.findings.loadedCount, 50),
         totalCount: Math.max(input.findings.loadedCount, input.findings.totalCount),
-        truncated: input.findings.loadedCount < input.findings.totalCount,
+        truncated: Math.min(input.findings.loadedCount, 50) < input.findings.totalCount,
         available: input.findings.available,
       },
       {
         key: "associated_kbs",
-        visibleCount: cve?.associated_kbs.length ?? 0,
+        visibleCount: Math.min(cve?.associated_kbs.length ?? 0, 50),
         totalCount: cve?.associated_kbs.length ?? 0,
+        truncated: (cve?.associated_kbs.length ?? 0) > 50,
         available: Boolean(cve),
       },
       ...(input.attack ? [{
         key: "attack_path",
-        visibleCount: attackGraph?.nodes.length ?? 0,
+        visibleCount: Math.min(attackGraph?.nodes.length ?? 0, 50),
         totalCount: attackGraph?.nodes.length ?? 0,
+        truncated: (attackGraph?.nodes.length ?? 0) > 50,
         available: input.attack.available,
       }] : []),
     ],
@@ -3754,6 +3763,9 @@ function defenderPostureCoreInput(
 function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterInput {
   const kb = input.kb ?? null;
   const findingRows = input.findings.rows ?? [];
+  const kbSource = input.sources.find(
+    (source) => source.key === "silver_patch_snapshot",
+  );
   const records: CoreCopilotRecord[] = [
     ...(kb ? [{
       identity: kb.kb_id,
@@ -3767,7 +3779,8 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
         title: kb.title,
         severity: kb.severity,
         published_at: kb.published_at,
-        affected_server_count: kb.affected_servers.length,
+        affected_server_count: kb.affected_server_count ?? kb.affected_servers.length,
+        affected_servers_truncated: kb.affected_servers_truncated ?? false,
         affected_business_services: kb.affected_business_services,
       },
     }] : []),
@@ -3803,8 +3816,12 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
   const sourceStatuses: CoreCopilotSourceStatus[] = [
     {
       source: "kb",
-      observedAt: input.findings.observedAt,
-      status: kb ? "fresh" : "unavailable",
+      observedAt: kbSource?.observedAt,
+      status: (
+        kb && kbSource?.available
+          ? kbSource.freshness
+          : "unavailable"
+      ) as CopilotFreshnessStatusV2,
     },
     {
       source: "findings",
@@ -3825,15 +3842,16 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
     coverage: [
       {
         key: "findings",
-        visibleCount: input.findings.loadedCount,
+        visibleCount: Math.min(input.findings.loadedCount, 50),
         totalCount: Math.max(input.findings.loadedCount, input.findings.totalCount),
-        truncated: input.findings.loadedCount < input.findings.totalCount,
+        truncated: Math.min(input.findings.loadedCount, 50) < input.findings.totalCount,
         available: input.findings.available,
       },
       {
         key: "associated_cves",
-        visibleCount: kb?.cve_ids.length ?? 0,
+        visibleCount: Math.min(kb?.cve_ids.length ?? 0, 50),
         totalCount: kb?.cve_ids.length ?? 0,
+        truncated: (kb?.cve_ids.length ?? 0) > 50,
         available: Boolean(kb),
       },
     ],

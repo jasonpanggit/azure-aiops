@@ -1475,6 +1475,8 @@ describe("inventory Copilot page adapter", () => {
         published_at: "2026-09-01T00:00:00Z",
         cve_ids: ["CVE-2026-0001", "CVE-2026-0002"],
         affected_servers: ["srv-1", "srv-2"],
+        affected_server_count: 137,
+        affected_servers_truncated: true,
         affected_business_services: ["Payments"],
       },
       findings: {
@@ -1534,6 +1536,12 @@ describe("inventory Copilot page adapter", () => {
       // CVE identities retained.
       expect(context.snapshot.evidence).toEqual(
         expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              affected_server_count: 137,
+              affected_servers_truncated: true,
+            }),
+          }),
           expect.objectContaining({
             data: expect.objectContaining({
               entity: {

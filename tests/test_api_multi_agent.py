@@ -6,19 +6,24 @@ from typing import ClassVar
 
 from fastapi.testclient import TestClient
 
+import operations.autonomous_investigation as investigation_module
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
+from api.exposure_query import ExposureFilter
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from operations.autonomous_investigation import (
     _resolve_foundry_agent,
+    _snapshot_observations,
+    _tool_args,
     run_context_investigation,
 )
 from operations.foundry_agent import AgentAnswer
 from operations.page_context import PageSnapshot
+from operations.tools import ToolResult, _exposure_query_filter
 
 TOKEN = "agents-token-0123456789abcdef"
 
@@ -418,3 +423,186 @@ def test_contextual_network_specialist_answers_question_instead_of_emitting_find
 
     assert ledger["synthesis"]["mode"] == "foundry"
     assert ledger["synthesis"]["narration"].startswith("The available evidence")
+
+
+def test_cve_context_aggregates_visible_findings_and_explains_partial_metadata(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def call_tool(name, args, *, context, scope, principal=None):
+        calls.append({"name": name, "args": dict(args), "principal": principal})
+        return ToolResult(
+            status="ok",
+            data={
+                "total_count": 93,
+                "returned_count": 50,
+                "items": [
+                    {"severity": "Critical", "weakness_id": "CVE-2025-49796"}
+                ],
+            },
+        )
+
+    monkeypatch.setattr(investigation_module, "call_tool", call_tool)
+    principal = Principal(subject="operator@example.com", grants=(Grant("admin"),))
+    page = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "Explain CVE-2025-49796",
+        "scope": {"declared": {"subscription": ["sub-prod"]}},
+        "filters": {"weakness_id": ["CVE-2025-49796"]},
+        "freshness": [
+            {
+                "source": "cve",
+                "status": "unavailable",
+                "observed_at": "2026-09-10T04:48:09Z",
+            },
+            {
+                "source": "nvd",
+                "status": "unavailable",
+                "observed_at": "2026-09-10T04:48:09Z",
+            },
+            {
+                "source": "findings",
+                "status": "partial",
+                "observed_at": "2026-09-10T04:48:09Z",
+            },
+        ],
+        "evidence": [
+            {
+                "evidence_id": f"finding-{index}",
+                "section": "exposure/cve-findings",
+                "status": "ok",
+                "data": {
+                    "severity": "Critical",
+                    "source_key": f"image-digest:{index}",
+                },
+            }
+            for index in range(12)
+        ] + [{
+            "evidence_id": "coverage-findings",
+            "section": "coverage",
+            "status": "ok",
+            "data": {
+                "source_key": "findings",
+                "coverage": {
+                    "visible_count": 12,
+                    "total_count": 93,
+                    "complete": False,
+                    "truncated": True,
+                },
+            },
+        }],
+    })
+
+    findings = _snapshot_observations(page)
+    ledger = run_context_investigation(
+        page,
+        context=ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator({TOKEN: principal}),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+        ),
+        scope=Scope.from_mapping({"subscription": ["sub-prod"]}),
+        principal_subject=principal.subject,
+        principal=principal,
+    )
+
+    assert len(findings) == 2
+    assert any("93 scoped findings" in item["summary"] for item in findings)
+    assert ledger["synthesis"]["mode"] == "deterministic"
+    assert "CVE-2025-49796" in ledger["synthesis"]["narration"]
+    assert "93 scoped findings" in ledger["synthesis"]["narration"]
+    assert ledger["warnings"] == [
+        (
+            "Vulnerability metadata is unavailable from cve, nvd; "
+            "scoped Exposure findings remain available with partial coverage"
+        )
+    ]
+    assert calls
+    assert all(call["principal"] is principal for call in calls)
+    exposure_call = next(call for call in calls if call["name"] == "cve_exposure")
+    assert exposure_call["args"] == {"query": "CVE-2025-49796"}
+
+
+def test_cve_exposure_arguments_use_cve_search_not_business_service() -> None:
+    assert _tool_args(
+        "cve_exposure",
+        "Explain CVE-2025-49796",
+        "Explain CVE-2025-49796",
+    ) == {"query": "CVE-2025-49796"}
+
+
+def test_single_visible_cve_finding_preserves_total_coverage() -> None:
+    page = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "Explain this CVE",
+        "filters": {"weakness_id": ["CVE-2025-49796"]},
+        "evidence": [
+            {
+                "evidence_id": "finding-1",
+                "section": "exposure/cve-findings",
+                "status": "ok",
+                "data": {"severity": "Critical", "source_key": "target-1"},
+            },
+            {
+                "evidence_id": "coverage-findings",
+                "section": "coverage",
+                "status": "ok",
+                "data": {
+                    "source_key": "findings",
+                    "coverage": {
+                        "visible_count": 1,
+                        "total_count": 93,
+                        "complete": False,
+                        "truncated": True,
+                    },
+                },
+            },
+        ],
+    })
+
+    finding = next(
+        item
+        for item in _snapshot_observations(page)
+        if item["check_id"] == "exposure/cve-findings"
+    )
+
+    assert finding["details"]["visible_count"] == 1
+    assert finding["details"]["total_count"] == 93
+    assert "93 scoped findings" in finding["summary"]
+    assert _tool_args(
+        "cve_exposure",
+        "What should I do next?",
+        "I",
+        "CVE-2025-49796",
+    ) == {"query": "CVE-2025-49796"}
+    assert _tool_args(
+        "cve_exposure",
+        "Explain this update",
+        "this update",
+        "KB6000001",
+    ) == {"query": "KB6000001"}
+
+
+def test_canonical_weakness_queries_are_exact() -> None:
+    assert _exposure_query_filter("cve-2025-49796") == (
+        ExposureFilter(
+            "weakness_id",
+            "eq",
+            "CVE-2025-49796",
+        )
+    )
+    assert _exposure_query_filter("KB600001") == (
+        ExposureFilter("weakness_id", "eq", "KB600001")
+    )
+    assert _exposure_query_filter("critical kernel") == (
+        ExposureFilter(
+            "search",
+            "contains",
+            "critical kernel",
+        )
+    )

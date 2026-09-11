@@ -14,6 +14,7 @@ from api.exposure_query import (
     ExposureCursorCodec,
     ExposureCursorKeyRing,
     ExposureFilter,
+    ExposureKbIdentifierError,
     ExposureQuery,
     ExposureQueryService,
     ExposureQueryUnavailableError,
@@ -165,6 +166,38 @@ class SilverPatchReader(RecordingReader):
             }
             for index in range(self.finding_count)
         ]
+
+
+class KbSilverReader(SilverPatchReader):
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if "[metadata_patch_snapshot]" in sql:
+            return super().query(sql, parameters, max_rows=max_rows)
+        self.calls.append(
+            {
+                "sql": sql,
+                "parameters": tuple(parameters),
+                "max_rows": max_rows,
+            }
+        )
+        if "[silver_patch_snapshot_findings]" in sql:
+            return [
+                {
+                    "update_name": "Contoso security update",
+                    "severity": "critical",
+                    "published_at": "2026-08-01",
+                    "target_resource_id": "server-1",
+                    "status": "installed",
+                    "timestamp": "2026-09-10T02:41:10Z",
+                    "affected_server_count": 0,
+                }
+            ]
+        return []
 
 
 def _authorization() -> ExposureAuthorization:
@@ -320,6 +353,161 @@ def test_server_aum_query_reads_bounded_silver_without_gold_generation() -> None
         assert "SELECT *" not in call["sql"].upper()
     assert page_call["max_rows"] == 26
     assert result.items[0]["source_state"] == "missing"
+
+
+def test_kb_detail_proves_silver_membership_and_merges_exact_catalog_records() -> None:
+    reader = KbSilverReader()
+    requested: list[str] = []
+
+    def records(identifier: str):
+        requested.append(identifier)
+        if identifier == "KB6000001":
+            return (
+                {
+                    "source": "msrc",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {
+                        "title": "MSRC security update",
+                        "severity": "Critical",
+                        "published_at": "2026-08-01",
+                        "cve_ids": ["CVE-2026-0001"],
+                    },
+                    "attempted_at": "2026-09-10T02:40:00Z",
+                    "succeeded_at": "2026-09-10T02:40:00Z",
+                },
+            )
+        return (
+            {
+                "source": "nvd",
+                "identifier": identifier,
+                "status": "succeeded",
+                "stale": False,
+                "payload": {
+                    "title": "Kernel remote execution",
+                    "severity": "Critical",
+                    "cvss": {
+                        "base_score": 9.8,
+                        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                        "severity": "Critical",
+                    },
+                },
+            },
+        )
+
+    detail = ExposureQueryService(
+        reader,
+        catalog_records_resolver=records,
+    ).kb_item(
+        _authorization(),
+        kb_id="KB6000001",
+    )
+
+    assert detail is not None
+    assert detail["generation"] == "silver-patch:source-generation-17"
+    assert detail["snapshot_freshness_at"] == "2026-09-10T02:41:10Z"
+    assert detail["kb_id"] == "KB6000001"
+    assert detail["title"] == "MSRC security update"
+    assert detail["severity"] == "Critical"
+    assert detail["published_at"] == "2026-08-01"
+    assert detail["cve_ids"] == ["CVE-2026-0001"]
+    assert detail["cves"][0]["cvss"]["base_score"] == 9.8
+    assert detail["affected_servers"] == []
+    assert detail["affected_server_count"] == 0
+    assert detail["affected_servers_truncated"] is False
+    assert detail["enrichment"]["sources"]["msrc:KB6000001"]["status"] == "succeeded"
+    assert detail["enrichment"]["sources"]["nvd:CVE-2026-0001"]["status"] == "succeeded"
+    assert detail["enrichment"]["complete"] is True
+    assert requested == ["KB6000001", "CVE-2026-0001"]
+    assert len(reader.calls) == 2
+    membership_call = reader.calls[-1]
+    assert "[silver_patch_snapshot_findings]" in membership_call["sql"]
+    assert "[tenant_id] = ?" in membership_call["sql"]
+    assert "[subscription_id] IN (?, ?)" in membership_call["sql"]
+    assert "[ingestion_run_id] = ?" in membership_call["sql"]
+    assert membership_call["parameters"][-1] == "KB6000001"
+    assert membership_call["max_rows"] == 100
+    assert "ROW_NUMBER() OVER" in membership_call["sql"]
+    assert "PARTITION BY [subscription_id], [target_resource_id]" in membership_call["sql"]
+    assert "NULLIF([last_modified], '')" in membership_call["sql"]
+    assert "LOWER([status]) IN ('missing', 'installation_failed')" in membership_call["sql"]
+    assert "AS [affected_server_count]" in membership_call["sql"]
+
+
+def test_kb_detail_rejects_blank_identifier_before_query() -> None:
+    reader = KbSilverReader()
+
+    with pytest.raises(
+        ExposureKbIdentifierError,
+        match="canonical KB identifier",
+    ):
+        ExposureQueryService(reader).kb_item(_authorization(), kb_id="   ")
+
+    assert reader.calls == []
+
+
+def test_kb_detail_reports_exact_count_when_affected_server_sample_is_bounded() -> None:
+    class LargeKbSilverReader(KbSilverReader):
+        def query(
+            self,
+            sql: str,
+            parameters: tuple[Any, ...] = (),
+            *,
+            max_rows: int | None = None,
+        ) -> list[dict[str, Any]]:
+            rows = super().query(sql, parameters, max_rows=max_rows)
+            if "[silver_patch_snapshot_findings]" not in sql:
+                return rows
+            return [
+                {
+                    **row,
+                    "status": "missing",
+                    "affected_server_count": 137,
+                }
+                for row in rows
+            ]
+
+    detail = ExposureQueryService(LargeKbSilverReader()).kb_item(
+        _authorization(),
+        kb_id="KB6000001",
+    )
+
+    assert detail is not None
+    assert detail["affected_servers"] == ["server-1"]
+    assert detail["affected_server_count"] == 137
+    assert detail["affected_servers_truncated"] is True
+
+
+def test_kb_detail_marks_missing_nvd_metadata_degraded() -> None:
+    detail = ExposureQueryService(
+        KbSilverReader(),
+        catalog_records_resolver=lambda identifier: (
+            (
+                {
+                    "source": "msrc",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {"cve_ids": ["CVE-2026-0001"]},
+                },
+            )
+            if identifier.startswith("KB")
+            else ()
+        ),
+    ).kb_item(_authorization(), kb_id="KB6000001")
+
+    assert detail is not None
+    assert detail["cves"][0]["cvss"] == {
+        "base_score": None,
+        "vector": "",
+        "severity": "Unknown",
+    }
+    assert detail["enrichment"]["complete"] is False
+    assert detail["enrichment"]["status"] == "degraded"
+    assert detail["enrichment"]["sources"]["nvd:CVE-2026-0001"][
+        "safe_error_code"
+    ] == "provider_unavailable"
 
 
 def test_server_aum_query_intersects_subscriptions_with_authorized_connections() -> None:

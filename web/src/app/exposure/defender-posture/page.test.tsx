@@ -29,7 +29,12 @@ vi.mock("@/lib/scope-context", () => ({
   useScope: () => ({ scope: authorized.scope }),
 }));
 
-vi.mock("@/lib/services", () => ({ vulnerabilityApi: api }));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>(
+    "@/lib/services",
+  );
+  return { ...actual, vulnerabilityApi: api };
+});
 
 import DefenderPosturePage from "./page";
 import { ApiError } from "@/lib/types";

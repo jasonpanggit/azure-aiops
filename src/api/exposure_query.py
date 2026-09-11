@@ -22,6 +22,7 @@ from typing import Any
 
 from api.evidence import classify_freshness
 from fabric.sql_endpoint import FabricSqlReader
+from intelligence.vulnerability.connector import canonical_enrichment_identifier
 from intelligence.vulnerability.exposure_contracts import (
     ExposureCursorError,
     ExposureRestartConflict,
@@ -39,6 +40,7 @@ SILVER_PATCH_FINDINGS_TABLE = "silver_patch_snapshot_findings"
 SILVER_PATCH_SNAPSHOT_TABLE = "metadata_patch_snapshot"
 SILVER_PATCH_GENERATION_PREFIX = "silver-patch:"
 MAX_EXPOSURE_PAGE_SIZE = 100
+MAX_KB_DETAIL_ROWS = 100
 MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS = 64
 MAX_EXPOSURE_FILTER_VALUES = 50
 MAX_SILVER_PATCH_SUBSCRIPTIONS = 500
@@ -196,6 +198,10 @@ _CURSOR_FIELDS = frozenset(
 
 class ExposureQueryUnavailableError(RuntimeError):
     """Raised when the production Fabric SQL reader is unavailable."""
+
+
+class ExposureKbIdentifierError(ValueError):
+    """Raised when a KB detail request does not use a canonical identifier."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1220,6 +1226,209 @@ class ExposureQueryService:
             },
         }
 
+    def kb_item(
+        self,
+        authorization: ExposureAuthorization,
+        *,
+        kb_id: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """Return one authorized KB detail from Silver plus durable metadata."""
+
+        if self._reader is None:
+            raise ExposureQueryUnavailableError(
+                "Fabric SQL Exposure reader is unavailable; Delta fallback is disabled"
+            )
+        try:
+            raw_identifier = _required_text(kb_id, "kb_id")
+        except ValueError as exc:
+            raise ExposureKbIdentifierError(
+                "KB detail requires a canonical KB identifier"
+            ) from exc
+        if len(raw_identifier) > 32:
+            raise ExposureKbIdentifierError(
+                "KB detail requires a canonical KB identifier"
+            )
+        try:
+            identifier = canonical_enrichment_identifier("msrc", raw_identifier)
+        except ValueError as exc:
+            raise ExposureKbIdentifierError(
+                "KB detail requires a canonical KB identifier"
+            ) from exc
+        current = _aware_utc(now or datetime.now(UTC), "now")
+        schema = getattr(
+            getattr(self._reader, "endpoint", None),
+            "schema",
+            "dbo",
+        )
+        snapshot = _silver_patch_snapshot(
+            self._reader,
+            authorization,
+            schema=schema,
+            now=current,
+        )
+        if snapshot.ingestion_run_id is None:
+            return None
+        table = f"{_identifier(schema)}.{_identifier(SILVER_PATCH_FINDINGS_TABLE)}"
+        predicates, parameters = _silver_patch_scope(authorization)
+        predicates.extend(
+            (
+                "[ingestion_run_id] = ?",
+                f"{_silver_patch_weakness_sql()} = ?",
+            )
+        )
+        parameters.extend((snapshot.ingestion_run_id, identifier))
+        limit = MAX_KB_DETAIL_ROWS
+        rows = self._reader.query(
+            "WITH [ranked_targets] AS ("
+            "SELECT [update_name], [severity], [published_at], "
+            "[target_resource_id], [status], [timestamp], [last_modified], "
+            "ROW_NUMBER() OVER (PARTITION BY [subscription_id], [target_resource_id] "
+            "ORDER BY TRY_CONVERT(datetimeoffset, NULLIF([last_modified], '')) DESC, "
+            "TRY_CONVERT(datetimeoffset, NULLIF([timestamp], '')) DESC, "
+            "CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
+            "THEN 0 ELSE 1 END, [resource_id] ASC) AS [target_rank] "
+            f"FROM {table} WHERE {' AND '.join(predicates)}"
+            "), [latest_targets] AS ("
+            "SELECT [update_name], [severity], [published_at], "
+            "[target_resource_id], [status], [timestamp], "
+            "SUM(CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
+            "THEN 1 ELSE 0 END) OVER () AS [affected_server_count] "
+            "FROM [ranked_targets] WHERE [target_rank] = 1"
+            ") "
+            f"SELECT TOP ({limit}) [update_name], [severity], [published_at], "
+            "[target_resource_id], [status], [timestamp], [affected_server_count] "
+            "FROM [latest_targets] "
+            "ORDER BY CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
+            "THEN 0 ELSE 1 END, [timestamp] DESC, [target_resource_id] ASC",
+            tuple(parameters),
+            max_rows=limit,
+        )
+        if not rows:
+            return None
+
+        catalog_records = (
+            tuple(self._catalog_records_resolver(identifier))
+            if callable(self._catalog_records_resolver)
+            else ()
+        )
+        msrc_record = _latest_catalog_record(
+            catalog_records,
+            source="msrc",
+            identifier=identifier,
+        )
+        msrc_payload = _record_catalog_payload(msrc_record)
+        raw_cve_ids = (
+            msrc_payload.get("cve_ids", ())
+            if isinstance(msrc_payload, Mapping)
+            else ()
+        )
+        cve_ids = tuple(
+            sorted(
+                {
+                    str(value or "").strip().upper()
+                    for value in raw_cve_ids
+                    if _CVE_IDENTIFIER.fullmatch(
+                        str(value or "").strip().upper()
+                    )
+                }
+            )
+        )
+        if len(cve_ids) > MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS:
+            raise ExposureQueryUnavailableError(
+                "KB detail exceeded its safe CVE association bound"
+            )
+        cves: list[dict[str, Any]] = []
+        nvd_states: dict[str, dict[str, Any]] = {}
+        for cve_id in cve_ids:
+            cve, nvd_state = _kb_cve_detail(
+                cve_id,
+                tuple(self._catalog_records_resolver(cve_id))
+                if callable(self._catalog_records_resolver)
+                else (),
+            )
+            cves.append(cve)
+            nvd_states[f"nvd:{cve_id}"] = nvd_state
+        source_state = _kb_msrc_source_state(
+            identifier,
+            msrc_record,
+            msrc_payload,
+        )
+        source_states = {f"msrc:{identifier}": source_state, **nvd_states}
+        complete = all(_kb_source_complete(state) for state in source_states.values())
+        available_count = sum(
+            1 for state in source_states.values() if state["has_last_known_good"]
+        )
+        stale = any(bool(state["stale"]) for state in source_states.values())
+        affected_servers = sorted(
+            {
+                str(row.get("target_resource_id") or "")
+                for row in rows
+                if str(row.get("target_resource_id") or "")
+                and str(row.get("status") or "").casefold()
+                in {"missing", "installation_failed"}
+            }
+        )
+        affected_server_count = max(
+            (int(row.get("affected_server_count") or 0) for row in rows),
+            default=0,
+        )
+        return {
+            "generation": snapshot.generation,
+            "snapshot_freshness_at": snapshot.freshness_at,
+            "snapshot": {
+                "completeness": snapshot.completeness,
+                "freshness": snapshot.freshness_state,
+                "as_of": snapshot.freshness_at,
+            },
+            "kb_id": identifier,
+            "title": str(
+                (msrc_payload or {}).get("title")
+                or next(
+                    (
+                        row.get("update_name")
+                        for row in rows
+                        if str(row.get("update_name") or "").strip()
+                    ),
+                    "",
+                )
+            ),
+            "severity": str(
+                (msrc_payload or {}).get("severity")
+                or _highest_severity(rows)
+                or "Unknown"
+            ),
+            "published_at": str(
+                (msrc_payload or {}).get("published_at")
+                or max(
+                    (str(row.get("published_at") or "") for row in rows),
+                    default="",
+                )
+            ),
+            "cve_ids": list(cve_ids),
+            "cves": cves,
+            "affected_servers": affected_servers,
+            "affected_server_count": affected_server_count,
+            "affected_servers_truncated": affected_server_count
+            > len(affected_servers),
+            "affected_business_services": [],
+            "findings": [],
+            "enrichment": {
+                "status": (
+                    "complete"
+                    if complete
+                    else "degraded"
+                    if available_count
+                    else "unavailable"
+                ),
+                "complete": complete,
+                "stale": stale,
+                "expected_count": len(source_states),
+                "available_count": available_count,
+                "sources": source_states,
+            },
+        }
+
 
 def _catalog_payload(source: str, value: Any) -> dict[str, Any] | None:
     if not value:
@@ -1251,6 +1460,125 @@ def _catalog_public_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _latest_catalog_record(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    source: str,
+    identifier: str,
+) -> dict[str, Any] | None:
+    matches = [
+        dict(record)
+        for record in records
+        if str(record.get("source") or "").casefold() == source
+        and str(record.get("identifier") or "").upper() == identifier
+    ]
+    return max(
+        matches,
+        key=lambda record: str(
+            record.get("enriched_at")
+            or record.get("succeeded_at")
+            or record.get("attempted_at")
+            or ""
+        ),
+        default=None,
+    )
+
+
+def _record_catalog_payload(
+    record: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    source = str(record.get("source") or "").casefold()
+    payload = record.get("payload")
+    return (
+        _catalog_payload(source, json.dumps(payload))
+        if isinstance(payload, Mapping)
+        else _catalog_payload(source, record.get("payload_json"))
+    )
+
+
+def _kb_msrc_source_state(
+    identifier: str,
+    record: Mapping[str, Any] | None,
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return _kb_catalog_source_state("msrc", identifier, record, payload)
+
+
+def _kb_catalog_source_state(
+    source: str,
+    identifier: str,
+    record: Mapping[str, Any] | None,
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "identifier": identifier,
+        "status": str((record or {}).get("status") or "failed"),
+        "stale": bool((record or {}).get("stale")),
+        "safe_error_code": str(
+            (record or {}).get("safe_error_code")
+            or ("" if payload else "provider_unavailable")
+        ),
+        "attempted_at": (record or {}).get("attempted_at"),
+        "succeeded_at": (record or {}).get("succeeded_at"),
+        "source_at": (record or {}).get("source_at"),
+        "enriched_at": (record or {}).get("enriched_at"),
+        "refresh_after": (record or {}).get("refresh_after"),
+        "has_last_known_good": payload is not None,
+    }
+
+
+def _kb_cve_detail(
+    cve_id: str,
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    record = _latest_catalog_record(records, source="nvd", identifier=cve_id)
+    payload = _record_catalog_payload(record) or {}
+    cvss = payload.get("cvss")
+    severity = str(payload.get("severity") or "Unknown")
+    return (
+        {
+            "cve_id": cve_id,
+            "title": str(payload.get("title") or cve_id),
+            "severity": severity,
+            "cvss": (
+                dict(cvss)
+                if isinstance(cvss, Mapping)
+                else {"base_score": None, "vector": "", "severity": severity}
+            ),
+        },
+        _kb_catalog_source_state("nvd", cve_id, record, payload or None),
+    )
+
+
+def _kb_source_complete(state: Mapping[str, Any]) -> bool:
+    return (
+        str(state.get("status") or "").casefold() == "succeeded"
+        and bool(state.get("has_last_known_good"))
+        and not bool(state.get("stale"))
+    )
+
+
+def _highest_severity(rows: Iterable[Mapping[str, Any]]) -> str:
+    ranks = {
+        "unknown": 0,
+        "low": 1,
+        "moderate": 2,
+        "medium": 2,
+        "security": 3,
+        "important": 3,
+        "high": 3,
+        "critical": 4,
+    }
+    return max(
+        (str(row.get("severity") or "") for row in rows),
+        key=lambda value: ranks.get(value.casefold(), 0),
+        default="",
+    )
 
 
 def _compile_queries(
@@ -1571,10 +1899,7 @@ def _compile_silver_patch_queries(
         "WHEN 'security' THEN 3 WHEN 'moderate' THEN 2 "
         "WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END"
     )
-    weakness_id = (
-        "CASE WHEN UPPER([kb_id]) LIKE 'KB%' THEN UPPER([kb_id]) "
-        "ELSE CONCAT('KB', UPPER([kb_id])) END"
-    )
+    weakness_id = _silver_patch_weakness_sql()
     completeness = snapshot.completeness
     source_status = (
         "succeeded"
@@ -1665,6 +1990,13 @@ def _compile_silver_patch_queries(
         page_parameters=tuple(page_parameters),
         page_limit=page_limit,
         sort_position_column=position_column,
+    )
+
+
+def _silver_patch_weakness_sql() -> str:
+    return (
+        "CASE WHEN UPPER([kb_id]) LIKE 'KB%' THEN UPPER([kb_id]) "
+        "ELSE CONCAT('KB', UPPER([kb_id])) END"
     )
 
 
