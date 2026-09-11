@@ -43,12 +43,13 @@ class DeltaWriteResult:
 
 
 class DeltaWriter:
-    APPEND_BATCH_SIZE: ClassVar[int] = 10_000
+    APPEND_BATCH_SIZE: ClassVar[int] = 1_000
+    APPEND_TARGET_STREAMING_THRESHOLD: ClassVar[int] = 10_000
     APPEND_TARGET_SCAN_BATCH_SIZE: ClassVar[int] = 1_000
     # Bounds payload-proportional materialization in both conflict preflight
     # and Arrow record-batch construction. Actual peak memory is higher than
     # this estimate because Arrow and Python representations coexist briefly.
-    APPEND_PREFLIGHT_BATCH_BYTES: ClassVar[int] = 32 * 1024 * 1024
+    APPEND_PREFLIGHT_BATCH_BYTES: ClassVar[int] = 4 * 1024 * 1024
     REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset({
         "tenant_id",
         "subscription_id",
@@ -87,6 +88,7 @@ class DeltaWriter:
         required_columns: frozenset[str] | tuple[str, ...] | None = REQUIRED_COLUMNS,
         append_replay_columns: Collection[str] = (),
         append_replay_json_fields: Mapping[str, Collection[str]] | None = None,
+        append_scan_partition_columns: Collection[str] = (),
     ) -> DeltaWriteResult:
         write_mode = DeltaWriteMode(mode)
         if write_mode is DeltaWriteMode.APPEND:
@@ -108,6 +110,7 @@ class DeltaWriter:
                         append_replay_json_fields or {}
                     ).items()
                 },
+                scan_partition_columns=tuple(append_scan_partition_columns),
             )
 
         normalized = [dict(row) for row in rows]
@@ -138,6 +141,7 @@ class DeltaWriter:
         schema: pa.Schema | None,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
+        scan_partition_columns: tuple[str, ...],
     ) -> DeltaWriteResult:
         batch_size = self.append_batch_size
         if (
@@ -183,6 +187,12 @@ class DeltaWriter:
         payload_bytes = [0] * len(rows)
         for index in unique_indices:
             payload_bytes[index] = _estimate_row_payload_bytes(rows[index])
+        scan_partition_values = {
+            column: frozenset(str(row.get(column) or "") for row in rows)
+            for column in scan_partition_columns
+        }
+        if any(not values or "" in values for values in scan_partition_values.values()):
+            raise ValueError("APPEND scan partition columns require non-empty values")
         version, pending_indices = self._retry(
             lambda: self._append_preflight_once(
                 uri,
@@ -194,6 +204,7 @@ class DeltaWriter:
                 batch_bytes=preflight_batch_bytes,
                 replay_columns=replay_columns,
                 replay_json_fields=replay_json_fields,
+                scan_partition_values=scan_partition_values,
             )
         )
 
@@ -225,6 +236,7 @@ class DeltaWriter:
                 expected_version=version,
                 replay_columns=replay_columns,
                 replay_json_fields=replay_json_fields,
+                scan_partition_values=scan_partition_values,
             )
 
         result = self._retry(append_once)
@@ -247,6 +259,7 @@ class DeltaWriter:
         batch_bytes: int,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
+        scan_partition_values: Mapping[str, frozenset[str]],
     ) -> tuple[int | None, list[int]]:
         if not self.exists(uri):
             return None, list(incoming_indices)
@@ -256,7 +269,7 @@ class DeltaWriter:
             # Validate every immutable conflict before the first chunk is
             # committed. Only rows matching this bounded incoming-key batch
             # are materialized from the target.
-            if len(incoming_indices) > batch_size:
+            if len(incoming_indices) > self.APPEND_TARGET_STREAMING_THRESHOLD:
                 incoming = [rows[index] for index in incoming_indices]
                 existing_keys = self._validate_append_target_streaming(
                     table,
@@ -266,6 +279,7 @@ class DeltaWriter:
                     batch_bytes=batch_bytes,
                     replay_columns=replay_columns,
                     replay_json_fields=replay_json_fields,
+                    scan_partition_values=scan_partition_values,
                 )
                 pending_indices.extend(
                     index
@@ -286,6 +300,7 @@ class DeltaWriter:
                         key_columns,
                         replay_columns=replay_columns,
                         replay_json_fields=replay_json_fields,
+                        scan_partition_values=scan_partition_values,
                     )
                     pending_indices.extend(
                         index
@@ -313,6 +328,7 @@ class DeltaWriter:
         expected_version: int | None,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
+        scan_partition_values: Mapping[str, frozenset[str]],
     ) -> DeltaWriteResult:
         if recover_committed:
             committed = self._committed_append_result(uri, invocation_id)
@@ -338,7 +354,7 @@ class DeltaWriter:
                 and _has_active_files(table)
             ):
                 pending_indices = []
-                if len(incoming_indices) > batch_size:
+                if len(incoming_indices) > self.APPEND_TARGET_STREAMING_THRESHOLD:
                     incoming = [rows[index] for index in incoming_indices]
                     existing_keys = self._validate_append_target_streaming(
                         table,
@@ -348,6 +364,7 @@ class DeltaWriter:
                         batch_bytes=preflight_batch_bytes,
                         replay_columns=replay_columns,
                         replay_json_fields=replay_json_fields,
+                        scan_partition_values=scan_partition_values,
                     )
                     pending_indices.extend(
                         index
@@ -368,6 +385,7 @@ class DeltaWriter:
                             key_columns,
                             replay_columns=replay_columns,
                             replay_json_fields=replay_json_fields,
+                            scan_partition_values=scan_partition_values,
                         )
                         pending_indices.extend(
                             index
@@ -452,6 +470,7 @@ class DeltaWriter:
         *,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
+        scan_partition_values: Mapping[str, frozenset[str]],
     ) -> set[tuple[str, ...]]:
         incoming_by_key = {
             _row_key(row, key_columns): row
@@ -467,11 +486,21 @@ class DeltaWriter:
                     [row[column] for row in incoming_rows],
                 )
             ]
+            filters.extend(
+                (partition_column, "in", sorted(values))
+                for partition_column, values in scan_partition_values.items()
+            )
         else:
             filters = [
                 [
-                    (column, "=", row[column])
-                    for column in key_columns
+                    *(
+                        (column, "=", row[column])
+                        for column in key_columns
+                    ),
+                    *(
+                        (partition_column, "in", sorted(values))
+                        for partition_column, values in scan_partition_values.items()
+                    ),
                 ]
                 for row in incoming_rows
             ]
@@ -505,6 +534,7 @@ class DeltaWriter:
         batch_bytes: int,
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
+        scan_partition_values: Mapping[str, frozenset[str]],
     ) -> set[tuple[str, ...]]:
         incoming_by_key = {
             _row_key(row, key_columns): row
@@ -542,6 +572,11 @@ class DeltaWriter:
                 raise RuntimeError(
                     "Delta active file is missing partition metadata"
                 )
+            if any(
+                str(partitions.get(column) or "") not in values
+                for column, values in scan_partition_values.items()
+            ):
+                continue
             parquet = pq.ParquetFile(
                 file_path,
                 filesystem=dataset.filesystem,

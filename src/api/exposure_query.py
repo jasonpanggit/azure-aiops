@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from api.evidence import classify_freshness
 from fabric.sql_endpoint import FabricSqlReader
 from intelligence.vulnerability.exposure_contracts import (
     ExposureCursorError,
@@ -34,9 +35,13 @@ from operations.exposure_metrics import (
 
 EXPOSURE_FACTS_TABLE = "gold_exposure_facts"
 EXPOSURE_EVIDENCE_TABLE = "gold_exposure_evidence"
+SILVER_PATCH_FINDINGS_TABLE = "silver_patch_snapshot_findings"
+SILVER_PATCH_SNAPSHOT_TABLE = "metadata_patch_snapshot"
+SILVER_PATCH_GENERATION_PREFIX = "silver-patch:"
 MAX_EXPOSURE_PAGE_SIZE = 100
 MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS = 64
 MAX_EXPOSURE_FILTER_VALUES = 50
+MAX_SILVER_PATCH_SUBSCRIPTIONS = 500
 MAX_EXPOSURE_FACETS = 8
 MAX_FACET_ROWS = 1_000
 MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS = 30
@@ -306,6 +311,7 @@ class ExposureAuthorization:
     subject: str
     tenant_id: str
     connection_ids: tuple[str, ...]
+    connection_subscriptions: Mapping[str, str] = field(default_factory=dict)
     scope: Mapping[str, Sequence[str]] = field(default_factory=dict)
     scope_keys: tuple[str, ...] = ()
 
@@ -317,6 +323,20 @@ class ExposureAuthorization:
             raise ValueError(
                 "Exposure authorization requires at least one connection_id"
             )
+        connection_subscriptions = {
+            str(connection_id or "").strip().casefold(): str(
+                subscription_id or ""
+            ).strip().casefold()
+            for connection_id, subscription_id in dict(
+                self.connection_subscriptions
+            ).items()
+            if str(connection_id or "").strip()
+            and str(subscription_id or "").strip()
+        }
+        if not set(connection_subscriptions) <= set(connection_ids):
+            raise ValueError(
+                "Exposure connection subscription mapping exceeds authorization"
+            )
         normalized_scope: dict[str, tuple[str, ...]] = {}
         for name, values in dict(self.scope).items():
             normalized_name = str(name or "").strip().casefold()
@@ -327,6 +347,13 @@ class ExposureAuthorization:
             canonical = _canonical_values(values)
             if canonical:
                 normalized_scope[normalized_name] = canonical
+        scoped_subscriptions = set(normalized_scope.get("subscription", ()))
+        if scoped_subscriptions and not set(
+            connection_subscriptions.values()
+        ) <= scoped_subscriptions:
+            raise ValueError(
+                "Exposure connection subscription mapping exceeds scope"
+            )
         scoped_connections = normalized_scope.get(
             "subscription_connection", ()
         )
@@ -339,6 +366,11 @@ class ExposureAuthorization:
         object.__setattr__(self, "subject", subject)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "connection_ids", connection_ids)
+        object.__setattr__(
+            self,
+            "connection_subscriptions",
+            dict(sorted(connection_subscriptions.items())),
+        )
         object.__setattr__(
             self,
             "scope",
@@ -599,6 +631,17 @@ class _CompiledQueries:
     sort_position_column: str
 
 
+@dataclass(frozen=True, slots=True)
+class _SilverPatchSnapshot:
+    generation: str
+    ingestion_run_id: str | None
+    completeness: str
+    freshness_state: str
+    freshness_at: str
+    represented_connections: int
+    expected_connections: int
+
+
 class ExposureQueryService:
     """Execute one immutable, scope-first Exposure count/facet/page request."""
 
@@ -718,10 +761,30 @@ class ExposureQueryService:
         current = _aware_utc(now or datetime.now(UTC), "now")
         if cursor and after is not None:
             raise ValueError("Exposure cursor and raw position are mutually exclusive")
+        use_silver_patch = _is_silver_patch_query(authorization, query)
+        schema = getattr(
+            getattr(self._reader, "endpoint", None),
+            "schema",
+            "dbo",
+        )
+        silver_snapshot = (
+            _silver_patch_snapshot(
+                self._reader,
+                authorization,
+                schema=schema,
+                now=current,
+            )
+            if use_silver_patch
+            else None
+        )
         window = (
-            self._generation_window()
-            if callable(self._generation_window)
-            else self._generation_window
+            (
+                self._generation_window()
+                if callable(self._generation_window)
+                else self._generation_window
+            )
+            if not use_silver_patch
+            else None
         )
         if window is not None and not isinstance(
             window,
@@ -735,7 +798,7 @@ class ExposureQueryService:
                 raise ExposureQueryUnavailableError(
                     "Exposure cursor verification is unavailable"
                 )
-            if window is None:
+            if window is None and not use_silver_patch:
                 raise ExposureQueryUnavailableError(
                     "Exposure generation retention state is unavailable"
                 )
@@ -744,13 +807,28 @@ class ExposureQueryService:
                     cursor,
                     authorization=authorization,
                     query=query,
-                    expected_generation_id=generation_id,
+                    expected_generation_id=(
+                        generation_id
+                        if not use_silver_patch
+                        or str(generation_id or "").startswith(
+                            SILVER_PATCH_GENERATION_PREFIX
+                        )
+                        else None
+                    ),
                     now=current,
                 )
-                generation = window.require_readable(
-                    cursor_state.generation,
-                    now=current,
-                )
+                if use_silver_patch:
+                    generation = cursor_state.generation
+                    if generation != silver_snapshot.generation:
+                        raise ExposureRestartConflict(
+                            "exposure_generation_evicted",
+                            generation=generation,
+                        )
+                else:
+                    generation = window.require_readable(
+                        cursor_state.generation,
+                        now=current,
+                    )
             except ExposureRestartConflict:
                 self._metrics.record_query_event(
                     operation="cursor",
@@ -770,33 +848,54 @@ class ExposureQueryService:
                 )
             after = cursor_state.position
         else:
-            selected_generation = (
-                generation_id
-                or (
-                    window.active_generation
-                    if window is not None
-                    else None
+            if use_silver_patch:
+                requested_generation = str(generation_id or "")
+                generation = (
+                    requested_generation
+                    if requested_generation.startswith(
+                        SILVER_PATCH_GENERATION_PREFIX
+                    )
+                    else str(silver_snapshot.generation)
                 )
-            )
-            generation = _required_text(
-                selected_generation,
-                "read_model_generation_id",
-            )
-            if window is not None:
-                generation = window.require_readable(
-                    generation,
-                    now=current,
+                if generation != silver_snapshot.generation:
+                    raise ExposureRestartConflict(
+                        "exposure_generation_evicted",
+                        generation=generation,
+                    )
+            else:
+                selected_generation = (
+                    generation_id
+                    or (
+                        window.active_generation
+                        if window is not None
+                        else None
+                    )
                 )
-        compiled = _compile_queries(
-            authorization,
-            generation_id=generation,
-            query=query,
-            after=after,
-            schema=getattr(
-                getattr(self._reader, "endpoint", None),
-                "schema",
-                "dbo",
-            ),
+                generation = _required_text(
+                    selected_generation,
+                    "read_model_generation_id",
+                )
+                if window is not None:
+                    generation = window.require_readable(
+                        generation,
+                        now=current,
+                    )
+        compiled = (
+            _compile_silver_patch_queries(
+                authorization,
+                snapshot=silver_snapshot,
+                query=query,
+                after=after,
+                schema=schema,
+            )
+            if use_silver_patch
+            else _compile_queries(
+                authorization,
+                generation_id=generation,
+                query=query,
+                after=after,
+                schema=schema,
+            )
         )
         count_started = self._clock()
         try:
@@ -830,6 +929,18 @@ class ExposureQueryService:
             count_row.get("all_complete"),
         )
         freshness = _freshness_payload(count_row.get("freshest_at"))
+        if use_silver_patch:
+            completeness = {
+                "state": silver_snapshot.completeness,
+                "represented_connections": (
+                    silver_snapshot.represented_connections
+                ),
+                "expected_connections": silver_snapshot.expected_connections,
+            }
+            freshness = {
+                "state": silver_snapshot.freshness_state,
+                "as_of": silver_snapshot.freshness_at,
+            }
         facet_rows: list[dict[str, Any]] = []
         if compiled.facet_sql:
             facet_started = self._clock()
@@ -1230,6 +1341,327 @@ def _compile_queries(
         facet_sql=facet_sql,
         page_sql=page_sql,
         parameters=tuple(parameters),
+        page_parameters=tuple(page_parameters),
+        page_limit=page_limit,
+        sort_position_column=position_column,
+    )
+
+
+def _is_silver_patch_query(
+    authorization: ExposureAuthorization,
+    query: ExposureQuery,
+) -> bool:
+    if (
+        authorization.scope_keys
+        or not authorization.connection_subscriptions
+    ):
+        return False
+    target_filters = [
+        item
+        for item in query.filters
+        if str(item.field).casefold() == "target_kind"
+    ]
+    if len(target_filters) != 1:
+        return False
+    target = target_filters[0]
+    if (
+        str(target.operator).casefold() != "eq"
+        or str(target.value).casefold() != "server"
+    ):
+        return False
+    source_filters = [
+        item
+        for item in query.filters
+        if str(item.field).casefold() == "source_family"
+    ]
+    if len(source_filters) != 1:
+        return False
+    source = source_filters[0]
+    if str(source.operator).casefold() == "eq":
+        values = (str(source.value).casefold(),)
+    elif str(source.operator).casefold() == "in" and not isinstance(
+            source.value,
+            (str, bytes),
+    ):
+        values = _canonical_values(source.value)
+    else:
+        return False
+    return values == ("aum",)
+
+
+def _silver_patch_subscriptions(
+    authorization: ExposureAuthorization,
+) -> tuple[str, ...]:
+    subscriptions = tuple(
+        sorted(set(authorization.connection_subscriptions.values()))
+    )
+    if len(subscriptions) > MAX_SILVER_PATCH_SUBSCRIPTIONS:
+        raise ExposureQueryUnavailableError(
+            "Silver patch subscription scope exceeds its safe bound"
+        )
+    return subscriptions
+
+
+def _silver_patch_scope(
+    authorization: ExposureAuthorization,
+) -> tuple[list[str], list[Any]]:
+    predicates = ["[tenant_id] = ?"]
+    parameters: list[Any] = [authorization.tenant_id]
+    _append_in_predicate(
+        predicates,
+        parameters,
+        "[subscription_id]",
+        _silver_patch_subscriptions(authorization),
+    )
+    return predicates, parameters
+
+
+def _silver_patch_status_scope(
+    authorization: ExposureAuthorization,
+) -> tuple[list[str], list[Any]]:
+    predicates = ["[tenant_id] = ?"]
+    parameters: list[Any] = ["system"]
+    _append_in_predicate(
+        predicates,
+        parameters,
+        "[subscription_id]",
+        _silver_patch_subscriptions(authorization),
+    )
+    return predicates, parameters
+
+
+def _silver_patch_snapshot(
+    reader: Any,
+    authorization: ExposureAuthorization,
+    *,
+    schema: str,
+    now: datetime,
+) -> _SilverPatchSnapshot:
+    snapshot_table = (
+        f"{_identifier(schema)}.{_identifier(SILVER_PATCH_SNAPSHOT_TABLE)}"
+    )
+    predicates, parameters = _silver_patch_status_scope(authorization)
+    subscriptions = _silver_patch_subscriptions(authorization)
+    limit = len(subscriptions) + 1
+    snapshot_rows = reader.query(
+        "WITH [ranked_snapshot] AS ("
+        "SELECT [subscription_id], [ingestion_run_id], [source_generation], "
+        "[status], [completeness], [freshness], [freshness_at], "
+        "[freshness_threshold_seconds], [represented_count], [expected_count], "
+        "ROW_NUMBER() OVER (PARTITION BY [subscription_id] "
+        "ORDER BY [timestamp] DESC, [ingestion_run_id] DESC, [resource_id] ASC) "
+        "AS [snapshot_rank] "
+        f"FROM {snapshot_table} WHERE {' AND '.join(predicates)}"
+        ") "
+        f"SELECT TOP ({limit}) [subscription_id], [ingestion_run_id], "
+        "[source_generation], [status], [completeness], [freshness], "
+        "[freshness_at], [freshness_threshold_seconds], [represented_count], "
+        "[expected_count] FROM [ranked_snapshot] WHERE [snapshot_rank] = 1 "
+        "ORDER BY [subscription_id] ASC",
+        tuple(parameters),
+        max_rows=limit,
+    )
+    actual_subscriptions = {
+        str(row.get("subscription_id") or "").casefold()
+        for row in snapshot_rows
+    }
+    if (
+        len(snapshot_rows) > len(subscriptions)
+        or actual_subscriptions != set(subscriptions)
+    ):
+        raise ExposureQueryUnavailableError(
+            "Silver patch snapshot is incomplete for the authorized scope"
+        )
+    publication_ids = sorted(
+        {
+            _required_text(
+                row.get("ingestion_run_id"),
+                "Silver patch publication generation",
+            )
+            for row in snapshot_rows
+        }
+    )
+    if len(publication_ids) != 1:
+        raise ExposureQueryUnavailableError(
+            "Silver patch subscriptions do not share one publication generation"
+        )
+    publication_id = publication_ids[0]
+    completeness_values = {
+        str(row.get("completeness") or "unavailable").casefold()
+        for row in snapshot_rows
+    }
+    if "unavailable" in completeness_values:
+        completeness = "unavailable"
+    elif "stale" in completeness_values:
+        completeness = "stale"
+    elif "partial" in completeness_values:
+        completeness = "partial"
+    elif completeness_values == {"healthy-empty"}:
+        completeness = "healthy-empty"
+    else:
+        completeness = "complete"
+    represented_connections = sum(
+        max(0, int(row.get("represented_count") or 0))
+        for row in snapshot_rows
+    )
+    freshness_at = min(
+        (str(row.get("freshness_at") or "") for row in snapshot_rows),
+        default="",
+    )
+    freshness_states = {
+        classify_freshness(
+            str(row.get("freshness_at") or ""),
+            now=now,
+            threshold_seconds=max(
+                1,
+                int(row.get("freshness_threshold_seconds") or 0),
+            ),
+        )
+        for row in snapshot_rows
+    }
+    freshness_state = (
+        "stale"
+        if "stale" in freshness_states
+        else "unknown"
+        if "unknown" in freshness_states
+        else "fresh"
+    )
+    ingestion_run_id = (
+        None if completeness == "healthy-empty" else publication_id
+    )
+    return _SilverPatchSnapshot(
+        generation=f"{SILVER_PATCH_GENERATION_PREFIX}{publication_id}",
+        ingestion_run_id=ingestion_run_id,
+        completeness=completeness,
+        freshness_state=freshness_state,
+        freshness_at=freshness_at,
+        represented_connections=represented_connections,
+        expected_connections=sum(
+            max(0, int(row.get("expected_count") or 0))
+            for row in snapshot_rows
+        ),
+    )
+
+
+def _compile_silver_patch_queries(
+    authorization: ExposureAuthorization,
+    *,
+    snapshot: _SilverPatchSnapshot,
+    query: ExposureQuery,
+    after: tuple[Any, str] | None,
+    schema: str,
+) -> _CompiledQueries:
+    _validate_query(query)
+    table = f"{_identifier(schema)}.{_identifier(SILVER_PATCH_FINDINGS_TABLE)}"
+    predicates, parameters = _silver_patch_scope(authorization)
+    if snapshot.ingestion_run_id is None:
+        predicates.append("1 = 0")
+    else:
+        predicates.append("[ingestion_run_id] = ?")
+        parameters.append(snapshot.ingestion_run_id)
+    severity_score = (
+        "CASE LOWER([severity]) WHEN 'critical' THEN 100.0 "
+        "WHEN 'important' THEN 80.0 WHEN 'high' THEN 80.0 "
+        "WHEN 'security' THEN 70.0 WHEN 'moderate' THEN 50.0 "
+        "WHEN 'medium' THEN 50.0 WHEN 'low' THEN 20.0 ELSE 40.0 END"
+    )
+    severity_rank = (
+        "CASE LOWER([severity]) WHEN 'critical' THEN 4 "
+        "WHEN 'important' THEN 3 WHEN 'high' THEN 3 "
+        "WHEN 'security' THEN 3 WHEN 'moderate' THEN 2 "
+        "WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END"
+    )
+    weakness_id = (
+        "CASE WHEN UPPER([kb_id]) LIKE 'KB%' THEN UPPER([kb_id]) "
+        "ELSE CONCAT('KB', UPPER([kb_id])) END"
+    )
+    completeness = snapshot.completeness
+    source_status = (
+        "succeeded"
+        if completeness in {"complete", "healthy-empty"}
+        else "partial"
+    )
+    source_projection = (
+        "CONCAT('silver-patch:', LOWER([resource_id])) AS [exposure_id], "
+        "[target_resource_id] AS [target_id], 'server' AS [target_kind], "
+        f"{weakness_id} AS [weakness_id], 'kb' AS [weakness_kind], "
+        "'aum' AS [source_family], LOWER([status]) AS [source_state], "
+        "LOWER([status]) AS [current_state], "
+        "CAST(CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') THEN 1 ELSE 0 END AS bit) AS [active], "
+        "LOWER([severity]) AS [severity], "
+        f"CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') THEN {severity_score} ELSE 0.0 END AS [priority_score], "
+        "'unknown' AS [sla_state], CAST(NULL AS bigint) AS [sla_age_seconds], "
+        "CAST(NULL AS bigint) AS [sla_target_seconds], CAST(NULL AS nvarchar(64)) AS [sla_due_at], "
+        "CAST(NULL AS bit) AS [sla_overdue], "
+        f"CASE WHEN LOWER([status]) = 'missing' THEN CONCAT('Install ', {weakness_id}) "
+        f"WHEN LOWER([status]) = 'installation_failed' THEN CONCAT('Retry ', {weakness_id}, ' installation') "
+        f"ELSE CONCAT({weakness_id}, ' is installed') END AS [recommendation], "
+        "'' AS [registry_id], '' AS [logical_image_id], '' AS [image_digest_id], "
+        "'' AS [image_digest], 'not_applicable' AS [deployment_state], "
+        "CAST(1 AS bigint) AS [represented_workload_count], "
+        "CAST(1 AS bigint) AS [total_workload_count], "
+        "CAST(0 AS bigint) AS [unknown_workload_count], "
+        f"'{source_status}' AS [source_status], '{completeness}' AS [completeness], "
+        "CAST(1 AS bigint) AS [evidence_count], "
+        f"CONCAT('/exposure/kbs/', {weakness_id}) AS [detail_path], "
+        "[timestamp] AS [timestamp], "
+        f"CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') THEN {severity_score} ELSE 0.0 END AS [ordering_priority_score], "
+        f"{severity_rank} AS [ordering_severity_rank], "
+        "[target_resource_id] AS [ordering_target_id], [resource_id] AS [fact_id]"
+    )
+    base_cte = (
+        "WITH [silver_patch] AS ("
+        f"SELECT {source_projection} FROM {table} WHERE {' AND '.join(predicates)}"
+        ")"
+    )
+    filter_predicates: list[str] = []
+    filter_parameters: list[Any] = []
+    _append_filter_predicates(filter_predicates, filter_parameters, query.filters)
+    where_sql = " AND ".join(filter_predicates) if filter_predicates else "1 = 1"
+    projection = ", ".join(_identifier(column) for column in _PAGE_COLUMNS)
+    scoped_cte = (
+        f"{base_cte}, [scoped] AS ("
+        f"SELECT {projection} FROM [silver_patch] WHERE {where_sql}"
+        ")"
+    )
+    all_parameters = (*parameters, *filter_parameters)
+    count_sql = (
+        f"{scoped_cte} SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "MAX([timestamp]) AS [freshest_at], "
+        "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) AS [all_complete] "
+        "FROM [scoped]"
+    )
+    facet_sql = _compile_facet_sql(scoped_cte, query.facets)
+    sort_sql, position_column = _SORT_FIELDS[query.sort.field]
+    direction = query.sort.direction.upper()
+    keyset = ""
+    page_parameters = list(all_parameters)
+    if after is not None:
+        if len(after) != 2 or not str(after[1] or ""):
+            raise ValueError(
+                "Exposure cursor position must contain sort value and exposure_id"
+            )
+        comparison = "<" if direction == "DESC" else ">"
+        keyset = (
+            f" AND ({sort_sql} {comparison} ? OR "
+            f"({sort_sql} = ? AND [exposure_id] > ?))"
+        )
+        page_parameters.extend((after[0], after[0], str(after[1])))
+    page_limit = query.page_size + 1
+    page_sql = (
+        f"{scoped_cte}, [deduped] AS ("
+        f"SELECT {projection}, ROW_NUMBER() OVER (PARTITION BY [exposure_id] "
+        "ORDER BY [fact_id] ASC) AS [exposure_rank] FROM [scoped]"
+        ") "
+        f"SELECT TOP ({page_limit}) {projection} FROM [deduped] "
+        f"WHERE [exposure_rank] = 1{keyset} "
+        f"ORDER BY {sort_sql} {direction}, [exposure_id] ASC"
+    )
+    return _CompiledQueries(
+        count_sql=count_sql,
+        facet_sql=facet_sql,
+        page_sql=page_sql,
+        parameters=tuple(all_parameters),
         page_parameters=tuple(page_parameters),
         page_limit=page_limit,
         sort_position_column=position_column,

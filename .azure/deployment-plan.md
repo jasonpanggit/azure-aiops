@@ -624,6 +624,28 @@ change is in scope.
 
 ## All validation checks pass
 
+### Bronze/Silver patch release proof — 2026-09-11
+
+- Affected backend suites passed, including Fabric SQL, cursor, temporal
+  projection, runtime, Delta APPEND, Fabric sync, ontology round-trip, and ARG
+  normalization coverage.
+- Ruff and `git diff --check` passed for every modified Python source/test file.
+- Patch Priorities and shared table-filter tests passed (25 focused tests);
+  TypeScript checking and the production Next.js build passed.
+- Live read-only Fabric SQL proved 2 Bronze assessments, 5 Bronze missing-patch
+  details, 5 Bronze installations, and 10 Silver findings (5 missing and 5
+  installed) in one source generation.
+- Official Terraform preflight passed installation, authentication, init,
+  formatting, validation, state, and template checks. Its generic plan lacked
+  repository-secret variables, so the repository deployment wrapper was used
+  for the authoritative saved plan.
+- `/tmp/aiops-bronze-silver-prebuild.tfplan` is refresh-enabled and contains
+  exactly four in-place updates: `azurerm_container_app.api`, `.web`,
+  `.mcp_server`, and `.azure_mcp`; zero creates, deletes, replacements, or
+  unrelated resource changes.
+- RBAC is unchanged. The release does not create, resize, replace, or modify
+  Fabric, APIM, identities, roles, jobs, capacity, networking, or secrets.
+
 - Terraform validation recipe:
   - Terraform and Azure CLI are installed.
   - Azure CLI is authenticated to the target subscription.

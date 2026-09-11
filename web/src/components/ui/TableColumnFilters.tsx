@@ -10,6 +10,7 @@ export interface TableColumnFilter {
   label: string;
   value: string;
   options: TableColumnFilterOption[];
+  defaultValue?: string;
   allLabel?: string;
   onChange: (value: string) => void;
 }
@@ -27,7 +28,9 @@ export function TableColumnFilters({
   resultCount,
   totalCount,
 }: TableColumnFiltersProps) {
-  const hasActiveFilters = filters.some((filter) => filter.value !== "all");
+  const hasActiveFilters = filters.some(
+    (filter) => filter.value !== (filter.defaultValue ?? "all"),
+  );
 
   return (
     <div className="table-column-filters" aria-label="Table column filters">
@@ -40,7 +43,9 @@ export function TableColumnFilters({
               onChange={(event) => filter.onChange(event.target.value)}
               aria-label={`Filter by ${filter.label}`}
             >
-              <option value="all">{filter.allLabel ?? `All ${filter.label.toLowerCase()}`}</option>
+              {filter.defaultValue === undefined && (
+                <option value="all">{filter.allLabel ?? `All ${filter.label.toLowerCase()}`}</option>
+              )}
               {filter.options.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}

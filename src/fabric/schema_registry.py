@@ -36,6 +36,18 @@ _ASSET = [
     pa.field("vm_size", pa.string(), nullable=False),
 ]
 
+_PATCH_FINDING = [
+    *_ENTITY,
+    pa.field("target_resource_id", pa.string(), nullable=False),
+    pa.field("kb_id", pa.string(), nullable=False),
+    pa.field("update_name", pa.string(), nullable=False),
+    pa.field("category", pa.string(), nullable=False),
+    pa.field("severity", pa.string(), nullable=False),
+    pa.field("status", pa.string(), nullable=False),
+    pa.field("published_at", pa.string(), nullable=False),
+    pa.field("last_modified", pa.string(), nullable=False),
+]
+
 _RELATIONSHIP = [
     *_BASE,
     pa.field("subject_id", pa.string(), nullable=False),
@@ -199,17 +211,19 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("missing_security_updates", pa.int64(), nullable=False),
         ]
     ),
-    "silver_patch_findings": pa.schema(
+    "silver_patch_findings": pa.schema(_PATCH_FINDING),
+    "silver_patch_snapshot_findings": pa.schema(_PATCH_FINDING),
+    "metadata_patch_snapshot": pa.schema(
         [
-            *_ENTITY,
-            pa.field("target_resource_id", pa.string(), nullable=False),
-            pa.field("kb_id", pa.string(), nullable=False),
-            pa.field("update_name", pa.string(), nullable=False),
-            pa.field("category", pa.string(), nullable=False),
-            pa.field("severity", pa.string(), nullable=False),
+            *_BASE,
+            pa.field("source_generation", pa.string(), nullable=False),
             pa.field("status", pa.string(), nullable=False),
-            pa.field("published_at", pa.string(), nullable=False),
-            pa.field("last_modified", pa.string(), nullable=False),
+            pa.field("completeness", pa.string(), nullable=False),
+            pa.field("freshness", pa.string(), nullable=False),
+            pa.field("freshness_at", pa.string(), nullable=False),
+            pa.field("freshness_threshold_seconds", pa.int64(), nullable=False),
+            pa.field("represented_count", pa.int64(), nullable=False),
+            pa.field("expected_count", pa.int64(), nullable=False),
         ]
     ),
     "silver_defender_findings": pa.schema(

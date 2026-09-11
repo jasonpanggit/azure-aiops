@@ -3721,6 +3721,10 @@ def _exposure_query_authorization(
         connection_ids=tuple(
             str(connection.connection_id) for connection in connections
         ),
+        connection_subscriptions={
+            str(connection.connection_id): str(connection.subscription_id)
+            for connection in connections
+        },
         scope=scope.to_dict(),
     )
 
@@ -3789,7 +3793,6 @@ def _fabric_exposure_query_service(
         raise RuntimeError("Fabric SQL Exposure reader is unavailable")
     if not runtime.service.sql_reader.query("SELECT 1 AS probe", max_rows=1):
         raise RuntimeError("Fabric SQL Exposure connectivity probe returned no rows")
-    _exposure_generation_window()
 
     from .exposure_query import (
         ExposureCursorCodec,

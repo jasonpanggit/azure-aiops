@@ -216,8 +216,13 @@ def test_exposure_query_provider_probes_sql_reader_before_publication() -> None:
         _fabric_exposure_query_service(runtime, object())
 
 
-def test_exposure_query_provider_requires_readable_generation(monkeypatch) -> None:
+def test_exposure_query_provider_defers_readable_generation_to_gold_queries(
+    monkeypatch,
+) -> None:
     import api.runtime as runtime_module
+
+    monkeypatch.setenv("EXPOSURE_CURSOR_ACTIVE_KID", "test-active")
+    monkeypatch.setenv("EXPOSURE_CURSOR_ACTIVE_KEY", "a" * 32)
 
     class _Reader:
         def query(
@@ -241,11 +246,9 @@ def test_exposure_query_provider_requires_readable_generation(monkeypatch) -> No
     )
     runtime = SimpleNamespace(service=SimpleNamespace(sql_reader=_Reader()))
 
-    with pytest.raises(
-        ExposureQueryUnavailableError,
-        match="Exposure readable generation is unavailable",
-    ):
-        _fabric_exposure_query_service(runtime, object())
+    service = _fabric_exposure_query_service(runtime, object())
+
+    assert service is not None
 
 
 def test_exposure_generation_window_reads_api_home_pointer(

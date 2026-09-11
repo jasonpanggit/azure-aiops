@@ -210,10 +210,25 @@ export default function PatchPrioritiesPage() {
     [searchParams],
   );
   const queryState = useMemo(
-    () =>
-      parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
+    () => {
+      const parsed = parseExposureQueryState(
+        new URLSearchParams(searchParams.toString()),
+        {
         authorizedScope: scope,
-      }),
+        },
+      );
+      const targetKind = parsed.filters.target_kind ?? "server";
+      const sourceFamily =
+        targetKind === "container_image" ? "defender_image" : "aum";
+      return {
+        ...parsed,
+        filters: {
+          ...parsed.filters,
+          target_kind: targetKind,
+          source_family: sourceFamily,
+        },
+      };
+    },
     [scope, searchParams],
   );
   const [searchDraft, setSearchDraft] = useState(
@@ -333,11 +348,14 @@ export default function PatchPrioritiesPage() {
 
   const updateFilter = useCallback(
     (field: "target_kind", value: string) => {
+      const targetKind = value === "all" ? "server" : value;
       commitQuery(
         updateExposureQueryState(queryState, {
           filters: {
             ...queryState.filters,
-            [field]: value === "all" ? undefined : value,
+            [field]: targetKind,
+            source_family:
+              targetKind === "container_image" ? "defender_image" : "aum",
           },
         }),
       );
@@ -445,13 +463,14 @@ export default function PatchPrioritiesPage() {
                 id: "target_kind",
                 label: "Target kind",
                 value: targetKind,
+                defaultValue: "server",
                 options: TARGET_KIND_OPTIONS,
                 onChange: (value) => updateFilter("target_kind", value),
               },
             ]}
             resultCount={rows.length}
             totalCount={page?.total_count ?? 0}
-            onReset={() => updateFilter("target_kind", "all")}
+            onReset={() => updateFilter("target_kind", "server")}
           />
 
           {rows.length > 0 && (

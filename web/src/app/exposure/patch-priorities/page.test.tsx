@@ -356,7 +356,7 @@ describe("Patch priorities", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Restart results" }));
     expect(navigation.replace).toHaveBeenLastCalledWith(
-      "/exposure/patch-priorities?subscription=sub-1",
+      "/exposure/patch-priorities?subscription=sub-1&target_kind=server&source_family=aum",
       { scroll: false },
     );
   });
@@ -394,6 +394,7 @@ describe("Patch priorities", () => {
   });
 
   it("fails closed for container findings without SQL-backed governed handoff evidence", async () => {
+    navigation.params.set("target_kind", "container_image");
     const envelope = exposureEnvelope();
     envelope.data.items = [envelope.data.items[1]];
     envelope.data.total_count = 1;
@@ -419,5 +420,24 @@ describe("Patch priorities", () => {
     expect(
       screen.queryByRole("link", { name: /execute|rebuild|deploy/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("canonicalizes contradictory target and source URL filters", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&target_kind=server&source_family=defender_image",
+    );
+
+    render(<PatchPrioritiesPage />);
+    await screen.findByText("KB600001");
+
+    expect(api.exposureItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          target_kind: "server",
+          source_family: "aum",
+        }),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 });
