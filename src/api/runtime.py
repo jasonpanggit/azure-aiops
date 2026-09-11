@@ -981,6 +981,10 @@ def _load_incident_engine() -> IncidentEngine | None:
 # multiplying load on rate-limited public feeds. A local home keeps them
 # purely in memory. Failures never break the endpoint.
 _KB_CVE_CACHE_TTL_SECONDS = 6 * 60 * 60
+_DURABLE_CATALOG_CACHE_TTL_SECONDS = 5
+_durable_catalog_cache: dict[
+    tuple[str, tuple[str, ...]], tuple[float, tuple[dict[str, Any], ...]]
+] = {}
 
 
 @cache
@@ -1015,6 +1019,34 @@ def _durable_enrichment_records() -> tuple[dict[str, Any], ...]:
         store=OneLakeDocumentStore(str(aiops_home())),
         ttl_seconds=_KB_CVE_CACHE_TTL_SECONDS,
     ).records()
+
+
+def _durable_catalog_records(cve_id: str) -> tuple[dict[str, Any], ...]:
+    identifier = str(cve_id or "").strip().upper()
+    root = str(aiops_home())
+    records = _ttl_cached_value(
+        _durable_catalog_cache,
+        (root, ()),
+        ttl_seconds=_DURABLE_CATALOG_CACHE_TTL_SECONDS,
+        now=time.monotonic(),
+        build=_durable_enrichment_records,
+        completion_clock=time.monotonic,
+    )
+    selected: list[dict[str, Any]] = []
+    for record in records:
+        source = str(record.get("source") or "").casefold()
+        record_identifier = str(record.get("identifier") or "").upper()
+        payload = record.get("payload")
+        direct = source in {"nvd", "epss", "kev"} and record_identifier == identifier
+        mapped = (
+            source == "msrc"
+            and isinstance(payload, Mapping)
+            and identifier
+            in {str(value).upper() for value in payload.get("cve_ids") or ()}
+        )
+        if direct or mapped:
+            selected.append(dict(record))
+    return tuple(selected)
 
 
 def _durable_enrichment_payloads(
@@ -3778,6 +3810,7 @@ def _fabric_exposure_query_service(
                 scope,
             )
         ),
+        catalog_records_resolver=_durable_catalog_records,
     )
 
 

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+import api.runtime as runtime_module
 from api.app import create_app
 from api.auth import (
     EntraJwtAuthenticator,
@@ -53,6 +54,35 @@ from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
 from storage.datasets import DatasetStore as NeutralDatasetStore
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
+
+
+def test_durable_catalog_records_reuse_short_ttl_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def records() -> tuple[dict[str, object], ...]:
+        nonlocal calls
+        calls += 1
+        return (
+            {
+                "source": "nvd",
+                "identifier": "CVE-2026-59873",
+                "payload": {"description": "bounded"},
+            },
+        )
+
+    runtime_module._durable_catalog_cache.clear()
+    monkeypatch.setattr(runtime_module, "aiops_home", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "_durable_enrichment_records", records)
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 1_000.0)
+
+    first = runtime_module._durable_catalog_records("CVE-2026-59873")
+    second = runtime_module._durable_catalog_records("CVE-2026-59873")
+
+    assert first == second
+    assert calls == 1
 
 
 @pytest.fixture(autouse=True)

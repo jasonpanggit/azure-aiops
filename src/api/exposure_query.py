@@ -609,6 +609,7 @@ class ExposureQueryService:
         cursor_codec: ExposureCursorCodec | None = None,
         generation_window: Any | None = None,
         authorization_resolver: Any | None = None,
+        catalog_records_resolver: Any | None = None,
         metrics: ExposureMetrics | None = None,
         clock: Any = time.monotonic,
     ) -> None:
@@ -626,6 +627,7 @@ class ExposureQueryService:
         self._cursor_codec = cursor_codec
         self._generation_window = generation_window
         self._authorization_resolver = authorization_resolver
+        self._catalog_records_resolver = catalog_records_resolver
         self._metrics = metrics or ExposureMetrics()
         self._clock = clock
 
@@ -982,7 +984,20 @@ class ExposureQueryService:
             )
         predicates.append("[read_model_generation_id] = ?")
         parameters.append(generation)
-        parameters.extend((identifier, f'%"{identifier}"%'))
+        membership_parameters = (*parameters, identifier)
+        membership_sql = (
+            f"SELECT TOP (1) [fact_id] FROM {facts} WHERE "
+            f"{' AND '.join(predicates)} AND [weakness_id] = ? "
+            "ORDER BY [fact_id] ASC"
+        )
+        membership = self._reader.query(
+            membership_sql,
+            membership_parameters,
+            max_rows=1,
+        )
+        if not membership:
+            return None
+        parameters.extend((identifier, identifier))
         public_columns = (
             "source",
             "identifier",
@@ -1014,7 +1029,10 @@ class ExposureQueryService:
             f"FROM {evidence} AS [e] "
             "INNER JOIN [authorized_facts] AS [a] ON [a].[fact_id] = [e].[fact_id] "
             "WHERE [e].[identifier] = ? OR "
-            "([e].[source] = 'msrc' AND [e].[payload_json] LIKE ?)"
+            "([e].[source] = 'msrc' AND EXISTS ("
+            "SELECT 1 FROM OPENJSON([e].[payload_json], '$.cve_ids') "
+            "WITH ([cve_id] nvarchar(256) '$') AS [ids] "
+            "WHERE [ids].[cve_id] = ?))"
             ") "
             f"SELECT TOP ({limit}) {outer_projection} FROM [ranked_evidence] "
             "WHERE [evidence_rank] = 1 "
@@ -1029,20 +1047,48 @@ class ExposureQueryService:
             raise ExposureQueryUnavailableError(
                 "External vulnerability catalog evidence exceeded its safe bound"
             )
+        resolved_rows = list(rows)
+        if callable(self._catalog_records_resolver):
+            resolved_rows.extend(
+                dict(row)
+                for row in self._catalog_records_resolver(identifier)
+                if isinstance(row, Mapping)
+            )
         sources: dict[str, dict[str, Any]] = {}
-        for row in rows:
+        for row in sorted(
+            resolved_rows,
+            key=lambda value: (
+                str(value.get("source") or ""),
+                str(value.get("identifier") or ""),
+                str(value.get("enriched_at") or ""),
+            ),
+            reverse=True,
+        ):
             source = str(row.get("source") or "").strip().casefold()
             source_identifier = str(row.get("identifier") or "")
             key = f"{source}:{source_identifier}" if source == "msrc" else source
             if not source or key in sources:
                 continue
-            payload = _catalog_payload(source, row.get("payload_json"))
+            if len(sources) >= MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS:
+                raise ExposureQueryUnavailableError(
+                    "External vulnerability catalog evidence exceeded its safe bound"
+                )
+            payload_value = row.get("payload")
+            payload = (
+                _catalog_payload(source, json.dumps(payload_value))
+                if isinstance(payload_value, Mapping)
+                else _catalog_payload(source, row.get("payload_json"))
+            )
             sources[key] = {
                 "source": source,
                 "identifier": source_identifier,
                 "status": str(row.get("status") or "unknown"),
                 "stale": bool(row.get("stale")),
-                "has_last_known_good": bool(row.get("lkg_available")),
+                "has_last_known_good": bool(
+                    row.get("lkg_available")
+                    or row.get("has_last_known_good")
+                    or payload is not None
+                ),
                 "safe_error_code": str(row.get("safe_error_code") or ""),
                 "attempted_at": str(row.get("attempted_at") or ""),
                 "succeeded_at": str(row.get("succeeded_at") or ""),

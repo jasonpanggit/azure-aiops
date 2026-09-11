@@ -143,6 +143,8 @@ class CatalogReader(RecordingReader):
                 "max_rows": max_rows,
             }
         )
+        if "SELECT TOP (1) [fact_id]" in sql:
+            return [{"fact_id": "fact-1"}]
         return [
             {
                 "source": "nvd",
@@ -188,14 +190,18 @@ def test_external_catalog_is_authorized_generation_pinned_and_bounded() -> None:
         weakness_id="CVE-2026-0001",
     )
 
-    assert len(reader.calls) == 1
-    call = reader.calls[0]
+    assert len(reader.calls) == 2
+    membership_call, call = reader.calls
+    assert membership_call["max_rows"] == 1
+    assert "[weakness_id] = ?" in membership_call["sql"]
+    assert membership_call["parameters"][-1] == "CVE-2026-0001"
     sql = call["sql"]
     assert "[gold_exposure_facts]" in sql
     assert "[gold_exposure_evidence]" in sql
     assert f"TOP ({MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1})" in sql
     assert "ROW_NUMBER() OVER (PARTITION BY [e].[source], [e].[identifier]" in sql
     assert "WHERE [evidence_rank] = 1" in sql
+    assert "OPENJSON([e].[payload_json], '$.cve_ids')" in sql
     assert "SELECT *" not in sql.upper()
     assert call["max_rows"] == MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1
     assert call["parameters"] == (
@@ -206,7 +212,7 @@ def test_external_catalog_is_authorized_generation_pinned_and_bounded() -> None:
         "subscription-b",
         "generation-17",
         "CVE-2026-0001",
-        '%"CVE-2026-0001"%',
+        "CVE-2026-0001",
     )
     assert all(str(value) not in sql for value in call["parameters"])
     assert result["generation"] == "generation-17"
@@ -229,6 +235,94 @@ def test_external_catalog_is_authorized_generation_pinned_and_bounded() -> None:
         "connection_id",
     ):
         assert forbidden not in serialized
+
+
+def test_external_catalog_merges_exact_durable_records_after_sql_membership() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda identifier: (
+            {
+                "source": "kev",
+                "identifier": identifier,
+                "status": "succeeded",
+                "stale": False,
+                "payload": {
+                    "kev_due_date": "2026-10-01",
+                    "target_id": "must-not-leak",
+                },
+                "enriched_at": "2026-09-11T03:06:51Z",
+            },
+        ),
+    )
+
+    result = service.catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert result is not None
+    kev = result["item"]["sources"]["kev"]
+    assert kev["payload"] == {"kev_due_date": "2026-10-01"}
+    assert kev["has_last_known_good"] is True
+
+
+def test_external_catalog_enforces_one_bound_after_merging_sources() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda _identifier: tuple(
+            {
+                "source": "msrc",
+                "identifier": f"KB{index:07d}",
+                "status": "succeeded",
+                "payload": {"kb_id": f"KB{index:07d}"},
+            }
+            for index in range(MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS)
+        ),
+    )
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="exceeded its safe bound",
+    ):
+        service.catalog_item(
+            _authorization(),
+            generation_id="generation-17",
+            weakness_id="CVE-2026-0001",
+        )
+
+
+def test_external_catalog_rejects_durable_only_source_overflow() -> None:
+    reader = CatalogReader()
+    reader.query = lambda sql, parameters=(), max_rows=None: (
+        [{"fact_id": "fact-1"}]
+        if "SELECT TOP (1) [fact_id]" in sql
+        else []
+    )
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda _identifier: tuple(
+            {
+                "source": "msrc",
+                "identifier": f"KB{index:07d}",
+                "status": "succeeded",
+                "payload": {"kb_id": f"KB{index:07d}"},
+            }
+            for index in range(MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1)
+        ),
+    )
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="exceeded its safe bound",
+    ):
+        service.catalog_item(
+            _authorization(),
+            generation_id="generation-17",
+            weakness_id="CVE-2026-0001",
+        )
 
 
 @pytest.mark.parametrize(
