@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from storage.fs import is_onelake_uri, resolve_root
+
 from .auth import FabricAuthConfig
 
 
@@ -285,7 +287,7 @@ class CapacityRuntimeConfig:
 @dataclass(frozen=True)
 class FabricRuntimeConfig:
     auth: FabricAuthConfig
-    source_data_root: Path
+    source_data_root: Path | str
     workspace_id: str = ""
     workspace_name: str = ""
     lakehouse_id: str = ""
@@ -332,7 +334,10 @@ class FabricRuntimeConfig:
         config_path = Path(path).expanduser().resolve()
         payload = yaml.safe_load(config_path.read_text()) or {}
         fabric = payload.get("fabric") or {}
-        source = _resolve_path(config_path.parent, fabric.get("source_data_root") or "./data")
+        source = _resolve_source_root(
+            config_path.parent,
+            fabric.get("source_data_root") or "./data",
+        )
         local_value = fabric.get("local_onelake_root")
         local = _resolve_path(config_path.parent, local_value) if local_value else None
         shortcuts = tuple(
@@ -806,6 +811,13 @@ class FabricRuntimeConfig:
 def _resolve_path(base: Path, value: object) -> Path:
     path = Path(str(value)).expanduser()
     return (path if path.is_absolute() else base / path).resolve()
+
+
+def _resolve_source_root(base: Path, value: object) -> Path | str:
+    text = str(value)
+    if is_onelake_uri(text):
+        return resolve_root(text)
+    return _resolve_path(base, value)
 
 
 def _strict_positive_int(payload: dict[str, object], name: str, default: int) -> int:

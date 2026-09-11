@@ -113,6 +113,48 @@ def test_store_is_idempotent_for_same_content(tmp_path: Path) -> None:
     assert second["changedDatasets"] == []
 
 
+@pytest.mark.parametrize(
+    ("field", "first_value", "second_value"),
+    [
+        ("observed_at", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"),
+        ("ingested_at", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"),
+        ("run_id", "source-run-1", "source-run-2"),
+        (
+            "lastObservedTimestamp",
+            "2026-09-01T00:00:00Z",
+            "2026-09-02T00:00:00Z",
+        ),
+    ],
+)
+def test_store_integrity_hash_covers_semantically_volatile_fields(
+    tmp_path: Path,
+    field: str,
+    first_value: str,
+    second_value: str,
+) -> None:
+    store = NeutralDatasetStore(tmp_path)
+    first = store.publish(
+        {"entities/Resource": [{"id": "resource-1", field: first_value}]},
+        {},
+        {"runId": "integrity-run-1"},
+        ontology={"generatedAt": first_value},
+    )
+    second = store.publish(
+        {"entities/Resource": [{"id": "resource-1", field: second_value}]},
+        {},
+        {"runId": "integrity-run-2"},
+        ontology={"generatedAt": second_value},
+    )
+
+    first_detail = first["datasets"]["entities/Resource"]
+    second_detail = second["datasets"]["entities/Resource"]
+    assert first_detail["contentHash"] == second_detail["contentHash"]
+    assert first_detail["integrityHash"] != second_detail["integrityHash"]
+    assert first["datasets"]["ontology/ontology"]["integrityHash"]
+    assert second["datasets"]["ontology/ontology"]["integrityHash"]
+    assert first["integrityHash"] != second["integrityHash"]
+
+
 def test_store_can_retain_raw_queries_when_explicitly_enabled(tmp_path: Path) -> None:
     payload = json.loads(FIXTURE.read_text())
     graph = Normalizer().normalize(payload, datetime(2026, 8, 17, tzinfo=UTC))
@@ -256,6 +298,26 @@ def test_windows_generation_cleanup_is_bounded(
     assert len(generations) == 3
     assert "windows-run-4" in generations
     assert Path(store.current_generation() or "").name == "windows-run-4"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX uses symlink activation")
+def test_local_generation_cleanup_remains_bounded(tmp_path: Path) -> None:
+    store = NeutralDatasetStore(tmp_path)
+
+    for index in range(5):
+        store.publish(
+            {"inventory/os_observations": [{"resource_id": f"vm-{index}"}]},
+            {},
+            {"runId": f"local-run-{index}", "status": "completed"},
+        )
+
+    generations = {
+        path.name
+        for path in store.generations.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    assert generations == {"local-run-2", "local-run-3", "local-run-4"}
+    assert Path(store.current_generation() or "").name == "local-run-4"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")

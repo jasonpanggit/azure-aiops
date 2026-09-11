@@ -808,6 +808,15 @@ def test_hybrid_vulnerability_cache_serializes_concurrent_builds_for_same_key(
     )
 
     context = build_context()
+    original_get = context.provider_runtime.get
+    graph_resolution_modes: list[bool] = []
+
+    def tracked_get(name: str, *, optional: bool = False):
+        if name == "semantic_graph":
+            graph_resolution_modes.append(optional)
+        return original_get(name, optional=optional)
+
+    monkeypatch.setattr(context.provider_runtime, "get", tracked_get)
     subscription_ids = [DEFAULT_LOCAL_SUBSCRIPTION_ID]
 
     results: list = []
@@ -839,3 +848,5 @@ def test_hybrid_vulnerability_cache_serializes_concurrent_builds_for_same_key(
     assert build_calls["count"] == 1
     assert len(results) == 2
     assert results[0] is results[1]
+    assert graph_resolution_modes
+    assert all(graph_resolution_modes)

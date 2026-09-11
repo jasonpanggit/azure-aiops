@@ -200,6 +200,9 @@ describe("Patch priorities", () => {
     render(<PatchPrioritiesPage />);
 
     expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    expect(api.exposureItems).toHaveBeenCalledTimes(1);
+    expect(api.exposureHandoffs).not.toHaveBeenCalled();
+    expect(api.riskExceptions).not.toHaveBeenCalled();
     expect(api.exposureItems).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: { subscription: ["sub-1"] },
@@ -234,6 +237,14 @@ describe("Patch priorities", () => {
     expect(
       screen.getByText("Showing 1–2 of 7 findings · 2 loaded"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Open governed remediation for KB600001",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Risk exceptions" }),
+    ).not.toBeInTheDocument();
   });
 
   it("commits filter, sort, and opaque-cursor changes to the canonical URL", async () => {
@@ -345,7 +356,7 @@ describe("Patch priorities", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Restart results" }));
     expect(navigation.replace).toHaveBeenLastCalledWith(
-      "/exposure/patch-priorities?subscription=sub-1",
+      "/exposure/patch-priorities?subscription=sub-1&target_kind=server&source_family=aum",
       { scroll: false },
     );
   });
@@ -382,7 +393,8 @@ describe("Patch priorities", () => {
     ).toHaveFocus();
   });
 
-  it("uses the governed container case for review handoff and never exposes execution", async () => {
+  it("fails closed for container findings without SQL-backed governed handoff evidence", async () => {
+    navigation.params.set("target_kind", "container_image");
     const envelope = exposureEnvelope();
     envelope.data.items = [envelope.data.items[1]];
     envelope.data.total_count = 1;
@@ -394,120 +406,38 @@ describe("Patch priorities", () => {
       excluded: 0,
     };
     api.exposureItems.mockResolvedValue(envelope);
-    api.exposureHandoffs.mockResolvedValue({
-      data: {
-        cases: [
-          {
-            handoff_id: "exposure-handoff:generation-17:exposure-image-1-cve-2026-0002",
-            exposure_id: "exposure-image-1-cve-2026-0002",
-            resource_key: `sha256:${"a".repeat(64)}`,
-            weakness_key: "CVE-2026-0002",
-            target_kind: "container_image",
-            read_model_generation_id: "generation-17",
-            outcome: "review_handoff",
-            outcome_reason: "Exact digest evidence is ready for governed review.",
-            direct_execution_supported: false,
-            review_handoff: { target_kind: "container_image" },
-          },
-        ],
-        read_only: true,
-        execution_transition: false,
-      },
-      evidence: [],
-      warnings: [],
-      scope: { subscription: ["sub-1"] },
-      knowledge_version: "generation-17",
-    });
 
     render(<PatchPrioritiesPage />);
 
-    const link = await screen.findByRole("link", {
-      name: "Open governed container review for CVE-2026-0002",
-    });
-    expect(link).toHaveAttribute(
-      "href",
-      expect.stringContaining(
-        "handoff=exposure-handoff%3Ageneration-17%3Aexposure-image-1-cve-2026-0002",
-      ),
-    );
-    expect(screen.getByText("Nothing executes from Exposure.")).toBeInTheDocument();
+    expect(await screen.findByText("CVE-2026-0002")).toBeInTheDocument();
+    expect(api.exposureHandoffs).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("button", { name: /execute|rebuild|deploy/i }),
+      screen.queryByRole("link", {
+        name: "Open governed container review for CVE-2026-0002",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("No safe container action")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /execute|rebuild|deploy/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("records partial bulk revoke outcomes and retains failed and unattempted selections", async () => {
-    api.riskExceptions.mockResolvedValue({
-      data: [
-        {
-          exception_id: "risk-1",
-          cve_id: "CVE-2026-0001",
-          server_id: SERVER_ID,
-          reason: "Compensating control",
-          approved_by: "security@example.com",
-          created_at: "2026-09-01T00:00:00Z",
-          expires_at: "2026-10-01T00:00:00Z",
-        },
-        {
-          exception_id: "risk-2",
-          cve_id: "CVE-2026-0002",
-          server_id: SERVER_ID,
-          reason: "Maintenance window",
-          approved_by: "security@example.com",
-          created_at: "2026-09-01T00:00:00Z",
-          expires_at: "2026-10-01T00:00:00Z",
-        },
-        {
-          exception_id: "risk-3",
-          cve_id: "CVE-2026-0003",
-          server_id: SERVER_ID,
-          reason: "Vendor review",
-          approved_by: "security@example.com",
-          created_at: "2026-09-01T00:00:00Z",
-          expires_at: "2026-10-01T00:00:00Z",
-        },
-      ],
-      evidence: [],
-      warnings: [],
-      scope: { subscription: ["sub-1"] },
-      knowledge_version: "generation-17",
-    });
-    api.revokeRiskException
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("Audit store unavailable"));
-    const user = userEvent.setup();
-    render(<PatchPrioritiesPage />);
-
-    await screen.findByText("risk-1");
-    await user.click(
-      screen.getByRole("checkbox", {
-        name: "Select all 3 risk exceptions on this page",
-      }),
+  it("canonicalizes contradictory target and source URL filters", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&target_kind=server&source_family=defender_image",
     );
-    const invoker = screen.getByRole("button", {
-      name: "Revoke 3 selected risk exceptions",
-    });
-    await user.click(invoker);
-    expect(
-      screen.getByRole("heading", { name: "Revoke 3 risk exceptions" }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Revoke exceptions" }));
 
-    expect(
-      await screen.findByText(
-        "1 revoked, 1 failed, 1 not attempted. Failed and unattempted items remain selected.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Audit ID:/)).toHaveTextContent("risk-1");
-    expect(api.revokeRiskException).toHaveBeenCalledTimes(2);
+    render(<PatchPrioritiesPage />);
+    await screen.findByText("KB600001");
 
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(invoker).toHaveFocus());
-    expect(
-      screen.getByRole("checkbox", { name: /Select risk exception risk-2/ }),
-    ).toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: /Select risk exception risk-3/ }),
-    ).toBeChecked();
+    expect(api.exposureItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          target_kind: "server",
+          source_family: "aum",
+        }),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 });

@@ -3584,12 +3584,12 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
         totalCount: cve?.associated_kbs.length ?? 0,
         available: Boolean(cve),
       },
-      {
+      ...(input.attack ? [{
         key: "attack_path",
         visibleCount: attackGraph?.nodes.length ?? 0,
         totalCount: attackGraph?.nodes.length ?? 0,
-        available: input.attack?.available ?? false,
-      },
+        available: input.attack.available,
+      }] : []),
     ],
     sourceStatuses,
   };
@@ -3604,12 +3604,12 @@ function cveDetailStarters(input: CveDetailCopilotPageInput): CoreCopilotStarter
       tool: "cve_detail",
       toolArguments: { cve_id: cveId },
     },
-    {
+    ...(input.attack ? [{
       label: `Show the blast radius of ${cveId}`,
       specialistId: "vulnerability",
       tool: "cve_attack_path",
       toolArguments: { cve_id: cveId },
-    },
+    }] : []),
   ];
 }
 

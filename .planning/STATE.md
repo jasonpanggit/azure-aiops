@@ -5,7 +5,7 @@ milestone_name: milestone
 current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
 status: planning
 stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-08T08:55:42.702Z"
+last_updated: "2026-09-10T03:58:43Z"
 progress:
   total_phases: 17
   completed_phases: 10
@@ -143,8 +143,9 @@ current_phase_name: Exposure Reliability and Scale
 |---|-------------|------|--------|--------|-----------|
 | 260903-rkn | Add detailed sync progress reporting for Fabric table writes, including written count out of total and useful in-progress status when a sync remains active | 2026-09-03 | ca708add |  | [260903-rkn-add-detailed-sync-progress-reporting-for](./quick/260903-rkn-add-detailed-sync-progress-reporting-for/) |
 | 260909-032 | Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication | 2026-09-09 | f34fde19b | Verified | [260909-032-add-stage-level-progress-logging-and-bou](./quick/260909-032-add-stage-level-progress-logging-and-bou/) |
+| 260910-f2h | Persist combined activation snapshots in OneLake and replay one exact generation without upstream discovery | 2026-09-10 | 89fcb0102 | Verified | [260910-f2h-persist-combined-activation-snapshots-in](./quick/260910-f2h-persist-combined-activation-snapshots-in/) |
 
-Last activity: 2026-09-09 - Completed quick task 260909-032: Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication
+Last activity: 2026-09-10 - Closed quick task 260910-f2h final code-review findings with full-content replay integrity and durable remote generation retention
 
 ## Performance Metrics
 
@@ -196,6 +197,8 @@ Last activity: 2026-09-09 - Completed quick task 260909-032: Add stage-level pro
 
 ## Decisions
 
+- [Quick 260910-f2h]: Preserve semantic contentHash for change detection; require separate canonical full-content artifact and manifest integrityHash values for exact activation replay.
+- [Quick 260910-f2h]: Remote DatasetStore generations are retained until a separately governed retention operation exists; only local test/development roots retain automatic three-generation cleanup.
 - [Phase 03]: Only approved controlled-patch-recovery decisions carry an execution snapshot; non-approved decisions carry none.
 - [Phase 03]: Execution validates snapshot integrity and availability but never widens the approved patch selection.
 - [Phase 03]: The public patching router is read-only; mutations route only through approved remediation execution.

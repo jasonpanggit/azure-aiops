@@ -251,6 +251,40 @@ def test_cli_activate_streams_progress_to_stderr_and_terminal_json_to_stdout(
     }
 
 
+def test_cli_activate_forwards_exact_replay_source_run_id(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    _patch_service(monkeypatch, object())
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_activate_runtime(service, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"status": "activated", "connections": ["hub"]}
+
+    monkeypatch.setattr(
+        "onboarding.activation.activate_runtime",
+        fake_activate_runtime,
+    )
+
+    assert (
+        _run(
+            [
+                "activate",
+                "--config",
+                _config(tmp_path),
+                "--replay-source-run-id",
+                "exact-generation",
+            ]
+        )
+        == 0
+    )
+
+    assert captured_kwargs["replay_source_run_id"] == "exact-generation"
+    assert json.loads(capsys.readouterr().out)["status"] == "activated"
+
+
 def test_cli_activate_renders_only_sanitized_failure_fields(
     tmp_path,
     monkeypatch,

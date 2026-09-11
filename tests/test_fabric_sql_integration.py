@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
 
 from api.exposure_query import (
+    MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS,
     ExposureAuthorization,
+    ExposureCursorCodec,
+    ExposureCursorKeyRing,
     ExposureFilter,
     ExposureQuery,
     ExposureQueryService,
     ExposureQueryUnavailableError,
+    ExposureRestartConflict,
     ExposureSort,
 )
+from fabric.dataset_mapper import (
+    _patch_installation_finding_state,
+    _patch_snapshot_rows,
+)
+from fabric.schema_registry import schema_for
 from fabric.sql_endpoint import FabricSqlQueryLimitError, FabricSqlReader, SqlEndpoint
 
 
@@ -60,16 +70,451 @@ class RecordingReader:
         ]
 
 
+class SilverPatchReader(RecordingReader):
+    def __init__(
+        self,
+        *,
+        status_completeness: str = "complete",
+        status_row_count: int = 10,
+        findings_available: bool = True,
+        finding_count: int = 1,
+    ) -> None:
+        super().__init__()
+        self.status_generation = "source-generation-17"
+        self.status_completeness = status_completeness
+        self.status_row_count = status_row_count
+        self.findings_available = findings_available
+        self.finding_count = finding_count
+
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "sql": sql,
+                "parameters": tuple(parameters),
+                "max_rows": max_rows,
+            }
+        )
+        if "[metadata_patch_snapshot]" in sql:
+            subscriptions = [
+                value
+                for value in ("subscription-a", "subscription-b")
+                if value in parameters
+            ]
+            return [
+                {
+                    "subscription_id": subscription_id,
+                    "ingestion_run_id": self.status_generation,
+                    "source_generation": "source-effective-17",
+                    "status": (
+                        "succeeded"
+                        if self.status_completeness in {"complete", "healthy-empty"}
+                        else "partial"
+                    ),
+                    "completeness": self.status_completeness,
+                    "freshness": "current",
+                    "freshness_at": "2026-09-10T02:41:10Z",
+                    "freshness_threshold_seconds": 3600,
+                    "represented_count": 1,
+                    "expected_count": 1,
+                }
+                for subscription_id in subscriptions
+            ]
+        if "COUNT_BIG" in sql and "GROUP BY" not in sql:
+            if "1 = 0" in sql:
+                return [
+                    {
+                        "total_count": 0,
+                        "freshest_at": None,
+                        "all_complete": 1,
+                    }
+                ]
+            return [
+                {
+                    "total_count": self.finding_count,
+                    "freshest_at": "2026-09-10T02:41:10Z",
+                    "all_complete": 1,
+                }
+            ]
+        if "1 = 0" in sql:
+            return []
+        return [
+            {
+                "exposure_id": f"silver-patch:patch-{index}",
+                "target_id": "/subscriptions/subscription-a/servers/server-1",
+                "target_kind": "server",
+                "weakness_id": "KB6000001",
+                "weakness_kind": "kb",
+                "source_family": "aum",
+                "source_state": "missing",
+                "current_state": "missing",
+                "active": True,
+                "severity": "critical",
+                "priority_score": 100.0,
+                "recommendation": "Install KB6000001",
+                "completeness": "complete",
+                "timestamp": "2026-09-10T02:41:10Z",
+                "ordering_priority_score": 100.0,
+                "ordering_severity_rank": 4,
+                "ordering_target_id": "/subscriptions/subscription-a/servers/server-1",
+            }
+            for index in range(self.finding_count)
+        ]
+
+
 def _authorization() -> ExposureAuthorization:
     return ExposureAuthorization(
         subject="operator@example.com",
         tenant_id="tenant-authorized",
         connection_ids=("connection-b", "connection-a"),
+        connection_subscriptions={
+            "connection-a": "subscription-a",
+            "connection-b": "subscription-b",
+        },
         scope={
             "subscription": ("subscription-b", "subscription-a"),
             "subscription_connection": ("connection-b", "connection-a"),
         },
     )
+
+
+def _patch_status_rows(*, row_count: int = 1) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_family": source_family,
+            "requested_scope": {"subscription": ["subscription-a"]},
+            "effective_generation": "source-generation-17",
+            "completeness": "complete" if row_count else "healthy-empty",
+            "freshness": "fresh",
+            "last_success_at": "2026-09-10T02:41:10Z",
+            "ingested_at": "2026-09-10T02:42:00Z",
+            "freshness_threshold_seconds": 3600,
+            "represented_count": 1,
+            "expected_count": 1,
+            "row_count": row_count,
+        }
+        for source_family in (
+            "azure_update_manager_assessment",
+            "azure_update_manager_installation",
+            "azure_update_manager_missing",
+        )
+    ]
+
+
+def test_patch_snapshot_manifest_shares_silver_publication_generation() -> None:
+    rows = _patch_snapshot_rows(
+        _patch_status_rows(),
+        "silver-publication-17",
+        "2026-09-10T02:40:00Z",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ingestion_run_id"] == "silver-publication-17"
+    assert rows[0]["source_generation"] == "source-generation-17"
+    assert rows[0]["completeness"] == "complete"
+    assert rows[0]["freshness"] == "fresh"
+    assert rows[0]["freshness_at"] == "2026-09-10T02:41:10Z"
+    assert set(rows[0]) == set(schema_for("metadata_patch_snapshot").names)
+
+
+def test_patch_snapshot_manifest_preserves_healthy_empty_generation() -> None:
+    rows = _patch_snapshot_rows(
+        _patch_status_rows(row_count=0),
+        "silver-publication-empty",
+        "2026-09-10T02:40:00Z",
+    )
+
+    assert rows[0]["ingestion_run_id"] == "silver-publication-empty"
+    assert rows[0]["completeness"] == "healthy-empty"
+
+
+def test_failed_patch_installation_remains_actionable() -> None:
+    assert (
+        _patch_installation_finding_state(
+            {"canonicalStatus": "installation_failed"}
+        )
+        == "installation_failed"
+    )
+    assert (
+        _patch_installation_finding_state({"canonicalStatus": "installed"})
+        == "installed"
+    )
+
+
+def test_patch_snapshot_manifest_aggregates_all_partitions_order_independently() -> None:
+    statuses = _patch_status_rows()
+    statuses.extend(
+        {
+            **row,
+            "completeness": "stale",
+            "freshness": "stale",
+            "last_success_at": "2026-09-10T01:41:10Z",
+            "represented_count": 0,
+            "row_count": 2,
+        }
+        for row in _patch_status_rows()
+    )
+
+    forward = _patch_snapshot_rows(
+        statuses,
+        "silver-publication-17",
+        "2026-09-10T02:40:00Z",
+    )
+    reverse = _patch_snapshot_rows(
+        list(reversed(statuses)),
+        "silver-publication-17",
+        "2026-09-10T02:40:00Z",
+    )
+
+    assert forward == reverse
+    assert forward[0]["completeness"] == "stale"
+    assert forward[0]["freshness"] == "stale"
+    assert forward[0]["freshness_at"] == "2026-09-10T01:41:10Z"
+    assert forward[0]["represented_count"] == 1
+    assert forward[0]["expected_count"] == 2
+
+
+def test_server_aum_query_reads_bounded_silver_without_gold_generation() -> None:
+    reader = SilverPatchReader()
+    service = ExposureQueryService(
+        reader,
+        generation_window=lambda: (_ for _ in ()).throw(
+            ExposureQueryUnavailableError("Gold generation unavailable")
+        ),
+    )
+
+    result = service.list_page(
+        _authorization(),
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+            page_size=25,
+        ),
+    )
+
+    assert result.generation == "silver-patch:source-generation-17"
+    assert result.total_count == 1
+    assert result.items[0]["weakness_id"] == "KB6000001"
+    assert len(reader.calls) == 3
+    status_call, count_call, page_call = reader.calls
+    assert "[metadata_patch_snapshot]" in status_call["sql"]
+    assert status_call["max_rows"] == 3
+    assert status_call["parameters"][:3] == (
+        "system",
+        "subscription-a",
+        "subscription-b",
+    )
+    for call in (count_call, page_call):
+        assert "[silver_patch_snapshot_findings]" in call["sql"]
+        assert "[gold_exposure_facts]" not in call["sql"]
+        assert "[tenant_id] = ?" in call["sql"]
+        assert "[subscription_id] IN (?, ?)" in call["sql"]
+        assert "[ingestion_run_id] = ?" in call["sql"]
+        assert "SELECT *" not in call["sql"].upper()
+    assert page_call["max_rows"] == 26
+    assert result.items[0]["source_state"] == "missing"
+
+
+def test_server_aum_query_intersects_subscriptions_with_authorized_connections() -> None:
+    reader = SilverPatchReader()
+    authorization = ExposureAuthorization(
+        subject="operator@example.com",
+        tenant_id="tenant-authorized",
+        connection_ids=("connection-a",),
+        connection_subscriptions={"connection-a": "subscription-a"},
+        scope={
+            "subscription": ("subscription-a", "subscription-b"),
+            "subscription_connection": ("connection-a",),
+        },
+    )
+
+    ExposureQueryService(reader).list_page(
+        authorization,
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+        ),
+    )
+
+    for call in reader.calls:
+        assert "subscription-b" not in call["parameters"]
+        assert "subscription-a" in call["parameters"]
+
+
+def test_server_aum_query_uses_trusted_connections_for_all_subscriptions() -> None:
+    reader = SilverPatchReader()
+    authorization = ExposureAuthorization(
+        subject="operator@example.com",
+        tenant_id="tenant-authorized",
+        connection_ids=("connection-a",),
+        connection_subscriptions={"connection-a": "subscription-a"},
+        scope={},
+    )
+
+    result = ExposureQueryService(reader).list_page(
+        authorization,
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+        ),
+    )
+
+    assert result.generation == "silver-patch:source-generation-17"
+    assert result.total_count == 1
+    assert all(
+        "subscription-a" in call["parameters"]
+        for call in reader.calls
+    )
+
+
+def test_server_aum_query_rejects_oversized_subscription_scope_before_sql() -> None:
+    connection_subscriptions = {
+        f"connection-{index}": f"subscription-{index}"
+        for index in range(501)
+    }
+    reader = SilverPatchReader()
+    authorization = ExposureAuthorization(
+        subject="operator@example.com",
+        tenant_id="tenant-authorized",
+        connection_ids=tuple(connection_subscriptions),
+        connection_subscriptions=connection_subscriptions,
+        scope={"subscription": tuple(connection_subscriptions.values())},
+    )
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="subscription scope exceeds its safe bound",
+    ):
+        ExposureQueryService(reader).list_page(
+            authorization,
+            query=ExposureQuery(
+                filters=(
+                    ExposureFilter("target_kind", "eq", "server"),
+                    ExposureFilter("source_family", "eq", "aum"),
+                ),
+            ),
+        )
+
+    assert reader.calls == []
+
+
+def test_server_aum_query_reports_healthy_empty_from_source_status() -> None:
+    reader = SilverPatchReader(
+        status_completeness="healthy-empty",
+        status_row_count=0,
+        findings_available=False,
+    )
+
+    result = ExposureQueryService(reader).list_page(
+        _authorization(),
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+        ),
+    )
+
+    assert result.generation == "silver-patch:source-generation-17"
+    assert result.total_count == 0
+    assert result.items == ()
+    assert result.completeness["state"] == "healthy-empty"
+
+
+def test_server_aum_query_reports_partial_source_status() -> None:
+    reader = SilverPatchReader(status_completeness="stale")
+
+    result = ExposureQueryService(reader).list_page(
+        _authorization(),
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+        ),
+    )
+
+    assert result.completeness["state"] == "stale"
+
+
+def test_server_aum_cursor_requires_the_same_source_generation() -> None:
+    reader = SilverPatchReader(finding_count=2)
+    codec = ExposureCursorCodec(
+        ExposureCursorKeyRing(
+            active_kid="test-active",
+            active_key=b"a" * 32,
+            loaded_at=datetime(2026, 9, 10, tzinfo=UTC),
+        )
+    )
+    service = ExposureQueryService(reader, cursor_codec=codec)
+    authorization = _authorization()
+    query = ExposureQuery(
+        filters=(
+            ExposureFilter("target_kind", "eq", "server"),
+            ExposureFilter("source_family", "eq", "aum"),
+        ),
+        page_size=1,
+    )
+    first = service.list_page(
+        authorization,
+        query=query,
+        now=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    assert first.next_cursor is not None
+    reader.status_generation = "source-generation-18"
+
+    with pytest.raises(ExposureRestartConflict) as error:
+        service.list_page(
+            authorization,
+            query=query,
+            cursor=first.next_cursor,
+            now=datetime(2026, 9, 10, 0, 1, tzinfo=UTC),
+        )
+
+    assert error.value.code == "exposure_generation_evicted"
+
+
+def test_container_query_keeps_gold_generation_path() -> None:
+    reader = RecordingReader()
+
+    ExposureQueryService(reader).list_page(
+        _authorization(),
+        generation_id="generation-17",
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "container_image"),
+            ),
+        ),
+    )
+
+    assert reader.calls
+    assert all("[gold_exposure_facts]" in call["sql"] for call in reader.calls)
+
+
+def test_generic_server_query_keeps_gold_generation_path() -> None:
+    reader = RecordingReader()
+
+    ExposureQueryService(reader).list_page(
+        _authorization(),
+        generation_id="generation-17",
+        query=ExposureQuery(
+            filters=(ExposureFilter("target_kind", "eq", "server"),),
+        ),
+    )
+
+    assert reader.calls
+    assert all("[gold_exposure_facts]" in call["sql"] for call in reader.calls)
 
 
 def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
@@ -125,6 +570,203 @@ def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
     assert reader.calls[0]["max_rows"] == 1
     assert reader.calls[1]["max_rows"] is not None
     assert reader.calls[2]["max_rows"] == 26
+
+
+class CatalogReader(RecordingReader):
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "sql": sql,
+                "parameters": tuple(parameters),
+                "max_rows": max_rows,
+            }
+        )
+        if "SELECT TOP (1) [fact_id]" in sql:
+            return [{"fact_id": "fact-1"}]
+        return [
+            {
+                "source": "nvd",
+                "identifier": "CVE-2026-0001",
+                "status": "succeeded",
+                "stale": False,
+                "lkg_available": True,
+                "safe_error_code": "",
+                "attempted_at": "2026-09-10T00:00:00Z",
+                "succeeded_at": "2026-09-10T00:00:00Z",
+                "source_at": "2026-09-09T00:00:00Z",
+                "enriched_at": "2026-09-10T00:00:00Z",
+                "payload_json": (
+                    '{"cve_id":"CVE-2026-0001",'
+                    '"description":"Safe NVD detail",'
+                    '"target_id":"secret-target",'
+                    '"cvss":{"base_score":9.8,"scope_key":"secret-scope"}}'
+                ),
+            },
+            {
+                "source": "epss",
+                "identifier": "CVE-2026-0001",
+                "status": "failed",
+                "stale": True,
+                "lkg_available": True,
+                "safe_error_code": "provider_unavailable",
+                "attempted_at": "2026-09-10T00:00:00Z",
+                "succeeded_at": "2026-09-09T00:00:00Z",
+                "source_at": "2026-09-09T00:00:00Z",
+                "enriched_at": "2026-09-09T00:00:00Z",
+                "payload_json": '{"epss_score":0.73,"epss_percentile":0.92}',
+            },
+        ]
+
+
+def test_external_catalog_is_authorized_generation_pinned_and_bounded() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(reader)
+
+    result = service.catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert len(reader.calls) == 2
+    membership_call, call = reader.calls
+    assert membership_call["max_rows"] == 1
+    assert "[weakness_id] = ?" in membership_call["sql"]
+    assert membership_call["parameters"][-1] == "CVE-2026-0001"
+    sql = call["sql"]
+    assert "[gold_exposure_facts]" in sql
+    assert "[gold_exposure_evidence]" in sql
+    assert f"TOP ({MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1})" in sql
+    assert "ROW_NUMBER() OVER (PARTITION BY [e].[source], [e].[identifier]" in sql
+    assert "WHERE [evidence_rank] = 1" in sql
+    assert "OPENJSON([e].[payload_json], '$.cve_ids')" in sql
+    assert "SELECT *" not in sql.upper()
+    assert call["max_rows"] == MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1
+    assert call["parameters"] == (
+        "tenant-authorized",
+        "connection-a",
+        "connection-b",
+        "subscription-a",
+        "subscription-b",
+        "generation-17",
+        "CVE-2026-0001",
+        "CVE-2026-0001",
+    )
+    assert all(str(value) not in sql for value in call["parameters"])
+    assert result["generation"] == "generation-17"
+    assert result["item"]["cve_id"] == "CVE-2026-0001"
+    assert result["item"]["sources"]["nvd"]["payload"]["description"] == (
+        "Safe NVD detail"
+    )
+    assert result["item"]["sources"]["nvd"]["payload"]["cvss"] == {
+        "base_score": 9.8
+    }
+    assert result["item"]["sources"]["epss"]["has_last_known_good"] is True
+    serialized = str(result)
+    for forbidden in (
+        "target_id",
+        "exposure_id",
+        "fact_id",
+        "scope_key",
+        "tenant_id",
+        "subscription_id",
+        "connection_id",
+    ):
+        assert forbidden not in serialized
+
+
+def test_external_catalog_merges_exact_durable_records_after_sql_membership() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda identifier: (
+            {
+                "source": "kev",
+                "identifier": identifier,
+                "status": "succeeded",
+                "stale": False,
+                "payload": {
+                    "kev_due_date": "2026-10-01",
+                    "target_id": "must-not-leak",
+                },
+                "enriched_at": "2026-09-11T03:06:51Z",
+            },
+        ),
+    )
+
+    result = service.catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert result is not None
+    kev = result["item"]["sources"]["kev"]
+    assert kev["payload"] == {"kev_due_date": "2026-10-01"}
+    assert kev["has_last_known_good"] is True
+
+
+def test_external_catalog_enforces_one_bound_after_merging_sources() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda _identifier: tuple(
+            {
+                "source": "msrc",
+                "identifier": f"KB{index:07d}",
+                "status": "succeeded",
+                "payload": {"kb_id": f"KB{index:07d}"},
+            }
+            for index in range(MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS)
+        ),
+    )
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="exceeded its safe bound",
+    ):
+        service.catalog_item(
+            _authorization(),
+            generation_id="generation-17",
+            weakness_id="CVE-2026-0001",
+        )
+
+
+def test_external_catalog_rejects_durable_only_source_overflow() -> None:
+    reader = CatalogReader()
+    reader.query = lambda sql, parameters=(), max_rows=None: (
+        [{"fact_id": "fact-1"}]
+        if "SELECT TOP (1) [fact_id]" in sql
+        else []
+    )
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda _identifier: tuple(
+            {
+                "source": "msrc",
+                "identifier": f"KB{index:07d}",
+                "status": "succeeded",
+                "payload": {"kb_id": f"KB{index:07d}"},
+            }
+            for index in range(MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1)
+        ),
+    )
+
+    with pytest.raises(
+        ExposureQueryUnavailableError,
+        match="exceeded its safe bound",
+    ):
+        service.catalog_item(
+            _authorization(),
+            generation_id="generation-17",
+            weakness_id="CVE-2026-0001",
+        )
 
 
 @pytest.mark.parametrize(

@@ -220,6 +220,43 @@ def test_remote_dataset_writer_streams_jsonl_and_parquet(
         assert pq.read_table(handle).num_rows == len(rows)
 
 
+def test_remote_dataset_store_retains_all_immutable_generations(
+    filesystem: OneLakeFileSystem,
+) -> None:
+    root = _path("lakehouse/Files/source")
+    store = DatasetStore.__new__(DatasetStore)
+    store.retain_raw_queries = False
+    store._document_root = root
+    store.is_remote = True
+    store.uri_root = root
+    store.fs = filesystem
+    store.root = root
+    store.generations = f"{root}/generations"
+    store.uri_generations = store.generations
+    store.current = f"{root}/current"
+    store.pointer_path = f"{root}/current.json"
+    store.hash_path = f"{root}/state/dataset_hashes.json"
+
+    for index in range(5):
+        store.publish(
+            {"entities/Resource": [{"id": f"resource-{index}"}]},
+            {},
+            {"runId": f"remote-run-{index}", "status": "completed"},
+            ontology={},
+        )
+
+    retained = {
+        path.rsplit("/", 1)[-1]
+        for path in filesystem.ls(store.generations)
+        if filesystem.isdir(path)
+    }
+    assert retained == {f"remote-run-{index}" for index in range(5)}
+    assert all(
+        store.generation_path(f"remote-run-{index}") is not None
+        for index in range(5)
+    )
+
+
 def test_exists_distinguishes_present_and_missing(filesystem: OneLakeFileSystem) -> None:
     with filesystem.open(_path("lakehouse/Files/a.json"), "wt") as handle:
         handle.write("{}")

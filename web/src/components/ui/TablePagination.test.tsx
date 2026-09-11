@@ -343,4 +343,49 @@ describe("TableColumnFilters", () => {
     await user.click(screen.getByRole("button", { name: /clear filters/i }));
     expect(onReset).toHaveBeenCalledTimes(1);
   });
+
+  it("uses an explicit default without rendering an all option", () => {
+    const { rerender } = render(
+      <TableColumnFilters
+        onReset={vi.fn()}
+        filters={[
+          {
+            id: "target",
+            label: "Target kind",
+            value: "server",
+            defaultValue: "server",
+            options: [
+              { value: "server", label: "Servers" },
+              { value: "container_image", label: "Container images" },
+            ],
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByRole("option", { name: /all target kind/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /clear filters/i })).not.toBeInTheDocument();
+
+    rerender(
+      <TableColumnFilters
+        onReset={vi.fn()}
+        filters={[
+          {
+            id: "target",
+            label: "Target kind",
+            value: "container_image",
+            defaultValue: "server",
+            options: [
+              { value: "server", label: "Servers" },
+              { value: "container_image", label: "Container images" },
+            ],
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /clear filters/i })).toBeInTheDocument();
+  });
 });

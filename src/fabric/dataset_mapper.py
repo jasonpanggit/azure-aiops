@@ -1853,10 +1853,36 @@ class InventoryDatasetMapper:
                     for row in entities["PatchAssessmentDetail"]
                 ),
                 *(
-                    _patch_finding_row(row, ingestion_run_id, status="installed")
+                    _patch_finding_row(
+                        row,
+                        ingestion_run_id,
+                        status=_patch_installation_finding_state(row),
+                    )
                     for row in entities["PatchInstallation"]
                 ),
             ],
+            "silver_patch_snapshot_findings": [
+                _patch_snapshot_finding_row(row, ingestion_run_id)
+                for row in [
+                    *(
+                        _patch_finding_row(row, ingestion_run_id, status="missing")
+                        for row in entities["PatchAssessmentDetail"]
+                    ),
+                    *(
+                        _patch_finding_row(
+                            row,
+                            ingestion_run_id,
+                            status=_patch_installation_finding_state(row),
+                        )
+                        for row in entities["PatchInstallation"]
+                    ),
+                ]
+            ],
+            "metadata_patch_snapshot": _patch_snapshot_rows(
+                source_status,
+                ingestion_run_id,
+                ingestion_timestamp,
+            ),
             "silver_defender_findings": [
                 _defender_finding_row(row, ingestion_run_id)
                 for row in entities["DefenderVulnerabilityFinding"]
@@ -2216,6 +2242,164 @@ def _patch_finding_row(row: dict[str, Any], run_id: str, *, status: str) -> dict
         }
     )
     return result
+
+
+def _patch_installation_finding_state(row: dict[str, Any]) -> str:
+    canonical = str(row.get("canonicalStatus") or "").strip().casefold()
+    return "installed" if canonical == "installed" else "installation_failed"
+
+
+def _patch_snapshot_finding_row(
+    row: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    result = dict(row)
+    source_resource_id = str(row.get("resource_id") or "")
+    result["resource_id"] = (
+        f"patch-snapshot://{run_id}/"
+        f"{hashlib.sha256(source_resource_id.encode()).hexdigest()}"
+    )
+    result["ingestion_run_id"] = run_id
+    return result
+
+
+def _patch_snapshot_rows(
+    source_status: list[dict[str, Any]],
+    run_id: str,
+    fallback_timestamp: str,
+) -> list[dict[str, Any]]:
+    required_families = {
+        "azure_update_manager_assessment",
+        "azure_update_manager_installation",
+        "azure_update_manager_missing",
+    }
+    by_subscription: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in source_status:
+        family = str(row.get("source_family") or "").casefold()
+        if family not in required_families:
+            continue
+        requested_scope = row.get("requested_scope")
+        subscriptions = (
+            requested_scope.get("subscription", [])
+            if isinstance(requested_scope, dict)
+            else []
+        )
+        for subscription_id in subscriptions:
+            normalized = str(subscription_id or "").strip().casefold()
+            if normalized:
+                by_subscription.setdefault(normalized, {}).setdefault(
+                    family,
+                    [],
+                ).append(row)
+
+    snapshots: list[dict[str, Any]] = []
+    for subscription_id, family_rows in sorted(by_subscription.items()):
+        if set(family_rows) != required_families:
+            continue
+        rows = [
+            row
+            for partition_rows in family_rows.values()
+            for row in partition_rows
+        ]
+        source_generations = sorted(
+            {
+                str(row.get("effective_generation") or "")
+                for row in rows
+                if str(row.get("effective_generation") or "")
+            }
+        )
+        source_generation = (
+            source_generations[0]
+            if len(source_generations) == 1
+            else hashlib.sha256(
+                json.dumps(source_generations, separators=(",", ":")).encode()
+            ).hexdigest()[:24]
+        )
+        completeness_values = {
+            str(row.get("completeness") or "unavailable").casefold()
+            for row in rows
+        }
+        if "unavailable" in completeness_values:
+            completeness = "unavailable"
+        elif "stale" in completeness_values:
+            completeness = "stale"
+        elif "partial" in completeness_values:
+            completeness = "partial"
+        elif all(int(row.get("row_count") or 0) == 0 for row in rows):
+            completeness = "healthy-empty"
+        else:
+            completeness = "complete"
+        freshness_values = {
+            str(row.get("freshness") or "unknown").casefold()
+            for row in rows
+        }
+        freshness = (
+            "stale"
+            if "stale" in freshness_values
+            else "fresh"
+            if freshness_values <= {"fresh", "current"}
+            and freshness_values
+            else "unknown"
+        )
+        freshness_at = min(
+            (
+                str(row.get("last_success_at") or row.get("observed_at") or "")
+                for row in rows
+                if str(row.get("last_success_at") or row.get("observed_at") or "")
+            ),
+            default="",
+        )
+        timestamp = max(
+            (
+                str(row.get("ingested_at") or row.get("attempted_at") or "")
+                for row in rows
+                if str(row.get("ingested_at") or row.get("attempted_at") or "")
+            ),
+            default=fallback_timestamp,
+        )
+        content = {
+            "source_generation": source_generation,
+            "status": (
+                "succeeded"
+                if completeness in {"complete", "healthy-empty"}
+                else "partial"
+            ),
+            "completeness": completeness,
+            "freshness": freshness,
+            "freshness_at": freshness_at,
+            "freshness_threshold_seconds": min(
+                max(0, int(row.get("freshness_threshold_seconds") or 0))
+                for row in rows
+            ),
+            "represented_count": min(
+                sum(
+                    max(0, int(row.get("represented_count") or 0))
+                    for row in partition_rows
+                )
+                for partition_rows in family_rows.values()
+            ),
+            "expected_count": max(
+                sum(
+                    max(0, int(row.get("expected_count") or 0))
+                    for row in partition_rows
+                )
+                for partition_rows in family_rows.values()
+            ),
+        }
+        snapshots.append(
+            {
+                "tenant_id": "system",
+                "subscription_id": subscription_id,
+                "resource_id": f"patch-snapshot://{subscription_id}",
+                "timestamp": timestamp,
+                "change_version": hashlib.sha256(
+                    json.dumps(content, sort_keys=True).encode()
+                ).hexdigest(),
+                "ingestion_run_id": run_id,
+                **content,
+            }
+        )
+    return snapshots
 
 
 def _defender_finding_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:

@@ -55,6 +55,7 @@ const API_FILTER_KEYS = [
   "completeness",
   "active",
   "sla_overdue",
+  "weakness_id",
 ] as const;
 const MAX_CURSOR_LENGTH = 16_384;
 const MAX_QUERY_VALUE_LENGTH = 256;
@@ -107,6 +108,7 @@ export interface ExposureRestartState {
 }
 
 export const EXPOSURE_DETAIL_ORIGINS = [
+  "/exposure",
   "/exposure/defender-posture",
   "/exposure/patch-priorities",
 ] as const;
@@ -223,9 +225,11 @@ function filterState(params: URLSearchParams): ExposureFilterState {
   for (const field of FREEFORM_FILTERS) {
     const value = safeString(params.get(field), {
       pattern: /^[a-zA-Z0-9._:-]+$/,
-      lower: true,
+      lower: field !== "weakness_id",
     });
-    if (value) filters[field] = value;
+    if (value) {
+      filters[field] = field === "weakness_id" ? value.toUpperCase() : value;
+    }
   }
   const active = booleanValue(params.get("active"));
   if (active !== undefined) filters.active = active;
@@ -319,9 +323,10 @@ export function exposureDetailReturnHref(
 
 export function exposureDetailParentLabel(
   origin: ExposureDetailOrigin,
-): "Defender posture" | "Patch priorities" {
+): "Overview" | "Defender exposure" | "Patch priorities" {
+  if (origin === "/exposure") return "Overview";
   return origin === "/exposure/defender-posture"
-    ? "Defender posture"
+    ? "Defender exposure"
     : "Patch priorities";
 }
 
@@ -559,6 +564,7 @@ export function toExposureApiSearchParams(
     params.set("page_size", String(state.pageSize));
     if (state.cursor) params.set("cursor", state.cursor);
   }
+  if (state.generation) params.set("generation", state.generation);
   return params;
 }
 

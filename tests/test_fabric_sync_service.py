@@ -4,11 +4,15 @@ import asyncio
 import io
 import json
 import logging
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import pytest
-from test_incremental_sync import _source_snapshot
+from test_container_image_exposure import REGISTRY, _granular_image_row
+from test_incremental_sync import FIXTURE, _source_snapshot
 
 import fabric.sync_service as sync_module
 from fabric.config import FabricRuntimeConfig
@@ -19,10 +23,14 @@ from fabric.sync_service import (
     DedicatedOntologyPublisherAdapter,
     FabricSyncService,
     FabricTableWriteProgress,
+    _commit_patch_publication,
     _exposure_gold_generation_id,
     _merge_granular_ontology_entities,
     _merge_granular_ontology_relationships,
     _observation_rows_at_or_before,
+    _partition_patch_publication_items,
+    _prepare_publish_items,
+    _should_publish_table,
     _state_row,
 )
 from fabric_pipelines.vulnerability_pipeline import (
@@ -32,11 +40,13 @@ from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_OBSERVATIONS_TABLE,
     TemporalExposureMaterialization,
 )
+from onboarding.graph_normalize import Normalizer
+from onboarding.ingestion_storage import DatasetStore
 from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphResult
 from ontology.relationship_builder import relationship_change_version
 from ontology_discovery.publisher import OntologyGenerationCandidate
-from storage.delta_writer import DeltaWriteMode, DeltaWriter
+from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
 from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 
@@ -50,6 +60,116 @@ def _service(tmp_path: Path) -> FabricSyncService:
         delta_writer=DeltaWriter(),
         validator=DataQualityValidator(),
     )
+
+
+def _container_source_snapshot(
+    root: Path,
+    *,
+    observed_at: datetime,
+    run_id: str,
+    severity: str = "Critical",
+    provider_event_time: bool = True,
+) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload["resources"].append(
+        {
+            "id": REGISTRY,
+            "name": "acr1",
+            "type": "Microsoft.ContainerRegistry/registries",
+            "location": "australiaeast",
+            "subscriptionId": "sub1",
+            "resourceGroup": "rg1",
+            "tenantId": "tenant1",
+        }
+    )
+    image_assessment = _granular_image_row(
+        "openssl",
+        [severity],
+        ["CVE-2026-1001"],
+    )
+    if not provider_event_time:
+        image_assessment["properties"].pop("timeGenerated", None)
+    image_assessment["tenantId"] = "tenant1"
+    payload["defender_assessments"].append(image_assessment)
+    graph = Normalizer(
+        {"connection_id": "connection-1"}
+    ).normalize(
+        payload,
+        observed_at,
+        run_id=run_id,
+    )
+    DatasetStore(root).publish(
+        graph,
+        payload,
+        {
+            "runId": run_id,
+            "startedAt": observed_at.isoformat().replace("+00:00", "Z"),
+            "status": "completed",
+        },
+    )
+
+
+def test_sync_deduplicates_unchanged_container_observation_across_source_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="source-generation-1",
+        provider_event_time=False,
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=lakehouse,
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    monkeypatch.setattr(service, "_validate", lambda _datasets: [])
+    write_mode_for_table = service._write_mode_for_table
+    monkeypatch.setattr(
+        service,
+        "_write_mode_for_table",
+        lambda table_name: (
+            DeltaWriteMode.OVERWRITE
+            if table_name == "metadata_audit_events"
+            else write_mode_for_table(table_name)
+        ),
+    )
+
+    first = service.sync()
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+        run_id="source-generation-2",
+        provider_event_time=False,
+    )
+    second = service.sync()
+
+    observations = service.delta.read(
+        lakehouse / "Tables/silver_container_vulnerability_observations"
+    )
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert len(observations) == 1
+    observation_key = (observations[0]["resource_id"],)
+
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 4, tzinfo=UTC),
+        run_id="source-generation-3",
+        severity="Low",
+        provider_event_time=False,
+    )
+    with pytest.raises(ValueError) as error:
+        service.sync()
+    assert str(error.value) == f"Append row mutation for key {observation_key}"
 
 
 def test_sync_reports_successful_table_writes_in_completion_order(
@@ -85,6 +205,313 @@ def test_sync_reports_successful_table_writes_in_completion_order(
     assert not (
         tmp_path / "lakehouse" / "Tables" / "bronze_container_image_exposure"
     ).exists()
+
+
+def test_sync_releases_transient_memory_before_table_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sequence: list[str] = []
+    monkeypatch.setattr(
+        sync_module,
+        "_release_transient_publication_memory",
+        lambda: sequence.append("release"),
+    )
+
+    result = _service(tmp_path).sync(
+        progress_callback=lambda _event: sequence.append("table"),
+    )
+
+    assert result.status == "completed"
+    assert sequence[0] == "release"
+    assert "table" in sequence
+
+
+def test_patch_publication_items_precede_manifest_barrier_and_remaining_tables() -> None:
+    patch_items, barrier_item, remaining = _partition_patch_publication_items(
+        [
+            ("ontology_entities", []),
+            ("metadata_patch_snapshot", [{"resource_id": "manifest"}]),
+            ("silver_patch_snapshot_findings", [{"resource_id": "finding"}]),
+            ("bronze_patchassessment", [{"resource_id": "assessment"}]),
+            ("silver_exposure_observations", [{"resource_id": "observation"}]),
+        ],
+        patch_tables=(
+            "bronze_patchassessment",
+            "silver_patch_snapshot_findings",
+        ),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+    assert [name for name, _rows in patch_items] == [
+        "bronze_patchassessment",
+        "silver_patch_snapshot_findings",
+    ]
+    assert barrier_item is not None
+    assert barrier_item[0] == "metadata_patch_snapshot"
+    assert [name for name, _rows in remaining] == [
+        "ontology_entities",
+        "silver_exposure_observations",
+    ]
+
+
+def test_full_sync_publishes_empty_patch_tables_when_manifest_exists() -> None:
+    assert _should_publish_table(
+        "silver_patch_snapshot_findings",
+        [],
+        patch_barrier_present=True,
+        patch_tables=("silver_patch_snapshot_findings",),
+        barrier_table="metadata_patch_snapshot",
+    )
+    assert not _should_publish_table(
+        "silver_patch_snapshot_findings",
+        [],
+        patch_barrier_present=False,
+        patch_tables=("silver_patch_snapshot_findings",),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+
+def test_forced_empty_patch_table_captures_prior_version_for_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    snapshot_uri = service.onelake.table_uri(
+        "silver",
+        "patch_snapshot_findings",
+    )
+    monkeypatch.setattr(
+        service.delta,
+        "version",
+        lambda table_uri: 7 if str(table_uri) == str(snapshot_uri) else None,
+    )
+
+    items, known_versions = _prepare_publish_items(
+        {
+            "silver_patch_snapshot_findings": [],
+            "metadata_patch_snapshot": [{"resource_id": "manifest"}],
+        },
+        onelake=service.onelake,
+        delta=service.delta,
+        patch_barrier_present=True,
+        patch_tables=("silver_patch_snapshot_findings",),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+    assert [name for name, _rows in items] == [
+        "silver_patch_snapshot_findings",
+        "metadata_patch_snapshot",
+    ]
+    assert known_versions == {"silver_patch_snapshot_findings": 7}
+
+
+def test_patch_manifest_barrier_commits_bronze_and_silver_independently() -> None:
+    written_versions = {
+        "bronze_patchassessment": ("bronze-uri", 1),
+        "silver_patch_snapshot_findings": ("snapshot-uri", 2),
+        "metadata_patch_snapshot": ("manifest-uri", 3),
+        "ontology_entities": ("ontology-uri", 4),
+    }
+
+    _commit_patch_publication(
+        written_versions,
+        patch_tables=(
+            "bronze_patchassessment",
+            "silver_patch_snapshot_findings",
+        ),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+    assert written_versions == {
+        "ontology_entities": ("ontology-uri", 4),
+    }
+
+
+def test_patch_only_sync_writes_patch_tables_and_manifest_last(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    manifest_row = {"resource_id": "patch-snapshot://sub-1"}
+    mapped = {
+        table_name: []
+        for table_name in service._PATCH_PUBLICATION_TABLES
+    }
+    mapped[service._PATCH_PUBLICATION_BARRIER] = [manifest_row]
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: mapped,
+    )
+    writes: list[tuple[str, DeltaWriteMode]] = []
+
+    def write(table_uri, _rows, *, mode, **_kwargs):
+        writes.append((str(table_uri), DeltaWriteMode(mode)))
+        return DeltaWriteResult(rows_processed=0, version=len(writes))
+
+    monkeypatch.setattr(service.delta, "write", write)
+    events: list[FabricTableWriteProgress] = []
+
+    result = service.sync_patch_tables(progress_callback=events.append)
+
+    expected_names = [
+        *service._PATCH_PUBLICATION_TABLES,
+        service._PATCH_PUBLICATION_BARRIER,
+    ]
+    assert result.status == "completed"
+    assert set(result.tables) == set(expected_names)
+    assert [event.table_name for event in events] == expected_names
+    assert [event.completed_tables for event in events] == list(
+        range(1, len(expected_names) + 1)
+    )
+    assert all(event.total_tables == len(expected_names) for event in events)
+    assert writes[-1][0].endswith("/Tables/metadata_patch_snapshot")
+    assert dict(writes)[
+        next(
+            uri
+            for uri, _mode in writes
+            if uri.endswith("/Tables/silver_patch_snapshot_findings")
+        )
+    ] is DeltaWriteMode.APPEND
+
+
+def test_patch_only_registration_failure_rolls_back_mutable_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    mapped = {
+        table_name: []
+        for table_name in service._PATCH_PUBLICATION_TABLES
+    }
+    mapped[service._PATCH_PUBLICATION_BARRIER] = [
+        {"resource_id": "patch-snapshot://sub-1"}
+    ]
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: mapped,
+    )
+    monkeypatch.setattr(service.delta, "version", lambda _uri: 1)
+    version = 1
+
+    def write(_table_uri, _rows, **_kwargs):
+        nonlocal version
+        version += 1
+        return DeltaWriteResult(rows_processed=0, version=version)
+
+    restored: list[str] = []
+    monkeypatch.setattr(service.delta, "write", write)
+    monkeypatch.setattr(
+        service.delta,
+        "restore",
+        lambda table_uri, _version: restored.append(str(table_uri)),
+    )
+    monkeypatch.setattr(
+        service,
+        "_register_fabric_assets",
+        lambda _tables: (_ for _ in ()).throw(RuntimeError("registration failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        service.sync_patch_tables()
+
+    assert all(
+        not uri.endswith("/Tables/silver_patch_snapshot_findings")
+        for uri in restored
+    )
+    assert any(
+        uri.endswith("/Tables/metadata_patch_snapshot")
+        for uri in restored
+    )
+    assert any(
+        uri.endswith("/Tables/bronze_patchassessment")
+        for uri in restored
+    )
+
+
+def test_failed_patch_manifest_restore_preserves_snapshot_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    restored: list[str] = []
+
+    def restore(table_uri: str, _version: int) -> None:
+        restored.append(table_uri)
+        if table_uri == "manifest-uri":
+            raise RuntimeError("manifest restore failed")
+
+    monkeypatch.setattr(service.delta, "restore", restore)
+    service.rollback_sleep = lambda _seconds: None
+
+    errors = service._rollback(
+        {
+            "silver_patch_snapshot_findings": ("snapshot-uri", 1),
+            "metadata_patch_snapshot": ("manifest-uri", 2),
+        }
+    )
+
+    assert restored == ["manifest-uri", "manifest-uri", "manifest-uri"]
+    assert errors == ["metadata_patch_snapshot: manifest restore failed"]
+
+
+def test_successful_rollback_also_preserves_immutable_snapshot_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    restored: list[str] = []
+    monkeypatch.setattr(
+        service.delta,
+        "restore",
+        lambda table_uri, _version: restored.append(table_uri),
+    )
+
+    errors = service._rollback(
+        {
+            "silver_patch_snapshot_findings": ("snapshot-uri", 1),
+            "metadata_patch_snapshot": ("manifest-uri", 2),
+        }
+    )
+
+    assert errors == []
+    assert restored == ["manifest-uri"]
+
+
+def test_exposure_gold_input_view_retains_only_projection_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_keys: set[str] = set()
+
+    def capture_generation(
+        _source_run_id: str,
+        datasets: Mapping[str, list[dict[str, Any]]],
+    ) -> str:
+        captured_keys.update(datasets)
+        raise RuntimeError("stop after Gold input construction")
+
+    monkeypatch.setattr(
+        sync_module,
+        "_exposure_gold_generation_id",
+        capture_generation,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="stop after Gold input construction",
+    ):
+        _service(tmp_path).sync(
+            exposure_pointer_store=OneLakeDocumentStore(
+                str(tmp_path / "pointer")
+            )
+        )
+
+    assert captured_keys == set(sync_module._EXPOSURE_GOLD_INPUT_TABLES)
+    assert "ontology_entities" not in captured_keys
+    assert "ontology_relationships" not in captured_keys
 
 
 def test_deployed_publication_orders_observations_after_workload_checkpoint(
@@ -290,6 +717,124 @@ def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> Non
         "pointer_activation"
     )
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+
+def test_exact_historical_replay_runs_full_finalization_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    first_payload = json.loads(FIXTURE.read_text())
+    first_payload["resources"][0]["name"] = "historical-resource"
+    first_graph = Normalizer().normalize(
+        first_payload,
+        datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    DatasetStore(source).publish(
+        first_graph,
+        first_payload,
+        {
+            "runId": "historical-generation",
+            "startedAt": "2026-09-08T00:00:00Z",
+            "status": "completed",
+        },
+    )
+    current_payload = json.loads(FIXTURE.read_text())
+    current_payload["resources"][0]["name"] = "current-resource"
+    current_graph = Normalizer().normalize(
+        current_payload,
+        datetime(2026, 9, 9, tzinfo=UTC),
+    )
+    DatasetStore(source).publish(
+        current_graph,
+        current_payload,
+        {
+            "runId": "current-generation",
+            "startedAt": "2026-09-09T00:00:00Z",
+            "status": "completed",
+        },
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter(
+            "workspace",
+            "lakehouse",
+            local_root=tmp_path / "lakehouse",
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    events: list[dict[str, object]] = []
+    shortcuts: list[str] = []
+    original_shortcuts = service._create_shortcuts
+
+    def record_shortcuts() -> None:
+        shortcuts.append("finalized")
+        original_shortcuts()
+
+    monkeypatch.setattr(service, "_create_shortcuts", record_shortcuts)
+
+    result = service.sync(
+        replay_source_run_id="historical-generation",
+        exposure_pointer_store=pointer_store,
+        stage_progress_callback=events.append,
+    )
+
+    resources = service.delta.read(
+        service.onelake.table_uri("bronze", "resources")
+    )
+    names = {str(row.get("name") or "") for row in resources}
+    assert "historical-resource" in names
+    assert "current-resource" not in names
+    assert result.status == "completed"
+    assert result.replay is True
+    assert result.source_run_id == "historical-generation"
+    assert {
+        "bronze_resources",
+        "ontology_entities",
+        "ontology_relationships",
+        *EXPOSURE_GOLD_TABLES,
+        EXPOSURE_GOLD_GENERATIONS_TABLE,
+    } <= set(result.tables)
+    assert shortcuts == ["finalized"]
+    completed = [
+        event["stage"]
+        for event in events
+        if event["status"] == "completed"
+    ]
+    assert completed.index("shortcut_finalization") < completed.index(
+        "pointer_activation"
+    )
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    marker = max(
+        (
+            row
+            for row in service.status()
+            if row.get("status") == "completed"
+        ),
+        key=lambda row: str(row.get("timestamp") or ""),
+    )
+    assert marker["source_run_id"] == "historical-generation"
+    assert marker["replay"] is True
+
+
+def test_missing_exact_replay_does_not_fallback_or_activate_pointer(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+
+    with pytest.raises(FileNotFoundError):
+        service.sync(
+            replay_source_run_id="missing-generation",
+            exposure_pointer_store=pointer_store,
+        )
+
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+    assert not any(
+        row.get("status") == "completed" for row in service.status()
+    )
 
 
 def test_successful_publication_hooks_follow_exact_side_effect_order(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fabric.runtime import FabricRuntime
+from fabric.sync_service import FabricSyncService
 from semantic.semantic_cache import SemanticCache
 
 
@@ -96,3 +97,26 @@ def test_fabric_runtime_reuses_operations_agent_until_semantic_version_changes()
 
     assert first is second
     assert third is not second
+
+
+def test_semantic_version_does_not_load_ontology_when_metadata_is_incomplete() -> None:
+    class Service:
+        entity_version = 17
+
+        def _latest_completed_ontology_state(self) -> dict[str, int]:
+            return {
+                "ontology_entity_version": self.entity_version,
+                "ontology_relationship_version": 23,
+            }
+
+        def _read_authoritative_ontology(self, **_kwargs: object) -> object:
+            raise AssertionError("version lookup must not load ontology rows")
+
+    service = Service()
+    first = FabricSyncService.semantic_version(service)  # type: ignore[arg-type]
+    service.entity_version = 18
+    second = FabricSyncService.semantic_version(service)  # type: ignore[arg-type]
+
+    assert first.startswith("semantic-")
+    assert second.startswith("semantic-")
+    assert first != second

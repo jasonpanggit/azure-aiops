@@ -166,11 +166,11 @@ class FabricClient:
             status = str(payload.get("status") or "").lower()
             if status in {"succeeded", "completed"}:
                 resource_location = response.headers.get("Location") or payload.get("resourceLocation")
-                return (
-                    self.request("GET", str(resource_location))
-                    if resource_location
-                    else payload
-                )
+                if resource_location:
+                    return self.request("GET", str(resource_location))
+                if payload.get("blobInfoId"):
+                    return self.request("GET", f"{location.rstrip('/')}/result")
+                return payload
             if status in {"failed", "cancelled"}:
                 raise RuntimeError(f"Fabric operation failed: {payload}")
             delay = float(response.headers.get("Retry-After") or delay)

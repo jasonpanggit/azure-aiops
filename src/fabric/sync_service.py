@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import logging
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
+
+import pyarrow as pa
 
 from fabric_pipelines import (
     change_pipeline,
@@ -128,10 +131,24 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
     "pointer_activation": frozenset(),
 }
 _MAX_PROGRESS_COUNT = 2_147_483_647
+_EXPOSURE_GOLD_INPUT_TABLES = (
+    "gold_exposure_current",
+    "silver_exposure_observations",
+    "gold_container_exposure_current",
+    "silver_container_vulnerability_observations",
+    "metadata_source_status",
+    "silver_exposure_enrichment",
+    "silver_defender_secure_scores",
+)
 
 
 def _bounded_progress_count(value: int) -> int:
     return min(max(int(value), 0), _MAX_PROGRESS_COUNT)
+
+
+def _release_transient_publication_memory() -> None:
+    gc.collect()
+    pa.default_memory_pool().release_unused()
 
 
 def _notify_stage_progress(
@@ -180,6 +197,101 @@ def _notify_table_progress(
             "fabric_table_progress_callback_failed",
             extra={"error_code": "FABRIC_TABLE_PROGRESS_CALLBACK_FAILED"},
         )
+
+
+def _partition_patch_publication_items(
+    publish_items: list[tuple[str, list[dict[str, Any]]]],
+    *,
+    patch_tables: tuple[str, ...],
+    barrier_table: str,
+) -> tuple[
+    list[tuple[str, list[dict[str, Any]]]],
+    tuple[str, list[dict[str, Any]]] | None,
+    list[tuple[str, list[dict[str, Any]]]],
+]:
+    by_name = dict(publish_items)
+    patch_items = [
+        (table_name, by_name[table_name])
+        for table_name in patch_tables
+        if table_name in by_name
+    ]
+    barrier_item = (
+        (barrier_table, by_name[barrier_table])
+        if barrier_table in by_name
+        else None
+    )
+    early_names = {table_name for table_name, _rows in patch_items}
+    if barrier_item is not None:
+        early_names.add(barrier_table)
+    remaining = [
+        item for item in publish_items if item[0] not in early_names
+    ]
+    return patch_items, barrier_item, remaining
+
+
+def _commit_patch_publication(
+    written_versions: dict[str, tuple[str, int | None]],
+    *,
+    patch_tables: tuple[str, ...],
+    barrier_table: str,
+) -> None:
+    for table_name in (*patch_tables, barrier_table):
+        written_versions.pop(table_name, None)
+
+
+def _should_publish_table(
+    table_name: str,
+    rows: list[dict[str, Any]],
+    *,
+    patch_barrier_present: bool,
+    patch_tables: tuple[str, ...],
+    barrier_table: str,
+) -> bool:
+    return bool(rows) or table_name in {
+        "ontology_entities",
+        "ontology_relationships",
+    } or (
+        patch_barrier_present
+        and table_name in {*patch_tables, barrier_table}
+    )
+
+
+def _prepare_publish_items(
+    datasets: Mapping[str, list[dict[str, Any]]],
+    *,
+    onelake: OneLakeWriter,
+    delta: DeltaWriter,
+    patch_barrier_present: bool,
+    patch_tables: tuple[str, ...],
+    barrier_table: str,
+) -> tuple[
+    list[tuple[str, list[dict[str, Any]]]],
+    dict[str, int | None],
+]:
+    known_versions: dict[str, int | None] = {}
+    publish_items: list[tuple[str, list[dict[str, Any]]]] = []
+    for table_name, rows in datasets.items():
+        selected = _should_publish_table(
+            table_name,
+            rows,
+            patch_barrier_present=patch_barrier_present,
+            patch_tables=patch_tables,
+            barrier_table=barrier_table,
+        )
+        table_uri = onelake.table_uri(
+            table_name.split("_", 1)[0],
+            table_name.split("_", 1)[1],
+        )
+        if selected:
+            if not rows:
+                known_versions[table_name] = delta.version(table_uri)
+            publish_items.append((table_name, rows))
+            continue
+        version = delta.version(table_uri)
+        if version is not None:
+            known_versions[table_name] = version
+            publish_items.append((table_name, rows))
+    return publish_items, known_versions
 
 
 class DedicatedOntologyPublisherAdapter:
@@ -299,6 +411,17 @@ class DedicatedOntologyPublisherAdapter:
 
 
 class FabricSyncService:
+    _PATCH_PUBLICATION_TABLES: tuple[str, ...] = (
+        "bronze_patchassessment",
+        "bronze_patchassessmentdetail",
+        "bronze_patchinstallation",
+        "silver_compliance",
+        "silver_patch_history",
+        "silver_patch_installations",
+        "silver_patch_findings",
+        "silver_patch_snapshot_findings",
+    )
+    _PATCH_PUBLICATION_BARRIER = "metadata_patch_snapshot"
     _MERGE_WRITE_TABLES: frozenset[str] = frozenset({
         "bronze_resource_changes",
         "silver_patch_history",
@@ -324,7 +447,24 @@ class FabricSyncService:
         "silver_exposure_observations",
         "silver_container_vulnerability_observations",
         "silver_workload_observations",
+        "silver_patch_snapshot_findings",
     })
+    _APPEND_REPLAY_COLUMNS: Mapping[str, frozenset[str]] = {
+        "silver_container_vulnerability_observations": frozenset({
+            "timestamp",
+            "change_version",
+            "observed_at",
+            "ingested_at",
+        }),
+    }
+    _APPEND_REPLAY_JSON_FIELDS: Mapping[
+        str,
+        Mapping[str, frozenset[str]],
+    ] = {
+        "silver_container_vulnerability_observations": {
+            "provenance_json": frozenset({"ingested_at"}),
+        },
+    }
     _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
         "silver_container_image_digests",
         "silver_container_logical_images",
@@ -446,6 +586,104 @@ class FabricSyncService:
                 assert_lock_held=sync_lock.assert_held,
             )
 
+    def sync_patch_tables(
+        self,
+        *,
+        replay_source_run_id: str = "",
+        progress_callback: Callable[[FabricTableWriteProgress], None] | None = None,
+    ) -> FabricSyncResult:
+        """Publish only ARG-backed patch Bronze/Silver tables and their barrier."""
+
+        with self.onelake.sync_lock() as sync_lock:
+            sync_lock.assert_held()
+            started_clock = self.clock()
+            run_id = str(uuid.uuid4())
+            snapshot = self._resolve_snapshot(replay_source_run_id)
+            manifest = self._read_manifest(snapshot)
+            source_run_id = str(
+                manifest.get("runId") or replay_source_run_id or "unknown"
+            )
+            datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            patch_items = [
+                (table_name, datasets.get(table_name, []))
+                for table_name in self._PATCH_PUBLICATION_TABLES
+            ]
+            barrier_rows = datasets.get(self._PATCH_PUBLICATION_BARRIER, [])
+            if not barrier_rows:
+                raise ValueError(
+                    "Patch-only publication requires a complete patch snapshot manifest"
+                )
+
+            table_results: dict[str, DeltaWriteResult] = {}
+            written_versions: dict[str, tuple[str, int | None]] = {}
+            total_tables = len(patch_items) + 1
+            try:
+                for table_name, rows in [
+                    *patch_items,
+                    (self._PATCH_PUBLICATION_BARRIER, barrier_rows),
+                ]:
+                    sync_lock.assert_held()
+                    layer, logical_name = table_name.split("_", 1)
+                    table_uri = self.onelake.table_uri(layer, logical_name)
+                    before_version = self.delta.version(table_uri)
+                    result = self.delta.write(
+                        table_uri,
+                        rows,
+                        mode=self._write_mode_for_table(table_name),
+                        key_columns=("resource_id",),
+                        partition_by=(
+                            (*self.partitioning.columns_for(table_name), "ingestion_run_id")
+                            if table_name == "silver_patch_snapshot_findings"
+                            else self.partitioning.columns_for(table_name)
+                        ),
+                        schema=schema_for(table_name),
+                        append_scan_partition_columns=(
+                            ("ingestion_run_id",)
+                            if table_name == "silver_patch_snapshot_findings"
+                            else ()
+                        ),
+                    )
+                    table_results[table_name] = result
+                    if result.version != before_version:
+                        written_versions[table_name] = (
+                            str(table_uri),
+                            before_version,
+                        )
+                    _notify_table_progress(
+                        progress_callback,
+                        FabricTableWriteProgress(
+                            completed_tables=len(table_results),
+                            total_tables=total_tables,
+                            table_name=table_name,
+                            result=result,
+                        ),
+                    )
+                sync_lock.assert_held()
+                self._register_fabric_assets(set(table_results))
+                _commit_patch_publication(
+                    written_versions,
+                    patch_tables=self._PATCH_PUBLICATION_TABLES,
+                    barrier_table=self._PATCH_PUBLICATION_BARRIER,
+                )
+            except Exception as exc:
+                rollback_errors = self._rollback(written_versions)
+                if rollback_errors:
+                    raise RuntimeError(
+                        "Patch-only sync failed and rollback was incomplete: "
+                        + " | ".join(rollback_errors)
+                    ) from exc
+                raise
+            duration = self.clock() - started_clock
+            return _result(
+                run_id,
+                source_run_id,
+                "completed",
+                bool(replay_source_run_id),
+                table_results,
+                0,
+                duration,
+            )
+
     def _sync_locked(
         self,
         *,
@@ -490,7 +728,7 @@ class FabricSyncService:
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
-        exposure_gold_datasets: dict[str, list[dict[str, Any]]] | None = None
+        exposure_gold_observation_rows: list[dict[str, Any]] | None = None
         exposure_gold_publisher: ExposureGoldFabricPublisher | None = None
         exposure_gold_stage = None
         data_committed = False
@@ -569,7 +807,8 @@ class FabricSyncService:
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
                 )
-                temporal_tables = temporal.write_tables()
+                del persisted_observations, existing_observations
+                temporal_tables = temporal.write_tables(copy_rows=False)
                 datasets.update(temporal_tables)
                 _notify_stage_progress(
                     stage_progress_callback,
@@ -617,12 +856,17 @@ class FabricSyncService:
                     datasets["ontology_relationships"],
                     granular_relationships,
                 )
-                exposure_gold_datasets = {
-                    **datasets,
-                    "silver_exposure_observations": [
-                        dict(row) for row in temporal.all_observation_rows
-                    ],
-                }
+                exposure_gold_observation_rows = list(
+                    temporal.all_observation_rows
+                )
+                del (
+                    container_tables,
+                    granular_entities,
+                    granular_relationships,
+                    temporal,
+                    temporal_tables,
+                )
+            del workload_products
             _notify_stage_progress(
                 stage_progress_callback,
                 "ontology_construction",
@@ -792,10 +1036,6 @@ class FabricSyncService:
                 ),
             ]
             datasets["metadata_source_status"] = source_status_rows
-            if exposure_gold_datasets is not None:
-                exposure_gold_datasets["metadata_source_status"] = [
-                    dict(row) for row in source_status_rows
-                ]
             if source_status_rows:
                 assert_lock_held()
                 table_uri = self.onelake.table_uri("metadata", "source_status")
@@ -839,6 +1079,8 @@ class FabricSyncService:
                     raise ValueError(f"Fabric data quality validation failed: {failed_records} records")
                 return result
 
+            _release_transient_publication_memory()
+
             def write_table(
                 item: tuple[str, list[dict[str, Any]]],
             ) -> tuple[str, str, int | None, DeltaWriteResult]:
@@ -864,31 +1106,41 @@ class FabricSyncService:
                     key_columns=("event_id",)
                     if table_name == "metadata_audit_events"
                     else ("resource_id",),
-                    partition_by=self.partitioning.columns_for(table_name),
+                    partition_by=(
+                        (*self.partitioning.columns_for(table_name), "ingestion_run_id")
+                        if table_name == "silver_patch_snapshot_findings"
+                        else self.partitioning.columns_for(table_name)
+                    ),
                     schema=schema_for(table_name),
+                    append_replay_columns=self._APPEND_REPLAY_COLUMNS.get(
+                        table_name,
+                        (),
+                    ),
+                    append_replay_json_fields=(
+                        self._APPEND_REPLAY_JSON_FIELDS.get(table_name)
+                    ),
+                    append_scan_partition_columns=(
+                        ("ingestion_run_id",)
+                        if table_name == "silver_patch_snapshot_findings"
+                        else ()
+                    ),
                 )
                 assert_lock_held()
                 return table_name, table_uri, before_version, result
 
             # Empty projections do not need a Fabric transaction unless the
             # table already exists and must be cleared for this snapshot.
-            known_versions: dict[str, int | None] = {}
-            publish_items: list[tuple[str, list[dict[str, Any]]]] = []
-            for table_name, rows in datasets.items():
-                if rows or table_name in {
-                    "ontology_entities",
-                    "ontology_relationships",
-                }:
-                    publish_items.append((table_name, rows))
-                    continue
-                table_uri = self.onelake.table_uri(
-                    table_name.split("_", 1)[0],
-                    table_name.split("_", 1)[1],
-                )
-                version = self.delta.version(table_uri)
-                if version is not None:
-                    known_versions[table_name] = version
-                    publish_items.append((table_name, rows))
+            patch_barrier_present = bool(
+                datasets.get(self._PATCH_PUBLICATION_BARRIER)
+            )
+            publish_items, known_versions = _prepare_publish_items(
+                datasets,
+                onelake=self.onelake,
+                delta=self.delta,
+                patch_barrier_present=patch_barrier_present,
+                patch_tables=self._PATCH_PUBLICATION_TABLES,
+                barrier_table=self._PATCH_PUBLICATION_BARRIER,
+            )
             _LOGGER.info(
                 "Preparing Fabric publish: %d datasets (%d non-empty, %d empty skipped)",
                 len(publish_items),
@@ -897,7 +1149,7 @@ class FabricSyncService:
             )
             gold_table_count = (
                 len(EXPOSURE_GOLD_TABLES) + 1
-                if exposure_gold_datasets is not None
+                if exposure_gold_observation_rows is not None
                 and exposure_pointer_store is not None
                 else 0
             )
@@ -907,6 +1159,55 @@ class FabricSyncService:
                 "table_publication",
                 "started",
             )
+
+            def record_table_result(
+                table_name: str,
+                table_uri: str,
+                before_version: int | None,
+                result: DeltaWriteResult,
+            ) -> None:
+                nonlocal completed_tables
+                table_results[table_name] = result
+                completed_tables += 1
+                if result.version != before_version:
+                    written_versions[table_name] = (table_uri, before_version)
+                self.metrics.record_table(table_name, result)
+                _notify_table_progress(
+                    progress_callback,
+                    FabricTableWriteProgress(
+                        completed_tables=completed_tables,
+                        total_tables=total_publish_tables,
+                        table_name=table_name,
+                        result=result,
+                    ),
+                )
+
+            patch_items, barrier_item, publish_items = (
+                _partition_patch_publication_items(
+                    publish_items,
+                    patch_tables=self._PATCH_PUBLICATION_TABLES,
+                    barrier_table=self._PATCH_PUBLICATION_BARRIER,
+                )
+            )
+
+            for item in patch_items:
+                record_table_result(*write_table(item))
+            if barrier_item is not None:
+                record_table_result(*write_table(barrier_item))
+                assert_lock_held()
+                self._register_fabric_assets(
+                    {
+                        *(table_name for table_name, _rows in patch_items),
+                        self._PATCH_PUBLICATION_BARRIER,
+                    }
+                )
+                assert_lock_held()
+                _commit_patch_publication(
+                    written_versions,
+                    patch_tables=self._PATCH_PUBLICATION_TABLES,
+                    barrier_table=self._PATCH_PUBLICATION_BARRIER,
+                )
+
             with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
                 futures = [
                     executor.submit(write_table, item) for item in publish_items
@@ -918,19 +1219,11 @@ class FabricSyncService:
                     except Exception as exc:  # noqa: BLE001 - collect all worker failures before rollback.
                         write_error = write_error or exc
                         continue
-                    table_results[table_name] = result
-                    completed_tables += 1
-                    if result.version != before_version:
-                        written_versions[table_name] = (table_uri, before_version)
-                    self.metrics.record_table(table_name, result)
-                    _notify_table_progress(
-                        progress_callback,
-                        FabricTableWriteProgress(
-                            completed_tables=completed_tables,
-                            total_tables=total_publish_tables,
-                            table_name=table_name,
-                            result=result,
-                        ),
+                    record_table_result(
+                        table_name,
+                        table_uri,
+                        before_version,
+                        result,
                     )
                 if write_error is not None:
                     raise write_error
@@ -975,9 +1268,17 @@ class FabricSyncService:
                 "completed",
             )
             if (
-                exposure_gold_datasets is not None
+                exposure_gold_observation_rows is not None
                 and exposure_pointer_store is not None
             ):
+                exposure_gold_datasets = {
+                    table_name: (
+                        exposure_gold_observation_rows
+                        if table_name == "silver_exposure_observations"
+                        else datasets.get(table_name, [])
+                    )
+                    for table_name in _EXPOSURE_GOLD_INPUT_TABLES
+                }
                 sample_table_uri = self.onelake.table_uri(
                     "gold",
                     "exposure_facts",
@@ -1171,6 +1472,8 @@ class FabricSyncService:
     def _rollback(self, written_versions: dict[str, tuple[str, int | None]]) -> list[str]:
         errors: list[str] = []
         for table_name, (table_uri, before_version) in reversed(written_versions.items()):
+            if table_name == "silver_patch_snapshot_findings":
+                continue
             for attempt in range(1, 4):
                 try:
                     if before_version is not None:
@@ -1442,16 +1745,10 @@ class FabricSyncService:
             latest.get("source_run_id") or latest.get("change_version") or ""
         )
         if not raw_version:
-            # Mirror semantic_snapshot()'s fallback so the cached engine version
-            # matches the snapshot version and the engine is not rebuilt on
-            # every call when ingestion state is missing.
-            entities, _relationships = self._read_authoritative_ontology(
-                marker=latest,
-            )
-            raw_version = max(
-                (str(row.get("ingestion_run_id") or "") for row in entities),
-                default="",
-            )
+            entity_version = latest.get("ontology_entity_version")
+            relationship_version = latest.get("ontology_relationship_version")
+            if entity_version is not None and relationship_version is not None:
+                raw_version = f"ontology:{entity_version}:{relationship_version}"
         return (
             f"semantic-{_hash_json(raw_version)[:16]}"
             if raw_version

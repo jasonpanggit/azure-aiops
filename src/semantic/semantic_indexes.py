@@ -129,6 +129,22 @@ class SemanticIndexes:
             if target and not _contains_fact(self.cost[target], row):
                 self.cost[target].append(dict(row))
 
+    def graph_only_view(self) -> SemanticIndexes:
+        """Return a read-only graph view sharing immutable graph indexes."""
+        view = object.__new__(type(self))
+        view.entities = self.entities
+        view.relationships = self.relationships
+        view.by_type = self.by_type
+        view.by_name = self.by_name
+        view.by_connection_id = self.by_connection_id
+        view.outgoing = self.outgoing
+        view.incoming = self.incoming
+        view.inventory = {}
+        view.compliance = {}
+        view.security = defaultdict(list)
+        view.cost = defaultdict(list)
+        return view
+
     def resolve(self, value: str, *, types: set[str] | None = None) -> str:
         needle = value.strip().casefold()
         candidates = list(self.by_name.get(needle, ()))

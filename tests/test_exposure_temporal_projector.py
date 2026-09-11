@@ -106,7 +106,29 @@ def test_stale_or_failed_install_does_not_close_newer_missing_evidence() -> None
     failed_current = project_current(failed)
     assert failed_current.state == "missing"
     assert failed_current.active is True
+    assert "installation_failed" in dict(failed_current.source_states).values()
     assert failed_current.reintroduction_count == 0
+
+
+def test_failure_only_installation_remains_active() -> None:
+    from intelligence.vulnerability.projector import project_current
+
+    current = project_current(
+        (
+            _observation(
+                event="installed",
+                event_time="2026-08-02T00:00:00Z",
+                operation_succeeded=False,
+                provider_status="failed",
+                provider_operation_id="failed-install",
+            ),
+        )
+    )
+
+    assert current.state == "missing"
+    assert current.active is True
+    assert current.active_source_families == ("aum",)
+    assert dict(current.source_states) == {"aum": "installation_failed"}
 
 
 def test_arrival_order_does_not_change_projected_current_state() -> None:

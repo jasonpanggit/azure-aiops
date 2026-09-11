@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
-from storage.datasets import DatasetStore
+from storage.datasets import COMBINED_ACTIVATION_QUERY_VERSION, DatasetStore
 from storage.onelake_documents import OneLakeDocumentStore
 
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
@@ -499,7 +499,7 @@ def publish_combined_snapshot(
             "status": "completed",
             "startedAt": latest_started_at or now,
             "completedAt": now,
-            "queryVersion": "combined-subscription-connections-v1",
+            "queryVersion": COMBINED_ACTIVATION_QUERY_VERSION,
             "sourceConnectionIds": sorted(connection_ids),
             "sourceRunIds": sorted(source_runs),
         },
@@ -512,6 +512,7 @@ def activate_runtime(
     *,
     fabric_config: str | Path,
     connection_ids: list[str] | None = None,
+    replay_source_run_id: str = "",
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
     heartbeat_interval: float = 60.0,
     progress_clock: Callable[[], float] = time.monotonic,
@@ -531,58 +532,79 @@ def activate_runtime(
     )
     reporter.start("activation")
     try:
-        selected = connection_ids or [
-            connection.connection_id
-            for connection in service.registry.list(include_disabled=False)
-        ]
-        if not selected:
-            raise ValueError("No active subscription connections are registered")
-
-        validations: dict[str, Any] = {}
-        syncs: dict[str, Any] = {}
-        total_connections = len(selected)
-        for position, connection_id in enumerate(selected, start=1):
-            reporter.start("connection_validation")
-            validation = service.validate(connection_id)
-            validations[connection_id] = validation
-            if not validation.get("passed"):
-                raise ValueError("Connection failed SPN access validation")
-            reporter.complete(
-                "connection_validation",
-                completed=position,
-                total=total_connections,
-            )
-
-            reporter.start("connection_discovery")
-            sync = service.sync(connection_id, mode="manual")
-            syncs[connection_id] = sync
-            if sync.get("status") != "succeeded":
-                raise RuntimeError("Connection discovery failed")
-            reporter.complete(
-                "connection_discovery",
-                completed=position,
-                total=total_connections,
-            )
-
         from fabric.config import FabricRuntimeConfig
         from fabric.runtime import build_runtime
 
-        reporter.start("combined_snapshot")
-        config = FabricRuntimeConfig.load(fabric_config)
-        combined = publish_combined_snapshot(
-            service,
-            selected,
-            config.source_data_root,
-        )
-        reporter.complete(
-            "combined_snapshot",
-            dataset_count=len(combined.get("datasets") or {}),
-            failure_count=0,
-        )
+        exact_generation = str(replay_source_run_id)
+        source_store: DatasetStore | None = None
+        if exact_generation:
+            config = FabricRuntimeConfig.load(fabric_config)
+            source_store = DatasetStore(config.source_data_root)
+            combined = source_store.verify_combined_activation_generation(
+                exact_generation
+            )
+            selected = sorted(combined["sourceConnectionIds"])
+            validations: dict[str, Any] = {}
+            syncs: dict[str, Any] = {}
+        else:
+            selected = connection_ids or [
+                connection.connection_id
+                for connection in service.registry.list(include_disabled=False)
+            ]
+            if not selected:
+                raise ValueError("No active subscription connections are registered")
+
+            validations = {}
+            syncs = {}
+            total_connections = len(selected)
+            for position, connection_id in enumerate(selected, start=1):
+                reporter.start("connection_validation")
+                validation = service.validate(connection_id)
+                validations[connection_id] = validation
+                if not validation.get("passed"):
+                    raise ValueError("Connection failed SPN access validation")
+                reporter.complete(
+                    "connection_validation",
+                    completed=position,
+                    total=total_connections,
+                )
+
+                reporter.start("connection_discovery")
+                sync = service.sync(connection_id, mode="manual")
+                syncs[connection_id] = sync
+                if sync.get("status") != "succeeded":
+                    raise RuntimeError("Connection discovery failed")
+                reporter.complete(
+                    "connection_discovery",
+                    completed=position,
+                    total=total_connections,
+                )
+
+            reporter.start("combined_snapshot")
+            config = FabricRuntimeConfig.load(fabric_config)
+            combined = publish_combined_snapshot(
+                service,
+                selected,
+                config.source_data_root,
+            )
+            reporter.complete(
+                "combined_snapshot",
+                dataset_count=len(combined.get("datasets") or {}),
+                failure_count=0,
+            )
+
         reporter.start("fabric_publication")
         runtime = build_runtime(config)
+        if source_store is not None:
+            # Recheck the exact immutable input after runtime construction and
+            # immediately before Fabric mapping. Remote DatasetStore publish
+            # never deletes generations, so normal publication cannot
+            # invalidate this verified path while the replay transaction runs.
+            combined = source_store.verify_combined_activation_generation(
+                exact_generation
+            )
         publication = runtime.service.sync(
-            replay_source_run_id=str(combined["runId"]),
+            replay_source_run_id=exact_generation or str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
             stage_progress_callback=reporter.fabric_stage_progress,
             exposure_pointer_store=OneLakeDocumentStore(service.registry.root),

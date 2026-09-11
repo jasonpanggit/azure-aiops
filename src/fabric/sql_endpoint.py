@@ -97,6 +97,24 @@ REQUIRED_EXPOSURE_SCHEMA: dict[str, frozenset[str]] = {
             "exposure_count",
         }
     ),
+    "gold_exposure_evidence": frozenset(
+        {
+            "evidence_id",
+            "fact_id",
+            "read_model_generation_id",
+            "source",
+            "identifier",
+            "status",
+            "stale",
+            "lkg_available",
+            "safe_error_code",
+            "attempted_at",
+            "succeeded_at",
+            "source_at",
+            "enriched_at",
+            "payload_json",
+        }
+    ),
     "metadata_exposure_gold_generations": frozenset(
         {
             "read_model_generation_id",

@@ -46,7 +46,7 @@ describe("ExposureLayout", () => {
 
   it.each([
     ["/exposure", "Overview"],
-    ["/exposure/defender-posture", "Defender posture"],
+    ["/exposure/defender-posture", "Defender exposure"],
     ["/exposure/patch-priorities", "Patch priorities"],
   ])("marks only %s as the current ordinary navigation link", (pathname, label) => {
     navigation.pathname = pathname;
@@ -56,11 +56,13 @@ describe("ExposureLayout", () => {
     const links = screen.getAllByRole("link");
 
     expect(nav).toContainElement(screen.getByRole("link", { name: label }));
+    expect(nav).toHaveClass("exposure-nav");
     expect(links).toHaveLength(3);
     expect(links.filter((link) => link.getAttribute("aria-current") === "page")).toEqual([
       screen.getByRole("link", { name: label }),
     ]);
     for (const link of links) {
+      expect(link).toHaveClass("tab-link");
       expect(link).not.toHaveAttribute("role", "tab");
       expect(link).not.toHaveAttribute("aria-selected");
       expect(link).not.toHaveAttribute("tabindex", "-1");
@@ -74,7 +76,7 @@ describe("ExposureLayout", () => {
     await user.tab();
     expect(screen.getByRole("link", { name: "Overview" })).toHaveFocus();
     await user.tab();
-    expect(screen.getByRole("link", { name: "Defender posture" })).toHaveFocus();
+    expect(screen.getByRole("link", { name: "Defender exposure" })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("link", { name: "Patch priorities" })).toHaveFocus();
   });
@@ -93,7 +95,8 @@ describe("ExposureLayout", () => {
   );
 
   it.each([
-    ["/exposure/defender-posture", "Defender posture"],
+    ["/exposure", "Overview"],
+    ["/exposure/defender-posture", "Defender exposure"],
     ["/exposure/patch-priorities", "Patch priorities"],
   ])("uses canonical detail origin %s", (origin, label) => {
     navigation.pathname = "/exposure/cves/CVE-2026-0001";
@@ -108,7 +111,6 @@ describe("ExposureLayout", () => {
 
   it.each([
     "https://evil.example/exposure/defender-posture",
-    "/exposure",
     "/exposure/defender-posture/../patch-priorities",
     "defender-posture",
   ])("rejects non-canonical detail origin %s", (origin) => {

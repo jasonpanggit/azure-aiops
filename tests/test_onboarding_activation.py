@@ -19,6 +19,7 @@ from onboarding.activation import (
 from onboarding.graph_normalize import ENTITY_TYPES, NormalizedGraph
 from storage.datasets import DatasetStore
 from storage.delta_writer import DeltaWriteResult
+from storage.onelake_documents import OneLakeDocumentStore
 
 
 @dataclass(frozen=True)
@@ -503,6 +504,556 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert replay_source_run_ids == [
         str(result["combined_snapshot"]["runId"])
     ]
+
+
+def test_activate_runtime_replays_exact_generation_without_upstream_work(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "combined"
+    manifest = DatasetStore(source_root).publish(
+        {"entities/Resource": [{"id": "historical-resource"}]},
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["spoke", "hub"],
+            "sourceRunIds": ["run-spoke", "run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
+        },
+        ontology={},
+    )
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+
+    def unexpected_upstream_call(*_args, **_kwargs):
+        pytest.fail("exact replay must not invoke upstream discovery")
+
+    service.registry.list = unexpected_upstream_call
+    service.validate = unexpected_upstream_call
+    service.sync = unexpected_upstream_call
+    monkeypatch.setattr(DatasetStore, "current_generation", unexpected_upstream_call)
+
+    sync_kwargs: dict[str, object] = {}
+
+    class FabricService:
+        def sync(self, **kwargs):
+            sync_kwargs.update(kwargs)
+            return type(
+                "Publication",
+                (),
+                {
+                    "run_id": "fabric-run",
+                    "source_run_id": "exact-generation",
+                    "status": "completed",
+                    "tables": ("silver_resources",),
+                },
+            )()
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: type(
+                "Semantic",
+                (),
+                {"knowledge_version": "v1", "freshness": "current"},
+            )(),
+        },
+    )()
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+    monkeypatch.setattr("fabric.runtime.build_runtime", lambda _config: runtime)
+    events: list[dict[str, object]] = []
+
+    result = activate_runtime(
+        service,
+        fabric_config="fabric.test.yaml",
+        replay_source_run_id="exact-generation",
+        progress_callback=events.append,
+        heartbeat_interval=3600,
+    )
+
+    assert result == {
+        "status": "activated",
+        "connections": ["hub", "spoke"],
+        "validations": {},
+        "discovery_syncs": {},
+        "combined_snapshot": manifest,
+        "fabric_publication": {
+            "run_id": "fabric-run",
+            "source_run_id": "exact-generation",
+            "status": "completed",
+            "tables": ["silver_resources"],
+        },
+        "ontology_version": "v1",
+        "freshness": "current",
+    }
+    assert sync_kwargs["replay_source_run_id"] == "exact-generation"
+    pointer_store = sync_kwargs["exposure_pointer_store"]
+    assert isinstance(pointer_store, OneLakeDocumentStore)
+    assert pointer_store.root == str(service.registry.root)
+    started = [event["stage"] for event in events if event["status"] == "started"]
+    assert started == ["activation", "fabric_publication"]
+    assert not {
+        "connection_validation",
+        "connection_discovery",
+        "combined_snapshot",
+    } & set(started)
+
+
+def test_activate_runtime_reverifies_exact_generation_before_sync(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "combined"
+    store = DatasetStore(source_root)
+    store.publish(
+        {
+            "entities/Resource": [
+                {
+                    "id": "historical-resource",
+                    "observed_at": "2026-09-10T00:00:00Z",
+                }
+            ]
+        },
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["hub"],
+            "sourceRunIds": ["run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
+        },
+        ontology={},
+    )
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    generation = store.generation_path("exact-generation")
+    assert isinstance(generation, type(tmp_path))
+    dataset_path = generation / "entities" / "Resource.jsonl"
+
+    class FabricService:
+        def sync(self, **_kwargs):
+            pytest.fail("second verification must fail before Fabric sync")
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: None,
+        },
+    )()
+
+    def build_runtime_and_tamper(_config):
+        row = json.loads(dataset_path.read_text())
+        row["observed_at"] = "2026-09-10T00:01:00Z"
+        dataset_path.write_text(json.dumps(row) + "\n")
+        return runtime
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", build_runtime_and_tamper)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "fabric_publication"
+    assert not (tmp_path / "registry").exists()
+
+
+def test_activate_runtime_config_load_failure_is_combined_snapshot_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = _Service({"hub": tmp_path / "hub"})
+    events: list[dict[str, object]] = []
+    secret = "credential=planted-secret"
+
+    def fail_config_load(_path):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(fail_config_load),
+    )
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="missing-fabric.yaml",
+            progress_callback=events.append,
+            heartbeat_interval=3600,
+        )
+
+    failure = captured.value
+    assert failure.stage == "combined_snapshot"
+    assert (events[-2]["stage"], events[-2]["status"]) == (
+        "combined_snapshot",
+        "started",
+    )
+    assert events[-1] == {
+        "event": "activation_progress",
+        "stage": "combined_snapshot",
+        "status": "failed",
+        "elapsed_seconds": failure.elapsed_seconds,
+        "error_code": "ACTIVATION_FAILED",
+    }
+    assert secret not in json.dumps(events) + str(failure)
+
+
+@pytest.mark.parametrize(
+    "manifest_body",
+    [
+        None,
+        "{not-json",
+        '["not", "an", "object"]',
+        '{"runId":"exact-generation","sourceConnectionIds":"hub"}',
+    ],
+)
+def test_activate_runtime_replay_refuses_unreadable_or_malformed_manifest(
+    tmp_path,
+    monkeypatch,
+    manifest_body: str | None,
+) -> None:
+    source_root = tmp_path / "combined"
+    DatasetStore(source_root).publish(
+        {"entities/Resource": [{"id": "historical-resource"}]},
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "sourceConnectionIds": ["hub"],
+            "sourceRunIds": ["run-hub"],
+            "queryVersion": "combined-subscription-connections-v1",
+        },
+        ontology={},
+    )
+    generation = DatasetStore(source_root).generation_path("exact-generation")
+    assert generation is not None
+    manifest_path = generation / "manifest.json"
+    if manifest_body is None:
+        manifest_path.unlink()
+    else:
+        manifest_path.write_text(manifest_body)
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_publication(*_args, **_kwargs):
+        pytest.fail("invalid replay input must fail before Fabric publication")
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", unexpected_publication)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_dataset",
+        "malformed_dataset",
+        "altered_dataset_row",
+        "missing_ontology",
+        "invalid_ontology",
+        "wrong_row_count",
+        "wrong_content_hash",
+        "wrong_ontology_row_count",
+        "wrong_ontology_content_hash",
+        "wrong_overall_hash",
+        "incomplete_status",
+        "wrong_run_id",
+        "missing_query_version",
+        "wrong_query_version",
+        "wrong_type_query_version",
+        "missing_source_connection_ids",
+        "wrong_type_source_connection_ids",
+        "empty_source_connection_ids",
+        "invalid_source_connection_ids",
+        "non_string_source_connection_id",
+        "duplicate_source_connection_ids",
+        "missing_source_run_ids",
+        "wrong_type_source_run_ids",
+        "empty_source_run_ids",
+        "blank_source_run_id",
+        "non_string_source_run_id",
+        "duplicate_source_run_ids",
+        "mismatched_source_provenance_cardinality",
+        "altered_source_connection_ids",
+        "altered_source_run_ids",
+        "altered_started_at",
+        "altered_completed_at",
+        "altered_subscription_scope",
+        "altered_observed_at",
+        "altered_ingested_at",
+        "altered_row_run_id",
+        "altered_last_observed_timestamp",
+        "legacy_no_integrity_contract",
+        "invalid_dataset_name",
+    ],
+)
+def test_activate_runtime_replay_refuses_corrupt_generation_before_runtime(
+    tmp_path,
+    monkeypatch,
+    corruption: str,
+) -> None:
+    source_root = tmp_path / "combined"
+    store = DatasetStore(source_root)
+    store.publish(
+        {
+            "entities/Resource": [
+                {
+                    "id": "historical-resource",
+                    "observed_at": "2026-09-09T00:00:00Z",
+                    "ingested_at": "2026-09-09T00:01:00Z",
+                    "run_id": "source-run-original",
+                    "lastObservedTimestamp": "2026-09-09T00:02:00Z",
+                }
+            ]
+        },
+        {},
+        {
+            "runId": "exact-generation",
+            "status": "completed",
+            "startedAt": "2026-09-09T00:00:00Z",
+            "completedAt": "2026-09-09T00:05:00Z",
+            "sourceConnectionIds": ["hub", "spoke"],
+            "sourceRunIds": ["run-hub", "run-spoke"],
+            "subscriptionScope": {
+                "subscriptionIds": ["subscription-hub", "subscription-spoke"]
+            },
+            "queryVersion": "combined-subscription-connections-v1",
+        },
+        ontology={"version": "v1"},
+    )
+    generation = store.generation_path("exact-generation")
+    assert isinstance(generation, type(tmp_path))
+    manifest_path = generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    dataset_path = generation / "entities" / "Resource.jsonl"
+    ontology_path = generation / "ontology" / "ontology.json"
+
+    if corruption == "missing_dataset":
+        dataset_path.unlink()
+    elif corruption == "malformed_dataset":
+        dataset_path.write_text("{not-json\n")
+    elif corruption == "altered_dataset_row":
+        dataset_path.write_text('{"id":"tampered-resource"}\n')
+    elif corruption == "missing_ontology":
+        ontology_path.unlink()
+    elif corruption == "invalid_ontology":
+        ontology_path.write_text("[]\n")
+    elif corruption == "wrong_row_count":
+        manifest["datasets"]["entities/Resource"]["rowCount"] = 2
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_content_hash":
+        manifest["datasets"]["entities/Resource"]["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_ontology_row_count":
+        manifest["datasets"]["ontology/ontology"]["rowCount"] = 0
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_ontology_content_hash":
+        manifest["datasets"]["ontology/ontology"]["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_overall_hash":
+        manifest["contentHash"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "incomplete_status":
+        manifest["status"] = "started"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_run_id":
+        manifest["runId"] = "different-generation"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_query_version":
+        del manifest["queryVersion"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_query_version":
+        manifest["queryVersion"] = "per-connection-discovery-v1"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_query_version":
+        manifest["queryVersion"] = ["combined-subscription-connections-v1"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_source_connection_ids":
+        del manifest["sourceConnectionIds"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_source_connection_ids":
+        manifest["sourceConnectionIds"] = "hub"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "empty_source_connection_ids":
+        manifest["sourceConnectionIds"] = []
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "invalid_source_connection_ids":
+        manifest["sourceConnectionIds"] = [" "]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "non_string_source_connection_id":
+        manifest["sourceConnectionIds"] = ["hub", 7]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "duplicate_source_connection_ids":
+        manifest["sourceConnectionIds"] = ["hub", "hub"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "missing_source_run_ids":
+        del manifest["sourceRunIds"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "wrong_type_source_run_ids":
+        manifest["sourceRunIds"] = "run-hub"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "empty_source_run_ids":
+        manifest["sourceRunIds"] = []
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "blank_source_run_id":
+        manifest["sourceRunIds"] = ["run-hub", " "]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "non_string_source_run_id":
+        manifest["sourceRunIds"] = ["run-hub", 7]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "duplicate_source_run_ids":
+        manifest["sourceRunIds"] = ["run-hub", "run-hub"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "mismatched_source_provenance_cardinality":
+        manifest["sourceRunIds"] = ["run-hub"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_source_connection_ids":
+        manifest["sourceConnectionIds"] = ["hub", "other-spoke"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_source_run_ids":
+        manifest["sourceRunIds"] = ["run-hub", "run-other-spoke"]
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_started_at":
+        manifest["startedAt"] = "2026-09-09T00:00:01Z"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_completed_at":
+        manifest["completedAt"] = "2026-09-09T00:05:01Z"
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "altered_subscription_scope":
+        manifest["subscriptionScope"] = {
+            "subscriptionIds": ["subscription-hub", "subscription-other-spoke"]
+        }
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption in {
+        "altered_observed_at",
+        "altered_ingested_at",
+        "altered_row_run_id",
+        "altered_last_observed_timestamp",
+    }:
+        row = json.loads(dataset_path.read_text())
+        field = {
+            "altered_observed_at": "observed_at",
+            "altered_ingested_at": "ingested_at",
+            "altered_row_run_id": "run_id",
+            "altered_last_observed_timestamp": "lastObservedTimestamp",
+        }[corruption]
+        row[field] = f"tampered-{field}"
+        dataset_path.write_text(json.dumps(row) + "\n")
+    elif corruption == "legacy_no_integrity_contract":
+        manifest.pop("integrityHash", None)
+        for details in manifest["datasets"].values():
+            details.pop("integrityHash", None)
+        manifest_path.write_text(json.dumps(manifest))
+    elif corruption == "invalid_dataset_name":
+        manifest["datasets"]["../escape"] = {
+            "rowCount": 0,
+            "contentHash": "0" * 64,
+            "integrityHash": "0" * 64,
+        }
+        manifest_path.write_text(json.dumps(manifest))
+    else:
+        raise AssertionError(f"Unhandled corruption case: {corruption}")
+
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_runtime_or_pointer(*_args, **_kwargs):
+        pytest.fail(
+            "corrupt replay input must fail before runtime or pointer construction"
+        )
+
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        unexpected_runtime_or_pointer,
+    )
+    monkeypatch.setattr(
+        "onboarding.activation.OneLakeDocumentStore",
+        unexpected_runtime_or_pointer,
+    )
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id="exact-generation",
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
+
+
+@pytest.mark.parametrize(
+    "replay_source_run_id",
+    ["missing-generation", "../current"],
+)
+def test_activate_runtime_replay_refuses_missing_or_unsafe_exact_generation(
+    tmp_path,
+    monkeypatch,
+    replay_source_run_id: str,
+) -> None:
+    source_root = tmp_path / "combined"
+    DatasetStore(source_root)
+    service = _Service({})
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": source_root})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+
+    def unexpected_publication(*_args, **_kwargs):
+        pytest.fail("missing replay input must fail before Fabric publication")
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", unexpected_publication)
+
+    with pytest.raises(ActivationFailure) as captured:
+        activate_runtime(
+            service,
+            fabric_config="fabric.test.yaml",
+            replay_source_run_id=replay_source_run_id,
+            heartbeat_interval=3600,
+        )
+
+    assert captured.value.stage == "activation"
+    assert not (tmp_path / "registry").exists()
 
 
 def test_activate_runtime_failure_uses_same_sanitized_elapsed_value(

@@ -83,6 +83,22 @@ resource "fabric_lakehouse" "context_graph" {
   # instead (bronze_/silver_/ontology_).
 }
 
+resource "fabric_data_agent" "ai_ops" {
+  count = var.enable_fabric ? 1 : 0
+
+  display_name              = "AI Ops Data Agent"
+  description               = "Read-only Gold and deterministic ontology evidence for Operations Copilot. Advisory only; unified inventory remains the resource-identity authority."
+  workspace_id              = fabric_workspace.ops[0].id
+  definition_update_enabled = false
+
+  # Definition and publication are managed by configure-gold-grounding-agent.py
+  # so Terraform and the Fabric definition API never compete for ownership.
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 # The production API/web identity retains its existing Contributor role until
 # Plan 13-10 migrates legacy writes. Plan 13-07 proves separation only in its
 # dedicated non-production state and RBAC-validation workspaces.

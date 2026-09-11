@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -477,6 +477,42 @@ def _source_projection(
         ),
         previous_statuses=previous.statuses if previous is not None else (),
     )
+
+
+def test_source_partition_deduplicates_exact_rows_without_collapsing_distinct_findings() -> None:
+    outcome = _source_outcome(
+        query_name="defender_subassessments",
+        source_family="defender_subassessment",
+        row_id="shared-id",
+    )
+    first = {
+        "id": "shared-id",
+        "subscriptionId": "sub-a",
+        "properties": {"severity": "High"},
+    }
+    distinct = {
+        "id": "shared-id",
+        "subscriptionId": "sub-a",
+        "properties": {"severity": "Medium"},
+    }
+
+    projection = _source_projection(
+        {
+            "defender_subassessments": replace(
+                outcome,
+                paging=replace(outcome.paging, row_count=3),
+                rows=(first, dict(first), distinct),
+            )
+        },
+        generation="generation-1",
+    )
+
+    assert projection.rows_by_query["defender_subassessments"] == [
+        first,
+        distinct,
+    ]
+    assert len(projection.partition_rows) == 2
+    assert projection.statuses[0]["row_count"] == 2
 
 
 def test_failed_source_retains_only_its_own_last_known_good_partition() -> None:

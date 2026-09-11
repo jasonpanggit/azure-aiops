@@ -981,6 +981,10 @@ def _load_incident_engine() -> IncidentEngine | None:
 # multiplying load on rate-limited public feeds. A local home keeps them
 # purely in memory. Failures never break the endpoint.
 _KB_CVE_CACHE_TTL_SECONDS = 6 * 60 * 60
+_DURABLE_CATALOG_CACHE_TTL_SECONDS = 5
+_durable_catalog_cache: dict[
+    tuple[str, tuple[str, ...]], tuple[float, tuple[dict[str, Any], ...]]
+] = {}
 
 
 @cache
@@ -1015,6 +1019,34 @@ def _durable_enrichment_records() -> tuple[dict[str, Any], ...]:
         store=OneLakeDocumentStore(str(aiops_home())),
         ttl_seconds=_KB_CVE_CACHE_TTL_SECONDS,
     ).records()
+
+
+def _durable_catalog_records(cve_id: str) -> tuple[dict[str, Any], ...]:
+    identifier = str(cve_id or "").strip().upper()
+    root = str(aiops_home())
+    records = _ttl_cached_value(
+        _durable_catalog_cache,
+        (root, ()),
+        ttl_seconds=_DURABLE_CATALOG_CACHE_TTL_SECONDS,
+        now=time.monotonic(),
+        build=_durable_enrichment_records,
+        completion_clock=time.monotonic,
+    )
+    selected: list[dict[str, Any]] = []
+    for record in records:
+        source = str(record.get("source") or "").casefold()
+        record_identifier = str(record.get("identifier") or "").upper()
+        payload = record.get("payload")
+        direct = source in {"nvd", "epss", "kev"} and record_identifier == identifier
+        mapped = (
+            source == "msrc"
+            and isinstance(payload, Mapping)
+            and identifier
+            in {str(value).upper() for value in payload.get("cve_ids") or ()}
+        )
+        if direct or mapped:
+            selected.append(dict(record))
+    return tuple(selected)
 
 
 def _durable_enrichment_payloads(
@@ -2979,10 +3011,20 @@ def _latest_discovery(onboarding: SubscriptionOnboardingService) -> str:
 def _runtime_metadata(
     onboarding: SubscriptionOnboardingService,
     fabric_supplier: Callable[[], FabricRuntime | None],
+    *,
+    fabric_configured: bool = False,
 ) -> dict[str, Any]:
     runtime = fabric_supplier()
     last_discovery = _latest_discovery(onboarding)
     if runtime is None:
+        if fabric_configured:
+            return {
+                "ontology_version": "",
+                "freshness": "",
+                "last_discovery_run": last_discovery,
+                "last_ontology_publication": "",
+                "degraded_reason": "Fabric runtime is unavailable",
+            }
         semantic = _load_semantic_snapshot()
         return {
             "ontology_version": getattr(semantic, "knowledge_version", ""),
@@ -2991,17 +3033,17 @@ def _runtime_metadata(
             "last_ontology_publication": getattr(semantic, "freshness", ""),
         }
     health = runtime.service.ontology_health()
-    semantic = runtime.semantic_engine()
+    freshness = str(
+        health.get("timestamp")
+        or health.get("synchronized_at")
+        or health.get("published_at")
+        or ""
+    )
     return {
-        "ontology_version": semantic.knowledge_version,
-        "freshness": semantic.freshness,
+        "ontology_version": str(runtime.service.semantic_version() or ""),
+        "freshness": freshness,
         "last_discovery_run": last_discovery,
-        "last_ontology_publication": str(
-            health.get("timestamp")
-            or health.get("synchronized_at")
-            or health.get("published_at")
-            or ""
-        ),
+        "last_ontology_publication": freshness,
     }
 
 
@@ -3125,14 +3167,18 @@ def _build_provider_runtime(
         )
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
-    core_readiness_providers = {"semantic", "semantic_graph"}
+    core_readiness_providers = {"exposure_query"}
+    deferred_providers = {
+        "change",
+        "incidents",
+        "network",
+        "remediation",
+        "remediation_catalog",
+        "semantic",
+        "semantic_graph",
+        "vulnerability",
+    }
     remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
-    remediation_required = (
-        use_fabric
-        and remediation_enabled
-        and mode == "production"
-        and not bootstrap
-    )
     specs = {
         name: ProviderSpec(
             loader=loader,
@@ -3141,15 +3187,13 @@ def _build_provider_runtime(
                 and use_fabric
                 and not remediation_enabled
             ),
-            required=(
-                (name in core_readiness_providers and not bootstrap)
-                or (name == "remediation_catalog" and remediation_required)
-            ),
+            required=name in core_readiness_providers and not bootstrap,
             cache_key=(
                 (lambda provider_name=name: fabric_provider_cache_key(provider_name))
-                if use_fabric
+                if use_fabric and name != "exposure_query"
                 else None
             ),
+            scheduled=not (use_fabric and name in deferred_providers),
         )
         for name, loader in loaders.items()
     }
@@ -3186,11 +3230,13 @@ def _build_provider_runtime(
         loader=_load_inventory_service,
         configured=True,
         required=False,
+        scheduled=not use_fabric,
     )
     specs["inventory_read_port"] = ProviderSpec(
         loader=lambda: _load_inventory_read_port(),
         configured=True,
         required=False,
+        scheduled=not use_fabric,
     )
     specs["exposure_read_port"] = ProviderSpec(
         loader=_load_exposure_read_port,
@@ -3207,6 +3253,7 @@ def _build_provider_runtime(
         loader=_load_governance_snapshot,
         configured=True,
         required=False,
+        scheduled=not use_fabric,
     )
     # Patch remediation projects the same vulnerability snapshot into
     # patchable inventory and owns the guarded trigger path. It is never
@@ -3218,10 +3265,15 @@ def _build_provider_runtime(
             loader=lambda: _load_patching_service(_vulnerability_loader),
             configured=True,
             required=False,
+            scheduled=not use_fabric,
         )
     return ProviderRuntime(
         specs,
-        metadata_loader=lambda: _runtime_metadata(onboarding, fabric),
+        metadata_loader=lambda: _runtime_metadata(
+            onboarding,
+            fabric,
+            fabric_configured=use_fabric,
+        ),
         refresh_interval_seconds=int(
             os.environ.get(ENV_PROVIDER_REFRESH_SECONDS, "30")
         ),
@@ -3669,6 +3721,10 @@ def _exposure_query_authorization(
         connection_ids=tuple(
             str(connection.connection_id) for connection in connections
         ),
+        connection_subscriptions={
+            str(connection.connection_id): str(connection.subscription_id)
+            for connection in connections
+        },
         scope=scope.to_dict(),
     )
 
@@ -3733,6 +3789,11 @@ def _fabric_exposure_query_service(
 ) -> Any:
     """Compose the production Plan 13 service without a Delta fallback."""
 
+    if runtime.service.sql_reader is None:
+        raise RuntimeError("Fabric SQL Exposure reader is unavailable")
+    if not runtime.service.sql_reader.query("SELECT 1 AS probe", max_rows=1):
+        raise RuntimeError("Fabric SQL Exposure connectivity probe returned no rows")
+
     from .exposure_query import (
         ExposureCursorCodec,
         ExposureCursorKeyRing,
@@ -3752,6 +3813,7 @@ def _fabric_exposure_query_service(
                 scope,
             )
         ),
+        catalog_records_resolver=_durable_catalog_records,
     )
 
 
@@ -3986,7 +4048,7 @@ def build_context() -> ApiContext:
             cached = _hybrid_vulnerability_cache.get(cache_key)
             if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
                 return cached[1]
-            graph = providers.get("semantic_graph")
+            graph = providers.get("semantic_graph", optional=True)
             try:
                 network = hybrid_network(subscription_ids)
             except (RuntimeError, ValueError):
@@ -4360,8 +4422,8 @@ def build_context() -> ApiContext:
         vulnerability_provider=lambda: providers.get("vulnerability", optional=True),
         patching_provider=lambda: providers.get("patching", optional=True),
         change_provider=lambda: providers.get("change", optional=True),
-        governance_provider=_load_governance_snapshot,
-        governance_generation_provider=_load_governance_generation_snapshot,
+        governance_provider=lambda: providers.get("governance", optional=True),
+        governance_generation_provider=None,
         settings_store=_settings_store(),
         network_policy_store=_network_policy_store(),
         vulnerability_live_lookup=_lookup_live_cve,

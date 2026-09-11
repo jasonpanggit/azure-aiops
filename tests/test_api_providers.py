@@ -11,7 +11,14 @@ import pytest
 from fastapi import FastAPI
 
 from api.app import _start_background_refresh
-from api.providers import DEGRADED, READY, STALE, ProviderRuntime, ProviderSpec
+from api.providers import (
+    DEFERRED,
+    DEGRADED,
+    READY,
+    STALE,
+    ProviderRuntime,
+    ProviderSpec,
+)
 
 
 class SnapshotProvider:
@@ -38,6 +45,51 @@ def test_refresh_loads_provider_and_reports_version():
     assert health["readiness"] == READY
     assert health["ontology_version"] == "ontology-v2"
     assert health["providers"]["semantic"]["loaded"] is True
+
+
+def test_forced_refresh_skips_deferred_provider_io() -> None:
+    calls: list[str] = []
+
+    def load_exposure() -> SnapshotProvider:
+        calls.append("exposure-loader")
+        return SnapshotProvider(
+            version="exposure-v1",
+            freshness="2026-09-10T00:00:00Z",
+        )
+
+    def semantic_cache_key() -> tuple[str, int]:
+        calls.append("semantic-cache-key")
+        return ("semantic-generation", 7)
+
+    def load_semantic() -> SnapshotProvider:
+        calls.append("semantic-loader")
+        return SnapshotProvider(
+            version="ontology-v7",
+            freshness="2026-09-10T00:00:00Z",
+        )
+
+    runtime = ProviderRuntime(
+        {
+            "exposure_query": ProviderSpec(load_exposure),
+            "semantic": ProviderSpec(
+                load_semantic,
+                required=False,
+                cache_key=semantic_cache_key,
+                scheduled=False,
+            ),
+        },
+        clock=lambda: datetime(2026, 9, 10, 0, 30, tzinfo=UTC),
+    )
+
+    health = runtime.refresh(force=True)
+
+    assert calls == ["exposure-loader"]
+    assert health["readiness"] == READY
+    assert health["providers"]["exposure_query"]["loaded"] is True
+    assert health["providers"]["semantic"]["loaded"] is False
+    assert health["providers"]["semantic"]["state"] == DEFERRED
+    assert health["providers"]["semantic"]["last_attempt_at"] == ""
+    assert health["providers"]["semantic"]["retry"]["attempts"] == 0
 
 
 def test_failed_refresh_retains_last_good_provider():

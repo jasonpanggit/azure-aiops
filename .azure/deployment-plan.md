@@ -1,6 +1,110 @@
 # Azure Deployment Plan
 
-Status: Ready for Validation
+Status: Validated
+
+## Final Consolidated Phase 03.1 Recovery — 2026-09-08
+
+- **Source candidate:** `main` at
+  `8092ab0d25566c1b97cf560951a3e287419a6aa7`
+- **Included fixes:** MCP runtime dependencies, managed-load-balancer topology
+  semantics, lossless Exposure ontology collision merging, deterministic
+  Overview test synchronization, and bounded compliance-to-remediation review
+  handoff.
+- **Source gate:** GitHub Actions run `34240019881` completed successfully for
+  backend, frontend, and security against exact SHA
+  `8092ab0d25566c1b97cf560951a3e287419a6aa7`.
+- **Mode:** Modify existing development validation resources only.
+- **Subscription:** `ME-MngEnvMCAP686238-pangj-1`
+  (`a87a8e64-a52a-4aa8-a760-5e8919d23cd1`).
+- **Location:** `australiaeast`.
+- **Provisioning impact:** zero new resources, zero quota increase, zero RBAC
+  changes, and no configured compute increase.
+
+### Validation proof
+
+- GitHub Actions run `34240019881` passed backend, frontend, and security for
+  exact SHA `8092ab0d25566c1b97cf560951a3e287419a6aa7`.
+- Full local backend validation passed with 3,950 tests and Ruff clean; the
+  reconstructed live ontology passed at 80,691 entities / 233,212
+  relationships with zero validation errors and exact 3/3 registry round-trip.
+- `npm --prefix web run build` completed successfully, including lint and
+  TypeScript checks.
+- Terraform initialization, recursive formatting check, configuration
+  validation, state access, template-variable scan, and optional JSON variable
+  syntax checks passed.
+- Saved pre-build plan
+  `/tmp/aiops-final-8092ab0d-prebuild.tfplan` is refresh-enabled and limited to
+  the four Container Apps. It contains 0 creates, 0 updates, 0 destroys, and
+  0 replacements before recording the new image tag.
+- Source and the bounded plan contain no RBAC change. The post-build saved plan
+  must still be machine-checked for exactly four in-place Container App image
+  updates and no other action before apply.
+- 2026-09-09 bounded Delta APPEND recovery: exact source
+  `2f29bea327cf89288ce390cbff76a04fbc6985ff` passed 4,046 backend tests,
+  scoped Ruff, package sdist/wheel build, revert/reapply causality, and
+  independent review. GitHub Actions run `34349454752` could not acquire a
+  hosted runner on two attempts: all three jobs ended after two seconds with
+  zero steps, zero runner name, and no logs. This is recorded as CI
+  infrastructure unavailability, not a test result; no dependency changed.
+
+### Immutable application release
+
+Build all four repositories from a `git archive` of the exact approved source
+SHA under one new immutable tag:
+
+1. `aiops-api`
+2. `aiops-web`
+3. `mcp-server`
+4. `azure-mcp`
+
+Generate a refresh-enabled saved Terraform plan limited to:
+
+- `azurerm_container_app.api`
+- `azurerm_container_app.web`
+- `azurerm_container_app.mcp_server`
+- `azurerm_container_app.azure_mcp`
+
+The saved plan must contain exactly zero creates, zero destroys, and zero
+replacements. It must not include APIM, Container Apps Jobs, Fabric resources,
+roles, identities, capacity, Key Vault, or any other resource. Abort on drift.
+
+After apply, require all four apps to serve the new immutable image digest at
+100% healthy traffic. Verify API `/health` and `/ready`, web routes including
+the manual-only compliance handoff, MCP startup and `/health`, Azure MCP, APIM
+MCP access, and Topology warning-free managed-load-balancer behavior.
+
+### Guarded Exposure Gold initialization
+
+After the application release is healthy:
+
+1. Confirm `aiops-dev-exposure-publication` has no active execution.
+2. Snapshot the complete Job template and its prior image tag/digest.
+3. Update only the existing Job template container image to the new immutable
+  `aiops-api` tag and the execution timeout from 3,600 to 7,200 seconds.
+  Preserve 4 CPU / 8 GiB: Azure rejects 4 CPU / 16 GiB for this Consumption
+  Job, and the release image contains the tested payload-byte APPEND bound
+  that addresses the prior 8 GiB preflight OOM.
+4. Machine-diff normalized pre/post templates and require the sole semantic
+  changes to be the image and timeout. Command, arguments, memory,
+   environment, secret references, identity, registry, manual trigger,
+   zero-retry setting, and 4 CPU must remain unchanged. Use
+   `scripts/recover_aum_exposure_publication.py`; it refuses replay arguments,
+   active executions, baseline drift, and partial execution overrides.
+5. Start exactly one execution with no execution overrides.
+6. Require terminal `Succeeded`; capture sanitized evidence on failure and do
+   not retry or repair the pointer manually.
+7. Restore the prior Job template image and 3,600-second timeout after every
+  terminal outcome or interruption; require the full normalized Job
+  configuration to match its pre-run value. Retain `pre-update.json` for
+  the runner's `--restore-snapshot` path if the operator host is lost.
+8. Verify non-empty Gold facts and generation metadata, pointer schema/revision
+   with a non-empty `readable_generation_id`, Exposure overview HTTP 200, exact
+   digest-to-workload traversal, graph bounds below 100,000 entities / 250,000
+   relationships, and no unhealthy serving revision.
+
+Rollback is the prior healthy Container Apps revisions and exact restored Job
+template. Pointer-only repair, additional Job starts, Foundry promotion,
+Fabric/RBAC changes, and unrelated infrastructure are prohibited.
 
 ## Objective
 
@@ -175,6 +279,33 @@ change is in scope.
   production Fabric items remain untouched.
 
 ## Validation Proof
+
+- 2026-09-08 18:14 +08:00: Final integrated source SHA
+  `b2ba755804b8fa283adcfa39fca2bce1358c6edd` is clean, equals
+  `origin/main`, has one worktree and zero open pull requests. GitHub Actions
+  run `34214317851` passed backend full pytest/Ruff, frontend tests/lint/build,
+  and security scanning.
+- 2026-09-08 18:14 +08:00: Azure/Terraform preflight confirmed Terraform and
+  Azure CLI availability, authenticated subscription
+  `a87a8e64-a52a-4aa8-a760-5e8919d23cd1`, `terraform init`,
+  `terraform fmt -check`, `terraform validate`, state access, and template
+  variable checks. The generic bare plan reported the repository's expected
+  missing secret-backed variables; the canonical
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh plan` path resolved
+  them successfully.
+- 2026-09-08 18:14 +08:00: The unrestricted refreshed plan was rejected
+  because it contained an unrelated ACA Job replacement, Fabric role creation,
+  and Job updates. The bounded pre-build plan
+  `/tmp/aiops-final-b2ba7558-prebuild.tfplan` contains exactly **0 additions,
+  3 in-place updates, and 0 destructions**: the API and the two existing APIM
+  MCP policies. API/web/MCP/Azure MCP image targets are included in the
+  bounded scope and will be replanned after the final immutable image tag is
+  pushed.
+- 2026-09-08 18:14 +08:00: Static RBAC review confirmed all four Container
+  Apps identities retain resource-scoped `AcrPull`; the MCP identity retains
+  Key Vault Secrets User; the Azure MCP identity retains Reader and Monitoring
+  Reader on the onboarded subscription. The bounded deployment introduces no
+  RBAC changes.
 
 - 2026-09-08: Final Network summary semantics passed 159 backend tests, 199 web
   tests, 3 Chromium scenarios, TypeScript, ESLint, changed-path Ruff, Next.js
@@ -492,6 +623,28 @@ change is in scope.
   web `/` and `/api/config` returned HTTP 200.
 
 ## All validation checks pass
+
+### Bronze/Silver patch release proof — 2026-09-11
+
+- Affected backend suites passed, including Fabric SQL, cursor, temporal
+  projection, runtime, Delta APPEND, Fabric sync, ontology round-trip, and ARG
+  normalization coverage.
+- Ruff and `git diff --check` passed for every modified Python source/test file.
+- Patch Priorities and shared table-filter tests passed (25 focused tests);
+  TypeScript checking and the production Next.js build passed.
+- Live read-only Fabric SQL proved 2 Bronze assessments, 5 Bronze missing-patch
+  details, 5 Bronze installations, and 10 Silver findings (5 missing and 5
+  installed) in one source generation.
+- Official Terraform preflight passed installation, authentication, init,
+  formatting, validation, state, and template checks. Its generic plan lacked
+  repository-secret variables, so the repository deployment wrapper was used
+  for the authoritative saved plan.
+- `/tmp/aiops-bronze-silver-prebuild.tfplan` is refresh-enabled and contains
+  exactly four in-place updates: `azurerm_container_app.api`, `.web`,
+  `.mcp_server`, and `.azure_mcp`; zero creates, deletes, replacements, or
+  unrelated resource changes.
+- RBAC is unchanged. The release does not create, resize, replace, or modify
+  Fabric, APIM, identities, roles, jobs, capacity, networking, or secrets.
 
 - Terraform validation recipe:
   - Terraform and Azure CLI are installed.

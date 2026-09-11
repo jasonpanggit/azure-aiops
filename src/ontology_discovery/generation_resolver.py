@@ -94,6 +94,7 @@ CONSUMER_INVENTORY: tuple[ConsumerInventoryEntry, ...] = (
     _entry("api-graph-router", "api", "src/api/routers/graph.py", "graph traversal", "API graph", "request semantic provider", "indirect"),
     _entry("api-network-router", "api", "src/api/routers/network.py", "network projection", "API network", "request network provider", "indirect"),
     _entry("fabric-data-agent", "fabric", "src/fabric/data_agent_manager.py", "build_data_agent_definition", "Fabric Data Agent", "versioned logical table aliases", "compatibility-alias"),
+    _entry("fabric-gold-grounding-agent", "fabric", "src/fabric/gold_grounding_definition.py", "build_gold_grounding_definition", "Fabric Gold grounding", "delegates ontology selection to the Data Agent definition builder", "indirect"),
     _entry("fabric-semantic-model", "fabric", "src/fabric/semantic_model_manager.py", "build_semantic_model_definition", "Fabric semantic model", "versioned logical table aliases", "compatibility-alias"),
     _entry("fabric-dataset-mapper", "fabric", "src/fabric/dataset_mapper.py", "InventoryDatasetMapper.load", "Fabric mapping", "resolver-selected generation directory", "resolver"),
     _entry("fabric-sync-reader", "fabric", "src/fabric/sync_service.py", "semantic_snapshot and ontology_query", "Fabric runtime", "compatibility alias over selected generation", "compatibility-alias"),

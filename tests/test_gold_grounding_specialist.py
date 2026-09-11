@@ -15,7 +15,7 @@ from operations.gold_grounding_specialist import answer_with_gold_grounding
 class _Scope:
     fabric_workspace_id: str = "workspace-id"
     gold_grounding_agent_id: str = "agent-id"
-    gold_grounding_tool_name: str = "DataAgent_gold_grounding_agent"
+    gold_grounding_tool_name: str = "DataAgent_AI_Ops_Data_Agent"
     fabric_delegated_token: str = "delegated-token"
     evidence_refs: set[str] = frozenset({"ontology"})
     resource_ids: set[str] = frozenset(

@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { vulnerabilityApi } from "@/lib/services";
-import type { Envelope, ExposureCollection } from "@/lib/types";
+import type {
+  Envelope,
+  ExposureCollection,
+  ExposureCursorPagination,
+  ExposureExternalCatalog,
+  ExposureExternalCatalogItem,
+  Pagination,
+} from "@/lib/types";
 
 const GENERATION = "exposure-generation-0001";
 
-function captureFetch(body: Envelope<ExposureCollection>) {
+function captureFetch<T, TPagination = Pagination>(body: Envelope<T, TPagination>) {
   const spy = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     if (String(input) === "/api/dev-token") {
       return {
@@ -96,5 +103,41 @@ describe("vulnerabilityApi authoritative Exposure envelope", () => {
     expect(url.searchParams.get("q")).toBe("CVE-2026");
     expect(url.searchParams.get("reachable_only")).toBe("true");
     expect(url.searchParams.has("read_model_generation_id")).toBe(false);
+  });
+
+  it("requests external catalog metadata at the pinned generation", async () => {
+    const catalogEnvelope: Envelope<
+      ExposureExternalCatalog<ExposureExternalCatalogItem>,
+      ExposureCursorPagination
+    > = {
+      data: {
+        contract_version: "1.0.0",
+        catalog_scope: "external_public_metadata",
+        environment_membership_included: false,
+        generation: GENERATION,
+        item: { cve_id: "CVE-2026-1001", sources: {} },
+      },
+      evidence: [],
+      scope: { subscription: ["sub-a"] },
+      pagination: { limit: 0, total: 0, next_cursor: null },
+    };
+    const fetchSpy = captureFetch(catalogEnvelope);
+
+    await vulnerabilityApi.exposureExternalCatalog(
+      "CVE-2026-1001",
+      { subscription: ["sub-a"] },
+      { generation: GENERATION },
+    );
+
+    const apiCall = fetchSpy.mock.calls.find(([input]) =>
+      String(input).includes("/api/v1/vulnerabilities/exposure/external-catalog/"),
+    );
+    expect(apiCall).toBeDefined();
+    const url = new URL(String(apiCall?.[0]));
+    expect(url.pathname).toBe(
+      "/api/v1/vulnerabilities/exposure/external-catalog/CVE-2026-1001",
+    );
+    expect(url.searchParams.getAll("subscription")).toEqual(["sub-a"]);
+    expect(url.searchParams.get("generation")).toBe(GENERATION);
   });
 });
