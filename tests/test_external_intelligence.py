@@ -12,6 +12,25 @@ from intelligence.vulnerability.enrichment_worker import (
     EnrichmentTarget,
     EnrichmentWorker,
 )
+
+
+@pytest.mark.parametrize(
+    ("source_at", "expected"),
+    [
+        ("2026-09-11", "2026-09-11T00:00:00Z"),
+        ("2026-09-11T01:02:03", "2026-09-11T01:02:03Z"),
+        ("2026-09-11T01:02:03+02:00", "2026-09-10T23:02:03Z"),
+    ],
+)
+def test_provider_source_timestamps_are_normalized_to_utc(
+    source_at: str,
+    expected: str,
+) -> None:
+    from intelligence.vulnerability.enrichment_worker import (
+        _normalized_source_at,
+    )
+
+    assert _normalized_source_at(source_at) == expected
 from intelligence.vulnerability.models import CVE, SecurityUpdate
 from storage.onelake_documents import OneLakeDocumentStore
 
