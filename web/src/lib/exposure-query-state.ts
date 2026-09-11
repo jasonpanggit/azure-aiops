@@ -55,6 +55,7 @@ const API_FILTER_KEYS = [
   "completeness",
   "active",
   "sla_overdue",
+  "weakness_id",
 ] as const;
 const MAX_CURSOR_LENGTH = 16_384;
 const MAX_QUERY_VALUE_LENGTH = 256;
@@ -224,9 +225,11 @@ function filterState(params: URLSearchParams): ExposureFilterState {
   for (const field of FREEFORM_FILTERS) {
     const value = safeString(params.get(field), {
       pattern: /^[a-zA-Z0-9._:-]+$/,
-      lower: true,
+      lower: field !== "weakness_id",
     });
-    if (value) filters[field] = value;
+    if (value) {
+      filters[field] = field === "weakness_id" ? value.toUpperCase() : value;
+    }
   }
   const active = booleanValue(params.get("active"));
   if (active !== undefined) filters.active = active;

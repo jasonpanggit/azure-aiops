@@ -1451,15 +1451,22 @@ export const vulnerabilityApi = {
   exposureExternalCatalog: <TItem = Record<string, unknown>>(
     weaknessId: string,
     scope: ScopeSelection = {},
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; generation?: string } = {},
   ) =>
-    apiRequest<ExposureExternalCatalog<TItem>>(
-      `/vulnerabilities/exposure/external-catalog/${encodeURIComponent(weaknessId)}`,
-      {
-        query: scopeToSearchParams(scope),
-        signal: options.signal,
-      },
-    ),
+    {
+      const query = scopeToSearchParams(scope);
+      if (options.generation) query.set("generation", options.generation);
+      return apiRequest<
+        ExposureExternalCatalog<TItem>,
+        import("./types").ExposureCursorPagination
+      >(
+        `/vulnerabilities/exposure/external-catalog/${encodeURIComponent(weaknessId)}`,
+        {
+          query,
+          signal: options.signal,
+        },
+      );
+    },
   summary: (scope: ScopeSelection = {}) =>
     apiRequest<VulnerabilitySummary>("/vulnerabilities/summary", { query: scopeToSearchParams(scope) }),
   exposures: (scope: ScopeSelection = {}, filters?: { q?: string; reachableOnly?: boolean }) => {

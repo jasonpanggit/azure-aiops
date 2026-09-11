@@ -33,7 +33,9 @@ from operations.exposure_metrics import (
 )
 
 EXPOSURE_FACTS_TABLE = "gold_exposure_facts"
+EXPOSURE_EVIDENCE_TABLE = "gold_exposure_evidence"
 MAX_EXPOSURE_PAGE_SIZE = 100
+MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS = 64
 MAX_EXPOSURE_FILTER_VALUES = 50
 MAX_EXPOSURE_FACETS = 8
 MAX_FACET_ROWS = 1_000
@@ -42,6 +44,53 @@ CURSOR_TTL_SECONDS = 15 * 60
 CURSOR_KEY_OVERLAP_SECONDS = 30 * 60
 CURSOR_VERSION = 1
 MAX_CURSOR_BYTES = 8_192
+
+_CATALOG_PAYLOAD_FIELDS = {
+    "nvd": frozenset(
+        {
+            "cve_id",
+            "id",
+            "title",
+            "description",
+            "severity",
+            "cvss",
+            "associated_kbs",
+            "exploit_references",
+        }
+    ),
+    "epss": frozenset({"cve", "epss_score", "epss_percentile"}),
+    "kev": frozenset(
+        {"kev_date_added", "kev_due_date", "kev_ransomware_use"}
+    ),
+    "msrc": frozenset(
+        {
+            "update_id",
+            "kb_id",
+            "title",
+            "product_ids",
+            "cve_ids",
+            "published_at",
+            "classification",
+            "severity",
+        }
+    ),
+}
+_CATALOG_FORBIDDEN_KEYS = frozenset(
+    {
+        "target_id",
+        "exposure_id",
+        "fact_id",
+        "scope_key",
+        "tenant_id",
+        "subscription_id",
+        "connection_id",
+        "environment",
+        "affected_servers",
+        "affected_applications",
+        "affected_business_services",
+        "findings",
+    }
+)
 
 _PAGE_COLUMNS = (
     "exposure_id",
@@ -120,6 +169,7 @@ _SUPPORTED_SCOPE_DIMENSIONS = frozenset(
     {"subscription", "subscription_connection"}
 )
 _CURSOR_KID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_CVE_IDENTIFIER = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 _CURSOR_FIELDS = frozenset(
     {
         "v",
@@ -861,6 +911,189 @@ class ExposureQueryService:
             freshness=freshness,
             next_cursor=next_cursor,
         )
+
+    def catalog_item(
+        self,
+        authorization: ExposureAuthorization,
+        *,
+        generation_id: str | None,
+        weakness_id: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        if self._reader is None:
+            raise ExposureQueryUnavailableError(
+                "Fabric SQL Exposure reader is unavailable; Delta fallback is disabled"
+            )
+        identifier = _required_text(weakness_id, "weakness_id").upper()
+        if not _CVE_IDENTIFIER.fullmatch(identifier):
+            raise ValueError("External catalog lookup requires a canonical CVE identifier")
+        current = _aware_utc(now or datetime.now(UTC), "now")
+        window = (
+            self._generation_window()
+            if callable(self._generation_window)
+            else self._generation_window
+        )
+        if window is not None and not isinstance(
+            window,
+            ExposureGenerationWindow,
+        ):
+            raise TypeError(
+                "Exposure generation_window must return ExposureGenerationWindow"
+            )
+        selected_generation = generation_id or (
+            window.active_generation if window is not None else None
+        )
+        generation = _required_text(
+            selected_generation,
+            "read_model_generation_id",
+        )
+        if window is not None:
+            generation = window.require_readable(generation, now=current)
+
+        schema = getattr(
+            getattr(self._reader, "endpoint", None),
+            "schema",
+            "dbo",
+        )
+        facts = f"{_identifier(schema)}.{_identifier(EXPOSURE_FACTS_TABLE)}"
+        evidence = f"{_identifier(schema)}.{_identifier(EXPOSURE_EVIDENCE_TABLE)}"
+        predicates = ["[tenant_id] = ?"]
+        parameters: list[Any] = [authorization.tenant_id]
+        _append_in_predicate(
+            predicates,
+            parameters,
+            "[connection_id]",
+            authorization.connection_ids,
+        )
+        subscriptions = tuple(authorization.scope.get("subscription", ()))
+        if subscriptions:
+            _append_in_predicate(
+                predicates,
+                parameters,
+                "[subscription_id]",
+                subscriptions,
+            )
+        if authorization.scope_keys:
+            _append_in_predicate(
+                predicates,
+                parameters,
+                "[scope_key]",
+                authorization.scope_keys,
+            )
+        predicates.append("[read_model_generation_id] = ?")
+        parameters.append(generation)
+        parameters.extend((identifier, f'%"{identifier}"%'))
+        public_columns = (
+            "source",
+            "identifier",
+            "status",
+            "stale",
+            "lkg_available",
+            "safe_error_code",
+            "attempted_at",
+            "succeeded_at",
+            "source_at",
+            "enriched_at",
+            "payload_json",
+        )
+        inner_projection = ", ".join(
+            f"[e].{_identifier(column)} AS {_identifier(column)}"
+            for column in public_columns
+        )
+        outer_projection = ", ".join(_identifier(column) for column in public_columns)
+        limit = MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1
+        sql = (
+            "WITH [authorized_facts] AS ("
+            f"SELECT DISTINCT [fact_id] FROM {facts} WHERE "
+            f"{' AND '.join(predicates)}"
+            "), [ranked_evidence] AS ("
+            f"SELECT {inner_projection}, "
+            "ROW_NUMBER() OVER (PARTITION BY [e].[source], [e].[identifier] "
+            "ORDER BY [e].[enriched_at] DESC, [e].[evidence_id] ASC) "
+            "AS [evidence_rank] "
+            f"FROM {evidence} AS [e] "
+            "INNER JOIN [authorized_facts] AS [a] ON [a].[fact_id] = [e].[fact_id] "
+            "WHERE [e].[identifier] = ? OR "
+            "([e].[source] = 'msrc' AND [e].[payload_json] LIKE ?)"
+            ") "
+            f"SELECT TOP ({limit}) {outer_projection} FROM [ranked_evidence] "
+            "WHERE [evidence_rank] = 1 "
+            "ORDER BY [source] ASC, [identifier] ASC, [enriched_at] DESC"
+        )
+        rows = self._reader.query(
+            sql,
+            tuple(parameters),
+            max_rows=limit,
+        )
+        if len(rows) > MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS:
+            raise ExposureQueryUnavailableError(
+                "External vulnerability catalog evidence exceeded its safe bound"
+            )
+        sources: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            source = str(row.get("source") or "").strip().casefold()
+            source_identifier = str(row.get("identifier") or "")
+            key = f"{source}:{source_identifier}" if source == "msrc" else source
+            if not source or key in sources:
+                continue
+            payload = _catalog_payload(source, row.get("payload_json"))
+            sources[key] = {
+                "source": source,
+                "identifier": source_identifier,
+                "status": str(row.get("status") or "unknown"),
+                "stale": bool(row.get("stale")),
+                "has_last_known_good": bool(row.get("lkg_available")),
+                "safe_error_code": str(row.get("safe_error_code") or ""),
+                "attempted_at": str(row.get("attempted_at") or ""),
+                "succeeded_at": str(row.get("succeeded_at") or ""),
+                "source_at": str(row.get("source_at") or ""),
+                "enriched_at": str(row.get("enriched_at") or ""),
+                "payload": payload,
+            }
+        if not sources:
+            return None
+        return {
+            "contract_version": "1.0.0",
+            "catalog_scope": "external_public_metadata",
+            "environment_membership_included": False,
+            "generation": generation,
+            "item": {
+                "cve_id": identifier,
+                "sources": sources,
+            },
+        }
+
+
+def _catalog_payload(source: str, value: Any) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    allowed = _CATALOG_PAYLOAD_FIELDS.get(source, frozenset())
+    payload = {
+        str(key): _catalog_public_value(item)
+        for key, item in parsed.items()
+        if str(key) in allowed and str(key).casefold() not in _CATALOG_FORBIDDEN_KEYS
+    }
+    return payload or None
+
+
+def _catalog_public_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _catalog_public_value(item)
+            for key, item in value.items()
+            if str(key).casefold() not in _CATALOG_FORBIDDEN_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_catalog_public_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _compile_queries(

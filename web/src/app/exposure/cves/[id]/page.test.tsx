@@ -2,7 +2,13 @@ import { FluentProvider, webLightTheme } from "@fluentui/react-components";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/lib/types";
+import {
+  ApiError,
+  type Envelope,
+  type ExposureCursorPagination,
+  type ExposureExternalCatalog,
+  type ExposureExternalCatalogItem,
+} from "@/lib/types";
 
 const navigation = vi.hoisted(() => ({
   params: new URLSearchParams(
@@ -18,6 +24,7 @@ const api = vi.hoisted(() => ({
   attackPath: vi.fn(),
   exposureOverview: vi.fn(),
   exposureItems: vi.fn(),
+  exposureExternalCatalog: vi.fn(),
   acceptRisk: vi.fn(),
 }));
 
@@ -44,7 +51,16 @@ vi.mock("@/lib/services", () => ({
 }));
 
 vi.mock("@/components/ui/CopilotDrawer", () => ({
-  CopilotDrawer: () => null,
+  CopilotDrawer: ({
+    open,
+    contextLabel,
+  }: {
+    open: boolean;
+    contextLabel: string;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label={`Copilot for ${contextLabel}`} />
+    ) : null,
 }));
 
 vi.mock("@/components/ui/CopilotDrawerButton", () => ({
@@ -176,6 +192,96 @@ function cveEnvelope(epssStatus = "succeeded") {
   };
 }
 
+function externalCatalogEnvelope(
+  epssStatus = "succeeded",
+  kevPresent = true,
+): Envelope<
+  ExposureExternalCatalog<ExposureExternalCatalogItem>,
+  ExposureCursorPagination
+> {
+  const detail = cveEnvelope().data.cve;
+  return {
+    data: {
+      contract_version: "1.0.0",
+      catalog_scope: "external_public_metadata",
+      environment_membership_included: false,
+      generation: "generation-25",
+      item: {
+        cve_id: detail.cve_id,
+        sources: {
+          nvd: {
+            source: "nvd",
+            identifier: detail.cve_id,
+            status: "succeeded",
+            stale: false,
+            has_last_known_good: true,
+            safe_error_code: "",
+            attempted_at: "2026-09-06T08:00:00Z",
+            succeeded_at: "2026-09-06T08:00:00Z",
+            source_at: "2026-09-06T07:50:00Z",
+            enriched_at: "2026-09-06T08:00:00Z",
+            payload: detail,
+          },
+          epss: {
+            source: "epss",
+            identifier: detail.cve_id,
+            status: epssStatus,
+            stale: false,
+            has_last_known_good: epssStatus === "succeeded",
+            safe_error_code: epssStatus === "succeeded" ? "" : "provider_unavailable",
+            attempted_at: "2026-09-06T08:00:00Z",
+            succeeded_at: "2026-09-06T08:00:00Z",
+            source_at: "2026-09-06T07:55:00Z",
+            enriched_at: "2026-09-06T08:00:00Z",
+            payload: epssStatus === "succeeded"
+              ? {
+                  epss_score: detail.epss_score,
+                  epss_percentile: detail.epss_percentile,
+                }
+              : null,
+          },
+          kev: {
+            source: "kev",
+            identifier: detail.cve_id,
+            status: "succeeded",
+            stale: false,
+            has_last_known_good: true,
+            safe_error_code: "",
+            attempted_at: "2026-09-06T08:00:00Z",
+            succeeded_at: "2026-09-06T08:00:00Z",
+            source_at: "2026-09-06T07:55:00Z",
+            enriched_at: "2026-09-06T08:00:00Z",
+            payload: kevPresent
+              ? {
+                  kev_date_added: detail.kev_date_added,
+                  kev_due_date: detail.kev_due_date,
+                  kev_ransomware_use: detail.kev_ransomware_use,
+                }
+              : {},
+          },
+          "msrc:KB600001": {
+            source: "msrc",
+            identifier: "KB600001",
+            status: "succeeded",
+            stale: false,
+            has_last_known_good: true,
+            safe_error_code: "",
+            attempted_at: "2026-09-06T08:00:00Z",
+            succeeded_at: "2026-09-06T08:00:00Z",
+            source_at: "2026-09-06T07:45:00Z",
+            enriched_at: "2026-09-06T08:00:00Z",
+            payload: { kb_id: "KB600001", cve_ids: [detail.cve_id] },
+          },
+        },
+      },
+    },
+    evidence: [],
+    warnings: [],
+    scope: { subscription: ["sub-1"] },
+    knowledge_version: "generation-25",
+  };
+}
+
 function findingsEnvelope() {
   const common = contract();
   return {
@@ -254,6 +360,7 @@ describe("CVE detail", () => {
     api.exposureOverview.mockResolvedValue(overviewEnvelope());
     api.exposureItems.mockResolvedValue(findingsEnvelope());
     api.cve.mockResolvedValue(cveEnvelope());
+    api.exposureExternalCatalog.mockResolvedValue(externalCatalogEnvelope());
     api.attackPath.mockResolvedValue(attackEnvelope());
     api.acceptRisk.mockResolvedValue({
       data: {
@@ -268,6 +375,93 @@ describe("CVE detail", () => {
     });
   });
 
+  it("uses one SQL catalog read and skips server attack paths for container images", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&target_kind=container_image&source_family=defender_image&generation=generation-25",
+    );
+    const findings = findingsEnvelope();
+    findings.data.items[0].target_kind = "container_image";
+    api.exposureItems.mockResolvedValue(findings);
+
+    renderPage();
+
+    expect(await screen.findByText("9.8/10")).toBeInTheDocument();
+    expect(api.exposureExternalCatalog).toHaveBeenCalledTimes(1);
+    expect(api.exposureExternalCatalog).toHaveBeenCalledWith(
+      "CVE-2026-0001",
+      authorizedScope,
+      expect.objectContaining({
+        generation: "generation-25",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(api.cve).not.toHaveBeenCalled();
+    expect(api.attackPath).not.toHaveBeenCalled();
+    const attack = screen.getByRole("region", { name: "Attack path section" });
+    expect(within(attack).getByText("Not applicable")).toBeInTheDocument();
+    expect(
+      within(attack).getByText(
+        "Attack paths are not applicable to container image targets.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(attack).queryByText("Attack path is unavailable")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/);
+    expect(screen.getByText("Due 2026-08-22")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
+  });
+
+  it("opens Copilot when catalog metadata is unavailable", async () => {
+    api.exposureExternalCatalog.mockRejectedValue(
+      new Error("Catalog metadata unavailable"),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Ask Copilot about CVE-2026-0001",
+      }),
+    );
+
+    expect(
+      screen.getByRole("dialog", { name: "Copilot for CVE-2026-0001" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps missing EPSS unknown and aggregates all KB source failures", async () => {
+    const catalog = externalCatalogEnvelope();
+    catalog.data.item.sources.epss.payload = {};
+    const nvdPayload = catalog.data.item.sources.nvd.payload;
+    if (nvdPayload) {
+      nvdPayload.cvss = {
+        version: "",
+        base_score: 0,
+        vector: "",
+        severity: "Unknown",
+      };
+    }
+    catalog.data.item.sources["msrc:KB600002"] = {
+      ...catalog.data.item.sources["msrc:KB600001"],
+      identifier: "KB600002",
+      status: "failed",
+      has_last_known_good: false,
+      safe_error_code: "provider_unavailable",
+      payload: { kb_id: "KB600002", cve_ids: ["CVE-2026-0001"] },
+    };
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+
+    renderPage();
+
+    expect(
+      await screen.findByText("No EPSS scores reported by EPSS"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
+    const nvd = screen.getByRole("region", { name: "NVD and CVSS section" });
+    expect(within(nvd).getByText("—", { selector: ".large-value" })).toBeInTheDocument();
+    expect(within(nvd).queryByText("0.0/10")).not.toBeInTheDocument();
+    expect(screen.getByText("MSRC KB mapping is unavailable")).toBeInTheDocument();
+  });
+
   it("renders all six sections with conservative completeness and unknown-safe values", async () => {
     renderPage();
 
@@ -280,10 +474,13 @@ describe("CVE detail", () => {
     expect(screen.getAllByText("Defender West connection unavailable").length).toBeGreaterThanOrEqual(6);
     expect(screen.getByText("9.8/10")).toBeInTheDocument();
     expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/);
+    expect(screen.getByLabelText("Business services loaded value")).toHaveTextContent(
+      "1 service",
+    );
   });
 
   it("keeps scoped core and healthy siblings usable when EPSS is unavailable", async () => {
-    api.cve.mockResolvedValue(cveEnvelope("failed"));
+    api.exposureExternalCatalog.mockResolvedValue(externalCatalogEnvelope("failed"));
     renderPage();
 
     expect((await screen.findAllByText("server-1")).length).toBeGreaterThan(0);
@@ -297,10 +494,7 @@ describe("CVE detail", () => {
     const attackPending = deferred<ReturnType<typeof attackEnvelope>>();
     api.attackPath.mockImplementationOnce(() => attackPending.promise);
     api.exposureOverview.mockResolvedValueOnce(overviewEnvelope("partial"));
-    const cveWithoutKev = cveEnvelope();
-    cveWithoutKev.data.cve.is_known_exploited = false;
-    cveWithoutKev.data.cve.kev_due_date = "";
-    api.cve.mockResolvedValue(cveWithoutKev);
+    api.exposureExternalCatalog.mockResolvedValue(externalCatalogEnvelope("succeeded", false));
     renderPage();
 
     expect(await screen.findByText("Loading Attack path")).toBeInTheDocument();
@@ -383,21 +577,21 @@ describe("CVE detail", () => {
   });
 
   it("keeps local retry focus when a failed section recovers", async () => {
-    api.cve.mockResolvedValue(cveEnvelope("failed"));
+    api.exposureExternalCatalog.mockResolvedValue(externalCatalogEnvelope("failed"));
     const user = userEvent.setup();
     renderPage();
 
     const epss = await screen.findByRole("region", { name: "EPSS section" });
     const retry = within(epss).getByRole("button", { name: "Retry EPSS" });
     retry.focus();
-    const recovery = deferred<ReturnType<typeof cveEnvelope>>();
-    api.cve.mockImplementationOnce(() => recovery.promise);
+    const recovery = deferred<ReturnType<typeof externalCatalogEnvelope>>();
+    api.exposureExternalCatalog.mockImplementationOnce(() => recovery.promise);
     await user.click(retry);
     await waitFor(() => {
       expect(document.activeElement).toHaveAccessibleName("Retry EPSS");
       expect(document.activeElement).toHaveAttribute("aria-busy", "true");
     });
-    recovery.resolve(cveEnvelope());
+    recovery.resolve(externalCatalogEnvelope());
     await waitFor(() =>
       expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/),
     );

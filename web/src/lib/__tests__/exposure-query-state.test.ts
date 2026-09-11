@@ -255,6 +255,19 @@ describe("Exposure query state", () => {
     );
   });
 
+  it("forwards a weakness identifier to the bounded API", () => {
+    const state = parseExposureQueryState(
+      new URLSearchParams(
+        `weakness_id=CVE-2026-0001&generation=${scenario.read_model_generation_id}`,
+      ),
+      { authorizedScope: AUTHORIZED_SCOPE },
+    );
+
+    expect(toExposureApiSearchParams(state).get("weakness_id")).toBe(
+      "CVE-2026-0001",
+    );
+  });
+
   it("labels Overview as the parent of Overview-origin details", async () => {
     const { exposureDetailParentLabel } = await import(
       "@/lib/exposure-query-state"

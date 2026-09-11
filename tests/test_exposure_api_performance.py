@@ -17,6 +17,7 @@ from api.exposure_query import (
     MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS,
     ExposureAuthorization,
     ExposureCursorError,
+    ExposureFilter,
     ExposureQuery,
     ExposureQueryPage,
     ExposureQueryService,
@@ -115,6 +116,7 @@ class ApiExposureService:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.calls: list[dict[str, Any]] = []
+        self.catalog_calls: list[dict[str, Any]] = []
 
     def authorization_for(
         self,
@@ -165,6 +167,20 @@ class ApiExposureService:
             },
         )
 
+    def catalog_item(
+        self,
+        authorization: ExposureAuthorization,
+        **values: Any,
+    ) -> dict[str, Any]:
+        self.catalog_calls.append({"authorization": authorization, **values})
+        return {
+            "contract_version": "1.0.0",
+            "catalog_scope": "external_public_metadata",
+            "environment_membership_included": False,
+            "generation": "generation-100k",
+            "item": {"cve_id": "CVE-2026-0001", "sources": {}},
+        }
+
 
 @pytest.fixture
 def exposure_api(tmp_path: Path) -> tuple[TestClient, ApiExposureService]:
@@ -207,6 +223,7 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
             "subscription": "subscription-scale",
             "generation": "generation-100k",
             "severity": "critical",
+            "weakness_id": "CVE-2026-0001",
             "facet": ["severity", "target_kind"],
             "page_size": 25,
         },
@@ -256,7 +273,32 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
     }
     assert body["evidence"][0]["source_engine"] == "fabric_sql"
     assert service.calls[0]["query"].facets == ("severity", "target_kind")
+    assert service.calls[0]["query"].filters == (
+        ExposureFilter("severity", "eq", "critical"),
+        ExposureFilter("weakness_id", "eq", "CVE-2026-0001"),
+    )
     assert service.calls[0]["generation_id"] == "generation-100k"
+
+
+def test_external_catalog_uses_authorized_generation_bound_query_service(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/external-catalog/CVE-2026-0001",
+        params={
+            "subscription": "subscription-scale",
+            "generation": "generation-100k",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert service.catalog_calls[0]["weakness_id"] == "CVE-2026-0001"
+    assert service.catalog_calls[0]["generation_id"] == "generation-100k"
+    data = response.json()["data"]
+    assert data["catalog_scope"] == "external_public_metadata"
+    assert data["environment_membership_included"] is False
 
 
 @pytest.mark.parametrize(

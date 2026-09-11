@@ -8,6 +8,7 @@ from typing import Any, Self
 import pytest
 
 from api.exposure_query import (
+    MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS,
     ExposureAuthorization,
     ExposureFilter,
     ExposureQuery,
@@ -125,6 +126,109 @@ def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
     assert reader.calls[0]["max_rows"] == 1
     assert reader.calls[1]["max_rows"] is not None
     assert reader.calls[2]["max_rows"] == 26
+
+
+class CatalogReader(RecordingReader):
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "sql": sql,
+                "parameters": tuple(parameters),
+                "max_rows": max_rows,
+            }
+        )
+        return [
+            {
+                "source": "nvd",
+                "identifier": "CVE-2026-0001",
+                "status": "succeeded",
+                "stale": False,
+                "lkg_available": True,
+                "safe_error_code": "",
+                "attempted_at": "2026-09-10T00:00:00Z",
+                "succeeded_at": "2026-09-10T00:00:00Z",
+                "source_at": "2026-09-09T00:00:00Z",
+                "enriched_at": "2026-09-10T00:00:00Z",
+                "payload_json": (
+                    '{"cve_id":"CVE-2026-0001",'
+                    '"description":"Safe NVD detail",'
+                    '"target_id":"secret-target",'
+                    '"cvss":{"base_score":9.8,"scope_key":"secret-scope"}}'
+                ),
+            },
+            {
+                "source": "epss",
+                "identifier": "CVE-2026-0001",
+                "status": "failed",
+                "stale": True,
+                "lkg_available": True,
+                "safe_error_code": "provider_unavailable",
+                "attempted_at": "2026-09-10T00:00:00Z",
+                "succeeded_at": "2026-09-09T00:00:00Z",
+                "source_at": "2026-09-09T00:00:00Z",
+                "enriched_at": "2026-09-09T00:00:00Z",
+                "payload_json": '{"epss_score":0.73,"epss_percentile":0.92}',
+            },
+        ]
+
+
+def test_external_catalog_is_authorized_generation_pinned_and_bounded() -> None:
+    reader = CatalogReader()
+    service = ExposureQueryService(reader)
+
+    result = service.catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert len(reader.calls) == 1
+    call = reader.calls[0]
+    sql = call["sql"]
+    assert "[gold_exposure_facts]" in sql
+    assert "[gold_exposure_evidence]" in sql
+    assert f"TOP ({MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1})" in sql
+    assert "ROW_NUMBER() OVER (PARTITION BY [e].[source], [e].[identifier]" in sql
+    assert "WHERE [evidence_rank] = 1" in sql
+    assert "SELECT *" not in sql.upper()
+    assert call["max_rows"] == MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS + 1
+    assert call["parameters"] == (
+        "tenant-authorized",
+        "connection-a",
+        "connection-b",
+        "subscription-a",
+        "subscription-b",
+        "generation-17",
+        "CVE-2026-0001",
+        '%"CVE-2026-0001"%',
+    )
+    assert all(str(value) not in sql for value in call["parameters"])
+    assert result["generation"] == "generation-17"
+    assert result["item"]["cve_id"] == "CVE-2026-0001"
+    assert result["item"]["sources"]["nvd"]["payload"]["description"] == (
+        "Safe NVD detail"
+    )
+    assert result["item"]["sources"]["nvd"]["payload"]["cvss"] == {
+        "base_score": 9.8
+    }
+    assert result["item"]["sources"]["epss"]["has_last_known_good"] is True
+    serialized = str(result)
+    for forbidden in (
+        "target_id",
+        "exposure_id",
+        "fact_id",
+        "scope_key",
+        "tenant_id",
+        "subscription_id",
+        "connection_id",
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.parametrize(

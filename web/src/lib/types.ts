@@ -745,7 +745,27 @@ export interface ExposureExternalCatalog<TItem = Record<string, unknown>> {
   contract_version: string;
   catalog_scope: "external_public_metadata";
   environment_membership_included: false;
+  generation: string;
   item: TItem;
+}
+
+export interface ExposureExternalCatalogSource {
+  source: "nvd" | "epss" | "kev" | "msrc" | string;
+  identifier: string;
+  status: string;
+  stale: boolean;
+  has_last_known_good: boolean;
+  safe_error_code: string;
+  attempted_at: string;
+  succeeded_at: string;
+  source_at: string;
+  enriched_at: string;
+  payload: Record<string, unknown> | null;
+}
+
+export interface ExposureExternalCatalogItem {
+  cve_id: string;
+  sources: Record<string, ExposureExternalCatalogSource>;
 }
 
 export type ExposureEnvelope<T> = Envelope<T, ExposureCursorPagination>;
@@ -1221,10 +1241,10 @@ export interface CveDetail {
     title: string;
     description: string;
     severity: string;
-    cvss: { version: string; base_score: number; vector: string; severity: string };
+    cvss: { version: string; base_score: number | null; vector: string; severity: string };
     associated_kbs: string[];
-    epss_score: number;
-    epss_percentile: number;
+    epss_score: number | null;
+    epss_percentile: number | null;
     is_known_exploited: boolean;
     kev_date_added: string;
     kev_due_date: string;
