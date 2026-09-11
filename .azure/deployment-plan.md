@@ -80,17 +80,25 @@ After the application release is healthy:
 1. Confirm `aiops-dev-exposure-publication` has no active execution.
 2. Snapshot the complete Job template and its prior image tag/digest.
 3. Update only the existing Job template container image to the new immutable
-   `aiops-api` tag and the execution timeout from 3,600 to 7,200 seconds.
+   `aiops-api` tag, the execution timeout from 3,600 to 7,200 seconds, and
+   memory from 8 GiB to 16 GiB. Keep CPU at 4. The prior fresh 8 GiB execution
+   OOMed in high-payload APPEND preflight; the byte-bound fix is covered by
+   focused tests but has no production-scale 8 GiB proof, while 16 GiB is the
+   only sizing with a succeeded publication. The succeeded run was a replay,
+   so it does not replace the required fresh combined activation.
 4. Machine-diff normalized pre/post templates and require the sole semantic
-   changes to be the image and timeout. Command, arguments, environment, secret
-   references, identity, registry, manual trigger, zero-retry setting, and
-   4 CPU / 8 GiB resources must remain unchanged.
+   changes to be the image, timeout, and memory. Command, arguments,
+   environment, secret references, identity, registry, manual trigger,
+   zero-retry setting, and 4 CPU must remain unchanged. Use
+   `scripts/recover_aum_exposure_publication.py`; it refuses replay arguments,
+   active executions, baseline drift, and partial execution overrides.
 5. Start exactly one execution with no execution overrides.
 6. Require terminal `Succeeded`; capture sanitized evidence on failure and do
    not retry or repair the pointer manually.
-7. Restore the prior Job template image and 3,600-second timeout after every
-   terminal outcome or interruption; require the full normalized Job
-   configuration to match its pre-run value.
+7. Restore the prior Job template image, 3,600-second timeout, and 8 GiB memory
+  after every terminal outcome or interruption; require the full normalized
+  Job configuration to match its pre-run value. Retain `pre-update.json` for
+  the runner's `--restore-snapshot` path if the operator host is lost.
 8. Verify non-empty Gold facts and generation metadata, pointer schema/revision
    with a non-empty `readable_generation_id`, Exposure overview HTTP 200, exact
    digest-to-workload traversal, graph bounds below 100,000 entities / 250,000
