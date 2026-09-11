@@ -417,6 +417,8 @@ describe("CVE detail", () => {
     const user = userEvent.setup();
     renderPage();
 
+    expect(await screen.findByText("NVD and CVSS is unavailable")).toBeInTheDocument();
+
     await user.click(
       await screen.findByRole("button", {
         name: "Ask Copilot about CVE-2026-0001",

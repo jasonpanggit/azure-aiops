@@ -944,6 +944,18 @@ describe("inventory Copilot page adapter", () => {
       );
     });
 
+    it("omits attack-path context when the page does not supply an attack section", () => {
+      const context = buildCveDetailCopilotContext({ ...cveInput, attack: undefined });
+
+      expect(context.coverage).not.toHaveProperty("attack_path");
+      expect(context.snapshot.freshness.some((item) => item.source === "attack_path")).toBe(false);
+      expect(context.snapshot.evidence.some((item) =>
+        JSON.stringify(item).includes("attack_path"))).toBe(false);
+      expect(context.starterQuestions.some((starter) =>
+        starter.tool === "cve_attack_path")).toBe(false);
+    });
+
+
     const situationsInput = {
       scope: { subscription: ["sub-a"] },
       situations: [
