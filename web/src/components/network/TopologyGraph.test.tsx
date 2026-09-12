@@ -201,6 +201,43 @@ describe("topology detail transitions", () => {
       name: "breadthfirst",
       directed: true,
       circle: false,
+      maximal: false,
+    });
+  });
+
+  it("lays out compound nodes with a directed cycle without crashing", () => {
+    const cy = cytoscape({
+      headless: true,
+      elements: [
+        { data: { id: "subscription-a" } },
+        { data: { id: "subscription-b" } },
+        { data: { id: "hub", parent: "subscription-a" } },
+        { data: { id: "subnet", parent: "subscription-a" } },
+        { data: { id: "private-endpoint", parent: "subscription-b" } },
+        { data: { id: "contains", source: "hub", target: "subnet" } },
+        {
+          data: {
+            id: "attached-to",
+            source: "subnet",
+            target: "private-endpoint",
+          },
+        },
+        {
+          data: {
+            id: "returns-to-hub",
+            source: "private-endpoint",
+            target: "hub",
+          },
+        },
+      ],
+    });
+
+    expect(() =>
+      cy.layout(layoutForGraph(cy.nodes().length, cy.edges().length, false)).run(),
+    ).not.toThrow();
+    cy.nodes(":child").forEach((node) => {
+      expect(Number.isFinite(node.position("x"))).toBe(true);
+      expect(Number.isFinite(node.position("y"))).toBe(true);
     });
   });
 
