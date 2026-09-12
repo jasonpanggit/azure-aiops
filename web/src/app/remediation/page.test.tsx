@@ -365,6 +365,13 @@ describe("Governed remediation workflow", () => {
     expect(
       screen.getByText(/No executable network action has been generated/),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Show all fixes in scope" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open network topology" })).toHaveAttribute(
+      "href",
+      "/network",
+    );
     expect(screen.queryByRole("button", { name: "Record decision" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review and run" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm run" })).not.toBeInTheDocument();

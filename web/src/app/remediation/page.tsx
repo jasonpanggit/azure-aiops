@@ -111,7 +111,9 @@ function ComplianceFindingReviewPanel({ review }: { review: ComplianceFindingRev
           No executable network action has been generated for this compliance finding.
           Route the recommendation through the governed network-owner review process.
         </p>
-        <Link className="button" href="/remediation">Show all fixes in scope</Link>
+        <div className="remediation-handoff-actions">
+          <Link className="button" href="/network">Open network topology</Link>
+        </div>
       </div>
     </section>
   );
