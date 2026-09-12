@@ -264,6 +264,8 @@ def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
     _hybrid_vulnerability_cache.clear()
     captured: dict[str, object] = {}
     expected = object()
+    clock = [1_000.0]
+    build_calls = 0
 
     def query(_self, _spec, *, subscription_ids):
         assert subscription_ids == [DEFAULT_LOCAL_SUBSCRIPTION_ID]
@@ -278,10 +280,14 @@ def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
         )()
 
     def live_vulnerability(_provider, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        clock[0] = 1_045.0
         captured["semantic"] = kwargs["semantic"]
         return expected
 
     context = build_context()
+    monkeypatch.setattr(runtime_module.time, "time", lambda: clock[0])
     assert context.hybrid_vulnerability_provider is not None
     monkeypatch.setattr(
         runtime_module.ConnectionScopedLiveResourceProvider,
@@ -297,8 +303,19 @@ def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
     resolved = context.hybrid_vulnerability_provider(
         [DEFAULT_LOCAL_SUBSCRIPTION_ID]
     )
+    clock[0] = 1_050.0
+    repeated = context.hybrid_vulnerability_provider(
+        [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+    )
 
-    assert resolved is expected
+    assert resolved is repeated is expected
+    assert build_calls == 1
+    assert _hybrid_vulnerability_cache[
+        (
+            str(runtime_module.aiops_home()),
+            (DEFAULT_LOCAL_SUBSCRIPTION_ID,),
+        )
+    ][0] == 1_045.0
     assert captured["semantic"] is None
 
 
@@ -439,7 +456,7 @@ fabric:
     assert health["readiness"] == "ready"
 
 
-def test_exposure_query_failure_is_visible_without_blocking_process_readiness(
+def test_exposure_query_failure_blocks_process_readiness(
     monkeypatch,
 ) -> None:
     import api.runtime as runtime_module
@@ -460,9 +477,9 @@ def test_exposure_query_failure_is_visible_without_blocking_process_readiness(
     providers = runtime_module._build_provider_runtime(object())
     health = providers.refresh(force=True)
 
-    assert providers.specs["exposure_query"].required is False
+    assert providers.specs["exposure_query"].required is True
     assert health["providers"]["exposure_query"]["state"] == "unavailable"
-    assert health["readiness"] == "ready"
+    assert health["readiness"] == "degraded"
 
 
 def test_exposure_query_provider_defers_readable_generation_to_gold_queries(
@@ -571,7 +588,7 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
-    assert providers.specs["exposure_query"].required is False
+    assert providers.specs["exposure_query"].required is True
     assert providers.specs["exposure_read_port"].required is False
     assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False
