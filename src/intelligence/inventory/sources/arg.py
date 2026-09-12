@@ -77,14 +77,14 @@ def inventory_resource_specs() -> list[InventoryQuerySpec]:
 
 
 def inventory_log_analytics_workspace_specs() -> list[InventoryQuerySpec]:
-    """Discover Log Analytics workspaces in scope, for dynamic LAW enumeration.
+    """Discover ConfigurationData destinations in scope.
 
     Software inventory (ConfigurationData) has no ARG projection of its own --
-    it must be queried per-workspace through the Logs Query API. Rather than
-    relying on a static, hand-maintained connection -> workspace mapping, this
-    spec lets the pipeline discover every workspace visible in the connection's
-    subscription scope via ARG (the same mechanism already used for VM/Arc OS
-    discovery) and feed each discovered ``customerId`` to the Logs client.
+    it must be queried per-workspace through the Logs Query API. Data Collection
+    Rules are the server-owned mapping between the ``Microsoft-ConfigurationData``
+    stream and its Log Analytics destinations. Joining those destinations to
+    workspace resources avoids treating unrelated workspaces as failed software
+    inventory sources while still discovering new mappings dynamically.
     """
     return [
         InventoryQuerySpec(
@@ -92,12 +92,25 @@ def inventory_log_analytics_workspace_specs() -> list[InventoryQuerySpec]:
             "Resources",
             (
                 "Resources "
+                "| where type =~ 'microsoft.insights/datacollectionrules' "
+                "| mv-expand dataFlow=properties.dataFlows "
+                "| where dataFlow.streams has 'Microsoft-ConfigurationData' "
+                "| mv-expand destinationName=dataFlow.destinations "
+                "| mv-expand logAnalytics=properties.destinations.logAnalytics "
+                "| where tostring(logAnalytics.name) == tostring(destinationName) "
+                "| project workspaceResourceId=tolower(tostring(logAnalytics.workspaceResourceId)) "
+                "| join kind=inner ("
+                "Resources "
                 "| where type =~ 'microsoft.operationalinsights/workspaces' "
                 "| project id, name, subscriptionId, resourceGroup, "
-                "workspaceId=tostring(properties.customerId) "
+                "workspaceId=tostring(properties.customerId), "
+                "workspaceResourceId=tolower(id)"
+                ") on workspaceResourceId "
+                "| project id, name, subscriptionId, resourceGroup, workspaceId "
+                "| distinct id, name, subscriptionId, resourceGroup, workspaceId "
                 "| order by id asc"
             ),
-            version="inventory-law-workspaces-v1",
+            version="inventory-law-configurationdata-workspaces-v2",
         )
     ]
 
