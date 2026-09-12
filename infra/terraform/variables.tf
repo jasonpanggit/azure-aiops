@@ -158,6 +158,28 @@ variable "ontology_discovery_image_digest" {
   }
 }
 
+variable "ontology_discovery_job_cpu" {
+  description = "CPU allocated to each finite Phase 13 ontology Job, independent of the shared API sizing."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = contains([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4], var.ontology_discovery_job_cpu)
+    error_message = "ontology_discovery_job_cpu must be a supported Container Apps consumption CPU value."
+  }
+}
+
+variable "ontology_discovery_job_memory" {
+  description = "Memory allocated to each finite Phase 13 ontology Job, independent of the shared API sizing."
+  type        = string
+  default     = "4Gi"
+
+  validation {
+    condition     = can(regex("^[1-8](?:\\.0)?Gi$", var.ontology_discovery_job_memory))
+    error_message = "ontology_discovery_job_memory must be expressed as 1Gi through 8Gi."
+  }
+}
+
 variable "ontology_discovery_environment" {
   description = "Exact ontology coordinator data classification. Validation selects only the isolated validation connection registry and fixture Jobs; it does not rename the shared deployment."
   type        = string

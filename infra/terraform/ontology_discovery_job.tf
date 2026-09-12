@@ -99,8 +99,8 @@ resource "azurerm_container_app_job" "ontology_discovery" {
     container {
       name   = "ontology-discovery"
       image  = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu    = var.api_cpu
-      memory = var.api_memory
+      cpu    = var.ontology_discovery_job_cpu
+      memory = var.ontology_discovery_job_memory
 
       command = [
         "python",
@@ -231,8 +231,8 @@ resource "azurerm_container_app_job" "ontology_publisher" {
     container {
       name    = "ontology-publisher"
       image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu     = var.api_cpu
-      memory  = var.api_memory
+      cpu     = var.ontology_discovery_job_cpu
+      memory  = var.ontology_discovery_job_memory
       command = ["python", "-m", "ontology_discovery.publisher_cli"]
       args    = ["run-once"]
 
@@ -355,8 +355,8 @@ resource "azurerm_container_app_job" "ontology_rbac_validation" {
     container {
       name   = "ontology-rbac-validation"
       image  = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu    = var.api_cpu
-      memory = var.api_memory
+      cpu    = var.ontology_discovery_job_cpu
+      memory = var.ontology_discovery_job_memory
 
       command = [
         "python",
@@ -452,8 +452,8 @@ resource "azurerm_container_app_job" "ontology_evidence_read" {
     container {
       name    = "ontology-evidence-read"
       image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu     = var.api_cpu
-      memory  = var.api_memory
+      cpu     = var.ontology_discovery_job_cpu
+      memory  = var.ontology_discovery_job_memory
       command = ["python", "/app/scripts/collect_ontology_evidence.py"]
       args    = ["--emit-console-record"]
 
@@ -557,8 +557,8 @@ resource "azurerm_container_app_job" "ontology_fixture_prepare" {
     container {
       name    = "ontology-fixture-prepare"
       image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu     = var.api_cpu
-      memory  = var.api_memory
+      cpu     = var.ontology_discovery_job_cpu
+      memory  = var.ontology_discovery_job_memory
       command = ["python", "-m", "ontology_discovery.runtime"]
       args    = ["fixture-prepare"]
       env {
@@ -625,8 +625,8 @@ resource "azurerm_container_app_job" "ontology_fixture_cleanup" {
     container {
       name    = "ontology-fixture-cleanup"
       image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
-      cpu     = var.api_cpu
-      memory  = var.api_memory
+      cpu     = var.ontology_discovery_job_cpu
+      memory  = var.ontology_discovery_job_memory
       command = ["python", "-m", "ontology_discovery.runtime"]
       args    = ["fixture-cleanup"]
       env {

@@ -80,6 +80,18 @@ def test_ontology_jobs_have_an_independent_optional_immutable_image_tag() -> Non
         assert "var.image_tag" not in job
 
 
+def test_ontology_jobs_keep_sizing_independent_from_shared_api() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+
+    assert 'variable "ontology_discovery_job_cpu"' in variables
+    assert 'variable "ontology_discovery_job_memory"' in variables
+    assert terraform.count("var.ontology_discovery_job_cpu") == 6
+    assert terraform.count("var.ontology_discovery_job_memory") == 6
+    assert "var.api_cpu" not in terraform
+    assert "var.api_memory" not in terraform
+
+
 def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
