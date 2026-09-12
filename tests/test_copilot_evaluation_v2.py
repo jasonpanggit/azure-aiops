@@ -1052,6 +1052,8 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
 # ===========================================================================
 
 import importlib.util
+import os
+import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1796,3 +1798,201 @@ def test_validate_artifact_rejects_malformed_nested_values(field, value):
 
     assert ok is False
     assert any("malformed" in problem for problem in problems)
+
+
+def test_runtime_e2e_result_emits_revision_bound_validation_evidence_atomically(
+    tmp_path,
+):
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    revision = "api--phase11-canary"
+    destination = tmp_path / "validation-evidence.json"
+    runtime_result = {
+        "status": "passed",
+        "revision": revision,
+        "gates": {
+            name: True for name in thresholds["deterministic_gates"]
+        },
+    }
+
+    evidence = evaluate_agents.emit_runtime_validation_evidence(
+        runtime_result,
+        revision=revision,
+        thresholds=thresholds,
+        destination=destination,
+    )
+
+    assert json.loads(destination.read_text()) == evidence
+    assert evidence == {
+        "revision": revision,
+        "gates": {
+            name: True
+            for name in sorted(thresholds["deterministic_gates"])
+        },
+    }
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (
+            lambda payload: payload.update(revision="api--wrong-revision"),
+            "revision does not match",
+        ),
+        (
+            lambda payload: payload["gates"].pop("scope_isolation"),
+            "exact deterministic gate set",
+        ),
+        (
+            lambda payload: payload["gates"].update(scope_isolation=1),
+            "boolean values",
+        ),
+        (
+            lambda payload: payload.update(status="failed"),
+            "status must be 'passed'",
+        ),
+    ],
+)
+def test_runtime_e2e_validation_evidence_fails_closed_without_replacing_output(
+    tmp_path, mutate, match
+):
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    revision = "api--phase11-canary"
+    destination = tmp_path / "validation-evidence.json"
+    destination.write_text('{"preserved": true}\n')
+    runtime_result = {
+        "status": "passed",
+        "revision": revision,
+        "gates": {
+            name: True for name in thresholds["deterministic_gates"]
+        },
+    }
+    mutate(runtime_result)
+
+    with pytest.raises(ValueError, match=match):
+        evaluate_agents.emit_runtime_validation_evidence(
+            runtime_result,
+            revision=revision,
+            thresholds=thresholds,
+            destination=destination,
+        )
+
+    assert json.loads(destination.read_text()) == {"preserved": True}
+
+
+def test_main_translates_runtime_e2e_result_without_acquiring_live_token(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    revision = "api--phase11-canary"
+    runtime_result = tmp_path / "runtime-e2e.json"
+    validation_evidence = tmp_path / "validation-evidence.json"
+    runtime_result.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "revision": revision,
+                "gates": {
+                    name: True
+                    for name in thresholds["deterministic_gates"]
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_token",
+        lambda _resource: pytest.fail("translator must not acquire a live token"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_agents.py",
+            "--revision",
+            revision,
+            "--runtime-e2e-result",
+            str(runtime_result),
+            "--validation-evidence-out",
+            str(validation_evidence),
+            "--thresholds",
+            str(_THRESHOLDS_PATH),
+        ],
+    )
+
+    assert evaluate_agents.main() == 0
+    assert json.loads(validation_evidence.read_text())["revision"] == revision
+
+
+def test_main_writes_false_runtime_gate_evidence_and_returns_hold(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    revision = "api--phase11-canary"
+    gates = {name: True for name in thresholds["deterministic_gates"]}
+    gates["citation_reference_integrity"] = False
+    runtime_result = tmp_path / "runtime-e2e.json"
+    runtime_result.write_text(
+        json.dumps(
+            {"status": "passed", "revision": revision, "gates": gates}
+        )
+    )
+    validation_evidence = tmp_path / "validation-evidence.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_agents.py",
+            "--revision",
+            revision,
+            "--runtime-e2e-result",
+            str(runtime_result),
+            "--validation-evidence-out",
+            str(validation_evidence),
+            "--thresholds",
+            str(_THRESHOLDS_PATH),
+        ],
+    )
+
+    assert evaluate_agents.main() == 3
+    assert (
+        json.loads(validation_evidence.read_text())["gates"][
+            "citation_reference_integrity"
+        ]
+        is False
+    )
+
+
+def test_runtime_e2e_requires_revision_before_live_commands(tmp_path):
+    env = os.environ.copy()
+    env.update(
+        {
+            "API_URL": "https://offline.invalid",
+            "WEB_URL": "https://offline.invalid",
+            "API_TOKEN": "not-a-token",
+            "HUB_CONNECTION_ID": "hub",
+            "SPOKE_CONNECTION_ID": "spoke",
+            "AIOPS_ARG_CONFIG": str(tmp_path / "arg.yaml"),
+            "AIOPS_FABRIC_CONFIG": str(tmp_path / "fabric.yaml"),
+        }
+    )
+    env.pop("COPILOT_DEPLOYED_REVISION", None)
+
+    result = subprocess.run(
+        ["bash", str(_REPO_ROOT / "infra/scripts/validate-runtime-e2e.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "COPILOT_DEPLOYED_REVISION" in result.stderr

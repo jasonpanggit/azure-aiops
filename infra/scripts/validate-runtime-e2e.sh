@@ -9,9 +9,16 @@
 # pass. Only controlled identifiers, statuses, and counts are printed: no
 # token, secret, or tool argument is ever echoed.
 #
+# Required:
+#   COPILOT_DEPLOYED_REVISION
+#                     immutable candidate revision copied into the sanitized
+#                     runtime result for revision-bound evidence translation
+#
 # Optional:
 #   PARITY_PYTHON     interpreter used for the parity validator (default python3)
 #   PARITY_VALIDATOR  path to scripts/validate_specialist_parity.py
+#   COPILOT_THRESHOLDS_PATH
+#                     release thresholds used to enumerate required gates
 set -eu
 
 : "${API_URL:?Set API_URL to the deployed Operations API URL}"
@@ -21,6 +28,7 @@ set -eu
 : "${SPOKE_CONNECTION_ID:?Set SPOKE_CONNECTION_ID}"
 : "${AIOPS_ARG_CONFIG:?Set AIOPS_ARG_CONFIG}"
 : "${AIOPS_FABRIC_CONFIG:?Set AIOPS_FABRIC_CONFIG}"
+: "${COPILOT_DEPLOYED_REVISION:?Set COPILOT_DEPLOYED_REVISION to the immutable candidate revision}"
 
 if [ "$HUB_CONNECTION_ID" = "$SPOKE_CONNECTION_ID" ]; then
   echo "Hub and spoke connection IDs must be different" >&2
@@ -43,6 +51,19 @@ trap 'rm -rf "$tmp_dir"' EXIT
 # per docs/runbooks/copilot-orchestration-rollout.md.
 # ---------------------------------------------------------------------------
 COPILOT_ROLLOUT_MODE="${COPILOT_ROLLOUT_MODE:-compatibility}"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH= cd -- "$script_dir/../.." && pwd)"
+COPILOT_THRESHOLDS_PATH="${COPILOT_THRESHOLDS_PATH:-$repo_root/tests/fixtures/copilot_release_thresholds.v1.json}"
+python3 - "$COPILOT_THRESHOLDS_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+gates = payload.get("deterministic_gates")
+if not isinstance(gates, dict) or not gates:
+    raise SystemExit("release thresholds contain no deterministic gates")
+PY
 case "$COPILOT_ROLLOUT_MODE" in
   compatibility | shadow | canary | default) ;;
   *)
@@ -109,7 +130,7 @@ curl -fsS -H "$auth_header" \
   "$API_URL/api/v1/remediation-plans" >"$tmp_dir/remediation.json"
 curl -fsS "$WEB_URL" >/dev/null
 
-python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" "$COPILOT_ROLLOUT_MODE" <<'PY'
+python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" "$COPILOT_ROLLOUT_MODE" "$COPILOT_DEPLOYED_REVISION" "$COPILOT_THRESHOLDS_PATH" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -119,6 +140,8 @@ hub = sys.argv[2]
 spoke = sys.argv[3]
 parity_status = sys.argv[4]
 rollout_mode = sys.argv[5]
+revision = sys.argv[6]
+thresholds_path = Path(sys.argv[7])
 
 activation = json.loads((root / "activation.json").read_text())
 ready = json.loads((root / "ready.json").read_text())
@@ -168,6 +191,9 @@ for connection_id, payload in ((hub, hub_payload), (spoke, spoke_payload)):
 
 parity = json.loads((root / "parity-offline.json").read_text())
 assert parity["status"] == "pass", parity["failures"]
+thresholds = json.loads(thresholds_path.read_text())
+deterministic_gate_names = thresholds["deterministic_gates"]
+assert isinstance(deterministic_gate_names, dict), deterministic_gate_names
 
 # Live parity is a promotion prerequisite, not an assumption: a blocked gate
 # holds promotion with an explicit reason instead of reporting a pass. A canary
@@ -181,8 +207,17 @@ print(
     json.dumps(
         {
             "status": "passed",
+            "revision": revision,
             "promotion": promotion,
             "parity_status": parity_status,
+            # Reaching this point proves the runtime assertions above. Live
+            # parity additionally proves the deployed manifest/tool projection.
+            # evaluate_agents.py recomputes every named gate from controlled
+            # per-case evidence, so either source can still force a HOLD.
+            "gates": {
+                name: parity_status == "pass"
+                for name in sorted(deterministic_gate_names)
+            },
             "specialist_count": parity["specialist_count"],
             "ontology_version": ready["ontology_version"],
             "hub_count": summary["hub_count"],

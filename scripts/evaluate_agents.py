@@ -48,9 +48,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1484,6 +1486,58 @@ def _provider_availability(values: list[str] | None) -> dict[str, str]:
     return providers
 
 
+def emit_runtime_validation_evidence(
+    runtime_result: dict[str, Any],
+    *,
+    revision: str,
+    thresholds: dict[str, Any],
+    destination: Path,
+) -> dict[str, Any]:
+    """Validate runtime E2E gates and atomically write evaluator evidence."""
+    if not isinstance(runtime_result, dict):
+        raise TypeError("runtime E2E result must be a JSON object")
+    if runtime_result.get("status") != "passed":
+        raise ValueError("runtime E2E result status must be 'passed'")
+    if not revision.strip():
+        raise ValueError("deployed revision must not be empty")
+    if runtime_result.get("revision") != revision:
+        raise ValueError("runtime E2E result revision does not match --revision")
+
+    expected_gates = set(thresholds["deterministic_gates"])
+    gates = runtime_result.get("gates")
+    if not isinstance(gates, dict) or set(gates) != expected_gates:
+        raise ValueError(
+            "runtime E2E result must contain the exact deterministic gate set"
+        )
+    if any(not isinstance(value, bool) for value in gates.values()):
+        raise ValueError("runtime E2E gates must contain boolean values")
+
+    evidence = {
+        "revision": revision,
+        "gates": {name: gates[name] for name in sorted(expected_gates)},
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "w") as handle:
+            json.dump(evidence, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return evidence
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
@@ -1528,7 +1582,60 @@ def main() -> int:
         type=Path,
         help="validate a committed baseline artifact against --dataset/--thresholds and exit",
     )
+    parser.add_argument(
+        "--runtime-e2e-result",
+        type=Path,
+        help="translate a completed runtime E2E gate result without live calls",
+    )
+    parser.add_argument(
+        "--validation-evidence-out",
+        type=Path,
+        help="atomically write revision-bound validation evidence",
+    )
     args = parser.parse_args()
+
+    if bool(args.runtime_e2e_result) != bool(args.validation_evidence_out):
+        parser.error(
+            "--runtime-e2e-result and --validation-evidence-out must be supplied together"
+        )
+    if args.runtime_e2e_result is not None:
+        if not args.revision:
+            parser.error("--revision is required with --runtime-e2e-result")
+        if args.validate_artifact is not None:
+            parser.error(
+                "--runtime-e2e-result cannot be combined with --validate-artifact"
+            )
+        try:
+            thresholds = load_thresholds(args.thresholds)
+            runtime_result = json.loads(args.runtime_e2e_result.read_text())
+            evidence = emit_runtime_validation_evidence(
+                runtime_result,
+                revision=args.revision,
+                thresholds=thresholds,
+                destination=args.validation_evidence_out,
+            )
+        except (
+            FileNotFoundError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise SystemExit(str(exc)) from exc
+        gates_passed = all(evidence["gates"].values())
+        print(
+            json.dumps(
+                {
+                    "status": "valid",
+                    "revision": evidence["revision"],
+                    "validation_evidence": str(args.validation_evidence_out),
+                    "gates_passed": gates_passed,
+                },
+                indent=2,
+            )
+        )
+        return 0 if gates_passed else 3
 
     # Offline artifact validation: no live calls, no credentials. Confirms a
     # committed baseline names the exact dataset/thresholds versions it was
