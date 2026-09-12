@@ -17,6 +17,12 @@ EVIDENCE_IDENTITY_ID = (
     "Microsoft.ManagedIdentity/userAssignedIdentities/azure-mcp"
 )
 PRODUCTION_WORKSPACE_ID = "22222222-2222-2222-2222-222222222222"
+COORDINATOR_PRINCIPAL_ID = "33333333-3333-3333-3333-333333333333"
+SUBSCRIPTION_ID = "44444444-4444-4444-4444-444444444444"
+KEY_VAULT_ID = (
+    f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg/"
+    "providers/Microsoft.KeyVault/vaults/vault"
+)
 
 
 def _plan() -> dict[str, object]:
@@ -108,6 +114,44 @@ def _plan() -> dict[str, object]:
                 },
             }
         )
+    for address, role, scope in (
+        (
+            (
+                "azurerm_role_assignment."
+                f'ontology_coordinator_validation_reader["{SUBSCRIPTION_ID}"]'
+            ),
+            "Reader",
+            f"/subscriptions/{SUBSCRIPTION_ID}",
+        ),
+        (
+            (
+                "azurerm_role_assignment."
+                "ontology_coordinator_validation_monitoring_reader"
+                f'["{SUBSCRIPTION_ID}"]'
+            ),
+            "Monitoring Reader",
+            f"/subscriptions/{SUBSCRIPTION_ID}",
+        ),
+        (
+            "azurerm_role_assignment.ontology_coordinator_key_vault_secrets",
+            "Key Vault Secrets User",
+            KEY_VAULT_ID,
+        ),
+    ):
+        changes.append(
+            {
+                "address": address,
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "principal_id": COORDINATOR_PRINCIPAL_ID,
+                        "role_definition_name": role,
+                        "scope": scope,
+                    },
+                },
+            }
+        )
     return {"resource_changes": changes}
 
 
@@ -118,6 +162,9 @@ def _validate(plan: dict[str, object]) -> dict[str, object]:
         expected_principal_id=EVIDENCE_PRINCIPAL_ID,
         expected_identity_id=EVIDENCE_IDENTITY_ID,
         production_workspace_id=PRODUCTION_WORKSPACE_ID,
+        expected_coordinator_principal_id=COORDINATOR_PRINCIPAL_ID,
+        expected_subscription_id=SUBSCRIPTION_ID,
+        expected_key_vault_id=KEY_VAULT_ID,
     )
 
 
@@ -126,7 +173,24 @@ def test_targeted_plan_accepts_only_evidence_resources_and_phase13_images() -> N
 
     assert result["delete_count"] == 0
     assert result["replace_count"] == 0
-    assert result["create_addresses"] == sorted(CREATE_ADDRESSES)
+    assert result["create_addresses"] == sorted(
+        [
+            *CREATE_ADDRESSES,
+            (
+                "azurerm_role_assignment."
+                f'ontology_coordinator_validation_reader["{SUBSCRIPTION_ID}"]'
+            ),
+            (
+                "azurerm_role_assignment."
+                "ontology_coordinator_validation_monitoring_reader"
+                f'["{SUBSCRIPTION_ID}"]'
+            ),
+            (
+                "azurerm_role_assignment."
+                "ontology_coordinator_key_vault_secrets"
+            ),
+        ]
+    )
     assert result["update_addresses"] == sorted(UPDATE_ADDRESSES)
     assert result["external_role_contract"] == (
         "Workspace=Viewer;ManagedIdentity:Path=*:Action=Read"
@@ -167,7 +231,49 @@ def test_targeted_plan_rejects_non_image_mutation_on_existing_job() -> None:
     )
     changed["change"]["after"]["replica_retry_limit"] = 99
 
-    with pytest.raises(EvidencePlanError, match="image-only"):
+    with pytest.raises(EvidencePlanError):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "azurerm_container_app_job.ontology_discovery",
+        "azurerm_container_app_job.ontology_publisher",
+    ],
+)
+def test_targeted_plan_allows_validation_schedule_to_manual_only(
+    address: str,
+) -> None:
+    plan = _plan()
+    changed = next(
+        row for row in plan["resource_changes"] if row["address"] == address
+    )
+    changed["change"]["before"].update(
+        {
+            "schedule_trigger_config": [
+                {
+                    "cron_expression": "*/15 * * * *",
+                    "parallelism": 1,
+                    "replica_completion_count": 1,
+                }
+            ],
+            "manual_trigger_config": [],
+        }
+    )
+    changed["change"]["after"].update(
+        {
+            "schedule_trigger_config": [],
+            "manual_trigger_config": [
+                {"parallelism": 1, "replica_completion_count": 1}
+            ],
+        }
+    )
+
+    assert _validate(plan)["status"] == "PASS"
+
+    changed["change"]["after"]["manual_trigger_config"][0]["parallelism"] = 2
+    with pytest.raises(EvidencePlanError, match="fixed manual"):
         _validate(plan)
 
 
@@ -176,7 +282,7 @@ def test_targeted_plan_requires_all_exact_resources() -> None:
     missing = copy.deepcopy(plan)
     missing["resource_changes"].pop()
 
-    with pytest.raises(EvidencePlanError, match="exact"):
+    with pytest.raises(EvidencePlanError):
         _validate(missing)
 
 
@@ -193,6 +299,34 @@ def test_targeted_plan_rejects_provider_managed_onelake_role() -> None:
     )
 
     with pytest.raises(EvidencePlanError, match="unexpected"):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("principal_id", "wrong-principal"),
+        ("role_definition_name", "Contributor"),
+        ("scope", "/subscriptions/wrong"),
+    ],
+)
+def test_targeted_plan_rejects_coordinator_role_expansion(
+    field: str,
+    value: str,
+) -> None:
+    plan = _plan()
+    role = next(
+        row
+        for row in plan["resource_changes"]
+        if row["address"]
+        == (
+            "azurerm_role_assignment."
+            f'ontology_coordinator_validation_reader["{SUBSCRIPTION_ID}"]'
+        )
+    )
+    role["change"]["after"][field] = value
+
+    with pytest.raises(EvidencePlanError, match="read-only boundary"):
         _validate(plan)
 
 

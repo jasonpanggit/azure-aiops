@@ -342,11 +342,21 @@ export default function IdentityPage() {
                       {ownersPaging.pageRows.map((row, index) => (
                         <tr key={`${row.principal_id}-${row.scope}-${index}`}>
                           <td>
-                            <span className="table-wrap">{row.principal_id}</span>
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.principal_id)}`}
+                            >
+                              <span className="table-wrap">{row.principal_id}</span>
+                            </Link>
                           </td>
                           <td>{titleize(row.principal_type || "unknown")}</td>
                           <td>
-                            <span className="table-wrap">{row.subscription_id}</span>
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.subscription_id)}`}
+                            >
+                              <span className="table-wrap">{row.subscription_id}</span>
+                            </Link>
                           </td>
                           <td>{formatDateTime(row.assigned_on)}</td>
                           <td>
@@ -414,11 +424,21 @@ export default function IdentityPage() {
                       {stalePaging.pageRows.map((row, index) => (
                         <tr key={`${row.assignment_id}-${index}`}>
                           <td>
-                            <span className="table-wrap">{row.principal_id}</span>
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.principal_id)}`}
+                            >
+                              <span className="table-wrap">{row.principal_id}</span>
+                            </Link>
                           </td>
                           <td>{row.role || "Unresolved"}</td>
                           <td>
-                            <span className="table-wrap">{row.scope}</span>
+                            <Link
+                              className="table-primary-link"
+                              href={`/search?q=${encodeURIComponent(row.scope)}`}
+                            >
+                              <span className="table-wrap">{row.scope}</span>
+                            </Link>
                           </td>
                           <td>{formatDateTime(row.last_changed)}</td>
                           <td>

@@ -46,6 +46,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 EVIDENCE_ROLE_NAME = "Phase13EvidenceRead"
+COORDINATOR_SOURCE_ROLE_NAME = "Phase13CoordinatorConnectionRead"
+COORDINATOR_SOURCE_PATH = "/Files/aiops/connections"
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds, doubled per attempt
@@ -74,7 +76,13 @@ class VerificationDriftError(DataAccessRoleReconciliationError):
 # ---------------------------------------------------------------------------
 
 
-def build_desired_role(object_id: str, tenant_id: str) -> dict[str, Any]:
+def build_desired_role(
+    object_id: str,
+    tenant_id: str,
+    *,
+    role_name: str = EVIDENCE_ROLE_NAME,
+    paths: Sequence[str] = ("*",),
+) -> dict[str, Any]:
     """Build the exact least-privilege evidence role definition.
 
     Produces the canonical ``Phase13EvidenceRead`` role with:
@@ -86,7 +94,7 @@ def build_desired_role(object_id: str, tenant_id: str) -> dict[str, Any]:
     tenant_id = _validated_uuid(tenant_id, "tenantId")
 
     return {
-        "name": EVIDENCE_ROLE_NAME,
+        "name": role_name,
         "kind": "Policy",
         "decisionRules": [
             {
@@ -94,7 +102,7 @@ def build_desired_role(object_id: str, tenant_id: str) -> dict[str, Any]:
                 "permission": [
                     {
                         "attributeName": "Path",
-                        "attributeValueIncludedIn": ["*"],
+                        "attributeValueIncludedIn": list(paths),
                     },
                     {
                         "attributeName": "Action",
@@ -276,11 +284,13 @@ def _opaque(value: object) -> str:
 
 def _unrelated_roles(
     roles: Sequence[Mapping[str, Any]],
+    *,
+    excluded_role_name: str = EVIDENCE_ROLE_NAME,
 ) -> list[dict[str, Any]]:
     return [
         _request_role(role)
         for role in roles
-        if role.get("name") != EVIDENCE_ROLE_NAME
+        if role.get("name") != excluded_role_name
     ]
 
 
@@ -332,7 +342,7 @@ def verify_roles_match(
     verified_principal_type: str | None = None,
 ) -> None:
     """Fail closed if the desired role is missing or drifted."""
-    found = _find_role(actual_roles, desired["name"])
+    found = _find_role(actual_roles, str(desired["name"]))
     if found is None:
         raise VerificationDriftError(
             f"role {desired['name']!r} not found in response after PUT"
@@ -474,6 +484,8 @@ def reconcile_item_roles(
     tenant_id: str,
     dry_run: bool = True,
     verified_principal_type: str | None = None,
+    role_name: str = EVIDENCE_ROLE_NAME,
+    paths: Sequence[str] = ("*",),
 ) -> dict[str, Any]:
     """Reconcile data-access roles for one Lakehouse item.
 
@@ -496,7 +508,12 @@ def reconcile_item_roles(
     ``verified``, ``retries``, ``etag_before_hash``, ``etag_after_hash``.
     """
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items/{item_id}/dataAccessRoles"
-    desired = build_desired_role(object_id, tenant_id)
+    desired = build_desired_role(
+        object_id,
+        tenant_id,
+        role_name=role_name,
+        paths=paths,
+    )
     retries = 0
 
     for attempt in range(MAX_RETRIES + 1):
@@ -504,7 +521,7 @@ def reconcile_item_roles(
         current_roles, etag = _list_roles(client, url)
 
         # ---- Check convergence ----
-        existing_evidence = _find_role(current_roles, EVIDENCE_ROLE_NAME)
+        existing_evidence = _find_role(current_roles, role_name)
         if existing_evidence is not None and _roles_equal(
             existing_evidence,
             desired,
@@ -522,7 +539,10 @@ def reconcile_item_roles(
 
         # ---- Merge ----
         merged = merge_roles(current_roles, desired)
-        unrelated_before = _unrelated_roles(current_roles)
+        unrelated_before = _unrelated_roles(
+            current_roles,
+            excluded_role_name=role_name,
+        )
 
         # ---- Dry-run exit ----
         if dry_run:
@@ -608,7 +628,13 @@ def reconcile_item_roles(
             desired,
             verified_principal_type=verified_principal_type,
         )
-        if _unrelated_roles(actual_roles) != unrelated_before:
+        if (
+            _unrelated_roles(
+                actual_roles,
+                excluded_role_name=role_name,
+            )
+            != unrelated_before
+        ):
             raise VerificationDriftError("unrelated OneLake roles changed")
 
         return {
@@ -733,6 +759,89 @@ def reconcile_all_evidence_items(
     return results
 
 
+def parse_coordinator_source_contract(
+    value: object,
+) -> tuple[str, str, str, str, str]:
+    """Parse the single production connection-registry read contract."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "principal_object_id",
+        "principal_resource_id",
+        "tenant_id",
+        "workspace_id",
+        "item_id",
+        "path",
+    }:
+        raise DataAccessRoleReconciliationError(
+            "coordinator source contract has unexpected fields"
+        )
+    path = str(value.get("path") or "")
+    if path != COORDINATOR_SOURCE_PATH:
+        raise DataAccessRoleReconciliationError(
+            "coordinator source path is not exact"
+        )
+    resource_id = str(value.get("principal_resource_id") or "").strip()
+    if (
+        "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+        not in resource_id
+    ):
+        raise DataAccessRoleReconciliationError(
+            "coordinator source principal must be a managed identity"
+        )
+    return (
+        _validated_uuid(str(value.get("principal_object_id")), "objectId"),
+        _validated_uuid(str(value.get("tenant_id")), "tenantId"),
+        resource_id,
+        _validated_uuid(str(value.get("workspace_id")), "workspace_id"),
+        _validated_uuid(str(value.get("item_id")), "item_id"),
+    )
+
+
+def reconcile_coordinator_source(
+    *,
+    contract: object,
+    token_provider: Callable[[], str],
+    principal_type_provider: Callable[[str, str], str],
+    dry_run: bool,
+) -> dict[str, object]:
+    object_id, tenant_id, resource_id, workspace_id, item_id = (
+        parse_coordinator_source_contract(contract)
+    )
+    if principal_type_provider(object_id, resource_id) != "ManagedIdentity":
+        raise DataAccessRoleReconciliationError(
+            "coordinator source principal is not a managed identity"
+        )
+    import httpx
+
+    with httpx.Client(
+        headers={"Authorization": f"Bearer {token_provider()}"},
+        timeout=30.0,
+    ) as client:
+        viewer = reconcile_workspace_viewer(
+            client=client,
+            workspace_id=workspace_id,
+            object_id=object_id,
+            dry_run=dry_run,
+        )
+        role = reconcile_item_roles(
+            client=client,
+            workspace_id=workspace_id,
+            item_id=item_id,
+            object_id=object_id,
+            tenant_id=tenant_id,
+            dry_run=dry_run,
+            verified_principal_type="ManagedIdentity",
+            role_name=COORDINATOR_SOURCE_ROLE_NAME,
+            paths=(COORDINATOR_SOURCE_PATH,),
+        )
+    return {
+        "status": "PASS",
+        "workspace_viewer": viewer,
+        "onelake_role": role,
+        "path_hash": _opaque(COORDINATOR_SOURCE_PATH),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -851,6 +960,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--azure-config-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--coordinator-source-contract-file", type=argparse.FileType("r"))
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -900,6 +1010,22 @@ def main(argv: list[str] | None = None) -> int:
         "principal_type_proof_hash": _opaque("ManagedIdentity"),
         "results": results,
     }
+    if args.coordinator_source_contract_file is not None:
+        source_contract = json.load(args.coordinator_source_contract_file)
+        evidence["coordinator_source"] = reconcile_coordinator_source(
+            contract=source_contract,
+            token_provider=lambda: _get_token_from_azure_cli(
+                args.azure_config_dir
+            ),
+            principal_type_provider=lambda object_id, resource_id: (
+                _get_principal_type_from_azure_cli(
+                    args.azure_config_dir,
+                    object_id,
+                    resource_id,
+                )
+            ),
+            dry_run=dry_run,
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",

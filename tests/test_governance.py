@@ -769,6 +769,12 @@ def test_scoping_a_snapshot_excludes_other_subscriptions():
     assert [item["subscription_id"] for item in scoped.connections] == ["sub-a"]
 
 
+def test_unrestricted_scope_reuses_snapshot_without_copying_estate_rows():
+    snapshot = _snapshot()
+
+    assert snapshot.scoped(Scope.unrestricted()) is snapshot
+
+
 def test_disjoint_scope_yields_nothing_rather_than_everything():
     """The failure mode that would leak an estate: an empty scope widening."""
     scoped = _snapshot().scoped(Scope({"subscription": {"sub-zzz"}}))

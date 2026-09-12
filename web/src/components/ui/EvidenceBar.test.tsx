@@ -67,4 +67,31 @@ describe("EvidenceBar graph freshness", () => {
       "Topology graph observed Unknown",
     );
   });
+
+  it("keeps warning overflow collapsed while preserving each unique warning", () => {
+    render(
+      <EvidenceBar
+        warnings={[
+          "First source is unavailable",
+          "Second source is stale",
+          "Third source is unconfigured",
+          "Fourth source is degraded",
+          "Third source is unconfigured",
+          " ",
+        ]}
+      />,
+    );
+
+    const warningRegion = screen.getByLabelText("Data warnings");
+    const warningLists = warningRegion.querySelectorAll(".evidence-warning-list");
+    expect(warningLists).toHaveLength(2);
+    expect(warningLists[0]?.querySelectorAll("li")).toHaveLength(2);
+
+    const disclosureLabel = screen.getByText("Show 2 more warnings");
+    const disclosure = disclosureLabel.closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(disclosure?.querySelectorAll("li")).toHaveLength(2);
+    expect(disclosure).toHaveTextContent("Third source is unconfigured");
+    expect(disclosure).toHaveTextContent("Fourth source is degraded");
+  });
 });

@@ -104,14 +104,17 @@ The authoritative artifact for Plan 03.1-19 is:
 
 ## Current disposition
 
-The current artifact is blocked. Live source refresh, the 435-table Fabric
-publication, Fabric SQL connectivity, ontology validation, Gold schema
-publication, and all automated suites pass. The live exact source chain is
-empty for the authorized dev scope: the qualified query sees zero server and
-container-image Gold facts, zero active digest-to-deployment edges, and zero
-deployment-to-application edges. No exact Defender
-digest-to-supported-workload round trip exists. Phase 4 remains blocked;
-repository, tag, unknown, or incomplete evidence must not be substituted.
+Phase 03.1 closed on 2026-09-12 after exact-generation replay published 458/458
+tables, activated Gold pointer `exposure-gold-4d85d1e59c660c2636edf8ce`,
+and the authenticated Exposure experience became available. That closeout does
+not waive this Phase 4 gate.
+
+The latest retained exact-path evidence remains blocked for the authorized dev
+scope. The qualified 100k benchmark, exact Defender
+digest-to-supported-workload forward/reverse traversal, and promoted-candidate
+canary/live rollback must be rerun against the accepted Gold generation before
+Phase 4 claims readiness. Repository, tag, unknown, incomplete, or synthetic
+evidence must not be substituted.
 
 ## Unblocking sequence
 

@@ -90,7 +90,7 @@ class GovernanceSnapshot:
 
     def scoped(self, scope: Any) -> GovernanceSnapshot:
         """Return a copy containing only rows the scope admits."""
-        if scope is None:
+        if scope is None or scope.is_unrestricted():
             return self
         entities = [row for row in self._entities if self._matches(row, scope)]
         connections = [

@@ -20,7 +20,14 @@ from api.auth import (
     StaticTokenAuthenticator,
 )
 from api.exposure_query import ExposureQueryUnavailableError
-from api.providers import STALE, ProviderRuntime, ProviderSpec, ProviderValue
+from api.providers import (
+    DEFERRED,
+    LOADING,
+    STALE,
+    ProviderRuntime,
+    ProviderSpec,
+    ProviderValue,
+)
 from api.runtime import (
     _HYBRID_NETWORK_CACHE_TTL_SECONDS,
     _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
@@ -28,11 +35,14 @@ from api.runtime import (
     _defender_configuration_adapter,
     _execution_verifier,
     _exposure_generation_window,
+    _fabric_change_intelligence,
     _fabric_exposure_query_service,
     _fabric_remediation_catalog,
     _fabric_remediation_planner,
+    _governance_snapshot_cache,
     _hybrid_network_cache,
     _hybrid_remediation_cache,
+    _hybrid_vulnerability_cache,
     _load_fabric_iq_adapter,
     _load_network_service,
     _patch_execution_adapter,
@@ -170,6 +180,126 @@ def test_configured_fabric_metadata_failure_never_loads_local_snapshot(
         "last_ontology_publication": "",
         "degraded_reason": "Fabric runtime is unavailable",
     }
+
+
+def test_change_provider_does_not_hydrate_operations_agent() -> None:
+    semantic = SimpleNamespace(freshness="2026-09-10T00:00:00+00:00")
+    snapshot = {
+        "inventory": [],
+        "resource_changes": [],
+        "policy_deviations": [],
+        "security_deviations": [],
+        "network_changes": [],
+        "identity_changes": [],
+        "iac_changes": [],
+        "incidents": [],
+        "history": [],
+        "expected_configurations": {},
+        "observed_configurations": {},
+    }
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            change_intelligence=SimpleNamespace(
+                enabled=True,
+                max_changes=100,
+                max_output_items=20,
+            )
+        ),
+        service=SimpleNamespace(change_intelligence_snapshot=lambda: snapshot),
+        semantic_engine=lambda: semantic,
+        operations_agent=lambda: (_ for _ in ()).throw(
+            AssertionError("change provider must not hydrate every operations domain")
+        ),
+    )
+
+    change = _fabric_change_intelligence(runtime)
+
+    assert change is not None
+    assert change.freshness == "2026-09-10T00:00:00Z"
+
+
+def test_resource_health_discovers_container_apps(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops-local"
+    seed_local_environment(root=home, fixture="tests/fixtures/mock_arg_responses.json")
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    captured_queries: dict[str, str] = {}
+
+    def query(_self, spec, *, subscription_ids):
+        assert subscription_ids == [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+        captured_queries[spec.name] = spec.query
+        return type(
+            "Observation",
+            (),
+            {"rows": (), "observed_at": "2026-09-12T00:00:00Z"},
+        )()
+
+    context = build_context()
+    assert context.hybrid_resource_health_provider is not None
+    monkeypatch.setattr(
+        runtime_module.ConnectionScopedLiveResourceProvider,
+        "query",
+        query,
+    )
+
+    service = context.hybrid_resource_health_provider(
+        [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+    )
+    service.snapshot(subscription_ids=[DEFAULT_LOCAL_SUBSCRIPTION_ID])
+
+    assert "'microsoft.app/containerapps'" in captured_queries["live_compute_resources"]
+
+
+def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    _hybrid_network_cache.clear()
+    _hybrid_vulnerability_cache.clear()
+    captured: dict[str, object] = {}
+    expected = object()
+
+    def query(_self, _spec, *, subscription_ids):
+        assert subscription_ids == [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+        return type(
+            "Observation",
+            (),
+            {
+                "rows": (),
+                "observed_at": "2026-09-08T00:00:00Z",
+                "completeness": "complete",
+            },
+        )()
+
+    def live_vulnerability(_provider, **kwargs):
+        captured["semantic"] = kwargs["semantic"]
+        return expected
+
+    context = build_context()
+    assert context.hybrid_vulnerability_provider is not None
+    monkeypatch.setattr(
+        runtime_module.ConnectionScopedLiveResourceProvider,
+        "query",
+        query,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "live_vulnerability_service",
+        live_vulnerability,
+    )
+
+    resolved = context.hybrid_vulnerability_provider(
+        [DEFAULT_LOCAL_SUBSCRIPTION_ID]
+    )
+
+    assert resolved is expected
+    assert captured["semantic"] is None
 
 
 def test_exposure_generation_window_reports_unavailable_without_a_generation(
@@ -445,6 +575,10 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
     assert providers.specs["exposure_read_port"].required is False
     assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False
+    initial_health = providers.health(refresh=False)
+    for name in ("exposure_query", "change"):
+        assert initial_health["providers"][name]["state"] == LOADING
+        assert providers.specs[name].scheduled is True
     for name in (
         "semantic",
         "semantic_graph",
@@ -453,10 +587,11 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
         "incidents",
         "remediation",
         "remediation_catalog",
-        "change",
         "patching",
     ):
+        assert initial_health["providers"][name]["state"] == DEFERRED
         assert providers.specs[name].scheduled is False
+    assert providers.specs["exposure_query"].cache_key is None
     assert providers.specs["exposure_query"].scheduled is True
     assert providers.specs["exposure_read_port"].scheduled is True
     assert providers.specs["exposure_query"].cache_key is None
@@ -1039,6 +1174,40 @@ def test_ttl_cached_value_reuses_within_ttl_and_rebuilds_after_expiry():
 
     assert third is not first
     assert build_calls["count"] == 2
+
+
+def test_governance_snapshot_reuses_one_projection_within_snapshot_ttl(
+    monkeypatch,
+) -> None:
+    _governance_snapshot_cache.clear()
+    build_calls = 0
+    expected = runtime_module.GovernanceSnapshot(
+        [],
+        generation_available=False,
+    )
+
+    def build(_scope):
+        nonlocal build_calls
+        build_calls += 1
+        return expected
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_build_governance_generation_snapshot",
+        build,
+    )
+    monkeypatch.setattr(runtime_module, "_governance_connections", list)
+    monkeypatch.setattr(runtime_module.time, "time", lambda: 1_000.0)
+
+    first = runtime_module._load_governance_generation_snapshot(
+        Scope.unrestricted()
+    )
+    second = runtime_module._load_governance_generation_snapshot(
+        Scope.unrestricted()
+    )
+
+    assert first is second is expected
+    assert build_calls == 1
 
 
 def test_ttl_cached_value_starts_ttl_after_slow_build_completes():

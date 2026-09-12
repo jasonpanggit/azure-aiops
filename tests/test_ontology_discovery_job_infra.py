@@ -19,12 +19,21 @@ def _resource(text: str, kind: str, name: str) -> str:
     return text[start:] if next_resource == -1 else text[start:next_resource]
 
 
-def test_ontology_job_is_finite_scheduled_and_uses_the_api_image() -> None:
+def test_ontology_job_is_finite_and_validation_is_manual_only() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
 
-    assert "schedule_trigger_config" in job
+    assert 'dynamic "schedule_trigger_config"' in job
     assert "cron_expression          = var.ontology_discovery_schedule" in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [] : [1]"
+    ) in job
+    assert 'dynamic "manual_trigger_config"' in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [1] : []"
+    ) in job
     assert "parallelism              = 1" in job
     assert "replica_completion_count = 1" in job
     assert "replica_timeout_in_seconds = 900" in job
@@ -71,6 +80,18 @@ def test_ontology_jobs_have_an_independent_optional_immutable_image_tag() -> Non
         assert "var.image_tag" not in job
 
 
+def test_ontology_jobs_keep_sizing_independent_from_shared_api() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+
+    assert 'variable "ontology_discovery_job_cpu"' in variables
+    assert 'variable "ontology_discovery_job_memory"' in variables
+    assert terraform.count("var.ontology_discovery_job_cpu") == 6
+    assert terraform.count("var.ontology_discovery_job_memory") == 6
+    assert "var.api_cpu" not in terraform
+    assert "var.api_memory" not in terraform
+
+
 def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
@@ -93,6 +114,38 @@ def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> N
     assert "active_pointer" not in job.casefold()
     assert 'role_definition_name             = "AcrPull"' in acr
     assert "fabric_workspace.ontology_discovery_state[0].id" in terraform
+
+
+def test_validation_coordinator_has_read_only_azure_scope() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+
+    for name, role in (
+        ("ontology_coordinator_validation_reader", "Reader"),
+        (
+            "ontology_coordinator_validation_monitoring_reader",
+            "Monitoring Reader",
+        ),
+    ):
+        assignment = _resource(terraform, "azurerm_role_assignment", name)
+        assert (
+            'for_each = var.ontology_discovery_environment == "validation"'
+            in assignment
+        )
+        assert f'role_definition_name = "{role}"' in assignment
+        assert (
+            "azurerm_user_assigned_identity.ontology_coordinator.principal_id"
+            in assignment
+        )
+        assert "Contributor" not in assignment
+        assert "Owner" not in assignment
+
+    key_vault = _resource(
+        terraform,
+        "azurerm_role_assignment",
+        "ontology_coordinator_key_vault_secrets",
+    )
+    assert 'role_definition_name             = "Key Vault Secrets User"' in key_vault
+    assert "azurerm_key_vault.main.id" in key_vault
 
 
 def test_scheduled_job_uses_only_the_nonproduction_state_lakehouse() -> None:
@@ -213,6 +266,7 @@ def test_validation_fixture_jobs_are_fixed_manual_templates() -> None:
         assert f'"{command_name}"' in job
         assert "AIOPS_ONTOLOGY_ENVIRONMENT" in job
         assert "AIOPS_ONTOLOGY_FIXTURE_HOME" in job
+        assert "AIOPS_SOURCE_CONNECTION_HOME" in job
         assert "AIOPS_ONTOLOGY_DISPATCH_HOME" not in job
         assert "ontology_coordinator_fixture" not in job
 
@@ -270,6 +324,16 @@ def test_evidence_job_is_fixed_manual_only_and_uses_only_azure_mcp_identity() ->
     assert "Microsoft.App/jobs/start/action" not in job
 
 
+def test_coordinator_source_role_contract_is_exact_connection_path() -> None:
+    outputs = OUTPUTS_TF.read_text(encoding="utf-8")
+
+    assert 'output "ontology_coordinator_source_role_contract"' in outputs
+    assert "azurerm_user_assigned_identity.ontology_coordinator.principal_id" in outputs
+    assert "fabric_workspace.ops[0].id" in outputs
+    assert "fabric_lakehouse.context_graph[0].id" in outputs
+    assert 'path                  = "/Files/aiops/connections"' in outputs
+
+
 def test_evidence_identity_roles_use_only_rest_reconciliation() -> None:
     terraform = IDENTITY_TF.read_text(encoding="utf-8")
     outputs = OUTPUTS_TF.read_text(encoding="utf-8")
@@ -296,7 +360,8 @@ def test_evidence_identity_roles_use_only_rest_reconciliation() -> None:
     )
     assert '"objectType": "ManagedIdentity"' in reconciler
     assert '"attributeName": "Path"' in reconciler
-    assert '"attributeValueIncludedIn": ["*"]' in reconciler
+    assert 'paths: Sequence[str] = ("*",)' in reconciler
+    assert '"attributeValueIncludedIn": list(paths)' in reconciler
     assert '"attributeName": "Action"' in reconciler
     assert '"attributeValueIncludedIn": ["Read"]' in reconciler
     assert '"role": "Viewer"' in reconciler

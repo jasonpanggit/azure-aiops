@@ -67,6 +67,30 @@ def test_snapshot_returns_utilization_for_supported_resources():
     ]
 
 
+def test_snapshot_keeps_container_apps_in_resource_health_results():
+    connection = _connection()
+    container_app = {
+        "id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.App/containerApps/api"
+        ),
+        "name": "api",
+        "type": "microsoft.app/containerapps",
+        "subscriptionId": "sub-1",
+        "resourceGroup": "rg",
+    }
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [container_app],
+        metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    assert [resource.resource_name for resource in snapshot.resources] == ["api"]
+    assert snapshot.resources[0].resource_type == "microsoft.app/containerapps"
+
+
 def test_snapshot_flags_no_matching_connection():
     service = ResourceHealthService(
         connections=lambda: [_connection(subscription_id="other-sub")],

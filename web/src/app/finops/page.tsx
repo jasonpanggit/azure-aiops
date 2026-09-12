@@ -287,6 +287,7 @@ export default function FinOpsPage() {
                   <button
                     key={item}
                     type="button"
+                    aria-pressed={item === dimension}
                     className={item === dimension ? "segmented-active" : ""}
                     onClick={() => setDimension(item)}
                   >
@@ -296,7 +297,16 @@ export default function FinOpsPage() {
               </div>
             </div>
             <div className="card-body">
-              {attribution.loading ? (
+              {attribution.error ? (
+                <StatePanel
+                  title="Attribution is unavailable"
+                  message={
+                    attribution.error.message ??
+                    "Cost attribution could not be loaded for this dimension."
+                  }
+                  tone="error"
+                />
+              ) : attribution.loading ? (
                 <StatePanel
                   title="Grouping"
                   message={`Attributing savings by ${titleize(dimension).toLowerCase()}.`}

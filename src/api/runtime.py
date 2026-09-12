@@ -460,6 +460,41 @@ def _governance_source_degradation(row: Mapping[str, Any]) -> str:
 def _load_governance_generation_snapshot(
     scope: Scope,
 ) -> GovernanceSnapshot | None:
+    """Reuse one aggregate generation snapshot for concurrent unrestricted reads."""
+
+    if not scope.is_unrestricted():
+        return _build_governance_generation_snapshot(scope)
+
+    connection_signature = tuple(
+        sorted(
+            "|".join(
+                (
+                    str(row.get("connection_id") or ""),
+                    str(row.get("subscription_id") or ""),
+                    str(row.get("is_active") is not False),
+                    str(row.get("last_sync") or row.get("last_sync_at") or ""),
+                )
+            )
+            for row in _governance_connections()
+        )
+    )
+    cache_key = (
+        str(aiops_home()),
+        ("generation", *connection_signature),
+    )
+    return _ttl_cached_value(
+        _governance_snapshot_cache,
+        cache_key,
+        ttl_seconds=_SNAPSHOT_TABLES_CACHE_TTL_SECONDS,
+        now=time.time(),
+        build=lambda: _build_governance_generation_snapshot(scope),
+        completion_clock=time.time,
+    )
+
+
+def _build_governance_generation_snapshot(
+    scope: Scope,
+) -> GovernanceSnapshot | None:
     """Read bounded governance families from authorized active generations."""
 
     scoped_connections = [
@@ -981,6 +1016,10 @@ def _load_ontology_rows() -> tuple[list[dict], list[dict], str]:
 # must never be served for another.
 _SNAPSHOT_TABLES_CACHE_TTL_SECONDS = 30
 _snapshot_tables_cache: dict[str, tuple[float, tuple[list[dict[str, list[dict]]], str]]] = {}
+_governance_snapshot_cache: dict[
+    tuple[str, tuple[str, ...]],
+    tuple[float, GovernanceSnapshot | None],
+] = {}
 
 # Scoped network requests bypass the persisted snapshot and query ARG live, so
 # without a cache every page interaction costs a round trip. Keep a completed
@@ -3419,12 +3458,24 @@ def _attach_live_defender_correlator(
 def _fabric_change_intelligence(runtime: FabricRuntime) -> Any:
     """Resolve the compliance/change-intelligence engine for this snapshot.
 
-    Reuses the instance already built by ``operations_agent()`` (gated by
-    ``change_intelligence.enabled``) rather than reconstructing it, so
-    compliance reads share the exact snapshot the operations narration path
-    reasons over.
+    Compliance must remain available without hydrating every OperationsAgent
+    domain into the API process. Build only ChangeIntelligence from its
+    governed snapshot and the shared semantic engine; the monolithic agent
+    also constructs patch, lifecycle, incident, predictive, and remediation
+    state and exceeds the production API's bounded memory envelope.
     """
-    return getattr(runtime.operations_agent(), "change_intelligence", None)
+    from intelligence.change import ChangeIntelligence
+
+    config = getattr(runtime.config, "change_intelligence", None)
+    if config is None or not config.enabled:
+        return None
+    snapshot = runtime.service.change_intelligence_snapshot()
+    return ChangeIntelligence.from_semantic_engine(
+        runtime.semantic_engine(),
+        max_changes=config.max_changes,
+        max_output_items=config.max_output_items,
+        **snapshot,
+    )
 
 
 def _latest_discovery(onboarding: SubscriptionOnboardingService) -> str:
@@ -3602,7 +3653,6 @@ def _build_provider_runtime(
     # safely answer requests.
     core_readiness_providers: set[str] = set()
     deferred_providers = {
-        "change",
         "incidents",
         "network",
         "remediation",
@@ -3873,13 +3923,25 @@ def _load_governance_snapshot() -> GovernanceSnapshot | None:
     the capability as unavailable rather than returning empty results a UI
     would render as "no cost waste and no privileged access".
     """
-    entities, _relationships, freshness = _load_ontology_rows()
-    if not entities:
-        return None
-    return GovernanceSnapshot(
-        entities,
-        observed_at=freshness,
-        connections=_governance_connections(),
+    cache_key = (str(aiops_home()), ("legacy",))
+
+    def build() -> GovernanceSnapshot | None:
+        entities, _relationships, freshness = _load_ontology_rows()
+        if not entities:
+            return None
+        return GovernanceSnapshot(
+            entities,
+            observed_at=freshness,
+            connections=_governance_connections(),
+        )
+
+    return _ttl_cached_value(
+        _governance_snapshot_cache,
+        cache_key,
+        ttl_seconds=_SNAPSHOT_TABLES_CACHE_TTL_SECONDS,
+        now=time.time(),
+        build=build,
+        completion_clock=time.time,
     )
 
 
@@ -4420,15 +4482,22 @@ def build_context() -> ApiContext:
         return result
 
     def hybrid_risk(subject: str, subscription_ids: list[str]) -> dict[str, Any]:
-        graph = providers.get("semantic_graph")
-        result = graph.get_risk_context(subject)
+        # Full semantic graph hydration is intentionally deferred in the
+        # bounded production runtime. Live vulnerability evidence remains
+        # usable without that optional enrichment.
+        graph = providers.get("semantic_graph", optional=True)
+        result = (
+            graph.get_risk_context(subject)
+            if graph is not None
+            else {"subject": {"name": subject}, "risk": {}}
+        )
         try:
             vulnerability = hybrid_vulnerability(subscription_ids)
             live_summary = vulnerability.summary() if vulnerability is not None else {}
         except (RuntimeError, ValueError, TypeError, AttributeError):
             live_summary = {}
         result["source_status"] = {
-            "semantic-graph": "ok",
+            "semantic-graph": "ok" if graph is not None else "unavailable",
             "live-vulnerability": "ok" if live_summary else "unavailable",
         }
         result["live_vulnerability_summary"] = live_summary
@@ -4795,7 +4864,8 @@ def build_context() -> ApiContext:
                         "Resources "
                         "| where type in ("
                         "'microsoft.compute/virtualmachines', "
-                        "'microsoft.hybridcompute/machines') "
+                        "'microsoft.hybridcompute/machines', "
+                        "'microsoft.app/containerapps') "
                         "| project id, name, type, subscriptionId, resourceGroup"
                     ),
                     incremental=False,

@@ -1272,10 +1272,34 @@ textarea:focus-visible {
 }
 
 .evidence-warning {
+  display: grid;
   flex-basis: 100%;
+  gap: 6px;
   padding-top: 7px;
   color: var(--color-warning);
   border-top: 1px solid var(--color-border);
+}
+
+.evidence-warning-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.evidence-warning-list li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.evidence-warning-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.evidence-warning-details[open] summary {
+  margin-bottom: 6px;
 }
 
 .evidence-trust-grid {

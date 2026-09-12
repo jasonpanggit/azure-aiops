@@ -740,6 +740,7 @@ class ValidationFixtureLifecycle:
         self,
         *,
         connection_home: str,
+        source_connection_home: str,
         fixture_home: str,
         state_home: str,
         environment: str,
@@ -752,11 +753,17 @@ class ValidationFixtureLifecycle:
             raise PermissionError("validation fixture lifecycle requires validation")
         roots = {
             value.rstrip("/").casefold()
-            for value in (connection_home, fixture_home, state_home)
+            for value in (
+                connection_home,
+                source_connection_home,
+                fixture_home,
+                state_home,
+            )
         }
-        if len(roots) != 3:
+        if len(roots) != 4:
             raise ValueError("fixture capability roots must be pairwise distinct")
         self.registry = ConnectionRegistry(connection_home)
+        self.source_registry = ConnectionRegistry(source_connection_home)
         self.documents = OneLakeDocumentStore(fixture_home)
         self.state = OntologyRunStore(
             state_home,
@@ -780,30 +787,76 @@ class ValidationFixtureLifecycle:
         existing = [
             row
             for row in self.registry.list()
-            if row.connection_id.startswith("ontology-fixture-")
+            if row.metadata.get("fixture_owner_hash") == self.owner_hash
         ]
         if existing:
             raise RuntimeError("fixture namespace must be empty")
         drill_id = uuid.uuid4().hex
         fence = int(control.get("last_fence") or 0) + 1
         prefix = f"ontology-fixture-{drill_id[:12]}"
-        connection_ids = [f"{prefix}-{role}" for role in _FIXTURE_ROLES]
+        source_candidates = sorted(
+            (
+                row
+                for row in self.source_registry.list(include_disabled=False)
+                if self.source_registry.metadata_for(row).environment
+                in {"development", "test", "validation"}
+                and row.metadata.get("ontology_discovery_enabled") is True
+                and row.credential is not None
+                and row.credential.active
+            ),
+            key=lambda row: row.connection_id.casefold(),
+        )
+        if len(source_candidates) != 1:
+            raise RuntimeError(
+                "exactly one eligible non-production source connection is required"
+            )
+        source_connection = source_candidates[0]
+        connection_ids = [
+            source_connection.connection_id,
+            *[
+                f"{prefix}-{role}"
+                for role in _FIXTURE_ROLES[1:]
+            ],
+        ]
         for index, (connection_id, role) in enumerate(
             zip(connection_ids, _FIXTURE_ROLES, strict=True), start=1
         ):
-            self.registry.add(
-                SubscriptionConnection(
+            metadata = {
+                "environment": "validation",
+                "ontology_discovery_enabled": True,
+                "fixture_drill_hash": hashlib.sha256(
+                    drill_id.encode()
+                ).hexdigest(),
+                "fixture_role": role,
+                "fixture_owner_hash": self.owner_hash,
+                "fixture_fence": fence,
+            }
+            if index == 1:
+                source_payload = source_connection.to_dict()
+                source_payload.update(
+                    {
+                        "name": "Ontology validation source fixture",
+                        "metadata": {
+                            **source_connection.metadata,
+                            **metadata,
+                            "source_connection_hash": _hash_json(
+                                source_connection.connection_id
+                            ),
+                        },
+                    }
+                )
+                fixture_connection = SubscriptionConnection.from_mapping(
+                    source_payload
+                )
+            else:
+                fixture_connection = SubscriptionConnection(
                     connection_id=connection_id,
                     name=f"Ontology validation fixture {index}",
                     tenant_id=self.tenant_id,
-                    subscription_id=(
-                        self.subscription_id
-                        if index == 1
-                        else str(
-                            uuid.uuid5(
-                                uuid.NAMESPACE_URL,
-                                f"{drill_id}:subscription:{index}",
-                            )
+                    subscription_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{drill_id}:subscription:{index}",
                         )
                     ),
                     credential=CredentialReference(
@@ -812,17 +865,10 @@ class ValidationFixtureLifecycle:
                         client_id=self.owner_id,
                         tenant_id=self.tenant_id,
                     ),
-                    metadata={
-                        "environment": "validation",
-                        "ontology_discovery_enabled": True,
-                        "fixture_drill_hash": hashlib.sha256(
-                            drill_id.encode()
-                        ).hexdigest(),
-                        "fixture_role": role,
-                        "fixture_owner_hash": self.owner_hash,
-                        "fixture_fence": fence,
-                    },
+                    metadata=metadata,
                 )
+            self.registry.add(
+                fixture_connection
             )
         revision = self.registry.revision()
         epoch = self.state.ensure_eligible_epoch(
@@ -931,6 +977,10 @@ def _fixture_lifecycle_from_env() -> ValidationFixtureLifecycle:
     return ValidationFixtureLifecycle(
         connection_home=_required(
             os.environ.get("AIOPS_CONNECTION_HOME"), "AIOPS_CONNECTION_HOME"
+        ),
+        source_connection_home=_required(
+            os.environ.get("AIOPS_SOURCE_CONNECTION_HOME"),
+            "AIOPS_SOURCE_CONNECTION_HOME",
         ),
         fixture_home=_required(
             os.environ.get("AIOPS_ONTOLOGY_FIXTURE_HOME"),

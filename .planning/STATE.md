@@ -2,26 +2,26 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
-status: planning
-stopped_at: Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-last_updated: "2026-09-10T03:58:43Z"
+current_plan: Phase 4 planning (Phase 03.1 closed; 23 plans executed and 2 accepted with Phase 4 deferrals; 25/25 summaries)
+status: ready
+stopped_at: Phase 03.1 accepted and closed; Phase 4 exact container evidence gate retained
+last_updated: "2026-09-12T09:28:01Z"
 progress:
   total_phases: 17
-  completed_phases: 10
+  completed_phases: 11
   total_plans: 165
-  completed_plans: 146
-current_phase_name: Exposure Reliability and Scale
+  completed_plans: 148
+current_phase_name: Domain Coverage and Operational Twin
 ---
 
-# Phase 03.1: Exposure Reliability and Scale
+# Phase 4: Domain Coverage and Operational Twin
 
 ## Current Status
 
-**Active Phase:** Phase 03.1 (Exposure Reliability and Scale)
-**Wave:** Next eligible plan<br>
-**Current Plan:** 03.1-19 not started (18/25 sequential complete; 23/25 total summaries)
-**Status:** Planning — Plans 03.1-21 through 03.1-25 are complete out of sequence; Plan 03.1-19 remains next; Phase 11 snapshot v2, Phase 12, remediation, and network behavior preserved
+**Active Phase:** Phase 4 (Domain Coverage and Operational Twin)
+**Wave:** Planning<br>
+**Current Plan:** Not planned
+**Status:** Ready for Phase 4 planning — Phase 03.1 is closed with 23 plans executed and Plans 19-20 accepted with explicit Phase 4 deferrals; all 25 summaries are present. Gold publication and the authenticated Exposure page are live; exact supported digest-to-workload traversal, the qualified 100k benchmark, and the canary/rollback exercise remain Phase 4 entry gates.
 
 ## Completed Plans (This Session)
 
@@ -63,6 +63,8 @@ current_phase_name: Exposure Reliability and Scale
 - **03.1-18** COMPLETE — Low-cardinality Exposure telemetry, one-cycle Azure Monitor alerts, and generation-bound semantic shadow reconciliation
 - **03.1-24** COMPLETE — Conservative shared evidence primitives, opaque cursor pagination, and governed Fluent UI risk-exception feedback
 - **03.1-25** COMPLETE — Independent CVE/KB detail states, canonical origin/query/row/scroll continuity, and governed risk-exception feedback
+- **03.1-19** COMPLETE WITH PHASE 4 DEFERRALS — Durable exact-generation replay published 458/458 tables and activated Gold; API revision 0000293 is ready on Consumption with zero replica restarts. The qualified 100k benchmark, exact supported digest-to-workload traversal, and live canary/rollback remain retained Phase 4 entry gates.
+- **03.1-20** COMPLETE — Authenticated operator confirmed the Exposure page loads and directed Phase 03.1 closeout against Gold generation `exposure-gold-4d85d1e59c660c2636edf8ce`; no container execution capability was introduced.
 - **03.6-01** COMPLETE — `execution.failure_details` authoritative on every terminal-failure transition (both `verification_timed_out` branches, `submission_unconfirmed`), plus an exhaustive regression test
 - **03.6-02** COMPLETE — `plan_workflow` gains `blockers[]`/`degradation[]` arrays and an honest `verify` step status; `live_operations.py`'s two hardcoded `"current"` freshness literals replaced with real `classify_freshness()` computation
 - **03.6-03** COMPLETE — Fail-safe `selectedPatchIds: string[] | null` patch-selection model (fixes CR-07 deselect-all-then-widens-to-all bug) and bounded/backoff client polling (`usePollingBackoff`, capped at 40 requests or 600000ms) with independently-testable ceilings
@@ -325,9 +327,9 @@ Last activity: 2026-09-10 - Closed quick task 260910-f2h final code-review findi
 
 ## Session
 
-**Last session:** 2026-09-07T09:26:12.397Z
-**Stopped at:** Blocked at 03.1-19 exact live source evidence after successful Fabric publication
-**Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-19-LIVE-EVIDENCE.json
+**Last session:** 2026-09-12T09:28:01Z
+**Stopped at:** Phase 03.1 closed; ready to plan Phase 4
+**Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-20-SUMMARY.md
 
 ## Accumulated Context
 
@@ -345,7 +347,7 @@ Last activity: 2026-09-10 - Closed quick task 260910-f2h final code-review findi
 
 ### Blockers
 
-- Plan 03.1-19: exact supported Defender digest to Container Insights workload round trip is unavailable; Phase 4 remains blocked.
+- Phase 4 entry gate: exact supported Defender digest to Container Insights workload round trip is unavailable. The qualified 100k benchmark and canary/rollback exercise remain coupled closeout evidence for that gate.
 
 ### Pending Todos
 

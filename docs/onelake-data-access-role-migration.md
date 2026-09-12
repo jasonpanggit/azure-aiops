@@ -19,6 +19,19 @@ Each role was named `Phase13EvidenceRead` with:
 - **Action:** `Read` (read-only)
 - **Member:** `ManagedIdentity` with the `azure_mcp` UAI `principal_id`
 
+The same reconciler also owns the coordinator's narrower production-source
+contract:
+
+- workspace role: `Viewer` on the production connection workspace;
+- OneLake role: `Phase13CoordinatorConnectionRead`;
+- path: `/Files/aiops/connections`;
+- action: `Read`;
+- member: the ontology coordinator managed identity.
+
+This lets the fixed validation prepare Job mirror one server-selected
+non-production connection into the isolated validation registry without
+granting the coordinator broader Fabric write access.
+
 ## Problem
 
 The Fabric Terraform provider version 1.13 has a **ManagedIdentity
@@ -72,6 +85,10 @@ contract_file="$(mktemp)"
 chmod 0600 "$contract_file"
 terraform -chdir=infra/terraform output -json \
   ontology_evidence_role_contract >"$contract_file"
+source_contract_file="$(mktemp)"
+chmod 0600 "$source_contract_file"
+terraform -chdir=infra/terraform output -json \
+  ontology_coordinator_source_role_contract >"$source_contract_file"
 ```
 
 Run a dry-run to verify current state:
@@ -79,6 +96,7 @@ Run a dry-run to verify current state:
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
   --contract-file "$contract_file" \
+  --coordinator-source-contract-file "$source_contract_file" \
   --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
   --output .planning/eval/ontology-onelake-role-dry-run.json
 ```
@@ -94,10 +112,12 @@ If any item shows `"would_change": true`:
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
   --contract-file "$contract_file" \
+  --coordinator-source-contract-file "$source_contract_file" \
   --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
   --output .planning/eval/ontology-onelake-role-reconciliation.json \
   --apply
 rm "$contract_file"
+rm "$source_contract_file"
 ```
 
 Verify all items return `"verified": true`.
