@@ -96,7 +96,10 @@ def test_snapshot_keeps_container_apps_in_resource_health_results():
         resource_lister=lambda _conn: [container_app],
         metrics_client_factory=lambda _conn: _FakeMetricsClient(
             {
-                "CpuPercentage": {"value": 22.0},
+                "CpuPercentage": {
+                    "value": 22.0,
+                    "series": [{"timestamp": "t1", "value": 20.0}],
+                },
                 "MemoryPercentage": {"value": 48.0},
                 "RxBytes": {"value": 1024.0},
                 "TxBytes": {"value": 2048.0},
@@ -112,6 +115,9 @@ def test_snapshot_keeps_container_apps_in_resource_health_results():
     assert snapshot.resources[0].memory_percent == 48.0
     assert snapshot.resources[0].network_in_bytes == 1024.0
     assert snapshot.resources[0].network_out_bytes == 2048.0
+    assert snapshot.resources[0].cpu_series == (
+        {"timestamp": "t1", "value": 20.0},
+    )
     assert snapshot.unavailable_metrics == ()
 
 

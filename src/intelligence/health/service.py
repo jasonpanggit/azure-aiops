@@ -472,7 +472,10 @@ def _fetch_resource_utilization(
         ),
         status=_cpu_status(cpu),
         observed_at=_now(),
-        cpu_series=_metric_series(metrics, "Percentage CPU"),
+        cpu_series=_metric_series(
+            metrics,
+            "CpuPercentage" if is_container_app else "Percentage CPU",
+        ),
     )
 
 
