@@ -217,6 +217,15 @@ function InventorySetupHint({ error }: { error: Error | ApiError | null }) {
 }
 
 function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Envelope<InventoryNarrative>>> }) {
+  const citationSources = narrative.data
+    ? Array.from(new Map(
+      narrative.data.data.citations.map((citation) => [
+        JSON.stringify([citation.source_engine, citation.source_table]),
+        citation,
+      ]),
+    ).values())
+    : [];
+
   return (
     <section aria-label="Inventory risk narrative" className="detail-panel">
       <div className="card-header">
@@ -270,12 +279,12 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
               </dl>
             </div>
           )}
-          {narrative.data.data.citations.length > 0 && (
+          {citationSources.length > 0 && (
             <div className="narrative-section">
               <h3>Sources</h3>
               <ul className="narrative-citation-list">
-                {narrative.data.data.citations.map((citation) => (
-                  <li key={`${citation.source_engine}-${citation.source_table}-${citation.timestamp}`}>
+                {citationSources.map((citation) => (
+                  <li key={JSON.stringify([citation.source_engine, citation.source_table])}>
                     {citation.source_engine} / {citation.source_table}
                   </li>
                 ))}
@@ -501,6 +510,9 @@ export default function InventoryPage() {
     [softwareInventory.data],
   );
   const softwarePartialSource = Object.values(softwareSourceStates).find((source) => source.state !== "ready");
+  const softwarePartialWithRows = softwarePartialSource?.state === "partial"
+    && softwarePartialSource.row_count > 0
+    && softwareGroups.length > 0;
   const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
   const activeCopilotState = tab === "software"
     ? softwareInventory
@@ -1145,9 +1157,13 @@ export default function InventoryPage() {
           )}
           {softwarePartialSource && (
             <StatePanel
-              title="Installed software source is unavailable"
-              message={`Log Analytics source is ${softwarePartialSource.state}; rows are not presented as a successful empty result.`}
-              tone="error"
+              title={softwarePartialWithRows
+                ? "Installed software source is partial"
+                : "Installed software source is unavailable"}
+              message={softwarePartialWithRows
+                ? "Log Analytics source is partial; successful rows are shown, but coverage may be incomplete."
+                : `Log Analytics source is ${softwarePartialSource.state}; rows are not presented as a successful empty result.`}
+              tone={softwarePartialWithRows ? "partial" : "error"}
             />
           )}
           {filteredSoftwareGroups.length > 0 && (

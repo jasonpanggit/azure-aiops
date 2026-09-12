@@ -480,6 +480,95 @@ describe("Inventory OS tracer", () => {
     expect(screen.queryByRole("button", { name: /View machines for Windows Server 2019/ })).not.toBeInTheDocument();
   });
 
+  it("lists each narrative source once when citations have different observation timestamps", async () => {
+    narrative.mockResolvedValue(envelope({
+      fact_summary: "Inventory facts.",
+      fact_items: [],
+      narrated_summary: null,
+      narrated_by: "",
+      model: "",
+      confidence: "medium",
+      citations: [
+        {
+          source_engine: "Azure Monitor Logs",
+          source_table: "ConfigurationData",
+          timestamp: "2026-08-25T10:00:00Z",
+          reference: "",
+        },
+        {
+          source_engine: "Azure Monitor Logs",
+          source_table: "ConfigurationData",
+          timestamp: "2026-08-25T11:00:00Z",
+          reference: "",
+        },
+        {
+          source_engine: "Azure Resource Graph",
+          source_table: "Resources",
+          timestamp: "2026-08-25T11:00:00Z",
+          reference: "",
+        },
+      ],
+      source_status: collection.source_status,
+      requested_scope: { dimensions: ["subscription"] },
+      status: "fact_only",
+    }));
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+
+    expect(await screen.findAllByText("Azure Monitor Logs / ConfigurationData")).toHaveLength(1);
+    expect(screen.getAllByText("Azure Resource Graph / Resources")).toHaveLength(1);
+  });
+
+  it("presents a partial software source with trustworthy rows as incomplete, not unavailable", async () => {
+    software.mockResolvedValue(envelope({
+      groups: [{
+        key: "7-Zip|19.00",
+        software_name: "7-Zip",
+        software_version: "19.00",
+        install_count: 35,
+        source_types: ["azure_vm"],
+        linked_count: 35,
+        unlinked_count: 0,
+        publishers: ["Igor Pavlov"],
+      }],
+      source_status: {
+        logs: { source_type: "logs", state: "partial", observed_at: "", query_version: "v1", row_count: 35, error: "one workspace timed out" },
+      },
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "v1",
+      generation_id: "generation-1",
+      requested_scope: {},
+    }));
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
+
+    expect(await screen.findByText("Installed software source is partial")).toBeInTheDocument();
+    expect(screen.getByText(/successful rows are shown, but coverage may be incomplete/)).toBeInTheDocument();
+    expect(screen.queryByText("Installed software source is unavailable")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /View machines for 7-Zip 19.00/ })).toBeInTheDocument();
+  });
+
+  it("keeps a partial software source with zero trustworthy rows unavailable", async () => {
+    software.mockResolvedValue(envelope({
+      groups: [],
+      source_status: {
+        logs: { source_type: "logs", state: "partial", observed_at: "", query_version: "v1", row_count: 0, error: "all workspaces timed out" },
+      },
+      observed_at: "2026-08-25T10:00:00Z",
+      query_version: "v1",
+      generation_id: "generation-1",
+      requested_scope: {},
+    }));
+
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: "Installed Software" }));
+
+    expect(await screen.findByText("Installed software source is unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/rows are not presented as a successful empty result/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View machines for/ })).not.toBeInTheDocument();
+  });
+
   it("keeps the three-tab boundary and shows authorized export context for exact lookup", async () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
