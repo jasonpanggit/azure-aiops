@@ -38,7 +38,17 @@ from typing import Any, Protocol
 SUPPORTED_RESOURCE_TYPES: frozenset[str] = frozenset(
     {
         "microsoft.compute/virtualmachines",
+        "microsoft.app/containerapps",
     }
+)
+
+# Platform metric names queried for Azure Container Apps. Container Apps emit
+# direct platform metrics for CPU % and Memory %, as well as network I/O.
+CONTAINER_APP_METRIC_NAMES: tuple[str, ...] = (
+    "CpuPercentage",
+    "MemoryPercentage",
+    "RxBytes",
+    "TxBytes",
 )
 
 # Guest-level signals the platform Metrics API cannot provide for an ordinary
@@ -58,7 +68,12 @@ _CPU_CRITICAL_THRESHOLD = 90.0
 
 
 class MetricsReader(Protocol):
-    def query_resource_metrics(self, resource_id: str) -> dict[str, Any]: ...
+    def query_resource_metrics(
+        self,
+        resource_id: str,
+        *,
+        metric_names: tuple[str, ...] = ...,
+    ) -> dict[str, Any]: ...
 
 
 class GuestPerformanceReader(Protocol):
@@ -234,6 +249,7 @@ class ResourceHealthService:
         results: list[ResourceUtilization] = []
         warnings: list[str] = []
         guest_performance_found = False
+        has_vms = False
         for connection in matches:
             try:
                 rows = self.resource_lister(connection)
@@ -249,6 +265,11 @@ class ResourceHealthService:
             ][: self.max_resources]
             if not candidates:
                 continue
+            if any(
+                str(row.get("type", "")).casefold() == "microsoft.compute/virtualmachines"
+                for row in candidates
+            ):
+                has_vms = True
             try:
                 metrics_client = self.metrics_client_factory(connection)
             except (RuntimeError, ValueError) as exc:
@@ -271,7 +292,7 @@ class ResourceHealthService:
             warnings.append(
                 "Results are truncated; narrow the scope for a complete view."
             )
-        unavailable = () if guest_performance_found else UNAVAILABLE_METRICS
+        unavailable = UNAVAILABLE_METRICS if (has_vms and not guest_performance_found) else ()
         return ResourceHealthSnapshot(
             resources=tuple(results),
             observed_at=_now(),
@@ -384,6 +405,7 @@ def _fetch_resource_utilization(
     guest_performance: dict[str, dict[str, float]] | None = None,
 ) -> ResourceUtilization:
     resource_id = str(row.get("id") or "")
+    resource_type = str(row.get("type") or "").casefold()
     base = {
         "resource_id": resource_id,
         "resource_name": str(row.get("name") or ""),
@@ -393,8 +415,18 @@ def _fetch_resource_utilization(
         "connection_id": str(getattr(connection, "connection_id", "")),
     }
     guest = (guest_performance or {}).get(resource_id.casefold(), {})
+    is_container_app = resource_type == "microsoft.app/containerapps"
+
     try:
-        metrics = metrics_client.query_resource_metrics(resource_id)
+        if is_container_app:
+            try:
+                metrics = metrics_client.query_resource_metrics(
+                    resource_id, metric_names=CONTAINER_APP_METRIC_NAMES
+                )
+            except TypeError:
+                metrics = metrics_client.query_resource_metrics(resource_id)
+        else:
+            metrics = metrics_client.query_resource_metrics(resource_id)
     except (RuntimeError, ValueError) as exc:
         return ResourceUtilization(
             **base,
@@ -402,6 +434,26 @@ def _fetch_resource_utilization(
             disk_free_percent=guest.get("disk_free_percent"),
             observed_at=_now(),
             error=str(exc),
+        )
+
+    if is_container_app:
+        cpu = _metric_value(metrics, "CpuPercentage")
+        memory = _metric_value(metrics, "MemoryPercentage")
+        if memory is None:
+            memory = guest.get("memory_percent")
+        return ResourceUtilization(
+            **base,
+            cpu_percent=cpu,
+            network_in_bytes=_metric_value(metrics, "RxBytes"),
+            network_out_bytes=_metric_value(metrics, "TxBytes"),
+            disk_read_bytes=None,
+            disk_write_bytes=None,
+            os_disk_queue_depth=None,
+            memory_percent=memory,
+            disk_free_percent=guest.get("disk_free_percent"),
+            status=_cpu_status(cpu),
+            observed_at=_now(),
+            cpu_series=_metric_series(metrics, "CpuPercentage"),
         )
 
     cpu = _metric_value(metrics, "Percentage CPU")

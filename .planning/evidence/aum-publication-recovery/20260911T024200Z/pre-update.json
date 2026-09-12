@@ -1,0 +1,76 @@
+{
+  "configuration": {
+    "dapr": null,
+    "eventTriggerConfig": null,
+    "identitySettings": [],
+    "manualTriggerConfig": {
+      "parallelism": 1,
+      "replicaCompletionCount": 1
+    },
+    "registries": [
+      {
+        "identity": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/aiops-dev-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/aiops-dev-apps-id",
+        "server": "aiopsdevacrg6ludc.azurecr.io"
+      }
+    ],
+    "replicaRetryLimit": 0,
+    "replicaTimeout": 3600,
+    "scheduleTriggerConfig": null,
+    "secrets": null,
+    "triggerType": "Manual"
+  },
+  "environmentId": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/aiops-dev-rg/providers/Microsoft.App/managedEnvironments/aiops-dev-cae",
+  "identity": {
+    "type": "UserAssigned",
+    "userAssignedIdentities": {
+      "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/aiops-dev-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/aiops-dev-apps-id": {
+        "clientId": "4318b70e-9626-4866-abfd-b10dfc0a9d66",
+        "principalId": "2c367602-bb4f-4868-8dbb-7f4ca117a719"
+      }
+    }
+  },
+  "template": {
+    "containers": [
+      {
+        "args": [
+          "-m",
+          "onboarding.cli",
+          "activate",
+          "--config",
+          "/app/config.yaml",
+          "--fabric-config",
+          "/app/fabric.config.yaml",
+          "--connection-id",
+          "demo"
+        ],
+        "command": [
+          "python"
+        ],
+        "env": [
+          {
+            "name": "AIOPS_HOME",
+            "value": "sha256:e17a7e90c0eb475eebb0b362983ce0a5c794c9eb5e041c2c6df881e9d946f629"
+          },
+          {
+            "name": "AIOPS_CONNECTION_KEY_VAULT",
+            "value": "sha256:4d9e2f1319f5ff754abf2e2539329aaacdf074080aefcf6a05d1e7cda7fa3a29"
+          },
+          {
+            "name": "AZURE_CLIENT_ID",
+            "value": "sha256:20fd83f6d20fc66b9e34afccaa7ee549d5a96602d7709164dd28321fec907402"
+          }
+        ],
+        "image": "aiopsdevacrg6ludc.azurecr.io/aiops-api@sha256:eceadce495a5185b0d3bddf1221763a706ef03be66025f7b5e41f506ff1d4354",
+        "imageType": "ContainerImage",
+        "name": "activate",
+        "resources": {
+          "cpu": 4.0,
+          "memory": "8Gi"
+        }
+      }
+    ],
+    "initContainers": null,
+    "volumes": null
+  },
+  "workloadProfileName": "Consumption"
+}

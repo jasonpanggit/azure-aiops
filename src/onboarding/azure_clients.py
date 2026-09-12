@@ -445,6 +445,15 @@ VM_METRIC_NAMES: tuple[str, ...] = (
     "OS Disk Queue Depth",
 )
 
+#: Platform metrics available for Azure Container Apps. Container Apps emit
+#: direct platform metrics for CPU % and Memory %, as well as network I/O.
+CONTAINER_APP_METRIC_NAMES: tuple[str, ...] = (
+    "CpuPercentage",
+    "MemoryPercentage",
+    "RxBytes",
+    "TxBytes",
+)
+
 
 class AzureMonitorMetricsClient:
     """Query the Azure Monitor Metrics REST API for one resource's platform metrics."""

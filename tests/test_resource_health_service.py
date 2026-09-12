@@ -390,3 +390,99 @@ def test_snapshot_amw_lister_failure_adds_warning_but_keeps_metrics():
     assert snapshot.resources[0].cpu_percent == 33.0
     assert len(snapshot.warnings) == 1
     assert "Azure Monitor Workspaces" in snapshot.warnings[0]
+
+
+def _container_app_row(name="app-1"):
+    return {
+        "id": f"/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.App/containerApps/{name}",
+        "name": name,
+        "type": "microsoft.app/containerapps",
+        "subscriptionId": "sub-1",
+        "resourceGroup": "rg",
+    }
+
+
+def test_snapshot_returns_utilization_for_container_apps():
+    connection = _connection()
+    queried_metrics = {}
+
+    class _CaptureMetricsClient:
+        def query_resource_metrics(self, resource_id: str, *, metric_names=None) -> dict:
+            queried_metrics[resource_id] = metric_names
+            return {
+                "CpuPercentage": {
+                    "value": 25.5,
+                    "unit": "Percent",
+                    "series": [{"timestamp": "t1", "value": 20.0}, {"timestamp": "t2", "value": 25.5}],
+                },
+                "MemoryPercentage": {"value": 55.0, "unit": "Percent"},
+                "RxBytes": {"value": 1048576.0, "unit": "Bytes"},
+                "TxBytes": {"value": 524288.0, "unit": "Bytes"},
+            }
+
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_container_app_row()],
+        metrics_client_factory=lambda _conn: _CaptureMetricsClient(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    assert len(snapshot.resources) == 1
+    resource = snapshot.resources[0]
+    assert resource.resource_name == "app-1"
+    assert resource.resource_type == "microsoft.app/containerapps"
+    assert resource.cpu_percent == 25.5
+    assert resource.memory_percent == 55.0
+    assert resource.network_in_bytes == 1048576.0
+    assert resource.network_out_bytes == 524288.0
+    assert resource.disk_read_bytes is None
+    assert resource.disk_write_bytes is None
+    assert resource.os_disk_queue_depth is None
+    assert resource.status == "healthy"
+    assert len(resource.cpu_series) == 2
+    assert snapshot.summary()["healthy"] == 1
+    # Since only Container Apps are in scope, no VM guest counters warning is needed
+    assert snapshot.to_dict()["unavailable_metrics"] == []
+    # Verify metric_names was passed
+    app_id = _container_app_row()["id"]
+    assert "CpuPercentage" in queried_metrics[app_id]
+
+
+def test_snapshot_mixes_vms_and_container_apps():
+    connection = _connection()
+
+    class _MultiMetricsClient:
+        def query_resource_metrics(self, resource_id: str, *, metric_names=None) -> dict:
+            if "containerApps" in resource_id:
+                return {
+                    "CpuPercentage": {"value": 85.0, "unit": "Percent"},
+                    "MemoryPercentage": {"value": 40.0, "unit": "Percent"},
+                }
+            return {
+                "Percentage CPU": {"value": 15.0, "unit": "Percent"},
+                "Network In Total": {"value": 1000.0, "unit": "Bytes"},
+            }
+
+    service = ResourceHealthService(
+        connections=lambda: [connection],
+        resource_lister=lambda _conn: [_vm_row("vm-1"), _container_app_row("app-1")],
+        metrics_client_factory=lambda _conn: _MultiMetricsClient(),
+    )
+
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+
+    assert len(snapshot.resources) == 2
+    by_name = {r.resource_name: r for r in snapshot.resources}
+    assert by_name["app-1"].cpu_percent == 85.0
+    assert by_name["app-1"].status == "warning"
+    assert by_name["app-1"].memory_percent == 40.0
+    assert by_name["vm-1"].cpu_percent == 15.0
+    assert by_name["vm-1"].status == "healthy"
+    assert by_name["vm-1"].memory_percent is None
+    # Since a VM is in scope without guest performance, unavailable_metrics is reported for the VM
+    assert snapshot.to_dict()["unavailable_metrics"] == [
+        "memory_percent",
+        "disk_free_percent",
+    ]
+

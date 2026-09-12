@@ -141,7 +141,7 @@ export default function ResourceHealthPage() {
       <PageHeader
         eyebrow="Resource health"
         title="CPU, disk, and network pressure"
-        description="Azure Monitor metrics for VMs and Arc servers in scope, cached briefly to avoid throttling."
+        description="Azure Monitor metrics for VMs, Container Apps, and compute resources in scope, cached briefly to avoid throttling."
         metadata={
           <>
             <span>{summary?.total ?? 0} observed</span>
@@ -197,7 +197,7 @@ export default function ResourceHealthPage() {
       {!health.loading && !health.error && resources.length === 0 && (
         <StatePanel
           title="No compute resources found in scope"
-          message="No virtual machines or Arc-connected servers matched the current scope, or their connections are inactive."
+          message="No virtual machines or Container Apps matched the current scope, or their connections are inactive."
           tone="empty"
         />
       )}
