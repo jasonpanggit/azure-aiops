@@ -1509,12 +1509,21 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     dataset = tmp_path / "cases.json"
     dataset.write_text(json.dumps(source))
     artifact = tmp_path / "baseline.json"
-    validation_evidence = tmp_path / "validation.json"
-    validation_evidence.write_text(
+    runtime_e2e_result = tmp_path / "runtime-e2e.json"
+    validation_evidence = tmp_path / "validation-evidence.json"
+    runtime_e2e_result.write_text(
         json.dumps(
             {
+                "status": "passed",
                 "revision": "api--phase11-canary",
-                "gates": _passing_validation_evidence(),
+                "rollout_mode": "canary",
+                "promotion": "promote",
+                "checks": {
+                    "live_specialist_parity": True,
+                    "offline_specialist_parity": True,
+                    "runtime_readiness": True,
+                    "scoped_topology_isolation": True,
+                },
             }
         )
     )
@@ -1564,7 +1573,9 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             "operations_mcp=available",
             "--provider",
             "azure_mcp=available",
-            "--validation-evidence",
+            "--runtime-e2e-result",
+            str(runtime_e2e_result),
+            "--validation-evidence-out",
             str(validation_evidence),
             "--out",
             str(artifact),
@@ -1582,6 +1593,7 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
         case["case_id"] for case in source["cases"]
     ]
     assert payload["decision"] == "PROMOTE"
+    assert all(json.loads(validation_evidence.read_text())["gates"].values())
 
 
 def test_validate_artifact_rejects_promote_with_omitted_release_gates():
@@ -1800,23 +1812,46 @@ def test_validate_artifact_rejects_malformed_nested_values(field, value):
     assert any("malformed" in problem for problem in problems)
 
 
-def test_runtime_e2e_result_emits_revision_bound_validation_evidence_atomically(
-    tmp_path,
-):
-    evaluate_agents = _load_evaluate_agents()
-    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
-    revision = "api--phase11-canary"
-    destination = tmp_path / "validation-evidence.json"
-    runtime_result = {
+def _complete_case_evidence(evaluate_agents, cases):
+    return [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+        )
+        for case in cases
+    ]
+
+
+def _passing_runtime_result(revision):
+    return {
         "status": "passed",
         "revision": revision,
-        "gates": {
-            name: True for name in thresholds["deterministic_gates"]
+        "rollout_mode": "canary",
+        "promotion": "promote",
+        "checks": {
+            "live_specialist_parity": True,
+            "offline_specialist_parity": True,
+            "runtime_readiness": True,
+            "scoped_topology_isolation": True,
         },
     }
 
+
+def test_single_corpus_evidence_emits_revision_bound_validation_atomically(tmp_path):
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    revision = "api--phase11-canary"
+    destination = tmp_path / "validation-evidence.json"
+
     evidence = evaluate_agents.emit_runtime_validation_evidence(
-        runtime_result,
+        _passing_runtime_result(revision),
+        case_evidence=_complete_case_evidence(evaluate_agents, cases),
+        cases=cases,
         revision=revision,
         thresholds=thresholds,
         destination=destination,
@@ -1825,6 +1860,12 @@ def test_runtime_e2e_result_emits_revision_bound_validation_evidence_atomically(
     assert json.loads(destination.read_text()) == evidence
     assert evidence == {
         "revision": revision,
+        "runtime_checks": {
+            "live_specialist_parity": True,
+            "offline_specialist_parity": True,
+            "runtime_readiness": True,
+            "scoped_topology_isolation": True,
+        },
         "gates": {
             name: True
             for name in sorted(thresholds["deterministic_gates"])
@@ -1841,16 +1882,20 @@ def test_runtime_e2e_result_emits_revision_bound_validation_evidence_atomically(
             "revision does not match",
         ),
         (
-            lambda payload: payload["gates"].pop("scope_isolation"),
-            "exact deterministic gate set",
+            lambda payload: payload["checks"].pop("runtime_readiness"),
+            "exact runtime check set",
         ),
         (
-            lambda payload: payload["gates"].update(scope_isolation=1),
+            lambda payload: payload["checks"].update(runtime_readiness=1),
             "boolean values",
         ),
         (
             lambda payload: payload.update(status="failed"),
             "status must be 'passed'",
+        ),
+        (
+            lambda payload: payload.update(rollout_mode="shadow"),
+            "rollout_mode must be 'canary'",
         ),
     ],
 )
@@ -1859,21 +1904,18 @@ def test_runtime_e2e_validation_evidence_fails_closed_without_replacing_output(
 ):
     evaluate_agents = _load_evaluate_agents()
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
     revision = "api--phase11-canary"
     destination = tmp_path / "validation-evidence.json"
     destination.write_text('{"preserved": true}\n')
-    runtime_result = {
-        "status": "passed",
-        "revision": revision,
-        "gates": {
-            name: True for name in thresholds["deterministic_gates"]
-        },
-    }
+    runtime_result = _passing_runtime_result(revision)
     mutate(runtime_result)
 
     with pytest.raises(ValueError, match=match):
         evaluate_agents.emit_runtime_validation_evidence(
             runtime_result,
+            case_evidence=_complete_case_evidence(evaluate_agents, cases),
+            cases=cases,
             revision=revision,
             thresholds=thresholds,
             destination=destination,
@@ -1882,93 +1924,115 @@ def test_runtime_e2e_validation_evidence_fails_closed_without_replacing_output(
     assert json.loads(destination.read_text()) == {"preserved": True}
 
 
-def test_main_translates_runtime_e2e_result_without_acquiring_live_token(
-    tmp_path, monkeypatch
-):
-    import sys
-
+def test_parity_pass_cannot_make_unproven_mutation_gate_true(tmp_path):
     evaluate_agents = _load_evaluate_agents()
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    dataset = json.loads(_CASES_PATH.read_text())
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    case_evidence = _complete_case_evidence(evaluate_agents, cases)
+    mutation_case_ids = {
+        case.case_id for case in cases if case.safety.get("mutation_denied")
+    }
+    target = next(
+        result
+        for result in case_evidence
+        if result["case_id"] in mutation_case_ids
+    )
+    target["mutation_denied"] = False
     revision = "api--phase11-canary"
-    runtime_result = tmp_path / "runtime-e2e.json"
-    validation_evidence = tmp_path / "validation-evidence.json"
-    runtime_result.write_text(
-        json.dumps(
-            {
-                "status": "passed",
-                "revision": revision,
-                "gates": {
-                    name: True
-                    for name in thresholds["deterministic_gates"]
-                },
-            }
-        )
+    evidence = evaluate_agents.emit_runtime_validation_evidence(
+        _passing_runtime_result(revision),
+        case_evidence=case_evidence,
+        cases=cases,
+        revision=revision,
+        thresholds=thresholds,
+        destination=tmp_path / "validation-evidence.json",
     )
-    monkeypatch.setattr(
-        evaluate_agents,
-        "_token",
-        lambda _resource: pytest.fail("translator must not acquire a live token"),
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "evaluate_agents.py",
-            "--revision",
-            revision,
-            "--runtime-e2e-result",
-            str(runtime_result),
-            "--validation-evidence-out",
-            str(validation_evidence),
-            "--thresholds",
-            str(_THRESHOLDS_PATH),
-        ],
+    artifact = evaluate_agents.build_release_artifact(
+        case_evidence,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision=revision,
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=evidence["gates"],
     )
 
-    assert evaluate_agents.main() == 0
-    assert json.loads(validation_evidence.read_text())["revision"] == revision
+    assert evidence["runtime_checks"]["live_specialist_parity"] is True
+    assert evidence["gates"]["mutation_denied"] is False
+    assert artifact["decision"] == "HOLD"
 
 
-def test_main_writes_false_runtime_gate_evidence_and_returns_hold(
-    tmp_path, monkeypatch
-):
-    import sys
-
+def test_blocked_live_parity_only_fails_parity_dependent_gates(tmp_path):
     evaluate_agents = _load_evaluate_agents()
     thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
     revision = "api--phase11-canary"
-    gates = {name: True for name in thresholds["deterministic_gates"]}
-    gates["citation_reference_integrity"] = False
-    runtime_result = tmp_path / "runtime-e2e.json"
-    runtime_result.write_text(
-        json.dumps(
-            {"status": "passed", "revision": revision, "gates": gates}
-        )
-    )
-    validation_evidence = tmp_path / "validation-evidence.json"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "evaluate_agents.py",
-            "--revision",
-            revision,
-            "--runtime-e2e-result",
-            str(runtime_result),
-            "--validation-evidence-out",
-            str(validation_evidence),
-            "--thresholds",
-            str(_THRESHOLDS_PATH),
-        ],
+    runtime_result = _passing_runtime_result(revision)
+    runtime_result["checks"]["live_specialist_parity"] = False
+    runtime_result["promotion"] = "hold"
+
+    evidence = evaluate_agents.emit_runtime_validation_evidence(
+        runtime_result,
+        case_evidence=_complete_case_evidence(evaluate_agents, cases),
+        cases=cases,
+        revision=revision,
+        thresholds=thresholds,
+        destination=tmp_path / "validation-evidence.json",
     )
 
-    assert evaluate_agents.main() == 3
-    assert (
-        json.loads(validation_evidence.read_text())["gates"][
-            "citation_reference_integrity"
-        ]
-        is False
+    assert evidence["gates"]["manifest_projection_parity"] is False
+    assert evidence["gates"]["tool_grant_parity"] is False
+    assert evidence["gates"]["mutation_denied"] is True
+    assert evidence["gates"]["citation_reference_integrity"] is True
+
+
+def test_missing_case_proof_yields_false_gate_and_hold(tmp_path):
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    dataset = json.loads(_CASES_PATH.read_text())
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    case_evidence = _complete_case_evidence(evaluate_agents, cases)
+    citation_case_ids = {
+        case.case_id
+        for case in cases
+        if case.disposition in {"integrated", "dedicated"}
+    }
+    target = next(
+        result
+        for result in case_evidence
+        if result["case_id"] in citation_case_ids
     )
+    target["citation_reference_integrity_ok"] = None
+    revision = "api--phase11-canary"
+    evidence = evaluate_agents.emit_runtime_validation_evidence(
+        _passing_runtime_result(revision),
+        case_evidence=case_evidence,
+        cases=cases,
+        revision=revision,
+        thresholds=thresholds,
+        destination=tmp_path / "validation-evidence.json",
+    )
+    artifact = evaluate_agents.build_release_artifact(
+        case_evidence,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision=revision,
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=evidence["gates"],
+    )
+
+    assert evidence["gates"]["citation_reference_integrity"] is False
+    assert artifact["decision"] == "HOLD"
 
 
 def test_runtime_e2e_requires_revision_before_live_commands(tmp_path):

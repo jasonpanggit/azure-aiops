@@ -85,11 +85,6 @@ so a rollback is a revision/mode switch, never a rebuild.
   COPILOT_DEPLOYED_REVISION="$CANDIDATE_REVISION" \
   COPILOT_ROLLOUT_MODE=canary \
     bash infra/scripts/validate-runtime-e2e.sh >"$RUNTIME_E2E_RESULT"
-  python3 scripts/evaluate_agents.py \
-    --revision "$CANDIDATE_REVISION" \
-    --runtime-e2e-result "$RUNTIME_E2E_RESULT" \
-    --validation-evidence-out "$VALIDATION_EVIDENCE_JSON" \
-    --thresholds tests/fixtures/copilot_release_thresholds.v1.json
 
   BASELINE_TMP="/secure/path/copilot-orchestration-baseline.json"
   python3 scripts/evaluate_agents.py \
@@ -101,7 +96,8 @@ so a rollback is a revision/mode switch, never a rebuild.
     --provider foundry=available \
     --provider operations_mcp=available \
     --provider azure_mcp=available \
-    --validation-evidence "$VALIDATION_EVIDENCE_JSON" \
+    --runtime-e2e-result "$RUNTIME_E2E_RESULT" \
+    --validation-evidence-out "$VALIDATION_EVIDENCE_JSON" \
     --out "$BASELINE_TMP"
   python3 scripts/evaluate_agents.py \
     --validate-artifact "$BASELINE_TMP" \
@@ -109,13 +105,16 @@ so a rollback is a revision/mode switch, never a rebuild.
     --thresholds tests/fixtures/copilot_release_thresholds.v1.json
   ```
 
-  The translator performs no live calls, rejects missing/extra/non-boolean
-  gates and revision mismatches, and atomically replaces its output only after
-  validation. `COPILOT_DEPLOYED_REVISION` is mandatory, so a missing revision
-  or malformed threshold file stops the runtime gate before any provider call.
-  Do not hand-author `VALIDATION_EVIDENCE_JSON`. A blocked live parity result
-  writes false gate evidence and exits with the evaluator's hold status; a
-  failed or incomplete runtime result produces no replacement evidence file.
+  This is one corpus run: the evaluator derives every deterministic gate from
+  that run's controlled per-case evidence. The runtime result contributes only
+  the exact revision, scoped-topology check, runtime readiness, and offline/live
+  parity facts it actually measured. Parity cannot turn an unrelated mutation,
+  snapshot, citation, scope, tool, or route gate true. The evaluator rejects
+  missing/extra/non-boolean runtime checks and revision mismatches, then
+  atomically replaces `VALIDATION_EVIDENCE_JSON` only after deriving the full
+  gate set. Do not hand-author that file. A missing or unproven case field
+  records a false gate and HOLD; a failed or incomplete runtime result produces
+  no replacement evidence file.
   Exit `0` is `PROMOTE`; exit `3` is `HOLD` or
   `HOLD_OR_DISABLE_MODE`. Copy the temporary artifact into
   `.planning/eval/copilot-orchestration-baseline.json` only after the deployed
