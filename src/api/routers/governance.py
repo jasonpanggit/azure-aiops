@@ -34,7 +34,13 @@ from intelligence.governance import (
 
 from ..dependencies import Context, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
-from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
+from ..evidence import (
+    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    CONFIDENCE_UNKNOWN,
+    Evidence,
+    envelope,
+)
 from ..governance_snapshot import GovernanceSnapshot
 from ..scope import Scope
 
@@ -47,7 +53,7 @@ router = APIRouter(prefix="/api/v1/governance", tags=["governance"])
 FINOPS_ENGINE = "intelligence.governance.FinOpsEngine"
 IDENTITY_ENGINE = "intelligence.governance.IdentityRiskEngine"
 SPN_ENGINE = "intelligence.governance.SpnGovernanceEngine"
-SOURCE_TABLE = "ontology_entities"
+SOURCE_TABLE = "connection_generation_entities"
 
 _NO_IDENTITY_DATA = (
     "No role assignment data has been synced for this scope. This is not a "
@@ -56,7 +62,12 @@ _NO_IDENTITY_DATA = (
 )
 
 
-def _snapshot(context: Context, scope: Scope) -> GovernanceSnapshot:
+def _snapshot(
+    context: Context,
+    scope: Scope,
+    *,
+    require_generation: bool = True,
+) -> GovernanceSnapshot:
     """Resolve the governance snapshot already narrowed to the caller's scope."""
     provider = (
         context.governance_generation_provider(scope)
@@ -69,7 +80,14 @@ def _snapshot(context: Context, scope: Scope) -> GovernanceSnapshot:
             "Governance data is unavailable because no connection has synced yet",
             {"capability": "governance", "provider_state": "unavailable"},
         )
-    return provider.scoped(scope)
+    snapshot = provider.scoped(scope)
+    if require_generation and not snapshot.generation_available:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Governance data is unavailable because no active connection has synced yet",
+            {"capability": "governance", "provider_state": "unavailable"},
+        )
+    return snapshot
 
 
 def _evidence(
@@ -78,10 +96,11 @@ def _evidence(
     *,
     confidence: str = CONFIDENCE_HIGH,
     resource_id: str = "",
+    source_table: str = SOURCE_TABLE,
 ) -> Evidence:
     return Evidence(
         source_engine=engine,
-        source_table=SOURCE_TABLE,
+        source_table=source_table,
         resource_id=resource_id,
         confidence=confidence,
         timestamp=snapshot.observed_at,
@@ -116,7 +135,10 @@ def _spn(snapshot: GovernanceSnapshot) -> SpnGovernanceEngine:
 
 
 def _identity_warnings(snapshot: GovernanceSnapshot) -> list[str]:
-    return [] if snapshot.has_identity_data else [_NO_IDENTITY_DATA]
+    warnings = list(snapshot.warnings)
+    if not snapshot.has_identity_data:
+        warnings.append(_NO_IDENTITY_DATA)
+    return list(dict.fromkeys(warnings))
 
 
 @router.get("/finops/summary", summary="Cost accountability summary")
@@ -128,6 +150,7 @@ def finops_summary(context: Context, scope: ReadScope) -> dict[str, Any]:
         # Savings figures are Azure Advisor's own computation, not ours.
         evidence=_evidence(snapshot, FINOPS_ENGINE),
         scope=scope.to_dict(),
+        warnings=snapshot.warnings,
     )
 
 
@@ -142,6 +165,7 @@ def finops_opportunities(context: Context, scope: ReadScope) -> dict[str, Any]:
         },
         evidence=_evidence(snapshot, FINOPS_ENGINE),
         scope=scope.to_dict(),
+        warnings=snapshot.warnings,
     )
 
 
@@ -155,6 +179,7 @@ def finops_waste(context: Context, scope: ReadScope) -> dict[str, Any]:
         # from observed utilisation, so it is a medium-confidence signal.
         evidence=_evidence(snapshot, FINOPS_ENGINE, confidence=CONFIDENCE_MEDIUM),
         scope=scope.to_dict(),
+        warnings=snapshot.warnings,
     )
 
 
@@ -173,6 +198,7 @@ def finops_attribution(
         {"dimension": dimension, "groups": groups, "count": len(groups)},
         evidence=_evidence(snapshot, FINOPS_ENGINE),
         scope=scope.to_dict(),
+        warnings=snapshot.warnings,
     )
 
 
@@ -249,7 +275,7 @@ def identity_non_human(context: Context, scope: ReadScope) -> dict[str, Any]:
 @router.get("/spn/credentials", summary="Onboarding service principal governance")
 def spn_credentials(context: Context, scope: ReadScope) -> dict[str, Any]:
     """Rotation posture for the credentials the platform itself holds."""
-    snapshot = _snapshot(context, scope)
+    snapshot = _snapshot(context, scope, require_generation=False)
     engine = _spn(snapshot)
     credentials = engine.credentials()
     return envelope(
@@ -260,8 +286,13 @@ def spn_credentials(context: Context, scope: ReadScope) -> dict[str, Any]:
         },
         # Sourced from the connection registry the platform owns, so this is
         # a complete record rather than a sampled one.
-        evidence=_evidence(snapshot, SPN_ENGINE),
+        evidence=_evidence(
+            snapshot,
+            SPN_ENGINE,
+            source_table="connection_registry",
+        ),
         scope=scope.to_dict(),
+        warnings=snapshot.warnings,
     )
 
 
@@ -322,13 +353,17 @@ def audit_export(
     to a warning rather than failing the whole pack: a partial pack with its
     gaps stated is more useful to an auditor than no pack at all.
     """
-    snapshot = _snapshot(context, scope)
+    snapshot = _snapshot(
+        context,
+        scope,
+        require_generation=kind != "subscription_onboarding",
+    )
     builder = AuditExportBuilder(
         scope=scope.to_dict(), observed_at=snapshot.observed_at
     )
     sections: dict[str, Any] = {}
     engines: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(snapshot.warnings)
 
     if kind == "subscription_onboarding":
         engines.append(SPN_ENGINE)
@@ -381,9 +416,57 @@ def audit_export(
         )
         warnings.extend(_identity_warnings(snapshot))
 
+    evidence: list[Evidence]
+    independent_sources = {
+        "network_design": (
+            "network.NetworkIntelligenceService",
+            "network_provider",
+        ),
+        "firewall_nsg": (
+            "network.NetworkIntelligenceService",
+            "network_provider",
+        ),
+        "vulnerability_exposure": (
+            "intelligence.vulnerability.VulnerabilityIntelligenceService",
+            "vulnerability_provider",
+        ),
+        "remediation": (
+            "intelligence.remediation.RemediationPlanner",
+            "remediation_provider",
+        ),
+    }
+    if kind in independent_sources:
+        engine, source_table = independent_sources[kind]
+        evidence = [
+            Evidence(
+                source_engine=engine,
+                source_table=source_table,
+                confidence=CONFIDENCE_UNKNOWN,
+            )
+        ]
+    else:
+        evidence = [
+            _evidence(snapshot, engines[0] if engines else IDENTITY_ENGINE)
+        ]
+    if kind == "subscription_onboarding":
+        evidence = [
+            _evidence(
+                snapshot,
+                SPN_ENGINE,
+                source_table="connection_registry",
+            )
+        ]
+    elif kind == "executive":
+        evidence.append(
+            _evidence(
+                snapshot,
+                SPN_ENGINE,
+                source_table="connection_registry",
+            )
+        )
     return envelope(
         builder.build(kind, sections, engines=engines, warnings=warnings),
-        evidence=_evidence(snapshot, engines[0] if engines else IDENTITY_ENGINE),
+        evidence=evidence,
         scope=scope.to_dict(),
         warnings=warnings,
     )

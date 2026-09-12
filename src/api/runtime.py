@@ -13,10 +13,12 @@ the first request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -186,65 +188,473 @@ ENV_EXPOSURE_WRITE_GENERATION_ID = "AIOPS_EXPOSURE_WRITE_GENERATION_ID"
 ENV_EXPOSURE_READ_GENERATION_ID = "AIOPS_EXPOSURE_READ_GENERATION_ID"
 ENV_EXPOSURE_ROLLBACK_GENERATION_ID = "AIOPS_EXPOSURE_ROLLBACK_GENERATION_ID"
 
+_GOVERNANCE_ENTITY_DATASETS = (
+    "AdvisorRecommendation",
+    "CostActual",
+    "Resource",
+    "VirtualMachine",
+    "ArcServer",
+    "RoleAssignment",
+    "RoleDefinition",
+    "ManagedIdentity",
+)
+_MAX_GOVERNANCE_ROWS = 100_000
+_MAX_GOVERNANCE_BYTES = 128 * 1024 * 1024
+_MAX_GOVERNANCE_ROW_BYTES = 2 * 1024 * 1024
+_MAX_GOVERNANCE_MANIFEST_BYTES = 2 * 1024 * 1024
+_MAX_GOVERNANCE_POINTER_BYTES = 64 * 1024
+_GOVERNANCE_SOURCE_STATUS_DATASET = "situations/source_status"
+
+
+def _governance_dataset_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
+    declared = manifest.get("datasets")
+    if not isinstance(declared, Mapping):
+        raise TypeError("Governance generation manifest has no dataset declarations")
+    counts: dict[str, int] = {}
+    for entity_type in _GOVERNANCE_ENTITY_DATASETS:
+        name = f"entities/{entity_type}"
+        details = declared.get(name)
+        if details is None:
+            raise TypeError(f"Governance dataset declaration is missing: {name}")
+        if not isinstance(details, Mapping):
+            raise TypeError(f"Governance dataset declaration is invalid: {name}")
+        count = details.get("rowCount")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise TypeError(f"Governance dataset row count is invalid: {name}")
+        counts[name] = count
+    return counts
+
+
+def _read_governance_dataset(
+    store: Any,
+    generation: str,
+    name: str,
+    *,
+    expected_rows: int,
+    expected_integrity_hash: str = "",
+    max_bytes: int = _MAX_GOVERNANCE_BYTES,
+) -> tuple[list[dict[str, Any]], int]:
+    if store.is_remote:
+        path = f"{generation}/{name}.jsonl"
+        if not store.fs.exists(path):
+            raise FileNotFoundError(path)
+        handle = store.fs.open(path, "rb")
+    else:
+        path = (Path(generation) / name).with_suffix(".jsonl")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        handle = path.open("rb")
+    rows = []
+    bytes_read = 0
+    with handle:
+        while True:
+            raw_line = handle.readline(_MAX_GOVERNANCE_ROW_BYTES + 1)
+            if not raw_line:
+                break
+            if isinstance(raw_line, str):
+                raw_line = raw_line.encode("utf-8")
+            if len(raw_line) > _MAX_GOVERNANCE_ROW_BYTES:
+                raise ValueError(f"Governance dataset row exceeds its byte limit: {name}")
+            bytes_read += len(raw_line)
+            if bytes_read > max_bytes:
+                raise ValueError(f"Governance snapshot exceeds its byte limit: {name}")
+            if not raw_line.strip():
+                continue
+            if len(rows) >= expected_rows:
+                raise ValueError(f"Governance dataset exceeds its declared row count: {name}")
+            row = json.loads(raw_line.decode("utf-8"))
+            if not isinstance(row, dict):
+                raise TypeError(f"Governance dataset contains a non-object row: {name}")
+            rows.append(row)
+    if len(rows) != expected_rows:
+        raise ValueError(f"Governance dataset row count does not match its manifest: {name}")
+    if (
+        expected_integrity_hash
+        and _governance_integrity_hash(rows) != expected_integrity_hash
+    ):
+        raise ValueError(
+            f"Governance dataset integrity does not match its manifest: {name}"
+        )
+    return rows, bytes_read
+
+
+def _read_governance_manifest(store: Any, generation: str) -> dict[str, Any]:
+    if store.is_remote:
+        path = f"{generation}/manifest.json"
+        if not store.fs.exists(path):
+            raise FileNotFoundError(path)
+        handle = store.fs.open(path, "rb")
+    else:
+        path = Path(generation) / "manifest.json"
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        handle = path.open("rb")
+    with handle:
+        raw = handle.read(_MAX_GOVERNANCE_MANIFEST_BYTES + 1)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if len(raw) > _MAX_GOVERNANCE_MANIFEST_BYTES:
+        raise ValueError("Governance generation manifest exceeds its byte limit")
+    manifest = json.loads(raw.decode("utf-8"))
+    if not isinstance(manifest, dict):
+        raise TypeError("Governance generation manifest must be an object")
+    from storage.datasets import _manifest_integrity_hash
+
+    expected = str(manifest.get("integrityHash") or "")
+    if len(expected) != 64 or _manifest_integrity_hash(manifest) != expected:
+        raise ValueError("Governance generation manifest integrity mismatch")
+    return manifest
+
+
+def _governance_active_generation(store: Any) -> str:
+    if store.is_remote:
+        path = str(store.pointer_path)
+        if not store.fs.exists(path):
+            raise LookupError("Governance generation pointer is missing")
+        handle = store.fs.open(path, "rb")
+    else:
+        pointer = Path(store.pointer_path)
+        if not pointer.exists():
+            current = Path(store.current)
+            if not current.exists():
+                raise LookupError("Governance generation pointer is missing")
+            return str(current.resolve())
+        handle = pointer.open("rb")
+    with handle:
+        raw = handle.read(_MAX_GOVERNANCE_POINTER_BYTES + 1)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if len(raw) > _MAX_GOVERNANCE_POINTER_BYTES:
+        raise ValueError("Governance generation pointer exceeds its byte limit")
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, Mapping):
+        raise TypeError("Governance generation pointer must be an object")
+    name = str(
+        payload.get("active_generation")
+        or payload.get("generation")
+        or ""
+    ).strip()
+    if not name:
+        raise LookupError("Governance generation pointer has no active generation")
+    generation = store.generation_path(name)
+    if generation is None:
+        raise LookupError("Governance active generation is missing")
+    return str(generation)
+
+
+def _governance_integrity_hash(rows: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    for chunk in encoder.iterencode(rows):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _governance_connection_scope(connection: Mapping[str, Any]) -> dict[str, str]:
+    metadata = connection.get("metadata")
+    business = metadata.get("business") if isinstance(metadata, Mapping) else None
+    business = business if isinstance(business, Mapping) else {}
+    environment_mappings = connection.get("environment_mappings")
+    environment = (
+        environment_mappings[0]
+        if isinstance(environment_mappings, list)
+        and environment_mappings
+        and isinstance(environment_mappings[0], Mapping)
+        else {}
+    )
+    linkages = connection.get("business_service_linkages")
+    linkage = (
+        linkages[0]
+        if isinstance(linkages, list)
+        and linkages
+        and isinstance(linkages[0], Mapping)
+        else {}
+    )
+    application_ids = linkage.get("application_ids")
+    application = (
+        str(application_ids[0])
+        if isinstance(application_ids, list) and application_ids
+        else ""
+    )
+    subscription_id = str(connection.get("subscription_id") or "")
+    connection_id = str(connection.get("connection_id") or "")
+    return {
+        "subscription": subscription_id,
+        "subscription_id": subscription_id,
+        "subscription_connection": connection_id,
+        "connection_id": connection_id,
+        "business_service": str(
+            business.get("business_service")
+            or linkage.get("business_service_id")
+            or ""
+        ),
+        "application": str(business.get("application") or application),
+        "environment": str(
+            business.get("environment")
+            or environment.get("environment_name")
+            or linkage.get("environment_name")
+            or ""
+        ),
+        "owner": str(business.get("project_owner") or business.get("owner") or ""),
+        "support_team": str(business.get("support_team") or ""),
+        "criticality": str(business.get("criticality") or ""),
+        "region": str(business.get("region") or ""),
+    }
+
+
+def _governance_entity(
+    entity_type: str,
+    row: Mapping[str, Any],
+    *,
+    connection_scope: Mapping[str, str],
+) -> dict[str, Any]:
+    payload = dict(row)
+    trusted_subscription = connection_scope.get("subscription_id", "")
+    trusted_connection = connection_scope.get("connection_id", "")
+    for alias in ("subscription", "subscription_id", "subscriptionId"):
+        value = str(payload.get(alias) or "")
+        if value and trusted_subscription and value.casefold() != trusted_subscription.casefold():
+            raise PermissionError("Governance row subscription conflicts with its connection")
+        if trusted_subscription:
+            payload[alias] = trusted_subscription
+    for alias in ("subscription_connection", "connection_id", "connectionId"):
+        value = str(payload.get(alias) or "")
+        if value and trusted_connection and value.casefold() != trusted_connection.casefold():
+            raise PermissionError("Governance row connection conflicts with its source")
+        if trusted_connection:
+            payload[alias] = trusted_connection
+    for field in ("id", "resource_id", "targetResourceId", "assignmentScope", "scope"):
+        value = str(payload.get(field) or "")
+        match = re.search(r"/subscriptions/([^/]+)", value, flags=re.IGNORECASE)
+        if match and trusted_subscription and match.group(1).casefold() != trusted_subscription.casefold():
+            raise PermissionError("Governance row ARM scope conflicts with its connection")
+    for key, value in connection_scope.items():
+        if value:
+            payload[key] = value
+    return {
+        "resource_id": str(row.get("id") or row.get("resource_id") or ""),
+        "entity_type": entity_type,
+        "subscription_id": str(
+            row.get("subscriptionId")
+            or row.get("subscription_id")
+            or connection_scope.get("subscription_id")
+        ),
+        **{key: value for key, value in connection_scope.items() if value},
+        "payload_json": payload,
+    }
+
+
+def _governance_source_degradation(row: Mapping[str, Any]) -> str:
+    degraded = {"degraded", "failed", "partial", "stale", "unavailable", "unknown"}
+    for field in ("completeness", "freshness", "status", "availability"):
+        value = str(row.get(field) or "").strip().casefold()
+        if value in degraded:
+            return value
+    return ""
+
 
 def _load_governance_generation_snapshot(
     scope: Scope,
 ) -> GovernanceSnapshot | None:
-    """Resolve one selected connection generation for a governance request.
+    """Read bounded governance families from authorized active generations."""
 
-Existing unscoped and multi-connection behavior remains on the established
-aggregate provider. A request selecting exactly one connection instead
-captures its pointer once and reads every governance row from that same
-immutable generation, so a concurrent promotion or rollback cannot mix
-before/after rows in one export.
-    """
-
-    connections = [
+    scoped_connections = [
         row
         for row in _governance_connections()
         if scope.matches(
-            {
-                "subscription": row.get("subscription_id", ""),
-                "subscription_connection": row.get("connection_id", ""),
-                "business_service": row.get("business_service", ""),
-                "environment": row.get("environment", ""),
-            }
+            _governance_connection_scope(row)
         )
     ]
-    selected_ids = scope.values("subscription_connection")
-    if len(connections) != 1 or not selected_ids:
-        return _load_governance_snapshot()
-    connection = connections[0]
+    connections = [
+        row for row in scoped_connections if row.get("is_active") is not False
+    ]
+    inactive_connections = [
+        {
+            **row,
+            **_governance_connection_scope(row),
+        }
+        for row in scoped_connections
+        if row.get("is_active") is False
+    ]
+    registry_connections = [
+        {
+            **row,
+            **_governance_connection_scope(row),
+        }
+        for row in scoped_connections
+    ]
+    if not connections:
+        if not inactive_connections:
+            return None
+        return GovernanceSnapshot(
+            [],
+            connections=inactive_connections,
+            warnings=["No active governance generation is available"],
+            generation_available=False,
+        )
     from storage.datasets import DatasetStore
 
-    store = DatasetStore(
-        _connection_dataset_dir(
-            str(aiops_home()),
-            str(connection.get("connection_id") or ""),
+    entities: list[dict[str, Any]] = []
+    observed_times: list[str] = []
+    loaded_connections: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_rows = 0
+    total_bytes = 0
+    for connection in connections:
+        store = DatasetStore(
+            _connection_dataset_dir(
+                str(aiops_home()),
+                str(connection.get("connection_id") or ""),
+            )
         )
-    )
-    resolver = GenerationResolver(store)
-    try:
-        selection = resolver.resolve()
-        entities = resolver.read_dataset(
-            "ontology_entities",
-            selection=selection,
-        )
-        manifest = resolver.read_metadata(
-            "manifest.json",
-            selection=selection,
-        )
-    except (LookupError, OSError, TypeError, ValueError):
-        return None
-    return GovernanceSnapshot(
-        entities,
-        observed_at=str(
+        try:
+            active_generation = _governance_active_generation(store)
+            manifest = _read_governance_manifest(
+                store,
+                active_generation,
+            )
+            counts = _governance_dataset_counts(manifest)
+            source_details = manifest["datasets"].get(
+                _GOVERNANCE_SOURCE_STATUS_DATASET
+            )
+            source_row_count = 0
+            source_hash = ""
+            if isinstance(source_details, Mapping):
+                source_rows = source_details.get("rowCount")
+                source_hash = str(source_details.get("integrityHash") or "")
+                if (
+                    isinstance(source_rows, bool)
+                    or not isinstance(source_rows, int)
+                    or source_rows < 0
+                    or len(source_hash) != 64
+                ):
+                    raise TypeError("Governance source status declaration is invalid")
+                source_row_count = source_rows
+            connection_rows = sum(counts.values()) + source_row_count
+            if total_rows + connection_rows > _MAX_GOVERNANCE_ROWS:
+                raise ValueError(
+                    f"Governance snapshot exceeds the {_MAX_GOVERNANCE_ROWS}-row limit"
+                )
+            connection_scope = _governance_connection_scope(connection)
+            connection_entities: list[dict[str, Any]] = []
+            connection_bytes = 0
+            for name, expected_rows in counts.items():
+                entity_type = name.rsplit("/", 1)[-1]
+                details = manifest["datasets"][name]
+                integrity_hash = str(details.get("integrityHash") or "")
+                if len(integrity_hash) != 64:
+                    raise TypeError(
+                        f"Governance dataset integrity hash is invalid: {name}"
+                    )
+                rows, bytes_read = _read_governance_dataset(
+                    store,
+                    active_generation,
+                    name,
+                    expected_rows=expected_rows,
+                    expected_integrity_hash=integrity_hash,
+                    max_bytes=(
+                        _MAX_GOVERNANCE_BYTES - total_bytes - connection_bytes
+                    ),
+                )
+                connection_bytes += bytes_read
+                connection_entities.extend(
+                    _governance_entity(
+                        entity_type,
+                        row,
+                        connection_scope=connection_scope,
+                    )
+                    for row in rows
+                )
+            source_statuses: list[dict[str, Any]] = []
+            if source_row_count or isinstance(source_details, Mapping):
+                source_statuses, bytes_read = _read_governance_dataset(
+                    store,
+                    active_generation,
+                    _GOVERNANCE_SOURCE_STATUS_DATASET,
+                    expected_rows=source_row_count,
+                    expected_integrity_hash=source_hash,
+                    max_bytes=(
+                        _MAX_GOVERNANCE_BYTES - total_bytes - connection_bytes
+                    ),
+                )
+                connection_bytes += bytes_read
+            else:
+                warnings.append(
+                    "Governance source status is unavailable for connection "
+                    f"{connection.get('connection_id') or 'unknown'}; empty "
+                    "results are not proven clean"
+                )
+        except (LookupError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            _LOGGER.warning(
+                "governance_generation_load_failed connection_id=%s",
+                connection.get("connection_id") or "",
+                exc_info=True,
+            )
+            warnings.append(
+                "Governance data is unavailable for connection "
+                f"{connection.get('connection_id') or 'unknown'}"
+            )
+            continue
+        entities.extend(connection_entities)
+        total_rows += connection_rows
+        total_bytes += connection_bytes
+        loaded_connections.append({
+            **connection,
+            **connection_scope,
+        })
+        manifest_time = str(
             manifest.get("startedAt")
             or manifest.get("observed_at")
             or manifest.get("created_at")
             or ""
+        )
+        degraded_statuses = [
+            (row, _governance_source_degradation(row))
+            for row in source_statuses
+            if _governance_source_degradation(row)
+        ]
+        stale_times = [
+            str(row.get("last_success_at") or "")
+            for row, _status in degraded_statuses
+        ]
+        observed_times.append(
+            ""
+            if any(not value for value in stale_times)
+            else min(stale_times)
+            if degraded_statuses
+            else ""
+            if not manifest_time
+            else manifest_time
+        )
+        warnings.extend(
+            "Governance source "
+            f"{row.get('source_family') or 'unknown'} is "
+            f"{status} for connection "
+            f"{connection.get('connection_id') or 'unknown'}"
+            for row, status in degraded_statuses
+        )
+    if not loaded_connections:
+        if not registry_connections:
+            return None
+        return GovernanceSnapshot(
+            [],
+            connections=registry_connections,
+            warnings=[*warnings, "No active governance generation is available"],
+            generation_available=False,
+        )
+    return GovernanceSnapshot(
+        entities,
+        observed_at=(
+            ""
+            if any(not value for value in observed_times)
+            else min(observed_times, default="")
         ),
-        connections=[connection],
+        connections=registry_connections,
+        warnings=warnings,
     )
 
 
@@ -4496,7 +4906,7 @@ def build_context() -> ApiContext:
         patching_provider=lambda: providers.get("patching", optional=True),
         change_provider=lambda: providers.get("change", optional=True),
         governance_provider=lambda: providers.get("governance", optional=True),
-        governance_generation_provider=None,
+        governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
         network_policy_store=_network_policy_store(),
         vulnerability_live_lookup=_lookup_live_cve,

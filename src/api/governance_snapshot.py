@@ -56,10 +56,14 @@ class GovernanceSnapshot:
         *,
         observed_at: str = "",
         connections: Sequence[Mapping[str, Any]] = (),
+        warnings: Sequence[str] = (),
+        generation_available: bool = True,
     ) -> None:
         self._entities = [dict(row) for row in entities]
         self.observed_at = observed_at
         self.connections = [dict(row) for row in connections]
+        self.warnings = list(dict.fromkeys(warnings))
+        self.generation_available = generation_available
 
     @cached_property
     def _by_type(self) -> dict[str, list[dict[str, Any]]]:
@@ -95,7 +99,11 @@ class GovernanceSnapshot:
             if self._matches(connection, scope)
         ]
         snapshot = GovernanceSnapshot(
-            entities, observed_at=self.observed_at, connections=connections
+            entities,
+            observed_at=self.observed_at,
+            connections=connections,
+            warnings=self.warnings,
+            generation_available=self.generation_available,
         )
         return snapshot
 

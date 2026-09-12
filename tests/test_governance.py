@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from api import runtime as api_runtime
 from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
@@ -32,6 +35,7 @@ from intelligence.governance import (
     validate_settings,
 )
 from onboarding.service import SubscriptionOnboardingService
+from storage.datasets import DatasetStore
 
 ADMIN_TOKEN = "admin-token-0123456789"
 READER_TOKEN = "reader-token-0123456789"
@@ -810,6 +814,885 @@ def test_governance_routes_report_unavailable_before_any_sync(tmp_path):
     assert response.json()["error"]["code"] == "provider_unavailable"
 
 
+def _publish_governance_generation(
+    home,
+    connection: dict,
+    datasets: dict[str, list[dict]],
+) -> None:
+    store = DatasetStore(
+        api_runtime._connection_dataset_dir(str(home), connection["connection_id"])
+    )
+    store.publish(
+        datasets,
+        {},
+        {"runId": "governance-raw", "startedAt": NOW.isoformat()},
+        ontology={},
+    )
+
+
+def test_raw_connection_generation_serves_every_governance_section_without_ontology(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection(
+        "a",
+        expires_at=(NOW + timedelta(days=30)).isoformat(),
+        last_sync=NOW.isoformat(),
+    )
+    datasets = {
+        "entities/AdvisorRecommendation": [_advisor_row("/disks/orphan")],
+        "entities/CostActual": [_cost_row("/disks/orphan")],
+        "entities/Resource": [
+            {
+                "id": "/disks/orphan",
+                "type": "microsoft.compute/disks",
+                "subscriptionId": "sub-a",
+                "properties": {"diskState": "Unattached"},
+            }
+        ],
+        "entities/VirtualMachine": [],
+        "entities/ArcServer": [],
+        "entities/RoleAssignment": [
+            _assignment(
+                "assignment-a",
+                principal="principal-a",
+                role="/roles/owner",
+                scope="/subscriptions/sub-a",
+                principal_type="ServicePrincipal",
+                changed=NOW - timedelta(days=200),
+            )
+        ],
+        "entities/RoleDefinition": [_definition("/roles/owner", "Owner", ["*"])],
+        "entities/ManagedIdentity": [
+            {
+                "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-a",
+                "name": "id-a",
+                "subscriptionId": "sub-a",
+                "principalId": "managed-a",
+            }
+        ],
+    }
+    _publish_governance_generation(home, connection, datasets)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    principals = {
+        READER_TOKEN: Principal(
+            subject="scoped@example.com",
+            grants=(Grant("reader", Scope({"subscription": {"sub-a"}})),),
+        )
+    }
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(home),
+        authenticator=StaticTokenAuthenticator(principals),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        governance_provider=lambda: None,
+        governance_generation_provider=api_runtime._load_governance_generation_snapshot,
+        settings_store=EnterpriseSettingsStore(),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    expected = {
+        "/api/v1/governance/finops/summary": ("savings_opportunity_count", 1),
+        "/api/v1/governance/finops/opportunities": ("count", 1),
+        "/api/v1/governance/finops/waste": ("count", 1),
+        "/api/v1/governance/finops/attribution": ("count", 1),
+        "/api/v1/governance/identity/summary": ("assignment_count", 1),
+        "/api/v1/governance/identity/principals": ("count", 1),
+        "/api/v1/governance/identity/non-human": ("count", 2),
+        "/api/v1/governance/identity/stale-access": ("count", 1),
+        "/api/v1/governance/identity/subscription-owners": ("count", 1),
+        "/api/v1/governance/spn/credentials": ("count", 1),
+    }
+    for path, (field, value) in expected.items():
+        response = client.get(path, headers=_headers())
+        assert response.status_code == 200, (path, response.text)
+        assert response.json()["data"][field] == value, path
+        assert any(
+            "empty results are not proven clean" in warning
+            for warning in response.json().get("warnings", [])
+        )
+
+
+def test_active_empty_governance_generation_is_not_reported_as_unsynced(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None, last_sync=NOW.isoformat())
+    _publish_governance_generation(
+        home,
+        connection,
+        {
+            f"entities/{entity_type}": []
+            for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+        },
+    )
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(
+        Scope({"subscription": {"sub-a"}})
+    )
+
+    assert snapshot is not None
+    assert snapshot.rows("RoleAssignment") == []
+    assert [row["connection_id"] for row in snapshot.connections] == ["conn-a"]
+
+
+def test_missing_governance_dataset_declarations_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None)
+    _publish_governance_generation(home, connection, {})
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.generation_available is False
+
+
+def test_governance_rows_preserve_connection_and_business_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = {
+        **_connection("a", expires_at=None),
+        "metadata": {
+            "business": {
+                "application": "checkout",
+                "business_service": "payments",
+                "environment": "production",
+                "project_owner": "platform-team",
+            }
+        },
+    }
+    _publish_governance_generation(
+        home,
+        connection,
+        {
+            **{
+                f"entities/{entity_type}": []
+                for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+            },
+            "entities/AdvisorRecommendation": [_advisor_row("/disks/orphan")],
+        },
+    )
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(
+        Scope({
+            "subscription_connection": {"conn-a"},
+            "business_service": {"payments"},
+            "application": {"checkout"},
+            "environment": {"production"},
+            "owner": {"platform-team"},
+        })
+    )
+
+    assert snapshot is not None
+    row = snapshot.rows("AdvisorRecommendation")[0]
+    assert row["connection_id"] == "conn-a"
+    assert row["business_service"] == "payments"
+    assert row["application"] == "checkout"
+    assert row["environment"] == "production"
+    assert row["owner"] == "platform-team"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"id": "/resources/a", "subscriptionId": "sub-b"},
+        {
+            "id": "/assignments/a",
+            "subscriptionId": "sub-a",
+            "assignmentScope": "/subscriptions/sub-b",
+        },
+    ],
+)
+def test_governance_entity_rejects_scope_conflicts(row: dict) -> None:
+    with pytest.raises(PermissionError, match="conflicts"):
+        api_runtime._governance_entity(
+            "RoleAssignment",
+            row,
+            connection_scope={
+                "subscription_id": "sub-a",
+                "connection_id": "conn-a",
+            },
+        )
+
+
+def test_governance_snapshot_scopes_connections_by_nested_business_metadata() -> None:
+    connection = {
+        **_connection("a", expires_at=None),
+        "metadata": {
+            "business": {
+                "business_service": "payments",
+                "environment": "production",
+            }
+        },
+    }
+    snapshot = GovernanceSnapshot(
+        [],
+        connections=[
+            {
+                **connection,
+                **api_runtime._governance_connection_scope(connection),
+            }
+        ],
+    )
+
+    scoped = snapshot.scoped(
+        Scope({
+            "business_service": {"payments"},
+            "environment": {"production"},
+        })
+    )
+
+    assert [row["connection_id"] for row in scoped.connections] == ["conn-a"]
+
+
+def test_governance_reader_keeps_healthy_connections_when_one_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection_a = _connection("a", expires_at=None)
+    connection_b = {
+        **_connection("b", expires_at=None),
+        "subscription_id": "sub-b",
+    }
+    _publish_governance_generation(
+        home,
+        connection_a,
+        {
+            **{
+                f"entities/{entity_type}": []
+                for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+            },
+            "entities/RoleAssignment": [
+                _assignment("a", principal="principal-a")
+            ],
+        },
+    )
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_connections",
+        lambda: [connection_a, connection_b],
+    )
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert [row["principalId"] for row in snapshot.rows("RoleAssignment")] == [
+        "principal-a"
+    ]
+    assert {row["connection_id"] for row in snapshot.connections} == {
+        "conn-a",
+        "conn-b",
+    }
+    assert any("conn-b" in warning for warning in snapshot.warnings)
+
+
+def test_failed_connection_does_not_leak_rows_or_poison_later_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection_a = _connection("a", expires_at=None)
+    connection_b = {
+        **_connection("b", expires_at=None),
+        "subscription_id": "sub-b",
+    }
+    empty_hash = api_runtime._governance_integrity_hash([])
+    row = {"id": "/resources/healthy", "subscriptionId": "sub-b"}
+    row_hash = api_runtime._governance_integrity_hash([row])
+
+    class _Store:
+        is_remote = False
+
+        def __init__(self, root: str) -> None:
+            self.connection_id = root.rsplit("/", 1)[-1]
+
+    class _Resolver:
+        def __init__(self, store: _Store) -> None:
+            self.store = store
+
+        def resolve(self) -> SimpleNamespace:
+            return SimpleNamespace(active_generation=self.store.connection_id)
+
+        def read_metadata(self, _name: str, *, selection) -> dict:
+            return {
+                "startedAt": NOW.isoformat(),
+                "datasets": {
+                    f"entities/{entity_type}": {
+                        "rowCount": 1 if entity_type == "Resource" else 0,
+                        "integrityHash": (
+                            row_hash if entity_type == "Resource" else empty_hash
+                        ),
+                    }
+                    for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+                },
+            }
+
+    def read(_store, generation, name, **_kwargs):
+        if generation == "conn-a" and name == "entities/VirtualMachine":
+            raise ValueError("late connection failure")
+        if name == "entities/Resource":
+            value = {
+                "id": f"/resources/{generation}",
+                "subscriptionId": "sub-a" if generation == "conn-a" else "sub-b",
+            }
+            return [value], 80
+        return [], 0
+
+    monkeypatch.setattr("storage.datasets.DatasetStore", _Store)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_active_generation",
+        lambda store: _Resolver(store).resolve().active_generation,
+    )
+    monkeypatch.setattr(
+        api_runtime,
+        "_read_governance_manifest",
+        lambda _store, _generation: _Resolver(_store).read_metadata(
+            "manifest.json",
+            selection=None,
+        ),
+    )
+    monkeypatch.setattr(api_runtime, "_read_governance_dataset", read)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_connections",
+        lambda: [connection_a, connection_b],
+    )
+    monkeypatch.setattr(api_runtime, "_MAX_GOVERNANCE_ROWS", 1)
+    monkeypatch.setattr(api_runtime, "_MAX_GOVERNANCE_BYTES", 100)
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert [row["id"] for row in snapshot.rows("Resource")] == [
+        "/resources/conn-b"
+    ]
+    assert {row["connection_id"] for row in snapshot.connections} == {
+        "conn-a",
+        "conn-b",
+    }
+
+
+def test_disabled_only_governance_scope_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = {**_connection("a", expires_at=None), "is_active": False}
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.generation_available is False
+    assert [row["connection_id"] for row in snapshot.connections] == ["conn-a"]
+
+
+def test_registry_only_snapshot_serves_spn_but_not_finops(tmp_path) -> None:
+    snapshot = GovernanceSnapshot(
+        [],
+        connections=[
+            {**_connection("disabled", expires_at=None), "is_active": False}
+        ],
+        generation_available=False,
+        warnings=["No active governance generation is available"],
+    )
+    client = _client(tmp_path, snapshot=snapshot)
+
+    spn = client.get("/api/v1/governance/spn/credentials", headers=_headers())
+    finops = client.get("/api/v1/governance/finops/summary", headers=_headers())
+    onboarding = client.get(
+        "/api/v1/governance/exports/subscription_onboarding",
+        headers=_headers(),
+    )
+
+    assert spn.status_code == 200
+    assert spn.json()["data"]["count"] == 1
+    assert spn.json()["evidence"][0]["source_table"] == "connection_registry"
+    assert finops.status_code == 503
+    assert onboarding.status_code == 200
+    assert onboarding.json()["evidence"][0]["source_table"] == "connection_registry"
+
+
+def test_failed_active_generation_remains_visible_to_spn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    connection = _connection("failed", expires_at=None)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: tmp_path / "aiops")
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.generation_available is False
+    assert [row["connection_id"] for row in snapshot.connections] == ["conn-failed"]
+
+
+def test_disabled_connection_remains_visible_to_spn_with_active_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    active = _connection("active", expires_at=None)
+    disabled = {
+        **_connection("disabled", expires_at=None),
+        "is_active": False,
+    }
+    _publish_governance_generation(
+        home,
+        active,
+        {
+            f"entities/{entity_type}": []
+            for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+        },
+    )
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_connections",
+        lambda: [active, disabled],
+    )
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert {row["connection_id"] for row in snapshot.connections} == {
+        "conn-active",
+        "conn-disabled",
+    }
+
+
+def test_governance_reader_rejects_oversized_and_corrupt_generations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None)
+    datasets = {
+        f"entities/{entity_type}": []
+        for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+    }
+    datasets["entities/Resource"] = [{
+        "id": "/resources/a",
+        "subscriptionId": "sub-a",
+        "properties": {"payload": "x" * 100},
+    }]
+    _publish_governance_generation(home, connection, datasets)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+    monkeypatch.setattr(api_runtime, "_MAX_GOVERNANCE_BYTES", 32)
+
+    oversized = api_runtime._load_governance_generation_snapshot(Scope({}))
+    assert oversized is not None
+    assert oversized.generation_available is False
+
+    monkeypatch.setattr(api_runtime, "_MAX_GOVERNANCE_BYTES", 1024 * 1024)
+    store = DatasetStore(
+        api_runtime._connection_dataset_dir(str(home), connection["connection_id"])
+    )
+    generation = store.current_generation()
+    assert generation is not None
+    resource_path = (Path(generation) / "entities/Resource").with_suffix(".jsonl")
+    resource_path.write_text(
+        json.dumps({"id": "/resources/tampered", "subscriptionId": "sub-a"})
+        + "\n"
+    )
+
+    corrupt = api_runtime._load_governance_generation_snapshot(Scope({}))
+    assert corrupt is not None
+    assert corrupt.generation_available is False
+
+
+def test_governance_manifest_is_bounded_and_integrity_checked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = DatasetStore(tmp_path / "store")
+    store.publish(
+        {
+            f"entities/{entity_type}": []
+            for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+        },
+        {},
+        {"runId": "generation-1", "startedAt": NOW.isoformat()},
+        ontology={},
+    )
+    generation = store.current_generation()
+    assert generation is not None
+    manifest_path = Path(generation) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["startedAt"] = (NOW + timedelta(days=1)).isoformat()
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="integrity"):
+        api_runtime._read_governance_manifest(store, str(generation))
+
+    monkeypatch.setattr(api_runtime, "_MAX_GOVERNANCE_MANIFEST_BYTES", 16)
+    with pytest.raises(ValueError, match="byte limit"):
+        api_runtime._read_governance_manifest(store, str(generation))
+
+
+def test_governance_generation_pointer_is_bounded(tmp_path) -> None:
+    store = DatasetStore(tmp_path / "store")
+    pointer = Path(store.pointer_path)
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_bytes(
+        b'{"active_generation":"'
+        + b"x" * api_runtime._MAX_GOVERNANCE_POINTER_BYTES
+        + b'"}'
+    )
+
+    with pytest.raises(ValueError, match="pointer exceeds its byte limit"):
+        api_runtime._governance_active_generation(store)
+
+
+def test_stale_governance_source_status_qualifies_snapshot_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None)
+    stale_at = (NOW - timedelta(days=2)).isoformat()
+    datasets = {
+        f"entities/{entity_type}": []
+        for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+    }
+    datasets["entities/RoleAssignment"] = [
+        _assignment("a", principal="principal-a")
+    ]
+    datasets["situations/source_status"] = [{
+        "partition_key": "conn-a:role_assignments",
+        "connection_id": "conn-a",
+        "source_family": "role_assignments",
+        "attempted_generation": "governance-raw",
+        "effective_generation": "previous-generation",
+        "attempted_at": NOW.isoformat(),
+        "last_success_at": stale_at,
+        "row_count": 0,
+        "represented_count": 1,
+        "expected_count": 1,
+        "completeness": "stale",
+        "safe_error_code": "provider_unavailable",
+        "safe_error_summary": "Role assignment refresh failed",
+    }]
+    _publish_governance_generation(home, connection, datasets)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.observed_at == stale_at
+    assert any("role_assignments" in warning for warning in snapshot.warnings)
+
+
+def test_failed_governance_source_without_observation_time_is_not_current(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None)
+    datasets = {
+        f"entities/{entity_type}": []
+        for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+    }
+    datasets["situations/source_status"] = [{
+        "partition_key": "conn-a:cost_actuals",
+        "connection_id": "conn-a",
+        "source_family": "cost_actuals",
+        "attempted_generation": "governance-raw",
+        "effective_generation": "",
+        "attempted_at": NOW.isoformat(),
+        "last_success_at": "",
+        "row_count": 0,
+        "represented_count": 0,
+        "expected_count": 1,
+        "status": "unavailable",
+        "availability": "unavailable",
+        "freshness": "unknown",
+        "completeness": "unavailable",
+        "safe_error_code": "provider_unavailable",
+        "safe_error_summary": "Cost refresh failed",
+    }]
+    _publish_governance_generation(home, connection, datasets)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.observed_at == ""
+    assert any("cost_actuals" in warning for warning in snapshot.warnings)
+
+
+def test_any_degraded_source_without_success_time_makes_snapshot_time_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection = _connection("a", expires_at=None)
+    datasets = {
+        f"entities/{entity_type}": []
+        for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+    }
+    datasets["situations/source_status"] = [
+        {
+            "partition_key": "conn-a:role_assignments",
+            "connection_id": "conn-a",
+            "source_family": "role_assignments",
+            "attempted_generation": "governance-raw",
+            "effective_generation": "previous",
+            "attempted_at": NOW.isoformat(),
+            "last_success_at": (NOW - timedelta(days=1)).isoformat(),
+            "row_count": 0,
+            "represented_count": 1,
+            "expected_count": 1,
+            "completeness": "stale",
+            "safe_error_code": "provider_unavailable",
+            "safe_error_summary": "Role refresh failed",
+        },
+        {
+            "partition_key": "conn-a:cost_actuals",
+            "connection_id": "conn-a",
+            "source_family": "cost_actuals",
+            "attempted_generation": "governance-raw",
+            "effective_generation": "",
+            "attempted_at": NOW.isoformat(),
+            "last_success_at": "",
+            "row_count": 0,
+            "represented_count": 0,
+            "expected_count": 1,
+            "completeness": "unavailable",
+            "safe_error_code": "provider_unavailable",
+            "safe_error_summary": "Cost refresh failed",
+        },
+    ]
+    _publish_governance_generation(home, connection, datasets)
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+
+    snapshot = api_runtime._load_governance_generation_snapshot(Scope({}))
+
+    assert snapshot is not None
+    assert snapshot.observed_at == ""
+
+
+def test_governance_generation_reader_does_not_load_an_unauthorized_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    connection_a = _connection("a", expires_at=None)
+    connection_b = {
+        **_connection("b", expires_at=None),
+        "subscription_id": "sub-b",
+    }
+    _publish_governance_generation(
+        home,
+        connection_a,
+        {
+            **{
+                f"entities/{entity_type}": []
+                for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+            },
+            "entities/RoleAssignment": [
+                _assignment("a", principal="principal-a")
+            ],
+        },
+    )
+    _publish_governance_generation(
+        home,
+        connection_b,
+        {
+            **{
+                f"entities/{entity_type}": []
+                for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+            },
+            "entities/RoleAssignment": [
+                {
+                    **_assignment("b", principal="principal-b"),
+                    "subscriptionId": "sub-b",
+                    "assignmentScope": "/subscriptions/sub-b",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_connections",
+        lambda: [connection_a, connection_b],
+    )
+
+    snapshot = api_runtime._load_governance_generation_snapshot(
+        Scope({"subscription": {"sub-a"}})
+    )
+
+    assert snapshot is not None
+    assert [row["principalId"] for row in snapshot.rows("RoleAssignment")] == [
+        "principal-a"
+    ]
+    assert [row["connection_id"] for row in snapshot.connections] == ["conn-a"]
+
+
+def test_default_runtime_wires_connection_scoped_governance_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path / "aiops"))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv(
+        "AIOPS_API_TOKENS",
+        json.dumps(
+            {
+                READER_TOKEN: {
+                    "subject": "reader@example.com",
+                    "grants": [{"role": "reader", "scope": {}}],
+                }
+            }
+        ),
+    )
+
+    context = api_runtime.build_context()
+
+    assert (
+        context.governance_generation_provider
+        is api_runtime._load_governance_generation_snapshot
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared_rows", "available"),
+    [
+        (api_runtime._MAX_GOVERNANCE_ROWS, True),
+        (api_runtime._MAX_GOVERNANCE_ROWS + 1, False),
+    ],
+)
+def test_governance_generation_reader_enforces_aggregate_row_bound_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+    declared_rows: int,
+    available: bool,
+) -> None:
+    connection = _connection("a", expires_at=None)
+    reads: list[tuple[str, int]] = []
+
+    class _Store:
+        is_remote = False
+
+        def __init__(self, _root: str) -> None:
+            pass
+
+    class _Resolver:
+        def __init__(self, _store: _Store) -> None:
+            pass
+
+        def resolve(self) -> SimpleNamespace:
+            return SimpleNamespace(active_generation="generation")
+
+    empty_hash = api_runtime._governance_integrity_hash([])
+    manifest = {
+        "startedAt": NOW.isoformat(),
+        "datasets": {
+            f"entities/{entity_type}": {
+                "rowCount": (
+                    declared_rows if entity_type == "RoleAssignment" else 0
+                ),
+                "integrityHash": empty_hash,
+            }
+            for entity_type in api_runtime._GOVERNANCE_ENTITY_DATASETS
+        },
+    }
+
+    monkeypatch.setattr("storage.datasets.DatasetStore", _Store)
+    monkeypatch.setattr(
+        api_runtime,
+        "_governance_active_generation",
+        lambda _store: "generation",
+    )
+    monkeypatch.setattr(
+        api_runtime,
+        "_read_governance_manifest",
+        lambda _store, _generation: manifest,
+    )
+    monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
+    monkeypatch.setattr(
+        api_runtime,
+        "_read_governance_dataset",
+        lambda _store, _generation, name, **kwargs: (
+            reads.append((name, kwargs["expected_rows"])) or ([], 0)
+        ),
+    )
+
+    snapshot = api_runtime._load_governance_generation_snapshot(
+        Scope({"subscription": {"sub-a"}})
+    )
+
+    assert snapshot is not None
+    assert snapshot.generation_available is available
+    assert bool(reads) is available
+
+
+def test_governance_dataset_reader_rejects_rows_beyond_manifest_count(tmp_path) -> None:
+    generation = tmp_path / "generation"
+    path = generation / "entities" / "RoleAssignment.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"id":"a"}\n{"id":"b"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exceeds its declared row count"):
+        api_runtime._read_governance_dataset(
+            SimpleNamespace(is_remote=False),
+            str(generation),
+            "entities/RoleAssignment",
+            expected_rows=1,
+        )
+
+
+@pytest.mark.parametrize("contents", [None, " \n" * 32])
+def test_governance_zero_row_dataset_requires_bounded_artifact(
+    tmp_path,
+    contents: str | None,
+) -> None:
+    generation = tmp_path / "generation"
+    path = generation / "entities" / "RoleAssignment.jsonl"
+    path.parent.mkdir(parents=True)
+    if contents is not None:
+        path.write_text(contents, encoding="utf-8")
+
+    if contents is None:
+        with pytest.raises(FileNotFoundError):
+            api_runtime._read_governance_dataset(
+                SimpleNamespace(is_remote=False),
+                str(generation),
+                "entities/RoleAssignment",
+                expected_rows=0,
+                expected_integrity_hash=api_runtime._governance_integrity_hash([]),
+            )
+    else:
+        with pytest.raises(ValueError, match="byte limit"):
+            api_runtime._read_governance_dataset(
+                SimpleNamespace(is_remote=False),
+                str(generation),
+                "entities/RoleAssignment",
+                expected_rows=0,
+                expected_integrity_hash=api_runtime._governance_integrity_hash([]),
+                max_bytes=16,
+            )
+
+
 def test_identity_summary_returns_evidence_and_scope(tmp_path):
     client = _client(tmp_path, snapshot=_snapshot())
     response = client.get("/api/v1/governance/identity/summary", headers=_headers())
@@ -817,6 +1700,7 @@ def test_identity_summary_returns_evidence_and_scope(tmp_path):
     body = response.json()
     # The envelope carries evidence as a list of records.
     assert body["evidence"][0]["source_engine"].endswith("IdentityRiskEngine")
+    assert body["evidence"][0]["source_table"] == "connection_generation_entities"
     assert "scope" in body
 
 
@@ -827,6 +1711,70 @@ def test_empty_identity_data_is_warned_about_not_silently_empty(tmp_path):
     body = response.json()
     assert body["data"]["count"] == 0
     assert any("not a statement" in warning.lower() for warning in body["warnings"])
+
+
+def test_governance_snapshot_warnings_reach_finops_and_identity_routes(tmp_path):
+    warning = "Governance data is unavailable for connection conn-b"
+    client = _client(
+        tmp_path,
+        snapshot=GovernanceSnapshot(
+            [],
+            observed_at="2026-01-01T00:00:00Z",
+            warnings=[warning],
+        ),
+    )
+
+    finops = client.get("/api/v1/governance/finops/summary", headers=_headers())
+    identity = client.get(
+        "/api/v1/governance/identity/principals",
+        headers=_headers(),
+    )
+
+    assert warning in finops.json()["warnings"]
+    assert warning in identity.json()["warnings"]
+
+
+def test_executive_export_cites_generation_and_connection_registry(tmp_path):
+    client = _client(tmp_path, snapshot=_snapshot())
+
+    response = client.get(
+        "/api/v1/governance/exports/executive",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert {item["source_table"] for item in response.json()["evidence"]} == {
+        "connection_generation_entities",
+        "connection_registry",
+    }
+
+
+@pytest.mark.parametrize(
+    ("kind", "source_table"),
+    [
+        ("network_design", "network_provider"),
+        ("firewall_nsg", "network_provider"),
+        ("vulnerability_exposure", "vulnerability_provider"),
+        ("remediation", "remediation_provider"),
+    ],
+)
+def test_independent_audit_exports_do_not_borrow_governance_freshness(
+    tmp_path,
+    kind: str,
+    source_table: str,
+) -> None:
+    client = _client(tmp_path, snapshot=_snapshot())
+
+    response = client.get(
+        f"/api/v1/governance/exports/{kind}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    evidence = response.json()["evidence"][0]
+    assert evidence["source_table"] == source_table
+    assert evidence["timestamp"] == ""
+    assert evidence["confidence"] == "unknown"
 
 
 def test_finops_summary_exposes_unavailable_metrics(tmp_path):
