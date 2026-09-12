@@ -43,7 +43,12 @@ import type {
   RemediationWorkflow,
 } from "@/lib/services";
 import { ApiError } from "@/lib/types";
-import type { RemediationDecision, RemediationPlan } from "@/lib/types";
+import type {
+  Envelope,
+  RemediationDecision,
+  RemediationPlan,
+  RemediationPlanReport,
+} from "@/lib/types";
 
 import { usePollingBackoff } from "./polling";
 
@@ -638,9 +643,19 @@ function RemediationContent() {
       ),
     [effectiveScope, searchParams],
   );
-  const plans = useApi(
-    () => operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource),
-    [scopeKey, requestedResource],
+  const plans = useApi<Envelope<RemediationPlanReport>>(
+    () =>
+      complianceReview
+        ? Promise.resolve({
+            data: { plans: [] },
+            evidence: [],
+            warnings: [],
+            scope: {},
+            knowledge_version: "",
+            pagination: null,
+          })
+        : operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource),
+    [scopeKey, requestedResource, Boolean(complianceReview)],
   );
   const handoffs = useApi(
     () =>
@@ -1270,12 +1285,12 @@ function RemediationContent() {
         <WorkflowBlockers blockers={workflow.blockers} activeStep={activeStep} />
       )}
 
-      {pageError ? (
+      {complianceReview ? (
+        <ComplianceFindingReviewPanel review={complianceReview} />
+      ) : pageError ? (
         <StatePanel title="Remediation plans unavailable" message={pageError.message} tone="error" />
       ) : plans.loading ? (
         <StatePanel title="Loading governed fixes" message="Reading scoped, evidence-backed plans." tone="loading" />
-      ) : complianceReview ? (
-        <ComplianceFindingReviewPanel review={complianceReview} />
       ) : (
         <div className="remediation-workflow-layout">
           <aside className="card remediation-workflow-selection">
