@@ -111,6 +111,7 @@ output "ontology_evidence_role_contract" {
         workspace_id = fabric_workspace.ontology_discovery_state[0].id
         item_id      = fabric_lakehouse.ontology_discovery_state[0].id
       }
+
       ontology_command = {
         workspace_id = fabric_workspace.ontology_command[0].id
         item_id      = fabric_lakehouse.ontology_command[0].id
@@ -128,5 +129,17 @@ output "ontology_evidence_role_contract" {
         item_id      = fabric_lakehouse.ontology_rbac_validation[0].id
       }
     }
+  } : null
+}
+
+output "ontology_coordinator_source_role_contract" {
+  description = "Exact production connection-registry read contract for the ontology coordinator."
+  value = var.enable_fabric ? {
+    principal_object_id   = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+    principal_resource_id = azurerm_user_assigned_identity.ontology_coordinator.id
+    tenant_id             = var.tenant_id
+    workspace_id          = fabric_workspace.ops[0].id
+    item_id               = fabric_lakehouse.context_graph[0].id
+    path                  = "/Files/aiops/connections"
   } : null
 }

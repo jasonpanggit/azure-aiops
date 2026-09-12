@@ -205,6 +205,10 @@ contract_file="$(mktemp)"
 chmod 0600 "$contract_file"
 terraform -chdir=infra/terraform output -json \
   ontology_evidence_role_contract >"$contract_file"
+source_contract_file="$(mktemp)"
+chmod 0600 "$source_contract_file"
+terraform -chdir=infra/terraform output -json \
+  ontology_coordinator_source_role_contract >"$source_contract_file"
 ```
 
 Run a local dry run first, then the server-side dry-run, ETag-guarded write, and
@@ -213,17 +217,29 @@ post-write verification:
 ```bash
 uv run python scripts/reconcile_onelake_data_access_roles.py \
   --contract-file "$contract_file" \
+  --coordinator-source-contract-file "$source_contract_file" \
   --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
   --output .planning/eval/ontology-onelake-role-dry-run.json
 uv run python scripts/reconcile_onelake_data_access_roles.py \
   --contract-file "$contract_file" \
+  --coordinator-source-contract-file "$source_contract_file" \
   --azure-config-dir "$AIOPS_DEPLOYER_AZURE_CONFIG_DIR" \
   --output .planning/eval/ontology-onelake-role-reconciliation.json \
   --apply
 rm "$contract_file"
+rm "$source_contract_file"
 ```
 
 The script acquires a delegated Fabric token from only the selected mode-0700
 Azure CLI context. Each write is preceded by Fabric's `dryRun=true` request,
 uses the same collection ETag, and is followed by a GET that must return the
 exact `ManagedIdentity` member shape. Unrelated roles are preserved.
+
+The fixed prepare Job reads the production connection registry through the
+separate `Phase13CoordinatorConnectionRead` role and mirrors exactly one
+eligible non-production connection into the isolated validation registry.
+Only its credential reference is copied; secrets remain in Key Vault and are
+resolved at runtime by the coordinator identity. The other two fixture members
+remain synthetic to exercise bounded retry and fairness behavior. In
+validation, both coordinator and publisher Jobs are manual-only so scheduled
+executions cannot race the evidence sequence.

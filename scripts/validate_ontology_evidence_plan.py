@@ -237,6 +237,100 @@ def _validate_fixture_job_update(change: Mapping[str, object]) -> None:
         )
 
 
+def _validate_validation_manual_transition(
+    change: Mapping[str, object],
+    *,
+    address: str,
+) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError(
+            f"{address} validation trigger shape is invalid"
+        ) from exc
+    schedule = before.get("schedule_trigger_config")
+    manual = after.get("manual_trigger_config")
+    if (
+        not isinstance(schedule, list)
+        or len(schedule) != 1
+        or after.get("schedule_trigger_config") not in (None, [])
+        or before.get("manual_trigger_config") not in (None, [])
+        or not isinstance(manual, list)
+        or manual
+        != [{"parallelism": 1, "replica_completion_count": 1}]
+    ):
+        raise EvidencePlanError(
+            f"{address} must transition from schedule to fixed manual trigger"
+        )
+    before["schedule_trigger_config"] = []
+    after["manual_trigger_config"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            f"{address} may change only image and validation trigger"
+        )
+
+
+def _coordinator_role_addresses(subscription_id: str) -> dict[str, str]:
+    return {
+        (
+            "azurerm_role_assignment."
+            f'ontology_coordinator_validation_reader["{subscription_id}"]'
+        ): "Reader",
+        (
+            "azurerm_role_assignment."
+            "ontology_coordinator_validation_monitoring_reader"
+            f'["{subscription_id}"]'
+        ): "Monitoring Reader",
+        (
+            "azurerm_role_assignment."
+            "ontology_coordinator_key_vault_secrets"
+        ): "Key Vault Secrets User",
+    }
+
+
+def _validate_coordinator_roles(
+    rows: Mapping[str, Mapping[str, Any]],
+    *,
+    expected_principal_id: str,
+    expected_subscription_id: str,
+    expected_key_vault_id: str,
+) -> dict[str, str]:
+    expected = _coordinator_role_addresses(expected_subscription_id)
+    for address, role_name in expected.items():
+        change = rows.get(address)
+        if not isinstance(change, Mapping):
+            raise EvidencePlanError(
+                f"missing coordinator role contract {address}"
+            )
+        actions = tuple(str(value) for value in change.get("actions") or ())
+        if actions not in {("create",), ("no-op",)}:
+            raise EvidencePlanError(
+                f"{address} must be create-only or already converged"
+            )
+        values = change.get("after")
+        values = values if isinstance(values, Mapping) else {}
+        expected_scope = (
+            expected_key_vault_id
+            if role_name == "Key Vault Secrets User"
+            else f"/subscriptions/{expected_subscription_id}"
+        )
+        if (
+            values.get("principal_id") != expected_principal_id
+            or values.get("role_definition_name") != role_name
+            or str(values.get("scope") or "").casefold()
+            != expected_scope.casefold()
+        ):
+            raise EvidencePlanError(
+                f"{address} exceeds the coordinator read-only boundary"
+            )
+    return expected
+
+
 def validate_targeted_plan(
     plan: Mapping[str, Any],
     *,
@@ -244,6 +338,9 @@ def validate_targeted_plan(
     expected_principal_id: str,
     expected_identity_id: str,
     production_workspace_id: str,
+    expected_coordinator_principal_id: str,
+    expected_subscription_id: str,
+    expected_key_vault_id: str,
 ) -> dict[str, object]:
     """Require six creates plus image-only updates to five existing Jobs."""
 
@@ -263,8 +360,19 @@ def validate_targeted_plan(
         if actions and actions != ("no-op",):
             changes[address] = actions
             rows[address] = change
+    coordinator_roles = _validate_coordinator_roles(
+        all_rows,
+        expected_principal_id=expected_coordinator_principal_id,
+        expected_subscription_id=expected_subscription_id,
+        expected_key_vault_id=expected_key_vault_id,
+    )
+    allowed_addresses = CREATE_ADDRESSES | UPDATE_ADDRESSES | set(
+        coordinator_roles
+    )
 
-    missing_contract = sorted(CREATE_ADDRESSES - set(all_rows))
+    missing_contract = sorted(
+        (CREATE_ADDRESSES | set(coordinator_roles)) - set(all_rows)
+    )
     invalid_contract = sorted(
         address
         for address in CREATE_ADDRESSES
@@ -279,9 +387,9 @@ def validate_targeted_plan(
         missing_contract
         or invalid_contract
         or not required_changes.issubset(changes)
-        or set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES
+        or set(changes) - allowed_addresses
     ):
-        unexpected = sorted(set(changes) - CREATE_ADDRESSES - UPDATE_ADDRESSES)
+        unexpected = sorted(set(changes) - allowed_addresses)
         missing = sorted(required_changes - set(changes))
         raise EvidencePlanError(
             "targeted plan must contain the exact evidence rollout "
@@ -310,6 +418,18 @@ def validate_targeted_plan(
             "azurerm_container_app_job.ontology_fixture_cleanup[0]",
         }:
             _validate_fixture_job_update(change)
+        elif address in {
+            "azurerm_container_app_job.ontology_discovery",
+            "azurerm_container_app_job.ontology_publisher",
+        }:
+            paths = _changed_paths(change.get("before"), change.get("after"))
+            if paths == {"template[0].container[0].image"}:
+                pass
+            else:
+                _validate_validation_manual_transition(
+                    change,
+                    address=address,
+                )
         else:
             paths = _changed_paths(change.get("before"), change.get("after"))
             if paths != {"template[0].container[0].image"}:
@@ -359,6 +479,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-principal-id", required=True)
     parser.add_argument("--evidence-identity-id", required=True)
     parser.add_argument("--production-workspace-id", required=True)
+    parser.add_argument("--coordinator-principal-id", required=True)
+    parser.add_argument("--subscription-id", required=True)
+    parser.add_argument("--key-vault-id", required=True)
     return parser
 
 
@@ -371,6 +494,9 @@ def main(argv: list[str] | None = None) -> int:
         expected_principal_id=args.evidence_principal_id,
         expected_identity_id=args.evidence_identity_id,
         production_workspace_id=args.production_workspace_id,
+        expected_coordinator_principal_id=args.coordinator_principal_id,
+        expected_subscription_id=args.subscription_id,
+        expected_key_vault_id=args.key_vault_id,
     )
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
