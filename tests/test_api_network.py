@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import pytest
@@ -309,6 +310,61 @@ def test_business_scope_uses_live_active_subscriptions(tmp_path) -> None:
 
 
 class TestTopology:
+    def test_unrestricted_scope_uses_active_onboarded_subscriptions_for_hybrid_provider(
+        self, tmp_path, monkeypatch
+    ):
+        service = build_service(network_rows())
+        hybrid_calls: list[list[str]] = []
+        onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+        connections = [
+            SimpleNamespace(subscription_id=PROD_SUB, is_active=True),
+            SimpleNamespace(subscription_id=UAT_SUB, is_active=True),
+        ]
+
+        def list_connections(*, include_disabled=True):
+            assert include_disabled is False
+            return connections
+
+        monkeypatch.setattr(
+            onboarding.registry,
+            "list",
+            list_connections,
+        )
+        runtime = ProviderRuntime(
+            {
+                "network": ProviderSpec(
+                    loader=lambda: pytest.fail(
+                        "deferred managed network provider must not be resolved"
+                    ),
+                    scheduled=False,
+                )
+            }
+        )
+
+        def hybrid_network(subscription_ids: list[str]):
+            hybrid_calls.append(subscription_ids)
+            return service
+
+        context = ApiContext(
+            onboarding=onboarding,
+            authenticator=StaticTokenAuthenticator(_principals()),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+            provider_runtime=runtime,
+            hybrid_network_provider=hybrid_network,
+        )
+        client = TestClient(create_app(context), raise_server_exceptions=False)
+
+        response = client.get(
+            "/api/v1/network/topology",
+            params={"detail": "summary"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        assert hybrid_calls == [[PROD_SUB, UAT_SUB]]
+        assert response.json()["data"]["topology"]["resources"]
+
     def test_detail_contract_is_additive_and_defaults_to_full(self, client):
         default = client.get("/api/v1/network/topology", headers=_auth())
         full = client.get(

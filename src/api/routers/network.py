@@ -83,9 +83,10 @@ SOURCE_TABLE = "ontology_entities"
 
 def _onboarded_subscription_ids(context: Context) -> list[str]:
     connections = context.onboarding.registry.list(include_disabled=False)
-    return list(
-        dict.fromkeys(str(connection.subscription_id) for connection in connections)
-    )
+    seen: dict[str, None] = {}
+    for connection in connections:
+        seen.setdefault(str(connection.subscription_id), None)
+    return list(seen)
 
 
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
