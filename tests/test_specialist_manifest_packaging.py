@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -468,9 +469,9 @@ def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
 
     assert parity_at < promotion_at
     assert "parity_status" in script
-    assert 'API_HOST="$(printf' in script
-    assert '"$COPILOT_DEPLOYED_REVISION".*' in script
-    assert "revision-specific hostname" in script
+    assert "az containerapp revision show" in script
+    assert "actual != expected" in script
+    assert "API_URL host does not exactly match" in script
 
     # Controlled output only: the final report carries an allowlist of IDs,
     # statuses, and counts, and no line ever echoes a token or secret.
@@ -508,6 +509,166 @@ def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
         script,
         flags=re.MULTILINE,
     )
+
+
+def _run_runtime_e2e_host_guard(
+    tmp_path: Path,
+    *,
+    api_url: str,
+    revision: str = "candidate",
+    azure_fqdn: str = "candidate.example.azurecontainerapps.io",
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    az = fake_bin / "az"
+    az.write_text(f"#!/bin/sh\nprintf '%s\\n' '{azure_fqdn}'\n", encoding="utf-8")
+    az.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "API_URL": api_url,
+        "WEB_URL": "https://web.example.invalid",
+        "API_TOKEN": "not-a-real-token",
+        "HUB_CONNECTION_ID": "hub",
+        "SPOKE_CONNECTION_ID": "spoke",
+        "AIOPS_ARG_CONFIG": "arg.yaml",
+        "AIOPS_FABRIC_CONFIG": "fabric.yaml",
+        "COPILOT_DEPLOYED_REVISION": revision,
+        "AZURE_SUBSCRIPTION_ID": "subscription",
+        "AZURE_RESOURCE_GROUP": "resource-group",
+        "API_APP": "api-app",
+        "PARITY_PYTHON": sys.executable,
+        "PARITY_VALIDATOR": str(tmp_path / "missing-validator.py"),
+    }
+    return subprocess.run(
+        ["sh", "infra/scripts/validate-runtime-e2e.sh"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_runtime_e2e_requires_exact_azure_revision_fqdn(tmp_path: Path) -> None:
+    valid = _run_runtime_e2e_host_guard(
+        tmp_path,
+        api_url="https://candidate.example.azurecontainerapps.io",
+    )
+    assert valid.returncode == 2
+    assert "Specialist parity validator not found" in valid.stderr
+
+    for invalid_url in (
+        "https://candidate.attacker.invalid",
+        "https://shared.example.azurecontainerapps.io",
+        "https://other.example.azurecontainerapps.io",
+        "http://candidate.example.azurecontainerapps.io",
+        "https://user@candidate.example.azurecontainerapps.io",
+        "https://candidate.example.azurecontainerapps.io:443",
+        "https://candidate.example.azurecontainerapps.io/path",
+        "",
+        "not-a-url",
+    ):
+        result = _run_runtime_e2e_host_guard(tmp_path, api_url=invalid_url)
+        assert result.returncode != 0
+        assert "Specialist parity validator not found" not in result.stderr
+
+    revision_mismatch = _run_runtime_e2e_host_guard(
+        tmp_path,
+        api_url="https://candidate.example.azurecontainerapps.io",
+        revision="other-revision",
+    )
+    assert revision_mismatch.returncode == 2
+    assert "does not identify COPILOT_DEPLOYED_REVISION" in revision_mismatch.stderr
+
+
+def test_runtime_e2e_uses_bearer_token_without_leaking_it(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    token = "secret-runtime-token"
+    curl_log = tmp_path / "curl-args.txt"
+    az = fake_bin / "az"
+    az.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'candidate.example.azurecontainerapps.io'\n",
+        encoding="utf-8",
+    )
+    az.chmod(0o755)
+    aiops = fake_bin / "aiops-inventory"
+    aiops.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"status":"activated","connections":["hub","spoke"],"ontology_version":"v1"}\'\n',
+        encoding="utf-8",
+    )
+    aiops.chmod(0o755)
+    parity = tmp_path / "parity.py"
+    parity.write_text(
+        "import json\nprint(json.dumps({'status':'pass','failures':[],'specialist_count':12}))\n",
+        encoding="utf-8",
+    )
+    curl = fake_bin / "curl"
+    curl.write_text(
+        """#!/bin/sh
+for arg in "$@"; do
+  printf '%s\\n' "$arg" >>"$CURL_ARGS_LOG"
+  case "$arg" in
+    http*) url="$arg" ;;
+  esac
+done
+case "$url" in
+  */ready)
+    printf '%s\\n' '{"readiness":"ready","last_discovery_run":"t","last_ontology_publication":"t","ontology_version":"v1","providers":{"semantic":{"loaded":true,"state":"ready"},"network":{"loaded":true,"state":"ready"},"vulnerability":{"loaded":true,"state":"ready"},"incidents":{"loaded":true,"state":"ready"},"remediation":{"loaded":true,"state":"ready"}}}'
+    ;;
+  *subscription_connection=hub)
+    printf '%s\\n' '{"scope":{"subscription_connection":["hub"]},"data":{"topology":{"connection_ids":["hub"],"resources":[{"resource_id":"hub-r","connection_id":"hub"}]}}}'
+    ;;
+  *subscription_connection=spoke)
+    printf '%s\\n' '{"scope":{"subscription_connection":["spoke"]},"data":{"topology":{"connection_ids":["spoke"],"resources":[{"resource_id":"spoke-r","connection_id":"spoke"}]}}}'
+    ;;
+  */network/topology)
+    printf '%s\\n' '{"data":{"summary":{"connection_count":2,"hub_count":1,"spoke_count":1}}}'
+    ;;
+  *) printf '%s\\n' '{}' ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CURL_ARGS_LOG": str(curl_log),
+        "API_URL": "https://candidate.example.azurecontainerapps.io",
+        "WEB_URL": "https://web.example.invalid",
+        "API_TOKEN": token,
+        "HUB_CONNECTION_ID": "hub",
+        "SPOKE_CONNECTION_ID": "spoke",
+        "AIOPS_ARG_CONFIG": "arg.yaml",
+        "AIOPS_FABRIC_CONFIG": "fabric.yaml",
+        "COPILOT_DEPLOYED_REVISION": "candidate",
+        "COPILOT_ROLLOUT_MODE": "canary",
+        "AZURE_SUBSCRIPTION_ID": "subscription",
+        "AZURE_RESOURCE_GROUP": "resource-group",
+        "API_APP": "api-app",
+        "PARITY_PYTHON": sys.executable,
+        "PARITY_VALIDATOR": str(parity),
+        "AIOPS_CLI": str(aiops),
+    }
+
+    result = subprocess.run(
+        ["sh", "infra/scripts/validate-runtime-e2e.sh"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"Authorization: Bearer {token}" in curl_log.read_text(encoding="utf-8")
+    assert token not in result.stdout
+    assert token not in result.stderr
+    assert json.loads(result.stdout)["revision"] == "candidate"
 
 
 def test_rollout_scripts_have_valid_shell_syntax():

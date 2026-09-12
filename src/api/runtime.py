@@ -1032,7 +1032,7 @@ _hybrid_network_cache: dict[
     tuple[str, tuple[str, ...]],
     tuple[float, tuple[list[dict], str, int]],
 ] = {}
-_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
+_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 300
 _hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
 # Resolves the request-consistency half of WR-07: both the router's scope-
 # validation path (operations.py::_require's remediation branch) and the
@@ -3651,7 +3651,6 @@ def _build_provider_runtime(
     # unroutable. Their routes fail closed with provider_unavailable and their
     # state remains visible in /health; /ready only proves the process can
     # safely answer requests.
-    core_readiness_providers: set[str] = set()
     deferred_providers = {
         "incidents",
         "network",
@@ -3663,6 +3662,11 @@ def _build_provider_runtime(
     remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
     exposure_query_enabled = (
         _fabric_exposure_query_enabled() if use_fabric else False
+    )
+    core_readiness_providers = (
+        {"exposure_query"}
+        if use_fabric and exposure_query_enabled
+        else set()
     )
     specs = {
         name: ProviderSpec(
@@ -4610,15 +4614,8 @@ def build_context() -> ApiContext:
         # serializes on a lock scoped to this specific `(cache, key)` pair,
         # never a single cache-wide lock.
         cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
-        now = time.time()
-        cached = _hybrid_vulnerability_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
-            return cached[1]
 
-        with _ttl_cache_lock(_hybrid_vulnerability_cache, cache_key):
-            cached = _hybrid_vulnerability_cache.get(cache_key)
-            if cached is not None and now - cached[0] < _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS:
-                return cached[1]
+        def build() -> VulnerabilityIntelligenceService | None:
             graph = providers.get("semantic_graph", optional=True)
             try:
                 network = hybrid_network(subscription_ids)
@@ -4636,8 +4633,16 @@ def build_context() -> ApiContext:
                     connection_context=live_connection_business_context(),
                 ),
             )
-            _hybrid_vulnerability_cache[cache_key] = (now, service)
             return service
+
+        return _ttl_cached_value(
+            _hybrid_vulnerability_cache,
+            cache_key,
+            ttl_seconds=_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS,
+            now=time.time(),
+            build=build,
+            completion_clock=time.time,
+        )
 
     def hybrid_incidents(subscription_ids: list[str]) -> Any:
         return live_incident_engine(live_resources, subscription_ids=subscription_ids)
