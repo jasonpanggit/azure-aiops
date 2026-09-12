@@ -260,6 +260,7 @@ export function clearHoverFocus(cy: cytoscape.Core): void {
  * disorienting precisely when there is most to keep track of.
  */
 const LAYOUT_NODE_BUDGET = 100;
+const FORCE_LAYOUT_MIN_NODE_COUNT = 7;
 const RESIZE_REFIT_DEBOUNCE_MS = 150;
 
 export function layoutFor(
@@ -295,7 +296,7 @@ export function layoutForTransition(
     : options;
 }
 
-/** Chooses a topology-shaped first layout instead of scattering components. */
+/** Chooses a topology-shaped layout without forcing cyclic networks into rows. */
 export function layoutForGraph(
   nodeCount: number,
   edgeCount: number,
@@ -320,18 +321,27 @@ export function layoutForGraph(
       spacingFactor: 1.15,
     } as cytoscape.LayoutOptions;
   }
+  if (nodeCount < FORCE_LAYOUT_MIN_NODE_COUNT) {
+    return {
+      name: "breadthfirst",
+      animate: false,
+      avoidOverlap: true,
+      circle: false,
+      directed: true,
+      grid: true,
+      maximal: false,
+      nodeDimensionsIncludeLabels: false,
+      padding: 24,
+      spacingFactor: 0.8,
+    } as cytoscape.LayoutOptions;
+  }
   return {
-    name: "breadthfirst",
-    animate: false,
-    avoidOverlap: true,
-    circle: false,
-    directed: true,
-    grid: true,
-    maximal: false,
-    nodeDimensionsIncludeLabels: false,
-    padding: 24,
-    spacingFactor: 0.8,
-  } as cytoscape.LayoutOptions;
+    ...(layoutFor(nodeCount, connectedNodeCount) as unknown as Record<
+      string,
+      unknown
+    >),
+    quality: "default",
+  } as unknown as cytoscape.LayoutOptions;
 }
 
 /** Triggers a browser download for a data: URI without a server round trip. */
