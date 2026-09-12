@@ -167,7 +167,49 @@ def test_targeted_plan_rejects_non_image_mutation_on_existing_job() -> None:
     )
     changed["change"]["after"]["replica_retry_limit"] = 99
 
-    with pytest.raises(EvidencePlanError, match="image-only"):
+    with pytest.raises(EvidencePlanError):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "azurerm_container_app_job.ontology_discovery",
+        "azurerm_container_app_job.ontology_publisher",
+    ],
+)
+def test_targeted_plan_allows_validation_schedule_to_manual_only(
+    address: str,
+) -> None:
+    plan = _plan()
+    changed = next(
+        row for row in plan["resource_changes"] if row["address"] == address
+    )
+    changed["change"]["before"].update(
+        {
+            "schedule_trigger_config": [
+                {
+                    "cron_expression": "*/15 * * * *",
+                    "parallelism": 1,
+                    "replica_completion_count": 1,
+                }
+            ],
+            "manual_trigger_config": [],
+        }
+    )
+    changed["change"]["after"].update(
+        {
+            "schedule_trigger_config": [],
+            "manual_trigger_config": [
+                {"parallelism": 1, "replica_completion_count": 1}
+            ],
+        }
+    )
+
+    assert _validate(plan)["status"] == "PASS"
+
+    changed["change"]["after"]["manual_trigger_config"][0]["parallelism"] = 2
+    with pytest.raises(EvidencePlanError, match="fixed manual"):
         _validate(plan)
 
 

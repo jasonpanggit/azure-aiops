@@ -237,6 +237,44 @@ def _validate_fixture_job_update(change: Mapping[str, object]) -> None:
         )
 
 
+def _validate_validation_manual_transition(
+    change: Mapping[str, object],
+    *,
+    address: str,
+) -> None:
+    before = json.loads(json.dumps(change.get("before")))
+    after = json.loads(json.dumps(change.get("after")))
+    try:
+        before_container = before["template"][0]["container"][0]
+        after_container = after["template"][0]["container"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EvidencePlanError(
+            f"{address} validation trigger shape is invalid"
+        ) from exc
+    schedule = before.get("schedule_trigger_config")
+    manual = after.get("manual_trigger_config")
+    if (
+        not isinstance(schedule, list)
+        or len(schedule) != 1
+        or after.get("schedule_trigger_config") not in (None, [])
+        or before.get("manual_trigger_config") not in (None, [])
+        or not isinstance(manual, list)
+        or manual
+        != [{"parallelism": 1, "replica_completion_count": 1}]
+    ):
+        raise EvidencePlanError(
+            f"{address} must transition from schedule to fixed manual trigger"
+        )
+    before["schedule_trigger_config"] = []
+    after["manual_trigger_config"] = []
+    before_container["image"] = ""
+    after_container["image"] = ""
+    if before != after:
+        raise EvidencePlanError(
+            f"{address} may change only image and validation trigger"
+        )
+
+
 def validate_targeted_plan(
     plan: Mapping[str, Any],
     *,
@@ -310,6 +348,18 @@ def validate_targeted_plan(
             "azurerm_container_app_job.ontology_fixture_cleanup[0]",
         }:
             _validate_fixture_job_update(change)
+        elif address in {
+            "azurerm_container_app_job.ontology_discovery",
+            "azurerm_container_app_job.ontology_publisher",
+        }:
+            paths = _changed_paths(change.get("before"), change.get("after"))
+            if paths == {"template[0].container[0].image"}:
+                pass
+            else:
+                _validate_validation_manual_transition(
+                    change,
+                    address=address,
+                )
         else:
             paths = _changed_paths(change.get("before"), change.get("after"))
             if paths != {"template[0].container[0].image"}:
