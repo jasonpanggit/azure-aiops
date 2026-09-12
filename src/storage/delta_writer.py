@@ -191,7 +191,9 @@ class DeltaWriter:
             column: frozenset(str(row.get(column) or "") for row in rows)
             for column in scan_partition_columns
         }
-        if any(not values or "" in values for values in scan_partition_values.values()):
+        if rows and any(
+            not values or "" in values for values in scan_partition_values.values()
+        ):
             raise ValueError("APPEND scan partition columns require non-empty values")
         version, pending_indices = self._retry(
             lambda: self._append_preflight_once(

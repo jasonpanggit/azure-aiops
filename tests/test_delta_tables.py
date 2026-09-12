@@ -371,6 +371,29 @@ def test_delta_writer_append_empty_with_schema_creates_valid_table(
     assert _rows(table) == []
 
 
+def test_delta_writer_append_empty_with_scan_partition_creates_valid_table(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    schema = pa.Table.from_pylist(_append_rows(1)).schema
+
+    result = DeltaWriter().write(
+        table,
+        [],
+        mode=DeltaWriteMode.APPEND,
+        schema=schema,
+        partition_by=("ingestion_run_id",),
+        append_scan_partition_columns=("ingestion_run_id",),
+    )
+
+    assert result.rows_processed == 0
+    assert result.rows_added == 0
+    assert result.skipped is False
+    assert result.version == 0
+    assert DeltaTable(str(table)).version() == 0
+    assert _rows(table) == []
+
+
 def test_delta_writer_append_does_not_scan_valid_empty_target(
     tmp_path: Path,
     monkeypatch,
