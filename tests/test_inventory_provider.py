@@ -11,7 +11,10 @@ from intelligence.inventory import InventoryService, MachineObservation
 from intelligence.inventory.normalization import canonicalize_os, normalize_os_inventory
 from intelligence.inventory.pipeline import InventoryPipeline
 from intelligence.inventory.software_normalization import normalize_configuration_data
-from intelligence.inventory.sources.arg import inventory_os_specs
+from intelligence.inventory.sources.arg import (
+    inventory_log_analytics_workspace_specs,
+    inventory_os_specs,
+)
 from intelligence.lifecycle import EOLCatalog, LifecycleStatus
 from onboarding.config import ConnectorConfig
 from storage.datasets import DatasetStore
@@ -120,6 +123,19 @@ def test_native_and_arc_queries_are_versioned_and_independent() -> None:
     assert "osVersion" in arc.query
     assert "| order by id asc" in native.query
     assert "| order by id asc" in arc.query
+
+
+def test_log_analytics_discovery_selects_configuration_data_dcr_destinations() -> None:
+    spec = inventory_log_analytics_workspace_specs()[0]
+    query = spec.query
+
+    assert spec.version == "inventory-law-configurationdata-workspaces-v2"
+    assert "microsoft.insights/datacollectionrules" in query.casefold()
+    assert "Microsoft-ConfigurationData" in query
+    assert "properties.destinations.logAnalytics" in query
+    assert "microsoft.operationalinsights/workspaces" in query.casefold()
+    assert "join kind=inner" in query
+    assert "workspaceId=tostring(properties.customerId)" in query
 
 
 def test_generated_inventory_rows_preserve_source_identity_and_image_uncertainty(

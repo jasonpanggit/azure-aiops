@@ -159,6 +159,14 @@ def build_pipeline_content(
     *,
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    request_timeout_seconds = min(timeout_seconds, 10 * 60)
+    request_timeout = (
+        f"{request_timeout_seconds // 3600:02d}:"
+        f"{(request_timeout_seconds % 3600) // 60:02d}:"
+        f"{request_timeout_seconds % 60:02d}"
+    )
     return {
         "properties": {
             "description": (
@@ -183,6 +191,7 @@ def build_pipeline_content(
                     "typeProperties": {
                         "relativeUrl": "/api/v1/inventory/refresh",
                         "method": "POST",
+                        "httpRequestTimeout": request_timeout,
                         "headers": {
                             "Content-Type": "application/json",
                             "x-aiops-trigger-secret": trigger_secret,
@@ -244,29 +253,70 @@ def create_schedule(
     *,
     interval_minutes: int,
 ) -> None:
-    """Create a recurring Cron schedule for the pipeline's default job type.
+    """Create or reconcile one recurring Cron schedule for the pipeline.
 
     DataPipeline's runnable job type is "Pipeline". Schedules only control
     timing -- they cannot carry a custom payload -- which is fine here since
     the Web activity's request body/headers are already baked into the
-    pipeline definition itself.
+    pipeline definition itself. Repeated deployments reuse the oldest
+    schedule and disable duplicates so they cannot trigger overlapping runs.
     """
     start = time.gmtime()
     # Fabric requires an explicit endDateTime for Cron schedules; use a
     # 10-year horizon so this recurring schedule effectively never expires.
     end = time.gmtime(time.time() + 10 * 365 * 24 * 3600)
+    schedules_path = (
+        f"/workspaces/{workspace_id}/items/{item_id}/jobs/Pipeline/schedules"
+    )
+    configuration = {
+        "type": "Cron",
+        "interval": interval_minutes,
+        "startDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", start),
+        "endDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", end),
+        "localTimeZoneId": "UTC",
+    }
+    schedule_payload = {
+        "enabled": True,
+        "configuration": configuration,
+    }
+    existing_response = client.get(schedules_path)
+    existing_response.raise_for_status()
+    existing = sorted(
+        (
+            schedule
+            for schedule in existing_response.json().get("value", [])
+            if schedule.get("id")
+        ),
+        key=lambda schedule: (
+            str(schedule.get("createdDateTime") or ""),
+            str(schedule["id"]),
+        ),
+    )
+    if existing:
+        primary = existing[0]
+        response = client.patch(
+            f"{schedules_path}/{primary['id']}",
+            json=schedule_payload,
+        )
+        response.raise_for_status()
+        _poll_lro(client, response)
+        for duplicate in existing[1:]:
+            response = client.patch(
+                f"{schedules_path}/{duplicate['id']}",
+                json={
+                    "enabled": False,
+                    "configuration": dict(
+                        duplicate.get("configuration") or configuration
+                    ),
+                },
+            )
+            response.raise_for_status()
+            _poll_lro(client, response)
+        return
+
     response = client.post(
-        f"/workspaces/{workspace_id}/items/{item_id}/jobs/Pipeline/schedules",
-        json={
-            "enabled": True,
-            "configuration": {
-                "type": "Cron",
-                "interval": interval_minutes,
-                "startDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", start),
-                "endDateTime": time.strftime("%Y-%m-%dT%H:%M:%S", end),
-                "localTimeZoneId": "UTC",
-            },
-        },
+        schedules_path,
+        json=schedule_payload,
     )
     if response.status_code not in (200, 201, 202):
         print(response.text, file=sys.stderr)
