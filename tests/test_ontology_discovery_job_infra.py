@@ -19,12 +19,21 @@ def _resource(text: str, kind: str, name: str) -> str:
     return text[start:] if next_resource == -1 else text[start:next_resource]
 
 
-def test_ontology_job_is_finite_scheduled_and_uses_the_api_image() -> None:
+def test_ontology_job_is_finite_and_validation_is_manual_only() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
 
-    assert "schedule_trigger_config" in job
+    assert 'dynamic "schedule_trigger_config"' in job
     assert "cron_expression          = var.ontology_discovery_schedule" in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [] : [1]"
+    ) in job
+    assert 'dynamic "manual_trigger_config"' in job
+    assert (
+        'for_each = var.ontology_discovery_environment == "validation" '
+        "? [1] : []"
+    ) in job
     assert "parallelism              = 1" in job
     assert "replica_completion_count = 1" in job
     assert "replica_timeout_in_seconds = 900" in job
