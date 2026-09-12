@@ -1210,11 +1210,11 @@ function RemediationContent() {
         <div className="callout remediation-handoff remediation-handoff-context">
           <div>
             <strong>{complianceReview ? "From Compliance" : "From Exposure"}</strong>
-            <span>
+            <span className="remediation-handoff-detail">
               Scoped handoff:
               {requestedResource ? ` ${requestedResource}` : ""}
             </span>
-            <span>
+            <span className="remediation-handoff-detail">
               {fromIncident ? ` Incident ${fromIncident}.` : ""}
               {fromCve ? ` ${fromCve}.` : ""}
               {fromKb ? ` ${fromKb}.` : ""}
@@ -1222,7 +1222,9 @@ function RemediationContent() {
               {fromGeneration ? ` Evidence generation ${fromGeneration}.` : ""}
             </span>
             {requestedReturnFocus && (
-              <span> Return focus: {requestedReturnFocus}.</span>
+              <span className="remediation-handoff-detail">
+                Return focus: {requestedReturnFocus}.
+              </span>
             )}
             <p>
               {complianceReview
