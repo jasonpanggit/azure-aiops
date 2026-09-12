@@ -4473,6 +4473,11 @@ def build_context() -> ApiContext:
                 ),
                 subscription_ids=subscription_ids,
             )
+            if observation.completeness not in {"complete", "healthy-empty"}:
+                raise RuntimeError(
+                    "Live network observations are incomplete for the requested "
+                    "subscription connections"
+                )
             return (
                 list(observation.rows),
                 observation.observed_at,
@@ -4500,6 +4505,7 @@ def build_context() -> ApiContext:
             policy=policy,
             flow_observations=flow_observations,
             topology_build_duration_ms=topology_build_duration_ms,
+            connection_context=live_connection_business_context(),
         )
 
     def hybrid_vulnerability(

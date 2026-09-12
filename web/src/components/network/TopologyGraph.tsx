@@ -327,10 +327,10 @@ export function layoutForGraph(
     circle: false,
     directed: true,
     grid: true,
-    maximal: true,
-    nodeDimensionsIncludeLabels: true,
-    padding: 48,
-    spacingFactor: 1.35,
+    maximal: false,
+    nodeDimensionsIncludeLabels: false,
+    padding: 24,
+    spacingFactor: 0.8,
   } as cytoscape.LayoutOptions;
 }
 

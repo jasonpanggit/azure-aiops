@@ -47,6 +47,7 @@ from api.scope import Scope
 from fabric.dataset_mapper import InventoryDatasetMapper
 from intelligence.inventory.normalization import normalize_os_inventory
 from intelligence.remediation.execution_verifier import ExecutionVerifier
+from network.service import NetworkIntelligenceService
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.local_seed import DEFAULT_LOCAL_SUBSCRIPTION_ID, seed_local_environment
 from operations.defender_configuration import AzureArmDefenderConfigurationAdapter
@@ -1089,7 +1090,11 @@ def test_hybrid_network_cache_starts_ttl_after_slow_arg_query(
         return type(
             "Observation",
             (),
-            {"rows": (), "observed_at": "2026-09-08T00:00:00Z"},
+            {
+                "rows": (),
+                "observed_at": "2026-09-08T00:00:00Z",
+                "completeness": "healthy-empty",
+            },
         )()
 
     context = build_context()
@@ -1108,6 +1113,71 @@ def test_hybrid_network_cache_starts_ttl_after_slow_arg_query(
 
     assert _HYBRID_NETWORK_CACHE_TTL_SECONDS >= 300
     assert query_calls == 1
+
+
+@pytest.mark.parametrize("completeness", ["partial", "unavailable"])
+def test_hybrid_network_rejects_incomplete_live_observations(
+    monkeypatch,
+    completeness,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    _hybrid_network_cache.clear()
+    context = build_context()
+    assert context.hybrid_network_provider is not None
+
+    monkeypatch.setattr(
+        runtime_module.ConnectionScopedLiveResourceProvider,
+        "query",
+        lambda *_args, **_kwargs: type(
+            "Observation",
+            (),
+            {"rows": (), "observed_at": "", "completeness": completeness},
+        )(),
+    )
+
+    with pytest.raises(RuntimeError, match="observations are incomplete"):
+        context.hybrid_network_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
+
+
+def test_live_network_rows_receive_subscription_business_context() -> None:
+    subscription_id = "11111111-1111-1111-1111-111111111111"
+    resource_id = (
+        f"/subscriptions/{subscription_id}/resourceGroups/rg/providers/"
+        "Microsoft.Network/virtualNetworks/prod"
+    )
+
+    service = NetworkIntelligenceService.from_arg_rows(
+        [
+            {
+                "id": resource_id,
+                "name": "prod",
+                "type": "microsoft.network/virtualnetworks",
+                "subscriptionId": subscription_id,
+                "resourceGroup": "rg",
+                "properties": {},
+            }
+        ],
+        observed_at="2026-09-12T00:00:00Z",
+        connection_context={
+            subscription_id: {
+                "subscription_connection": "prod-core",
+                "environment": "production",
+                "business_service": "payments",
+                "application": "checkout",
+                "owner": "platform",
+            }
+        },
+    )
+
+    vnet = service.snapshot.vnets[0]
+    assert vnet.connection_id == "prod-core"
+    assert vnet.environment == "production"
+    assert vnet.business_service == "payments"
+    assert vnet.application == "checkout"
+    assert vnet.owner == "platform"
 
 
 def test_ttl_cached_value_serializes_concurrent_builds_for_same_key():
