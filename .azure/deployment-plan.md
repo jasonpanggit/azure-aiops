@@ -280,6 +280,19 @@ change is in scope.
 
 ## Validation Proof
 
+- 2026-09-12: Exposure Copilot CVE grounding release validated from clean commit
+  `18d4c63e6`. The focused backend release suite passed 106 tests; the contextual
+  Copilot suite passed 30 tests; Ruff, Pylance, and `git diff --check` passed.
+  ACR run `crs4` built `aiops-api:copilot-cve-grounding-20260912T023940Z` as
+  `linux/amd64` with digest
+  `sha256:5d084fe63358a09311e8c279a44e280715d663dabeb632e9febf32ca70d83c41`.
+  Terraform/Azure CLI authentication, init, formatting, validation, state, and
+  template checks passed. The generic bare plan lacked only this repository's
+  secret-backed required variables; the canonical wrapper supplied them and
+  produced a machine-checked saved plan with exactly 0 additions, one in-place
+  API image-only update, 0 destructions, and no RBAC, identity, secret, web,
+  MCP, traffic, or infrastructure change.
+
 - 2026-09-08 18:14 +08:00: Final integrated source SHA
   `b2ba755804b8fa283adcfa39fca2bce1358c6edd` is clean, equals
   `origin/main`, has one worktree and zero open pull requests. GitHub Actions
