@@ -80,8 +80,18 @@ SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
 
 
+def _onboarded_subscription_ids(context: Context) -> list[str]:
+    connections = context.onboarding.registry.list(include_disabled=False)
+    seen: dict[str, None] = {}
+    for connection in connections:
+        seen.setdefault(str(connection.subscription_id), None)
+    return list(seen)
+
+
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
     subscription_ids = list(scope.values("subscription"))
+    if not subscription_ids and scope.is_unrestricted():
+        subscription_ids = _onboarded_subscription_ids(context)
     if context.hybrid_network_provider is not None and subscription_ids:
         service = context.hybrid_network_provider(subscription_ids)
     else:
