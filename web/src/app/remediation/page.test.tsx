@@ -340,7 +340,6 @@ describe("Governed remediation workflow", () => {
   });
 
   it("renders a bounded compliance finding as manual review when no generated plan matches", async () => {
-    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
     searchParams.current = new URLSearchParams({
       resource_key: PRIVATE_ENDPOINT_TARGET,
       review_source: "compliance",
@@ -352,9 +351,16 @@ describe("Governed remediation workflow", () => {
 
     renderPage();
 
-    expect(
-      await screen.findByRole("heading", { name: "Compliance finding review" }),
-    ).toBeInTheDocument();
+    const reviewHeading = await screen.findByRole("heading", {
+      name: "Compliance finding review",
+    });
+    const reviewPanel = reviewHeading.closest("section");
+    if (!reviewPanel) {
+      throw new Error("Compliance finding review panel was not rendered.");
+    }
+    const review = within(reviewPanel);
+
+    expect(reviewHeading).toBeInTheDocument();
     expect(screen.getByText("Private endpoint network policy gap")).toBeInTheDocument();
     expect(screen.getByText(PRIVATE_ENDPOINT_TARGET)).toBeInTheDocument();
     expect(screen.getByText("High")).toBeInTheDocument();
@@ -366,12 +372,13 @@ describe("Governed remediation workflow", () => {
       screen.getByText(/No executable network action has been generated/),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: "Show all fixes in scope" }),
+      review.queryByRole("link", { name: "Show all fixes in scope" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open network topology" })).toHaveAttribute(
+    expect(review.getByRole("link", { name: "Open network topology" })).toHaveAttribute(
       "href",
       "/network",
     );
+    expect(remediationPlans).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Record decision" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review and run" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm run" })).not.toBeInTheDocument();
@@ -388,7 +395,6 @@ describe("Governed remediation workflow", () => {
   it("accepts compliance review text at the exact query bounds", async () => {
     const title = "T".repeat(200);
     const recommendation = "R".repeat(1_000);
-    remediationPlans.mockResolvedValueOnce(envelope({ plans: [] }));
     searchParams.current = new URLSearchParams({
       resource_key: PRIVATE_ENDPOINT_TARGET,
       review_source: "compliance",
@@ -408,17 +414,7 @@ describe("Governed remediation workflow", () => {
     expect(workflow).not.toHaveBeenCalled();
   });
 
-  it("does not expose an unrelated executable plan for the same compliance resource", async () => {
-    remediationPlans.mockResolvedValueOnce(envelope({
-      plans: [{
-        plan_id: "unrelated-patch-plan",
-        action_version: "version-1",
-        action_id: "controlled-patch-recovery",
-        title: "Install an unrelated operating system patch",
-        status: "Draft",
-        resource: { id: PRIVATE_ENDPOINT_TARGET, name: "cosmos-pe" },
-      }],
-    }));
+  it("does not request or expose unrelated executable plans for a compliance resource", async () => {
     searchParams.current = new URLSearchParams({
       resource_key: PRIVATE_ENDPOINT_TARGET,
       review_source: "compliance",
@@ -433,7 +429,7 @@ describe("Governed remediation workflow", () => {
     expect(
       await screen.findByRole("heading", { name: "Compliance finding review" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Install an unrelated operating system patch")).not.toBeInTheDocument();
+    expect(remediationPlans).not.toHaveBeenCalled();
     expect(screen.queryByRole("navigation", { name: "Remediation workflow" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Approve|Run/ })).not.toBeInTheDocument();
     expect(workflow).not.toHaveBeenCalled();
