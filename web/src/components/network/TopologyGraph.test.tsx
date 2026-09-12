@@ -202,6 +202,9 @@ describe("topology detail transitions", () => {
       directed: true,
       circle: false,
       maximal: false,
+      nodeDimensionsIncludeLabels: false,
+      padding: 24,
+      spacingFactor: 0.8,
     });
   });
 
