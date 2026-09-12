@@ -473,16 +473,33 @@ def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
     # statuses, and counts, and no line ever echoes a token or secret.
     report = script[script.index("json.dumps(") : script.rindex("indent=2")]
     printed = set(re.findall(r'"([a-z_]+)":', report))
-    assert printed <= {
+    assert printed == {
         "status",
+        "revision",
+        "rollout_mode",
         "promotion",
         "parity_status",
+        "checks",
+        "live_specialist_parity",
+        "offline_specialist_parity",
+        "runtime_readiness",
+        "scoped_topology_isolation",
         "specialist_count",
         "ontology_version",
         "hub_count",
         "spoke_count",
         "providers",
     }
+    lowered_report = report.casefold()
+    for forbidden in (
+        "api_token",
+        "auth_header",
+        "client_secret",
+        "access_token",
+        "authorization",
+        "bearer ",
+    ):
+        assert forbidden not in lowered_report
     assert not re.search(
         r"^\s*(echo|printf).*(API_TOKEN|auth_header|CLIENT_SECRET|access_token)",
         script,

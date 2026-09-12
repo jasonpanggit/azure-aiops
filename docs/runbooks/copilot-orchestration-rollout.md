@@ -69,6 +69,56 @@ so a rollback is a revision/mode switch, never a rebuild.
   deterministic fallback stays available.
 - **Validate:** completed-turn rate ≥ 0.98, timeout rate ≤ 0.01, latency and spend
   ceilings met for the served share.
+- **Evaluate the immutable revision once:**
+
+  ```sh
+  API_APP="<api-container-app-name>"
+  AZURE_RESOURCE_GROUP="<resource-group-name>"
+  CANDIDATE_REVISION="$(az containerapp revision list \
+    --name "$API_APP" \
+    --resource-group "$AZURE_RESOURCE_GROUP" \
+    --query '[?properties.active].name | [0]' \
+    --output tsv)"
+  RUNTIME_E2E_RESULT="$(mktemp)"
+  trap 'rm -f "$RUNTIME_E2E_RESULT"' EXIT
+  VALIDATION_EVIDENCE_JSON="/secure/path/copilot-validation-evidence.json"
+  COPILOT_DEPLOYED_REVISION="$CANDIDATE_REVISION" \
+  COPILOT_ROLLOUT_MODE=canary \
+    bash infra/scripts/validate-runtime-e2e.sh >"$RUNTIME_E2E_RESULT"
+
+  BASELINE_TMP="/secure/path/copilot-orchestration-baseline.json"
+  python3 scripts/evaluate_agents.py \
+    --api "$API_URL" \
+    --resource "$AIOPS_ENTRA_API_AUDIENCE" \
+    --dataset tests/fixtures/copilot_evaluation_cases.v1.json \
+    --thresholds tests/fixtures/copilot_release_thresholds.v1.json \
+    --revision "$CANDIDATE_REVISION" \
+    --provider foundry=available \
+    --provider operations_mcp=available \
+    --provider azure_mcp=available \
+    --runtime-e2e-result "$RUNTIME_E2E_RESULT" \
+    --validation-evidence-out "$VALIDATION_EVIDENCE_JSON" \
+    --out "$BASELINE_TMP"
+  python3 scripts/evaluate_agents.py \
+    --validate-artifact "$BASELINE_TMP" \
+    --dataset tests/fixtures/copilot_evaluation_cases.v1.json \
+    --thresholds tests/fixtures/copilot_release_thresholds.v1.json
+  ```
+
+  This is one corpus run: the evaluator derives every deterministic gate from
+  that run's controlled per-case evidence. The runtime result contributes only
+  the exact revision, scoped-topology check, runtime readiness, and offline/live
+  parity facts it actually measured. Parity cannot turn an unrelated mutation,
+  snapshot, citation, scope, tool, or route gate true. The evaluator rejects
+  missing/extra/non-boolean runtime checks and revision mismatches, then
+  atomically replaces `VALIDATION_EVIDENCE_JSON` only after deriving the full
+  gate set. Do not hand-author that file. A missing or unproven case field
+  records a false gate and HOLD; a failed or incomplete runtime result produces
+  no replacement evidence file.
+  Exit `0` is `PROMOTE`; exit `3` is `HOLD` or
+  `HOLD_OR_DISABLE_MODE`. Copy the temporary artifact into
+  `.planning/eval/copilot-orchestration-baseline.json` only after the deployed
+  revision and artifact have both been reviewed.
 - **Rollback:** `terraform apply -var 'copilot_rollout_mode=shadow'` (or
   `compatibility`) — the prior revision and threads are untouched.
 

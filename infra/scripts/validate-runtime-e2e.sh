@@ -9,6 +9,11 @@
 # pass. Only controlled identifiers, statuses, and counts are printed: no
 # token, secret, or tool argument is ever echoed.
 #
+# Required:
+#   COPILOT_DEPLOYED_REVISION
+#                     immutable candidate revision copied into the sanitized
+#                     runtime result for revision-bound evidence translation
+#
 # Optional:
 #   PARITY_PYTHON     interpreter used for the parity validator (default python3)
 #   PARITY_VALIDATOR  path to scripts/validate_specialist_parity.py
@@ -21,6 +26,7 @@ set -eu
 : "${SPOKE_CONNECTION_ID:?Set SPOKE_CONNECTION_ID}"
 : "${AIOPS_ARG_CONFIG:?Set AIOPS_ARG_CONFIG}"
 : "${AIOPS_FABRIC_CONFIG:?Set AIOPS_FABRIC_CONFIG}"
+: "${COPILOT_DEPLOYED_REVISION:?Set COPILOT_DEPLOYED_REVISION to the immutable candidate revision}"
 
 if [ "$HUB_CONNECTION_ID" = "$SPOKE_CONNECTION_ID" ]; then
   echo "Hub and spoke connection IDs must be different" >&2
@@ -109,7 +115,7 @@ curl -fsS -H "$auth_header" \
   "$API_URL/api/v1/remediation-plans" >"$tmp_dir/remediation.json"
 curl -fsS "$WEB_URL" >/dev/null
 
-python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" "$COPILOT_ROLLOUT_MODE" <<'PY'
+python3 - "$tmp_dir" "$HUB_CONNECTION_ID" "$SPOKE_CONNECTION_ID" "$parity_status" "$COPILOT_ROLLOUT_MODE" "$COPILOT_DEPLOYED_REVISION" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -119,6 +125,7 @@ hub = sys.argv[2]
 spoke = sys.argv[3]
 parity_status = sys.argv[4]
 rollout_mode = sys.argv[5]
+revision = sys.argv[6]
 
 activation = json.loads((root / "activation.json").read_text())
 ready = json.loads((root / "ready.json").read_text())
@@ -181,8 +188,20 @@ print(
     json.dumps(
         {
             "status": "passed",
+            "revision": revision,
+            "rollout_mode": rollout_mode,
             "promotion": promotion,
             "parity_status": parity_status,
+            # Report only facts this script actually checks. The evaluator
+            # combines them with the one controlled corpus run to derive each
+            # deterministic gate; no parity result is projected onto an
+            # unrelated safety or citation gate.
+            "checks": {
+                "live_specialist_parity": parity_status == "pass",
+                "offline_specialist_parity": True,
+                "runtime_readiness": True,
+                "scoped_topology_isolation": True,
+            },
             "specialist_count": parity["specialist_count"],
             "ontology_version": ready["ontology_version"],
             "hub_count": summary["hub_count"],

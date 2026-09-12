@@ -48,9 +48,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1133,6 +1135,65 @@ _CONTROLLED_CASE_FIELDS = (
     "snapshot_schema_ok",
     "citation_reference_integrity_ok",
 )
+_CONTEXT_SNAPSHOT_PAGES = frozenset(
+    {"network", "vulnerability", "patch", "incident", "governance", "resource"}
+)
+_DETERMINISTIC_RESULT_FIELDS = {
+    "scope_isolation": "scope_ok",
+    "mutation_denied": "mutation_denied",
+    "unknown_specialist_or_tool_denied": "unknown_id_denied",
+    "route_disposition_parity": "disposition_ok",
+    "manifest_projection_parity": "manifest_projection_ok",
+    "tool_grant_parity": "grants_ok",
+    "snapshot_schema": "snapshot_schema_ok",
+    "citation_reference_integrity": "citation_reference_integrity_ok",
+}
+_RUNTIME_E2E_CHECKS = frozenset(
+    {
+        "scoped_topology_isolation",
+        "offline_specialist_parity",
+        "live_specialist_parity",
+        "runtime_readiness",
+    }
+)
+
+
+def _deterministic_applicable_case_ids(
+    cases: list[EvalCase],
+) -> dict[str, list[str]]:
+    live_case_ids = [
+        case.case_id
+        for case in cases
+        if case.disposition not in {"redirect", "excluded"}
+    ]
+    return {
+        "scope_isolation": [
+            case.case_id
+            for case in cases
+            if case.safety.get("scope_isolation")
+            or case.safety.get("cross_principal_denied")
+        ],
+        "mutation_denied": [
+            case.case_id
+            for case in cases
+            if case.safety.get("mutation_denied")
+        ],
+        "unknown_specialist_or_tool_denied": live_case_ids,
+        "route_disposition_parity": [case.case_id for case in cases],
+        "manifest_projection_parity": live_case_ids,
+        "tool_grant_parity": live_case_ids,
+        "snapshot_schema": [
+            case.case_id
+            for case in cases
+            if case.disposition == "integrated"
+            and case.page_kind in _CONTEXT_SNAPSHOT_PAGES
+        ],
+        "citation_reference_integrity": [
+            case.case_id
+            for case in cases
+            if case.disposition in {"integrated", "dedicated"}
+        ],
+    }
 
 
 def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]:
@@ -1144,16 +1205,8 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     tool_correctness = result.tool_correctness
     if tool_correctness is None and completed:
         tool_correctness = 1.0 if grants_ok else 0.0
-    context_snapshot_pages = {
-        "network",
-        "vulnerability",
-        "patch",
-        "incident",
-        "governance",
-        "resource",
-    }
     snapshot_schema_ok = None
-    if not static_disposition and case.page_kind in context_snapshot_pages:
+    if not static_disposition and case.page_kind in _CONTEXT_SNAPSHOT_PAGES:
         snapshot_schema_ok = (
             result.snapshot_schema_ok
             if result.snapshot_schema_ok is not None
@@ -1217,61 +1270,11 @@ def build_release_artifact(
     result_by_id = {
         str(result.get("case_id")): result for result in controlled_results
     }
-    live_case_ids = [
-        case.case_id
-        for case in cases
-        if case.disposition not in {"redirect", "excluded"}
-    ]
-    context_snapshot_pages = {
-        "network",
-        "vulnerability",
-        "patch",
-        "incident",
-        "governance",
-        "resource",
-    }
-    applicable_case_ids = {
-        "scope_isolation": [
-            case.case_id
-            for case in cases
-            if case.safety.get("scope_isolation")
-            or case.safety.get("cross_principal_denied")
-        ],
-        "mutation_denied": [
-            case.case_id
-            for case in cases
-            if case.safety.get("mutation_denied")
-        ],
-        "unknown_specialist_or_tool_denied": live_case_ids,
-        "route_disposition_parity": [case.case_id for case in cases],
-        "manifest_projection_parity": live_case_ids,
-        "tool_grant_parity": live_case_ids,
-        "snapshot_schema": [
-            case.case_id
-            for case in cases
-            if case.disposition == "integrated"
-            and case.page_kind in context_snapshot_pages
-        ],
-        "citation_reference_integrity": [
-            case.case_id
-            for case in cases
-            if case.disposition in {"integrated", "dedicated"}
-        ],
-    }
-    result_fields = {
-        "scope_isolation": "scope_ok",
-        "mutation_denied": "mutation_denied",
-        "unknown_specialist_or_tool_denied": "unknown_id_denied",
-        "route_disposition_parity": "disposition_ok",
-        "manifest_projection_parity": "manifest_projection_ok",
-        "tool_grant_parity": "grants_ok",
-        "snapshot_schema": "snapshot_schema_ok",
-        "citation_reference_integrity": "citation_reference_integrity_ok",
-    }
+    applicable_case_ids = _deterministic_applicable_case_ids(cases)
     for name in deterministic_gate_names:
         aggregate_gate = report["gates"][name]
         evidence_value = validation_evidence.get(name)
-        field_name = result_fields[name]
+        field_name = _DETERMINISTIC_RESULT_FIELDS[name]
         missing_case_ids = [
             case_id
             for case_id in applicable_case_ids[name]
@@ -1484,6 +1487,113 @@ def _provider_availability(values: list[str] | None) -> dict[str, str]:
     return providers
 
 
+def emit_runtime_validation_evidence(
+    runtime_result: dict[str, Any],
+    *,
+    case_evidence: list[dict[str, Any]],
+    cases: list[EvalCase],
+    revision: str,
+    thresholds: dict[str, Any],
+    destination: Path,
+) -> dict[str, Any]:
+    """Derive exact gates from one corpus run and atomically write evidence."""
+    if not isinstance(runtime_result, dict):
+        raise TypeError("runtime E2E result must be a JSON object")
+    if runtime_result.get("status") != "passed":
+        raise ValueError("runtime E2E result status must be 'passed'")
+    if not revision.strip():
+        raise ValueError("deployed revision must not be empty")
+    if runtime_result.get("revision") != revision:
+        raise ValueError("runtime E2E result revision does not match --revision")
+    if runtime_result.get("rollout_mode") != "canary":
+        raise ValueError("runtime E2E result rollout_mode must be 'canary'")
+
+    expected_gates = set(thresholds["deterministic_gates"])
+    if expected_gates != set(_DETERMINISTIC_RESULT_FIELDS):
+        raise ValueError(
+            "thresholds must contain the supported deterministic gate set"
+        )
+    runtime_checks = runtime_result.get("checks")
+    if (
+        not isinstance(runtime_checks, dict)
+        or set(runtime_checks) != _RUNTIME_E2E_CHECKS
+    ):
+        raise ValueError("runtime E2E result must contain the exact runtime check set")
+    if any(not isinstance(value, bool) for value in runtime_checks.values()):
+        raise ValueError("runtime E2E checks must contain boolean values")
+    expected_promotion = (
+        "promote" if runtime_checks["live_specialist_parity"] else "hold"
+    )
+    if runtime_result.get("promotion") != expected_promotion:
+        raise ValueError("runtime E2E promotion is inconsistent with live parity")
+
+    controlled_results = [
+        {field: result.get(field) for field in _CONTROLLED_CASE_FIELDS}
+        for result in case_evidence
+    ]
+    result_by_id = {
+        str(result.get("case_id")): result for result in controlled_results
+    }
+    applicable_case_ids = _deterministic_applicable_case_ids(cases)
+    runtime_requirements = {
+        "scope_isolation": ("scoped_topology_isolation",),
+        "route_disposition_parity": ("offline_specialist_parity",),
+        "manifest_projection_parity": (
+            "offline_specialist_parity",
+            "live_specialist_parity",
+        ),
+        "tool_grant_parity": (
+            "offline_specialist_parity",
+            "live_specialist_parity",
+        ),
+    }
+    gates: dict[str, bool] = {}
+    for name in sorted(expected_gates):
+        field_name = _DETERMINISTIC_RESULT_FIELDS[name]
+        case_ids = applicable_case_ids[name]
+        cases_proven = bool(case_ids) and all(
+            result_by_id.get(case_id, {}).get(field_name) is True
+            for case_id in case_ids
+        )
+        runtime_proven = all(
+            runtime_checks[check]
+            for check in runtime_requirements.get(name, ())
+        )
+        gates[name] = (
+            cases_proven
+            and runtime_proven
+            and runtime_checks["runtime_readiness"]
+        )
+
+    evidence = {
+        "revision": revision,
+        "runtime_checks": {
+            name: runtime_checks[name] for name in sorted(_RUNTIME_E2E_CHECKS)
+        },
+        "gates": gates,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "w") as handle:
+            json.dump(evidence, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return evidence
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
@@ -1528,7 +1638,33 @@ def main() -> int:
         type=Path,
         help="validate a committed baseline artifact against --dataset/--thresholds and exit",
     )
+    parser.add_argument(
+        "--runtime-e2e-result",
+        type=Path,
+        help="combine revision-bound runtime E2E facts with this corpus run",
+    )
+    parser.add_argument(
+        "--validation-evidence-out",
+        type=Path,
+        help="atomically write revision-bound validation evidence",
+    )
     args = parser.parse_args()
+
+    if bool(args.runtime_e2e_result) != bool(args.validation_evidence_out):
+        parser.error(
+            "--runtime-e2e-result and --validation-evidence-out must be supplied together"
+        )
+    if args.runtime_e2e_result is not None:
+        if not args.revision:
+            parser.error("--revision is required with --runtime-e2e-result")
+        if args.validate_artifact is not None:
+            parser.error(
+                "--runtime-e2e-result cannot be combined with --validate-artifact"
+            )
+        if args.validation_evidence is not None:
+            parser.error(
+                "--runtime-e2e-result cannot be combined with --validation-evidence"
+            )
 
     # Offline artifact validation: no live calls, no credentials. Confirms a
     # committed baseline names the exact dataset/thresholds versions it was
@@ -1585,6 +1721,7 @@ def main() -> int:
         raise SystemExit("--case is diagnostic-only and cannot write a release artifact")
 
     validation_evidence: dict[str, bool] = {}
+    runtime_result: dict[str, Any] | None = None
     if args.validation_evidence:
         try:
             evidence_payload = json.loads(args.validation_evidence.read_text())
@@ -1601,6 +1738,11 @@ def main() -> int:
         ):
             raise SystemExit("validation evidence gates must be boolean values")
         validation_evidence = raw_gates
+    elif args.runtime_e2e_result:
+        try:
+            runtime_result = json.loads(args.runtime_e2e_result.read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(str(exc)) from exc
 
     # Verify credentials once up front so a misconfigured run fails fast
     # rather than after ten slow cases.
@@ -1649,6 +1791,19 @@ def main() -> int:
             result_to_release_evidence(result, case)
             for result, case in zip(results, cases, strict=True)
         ]
+        if runtime_result is not None:
+            try:
+                evidence = emit_runtime_validation_evidence(
+                    runtime_result,
+                    case_evidence=release_evidence,
+                    cases=cases,
+                    revision=args.revision,
+                    thresholds=thresholds,
+                    destination=args.validation_evidence_out,
+                )
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                raise SystemExit(str(exc)) from exc
+            validation_evidence = evidence["gates"]
         release_artifact = build_release_artifact(
             release_evidence,
             cases=cases,
