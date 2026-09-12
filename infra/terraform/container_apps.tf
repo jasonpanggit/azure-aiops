@@ -89,6 +89,13 @@ resource "azurerm_container_app_environment" "main" {
     maximum_count         = 0
   }
 
+  workload_profile {
+    name                  = "api-d4"
+    workload_profile_type = "D4"
+    minimum_count         = 0
+    maximum_count         = 2
+  }
+
   tags = local.tags
 }
 
@@ -107,7 +114,7 @@ resource "azurerm_container_app" "api" {
     identity_ids = [azurerm_user_assigned_identity.apps.id]
   }
 
-  workload_profile_name = "Consumption"
+  workload_profile_name = "api-d4"
 
   registry {
     server = local.registry_server
@@ -627,8 +634,8 @@ resource "azurerm_container_app_job" "exposure_enrichment" {
     container {
       name   = "exposure-enrichment"
       image  = var.deploy_images ? local.api_image : local.placeholder_image
-      cpu    = var.api_cpu
-      memory = var.api_memory
+      cpu    = var.ontology_discovery_job_cpu
+      memory = var.ontology_discovery_job_memory
       command = [
         "python",
       ]

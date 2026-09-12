@@ -42,6 +42,7 @@ SILVER_PATCH_GENERATION_PREFIX = "silver-patch:"
 MAX_EXPOSURE_PAGE_SIZE = 100
 MAX_KB_DETAIL_ROWS = 100
 MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS = 64
+MAX_KB_CVE_ASSOCIATIONS = 256
 MAX_EXPOSURE_FILTER_VALUES = 50
 MAX_SILVER_PATCH_SUBSCRIPTIONS = 500
 MAX_EXPOSURE_FACETS = 8
@@ -1334,7 +1335,7 @@ class ExposureQueryService:
                 }
             )
         )
-        if len(cve_ids) > MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS:
+        if len(cve_ids) > MAX_KB_CVE_ASSOCIATIONS:
             raise ExposureQueryUnavailableError(
                 "KB detail exceeded its safe CVE association bound"
             )

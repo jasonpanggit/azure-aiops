@@ -28,11 +28,13 @@ function formatPercent(value: number | null): string {
 }
 
 function ResourceCard({ resource }: { resource: ResourceUtilization }) {
+  const isContainerApp = resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
+
   return (
-    <article className="card" style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+    <article className="card resource-health-card" style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
-        <div>
-          <div style={{ fontWeight: 600 }}>{resource.resource_name}</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{resource.resource_name}</div>
           <div className="cell-subtext">{resource.resource_group}</div>
         </div>
         <StatusBadge label={resource.status} tone={statusTone(resource.status)} compact />
@@ -55,14 +57,22 @@ function ResourceCard({ resource }: { resource: ResourceUtilization }) {
         }}
       >
         <span className="cell-subtext">Memory: {formatPercent(resource.memory_percent)}</span>
-        <span className="cell-subtext">Disk free: {formatPercent(resource.disk_free_percent)}</span>
+        {!isContainerApp && (
+          <span className="cell-subtext">Disk free: {formatPercent(resource.disk_free_percent)}</span>
+        )}
         <span className="cell-subtext">Net in: {formatBytes(resource.network_in_bytes)}</span>
         <span className="cell-subtext">Net out: {formatBytes(resource.network_out_bytes)}</span>
-        <span className="cell-subtext">Disk read: {formatBytes(resource.disk_read_bytes)}</span>
-        <span className="cell-subtext">Disk write: {formatBytes(resource.disk_write_bytes)}</span>
+        {!isContainerApp && (
+          <>
+            <span className="cell-subtext">Disk read: {formatBytes(resource.disk_read_bytes)}</span>
+            <span className="cell-subtext">Disk write: {formatBytes(resource.disk_write_bytes)}</span>
+          </>
+        )}
       </div>
 
-      <div className="cell-subtext">{resource.error ? resource.error : `Observed ${resource.observed_at}`}</div>
+      <div className="cell-subtext resource-health-error">
+        {resource.error ? resource.error : `Observed ${resource.observed_at}`}
+      </div>
     </article>
   );
 }
@@ -137,11 +147,11 @@ export default function ResourceHealthPage() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container resource-health-page">
       <PageHeader
         eyebrow="Resource health"
-        title="CPU, disk, and network pressure"
-        description="Azure Monitor metrics for VMs and Arc servers in scope, cached briefly to avoid throttling."
+        title="Compute resource health and utilization"
+        description="Azure Monitor utilization metrics for Virtual Machines and Container Apps in scope, cached briefly to avoid throttling."
         metadata={
           <>
             <span>{summary?.total ?? 0} observed</span>
@@ -175,9 +185,10 @@ export default function ResourceHealthPage() {
       {(data?.unavailable_metrics?.length ?? 0) > 0 && (
         <div className="state-panel state-empty" role="status" style={{ marginBottom: "1.5rem" }}>
           <p>
-            Memory % and disk free % need either a Log Analytics workspace with classic
-            guest performance counters, or an Azure Monitor Workspace receiving
-            OpenTelemetry host metrics; neither was discovered for this scope.
+            VM memory % and disk free % need either a Log Analytics workspace with
+            classic guest performance counters, or an Azure Monitor Workspace receiving
+            OpenTelemetry host metrics; neither was discovered for this scope. Container
+            Apps use platform memory metrics.
           </p>
         </div>
       )}
@@ -196,8 +207,8 @@ export default function ResourceHealthPage() {
 
       {!health.loading && !health.error && resources.length === 0 && (
         <StatePanel
-          title="No compute resources found in scope"
-          message="No virtual machines or Arc-connected servers matched the current scope, or their connections are inactive."
+          title="No supported resources found in scope"
+          message="No virtual machines or Container Apps matched the current scope, or their connections are inactive."
           tone="empty"
         />
       )}

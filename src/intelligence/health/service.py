@@ -41,6 +41,13 @@ SUPPORTED_RESOURCE_TYPES: frozenset[str] = frozenset(
         "microsoft.compute/virtualmachines",
     }
 )
+CONTAINER_APP_RESOURCE_TYPE = "microsoft.app/containerapps"
+CONTAINER_APP_METRIC_NAMES: tuple[str, ...] = (
+    "CpuPercentage",
+    "MemoryPercentage",
+    "RxBytes",
+    "TxBytes",
+)
 
 # Guest-level signals the platform Metrics API cannot provide for an ordinary
 # VM. These are only actually filled in when the service is constructed with a
@@ -59,7 +66,12 @@ _CPU_CRITICAL_THRESHOLD = 90.0
 
 
 class MetricsReader(Protocol):
-    def query_resource_metrics(self, resource_id: str) -> dict[str, Any]: ...
+    def query_resource_metrics(
+        self,
+        resource_id: str,
+        *,
+        metric_names: tuple[str, ...] = ...,
+    ) -> dict[str, Any]: ...
 
 
 class GuestPerformanceReader(Protocol):
@@ -235,6 +247,7 @@ class ResourceHealthService:
         results: list[ResourceUtilization] = []
         warnings: list[str] = []
         guest_performance_found = False
+        vm_resources_present = False
         for connection in matches:
             try:
                 rows = self.resource_lister(connection)
@@ -250,6 +263,11 @@ class ResourceHealthService:
             ][: self.max_resources]
             if not candidates:
                 continue
+            vm_resources_present = vm_resources_present or any(
+                str(row.get("type", "")).casefold()
+                == "microsoft.compute/virtualmachines"
+                for row in candidates
+            )
             try:
                 metrics_client = self.metrics_client_factory(connection)
             except (RuntimeError, ValueError) as exc:
@@ -272,7 +290,11 @@ class ResourceHealthService:
             warnings.append(
                 "Results are truncated; narrow the scope for a complete view."
             )
-        unavailable = () if guest_performance_found else UNAVAILABLE_METRICS
+        unavailable = (
+            UNAVAILABLE_METRICS
+            if vm_resources_present and not guest_performance_found
+            else ()
+        )
         return ResourceHealthSnapshot(
             resources=tuple(results),
             observed_at=_now(),
@@ -394,8 +416,16 @@ def _fetch_resource_utilization(
         "connection_id": str(getattr(connection, "connection_id", "")),
     }
     guest = (guest_performance or {}).get(resource_id.casefold(), {})
+    resource_type = str(row.get("type") or "").casefold()
     try:
-        metrics = metrics_client.query_resource_metrics(resource_id)
+        metrics = (
+            metrics_client.query_resource_metrics(
+                resource_id,
+                metric_names=CONTAINER_APP_METRIC_NAMES,
+            )
+            if resource_type == CONTAINER_APP_RESOURCE_TYPE
+            else metrics_client.query_resource_metrics(resource_id)
+        )
     except (RuntimeError, ValueError) as exc:
         return ResourceUtilization(
             **base,
@@ -405,17 +435,41 @@ def _fetch_resource_utilization(
             error=str(exc),
         )
 
-    cpu = _metric_value(metrics, "Percentage CPU")
+    is_container_app = resource_type == CONTAINER_APP_RESOURCE_TYPE
+    cpu = _metric_value(
+        metrics,
+        "CpuPercentage" if is_container_app else "Percentage CPU",
+    )
     return ResourceUtilization(
         **base,
         cpu_percent=cpu,
-        network_in_bytes=_metric_value(metrics, "Network In Total"),
-        network_out_bytes=_metric_value(metrics, "Network Out Total"),
-        disk_read_bytes=_metric_value(metrics, "Disk Read Bytes"),
-        disk_write_bytes=_metric_value(metrics, "Disk Write Bytes"),
-        os_disk_queue_depth=_metric_value(metrics, "OS Disk Queue Depth"),
-        memory_percent=guest.get("memory_percent"),
-        disk_free_percent=guest.get("disk_free_percent"),
+        network_in_bytes=_metric_value(
+            metrics,
+            "RxBytes" if is_container_app else "Network In Total",
+        ),
+        network_out_bytes=_metric_value(
+            metrics,
+            "TxBytes" if is_container_app else "Network Out Total",
+        ),
+        disk_read_bytes=(
+            None if is_container_app else _metric_value(metrics, "Disk Read Bytes")
+        ),
+        disk_write_bytes=(
+            None if is_container_app else _metric_value(metrics, "Disk Write Bytes")
+        ),
+        os_disk_queue_depth=(
+            None
+            if is_container_app
+            else _metric_value(metrics, "OS Disk Queue Depth")
+        ),
+        memory_percent=(
+            _metric_value(metrics, "MemoryPercentage")
+            if is_container_app
+            else guest.get("memory_percent")
+        ),
+        disk_free_percent=(
+            None if is_container_app else guest.get("disk_free_percent")
+        ),
         status=_cpu_status(cpu),
         observed_at=_now(),
         cpu_series=_metric_series(metrics, "Percentage CPU"),

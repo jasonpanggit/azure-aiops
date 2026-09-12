@@ -3659,7 +3659,6 @@ def _build_provider_runtime(
         "remediation_catalog",
         "semantic",
         "semantic_graph",
-        "vulnerability",
     }
     remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
     exposure_query_enabled = (
@@ -3721,13 +3720,26 @@ def _build_provider_runtime(
         loader=_load_inventory_service,
         configured=True,
         required=False,
-        scheduled=not use_fabric,
+        cache_key=(
+            (lambda: fabric_provider_cache_key("inventory"))
+            if use_fabric
+            else None
+        ),
     )
+    provider_holder: dict[str, ProviderRuntime] = {}
+
+    def load_inventory_read_port() -> Any:
+        provider_runtime = provider_holder.get("runtime")
+        if provider_runtime is None:
+            return None
+        return _load_inventory_read_port(
+            provider_runtime.get("inventory", optional=True)
+        )
+
     specs["inventory_read_port"] = ProviderSpec(
-        loader=lambda: _load_inventory_read_port(),
+        loader=load_inventory_read_port,
         configured=True,
         required=False,
-        scheduled=not use_fabric,
     )
     specs["exposure_read_port"] = ProviderSpec(
         loader=_load_exposure_read_port,
@@ -3758,7 +3770,7 @@ def _build_provider_runtime(
             required=False,
             scheduled=not use_fabric,
         )
-    return ProviderRuntime(
+    provider_runtime = ProviderRuntime(
         specs,
         metadata_loader=lambda: _runtime_metadata(
             onboarding,
@@ -3770,6 +3782,8 @@ def _build_provider_runtime(
         ),
         stale_after_hours=int(os.environ.get(ENV_PROVIDER_STALE_HOURS, "24")),
     )
+    provider_holder["runtime"] = provider_runtime
+    return provider_runtime
 
 
 # Patch runs are operator-submitted mutations, not snapshot projections, so
@@ -4157,11 +4171,10 @@ def _load_inventory_service() -> Any:
     )
 
 
-def _load_inventory_read_port() -> Any:
+def _load_inventory_read_port(service: Any) -> Any:
     """Build the internal identity contract over the active inventory."""
     from intelligence.inventory.read_port import InventoryReadPort
 
-    service = _load_inventory_service()
     return InventoryReadPort(service) if service is not None else None
 
 
