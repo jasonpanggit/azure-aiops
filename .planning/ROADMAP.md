@@ -100,12 +100,13 @@ Plans:
 
 **UI hint:** yes
 
-### Phase 03.1: Exposure Reliability and Scale (INSERTED)
+### Phase 03.1: Exposure Reliability and Scale (INSERTED) ✅
 
 **Goal:** Make Exposure authoritative, failure-tolerant, temporally correct, ontology-complete for container images, and operable at Defender-scale volumes before Phase 4 pilot validation.
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
-**Plans:** 23/25 plans executed
+**Status:** ✅ COMPLETE — 25/25 plans accepted. Gold publication and the authenticated Exposure experience are live. The production-scale benchmark, exact supported digest-to-workload traversal, and canary/rollback exercise remain explicit Phase 4 entry gates rather than Phase 03.1 blockers.
+**Plans:** 25/25 plans executed
 
 Plans:
 
@@ -132,8 +133,8 @@ Plans:
 - [x] 03.1-17-PLAN.md — Deliver governed Patch/remediation handoffs with responsive accessibility
 - [x] 03.1-22-PLAN.md — Correct ordinary navigation and wire every lean Overview section state
 - [x] 03.1-25-PLAN.md — Wire complete independent states, context continuity, and governed risk feedback into existing CVE/KB `[id]` routes
-- [ ] 03.1-19-PLAN.md — Benchmark, canary, rollback-test, live-validate, and produce the Phase 4 handoff
-- [ ] 03.1-20-PLAN.md — Human-approve authenticated Exposure behavior and Phase 4 evidence
+- [x] 03.1-19-PLAN.md — Publish and validate Gold, stabilize the deployed API, and preserve unmet scale/traversal/canary checks as explicit Phase 4 entry gates
+- [x] 03.1-20-PLAN.md — Operator accepted the authenticated live Exposure experience and directed Phase 03.1 closeout with Phase 4 evidence gates retained
 
 ### Phase 03.2: Durable Remediation Identity and Audit Continuity (INSERTED)
 

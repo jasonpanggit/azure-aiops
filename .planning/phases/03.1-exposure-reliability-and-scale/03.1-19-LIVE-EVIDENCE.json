@@ -2,12 +2,12 @@
   "schema_version": "1.0.0",
   "plan": "03.1-19",
   "captured_at": "2026-09-07T09:10:00Z",
-  "status": "blocked",
+  "status": "accepted_with_phase4_deferrals",
   "sanitized": true,
   "residual_blockers": [
     {
       "code": "exact_supported_defender_digest_to_container_insights_workload_round_trip",
-      "status": "blocked",
+      "status": "deferred_to_phase_4",
       "summary": "The successful live refresh and Fabric publication produced zero exact Defender container facts and zero supported Container Insights deployment/workload edges, so the 100k certification and exact ontology round trip cannot pass."
     }
   ],
@@ -58,8 +58,8 @@
     "odbc_driver_18_and_managed_identity_connectivity": "pass",
     "live_connection_source_refresh": "pass",
     "gold_schema": "pass",
-    "qualified_100k_benchmark": "blocked_by_residual",
-    "exact_digest_workload_ontology_round_trip": "blocked_by_residual",
+    "qualified_100k_benchmark": "deferred_to_phase_4",
+    "exact_digest_workload_ontology_round_trip": "deferred_to_phase_4",
     "cursor_key_vault_refs": "pass",
     "cursor_active_previous_kids_distinct": "pass",
     "cursor_ttl_15_minutes": "pass",
@@ -72,9 +72,9 @@
     "container_operation_calls": 0,
     "alerts_enabled_and_routed": "pass",
     "rollout_controls": "fail_closed_off",
-    "shadow_canary_promotion": "blocked_by_exact_live_source_prerequisite",
+    "shadow_canary_promotion": "deferred_to_phase_4",
     "non_destructive_rollback_contract": "pass",
-    "live_rollback_transition": "not_applicable_no_promoted_candidate"
+    "live_rollback_transition": "deferred_to_phase_4"
   },
   "publication_observation": {
     "source_refresh": "succeeded",
@@ -110,5 +110,39 @@
       "count": 0,
       "affected_area": "all"
     }
+  },
+  "closeout": {
+    "closed_at": "2026-09-12T09:28:01Z",
+    "disposition": "accepted_with_explicit_phase4_entry_gates",
+    "operator_direction": "close_phase_03_1",
+    "gold_pointer": "exposure-gold-4d85d1e59c660c2636edf8ce",
+    "source_run_id": "activation-f0023980-0e16-4664-920c-a402769774b0",
+    "publication": {
+      "status": "pass",
+      "published_table_count": 458,
+      "gold_exposure_fact_count": 77865,
+      "silver_container_vulnerability_observation_count": 152631,
+      "ontology_entity_count": 81720,
+      "ontology_relationship_count": 235537
+    },
+    "runtime_probe": {
+      "web_exposure_http_status": 200,
+      "api_health_http_status": 200,
+      "api_ready_http_status": 200,
+      "api_revision": "aiops-dev-api--0000293",
+      "api_image": "sha256:5d084fe63358a09311e8c279a44e280715d663dabeb632e9febf32ca70d83c41",
+      "workload_profile": "Consumption",
+      "cpu": 4,
+      "memory": "8Gi",
+      "replica_running": true,
+      "replica_ready": true,
+      "replica_restart_count": 0
+    },
+    "phase4_entry_gates": [
+      "qualified_100k_fabric_sql_benchmark",
+      "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+      "shadow_canary_and_non_destructive_live_rollback"
+    ],
+    "evidence_note": "The historical 2026-09-07 publication observation above is retained. Closeout does not reinterpret its empty exact source chain or unexecuted benchmark/canary checks as passing."
   }
 }
