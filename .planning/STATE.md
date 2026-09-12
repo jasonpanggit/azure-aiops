@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Phase 4 planning (Phase 03.1 complete; 25/25 summaries)
+current_plan: Phase 4 planning (Phase 03.1 closed; 23 plans executed and 2 accepted with Phase 4 deferrals; 25/25 summaries)
 status: ready
 stopped_at: Phase 03.1 accepted and closed; Phase 4 exact container evidence gate retained
 last_updated: "2026-09-12T09:28:01Z"
@@ -21,7 +21,7 @@ current_phase_name: Domain Coverage and Operational Twin
 **Active Phase:** Phase 4 (Domain Coverage and Operational Twin)
 **Wave:** Planning<br>
 **Current Plan:** Not planned
-**Status:** Ready for Phase 4 planning — Phase 03.1 is complete with 25/25 summaries. Gold publication and the authenticated Exposure page are live; exact supported digest-to-workload traversal, the qualified 100k benchmark, and the canary/rollback exercise remain Phase 4 entry gates.
+**Status:** Ready for Phase 4 planning — Phase 03.1 is closed with 23 plans executed and Plans 19-20 accepted with explicit Phase 4 deferrals; all 25 summaries are present. Gold publication and the authenticated Exposure page are live; exact supported digest-to-workload traversal, the qualified 100k benchmark, and the canary/rollback exercise remain Phase 4 entry gates.
 
 ## Completed Plans (This Session)
 

@@ -798,11 +798,9 @@ class ValidationFixtureLifecycle:
             (
                 row
                 for row in self.source_registry.list(include_disabled=False)
-                if str(row.metadata.get("environment") or "")
-                .strip()
-                .casefold()
-                != "production"
-                and row.metadata.get("ontology_discovery_enabled") is not False
+                if self.source_registry.metadata_for(row).environment
+                in {"development", "test", "validation"}
+                and row.metadata.get("ontology_discovery_enabled") is True
                 and row.credential is not None
                 and row.credential.active
             ),

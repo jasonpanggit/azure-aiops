@@ -28,6 +28,15 @@ set -eu
 : "${AIOPS_FABRIC_CONFIG:?Set AIOPS_FABRIC_CONFIG}"
 : "${COPILOT_DEPLOYED_REVISION:?Set COPILOT_DEPLOYED_REVISION to the immutable candidate revision}"
 
+API_HOST="$(printf '%s' "$API_URL" | sed -E 's#^https?://([^/:]+).*#\1#')"
+case "$API_HOST" in
+  "$COPILOT_DEPLOYED_REVISION".*) ;;
+  *)
+    echo "API_URL must target the revision-specific hostname for COPILOT_DEPLOYED_REVISION" >&2
+    exit 2
+    ;;
+esac
+
 if [ "$HUB_CONNECTION_ID" = "$SPOKE_CONNECTION_ID" ]; then
   echo "Hub and spoke connection IDs must be different" >&2
   exit 2

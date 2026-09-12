@@ -1535,6 +1535,7 @@ def test_context_canonical_supported_page_translates_evidence_and_kind(
         snapshot,
         context=_context(tmp_path, None),
         scope=scope,
+        principal=SimpleNamespace(subject="test@example.com"),
         principal_subject="test@example.com",
     )
 

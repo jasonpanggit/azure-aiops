@@ -468,6 +468,9 @@ def test_runtime_e2e_gates_promotion_on_parity_and_prints_controlled_fields():
 
     assert parity_at < promotion_at
     assert "parity_status" in script
+    assert 'API_HOST="$(printf' in script
+    assert '"$COPILOT_DEPLOYED_REVISION".*' in script
+    assert "revision-specific hostname" in script
 
     # Controlled output only: the final report carries an allowlist of IDs,
     # statuses, and counts, and no line ever echoes a token or secret.

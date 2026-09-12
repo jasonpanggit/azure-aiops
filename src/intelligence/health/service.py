@@ -1,4 +1,4 @@
-"""Live Azure Monitor Metrics + Logs utilization for compute resources.
+"""Live Azure Monitor Metrics + Logs utilization for supported Azure resources.
 
 Fetches VM/server platform metrics (CPU %, network and disk I/O) per active
 connection, scoped by subscription. This deliberately mirrors the "live,
@@ -37,6 +37,7 @@ from typing import Any, Protocol
 # disk-free metrics above.
 SUPPORTED_RESOURCE_TYPES: frozenset[str] = frozenset(
     {
+        "microsoft.app/containerapps",
         "microsoft.compute/virtualmachines",
     }
 )

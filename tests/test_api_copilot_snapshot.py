@@ -112,7 +112,7 @@ def test_context_route_rejects_out_of_scope_evidence_identity(tmp_path):
     assert response.status_code == 400
 
 
-def test_context_route_sends_non_network_page_evidence_to_foundry(tmp_path):
+def test_context_route_keeps_supported_page_evidence_deterministic(tmp_path):
     body = {
         "snapshot": {
             "version": "1",
@@ -141,12 +141,12 @@ def test_context_route_sends_non_network_page_evidence_to_foundry(tmp_path):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["synthesis"]["mode"] == "foundry"
+    assert data["synthesis"]["mode"] == "deterministic"
     finding = data["findings"][0]
     assert finding["summary"] == "Publicly reachable vulnerable workload"
     assert finding["evidence_refs"] == ["cve-1"]
     assert finding["resource_ids"] == []
-    assert agent.calls[0]["context"]["findings"][0]["details"]["cve_id"] == "CVE-2026-0001"
+    assert agent.calls == []
 
 
 def test_context_route_maf_mode_delegates_by_question_not_page(tmp_path, monkeypatch):

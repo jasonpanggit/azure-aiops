@@ -106,7 +106,7 @@ Plans:
 **Requirements:** PILOT-01, PILOT-02, PILOT-03, PILOT-04 (reliability prerequisites; final pilot completion remains downstream)
 **Depends on:** Phase 3
 **Status:** ✅ COMPLETE — 25/25 plans accepted. Gold publication and the authenticated Exposure experience are live. The production-scale benchmark, exact supported digest-to-workload traversal, and canary/rollback exercise remain explicit Phase 4 entry gates rather than Phase 03.1 blockers.
-**Plans:** 25/25 plans executed
+**Plans:** 25/25 plans closed (23 executed; Plans 19-20 accepted with explicit Phase 4 deferrals)
 
 Plans:
 

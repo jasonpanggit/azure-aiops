@@ -536,14 +536,32 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
             credential_id="source-sp",
             client_id="source-client",
             tenant_id="tenant-a",
-            secret_ref="keyvault://vault/secrets/source-secret",
+            secret_ref="keyvault://example-vault/secrets/source-secret",
         ),
         metadata={
-            "environment": "development",
+            "business": {"environment": "development"},
             "ontology_discovery_enabled": True,
         },
     )
     ConnectionRegistry(source_connection_home).add(source)
+    ConnectionRegistry(source_connection_home).add(
+        SubscriptionConnection(
+            connection_id="production-connection",
+            name="Production connection",
+            tenant_id="tenant-a",
+            subscription_id="production-subscription",
+            credential=CredentialReference(
+                credential_id="production-sp",
+                client_id="production-client",
+                tenant_id="tenant-a",
+                secret_ref="keyvault://example-vault/secrets/production-secret",
+            ),
+            metadata={
+                "business": {"environment": "production"},
+                "ontology_discovery_enabled": True,
+            },
+        )
+    )
     lifecycle = ValidationFixtureLifecycle(
         connection_home=connection_home,
         source_connection_home=source_connection_home,
@@ -573,6 +591,9 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
     mirrored = ConnectionRegistry(connection_home).get("source-connection")
     assert mirrored.credential == source.credential
     assert mirrored.metadata["fixture_role"] == "head-change"
+    assert {
+        row.connection_id for row in ConnectionRegistry(connection_home).list()
+    }.isdisjoint({"production-connection"})
     assert OntologyRunStore(
         state_home,
         document_store=OneLakeDocumentStore(state_home),

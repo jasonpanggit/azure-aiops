@@ -77,13 +77,21 @@ so a rollback is a revision/mode switch, never a rebuild.
   CANDIDATE_REVISION="$(az containerapp revision list \
     --name "$API_APP" \
     --resource-group "$AZURE_RESOURCE_GROUP" \
-    --query '[?properties.active].name | [0]' \
+    --query 'sort_by([?properties.active], &properties.createdTime)[-1].name' \
     --output tsv)"
+  CANDIDATE_FQDN="$(az containerapp revision show \
+    --name "$API_APP" \
+    --resource-group "$AZURE_RESOURCE_GROUP" \
+    --revision "$CANDIDATE_REVISION" \
+    --query properties.fqdn \
+    --output tsv)"
+  API_URL="https://$CANDIDATE_FQDN"
   RUNTIME_E2E_RESULT="$(mktemp)"
   trap 'rm -f "$RUNTIME_E2E_RESULT"' EXIT
   VALIDATION_EVIDENCE_JSON="/secure/path/copilot-validation-evidence.json"
   COPILOT_DEPLOYED_REVISION="$CANDIDATE_REVISION" \
   COPILOT_ROLLOUT_MODE=canary \
+  API_URL="$API_URL" \
     bash infra/scripts/validate-runtime-e2e.sh >"$RUNTIME_E2E_RESULT"
 
   BASELINE_TMP="/secure/path/copilot-orchestration-baseline.json"
@@ -114,7 +122,9 @@ so a rollback is a revision/mode switch, never a rebuild.
   atomically replaces `VALIDATION_EVIDENCE_JSON` only after deriving the full
   gate set. Do not hand-author that file. A missing or unproven case field
   records a false gate and HOLD; a failed or incomplete runtime result produces
-  no replacement evidence file.
+  no replacement evidence file. `validate-runtime-e2e.sh` also rejects shared
+  ingress: `API_URL` must be the revision-specific FQDN returned for
+  `CANDIDATE_REVISION`, so traffic cannot be served by the prior active revision.
   Exit `0` is `PROMOTE`; exit `3` is `HOLD` or
   `HOLD_OR_DISABLE_MODE`. Copy the temporary artifact into
   `.planning/eval/copilot-orchestration-baseline.json` only after the deployed
