@@ -227,14 +227,14 @@ variable "api_cpu" {
 
 variable "api_memory" {
   description = <<-EOT
-    Memory allocated to the API container. Must pair with api_cpu per the
-    Container Apps ratio (2Gi per vCPU). 4Gi (2 vCPU) was observed
+    Memory allocated to the API container on the dedicated D4 workload profile.
+    4Gi (2 vCPU) was observed
     OOM-killing (exit 137) the API in a crash loop once real (non-empty)
-    inventory data was loaded into the in-memory provider cache; 8Gi (4
-    vCPU) is the minimum verified stable size.
+    inventory data was loaded into the in-memory provider cache; 16Gi (4
+    vCPU) provides headroom for the bounded provider projections.
   EOT
   type        = string
-  default     = "8Gi"
+  default     = "16Gi"
 }
 
 variable "api_min_replicas" {

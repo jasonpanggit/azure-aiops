@@ -19,9 +19,21 @@ class _FakeMetricsClient:
         self.readings = readings or {}
         self.error = error
 
-    def query_resource_metrics(self, resource_id: str) -> dict:
+    def query_resource_metrics(
+        self,
+        resource_id: str,
+        *,
+        metric_names: tuple[str, ...] | None = None,
+    ) -> dict:
         if self.error is not None:
             raise self.error
+        if metric_names is not None:
+            assert set(metric_names) == {
+                "CpuPercentage",
+                "MemoryPercentage",
+                "RxBytes",
+                "TxBytes",
+            }
         return self.readings
 
 
@@ -82,13 +94,25 @@ def test_snapshot_keeps_container_apps_in_resource_health_results():
     service = ResourceHealthService(
         connections=lambda: [connection],
         resource_lister=lambda _conn: [container_app],
-        metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+        metrics_client_factory=lambda _conn: _FakeMetricsClient(
+            {
+                "CpuPercentage": {"value": 22.0},
+                "MemoryPercentage": {"value": 48.0},
+                "RxBytes": {"value": 1024.0},
+                "TxBytes": {"value": 2048.0},
+            }
+        ),
     )
 
     snapshot = service.snapshot(subscription_ids=["sub-1"])
 
     assert [resource.resource_name for resource in snapshot.resources] == ["api"]
     assert snapshot.resources[0].resource_type == "microsoft.app/containerapps"
+    assert snapshot.resources[0].cpu_percent == 22.0
+    assert snapshot.resources[0].memory_percent == 48.0
+    assert snapshot.resources[0].network_in_bytes == 1024.0
+    assert snapshot.resources[0].network_out_bytes == 2048.0
+    assert snapshot.unavailable_metrics == ()
 
 
 def test_snapshot_flags_no_matching_connection():

@@ -576,14 +576,19 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
     assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False
     initial_health = providers.health(refresh=False)
-    for name in ("exposure_query", "change"):
+    for name in (
+        "exposure_query",
+        "change",
+        "vulnerability",
+        "inventory",
+        "inventory_read_port",
+    ):
         assert initial_health["providers"][name]["state"] == LOADING
         assert providers.specs[name].scheduled is True
     for name in (
         "semantic",
         "semantic_graph",
         "network",
-        "vulnerability",
         "incidents",
         "remediation",
         "remediation_catalog",
@@ -616,6 +621,77 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
         "network-policy",
         11,
     )
+
+
+def test_fabric_inventory_runtime_reuses_one_generation_for_the_read_port(
+    monkeypatch,
+) -> None:
+    generation = {"value": "semantic-generation-7"}
+
+    class _Service:
+        def semantic_version(self) -> str:
+            return generation["value"]
+
+    class _Runtime:
+        service = _Service()
+
+    inventory = SimpleNamespace(
+        freshness="2026-09-12T00:00:00Z",
+        knowledge_version="inventory-v1",
+    )
+    load_calls = {"count": 0}
+
+    def load_inventory():
+        load_calls["count"] += 1
+        return inventory
+
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+    monkeypatch.setattr(
+        runtime_module,
+        "_fabric_runtime_from_environment",
+        lambda: _Runtime(),
+    )
+    monkeypatch.setattr(runtime_module, "_load_inventory_service", load_inventory)
+
+    providers = _build_provider_runtime(object())
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    providers._refresh_provider(
+        "inventory",
+        providers.specs["inventory"],
+        now=now,
+        now_iso="2026-09-12T00:00:00Z",
+        force=True,
+    )
+    providers._refresh_provider(
+        "inventory_read_port",
+        providers.specs["inventory_read_port"],
+        now=now,
+        now_iso="2026-09-12T00:00:00Z",
+        force=True,
+    )
+
+    assert load_calls["count"] == 1
+    assert providers.get("inventory") is inventory
+    assert providers.get("inventory_read_port").service is inventory
+
+    providers._refresh_provider(
+        "inventory",
+        providers.specs["inventory"],
+        now=now,
+        now_iso="2026-09-12T00:00:30Z",
+        force=False,
+    )
+    assert load_calls["count"] == 1
+
+    generation["value"] = "semantic-generation-8"
+    providers._refresh_provider(
+        "inventory",
+        providers.specs["inventory"],
+        now=now,
+        now_iso="2026-09-12T00:01:00Z",
+        force=False,
+    )
+    assert load_calls["count"] == 2
 
 
 def test_fabric_runtime_shares_semantic_engine_with_graph_provider(

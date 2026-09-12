@@ -510,6 +510,31 @@ def test_kb_detail_marks_missing_nvd_metadata_degraded() -> None:
     ] == "provider_unavailable"
 
 
+def test_kb_detail_supports_realistic_large_msrc_association_sets() -> None:
+    cve_ids = [f"CVE-2026-{index:04d}" for index in range(126)]
+    detail = ExposureQueryService(
+        KbSilverReader(),
+        catalog_records_resolver=lambda identifier: (
+            (
+                {
+                    "source": "msrc",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {"cve_ids": cve_ids},
+                },
+            )
+            if identifier.startswith("KB")
+            else ()
+        ),
+    ).kb_item(_authorization(), kb_id="KB6000001")
+
+    assert detail is not None
+    assert detail["cve_ids"] == cve_ids
+    assert len(detail["cves"]) == 126
+    assert detail["enrichment"]["sources"]["msrc:KB6000001"]["status"] == "succeeded"
+
+
 def test_server_aum_query_intersects_subscriptions_with_authorized_connections() -> None:
     reader = SilverPatchReader()
     authorization = ExposureAuthorization(

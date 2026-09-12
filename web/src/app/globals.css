@@ -1084,6 +1084,17 @@ textarea:focus-visible {
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
+.resource-health-card {
+  min-width: 0;
+}
+
+.resource-health-error {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .metric-card-actionable:hover {
   border-color: #a8cbe7;
   box-shadow: 0 12px 28px rgb(16 37 63 / 11%);
