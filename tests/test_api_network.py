@@ -142,6 +142,172 @@ def _scope_leak_service() -> NetworkIntelligenceService:
     )
 
 
+def test_unrestricted_network_read_uses_active_onboarded_subscriptions(
+    tmp_path,
+) -> None:
+    subscription_id = "11111111-1111-1111-1111-111111111111"
+    disabled_subscription_id = "44444444-4444-4444-4444-444444444444"
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    onboarding.add(
+        connection_id="prod-core",
+        name="Prod core",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        subscription_id=subscription_id,
+        client_id="33333333-3333-3333-3333-333333333333",
+        secret_ref="keyvault://example/secrets/prod-core",
+    )
+    onboarding.add(
+        connection_id="disabled-core",
+        name="Disabled core",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        subscription_id=disabled_subscription_id,
+        client_id="55555555-5555-5555-5555-555555555555",
+        secret_ref="keyvault://example/secrets/disabled-core",
+    )
+    onboarding.disable("disabled-core")
+    captured_subscription_ids: list[list[str]] = []
+
+    def hybrid_network(subscription_ids: list[str]) -> NetworkIntelligenceService:
+        captured_subscription_ids.append(subscription_ids)
+        return NetworkIntelligenceService(
+            NetworkSnapshot(
+                vnets=(
+                    VNet(
+                        resource_id=f"/subscriptions/{subscription_id}/vnets/active",
+                        name="active",
+                        subscription_id=subscription_id,
+                    ),
+                    VNet(
+                        resource_id=(
+                            f"/subscriptions/{disabled_subscription_id}/vnets/disabled"
+                        ),
+                        name="disabled",
+                        subscription_id=disabled_subscription_id,
+                    ),
+                ),
+                observed_at="2026-09-12T00:00:00Z",
+            )
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_network_provider=hybrid_network,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get("/api/v1/network/topology", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    assert captured_subscription_ids == [[subscription_id]]
+    resources = response.json()["data"]["topology"]["resources"]
+    assert [resource["name"] for resource in resources] == ["active"]
+
+
+def test_unrestricted_network_read_fails_closed_without_active_connections(
+    tmp_path,
+) -> None:
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    onboarding.add(
+        connection_id="disabled-core",
+        name="Disabled core",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        subscription_id="44444444-4444-4444-4444-444444444444",
+        client_id="55555555-5555-5555-5555-555555555555",
+        secret_ref="keyvault://example/secrets/disabled-core",
+    )
+    onboarding.disable("disabled-core")
+    hybrid_calls: list[list[str]] = []
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_network_provider=lambda subscriptions: hybrid_calls.append(
+            subscriptions
+        ),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get("/api/v1/network/topology", headers=_auth())
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+    assert hybrid_calls == []
+
+
+def test_live_network_failure_returns_provider_unavailable(tmp_path) -> None:
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_network_provider=lambda _subscriptions: (_ for _ in ()).throw(
+            OSError("live acquisition failed")
+        ),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/network/topology",
+        params={"subscription": PROD_SUB},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
+def test_business_scope_uses_live_active_subscriptions(tmp_path) -> None:
+    subscription_id = "11111111-1111-1111-1111-111111111111"
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    onboarding.add(
+        connection_id="prod-core",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        subscription_id=subscription_id,
+        client_id="33333333-3333-3333-3333-333333333333",
+        secret_ref="keyvault://example/secrets/prod-core",
+    )
+    captured_subscription_ids: list[list[str]] = []
+
+    def hybrid_network(subscription_ids: list[str]) -> NetworkIntelligenceService:
+        captured_subscription_ids.append(subscription_ids)
+        return NetworkIntelligenceService(
+            NetworkSnapshot(
+                vnets=(
+                    VNet(
+                        resource_id=f"/subscriptions/{subscription_id}/vnets/prod",
+                        name="prod",
+                        subscription_id=subscription_id,
+                        environment="production",
+                    ),
+                ),
+                observed_at="2026-09-12T00:00:00Z",
+            )
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_network_provider=hybrid_network,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/network/topology",
+        params={"environment": "production"},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured_subscription_ids == [[subscription_id]]
+    assert response.json()["data"]["topology"]["resources"][0]["name"] == "prod"
+
+
 class TestTopology:
     def test_detail_contract_is_additive_and_defaults_to_full(self, client):
         default = client.get("/api/v1/network/topology", headers=_auth())

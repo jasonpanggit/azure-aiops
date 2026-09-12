@@ -11,6 +11,7 @@ network problems" -- a dangerous default for a security-facing view.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from time import perf_counter_ns
 from typing import Annotated, Any, Literal
 
@@ -80,13 +81,42 @@ SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
 
 
+def _onboarded_subscription_ids(context: Context) -> list[str]:
+    connections = context.onboarding.registry.list(include_disabled=False)
+    return list(
+        dict.fromkeys(str(connection.subscription_id) for connection in connections)
+    )
+
+
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
     subscription_ids = list(scope.values("subscription"))
-    if context.hybrid_network_provider is not None and subscription_ids:
-        service = context.hybrid_network_provider(subscription_ids)
-    else:
-        service = context.resolve_provider("network")
-    return service.scoped(_network_scope(scope))
+    network_scope = _network_scope(scope)
+    if context.hybrid_network_provider is not None:
+        if not subscription_ids:
+            subscription_ids = _onboarded_subscription_ids(context)
+            if not subscription_ids:
+                raise ApiError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Network data is unavailable because no active subscription "
+                    "connection is configured",
+                    {"capability": "network", "provider_state": "unavailable"},
+                )
+            network_scope = replace(
+                network_scope,
+                subscription_ids=tuple(subscription_ids),
+            )
+        if subscription_ids:
+            try:
+                service = context.hybrid_network_provider(subscription_ids)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ApiError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Live network observations are unavailable",
+                    {"capability": "network", "provider_state": "unavailable"},
+                ) from exc
+            return service.scoped(network_scope)
+    service = context.resolve_provider("network")
+    return service.scoped(network_scope)
 
 
 def _network_scope(scope: Scope) -> NetworkScope:
