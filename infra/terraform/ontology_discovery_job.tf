@@ -49,6 +49,13 @@ resource "azurerm_role_assignment" "ontology_coordinator_acr_pull" {
   skip_service_principal_aad_check = true
 }
 
+resource "azurerm_role_assignment" "ontology_coordinator_key_vault_secrets" {
+  scope                            = azurerm_key_vault.main.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+  skip_service_principal_aad_check = true
+}
+
 resource "azurerm_role_assignment" "ontology_coordinator_validation_reader" {
   for_each = var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
 
@@ -194,6 +201,7 @@ resource "azurerm_container_app_job" "ontology_discovery" {
 
   depends_on = [
     azurerm_role_assignment.ontology_coordinator_acr_pull,
+    azurerm_role_assignment.ontology_coordinator_key_vault_secrets,
     azurerm_role_assignment.ontology_coordinator_validation_reader,
     azurerm_role_assignment.ontology_coordinator_validation_monitoring_reader,
     fabric_workspace_role_assignment.ontology_coordinator_state,
@@ -588,6 +596,10 @@ resource "azurerm_container_app_job" "ontology_fixture_prepare" {
         value = local.ontology_validation_connection_home
       }
       env {
+        name  = "AIOPS_SOURCE_CONNECTION_HOME"
+        value = local.ontology_connection_home
+      }
+      env {
         name  = "AIOPS_ONTOLOGY_STATE_HOME"
         value = local.ontology_state_home
       }
@@ -654,6 +666,10 @@ resource "azurerm_container_app_job" "ontology_fixture_cleanup" {
       env {
         name  = "AIOPS_CONNECTION_HOME"
         value = local.ontology_validation_connection_home
+      }
+      env {
+        name  = "AIOPS_SOURCE_CONNECTION_HOME"
+        value = local.ontology_connection_home
       }
       env {
         name  = "AIOPS_ONTOLOGY_STATE_HOME"

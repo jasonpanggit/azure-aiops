@@ -139,6 +139,14 @@ def test_validation_coordinator_has_read_only_azure_scope() -> None:
         assert "Contributor" not in assignment
         assert "Owner" not in assignment
 
+    key_vault = _resource(
+        terraform,
+        "azurerm_role_assignment",
+        "ontology_coordinator_key_vault_secrets",
+    )
+    assert 'role_definition_name             = "Key Vault Secrets User"' in key_vault
+    assert "azurerm_key_vault.main.id" in key_vault
+
 
 def test_scheduled_job_uses_only_the_nonproduction_state_lakehouse() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
@@ -258,6 +266,7 @@ def test_validation_fixture_jobs_are_fixed_manual_templates() -> None:
         assert f'"{command_name}"' in job
         assert "AIOPS_ONTOLOGY_ENVIRONMENT" in job
         assert "AIOPS_ONTOLOGY_FIXTURE_HOME" in job
+        assert "AIOPS_SOURCE_CONNECTION_HOME" in job
         assert "AIOPS_ONTOLOGY_DISPATCH_HOME" not in job
         assert "ontology_coordinator_fixture" not in job
 
@@ -315,6 +324,16 @@ def test_evidence_job_is_fixed_manual_only_and_uses_only_azure_mcp_identity() ->
     assert "Microsoft.App/jobs/start/action" not in job
 
 
+def test_coordinator_source_role_contract_is_exact_connection_path() -> None:
+    outputs = OUTPUTS_TF.read_text(encoding="utf-8")
+
+    assert 'output "ontology_coordinator_source_role_contract"' in outputs
+    assert "azurerm_user_assigned_identity.ontology_coordinator.principal_id" in outputs
+    assert "fabric_workspace.ops[0].id" in outputs
+    assert "fabric_lakehouse.context_graph[0].id" in outputs
+    assert 'path                  = "/Files/aiops/connections"' in outputs
+
+
 def test_evidence_identity_roles_use_only_rest_reconciliation() -> None:
     terraform = IDENTITY_TF.read_text(encoding="utf-8")
     outputs = OUTPUTS_TF.read_text(encoding="utf-8")
@@ -341,7 +360,8 @@ def test_evidence_identity_roles_use_only_rest_reconciliation() -> None:
     )
     assert '"objectType": "ManagedIdentity"' in reconciler
     assert '"attributeName": "Path"' in reconciler
-    assert '"attributeValueIncludedIn": ["*"]' in reconciler
+    assert 'paths: Sequence[str] = ("*",)' in reconciler
+    assert '"attributeValueIncludedIn": list(paths)' in reconciler
     assert '"attributeName": "Action"' in reconciler
     assert '"attributeValueIncludedIn": ["Read"]' in reconciler
     assert '"role": "Viewer"' in reconciler

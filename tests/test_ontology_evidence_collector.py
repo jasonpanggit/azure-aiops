@@ -211,7 +211,10 @@ def test_lifecycle_documents_reduce_to_closed_hashes_counts_and_states() -> None
         "connections": [
             {
                 "connection_id": f"ontology-fixture-a-{role}",
-                "metadata": {"fixture_role": role},
+                "metadata": {
+                    "fixture_role": role,
+                    "fixture_owner_hash": "owner-hash",
+                },
             }
             for role in ("head-change", "retry-rotation", "later-restart")
         ],

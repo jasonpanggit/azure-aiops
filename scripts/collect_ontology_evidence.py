@@ -377,7 +377,8 @@ def summarize_lifecycle_documents(
     fixture_connections = [
         row
         for row in registry_rows
-        if str(row.get("connection_id") or "").startswith("ontology-fixture-")
+        if isinstance(row.get("metadata"), Mapping)
+        and bool(row["metadata"].get("fixture_owner_hash"))
     ]
     authorization_hashes = {
         str(row.get("connection_id") or ""): _hash(

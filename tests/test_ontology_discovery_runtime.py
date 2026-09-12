@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from onboarding.registry import ConnectionRegistry
-from ontology.subscription_connection import SubscriptionConnection
+from ontology.subscription_connection import CredentialReference, SubscriptionConnection
 from ontology_discovery import cli
 from ontology_discovery.command_intake import (
     CommandIntakeService,
@@ -524,10 +524,29 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
     from ontology_discovery.runtime import ValidationFixtureLifecycle
 
     connection_home = str(tmp_path / "connections")
+    source_connection_home = str(tmp_path / "source-connections")
     fixture_home = str(tmp_path / "fixture")
     state_home = str(tmp_path / "state")
+    source = SubscriptionConnection(
+        connection_id="source-connection",
+        name="Source connection",
+        tenant_id="tenant-a",
+        subscription_id="subscription-a",
+        credential=CredentialReference(
+            credential_id="source-sp",
+            client_id="source-client",
+            tenant_id="tenant-a",
+            secret_ref="keyvault://vault/secrets/source-secret",
+        ),
+        metadata={
+            "environment": "development",
+            "ontology_discovery_enabled": True,
+        },
+    )
+    ConnectionRegistry(source_connection_home).add(source)
     lifecycle = ValidationFixtureLifecycle(
         connection_home=connection_home,
+        source_connection_home=source_connection_home,
         fixture_home=fixture_home,
         state_home=state_home,
         environment="validation",
@@ -547,10 +566,13 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
     }
     assert "subscription-a" in subscription_ids
     assert len(subscription_ids) == 3
-    assert {
+    assert sorted(
         row.credential.kind
         for row in ConnectionRegistry(connection_home).list()
-    } == {"managed_identity"}
+    ) == ["managed_identity", "managed_identity", "service_principal"]
+    mirrored = ConnectionRegistry(connection_home).get("source-connection")
+    assert mirrored.credential == source.credential
+    assert mirrored.metadata["fixture_role"] == "head-change"
     assert OntologyRunStore(
         state_home,
         document_store=OneLakeDocumentStore(state_home),
@@ -560,6 +582,7 @@ def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
         lifecycle.prepare()
     cleaned = ValidationFixtureLifecycle(
         connection_home=connection_home,
+        source_connection_home=source_connection_home,
         fixture_home=fixture_home,
         state_home=state_home,
         environment="validation",

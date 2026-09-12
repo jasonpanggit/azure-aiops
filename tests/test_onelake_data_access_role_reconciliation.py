@@ -19,6 +19,8 @@ import pytest
 
 # The module under test — will be created in the next commit.
 from scripts.reconcile_onelake_data_access_roles import (
+    COORDINATOR_SOURCE_PATH,
+    COORDINATOR_SOURCE_ROLE_NAME,
     EVIDENCE_ROLE_NAME,
     MAX_RETRIES,
     DataAccessRoleReconciliationError,
@@ -26,7 +28,9 @@ from scripts.reconcile_onelake_data_access_roles import (
     build_desired_role,
     merge_roles,
     parse_contract,
+    parse_coordinator_source_contract,
     reconcile_all_evidence_items,
+    reconcile_coordinator_source,
     reconcile_item_roles,
     reconcile_workspace_viewer,
     verify_roles_match,
@@ -114,6 +118,21 @@ def _contract() -> dict[str, object]:
     }
 
 
+def _coordinator_source_contract() -> dict[str, object]:
+    return {
+        "principal_object_id": OBJECT_ID,
+        "principal_resource_id": (
+            "/subscriptions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "resourceGroups/rg/providers/Microsoft.ManagedIdentity/"
+            "userAssignedIdentities/coordinator"
+        ),
+        "tenant_id": TENANT_ID,
+        "workspace_id": WORKSPACE_ID,
+        "item_id": ITEM_ID,
+        "path": COORDINATOR_SOURCE_PATH,
+    }
+
+
 def test_contract_requires_exactly_five_isolated_targets() -> None:
     items, object_id, tenant_id, resource_id = parse_contract(_contract())
 
@@ -129,6 +148,69 @@ def test_contract_requires_exactly_five_isolated_targets() -> None:
         match="five exact",
     ):
         parse_contract(invalid)
+
+
+def test_coordinator_source_contract_is_one_exact_read_path() -> None:
+    parsed = parse_coordinator_source_contract(
+        _coordinator_source_contract()
+    )
+
+    assert parsed[0] == OBJECT_ID
+    assert parsed[3:] == (WORKSPACE_ID, ITEM_ID)
+    desired = build_desired_role(
+        OBJECT_ID,
+        TENANT_ID,
+        role_name=COORDINATOR_SOURCE_ROLE_NAME,
+        paths=(COORDINATOR_SOURCE_PATH,),
+    )
+    path_permission = desired["decisionRules"][0]["permission"][0]
+    assert path_permission["attributeValueIncludedIn"] == [
+        COORDINATOR_SOURCE_PATH
+    ]
+
+    invalid = _coordinator_source_contract()
+    invalid["path"] = "*"
+    with pytest.raises(
+        DataAccessRoleReconciliationError,
+        match="path is not exact",
+    ):
+        parse_coordinator_source_contract(invalid)
+
+
+def test_coordinator_source_reuses_exact_viewer_and_read_reconcilers() -> None:
+    fake_client = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = fake_client
+
+    with (
+        patch("httpx.Client", return_value=context),
+        patch(
+            "scripts.reconcile_onelake_data_access_roles.reconcile_workspace_viewer",
+            return_value={"verified": True},
+        ) as viewer,
+        patch(
+            "scripts.reconcile_onelake_data_access_roles.reconcile_item_roles",
+            return_value={"verified": True},
+        ) as role,
+    ):
+        result = reconcile_coordinator_source(
+            contract=_coordinator_source_contract(),
+            token_provider=lambda: "token",
+            principal_type_provider=lambda _object, _resource: (
+                "ManagedIdentity"
+            ),
+            dry_run=True,
+        )
+
+    assert result["status"] == "PASS"
+    viewer.assert_called_once_with(
+        client=fake_client,
+        workspace_id=WORKSPACE_ID,
+        object_id=OBJECT_ID,
+        dry_run=True,
+    )
+    assert role.call_args.kwargs["role_name"] == COORDINATOR_SOURCE_ROLE_NAME
+    assert role.call_args.kwargs["paths"] == (COORDINATOR_SOURCE_PATH,)
 
 
 # ---------------------------------------------------------------------------
