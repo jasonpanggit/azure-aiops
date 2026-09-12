@@ -72,6 +72,7 @@ so a rollback is a revision/mode switch, never a rebuild.
 - **Evaluate the immutable revision once:**
 
   ```sh
+  AZURE_SUBSCRIPTION_ID="<subscription-id>"
   API_APP="<api-container-app-name>"
   AZURE_RESOURCE_GROUP="<resource-group-name>"
   CANDIDATE_REVISION="$(az containerapp revision list \
@@ -91,6 +92,9 @@ so a rollback is a revision/mode switch, never a rebuild.
   VALIDATION_EVIDENCE_JSON="/secure/path/copilot-validation-evidence.json"
   COPILOT_DEPLOYED_REVISION="$CANDIDATE_REVISION" \
   COPILOT_ROLLOUT_MODE=canary \
+  AZURE_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" \
+  AZURE_RESOURCE_GROUP="$AZURE_RESOURCE_GROUP" \
+  API_APP="$API_APP" \
   API_URL="$API_URL" \
     bash infra/scripts/validate-runtime-e2e.sh >"$RUNTIME_E2E_RESULT"
 

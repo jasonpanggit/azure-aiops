@@ -27,15 +27,62 @@ set -eu
 : "${AIOPS_ARG_CONFIG:?Set AIOPS_ARG_CONFIG}"
 : "${AIOPS_FABRIC_CONFIG:?Set AIOPS_FABRIC_CONFIG}"
 : "${COPILOT_DEPLOYED_REVISION:?Set COPILOT_DEPLOYED_REVISION to the immutable candidate revision}"
+: "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID}"
+: "${AZURE_RESOURCE_GROUP:?Set AZURE_RESOURCE_GROUP}"
+: "${API_APP:?Set API_APP to the API Container App name}"
 
-API_HOST="$(printf '%s' "$API_URL" | sed -E 's#^https?://([^/:]+).*#\1#')"
-case "$API_HOST" in
-  "$COPILOT_DEPLOYED_REVISION".*) ;;
-  *)
-    echo "API_URL must target the revision-specific hostname for COPILOT_DEPLOYED_REVISION" >&2
-    exit 2
-    ;;
-esac
+PARITY_PYTHON="${PARITY_PYTHON:-python3}"
+EXPECTED_REVISION_FQDN="$(
+  az containerapp revision show \
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
+    --resource-group "$AZURE_RESOURCE_GROUP" \
+    --name "$API_APP" \
+    --revision "$COPILOT_DEPLOYED_REVISION" \
+    --query properties.fqdn \
+    --output tsv
+)" || {
+  echo "Could not resolve the candidate revision FQDN from Azure" >&2
+  exit 2
+}
+if [ -z "$EXPECTED_REVISION_FQDN" ]; then
+  echo "Azure returned no FQDN for the candidate revision" >&2
+  exit 2
+fi
+
+"$PARITY_PYTHON" - "$API_URL" "$EXPECTED_REVISION_FQDN" "$COPILOT_DEPLOYED_REVISION" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+api_url, expected_fqdn, revision = sys.argv[1:]
+try:
+    parsed = urlsplit(api_url)
+    port = parsed.port
+except ValueError:
+    print("API_URL is malformed", file=sys.stderr)
+    raise SystemExit(2)
+
+if (
+    parsed.scheme.casefold() != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or port is not None
+    or parsed.path not in {"", "/"}
+    or parsed.query
+    or parsed.fragment
+):
+    print("API_URL must be an HTTPS origin without userinfo, port, path, query, or fragment", file=sys.stderr)
+    raise SystemExit(2)
+
+actual = parsed.hostname.casefold().rstrip(".")
+expected = expected_fqdn.strip().casefold().rstrip(".")
+if not expected or actual != expected:
+    print("API_URL host does not exactly match the Azure revision FQDN", file=sys.stderr)
+    raise SystemExit(2)
+if not actual.startswith(f"{revision.casefold()}."):
+    print("Azure revision FQDN does not identify COPILOT_DEPLOYED_REVISION", file=sys.stderr)
+    raise SystemExit(2)
+PY
 
 if [ "$HUB_CONNECTION_ID" = "$SPOKE_CONNECTION_ID" ]; then
   echo "Hub and spoke connection IDs must be different" >&2
@@ -70,7 +117,6 @@ esac
 # Specialist parity gate -- runs before anything that could be read as a
 # promotion signal.
 # ---------------------------------------------------------------------------
-PARITY_PYTHON="${PARITY_PYTHON:-python3}"
 PARITY_VALIDATOR="${PARITY_VALIDATOR:-scripts/validate_specialist_parity.py}"
 
 if [ ! -f "$PARITY_VALIDATOR" ]; then
