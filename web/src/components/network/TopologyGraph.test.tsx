@@ -8,6 +8,7 @@ import {
   buildTopologyExport,
   clearHoverFocus,
   fitTopology,
+  layoutForGraph,
   layoutFor,
   nextExportIdentity,
   layoutForTransition,
@@ -57,6 +58,27 @@ describe("topology stylesheet", () => {
     const cy = mount([{ data: { id: "a", kind: "hub", icon: "/azure-icons/fw.svg" } }]);
 
     expect(cy.getElementById("a").style("background-image")).toBe("/azure-icons/fw.svg");
+  });
+
+  it("keeps relationship labels hidden until the edge is focused", () => {
+    const cy = mount([
+      { data: { id: "a", kind: "hub", label: "hub" } },
+      { data: { id: "b", kind: "resource", label: "subnet" } },
+      {
+        data: {
+          id: "ab",
+          source: "a",
+          target: "b",
+          kind: "relationship",
+          label: "contains subnet",
+        },
+      },
+    ]);
+    const edge = cy.getElementById("ab");
+
+    expect(edge.style("text-opacity")).toBe("0");
+    edge.addClass("cy-hover-focus");
+    expect(edge.style("text-opacity")).toBe("1");
   });
 
   it("removes a stale badge when the node no longer has findings", () => {
@@ -174,6 +196,28 @@ describe("topology hover highlight", () => {
 });
 
 describe("topology detail transitions", () => {
+  it("uses a directed hierarchy for connected topology on first render", () => {
+    expect(layoutForGraph(12, 11, false)).toMatchObject({
+      name: "breadthfirst",
+      directed: true,
+      circle: false,
+    });
+  });
+
+  it("uses a compact grid when the payload contains no relationships", () => {
+    expect(layoutForGraph(12, 0, false)).toMatchObject({
+      name: "grid",
+      condense: true,
+    });
+  });
+
+  it("preserves positions when a populated graph transitions", () => {
+    expect(layoutForGraph(12, 11, true)).toMatchObject({
+      name: "fcose",
+      randomize: false,
+    });
+  });
+
   it("keeps existing positions on every payload transition", () => {
     expect(layoutForTransition(40, true)).toMatchObject({ randomize: false });
     expect(layoutForTransition(1_000, true)).toMatchObject({ randomize: false });
@@ -235,6 +279,9 @@ describe("topology export provenance", () => {
           filterMode: true,
           showServices: false,
           showFindings: true,
+          showDisconnectedContext: false,
+          showUnattachedPrivateLinkCandidates: false,
+          showRelationshipLabels: false,
         },
         evidence: [],
         warnings: ["partial"],
@@ -271,6 +318,9 @@ describe("topology export provenance", () => {
       filter_mode: true,
       show_services: false,
       show_findings: true,
+      show_disconnected_context: false,
+      show_unattached_private_link_candidates: false,
+      show_relationship_labels: false,
     });
   });
 
@@ -300,6 +350,9 @@ describe("topology export provenance", () => {
           filterMode: false,
           showServices: true,
           showFindings: true,
+          showDisconnectedContext: false,
+          showUnattachedPrivateLinkCandidates: false,
+          showRelationshipLabels: false,
         },
         evidence: null,
         warnings: null,

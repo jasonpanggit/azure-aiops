@@ -1,7 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { RESOURCE_ICONS, SERVICE_ICONS, buildTopologyGraph, serviceIcon, shortName, subscriptionOf } from "@/lib/network-graph";
+import {
+  RESOURCE_ICONS,
+  SERVICE_ICONS,
+  buildTopologyGraph,
+  resourceDisplayLabel,
+  serviceIcon,
+  shortName,
+  subscriptionOf,
+} from "@/lib/network-graph";
 import type {
   HubClassification,
   NetworkTopology,
@@ -100,7 +108,7 @@ describe("buildTopologyGraph", () => {
     expect(graph.groups).toEqual([
       {
         id: "subscription:unknown",
-        label: "Unknown subscription",
+        label: "Unassigned scope",
         kind: "subscription",
       },
     ]);
@@ -120,6 +128,18 @@ describe("buildTopologyGraph", () => {
       "subscription:sub-a",
       "subscription:sub-b",
     ]);
+    expect(graph.groups.map((group) => group.label)).toEqual([
+      "Subscription sub-a",
+      "Subscription sub-b",
+    ]);
+  });
+
+  it("labels a single known scope without exposing a GUID fragment", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({ hubs: [vnet({ vnet_id: HUB, role: "hub" })] }),
+    );
+
+    expect(graph.groups[0].label).toBe("Subscription sub-a");
   });
 
   it("draws one edge for a peering observed from both directions", () => {
@@ -588,6 +608,99 @@ describe("buildTopologyGraph", () => {
       icon: "",
       observed: true,
     });
+  });
+
+  it("hides disconnected context when meaningful network topology exists", () => {
+    const subnetId = `${HUB}/subnets/app`;
+    const orphanId =
+      "/subscriptions/sub-a/resourceGroups/rg-workloads/providers/Microsoft.Network/networkInterfaces/3dd257c6-28a7-4faa-99be-a85cce31b554";
+    const topology = topologyOf({
+      resources: [
+        resource({ id: HUB, entity_type: "VNet", role: "hub", name: "hub" }),
+        resource({ id: subnetId, entity_type: "Subnet", name: "app" }),
+        resource({
+          id: orphanId,
+          entity_type: "NetworkInterface",
+          name: "3dd257c6-28a7-4faa-99be-a85cce31b554",
+        }),
+      ],
+      relationships: [
+        {
+          id: `contains:${HUB}::${subnetId}`,
+          source: HUB,
+          target: subnetId,
+          relationship_type: "contains",
+          label: "contains subnet",
+          details: {},
+        },
+      ],
+    });
+
+    const focused = buildTopologyGraph(topology, {
+      showDisconnectedContext: false,
+    });
+    const complete = buildTopologyGraph(topology, {
+      showDisconnectedContext: true,
+    });
+
+    expect(focused.nodes.map((node) => node.id)).toEqual([HUB, subnetId]);
+    expect(focused.hiddenDisconnectedContextCount).toBe(1);
+    expect(complete.nodes.map((node) => node.id)).toContain(orphanId);
+    expect(complete.hiddenDisconnectedContextCount).toBe(0);
+  });
+
+  it("keeps a topology with no relationships visible instead of hiding everything", () => {
+    const graph = buildTopologyGraph(
+      topologyOf({
+        resources: [
+          resource({ id: FABRIC, entity_type: "FabricCapacity" }),
+          resource({ id: AI_SERVICES, entity_type: "AIFoundryAccount" }),
+        ],
+      }),
+      { showDisconnectedContext: false },
+    );
+
+    expect(graph.nodes).toHaveLength(2);
+    expect(graph.hiddenDisconnectedContextCount).toBe(0);
+  });
+});
+
+describe("resourceDisplayLabel", () => {
+  it("replaces opaque top-level names with a resource role and group", () => {
+    const item = resource({
+      id: "/subscriptions/sub-a/resourceGroups/rg-app/providers/Microsoft.Network/networkInterfaces/3dd257c6-28a7-4faa-99be-a85cce31b554",
+      entity_type: "NetworkInterface",
+      name: "3dd257c6-28a7-4faa-99be-a85cce31b554",
+      resource_group: "rg-app",
+    });
+    expect(resourceDisplayLabel(item)).toBe(
+      "Network interface · rg-app · 31b554",
+    );
+    const node = buildTopologyGraph(
+      topologyOf({ resources: [item] }),
+    ).nodes[0];
+    expect(node.searchText).toContain(item.name.toLowerCase());
+    expect(node.searchText).toContain(item.id.toLowerCase());
+  });
+
+  it("uses the parent resource name for opaque child resources", () => {
+    expect(
+      resourceDisplayLabel(
+        resource({
+          id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/app-nsg/securityRules/9ff08e1c-3cf8-4fbe-80a0-f32f34cc0192",
+          entity_type: "NetworkSecurityRule",
+          name: "9ff08e1c-3cf8-4fbe-80a0-f32f34cc0192",
+        }),
+      ),
+    ).toBe("NSG rule · app-nsg · cc0192");
+  });
+
+  it("keeps a meaningful Azure resource name unchanged", () => {
+    expect(
+      resourceDisplayLabel(
+        resource({ id: HUB, entity_type: "VNet", name: "hub-prod" }),
+      ),
+    ).toBe("hub-prod");
   });
 });
 

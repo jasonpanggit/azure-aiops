@@ -87,12 +87,13 @@ export const STYLESHEET = [
       width: 52,
       height: 52,
       label: "data(label)",
-      "font-size": 10,
+      "font-size": 11,
+      "line-height": 1.2,
       color: "#17202a",
       "text-valign": "bottom",
       "text-margin-y": 6,
-      "text-wrap": "ellipsis",
-      "text-max-width": "96px",
+      "text-wrap": "wrap",
+      "text-max-width": "128px",
       "text-background-color": "#ffffff",
       "text-background-opacity": 0.85,
       "text-background-padding": "2px",
@@ -186,6 +187,7 @@ export const STYLESHEET = [
       "target-arrow-color": (edge: cytoscape.EdgeSingular) => EDGE_COLOR[edge.data("kind") as string] ?? "#8a97a6",
       "arrow-scale": 1.1,
       label: "data(label)",
+      "text-opacity": 0,
       "font-size": 9,
       color: "#778290",
       "text-background-color": "#ffffff",
@@ -203,13 +205,20 @@ export const STYLESHEET = [
   // A bidirectional peering is symmetric, so it carries a head at both ends.
   { selector: "edge[?bidirectional]", style: { "source-arrow-shape": "triangle", "source-arrow-color": "#8a97a6" } },
   { selector: ".cy-selected", style: { "border-width": 4, "border-color": "#0f6cbd", "overlay-color": "#0f6cbd", "overlay-opacity": 0.12, "overlay-padding": 8 } },
-  { selector: "edge.cy-selected", style: { width: 3.5, "line-color": "#0f6cbd" } },
+  {
+    selector: "edge.cy-selected",
+    style: { width: 3.5, "line-color": "#0f6cbd", "text-opacity": 1 },
+  },
   { selector: ".cy-dimmed", style: { opacity: 0.15, "text-opacity": 0.1 } },
   // Hover-highlight: the hovered node and its immediate neighbourhood pop
   // forward while everything else recedes, so dense graphs stay legible.
   { selector: ".cy-hover-focus", style: { "z-index": 30 } },
   { selector: "node.cy-hover-focus", style: { "border-width": 4 } },
-  { selector: "edge.cy-hover-focus", style: { width: 3, opacity: 1 } },
+  {
+    selector: "edge.cy-hover-focus",
+    style: { width: 3, opacity: 1, "text-opacity": 1 },
+  },
+  { selector: "edge.cy-show-labels", style: { "text-opacity": 1 } },
   // Faded enough to recede behind the focused neighbourhood, but still legible
   // so the surrounding topology stays readable rather than washing out.
   { selector: ".cy-hover-fade", style: { opacity: 0.3, "text-opacity": 0.2 } },
@@ -286,6 +295,45 @@ export function layoutForTransition(
     : options;
 }
 
+/** Chooses a topology-shaped first layout instead of scattering components. */
+export function layoutForGraph(
+  nodeCount: number,
+  edgeCount: number,
+  hasPreviousPositions: boolean,
+  connectedNodeCount = nodeCount,
+): cytoscape.LayoutOptions {
+  if (hasPreviousPositions) {
+    return layoutForTransition(
+      nodeCount,
+      hasPreviousPositions,
+      connectedNodeCount,
+    );
+  }
+  if (edgeCount === 0) {
+    return {
+      name: "grid",
+      animate: false,
+      avoidOverlap: true,
+      condense: true,
+      nodeDimensionsIncludeLabels: true,
+      padding: 48,
+      spacingFactor: 1.15,
+    } as cytoscape.LayoutOptions;
+  }
+  return {
+    name: "breadthfirst",
+    animate: false,
+    avoidOverlap: true,
+    circle: false,
+    directed: true,
+    grid: true,
+    maximal: true,
+    nodeDimensionsIncludeLabels: true,
+    padding: 48,
+    spacingFactor: 1.35,
+  } as cytoscape.LayoutOptions;
+}
+
 /** Triggers a browser download for a data: URI without a server round trip. */
 function downloadDataUri(uri: string, filename: string): void {
   const link = document.createElement("a");
@@ -348,6 +396,9 @@ export interface TopologyExportContext {
     filterMode: boolean;
     showServices: boolean;
     showFindings: boolean;
+    showDisconnectedContext: boolean;
+    showUnattachedPrivateLinkCandidates: boolean;
+    showRelationshipLabels: boolean;
   };
   evidence: EvidenceItem[] | null;
   warnings: string[] | null;
@@ -389,6 +440,10 @@ export function buildTopologyExport(
       filter_mode: context.filters.filterMode,
       show_services: context.filters.showServices,
       show_findings: context.filters.showFindings,
+      show_disconnected_context: context.filters.showDisconnectedContext,
+      show_unattached_private_link_candidates:
+        context.filters.showUnattachedPrivateLinkCandidates,
+      show_relationship_labels: context.filters.showRelationshipLabels,
     },
     evidence: context.evidence,
     warnings: context.warnings,
@@ -450,6 +505,8 @@ interface TopologyGraphProps {
     { severity: string; count: number; title?: string }
   >;
   showUnattachedPrivateLinkCandidates?: boolean;
+  showDisconnectedContext?: boolean;
+  showRelationshipLabels?: boolean;
 }
 
 /**
@@ -469,6 +526,8 @@ export default function TopologyGraph({
   exportContext,
   findingSeverityByResource,
   showUnattachedPrivateLinkCandidates = false,
+  showDisconnectedContext = false,
+  showRelationshipLabels = false,
 }: TopologyGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
@@ -480,8 +539,11 @@ export default function TopologyGraph({
 
   const graph = useMemo(
     () =>
-      buildTopologyGraph(topology, { showUnattachedPrivateLinkCandidates }),
-    [showUnattachedPrivateLinkCandidates, topology],
+      buildTopologyGraph(topology, {
+        showDisconnectedContext,
+        showUnattachedPrivateLinkCandidates,
+      }),
+    [showDisconnectedContext, showUnattachedPrivateLinkCandidates, topology],
   );
   const connectedNodeCount = useMemo(() => {
     const connected = new Set(
@@ -527,8 +589,9 @@ export default function TopologyGraph({
       .toArray()
       .some((node) => previousPositions.has(node.id()));
     cy.layout(
-      layoutForTransition(
+      layoutForGraph(
         graph.nodes.length,
+        graph.edges.length,
         hasPreviousPositions,
         connectedNodeCount,
       ),
@@ -634,7 +697,14 @@ export default function TopologyGraph({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [connectedNodeCount, elements, graph.nodes.length, onReady, topology]);
+  }, [
+    connectedNodeCount,
+    elements,
+    graph.edges.length,
+    graph.nodes.length,
+    onReady,
+    topology,
+  ]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -648,7 +718,11 @@ export default function TopologyGraph({
       if (term) {
         const matched = cy
           .nodes("[label]")
-          .filter((node) => String(node.data("label") ?? "").toLowerCase().includes(term));
+          .filter((node) =>
+            String(node.data("searchText") ?? node.data("label") ?? "")
+              .toLowerCase()
+              .includes(term),
+          );
         const keep = matched.union(matched.connectedEdges()).union(matched.ancestors());
         const drop = cy.elements().difference(keep);
         if (filterMode) {
@@ -682,6 +756,17 @@ export default function TopologyGraph({
     });
   }, [findingSeverityByResource, elements]);
 
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const edges = cy.edges();
+    if (showRelationshipLabels) {
+      edges.addClass("cy-show-labels");
+    } else {
+      edges.removeClass("cy-show-labels");
+    }
+  }, [showRelationshipLabels, elements]);
+
   const fit = useCallback(() => {
     const cy = cyRef.current;
     if (cy) fitTopology(cy);
@@ -699,11 +784,15 @@ export default function TopologyGraph({
     // An explicit re-layout is the one case where discarding positions is what
     // the user asked for, so force the randomized pass regardless of size.
     cy.layout({
-      ...layoutFor(graph.nodes.length, connectedNodeCount),
-      randomize: true,
+      ...layoutForGraph(
+        graph.nodes.length,
+        graph.edges.length,
+        false,
+        connectedNodeCount,
+      ),
     } as cytoscape.LayoutOptions).run();
     cy.fit(undefined, 40);
-  }, [connectedNodeCount, graph.nodes.length]);
+  }, [connectedNodeCount, graph.edges.length, graph.nodes.length]);
 
   return (
     <div className="topology-canvas-wrap">

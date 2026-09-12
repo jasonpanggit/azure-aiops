@@ -16,6 +16,7 @@ export type TopologyEdgeKind = "healthy" | "unhealthy" | "unresolved" | "service
 export interface TopologyNodeData {
   id: string;
   label: string;
+  searchText?: string;
   kind: TopologyNodeKind;
   /** Compound parent id (a subscription group), omitted for ungrouped nodes. */
   parent?: string;
@@ -70,10 +71,12 @@ export interface TopologyGraph {
   nodes: TopologyNodeData[];
   edges: TopologyEdgeData[];
   hiddenUnattachedPrivateLinkCount: number;
+  hiddenDisconnectedContextCount: number;
 }
 
 export interface TopologyGraphOptions {
   showUnattachedPrivateLinkCandidates?: boolean;
+  showDisconnectedContext?: boolean;
 }
 
 /**
@@ -177,10 +180,75 @@ export function shortName(resourceId: string): string {
   return segments.at(-1) ?? trimmed;
 }
 
+const ENTITY_LABELS: Record<string, string> = {
+  AIFoundryAccount: "AI Foundry account",
+  ApplicationGateway: "Application gateway",
+  AzureFirewall: "Azure Firewall",
+  ContainerAppEnvironment: "Container Apps environment",
+  FabricCapacity: "Fabric capacity",
+  FirewallRule: "Firewall rule",
+  FirewallRuleCollection: "Firewall rule collection",
+  NetworkInterface: "Network interface",
+  NetworkSecurityGroup: "Network security group",
+  NetworkSecurityRule: "NSG rule",
+  PrivateEndpoint: "Private endpoint",
+  PrivateLinkResource: "Private Link resource",
+  Route: "Route",
+  RouteTable: "Route table",
+  Subnet: "Subnet",
+  VNet: "Virtual network",
+};
+
+function isOpaqueLabel(value: string): boolean {
+  const normalized = value.trim();
+  return (
+    !normalized ||
+    normalized.includes("/") ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized) ||
+    /^[0-9a-f]{24,}$/i.test(normalized)
+  );
+}
+
+function humanizeEntityType(entityType: string): string {
+  const fallback = entityType.replace(/([a-z0-9])([A-Z])/g, "$1 $2").trim();
+  return (ENTITY_LABELS[entityType] ?? fallback) || "Resource";
+}
+
+function identitySuffix(value: string): string {
+  const normalized = value.replace(/[^0-9a-z]/gi, "");
+  return normalized.slice(-6).toLowerCase();
+}
+
+function parentResourceName(resourceId: string): string {
+  const segments = resourceId.split("/").filter(Boolean);
+  const providerIndex = segments.findIndex(
+    (segment) => segment.toLowerCase() === "providers",
+  );
+  const resourceSegments =
+    providerIndex >= 0 ? segments.slice(providerIndex + 2) : [];
+  return resourceSegments.length >= 4
+    ? resourceSegments.at(-3) ?? ""
+    : "";
+}
+
+/** Returns a concise canvas label while keeping exact identity in the drawer. */
+export function resourceDisplayLabel(
+  resource: NetworkTopologyResource,
+): string {
+  const name = String(resource.name || shortName(resource.id)).trim();
+  if (!isOpaqueLabel(name)) return name;
+  const role = humanizeEntityType(resource.entity_type);
+  const context = parentResourceName(resource.id) || resource.resource_group;
+  const suffix = identitySuffix(name || resource.id);
+  const prefix = context && !isOpaqueLabel(context) ? `${role} · ${context}` : role;
+  return suffix ? `${prefix} · ${suffix}` : prefix;
+}
+
 function vnetNode(vnet: HubClassification, kind: TopologyNodeKind): TopologyNodeData {
   return {
     id: vnet.vnet_id,
     label: vnet.name || shortName(vnet.vnet_id),
+    searchText: `${vnet.name} ${vnet.vnet_id} ${vnet.subscription_id}`.toLowerCase(),
     kind,
     parent: groupId(vnet.subscription_id),
     icon: VNET_ICON,
@@ -214,9 +282,11 @@ function resourceKind(resource: NetworkTopologyResource): TopologyNodeKind {
 }
 
 function resourceNode(resource: NetworkTopologyResource): TopologyNodeData {
+  const label = resourceDisplayLabel(resource);
   return {
     id: resource.id,
-    label: resource.name || shortName(resource.id),
+    label,
+    searchText: `${label} ${resource.name} ${resource.id} ${resource.entity_type} ${resource.resource_group}`.toLowerCase(),
     kind: resourceKind(resource),
     parent: groupId(resource.subscription_id),
     icon: resourceIcon(resource),
@@ -244,6 +314,7 @@ function serviceNode(service: SharedServiceSummary): TopologyNodeData {
   return {
     id: service.resource_id,
     label: service.name || shortName(service.resource_id),
+    searchText: `${service.name} ${service.resource_id} ${service.subscription_id}`.toLowerCase(),
     kind: "service",
     parent: groupId(service.subscription_id),
     icon: serviceIcon(service.service_kind),
@@ -266,6 +337,7 @@ function unresolvedNode(
   return {
     id: vnetId,
     label: shortName(vnetId),
+    searchText: `${shortName(vnetId)} ${vnetId} ${subscriptionId}`.toLowerCase(),
     kind: "unresolved",
     parent: subscriptionId ? groupId(subscriptionId) : undefined,
     icon: VNET_ICON,
@@ -329,6 +401,20 @@ function indexNodesByFoldedId(nodes: Map<string, TopologyNodeData>): Map<string,
 
 function resolveNodeId(byFoldedId: Map<string, string>, id: string): string | undefined {
   return byFoldedId.get(id.toLowerCase());
+}
+
+function topologyGroups(nodes: TopologyNodeData[]): TopologyGroupData[] {
+  const parentIds = Array.from(
+    new Set(nodes.flatMap((node) => (node.parent ? [node.parent] : []))),
+  ).sort();
+  return parentIds.map((id) => ({
+    id,
+    label:
+      id === UNGROUPED
+        ? "Unassigned scope"
+        : `Subscription ${id.replace(/^subscription:/, "").slice(0, 8)}`,
+    kind: "subscription",
+  }));
 }
 
 /**
@@ -432,21 +518,12 @@ export function buildTopologyGraph(
     }
   }
 
-  const groups = new Map<string, TopologyGroupData>();
-  for (const node of Array.from(nodes.values())) {
-    if (!node.parent || groups.has(node.parent)) continue;
-    groups.set(node.parent, {
-      id: node.parent,
-      label: node.subscriptionId ? `Subscription ${node.subscriptionId.slice(0, 8)}` : "Unknown subscription",
-      kind: "subscription",
-    });
-  }
-
   return {
-    groups: Array.from(groups.values()),
+    groups: topologyGroups(Array.from(nodes.values())),
     nodes: Array.from(nodes.values()),
     edges: Array.from(edges.values()),
     hiddenUnattachedPrivateLinkCount: 0,
+    hiddenDisconnectedContextCount: 0,
   };
 }
 
@@ -528,42 +605,60 @@ function buildResourceTopologyGraph(
     });
   }
 
-  const groups = new Map<string, TopologyGroupData>();
-  for (const node of Array.from(nodes.values())) {
-    if (!node.parent || groups.has(node.parent)) continue;
-    groups.set(node.parent, {
-      id: node.parent,
-      label: node.subscriptionId ? `Subscription ${node.subscriptionId.slice(0, 8)}` : "Unknown subscription",
-      kind: "subscription",
-    });
-  }
-
   const graph = {
-    groups: Array.from(groups.values()),
+    groups: topologyGroups(Array.from(nodes.values())),
     nodes: Array.from(nodes.values()),
     edges: Array.from(edges.values()),
     hiddenUnattachedPrivateLinkCount: 0,
+    hiddenDisconnectedContextCount: 0,
   };
-  if (options.showUnattachedPrivateLinkCandidates !== false) return graph;
-
   const connectedNodeIds = new Set(
     graph.edges.flatMap((edge) => [edge.source, edge.target]),
   );
   const isPrivateLinkCandidate = (node: TopologyNodeData) =>
     node.details?.private_link_candidate === true;
   const hasPrimaryTopology = graph.nodes.some(
-    (node) => !isPrivateLinkCandidate(node),
+    (node) =>
+      connectedNodeIds.has(node.id) ||
+      ["hub", "spoke", "isolated", "unresolved", "service"].includes(
+        node.kind,
+      ) ||
+      node.entityType === "VNet",
   );
-  if (!hasPrimaryTopology) return graph;
-
-  const hiddenIds = new Set(
+  const hiddenPrivateLinkIds = new Set(
     graph.nodes
       .filter(
         (node) =>
-          isPrivateLinkCandidate(node) && !connectedNodeIds.has(node.id),
+          options.showUnattachedPrivateLinkCandidates === false &&
+          hasPrimaryTopology &&
+          isPrivateLinkCandidate(node) &&
+          !connectedNodeIds.has(node.id),
       )
       .map((node) => node.id),
   );
+  const hiddenDisconnectedIds = new Set(
+    graph.nodes
+      .filter(
+        (node) =>
+          options.showDisconnectedContext === false &&
+          hasPrimaryTopology &&
+          !connectedNodeIds.has(node.id) &&
+          !(
+            options.showUnattachedPrivateLinkCandidates === true &&
+            isPrivateLinkCandidate(node)
+          ) &&
+          !["hub", "spoke", "isolated", "unresolved", "service"].includes(
+            node.kind,
+          ) &&
+          node.entityType !== "VNet" &&
+          !hiddenPrivateLinkIds.has(node.id),
+      )
+      .map((node) => node.id),
+  );
+  const hiddenIds = new Set([
+    ...Array.from(hiddenPrivateLinkIds),
+    ...Array.from(hiddenDisconnectedIds),
+  ]);
   if (hiddenIds.size === 0) return graph;
 
   const visibleNodes = graph.nodes.filter((node) => !hiddenIds.has(node.id));
@@ -576,6 +671,7 @@ function buildResourceTopologyGraph(
     edges: graph.edges.filter(
       (edge) => !hiddenIds.has(edge.source) && !hiddenIds.has(edge.target),
     ),
-    hiddenUnattachedPrivateLinkCount: hiddenIds.size,
+    hiddenUnattachedPrivateLinkCount: hiddenPrivateLinkIds.size,
+    hiddenDisconnectedContextCount: hiddenDisconnectedIds.size,
   };
 }

@@ -260,6 +260,8 @@ export function TopologyWorkspace({
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState(false);
   const [showServices, setShowServices] = useState(true);
+  const [showDisconnectedContext, setShowDisconnectedContext] = useState(false);
+  const [showRelationshipLabels, setShowRelationshipLabels] = useState(false);
   const [showUnattachedPrivateLinkCandidates, setShowUnattachedPrivateLinkCandidates] =
     useState(false);
   const [showFindings, setShowFindings] = useState(true);
@@ -346,10 +348,11 @@ export function TopologyWorkspace({
     () =>
       topology
         ? buildTopologyGraph(topology, {
+            showDisconnectedContext,
             showUnattachedPrivateLinkCandidates,
           })
         : null,
-    [showUnattachedPrivateLinkCandidates, topology],
+    [showDisconnectedContext, showUnattachedPrivateLinkCandidates, topology],
   );
   const visibleNodeIds = useMemo(
     () =>
@@ -378,7 +381,9 @@ export function TopologyWorkspace({
           .filter(
             (node) =>
               !normalizedSearch ||
-              node.label.toLowerCase().includes(normalizedSearch),
+              (node.searchText ?? node.label.toLowerCase()).includes(
+                normalizedSearch,
+              ),
           )
           .map((node) => node.id),
       ),
@@ -438,7 +443,9 @@ export function TopologyWorkspace({
       (selection.edge && !visibleEdgeIds.has(selection.edge.id))
     ) {
       clearSelection();
-      setSelectionAnnouncement("");
+      setSelectionAnnouncement(
+        "Selection cleared — the selected resource is hidden by the current topology controls.",
+      );
     }
   }, [
     clearSelection,
@@ -565,15 +572,24 @@ export function TopologyWorkspace({
       total:
         topology.coverage?.nodes?.total ??
         topology.coverage?.total ??
-        renderedGraph.nodes.length,
+        topology.resources?.length ??
+        topology.hubs.length +
+          topology.spokes.length +
+          topology.isolated.length +
+          topology.shared_services.length,
       droppedEntries,
       droppedTotal: droppedEntries.reduce((total, [, count]) => total + count, 0),
       peerCounts,
       findingsBearingNodes: renderedGraph.nodes.filter((node) =>
         findingSeverityByResource.has(node.id.toLowerCase()),
       ).length,
+      hiddenFindingsBearingNodes: (topology.resources ?? []).filter(
+        (resource) =>
+          findingSeverityByResource.has(resource.id.toLowerCase()) &&
+          !visibleNodeIds.has(resource.id.toLowerCase()),
+      ).length,
     };
-  }, [findingSeverityByResource, renderedGraph, topology]);
+  }, [findingSeverityByResource, renderedGraph, topology, visibleNodeIds]);
 
   const freshnessSentence = useMemo(() => {
     if (!graphFreshness) {
@@ -622,6 +638,9 @@ export function TopologyWorkspace({
         filterMode,
         showServices,
         showFindings,
+        showDisconnectedContext,
+        showUnattachedPrivateLinkCandidates,
+        showRelationshipLabels,
       },
       evidence,
       warnings,
@@ -640,7 +659,10 @@ export function TopologyWorkspace({
     scope,
     search,
     showFindings,
+    showDisconnectedContext,
     showServices,
+    showRelationshipLabels,
+    showUnattachedPrivateLinkCandidates,
     topology,
     warnings,
   ]);
@@ -721,6 +743,26 @@ export function TopologyWorkspace({
             onChange={(event) => setShowServices(event.target.checked)}
           />
           <span>Shared services</span>
+        </label>
+        <label className="topology-toggle">
+          <input
+            type="checkbox"
+            checked={showDisconnectedContext}
+            onChange={(event) =>
+              setShowDisconnectedContext(event.target.checked)
+            }
+          />
+          <span>Disconnected context</span>
+        </label>
+        <label className="topology-toggle">
+          <input
+            type="checkbox"
+            checked={showRelationshipLabels}
+            onChange={(event) =>
+              setShowRelationshipLabels(event.target.checked)
+            }
+          />
+          <span>Relationship labels</span>
         </label>
         <label className="topology-toggle">
           <input
@@ -879,6 +921,8 @@ export function TopologyWorkspace({
           showUnattachedPrivateLinkCandidates={
             showUnattachedPrivateLinkCandidates
           }
+          showDisconnectedContext={showDisconnectedContext}
+          showRelationshipLabels={showRelationshipLabels}
         />
         <TopologyDetailDrawer
           node={selection.node}
@@ -930,6 +974,15 @@ export function TopologyWorkspace({
               {renderedGraph.hiddenUnattachedPrivateLinkCount === 1 ? "it" : "them"}.
             </span>
           )}
+          {renderedGraph.hiddenDisconnectedContextCount > 0 && (
+            <span>
+              {renderedGraph.hiddenDisconnectedContextCount} disconnected
+              context node
+              {renderedGraph.hiddenDisconnectedContextCount === 1 ? "" : "s"}{" "}
+              hidden; enable Disconnected context to inspect
+              {renderedGraph.hiddenDisconnectedContextCount === 1 ? " it" : " them"}.
+            </span>
+          )}
           <span>{filterHiddenCount} hidden by filter</span>
           <span>{counts.hubs} hubs</span>
           <span>{counts.spokes} spokes</span>
@@ -959,6 +1012,13 @@ export function TopologyWorkspace({
             </span>
           )}
           <span>{counts.findingsBearingNodes} nodes with open findings</span>
+          {counts.hiddenFindingsBearingNodes > 0 && (
+            <span>
+              {counts.hiddenFindingsBearingNodes} hidden context node
+              {counts.hiddenFindingsBearingNodes === 1 ? "" : "s"} also have
+              open findings.
+            </span>
+          )}
           <span>
             Badges: {badgeCoverage.mapped} of {badgeCoverage.total} findings
           </span>
