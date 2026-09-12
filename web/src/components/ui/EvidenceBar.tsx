@@ -3,6 +3,8 @@ import type { PageHeaderCompleteness } from "./PageHeader";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge, statusTone } from "./StatusBadge";
 
+const VISIBLE_WARNING_COUNT = 2;
+
 export interface EvidenceBarProps {
   evidence?: EvidenceItem[];
   knowledgeVersion?: string;
@@ -45,6 +47,11 @@ export function EvidenceBar({
   graphTimestampLabel = "Graph",
 }: EvidenceBarProps) {
   const latest = evidence[0];
+  const uniqueWarnings = Array.from(
+    new Set(warnings.map((warning) => warning.trim()).filter(Boolean)),
+  );
+  const visibleWarnings = uniqueWarnings.slice(0, VISIBLE_WARNING_COUNT);
+  const additionalWarnings = uniqueWarnings.slice(VISIBLE_WARNING_COUNT);
   const timestamp = latest?.timestamp || fallbackTimestamp;
   const confidence = latest?.confidence || "unknown";
   const aggregateLabel =
@@ -125,7 +132,28 @@ export function EvidenceBar({
           ))}
         </div>
       )}
-      {warnings.length > 0 && <div className="evidence-warning">{warnings.join(" · ")}</div>}
+      {uniqueWarnings.length > 0 && (
+        <div className="evidence-warning" aria-label="Data warnings">
+          <ul className="evidence-warning-list">
+            {visibleWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+          {additionalWarnings.length > 0 && (
+            <details className="evidence-warning-details">
+              <summary>
+                Show {additionalWarnings.length} more{" "}
+                {additionalWarnings.length === 1 ? "warning" : "warnings"}
+              </summary>
+              <ul className="evidence-warning-list">
+                {additionalWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
