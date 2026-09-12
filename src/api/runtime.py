@@ -26,7 +26,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from fabric.auth import FabricAuthConfig
+from fabric.auth import FabricAuthConfig, build_credential
 from fabric.config import (
     ExposureRolloutRuntimeConfig,
     ExposureRolloutStage,
@@ -35,6 +35,7 @@ from fabric.config import (
 )
 from fabric.dataset_mapper import ExposureOntologyMapper, InventoryDatasetMapper
 from fabric.runtime import FabricRuntime, build_runtime
+from fabric.sql_endpoint import require_exposure_ready
 from intelligence.governance import EnterpriseSettingsStore
 from intelligence.health.service import ResourceHealthService
 from intelligence.incident.incident_intelligence import IncidentIntelligence
@@ -2638,6 +2639,16 @@ def _fabric_remediation_enabled() -> bool:
     return FabricRuntimeConfig.load(config_path).remediation.enabled
 
 
+def _fabric_exposure_query_enabled() -> bool:
+    """Whether production should load and require the Fabric SQL read path."""
+
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if not config_path:
+        return True
+    exposure = FabricRuntimeConfig.load(config_path).exposure
+    return exposure.enabled and not exposure.rollback_mode
+
+
 def _fabric_runtime_from_environment() -> FabricRuntime | None:
     """Build the authoritative Fabric reader from a file or Container Apps env."""
     config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
@@ -3136,8 +3147,9 @@ def _build_provider_runtime(
             ),
             "network": lambda: with_fabric(_fabric_network_service),
             "vulnerability": lambda: with_fabric(_fabric_vulnerability_service),
-            "exposure_query": lambda: with_fabric(
-                lambda item: _fabric_exposure_query_service(item, onboarding)
+            "exposure_query": lambda: _fabric_exposure_query_from_config(
+                onboarding,
+                fabric,
             ),
             "incidents": lambda: with_fabric(_fabric_incident_engine),
             "remediation_catalog": lambda: with_fabric(
@@ -3174,7 +3186,11 @@ def _build_provider_runtime(
         )
     )
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
-    core_readiness_providers = {"exposure_query"}
+    # External intelligence providers must never make the API process
+    # unroutable. Their routes fail closed with provider_unavailable and their
+    # state remains visible in /health; /ready only proves the process can
+    # safely answer requests.
+    core_readiness_providers: set[str] = set()
     deferred_providers = {
         "change",
         "incidents",
@@ -3186,6 +3202,9 @@ def _build_provider_runtime(
         "vulnerability",
     }
     remediation_enabled = _fabric_remediation_enabled() if use_fabric else False
+    exposure_query_enabled = (
+        _fabric_exposure_query_enabled() if use_fabric else False
+    )
     specs = {
         name: ProviderSpec(
             loader=loader,
@@ -3193,6 +3212,11 @@ def _build_provider_runtime(
                 name in {"remediation", "remediation_catalog"}
                 and use_fabric
                 and not remediation_enabled
+            )
+            and not (
+                name == "exposure_query"
+                and use_fabric
+                and not exposure_query_enabled
             ),
             required=name in core_readiness_providers and not bootstrap,
             cache_key=(
@@ -3796,9 +3820,51 @@ def _fabric_exposure_query_service(
 ) -> Any:
     """Compose the production Plan 13 service without a Delta fallback."""
 
-    if runtime.service.sql_reader is None:
+    return _exposure_query_service_from_reader(
+        runtime.service.sql_reader,
+        onboarding,
+    )
+
+
+def _fabric_exposure_query_from_config(
+    onboarding: SubscriptionOnboardingService,
+    fabric_supplier: Callable[[], FabricRuntime | None],
+) -> Any:
+    """Build Exposure SQL directly when deployment config names its endpoint."""
+
+    config_path = os.environ.get(ENV_FABRIC_CONFIG, "").strip()
+    if config_path:
+        config = FabricRuntimeConfig.load(config_path)
+        endpoint = config.sql_endpoint
+        if (
+            config.exposure.enabled
+            and not config.exposure.rollback_mode
+            and endpoint.server
+            and endpoint.database
+        ):
+            reader = require_exposure_ready(
+                {
+                    "server": endpoint.server,
+                    "database": endpoint.database,
+                    "schema": endpoint.schema,
+                },
+                build_credential(config.auth),
+                endpoint_source="deployment_config",
+            )
+            return _exposure_query_service_from_reader(reader, onboarding)
+    runtime = fabric_supplier()
+    if runtime is None:
+        raise RuntimeError("Fabric runtime is unavailable")
+    return _fabric_exposure_query_service(runtime, onboarding)
+
+
+def _exposure_query_service_from_reader(
+    reader: Any,
+    onboarding: SubscriptionOnboardingService,
+) -> Any:
+    if reader is None:
         raise RuntimeError("Fabric SQL Exposure reader is unavailable")
-    if not runtime.service.sql_reader.query("SELECT 1 AS probe", max_rows=1):
+    if not reader.query("SELECT 1 AS probe", max_rows=1):
         raise RuntimeError("Fabric SQL Exposure connectivity probe returned no rows")
 
     from .exposure_query import (
@@ -3808,7 +3874,7 @@ def _fabric_exposure_query_service(
     )
 
     return ExposureQueryService(
-        runtime.service.sql_reader,
+        reader,
         cursor_codec=ExposureCursorCodec(
             ExposureCursorKeyRing.from_environment()
         ),

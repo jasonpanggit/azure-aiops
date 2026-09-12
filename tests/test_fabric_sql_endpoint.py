@@ -379,6 +379,11 @@ def test_deployed_config_requires_fabric_sql_without_delta_rollback():
     assert config.exposure.enabled is True
     assert config.exposure.adapter == "fabric_sql"
     assert config.exposure.rollback_mode is False
+    assert config.sql_endpoint.server.endswith(
+        ".datawarehouse.fabric.microsoft.com"
+    )
+    assert config.sql_endpoint.database == "b4089445-1001-45a6-a0ea-2b4a0851eace"
+    assert config.sql_endpoint.schema == "dbo"
 
 
 def test_runtime_requires_readiness_only_for_enabled_nonrollback_exposure(

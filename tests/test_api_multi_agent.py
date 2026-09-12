@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+import pytest
 from fastapi.testclient import TestClient
 
 import operations.autonomous_investigation as investigation_module
@@ -16,6 +17,8 @@ from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from operations.autonomous_investigation import (
+    _deterministic_context_narration,
+    _nonnegative_count,
     _resolve_foundry_agent,
     _snapshot_observations,
     _tool_args,
@@ -439,7 +442,18 @@ def test_cve_context_aggregates_visible_findings_and_explains_partial_metadata(
                 "total_count": 93,
                 "returned_count": 50,
                 "items": [
-                    {"severity": "Critical", "weakness_id": "CVE-2025-49796"}
+                    {
+                        "severity": "Critical",
+                        "weakness_id": "CVE-2025-49796",
+                        "target_kind": "container_image",
+                        "source_family": "defender_image",
+                        "current_state": "active",
+                        "deployment_state": "unknown",
+                        "represented_workload_count": 0,
+                        "total_workload_count": 0,
+                        "recommendation": "",
+                    }
+                    for _ in range(50)
                 ],
             },
         )
@@ -513,8 +527,18 @@ def test_cve_context_aggregates_visible_findings_and_explains_partial_metadata(
     assert len(findings) == 2
     assert any("93 scoped findings" in item["summary"] for item in findings)
     assert ledger["synthesis"]["mode"] == "deterministic"
-    assert "CVE-2025-49796" in ledger["synthesis"]["narration"]
-    assert "93 scoped findings" in ledger["synthesis"]["narration"]
+    narration = ledger["synthesis"]["narration"]
+    assert "CVE-2025-49796" in narration
+    assert "**93** matching findings" in narration
+    assert "**50 records were inspected**" in narration
+    assert "inspected records target container image" in narration
+    assert "50 are currently marked active" in narration
+    assert "Critical" in narration
+    assert "running workload impact is unknown" in narration
+    assert "CVSS, exploitability assessment, affected product, or patch" in narration
+    assert "Review the remaining 43 findings" in narration
+    assert "Map the affected image digests to deployed workloads" in narration
+    assert "authenticated Exposure query confirms" not in narration
     assert ledger["warnings"] == [
         (
             "Vulnerability metadata is unavailable from cve, nvd; "
@@ -525,6 +549,174 @@ def test_cve_context_aggregates_visible_findings_and_explains_partial_metadata(
     assert all(call["principal"] is principal for call in calls)
     exposure_call = next(call for call in calls if call["name"] == "cve_exposure")
     assert exposure_call["args"] == {"query": "CVE-2025-49796"}
+
+
+def test_cve_context_explains_unavailable_exposure_without_implying_zero_risk(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        investigation_module,
+        "call_tool",
+        lambda *args, **kwargs: ToolResult(
+            status="unavailable",
+            warning="The vulnerability provider is deferred",
+        ),
+    )
+    principal = Principal(subject="operator@example.com", grants=(Grant("admin"),))
+    page = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "Explain CVE-2025-49796",
+        "filters": {"weakness_id": ["CVE-2025-49796"]},
+        "freshness": [
+            {"source": "findings", "status": "unavailable", "observed_at": "unknown"},
+            {"source": "nvd", "status": "unavailable", "observed_at": "unknown"},
+        ],
+        "evidence": [{
+            "evidence_id": "coverage-findings",
+            "section": "coverage",
+            "status": "unavailable",
+            "data": {
+                "source_key": "findings",
+                "coverage": {
+                    "visible_count": 0,
+                    "total_count": 0,
+                    "complete": False,
+                    "truncated": False,
+                },
+            },
+        }],
+    })
+
+    ledger = run_context_investigation(
+        page,
+        context=ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator({TOKEN: principal}),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+        ),
+        scope=Scope.from_mapping({"subscription": ["sub-prod"]}),
+        principal_subject=principal.subject,
+        principal=principal,
+    )
+
+    narration = ledger["synthesis"]["narration"]
+    assert "cannot determine whether CVE-2025-49796 affects resources" in narration
+    assert "authenticated Exposure recheck is unavailable" in narration
+    assert "zero represented records does not mean zero exposure" in narration
+    assert "Restore the scoped Exposure query provider and retry" in narration
+    assert "coverage evidence submitted" not in narration
+
+
+def test_unavailable_cve_recheck_uses_guarded_narration_and_qualifies_snapshot(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        investigation_module,
+        "call_tool",
+        lambda *args, **kwargs: ToolResult(
+            status="unavailable",
+            warning="The vulnerability provider is deferred",
+        ),
+    )
+    narrator = type(
+        "_Narrator",
+        (),
+        {"answer": lambda self, **kwargs: AgentAnswer(
+            text="No affected resources exist.",
+            agent_name="unsafe-narrator",
+            model="test",
+            grounded=True,
+        )},
+    )()
+    principal = Principal(subject="operator@example.com", grants=(Grant("admin"),))
+    page = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "Explain CVE-2025-49796",
+        "filters": {"weakness_id": ["CVE-2025-49796"]},
+        "freshness": [
+            {"source": "findings", "status": "partial", "observed_at": "unknown"},
+        ],
+        "evidence": [{
+            "evidence_id": "finding-1",
+            "section": "exposure/cve-findings",
+            "status": "ok",
+            "data": {"severity": "Critical", "source_key": "target-1"},
+        }],
+    })
+
+    ledger = run_context_investigation(
+        page,
+        context=ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator({TOKEN: principal}),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+            foundry_agent_provider=lambda: narrator,
+        ),
+        scope=Scope.from_mapping({"subscription": ["sub-prod"]}),
+        principal_subject=principal.subject,
+        principal=principal,
+    )
+
+    narration = ledger["synthesis"]["narration"]
+    assert ledger["synthesis"]["mode"] == "deterministic"
+    assert "No affected resources exist" not in narration
+    assert "1 scoped findings" in narration
+    assert "qualified visible context, not current truth" in narration
+
+
+def test_empty_cve_recheck_uses_scoped_deterministic_narration(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        investigation_module,
+        "call_tool",
+        lambda *args, **kwargs: ToolResult(status="empty", data={"total_count": 0}),
+    )
+    narrator = type(
+        "_Narrator",
+        (),
+        {"answer": lambda self, **kwargs: AgentAnswer(
+            text="No affected resources exist anywhere.",
+            agent_name="unsafe-narrator",
+            model="test",
+            grounded=True,
+        )},
+    )()
+    principal = Principal(subject="operator@example.com", grants=(Grant("admin"),))
+    page = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "Explain CVE-2025-49796",
+        "filters": {"weakness_id": ["CVE-2025-49796"]},
+        "evidence": [],
+    })
+
+    ledger = run_context_investigation(
+        page,
+        context=ApiContext(
+            onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+            authenticator=StaticTokenAuthenticator({TOKEN: principal}),
+            authorizer=Authorizer(),
+            telemetry=ApiTelemetry(),
+            foundry_agent_provider=lambda: narrator,
+        ),
+        scope=Scope.from_mapping({"subscription": ["sub-prod"]}),
+        principal_subject=principal.subject,
+        principal=principal,
+    )
+
+    narration = ledger["synthesis"]["narration"]
+    assert ledger["synthesis"]["mode"] == "deterministic"
+    assert "No affected resources exist anywhere" not in narration
+    assert "no scoped findings for CVE-2025-49796" in narration
+    assert "submitted page snapshot may be stale" in narration
 
 
 def test_cve_exposure_arguments_use_cve_search_not_business_service() -> None:
@@ -586,6 +778,129 @@ def test_single_visible_cve_finding_preserves_total_coverage() -> None:
         "this update",
         "KB6000001",
     ) == {"query": "KB6000001"}
+
+
+def test_cve_narration_handles_server_targets_and_malformed_counts() -> None:
+    snapshot = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "What is the impact?",
+        "freshness": [
+            {
+                "source": "nvd",
+                "status": "unavailable",
+                "observed_at": "2026-09-10T04:48:09Z",
+            },
+            {
+                "source": "kev",
+                "status": "fresh",
+                "observed_at": "2026-09-10T04:48:09Z",
+            },
+        ],
+    })
+    findings = [{
+        "check_id": "exposure/cve-findings",
+        "summary": "1 scoped finding",
+        "details": {"total_count": 1, "visible_count": 1},
+    }]
+    calls = [{
+        "tool": "cve_exposure",
+        "status": "ok",
+        "result": {
+            "data": {
+                "total_count": "many",
+                "returned_count": "one",
+                "items": [{
+                    "severity": "High",
+                    "target_kind": "server",
+                    "represented_workload_count": "unknown",
+                }],
+            },
+        },
+    }]
+
+    narration = _deterministic_context_narration(snapshot, findings, calls)
+
+    assert "total count is unavailable" in narration
+    assert "affected servers" in narration
+    assert "image digests" not in narration
+    assert "Activity state is unavailable" in narration
+    assert "current: kev" in narration
+    assert "unavailable: nvd" in narration
+    assert "Restore or refresh nvd metadata" in narration
+    assert "Restore or refresh kev" not in narration
+
+
+def test_cve_narration_treats_unknown_activity_sentinels_as_unknown() -> None:
+    snapshot = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "What is the impact?",
+    })
+    narration = _deterministic_context_narration(
+        snapshot,
+        [{
+            "check_id": "exposure/cve-findings",
+            "summary": "1 scoped finding",
+            "details": {"total_count": 1, "visible_count": 1},
+        }],
+        [{
+            "tool": "cve_exposure",
+            "status": "ok",
+            "result": {
+                "data": {
+                    "total_count": 1,
+                    "items": [{
+                        "severity": "Critical",
+                        "active": False,
+                        "current_state": "unknown",
+                    }],
+                },
+            },
+        }],
+    )
+
+    assert "Activity state is unavailable" in narration
+    assert "0 are currently marked active" not in narration
+
+
+def test_cve_narration_does_not_treat_unknown_workload_counts_as_zero() -> None:
+    snapshot = PageSnapshot.model_validate({
+        "page_kind": "vulnerability",
+        "page_id": "cve:CVE-2025-49796",
+        "question": "What is the workload impact?",
+    })
+    narration = _deterministic_context_narration(
+        snapshot,
+        [{
+            "check_id": "exposure/cve-findings",
+            "summary": "1 scoped finding",
+            "details": {"total_count": 1, "visible_count": 1},
+        }],
+        [{
+            "tool": "cve_exposure",
+            "status": "ok",
+            "result": {
+                "data": {
+                    "total_count": 1,
+                    "items": [{
+                        "severity": "Critical",
+                        "target_kind": "container_image",
+                        "current_state": "active",
+                        "represented_workload_count": "unknown",
+                    }],
+                },
+            },
+        }],
+    )
+
+    assert "Workload relationship counts are unavailable" in narration
+    assert "no represented workload relationships are present" not in narration
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, float("inf"), "many", None])
+def test_invalid_cve_counts_fail_closed(value) -> None:
+    assert _nonnegative_count(value, None) is None
 
 
 def test_canonical_weakness_queries_are_exact() -> None:

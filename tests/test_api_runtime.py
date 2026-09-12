@@ -221,6 +221,118 @@ def test_exposure_query_provider_probes_sql_reader_before_publication() -> None:
     with pytest.raises(OSError, match="Fabric SQL unavailable"):
         _fabric_exposure_query_service(runtime, object())
 
+def test_exposure_query_uses_explicit_sql_endpoint_without_fabric_rest(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    reader = object()
+    service = object()
+    captured: dict[str, object] = {}
+    monkeypatch.setenv(
+        "AIOPS_FABRIC_CONFIG",
+        str(Path("fabric.config.deploy.yaml").resolve()),
+    )
+    monkeypatch.setattr(runtime_module, "build_credential", lambda _auth: object())
+
+    def build_reader(endpoint, _credential, *, endpoint_source):
+        assert endpoint_source == "deployment_config"
+        captured.update(endpoint)
+        return reader
+
+    monkeypatch.setattr(runtime_module, "require_exposure_ready", build_reader)
+    monkeypatch.setattr(
+        runtime_module,
+        "_exposure_query_service_from_reader",
+        lambda actual_reader, _onboarding: (
+            service if actual_reader is reader else None
+        ),
+    )
+
+    result = runtime_module._fabric_exposure_query_from_config(
+        object(),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Fabric REST runtime must not be constructed")
+        ),
+    )
+
+    assert result is service
+    assert captured == {
+        "server": (
+            "a4y4r76a7qxe3b4y2wbnunsqly-u6gteheqetoerg5g32gb6mzxky"
+            ".datawarehouse.fabric.microsoft.com"
+        ),
+        "database": "b4089445-1001-45a6-a0ea-2b4a0851eace",
+        "schema": "dbo",
+    }
+
+
+def test_exposure_query_explicit_endpoint_honors_rollback_mode(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import api.runtime as runtime_module
+
+    config = tmp_path / "fabric.yaml"
+    config.write_text(
+        """
+fabric:
+  workspace_name: workspace
+  lakehouse_name: lakehouse
+  sql_endpoint:
+    server: server.datawarehouse.fabric.microsoft.com
+    database: database
+    schema: dbo
+  exposure:
+    enabled: true
+    adapter: fabric_sql
+    rollback_mode: true
+"""
+    )
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config))
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+    monkeypatch.setattr(
+        runtime_module,
+        "_fabric_runtime_from_environment",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("disabled rollback provider must not construct Fabric")
+        ),
+    )
+
+    providers = runtime_module._build_provider_runtime(object())
+
+    assert providers.specs["exposure_query"].configured is False
+    assert providers.specs["exposure_query"].required is False
+    health = providers.refresh(force=True)
+    assert health["providers"]["exposure_query"]["state"] == "disabled"
+    assert health["readiness"] == "ready"
+
+
+def test_exposure_query_failure_is_visible_without_blocking_process_readiness(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setenv(
+        "AIOPS_FABRIC_CONFIG",
+        str(Path("fabric.config.deploy.yaml").resolve()),
+    )
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: True)
+    monkeypatch.setattr(
+        runtime_module,
+        "require_exposure_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ConnectionError("Fabric SQL unavailable")
+        ),
+    )
+
+    providers = runtime_module._build_provider_runtime(object())
+    health = providers.refresh(force=True)
+
+    assert providers.specs["exposure_query"].required is False
+    assert health["providers"]["exposure_query"]["state"] == "unavailable"
+    assert health["readiness"] == "ready"
+
 
 def test_exposure_query_provider_defers_readable_generation_to_gold_queries(
     monkeypatch,
@@ -328,7 +440,7 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
-    assert providers.specs["exposure_query"].required is True
+    assert providers.specs["exposure_query"].required is False
     assert providers.specs["exposure_read_port"].required is False
     assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False

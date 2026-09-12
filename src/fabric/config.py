@@ -285,6 +285,13 @@ class CapacityRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class SqlEndpointRuntimeConfig:
+    server: str = ""
+    database: str = ""
+    schema: str = "dbo"
+
+
+@dataclass(frozen=True)
 class FabricRuntimeConfig:
     auth: FabricAuthConfig
     source_data_root: Path | str
@@ -303,6 +310,9 @@ class FabricRuntimeConfig:
     # default and degrades silently to Delta reads when the endpoint or an
     # ODBC driver is unavailable.
     sql_endpoint_enabled: bool = True
+    sql_endpoint: SqlEndpointRuntimeConfig = field(
+        default_factory=SqlEndpointRuntimeConfig
+    )
     exposure: ExposureRuntimeConfig = field(default_factory=ExposureRuntimeConfig)
     ontology: OntologyRuntimeConfig = field(default_factory=OntologyRuntimeConfig)
     topology_pipeline: PipelineToggleRuntimeConfig = field(
@@ -423,6 +433,9 @@ class FabricRuntimeConfig:
         sql_endpoint_enabled = fabric.get("sql_endpoint_enabled", True)
         if not isinstance(sql_endpoint_enabled, bool):
             raise TypeError("fabric.sql_endpoint_enabled must be boolean")
+        raw_sql_endpoint = fabric.get("sql_endpoint", {})
+        if not isinstance(raw_sql_endpoint, dict):
+            raise TypeError("fabric.sql_endpoint must be a mapping")
         raw_patch_payload = fabric.get("patch_intelligence", {})
         if raw_patch_payload is False:
             patch_payload = {"enabled": False}
@@ -528,6 +541,12 @@ class FabricRuntimeConfig:
             write_workers=int(fabric.get("write_workers") or 4),
             table_schema=str(fabric.get("table_schema") or ""),
             sql_endpoint_enabled=sql_endpoint_enabled,
+            sql_endpoint=SqlEndpointRuntimeConfig(
+                server=str(raw_sql_endpoint.get("server") or "").strip(),
+                database=str(raw_sql_endpoint.get("database") or "").strip(),
+                schema=str(raw_sql_endpoint.get("schema") or "dbo").strip()
+                or "dbo",
+            ),
             exposure=ExposureRuntimeConfig(
                 enabled=exposure_enabled,
                 adapter=exposure_adapter,
