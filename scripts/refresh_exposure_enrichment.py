@@ -25,10 +25,13 @@ from intelligence.vulnerability.enrichment_worker import (
     EnrichmentTarget,
     EnrichmentWorker,
 )
+from intelligence.vulnerability.exposure_contracts import EXPOSURE_FINDINGS_DATASET
+from storage.datasets import DatasetStore
 from storage.onelake_documents import OneLakeDocumentStore
 
 DEFAULT_MAX_ITEMS = 100
 MAX_ITEMS_LIMIT = 1_000
+PATCH_FINDINGS_DATASET = "silver_patch_snapshot_findings"
 _OUTCOME_FIELDS = (
     "source",
     "identifier",
@@ -99,23 +102,77 @@ def _build_worker(*, max_items: int) -> EnrichmentWorker:
     return EnrichmentWorker(cache, max_items=max_items)
 
 
-def _targets(args: argparse.Namespace, worker: EnrichmentWorker) -> tuple[EnrichmentTarget, ...]:
+def _published_targets() -> tuple[EnrichmentTarget, ...]:
+    root = os.environ.get("AIOPS_HOME", "").strip() or str(Path.home() / ".aiops")
+    datasets = DatasetStore(root).read_datasets(
+        (EXPOSURE_FINDINGS_DATASET, PATCH_FINDINGS_DATASET)
+    )
+    identities: set[tuple[str, str]] = set()
+
+    def add(source: str, value: object) -> None:
+        try:
+            target = EnrichmentTarget(source, str(value or ""))
+        except ValueError:
+            return
+        identities.add((target.source, target.identifier))
+
+    for row in datasets[EXPOSURE_FINDINGS_DATASET]:
+        weakness_id = str(row.get("weakness_id") or "").strip().upper()
+        if weakness_id.startswith("KB"):
+            add("msrc", weakness_id)
+        elif weakness_id.startswith("CVE-"):
+            for source in ("nvd", "epss", "kev"):
+                add(source, weakness_id)
+
+    for row in datasets[PATCH_FINDINGS_DATASET]:
+        for field in ("kb_id", "missing_kb"):
+            add("msrc", row.get(field))
+        for field in ("cve_id",):
+            for source in ("nvd", "epss", "kev"):
+                add(source, row.get(field))
+        for value in row.get("cve_ids") or ():
+            for source in ("nvd", "epss", "kev"):
+                add(source, value)
+
+    return tuple(
+        EnrichmentTarget(source, identifier)
+        for source, identifier in sorted(identities)
+    )
+
+
+def _targets(
+    args: argparse.Namespace,
+    worker: EnrichmentWorker,
+    *,
+    published_targets: Sequence[EnrichmentTarget] = (),
+) -> tuple[EnrichmentTarget, ...]:
     if args.all_due:
         if args.source or args.identifiers:
             raise ValueError("all_due_cannot_be_combined_with_source_or_id")
-        identities = sorted(
-            {
-                (
-                    str(record.get("source") or ""),
-                    str(record.get("identifier") or ""),
-                )
-                for record in worker.cache.records()
-                if _record_is_due(record)
-            }
+        records = worker.cache.records()
+        registered = {
+            (
+                str(record.get("source") or ""),
+                str(record.get("identifier") or ""),
+            )
+            for record in records
+        }
+        identities = {
+            (
+                str(record.get("source") or ""),
+                str(record.get("identifier") or ""),
+            )
+            for record in records
+            if _record_is_due(record)
+        }
+        identities.update(
+            (target.source, target.identifier)
+            for target in published_targets
+            if (target.source, target.identifier) not in registered
         )
         return tuple(
             EnrichmentTarget(source, identifier)
-            for source, identifier in identities[: args.max_items]
+            for source, identifier in sorted(identities)[: args.max_items]
         )
     if not args.source or not args.identifiers:
         raise ValueError("source_and_id_are_required_without_all_due")
@@ -151,6 +208,9 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     worker_factory: Callable[..., EnrichmentWorker] = _build_worker,
+    published_target_loader: Callable[
+        [], Sequence[EnrichmentTarget]
+    ] = _published_targets,
     stdout: TextIO = sys.stdout,
 ) -> int:
     """Run one bounded refresh and emit only scheduler-safe JSON."""
@@ -159,7 +219,13 @@ def main(
     outcomes: list[dict[str, Any]] = []
     try:
         worker = worker_factory(max_items=args.max_items)
-        targets = _targets(args, worker)
+        targets = _targets(
+            args,
+            worker,
+            published_targets=(
+                published_target_loader() if args.all_due else ()
+            ),
+        )
         worker.refresh(
             targets,
             force=args.force,
