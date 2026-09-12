@@ -279,6 +279,7 @@ class NetworkIntelligenceService:
         policy_path: str | None = None,
         flow_observations: Iterable[Mapping[str, Any]] | None = None,
         topology_build_duration_ms: int | None = None,
+        connection_context: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> NetworkIntelligenceService:
         """Normalize raw ARG resources before loading the typed network view.
 
@@ -314,6 +315,20 @@ class NetworkIntelligenceService:
             for entities in graph.entities.values()
             for entity in entities
         ]
+        context_fields = {
+            "subscription_connection": "connection_id",
+            "environment": "environment_name",
+            "business_service": "business_service_name",
+            "application": "application_name",
+            "owner": "owner_name",
+        }
+        for entity in normalized_rows:
+            subscription_id = str(entity.get("subscriptionId") or "").casefold()
+            context = (connection_context or {}).get(subscription_id, {})
+            for source_field, target_field in context_fields.items():
+                value = str(context.get(source_field) or "").strip()
+                if value and not entity.get(target_field):
+                    entity[target_field] = value
         if timestamp is None:
             for entity in normalized_rows:
                 entity["createdTimestamp"] = ""
