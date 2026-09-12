@@ -196,15 +196,12 @@ describe("topology hover highlight", () => {
 });
 
 describe("topology detail transitions", () => {
-  it("uses a directed hierarchy for connected topology on first render", () => {
+  it("uses a force-directed layout for connected topology on first render", () => {
     expect(layoutForGraph(12, 11, false)).toMatchObject({
-      name: "breadthfirst",
-      directed: true,
-      circle: false,
-      maximal: false,
-      nodeDimensionsIncludeLabels: false,
-      padding: 24,
-      spacingFactor: 0.8,
+      name: "fcose",
+      quality: "default",
+      randomize: true,
+      packComponents: true,
     });
   });
 
@@ -241,6 +238,14 @@ describe("topology detail transitions", () => {
     cy.nodes(":child").forEach((node) => {
       expect(Number.isFinite(node.position("x"))).toBe(true);
       expect(Number.isFinite(node.position("y"))).toBe(true);
+    });
+  });
+
+  it("keeps tiny compound graphs on the cycle-safe compact layout", () => {
+    expect(layoutForGraph(3, 3, false)).toMatchObject({
+      name: "breadthfirst",
+      maximal: false,
+      spacingFactor: 0.8,
     });
   });
 
