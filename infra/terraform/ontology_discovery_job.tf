@@ -49,6 +49,22 @@ resource "azurerm_role_assignment" "ontology_coordinator_acr_pull" {
   skip_service_principal_aad_check = true
 }
 
+resource "azurerm_role_assignment" "ontology_coordinator_validation_reader" {
+  for_each = var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
+
+  scope                = "/subscriptions/${each.value}"
+  role_definition_name = "Reader"
+  principal_id         = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+}
+
+resource "azurerm_role_assignment" "ontology_coordinator_validation_monitoring_reader" {
+  for_each = var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
+
+  scope                = "/subscriptions/${each.value}"
+  role_definition_name = "Monitoring Reader"
+  principal_id         = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+}
+
 resource "azurerm_role_assignment" "ontology_publisher_acr_pull" {
   scope                            = azurerm_container_registry.main.id
   role_definition_name             = "AcrPull"
@@ -178,6 +194,8 @@ resource "azurerm_container_app_job" "ontology_discovery" {
 
   depends_on = [
     azurerm_role_assignment.ontology_coordinator_acr_pull,
+    azurerm_role_assignment.ontology_coordinator_validation_reader,
+    azurerm_role_assignment.ontology_coordinator_validation_monitoring_reader,
     fabric_workspace_role_assignment.ontology_coordinator_state,
     fabric_workspace_role_assignment.ontology_command_coordinator,
     fabric_workspace_role_assignment.ontology_dispatch_coordinator,

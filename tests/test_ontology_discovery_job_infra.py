@@ -116,6 +116,30 @@ def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> N
     assert "fabric_workspace.ontology_discovery_state[0].id" in terraform
 
 
+def test_validation_coordinator_has_read_only_azure_scope() -> None:
+    terraform = JOB_TF.read_text(encoding="utf-8")
+
+    for name, role in (
+        ("ontology_coordinator_validation_reader", "Reader"),
+        (
+            "ontology_coordinator_validation_monitoring_reader",
+            "Monitoring Reader",
+        ),
+    ):
+        assignment = _resource(terraform, "azurerm_role_assignment", name)
+        assert (
+            'for_each = var.ontology_discovery_environment == "validation"'
+            in assignment
+        )
+        assert f'role_definition_name = "{role}"' in assignment
+        assert (
+            "azurerm_user_assigned_identity.ontology_coordinator.principal_id"
+            in assignment
+        )
+        assert "Contributor" not in assignment
+        assert "Owner" not in assignment
+
+
 def test_scheduled_job_uses_only_the_nonproduction_state_lakehouse() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
