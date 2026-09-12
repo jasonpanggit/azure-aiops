@@ -465,6 +465,7 @@ def _iso(value: datetime) -> str:
 
 
 __all__ = [
+    "DEFERRED",
     "DEGRADED",
     "DISABLED",
     "LOADING",
