@@ -4584,7 +4584,7 @@ def build_context() -> ApiContext:
 
     def hybrid_search(query: str, subscription_ids: list[str]) -> dict[str, Any]:
         return HybridQueryService(
-            providers.get("semantic_graph"),
+            providers.get("semantic_graph", optional=True),
             live_resources,
         ).search(query, subscription_ids=subscription_ids)
 
