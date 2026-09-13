@@ -250,6 +250,12 @@ def live_subscription_ids(
     default_all: bool = False,
 ) -> list[str]:
     """Map a page's authorized scope to active onboarded Azure connections."""
+    if (
+        not default_all
+        and not scope.values("subscription")
+        and not scope.values("subscription_connection")
+    ):
+        return []
     return subscription_ids_for_scope(
         scope,
         context.onboarding.registry.list(include_disabled=False),

@@ -51,6 +51,24 @@ def test_live_subscription_scope_resolves_selected_connection_and_intersection()
 
 
 @pytest.mark.parametrize(
+    "scope",
+    [
+        Scope.unrestricted(),
+        Scope.from_mapping({"environment": ["production"]}),
+    ],
+)
+def test_unscoped_snapshot_read_does_not_access_connection_registry(scope: Scope) -> None:
+    def fail_if_listed(*, include_disabled: bool = False):
+        del include_disabled
+        raise AssertionError("snapshot-backed read must not access connection registry")
+
+    context = _context()
+    context.onboarding.registry.list = fail_if_listed
+
+    assert live_subscription_ids(context, scope) == []
+
+
+@pytest.mark.parametrize(
     "resolve",
     [
         lambda context, scope: network._service(context, scope),
