@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
@@ -120,6 +121,7 @@ class PublicationCheckpointStore:
 
     def __init__(self, documents: OneLakeDocumentStore) -> None:
         self._documents = documents
+        self._mutation_lock = threading.Lock()
 
     def load(
         self,
@@ -1112,23 +1114,24 @@ class PublicationCheckpointStore:
         operation: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]:
         name = f"{self._prefix(source_run_id)}/progress.json"
-        for _attempt in range(3):
-            progress = self._read_progress(source_run_id)
-            revision = _non_negative_int(
-                progress.get("revision"),
-                field="progress revision",
-            )
-            updated = operation(dict(progress))
-            updated["revision"] = revision + 1
-            try:
-                self._documents.write(
-                    name,
-                    updated,
-                    expected_revision=revision,
+        with self._mutation_lock:
+            for _attempt in range(3):
+                progress = self._read_progress(source_run_id)
+                revision = _non_negative_int(
+                    progress.get("revision"),
+                    field="progress revision",
                 )
-                return updated
-            except DocumentConflictError:
-                continue
+                updated = operation(dict(progress))
+                updated["revision"] = revision + 1
+                try:
+                    self._documents.write(
+                        name,
+                        updated,
+                        expected_revision=revision,
+                    )
+                    return updated
+                except DocumentConflictError:
+                    continue
         raise PublicationCheckpointError(
             "Publication checkpoint progress changed concurrently"
         )
