@@ -570,6 +570,49 @@ def test_stale_replica_cannot_overwrite_a_concurrent_turn() -> None:
     assert [item["snapshot_id"] for item in history] == ["snap-second"]
 
 
+def test_authorize_rechecks_expected_revision_after_concurrent_reload() -> None:
+    class InterleavingDocuments(FakeDocuments):
+        before_write = None
+
+        def write(self, name, payload, *, expected_revision):
+            callback = self.before_write
+            self.before_write = None
+            if callback is not None:
+                callback()
+            super().write(name, payload, expected_revision=expected_revision)
+
+    documents = InterleavingDocuments()
+    first = InvestigationThreadStore(documents=documents)
+    second = InvestigationThreadStore(documents=documents)
+    thread = first.create("operator-a", BROAD)
+    document_name = thread_document_name(thread.thread_id)
+    documents.before_write = lambda: second.append(
+        thread.thread_id,
+        "operator-a",
+        BROAD,
+        _turn("concurrent"),
+        expected_revision=0,
+    )
+
+    with pytest.raises(ThreadRevisionConflict) as raised:
+        first.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+
+    assert raised.value.current_revision == 1
+    persisted = documents.documents[document_name]
+    assert persisted["thread_revision"] == 1
+    assert persisted["scope"] == BROAD.to_dict()
+    restarted = InvestigationThreadStore(documents=documents)
+    assert [
+        item["snapshot_id"]
+        for item in restarted.history(thread.thread_id, "operator-a", BROAD)
+    ] == ["snap-concurrent"]
+
+
 def test_document_revision_is_distinct_from_thread_revision() -> None:
     documents = FakeDocuments()
     store = InvestigationThreadStore(documents=documents)

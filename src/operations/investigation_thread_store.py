@@ -621,6 +621,13 @@ class InvestigationThreadStore:
                     record = self._resolve(
                         thread_id, principal_subject, current_scope, now
                     )
+                    if (
+                        expected_revision is not None
+                        and expected_revision != record.revision
+                    ):
+                        raise ThreadRevisionConflict(
+                            current_revision=record.revision
+                        ) from None
                     if attempt == 1:
                         raise ThreadRevisionConflict(
                             current_revision=record.revision
