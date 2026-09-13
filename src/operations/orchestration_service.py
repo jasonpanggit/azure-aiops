@@ -508,6 +508,7 @@ class OrchestrationService:
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
             thread_outcome = "created"
+        authorized_revision = thread.revision
         self._record_thread_metric(thread_outcome, thread.durability)
         started = self.clock()
         candidate, policy_status, fallback_reason = self._resolve_candidate(
@@ -538,7 +539,7 @@ class OrchestrationService:
         selected_tools: list[str] = []
         budget_exhausted = False
         turn_qualifier = (
-            f"{thread.thread_id}:rev-{thread.revision + 1}:turn-{uuid.uuid4().hex}"
+            f"{thread.thread_id}:rev-{authorized_revision + 1}:turn-{uuid.uuid4().hex}"
         )
 
         for step_index, step in enumerate(candidate.steps if candidate else ()):
@@ -651,7 +652,7 @@ class OrchestrationService:
             coverage=request.snapshot.coverage,
             citations=self._deduplicate_citations(citations),
             thread_id=thread.thread_id,
-            thread_revision=thread.revision + 1,
+            thread_revision=authorized_revision + 1,
             synthesis={
                 "status": synthesis.status,
                 "reason": synthesis.reason,
@@ -663,6 +664,7 @@ class OrchestrationService:
         return OrchestrationTurn(
             result=self._record_turn(
                 thread,
+                authorized_revision=authorized_revision,
                 principal_subject=principal_subject,
                 requested_scope=requested_scope,
                 question=request.question,
@@ -1444,6 +1446,7 @@ class OrchestrationService:
             )
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
+        authorized_revision = thread.revision
         result = OrchestrationResult(
             status=STATUS_UNAVAILABLE,
             policy_status="fallback",
@@ -1452,10 +1455,11 @@ class OrchestrationService:
             coverage=request.snapshot.coverage,
             citations=self._snapshot_citations(request),
             thread_id=thread.thread_id,
-            thread_revision=thread.revision + 1,
+            thread_revision=authorized_revision + 1,
         )
         return self._record_turn(
             thread,
+            authorized_revision=authorized_revision,
             principal_subject=principal_subject,
             requested_scope=requested_scope,
             question=request.question,
@@ -1467,6 +1471,7 @@ class OrchestrationService:
         self,
         thread: InvestigationThread,
         *,
+        authorized_revision: int,
         principal_subject: str,
         requested_scope: Scope,
         question: str,
@@ -1513,7 +1518,7 @@ class OrchestrationService:
                 principal_subject,
                 requested_scope,
                 payload,
-                expected_revision=thread.revision,
+                expected_revision=authorized_revision,
             )
         except ThreadRevisionConflict as conflict:
             if not reconcile_conflict:

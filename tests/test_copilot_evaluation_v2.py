@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -1341,6 +1343,7 @@ def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> N
 
     reconciled = service._record_turn(
         thread,
+        authorized_revision=0,
         principal_subject="operator-a",
         requested_scope=thread.scope,
         question="What changed?",
@@ -1352,6 +1355,71 @@ def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> N
     assert store.persisted["uncertainty"] == [
         "A concurrent turn superseded this thread revision."
     ]
+
+
+def test_same_process_concurrent_turn_rejects_stale_authorized_revision() -> None:
+    store = InvestigationThreadStore()
+    thread = store.create(
+        "operator-a",
+        Scope({"subscription": ["sub-a"]}),
+    )
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    def blocked_executor(name, arguments, *, context, scope):
+        first_entered.set()
+        assert release_first.wait(timeout=5)
+        return _executor(
+            name,
+            arguments,
+            context=context,
+            scope=scope,
+        )
+
+    request = _request("Which CVEs are exposed?").model_copy(
+        update={
+            "thread_id": thread.thread_id,
+            "expected_thread_revision": 0,
+        }
+    )
+    first = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=blocked_executor,
+        thread_store=store,
+    )
+    second = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=_executor,
+        thread_store=store,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            first.execute,
+            request,
+            context=object(),
+            principal_subject="operator-a",
+            effective_scope=Scope({"subscription": ["sub-a"]}),
+        )
+        assert first_entered.wait(timeout=5)
+        committed = second.execute(
+            request,
+            context=object(),
+            principal_subject="operator-a",
+            effective_scope=Scope({"subscription": ["sub-a"]}),
+        )
+        release_first.set()
+        with pytest.raises(ThreadRevisionConflict):
+            future.result(timeout=5)
+
+    assert committed.thread_revision == 1
+    assert len(
+        store.history(
+            thread.thread_id,
+            "operator-a",
+            Scope({"subscription": ["sub-a"]}),
+        )
+    ) == 1
 
 
 def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> None:
