@@ -3182,6 +3182,12 @@ export interface CopilotEvidenceSnapshotV2 {
   version: "2";
   page_kind: CopilotPageKindV2;
   page_id: string;
+  /** Normalized page filters that participate in retained-evidence identity. */
+  filters?: Record<string, string[]>;
+  /** Normalized page-local search/query text, distinct from the Copilot question. */
+  query?: string;
+  /** Content-derived immutable identity for this bounded evidence generation. */
+  generation_id?: string;
   coverage: CopilotSnapshotCoverageV2;
   freshness: CopilotSnapshotFreshnessV2[];
   selected_entities: CopilotEntityRef[];
@@ -3229,6 +3235,7 @@ export interface CanonicalCopilotResult {
   uncertainty: string[];
   coverage: CopilotSnapshotCoverageV2;
   citations: CanonicalCopilotCitation[];
+  synthesis?: CanonicalInvestigationSynthesis | null;
   thread_id: string;
   thread_revision: number;
   mutation_authorized: false;
@@ -3255,7 +3262,7 @@ export interface CanonicalSynthesisClaim {
  * specialists' own deterministic findings visible instead of inventing text.
  */
 export interface CanonicalInvestigationSynthesis {
-  status: "synthesized" | "degraded" | "skipped" | string;
+  status: "synthesized" | "deterministic" | "degraded" | "skipped" | string;
   reason: string;
   domain_count: number;
   claims: CanonicalSynthesisClaim[];

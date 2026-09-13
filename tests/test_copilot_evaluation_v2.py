@@ -33,10 +33,13 @@ from operations.investigation_thread_store import (
 )
 from operations.orchestration_contract import (
     CandidatePlan,
+    DomainEntityRef,
     EvidenceSnapshotV2,
     InvestigationRequest,
+    MaterialClaim,
     OrchestrationResult,
     SnapshotCoverage,
+    SnapshotEvidence,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -300,6 +303,183 @@ def test_repeated_retained_snapshot_ids_are_qualified_per_turn() -> None:
         "page_snapshot:inventory:coverage",
         "page_snapshot:vulnerability:coverage",
     }
+
+
+def test_retained_evidence_requires_the_exact_current_selection_identity() -> None:
+    """A stale zero-count page must not outrank the current filtered page."""
+
+    thread = InvestigationThread(
+        thread_id="thr-" + "a" * 32,
+        principal_subject="operator-a",
+        scope=Scope({"subscription": ["sub-a"]}),
+        scope_fingerprint="fingerprint",
+        turns=[
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "evidence_selection_id": "selection:stale",
+                    "retained_evidence": [
+                        {
+                            "evidence_id": "retained:stale-zero-count",
+                            "source": "page_snapshot:kb_detail:findings",
+                            "status": "empty",
+                            "observation_status": "historical",
+                            "data": {"visible_count": 0, "total_count": 0},
+                        }
+                    ],
+                },
+            ),
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "evidence_selection_id": "selection:current",
+                    "retained_evidence": [
+                        {
+                            "evidence_id": "retained:current-count",
+                            "source": "page_snapshot:kb_detail:findings",
+                            "status": "ok",
+                            "observation_status": "historical",
+                            "data": {"visible_count": 1, "total_count": 137},
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+
+    retained = OrchestrationService._retained_evidence(
+        thread,
+        Scope({"subscription": ["sub-a"]}),
+        evidence_selection_id="selection:current",
+    )
+
+    assert [item["evidence_id"] for item in retained] == [
+        "retained:current-count"
+    ]
+    assert retained[0]["data"] == {"visible_count": 1, "total_count": 137}
+
+
+def test_selection_identity_binds_page_entity_filter_query_generation_and_scope() -> None:
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="kb",
+        source_key="KB5001",
+    )
+    evidence = SnapshotEvidence(
+        evidence_id="kb-current",
+        source="exposure/kb",
+        source_key="KB5001",
+        entity=entity,
+        claim_type="kb",
+        selected=True,
+        direct=True,
+        data={"title": "September cumulative update"},
+    )
+    base = InvestigationRequest(
+        question="Which products and targets are affected?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="vulnerability",
+            page_id="kb:KB5001",
+            filters={"environment": [" PROD ", "uat"], "query": [" Ledger "]},
+            query=" Ledger ",
+            selected_entities=[entity],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+            evidence=[evidence],
+        ),
+    )
+    scope = Scope({"subscription": ["sub-a"]})
+    identity = OrchestrationService._evidence_selection_identity(base, scope)
+
+    reordered = base.model_copy(
+        update={
+            "snapshot": base.snapshot.model_copy(
+                update={
+                    "filters": {
+                        "query": ["ledger"],
+                        "environment": ["uat", "prod"],
+                    },
+                    "query": "ledger",
+                }
+            )
+        }
+    )
+    assert OrchestrationService._evidence_selection_identity(reordered, scope) == identity
+
+    variants = [
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"page_kind": "patch"}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"page_id": "kb:KB5002"}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={
+                        "selected_entities": [
+                            entity.model_copy(update={"source_key": "KB5002"})
+                        ]
+                    }
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"filters": {"environment": ["dev"]}}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(update={"query": "payments"})
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={
+                        "evidence": [
+                            evidence.model_copy(
+                                update={
+                                    "data": {
+                                        "title": "October cumulative update"
+                                    }
+                                }
+                            )
+                        ]
+                    }
+                )
+            }
+        ),
+    ]
+    identities = {
+        OrchestrationService._evidence_selection_identity(candidate, scope)
+        for candidate in variants
+    }
+    identities.add(
+        OrchestrationService._evidence_selection_identity(
+            base,
+            Scope({"subscription": ["sub-b"]}),
+        )
+    )
+
+    assert identity not in identities
+    assert len(identities) == len(variants) + 1
 
 
 def test_executive_claim_can_cite_authorized_retained_evidence() -> None:
@@ -746,6 +926,92 @@ def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
 
     assert turn.synthesis.status == "degraded"
     assert turn.synthesis.warning in turn.result.uncertainty
+
+
+def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() -> None:
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="kb",
+        source_key="KB5001",
+    )
+    request = InvestigationRequest(
+        question="Which product and targets does KB5001 affect, and when was it published?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="vulnerability",
+            page_id="kb:KB5001",
+            filters={"target_kind": ["server"]},
+            query="KB5001 product targets published",
+            selected_entities=[entity],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=137,
+                complete=False,
+            ),
+            evidence=[
+                SnapshotEvidence(
+                    evidence_id="kb-current",
+                    source="exposure/kb",
+                    source_key="KB5001",
+                    entity=entity,
+                    claim_type="kb",
+                    selected=True,
+                    direct=True,
+                    quality="high",
+                    data={
+                        "kb_id": "KB5001",
+                        "product": "Windows Server 2022",
+                        "published_at": "2026-09-01T00:00:00Z",
+                        "target_date": "2026-09-30",
+                        "affected_server_count": 137,
+                        "priority_rank": 3,
+                    },
+                )
+            ],
+            material_claims=[
+                MaterialClaim(
+                    claim_id="kb-current-facts",
+                    evidence_refs=["kb-current"],
+                )
+            ],
+        ),
+    )
+    service = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=lambda *_args, **_kwargs: ToolResult(status="unavailable"),
+        thread_store=InvestigationThreadStore(),
+        executive_agent=None,
+    )
+
+    turn = service.execute_turn(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert turn.synthesis.status == "degraded"
+    assert "unavailable" in turn.synthesis.warning.casefold()
+    assert turn.synthesis.claims
+    summaries = " ".join(claim["summary"] for claim in turn.synthesis.claims)
+    assert "Windows Server 2022" in summaries
+    assert "2026-09-01T00:00:00Z" in summaries
+    assert "2026-09-30" in summaries
+    assert "137" in summaries
+    assert "3" in summaries
+    retained_citation_ids = {
+        citation.citation_id
+        for citation in turn.result.citations
+        if citation.citation_id.startswith("retained:")
+    }
+    assert retained_citation_ids
+    assert all(
+        set(claim["evidence_refs"]) <= retained_citation_ids
+        for claim in turn.synthesis.claims
+    )
+    assert all(claim["evidence_refs"] for claim in turn.synthesis.claims)
+    assert "visible subset is incomplete" in turn.result.uncertainty
 
 
 def test_execute_still_returns_the_canonical_result_only() -> None:

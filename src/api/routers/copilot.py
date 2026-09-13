@@ -1085,8 +1085,9 @@ def investigate_canonical(
                         item.model_copy(update={"status": "unavailable"})
                         for item in browser_snapshot.freshness
                     ],
-                    # Browser rows select relevant governed tools but are never
-                    # promoted into server citations or persisted as authority.
+                    # Browser rows never become tool authority. The original
+                    # bounded snapshot is passed separately so orchestration
+                    # can label citation-closed facts as page observations.
                     "evidence": [],
                     "selected_entities": [],
                     "material_claims": [],
@@ -1197,6 +1198,7 @@ def investigate_canonical(
             context=context,
             principal_subject=principal.subject,
             effective_scope=scope,
+            selection_snapshot=browser_snapshot,
         )
     except PolicyViolation as exc:
         raise ApiError(
