@@ -21,15 +21,10 @@ What is scored, per question:
                       orchestration contract? Deterministic mode expects
                       page-anchored delegation; MAF mode expects question-first
                       delegation with page fallback only when intent is absent.
-* ``groundedness`` -- fraction of *deterministic findings* backed by evidence.
-                      Read this as a data-availability signal, **not** as
-                      answer quality. Two observed cases show why: an agent
-                      that correctly answers "I cannot determine who owns this
-                      from the governed sources" scores 0.0, and so does one
-                      that names a specific KB and VM in its narration, because
-                      the narration is not what is scored. A low score means
-                      the deterministic layer had little to stand on, which is
-                      worth knowing, but it does not mean the answer was bad.
+* ``groundedness`` -- explicit entailment score emitted by the evaluation
+                      contract. Citation attachment is measured separately and
+                      never substitutes for entailment; without an entailment
+                      measurement, release evaluation remains incomplete.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
                       signal, not a failure. This is the metric that caught
@@ -483,6 +478,7 @@ def _investigate(
     token: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
+    continuity_state: dict[str, tuple[str, int]] | None = None,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     if case.case_id == "scope.cross.principal":
@@ -539,6 +535,14 @@ def _investigate(
 
     if getattr(case, "disposition", "integrated") == "integrated":
         body = _canonical_evaluation_body(case, requested_scope)
+        continuity_group = getattr(case, "continuity_group", None)
+        previous = (
+            continuity_state.get(continuity_group)
+            if continuity_state is not None and continuity_group
+            else None
+        )
+        if previous is not None:
+            body["thread_id"], body["expected_thread_revision"] = previous
         endpoint = "/api/v1/copilot/investigations"
     elif case.case_id == "dedicated.investigate":
         body = {"objective": case.question}
@@ -613,6 +617,15 @@ def _investigate(
     data = dict(body.get("data") or {})
     data["_response_scope"] = body.get("scope")
     data["_disposition_ok"] = True
+    continuity_group = getattr(case, "continuity_group", None)
+    if continuity_state is not None and continuity_group:
+        thread_id = str(data.get("thread_id") or "")
+        thread_revision = data.get("thread_revision")
+        if thread_id and isinstance(thread_revision, int):
+            continuity_state[continuity_group] = (
+                thread_id,
+                thread_revision,
+            )
     return data, (time.monotonic() - started) * 1000
 
 
@@ -742,6 +755,7 @@ def _run_case(
     resource: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
+    continuity_state: dict[str, tuple[str, int]] | None = None,
 ) -> Result:
     """Run one case, retrying transient gateway failures.
 
@@ -757,6 +771,7 @@ def _run_case(
                 _token(resource),
                 case,
                 requested_scope,
+                continuity_state,
             )
             break
         except urllib.error.HTTPError as exc:
@@ -891,11 +906,6 @@ def _run_case(
         if "selected_specialists" in data or "_response_scope" in data
         else {}
     )
-    derived_groundedness = (
-        material_claim_coverage
-        if synthesis_claims
-        else evaluation.get("groundedness")
-    )
     deterministic_spend = (
         0.0
         if synthesis.get("status") in {"deterministic", "skipped"}
@@ -917,11 +927,7 @@ def _run_case(
         missing=missing,
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
-        groundedness=(
-            evaluation.get("groundedness")
-            if evaluation.get("groundedness") is not None
-            else derived_groundedness
-        ),
+        groundedness=evaluation.get("groundedness"),
         tool_correctness=(
             evaluation.get("tool_correctness")
             if evaluation.get("tool_correctness") is not None
@@ -2189,6 +2195,7 @@ def main() -> int:
     print(f"Evaluating {len(cases)} cases against {args.api}\n")
 
     results: list[Result] = []
+    continuity_state: dict[str, tuple[str, int]] = {}
     for index, case in enumerate(cases, start=1):
         if index > 1:
             time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
@@ -2208,6 +2215,7 @@ def main() -> int:
                 args.resource,
                 case,
                 requested_scope,
+                continuity_state,
             )
         results.append(result)
         if result.error:

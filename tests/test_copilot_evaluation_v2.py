@@ -2183,6 +2183,53 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         assert body["snapshot"]["material_claims"] == []
 
 
+def test_continuity_groups_propagate_thread_revision(monkeypatch):
+    evaluate_agents = _load_evaluate_agents()
+    cases = {
+        case.case_id: case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+    }
+    captured: list[dict[str, Any]] = []
+    revisions = iter((1, 2))
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        captured.append(body)
+        revision = next(revisions)
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": "thr-" + "a" * 32,
+                        "thread_revision": revision,
+                    },
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    continuity_state: dict[str, tuple[str, int]] = {}
+    for case_id in ("cont.inv.turn1", "cont.inv.turn2"):
+        evaluate_agents._investigate(
+            "https://example.invalid",
+            "token",
+            cases[case_id],
+            {"subscription": ["sub-a"]},
+            continuity_state,
+        )
+
+    assert "thread_id" not in captured[0]
+    assert "expected_thread_revision" not in captured[0]
+    assert captured[1]["thread_id"] == "thr-" + "a" * 32
+    assert captured[1]["expected_thread_revision"] == 1
+    assert continuity_state["cont-inv-cve"] == (
+        "thr-" + "a" * 32,
+        2,
+    )
+
+
 def test_run_case_scores_realistic_canonical_response_and_release_gates(
     monkeypatch,
 ):
@@ -2238,7 +2285,10 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case, _scope: (canonical_response, 12.5),
+        lambda _api, _token, _case, _scope, _continuity=None: (
+            canonical_response,
+            12.5,
+        ),
     )
 
     result = evaluate_agents._run_case(
@@ -2333,7 +2383,10 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case, _scope: (response, 5.0),
+        lambda _api, _token, _case, _scope, _continuity=None: (
+            response,
+            5.0,
+        ),
     )
 
     result = evaluate_agents._run_case(
@@ -2348,7 +2401,8 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     assert result.disposition_ok is True
     assert result.manifest_projection_ok is True
     assert result.tool_correctness == 1.0
-    assert result.groundedness == 1.0
+    assert result.groundedness is None
+    assert result.material_claim_coverage == 1.0
     assert result.spend_usd == 0.0
 
     response["selected_specialists"] = ["unreviewed-specialist"]
@@ -2375,6 +2429,47 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
         {"subscription": ["sub-a"]},
     )
     assert leaked.scope_ok is False
+
+
+def test_citation_attachment_does_not_imply_groundedness() -> None:
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            groundedness=None,
+            material_claim_coverage=1.0,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["metrics"]["material_claim_coverage"] == 1.0
+    assert artifact["metrics"]["groundedness_mean"] is None
+    assert artifact["decision"] != "PROMOTE"
+    assert artifact["gates"]["measurement_completeness"]["passed"] is False
+    assert "groundedness_mean" in artifact["gates"][
+        "measurement_completeness"
+    ]["observed"]["missing_metrics"]
 
 
 def test_dedicated_cases_use_production_contracts_and_two_principals(
@@ -2610,6 +2705,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                     "status": "deterministic",
                     "claims": claims,
                 },
+                "evaluation": {"groundedness": 1.0},
                 "mutation_authorized": False,
             },
             5.0,
@@ -2815,7 +2911,13 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     )
     seen: list[str] = []
 
-    def run_case(_api, _resource, case, requested_scope):
+    def run_case(
+        _api,
+        _resource,
+        case,
+        requested_scope,
+        _continuity_state,
+    ):
         assert requested_scope == {"subscription": ["sub-a"]}
         seen.append(case.case_id)
         return evaluate_agents.Result(
