@@ -697,14 +697,34 @@ class PublicationCheckpointStore:
     ) -> None:
         """Clear an uncommitted intent only after its baseline is verified."""
 
+        self.clear_table_intents(checkpoint, plan, (intent,))
+
+    def clear_table_intents(
+        self,
+        checkpoint: PreparedPublicationCheckpoint,
+        plan: PublicationResumePlan,
+        intents: Iterable[TableWriteIntent],
+    ) -> None:
+        """Clear verified-uncommitted intents in one checkpoint CAS update."""
+
+        selected = tuple(intents)
+        if not selected:
+            return
+        if len({intent.table_name for intent in selected}) != len(selected):
+            raise PublicationCheckpointError(
+                "Publication checkpoint intent batch contains duplicate tables"
+            )
+
         def update(progress: dict[str, Any]) -> dict[str, Any]:
             self._validate_plan_progress(progress, plan)
             in_flight = dict(progress.get("in_flight") or {})
-            if in_flight.get(intent.table_name) != _intent_document(intent):
-                raise PublicationCheckpointError(
-                    f"Table {intent.table_name} in-flight intent changed unexpectedly"
-                )
-            in_flight.pop(intent.table_name)
+            for intent in selected:
+                if in_flight.get(intent.table_name) != _intent_document(intent):
+                    raise PublicationCheckpointError(
+                        f"Table {intent.table_name} in-flight intent changed unexpectedly"
+                    )
+            for intent in selected:
+                in_flight.pop(intent.table_name)
             progress["in_flight"] = in_flight
             return progress
 
