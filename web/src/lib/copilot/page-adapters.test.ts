@@ -31,6 +31,7 @@ import {
   COPILOT_ROUTE_DISPOSITIONS,
   COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
+  normalizeCopilotSnapshotV2,
   serializeCopilotSnapshot,
   type InventoryCopilotRecord,
 } from "./page-adapters";
@@ -1975,6 +1976,105 @@ describe("inventory Copilot page adapter", () => {
     });
   });
 
+  it("normalizes an integrated remediation snapshot to the strict v2 wire shape", () => {
+      const legacy = buildRemediationCopilotContext({
+        ...corePageInput,
+        filters: { view: ["remediation"] },
+      }).snapshot;
+
+      const normalized = normalizeCopilotSnapshotV2(legacy);
+
+      expect(normalized).toMatchObject({
+        version: "2",
+        page_kind: "remediation",
+        page_id: "remediation",
+        coverage: {
+          visible_count: legacy.evidence.length,
+          total_count: legacy.evidence.length,
+          complete: false,
+        },
+        selected_entities: expect.any(Array),
+        material_claims: [],
+      });
+      expect(normalized).not.toHaveProperty("scope");
+      expect(normalized).not.toHaveProperty("filters");
+      expect(normalized).not.toHaveProperty("question");
+      expect(normalized.evidence.every((row) =>
+        row.actionable === false
+        && row.citations.length === 0
+        && Boolean(row.entity)
+        && Boolean(row.source_key))).toBe(true);
+    });
+
+  it.each([
+      [127, true],
+      [128, true],
+      [129, false],
+    ])(
+      "enforces the shared source character boundary at %i characters",
+      (sourceLength, accepted) => {
+        const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
+        snapshot.evidence[0] = {
+          ...snapshot.evidence[0],
+          source: "界".repeat(sourceLength),
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/source/i);
+      },
+    );
+
+  it.each([
+      [8, true],
+      [9, true],
+      [10, false],
+    ])(
+      "enforces the shared 8191/8192/8193-byte UTF-8 row boundary",
+      (suffixLength, accepted) => {
+        const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
+        snapshot.evidence[0] = {
+          ...snapshot.evidence[0],
+          data: { blob: `${"😀".repeat(681)}${"x".repeat(suffixLength)}` },
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/evidence row/i);
+      },
+    );
+
+  it.each([
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows - 1, true],
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows, true],
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows + 1, false],
+    ])(
+      "enforces the shared evidence-list structural boundary at %i rows",
+      (rowCount, accepted) => {
+        const base = buildInventoryCopilotContext(baseInput).snapshot;
+        const template = base.evidence[0];
+        const snapshot = {
+          ...base,
+          coverage: {
+            visible_count: rowCount,
+            total_count: rowCount,
+            complete: true,
+          },
+          evidence: Array.from({ length: rowCount }, (_, index) => ({
+            ...template,
+            evidence_id: `row-${index}`,
+            source_key: `row-${index}`,
+            entity: {
+              type: "domain" as const,
+              namespace: "inventory",
+              kind: "row",
+              source_key: `row-${index}`,
+            },
+          })),
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/evidence rows/i);
+      },
+    );
   it("builds the complete strict v2 wire contract without authority fields", () => {
     const context = buildInventoryCopilotContext(baseInput);
 

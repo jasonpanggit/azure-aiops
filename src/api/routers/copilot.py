@@ -59,7 +59,7 @@ from operations.orchestration_service import (
     execute_from_question,
     legacy_session_history,
 )
-from operations.page_context import PageSnapshot
+from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
 from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import (
     STATUS_EMPTY,
@@ -148,16 +148,10 @@ class CanonicalPlanHint(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class CanonicalInventorySnapshot(EvidenceSnapshotV2):
-    """Inventory-only snapshot accepted by the inventory canonical endpoint."""
-
-    page_kind: Literal["inventory", "connections", "connections_fabric"]
-
-
 class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
-    """Inventory canonical request plus an optional policy-checked hint."""
+    """Canonical request plus an optional policy-checked browser hint."""
 
-    snapshot: CanonicalInventorySnapshot
+    snapshot: EvidenceSnapshotV2
     hint: CanonicalPlanHint | None = None
 
 
@@ -1060,12 +1054,25 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     try:
-        selector = _inventory_selector(browser_snapshot)
+        # The strict Pydantic contract above validates every browser row and
+        # byte/list bound. Canonicalize the authority-free projection here so
+        # the production boundary executes the shared v2 normalization path
+        # without treating browser identities as server-resolved evidence.
+        canonicalize_snapshot_v2(
+            browser_snapshot.model_copy(
+                update={
+                    "evidence": [],
+                    "selected_entities": [],
+                    "material_claims": [],
+                }
+            ),
+            effective_scope=scope,
+        )
     except (TypeError, ValueError) as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
             str(exc),
-            details={"field": "snapshot.evidence"},
+            details={"field": "snapshot"},
         ) from exc
     request = request.model_copy(
         update={
@@ -1081,48 +1088,110 @@ def investigate_canonical(
                     # Browser rows select relevant governed tools but are never
                     # promoted into server citations or persisted as authority.
                     "evidence": [],
+                    "selected_entities": [],
+                    "material_claims": [],
                 }
             )
         }
     )
-    specialist_id = (
-        payload.hint.specialist_id
-        if payload.hint is not None
-        else INVENTORY_DATA_HEALTH_ID
-    )
-    tool = payload.hint.tool if payload.hint is not None else "inventory_resources"
-    derived_arguments = selector.tool_arguments()
-    hint_arguments = dict(payload.hint.arguments) if payload.hint is not None else {}
-    selector_conflict = any(
-        key in hint_arguments and hint_arguments[key] != value
-        for key, value in derived_arguments.items()
-    )
-    candidate_arguments = {
-        **hint_arguments,
-        **derived_arguments,
-        **({"selector_conflict": True} if selector_conflict else {}),
-    }
-    planner = lambda _request: CandidatePlan(
-        steps=[
-            SpecialistStep(
-                specialist_id=specialist_id,
-                tool_calls=[
-                    ToolCallCandidate(
-                        tool=tool,
-                        arguments=candidate_arguments,
-                        citation_ids=[COVERAGE_CITATION_ID],
-                    )
-                ],
+    if browser_snapshot.page_kind == "inventory":
+        try:
+            selector = _inventory_selector(browser_snapshot)
+        except (TypeError, ValueError) as exc:
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                str(exc),
+                details={"field": "snapshot.evidence"},
+            ) from exc
+        specialist_id = (
+            payload.hint.specialist_id
+            if payload.hint is not None
+            else INVENTORY_DATA_HEALTH_ID
+        )
+        tool = (
+            payload.hint.tool
+            if payload.hint is not None
+            else "inventory_resources"
+        )
+        derived_arguments = selector.tool_arguments()
+        hint_arguments = (
+            dict(payload.hint.arguments) if payload.hint is not None else {}
+        )
+        selector_conflict = any(
+            key in hint_arguments and hint_arguments[key] != value
+            for key, value in derived_arguments.items()
+        )
+        candidate_arguments = {
+            **hint_arguments,
+            **derived_arguments,
+            **({"selector_conflict": True} if selector_conflict else {}),
+        }
+        planner = lambda _request: CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id=specialist_id,
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool=tool,
+                            arguments=candidate_arguments,
+                            citation_ids=[COVERAGE_CITATION_ID],
+                        )
+                    ],
+                )
+            ],
+            estimated_tokens=0,
+            max_wall_seconds=5,
+        )
+        executor = _inventory_executor(selector)
+    else:
+        planner = (
+            (
+                lambda _request: CandidatePlan(
+                    steps=[
+                        SpecialistStep(
+                            specialist_id=payload.hint.specialist_id,
+                            tool_calls=[
+                                ToolCallCandidate(
+                                    tool=payload.hint.tool,
+                                    arguments=dict(payload.hint.arguments),
+                                    citation_ids=[COVERAGE_CITATION_ID],
+                                )
+                            ],
+                        )
+                    ],
+                    estimated_tokens=0,
+                    max_wall_seconds=5,
+                )
             )
-        ],
-        estimated_tokens=0,
-        max_wall_seconds=5,
-    )
+            if payload.hint is not None
+            else None
+        )
+
+        def executor(
+            name: str,
+            arguments: Mapping[str, Any],
+            *,
+            context: Any,
+            scope: Any,
+        ) -> ToolResult:
+            try:
+                return call_tool(
+                    name,
+                    arguments,
+                    context=context,
+                    scope=scope,
+                    principal=principal,
+                )
+            except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
+                return ToolResult(
+                    status=STATUS_UNAVAILABLE,
+                    warning="Tool unavailable in canonical page mode",
+                )
 
     try:
         result = OrchestrationService(
             planner=planner,
-            executor=_inventory_executor(selector),
+            executor=executor,
         ).execute(
             request,
             context=context,

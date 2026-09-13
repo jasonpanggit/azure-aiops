@@ -8,6 +8,7 @@ import type {
   CopilotEvidenceSnapshotV2 as StrictCopilotEvidenceSnapshotV2,
   CopilotFreshnessStatusV2,
   CopilotPageKind,
+  CopilotPageKindV2,
   CopilotPageSnapshot,
   CopilotSnapshotStatus,
   CopilotSnapshotEvidenceV2,
@@ -466,6 +467,486 @@ export function canonicalEvidenceStableId(identity: StableEvidenceIdentity): str
 /** Serializes a snapshot with stable object-key and adapter-controlled list ordering. */
 export function serializeCopilotSnapshot(snapshot: StrictCopilotEvidenceSnapshotV2): string {
   return stableJson(snapshot);
+}
+
+const SNAPSHOT_V2_PAGE_KINDS = new Set<CopilotPageKindV2>([
+  "overview",
+  "network",
+  "vulnerability",
+  "patch",
+  "incident",
+  "compliance",
+  "exposure",
+  "cve_detail",
+  "defender_posture",
+  "kb_detail",
+  "patch_priorities",
+  "situations",
+  "situation_detail",
+  "changes",
+  "changes_predeploy",
+  "inventory",
+  "connections",
+  "connections_fabric",
+  "governance",
+  "identity",
+  "finops",
+  "remediation",
+  "resource_health",
+  "resource",
+  "services",
+  "service_detail",
+  "twin",
+  "copilot",
+  "investigate",
+  "agents",
+]);
+const SNAPSHOT_EVIDENCE_ID = /^[A-Za-z0-9._:-]+$/;
+const SNAPSHOT_DOMAIN_PART = /^[A-Za-z0-9._-]+$/;
+
+function exactKeys(
+  name: string,
+  value: object,
+  expected: readonly string[],
+): void {
+  const allowed = new Set(expected);
+  const actual = Object.keys(value);
+  const unknown = actual.filter((key) => !allowed.has(key));
+  const missing = expected.filter((key) => !actual.includes(key));
+  if (unknown.length || missing.length) {
+    throw new Error(
+      `${name} has invalid fields: ${[...unknown, ...missing].sort().join(", ")}`,
+    );
+  }
+}
+
+function boundedSnapshotString(
+  name: string,
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  pattern?: RegExp,
+): string {
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  const normalized = value.trim();
+  const length = Array.from(normalized).length;
+  if (length < minimum || length > maximum || (pattern && !pattern.test(normalized))) {
+    throw new Error(`${name} must contain between ${minimum} and ${maximum} valid characters`);
+  }
+  return normalized;
+}
+
+function finiteJsonValue(value: unknown, seen = new Set<object>()): void {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("snapshot data contains a non-finite number");
+  }
+  if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol") {
+    throw new Error("snapshot data is not JSON-compatible");
+  }
+  if (!value || typeof value !== "object") return;
+  if (seen.has(value)) throw new Error("snapshot data contains a cycle");
+  seen.add(value);
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    finiteJsonValue(item, seen);
+  }
+  seen.delete(value);
+}
+
+function normalizedData(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("snapshot evidence data must be an object");
+  }
+  finiteJsonValue(value);
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) {
+    throw new Error("snapshot evidence data is not JSON-compatible");
+  }
+  return JSON.parse(serialized) as Record<string, unknown>;
+}
+
+function normalizedSnapshotEntity(value: unknown): CopilotEntityRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("snapshot entity must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type === "azure") {
+    exactKeys("Azure snapshot entity", record, ["type", "resource_id"]);
+    return {
+      type: "azure",
+      resource_id: canonicalResourceId(
+        boundedSnapshotString("Azure resource ID", record.resource_id, 1, 512),
+      ),
+    };
+  }
+  if (record.type === "domain") {
+    exactKeys("domain snapshot entity", record, [
+      "type",
+      "namespace",
+      "kind",
+      "source_key",
+    ]);
+    const sourceKey = boundedSnapshotString(
+      "domain source key",
+      record.source_key,
+      1,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("domain source key contains an invalid control character");
+    }
+    return {
+      type: "domain",
+      namespace: boundedSnapshotString(
+        "domain namespace",
+        record.namespace,
+        1,
+        64,
+        SNAPSHOT_DOMAIN_PART,
+      ),
+      kind: boundedSnapshotString(
+        "domain kind",
+        record.kind,
+        1,
+        80,
+        SNAPSHOT_DOMAIN_PART,
+      ),
+      source_key: sourceKey,
+    };
+  }
+  throw new Error("snapshot entity type is invalid");
+}
+
+function normalizeStrictSnapshotV2(
+  snapshot: StrictCopilotEvidenceSnapshotV2,
+): StrictCopilotEvidenceSnapshotV2 {
+  exactKeys("snapshot", snapshot, [
+    "version",
+    "page_kind",
+    "page_id",
+    "coverage",
+    "freshness",
+    "selected_entities",
+    "evidence",
+    "material_claims",
+  ]);
+  if (snapshot.version !== "2" || !SNAPSHOT_V2_PAGE_KINDS.has(snapshot.page_kind)) {
+    throw new Error("snapshot version or page kind is invalid");
+  }
+  const pageId = boundedSnapshotString("snapshot page ID", snapshot.page_id, 1, 128);
+  exactKeys("snapshot coverage", snapshot.coverage, [
+    "visible_count",
+    "total_count",
+    "complete",
+  ]);
+  const { visible_count: visibleCount, total_count: totalCount, complete } = snapshot.coverage;
+  if (
+    !Number.isSafeInteger(visibleCount)
+    || !Number.isSafeInteger(totalCount)
+    || visibleCount < 0
+    || totalCount < 0
+    || visibleCount > 1_000_000
+    || totalCount > 1_000_000
+    || visibleCount > totalCount
+    || (complete && visibleCount !== totalCount)
+  ) {
+    throw new Error("snapshot coverage is invalid");
+  }
+  assertBound(
+    "freshness records",
+    snapshot.freshness.length,
+    COPILOT_SNAPSHOT_LIMITS.freshnessRecords,
+  );
+  const freshness = snapshot.freshness.map((item) => {
+    exactKeys("snapshot freshness", item, ["source", "observed_at", "status"]);
+    if (!["fresh", "stale", "partial", "unavailable"].includes(item.status)) {
+      throw new Error("snapshot freshness status is invalid");
+    }
+    return {
+      source: boundedSnapshotString("freshness source", item.source, 1, 128),
+      observed_at: boundedSnapshotString(
+        "freshness observation time",
+        item.observed_at,
+        1,
+        128,
+      ),
+      status: item.status,
+    };
+  }).sort((left, right) =>
+    compareCodePoints(
+      stableJson([left.source, left.observed_at, left.status]),
+      stableJson([right.source, right.observed_at, right.status]),
+    ));
+  assertBound(
+    "selected entities",
+    snapshot.selected_entities.length,
+    COPILOT_SNAPSHOT_LIMITS.selectedEntities,
+  );
+  const selectedEntities = snapshot.selected_entities
+    .map(normalizedSnapshotEntity)
+    .sort((left, right) =>
+      compareCodePoints(entityOrderingKey(left), entityOrderingKey(right)));
+  if (
+    new Set(selectedEntities.map(entityOrderingKey)).size
+    !== selectedEntities.length
+  ) {
+    throw new Error("snapshot selected entities must be unique");
+  }
+  assertBound(
+    "evidence rows",
+    snapshot.evidence.length,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+  );
+  const evidence = snapshot.evidence.map((item) => {
+    exactKeys("snapshot evidence", item, [
+      "evidence_id",
+      "source",
+      "status",
+      "observed_at",
+      "resource_id",
+      "source_key",
+      "entity",
+      "claim_type",
+      "citations",
+      "selected",
+      "direct",
+      "actionable",
+      "severity",
+      "quality",
+      "data",
+    ]);
+    const evidenceId = boundedSnapshotString(
+      "evidence ID",
+      item.evidence_id,
+      1,
+      160,
+      SNAPSHOT_EVIDENCE_ID,
+    );
+    if (/^(snapshot|tool):/i.test(evidenceId)) {
+      throw new Error("snapshot evidence ID uses a reserved citation namespace");
+    }
+    const sourceKey = boundedSnapshotString(
+      "evidence source key",
+      item.source_key,
+      0,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("evidence source key contains an invalid control character");
+    }
+    assertBound(
+      "evidence citations",
+      item.citations.length,
+      COPILOT_SNAPSHOT_LIMITS.evidenceCitations,
+    );
+    const citations = item.citations.map((citation) => {
+      const normalized = boundedSnapshotString(
+        "evidence citation",
+        citation,
+        1,
+        200,
+      );
+      if (/[\0\r\n]/.test(normalized)) {
+        throw new Error("snapshot evidence citation is invalid");
+      }
+      return normalized;
+    });
+    if (new Set(citations).size !== citations.length) {
+      throw new Error("snapshot evidence citations must be unique");
+    }
+    if (!["ok", "empty", "partial", "unavailable", "denied"].includes(item.status)) {
+      throw new Error("snapshot evidence status is invalid");
+    }
+    if (!["unknown", "low", "medium", "high", "critical"].includes(item.severity)) {
+      throw new Error("snapshot evidence severity is invalid");
+    }
+    if (!["unknown", "low", "medium", "high"].includes(item.quality)) {
+      throw new Error("snapshot evidence quality is invalid");
+    }
+    const data = normalizedData(item.data);
+    assertEvidenceRowBound(data);
+    return {
+      evidence_id: evidenceId,
+      source: boundedSnapshotString("evidence source", item.source, 1, 128),
+      status: item.status,
+      observed_at: boundedSnapshotString(
+        "evidence observation time",
+        item.observed_at,
+        0,
+        128,
+      ),
+      resource_id: boundedSnapshotString(
+        "evidence resource ID",
+        item.resource_id,
+        0,
+        512,
+      ),
+      source_key: sourceKey,
+      entity: normalizedSnapshotEntity(item.entity),
+      claim_type: boundedSnapshotString(
+        "evidence claim type",
+        item.claim_type,
+        1,
+        128,
+      ),
+      citations,
+      selected: Boolean(item.selected),
+      direct: Boolean(item.direct),
+      actionable: Boolean(item.actionable),
+      severity: item.severity,
+      quality: item.quality,
+      data,
+    };
+  }).sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  if (evidenceIds.size !== evidence.length) {
+    throw new Error("snapshot evidence IDs must be unique");
+  }
+  assertBound(
+    "material claims",
+    snapshot.material_claims.length,
+    COPILOT_SNAPSHOT_LIMITS.materialClaims,
+  );
+  const materialClaims = snapshot.material_claims.map((claim) => {
+    exactKeys("snapshot material claim", claim, [
+      "claim_id",
+      "evidence_refs",
+      "requires_complete_coverage",
+    ]);
+    if (claim.evidence_refs.length < 1 || claim.evidence_refs.length > 32) {
+      throw new Error("material claim evidence references are outside bounds");
+    }
+    const evidenceRefs = claim.evidence_refs.map((reference) =>
+      boundedSnapshotString(
+        "material claim evidence reference",
+        reference,
+        1,
+        160,
+        SNAPSHOT_EVIDENCE_ID,
+      ));
+    if (evidenceRefs.some((reference) => !evidenceIds.has(reference))) {
+      throw new Error("material claim has a missing evidence reference");
+    }
+    return {
+      claim_id: boundedSnapshotString(
+        "material claim ID",
+        claim.claim_id,
+        1,
+        160,
+        SNAPSHOT_EVIDENCE_ID,
+      ),
+      evidence_refs: Array.from(new Set(evidenceRefs)).sort(compareCodePoints),
+      requires_complete_coverage: Boolean(claim.requires_complete_coverage),
+    };
+  }).sort((left, right) => compareCodePoints(left.claim_id, right.claim_id));
+  const normalized: StrictCopilotEvidenceSnapshotV2 = {
+    version: "2",
+    page_kind: snapshot.page_kind,
+    page_id: pageId,
+    coverage: {
+      visible_count: visibleCount,
+      total_count: totalCount,
+      complete,
+    },
+    freshness,
+    selected_entities: selectedEntities,
+    evidence,
+    material_claims: materialClaims,
+  };
+  assertBound(
+    "snapshot",
+    new TextEncoder().encode(serializeCopilotSnapshot(normalized)).length
+      + numericValueCount(normalized),
+    COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+  );
+  return normalized;
+}
+
+function legacySnapshotEntity(
+  pageKind: CopilotPageKind,
+  row: CopilotPageSnapshot["evidence"][number],
+  sourceKey: string,
+): CopilotEntityRef {
+  if (row.data.entity !== undefined) {
+    return normalizedSnapshotEntity(row.data.entity);
+  }
+  if (row.resource_id) {
+    return {
+      type: "azure",
+      resource_id: canonicalResourceId(row.resource_id),
+    };
+  }
+  return {
+    type: "domain",
+    namespace: "page",
+    kind: pageKind,
+    source_key: sourceKey,
+  };
+}
+
+/**
+ * Converts any integrated page snapshot to the one strict, bounded v2 wire
+ * contract. Character limits use Unicode code points; row limits use the
+ * backend-compatible escaped JSON byte count; structural limits reject N+1
+ * rather than silently widening or dropping observations.
+ */
+export function normalizeCopilotSnapshotV2(
+  snapshot: CopilotPageSnapshot | CopilotEvidenceSnapshotV2,
+): StrictCopilotEvidenceSnapshotV2 {
+  if (snapshot.version === "2") {
+    if (!isStrictSnapshot(snapshot)) {
+      throw new Error("canonical requests require the complete snapshot v2 contract");
+    }
+    return normalizeStrictSnapshotV2(snapshot);
+  }
+
+  const selectedEntities: CopilotEntityRef[] = snapshot.selected_resources.map((resource) => ({
+    type: "azure" as const,
+    resource_id: canonicalResourceId(resource.resource_id),
+  }));
+  const evidence = snapshot.evidence.map((row) => {
+    const sourceKeyValue = typeof row.data.source_key === "string"
+      ? row.data.source_key
+      : row.evidence_id;
+    const sourceKey = boundedSourceKey(sourceKeyValue);
+    const entity = legacySnapshotEntity(snapshot.page_kind, row, sourceKey);
+    if (row.data.selected === true) selectedEntities.push(entity);
+    return {
+      evidence_id: row.evidence_id,
+      source: row.section,
+      status: row.status,
+      observed_at: row.observed_at ?? "",
+      resource_id: entity.type === "azure" ? entity.resource_id : "",
+      source_key: sourceKey,
+      entity,
+      claim_type: typeof row.data.claim_type === "string"
+        ? row.data.claim_type
+        : "observation",
+      citations: [],
+      selected: row.data.selected === true,
+      direct: true,
+      actionable: false,
+      severity: "unknown" as const,
+      quality: "unknown" as const,
+      data: row.data,
+    };
+  });
+  const deduplicatedSelected = selectedEntities.filter((entity, index, entities) =>
+    entities.findIndex((candidate) =>
+      entityOrderingKey(candidate) === entityOrderingKey(entity)) === index);
+  return normalizeStrictSnapshotV2({
+    version: "2",
+    page_kind: snapshot.page_kind,
+    page_id: snapshot.page_id,
+    coverage: {
+      visible_count: evidence.length,
+      total_count: evidence.length,
+      complete: false,
+    },
+    freshness: snapshot.freshness,
+    selected_entities: deduplicatedSelected,
+    evidence,
+    material_claims: [],
+  });
 }
 
 function freshnessStatus(status: string): CopilotFreshnessStatusV2 {
