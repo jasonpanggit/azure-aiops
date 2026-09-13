@@ -127,8 +127,8 @@ type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   quality: CopilotSnapshotEvidenceV2["quality"];
 };
 
-/** The page-kind a route anchors on; `inventory` is the V2 inventory kind. */
-export type CopilotRouteAnchorPageKind = CopilotPageKind | "inventory";
+/** The exact manifest-backed v2 page kind on which an integrated route anchors. */
+export type CopilotRouteAnchorPageKind = CopilotPageKindV2;
 
 /** Exactly one reviewed Copilot disposition per Next.js route (D-03, locked page policy). */
 export type CopilotRouteDisposition =
@@ -150,29 +150,29 @@ export type CopilotRouteDisposition =
 export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition> = {
   // 23 integrated routes -- each renders the shared CopilotDrawerButton and a
   // typed page adapter over already-loaded, authorized evidence.
-  "/": { kind: "integrated", pageKind: "resource" },
+  "/": { kind: "integrated", pageKind: "overview" },
   "/network": { kind: "integrated", pageKind: "network" },
-  "/compliance": { kind: "integrated", pageKind: "governance" },
-  "/exposure": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/cves/[id]": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/defender-posture": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/kbs/[id]": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/patch-priorities": { kind: "integrated", pageKind: "vulnerability" },
-  "/situations": { kind: "integrated", pageKind: "incident" },
-  "/situations/[id]": { kind: "integrated", pageKind: "incident" },
-  "/changes": { kind: "integrated", pageKind: "incident" },
-  "/changes/predeploy": { kind: "integrated", pageKind: "governance" },
+  "/compliance": { kind: "integrated", pageKind: "compliance" },
+  "/exposure": { kind: "integrated", pageKind: "exposure" },
+  "/exposure/cves/[id]": { kind: "integrated", pageKind: "cve_detail" },
+  "/exposure/defender-posture": { kind: "integrated", pageKind: "defender_posture" },
+  "/exposure/kbs/[id]": { kind: "integrated", pageKind: "kb_detail" },
+  "/exposure/patch-priorities": { kind: "integrated", pageKind: "patch_priorities" },
+  "/situations": { kind: "integrated", pageKind: "situations" },
+  "/situations/[id]": { kind: "integrated", pageKind: "situation_detail" },
+  "/changes": { kind: "integrated", pageKind: "changes" },
+  "/changes/predeploy": { kind: "integrated", pageKind: "changes_predeploy" },
   "/inventory": { kind: "integrated", pageKind: "inventory" },
-  "/connections": { kind: "integrated", pageKind: "resource" },
-  "/connections/fabric": { kind: "integrated", pageKind: "resource" },
+  "/connections": { kind: "integrated", pageKind: "connections" },
+  "/connections/fabric": { kind: "integrated", pageKind: "connections_fabric" },
   "/governance": { kind: "integrated", pageKind: "governance" },
-  "/identity": { kind: "integrated", pageKind: "governance" },
-  "/finops": { kind: "integrated", pageKind: "governance" },
+  "/identity": { kind: "integrated", pageKind: "identity" },
+  "/finops": { kind: "integrated", pageKind: "finops" },
   "/remediation": { kind: "integrated", pageKind: "remediation" },
-  "/resource-health": { kind: "integrated", pageKind: "resource" },
-  "/services": { kind: "integrated", pageKind: "resource" },
-  "/services/[name]": { kind: "integrated", pageKind: "resource" },
-  "/twin": { kind: "integrated", pageKind: "network" },
+  "/resource-health": { kind: "integrated", pageKind: "resource_health" },
+  "/services": { kind: "integrated", pageKind: "services" },
+  "/services/[name]": { kind: "integrated", pageKind: "service_detail" },
+  "/twin": { kind: "integrated", pageKind: "twin" },
   // 3 dedicated Copilot/investigation surfaces -- they are the reasoning
   // destination itself and never embed a second contextual launcher.
   "/copilot": { kind: "dedicated", surface: "operations-copilot" },
@@ -906,6 +906,91 @@ function legacySnapshotEntity(
   };
 }
 
+const LEGACY_PAGE_ID_KINDS: Readonly<Record<string, CopilotPageKindV2>> = {
+  "operations-overview": "overview",
+  "network-topology": "network",
+  "compliance-posture": "compliance",
+  exposure: "exposure",
+  "defender-posture": "defender_posture",
+  "patch-priorities": "patch_priorities",
+  situations: "situations",
+  changes: "changes",
+  predeploy: "changes_predeploy",
+  connections: "connections",
+  "fabric-medallion": "connections_fabric",
+  governance: "governance",
+  identity: "identity",
+  finops: "finops",
+  remediation: "remediation",
+  "resource-health": "resource_health",
+  services: "services",
+  twin: "twin",
+};
+
+function legacyPageKind(snapshot: CopilotPageSnapshot): CopilotPageKindV2 {
+  if (snapshot.page_id.startsWith("cve:")) return "cve_detail";
+  if (snapshot.page_id.startsWith("kb:")) return "kb_detail";
+  if (snapshot.page_id.startsWith("situation:")) return "situation_detail";
+  if (snapshot.page_id.startsWith("service:")) return "service_detail";
+  if (snapshot.page_id === "inventory" || snapshot.page_id.startsWith("inventory:")) {
+    return "inventory";
+  }
+  return LEGACY_PAGE_ID_KINDS[snapshot.page_id] ?? snapshot.page_kind;
+}
+
+function legacyObservedCoverage(
+  snapshot: CopilotPageSnapshot,
+): StrictCopilotEvidenceSnapshotV2["coverage"] {
+  const observations = snapshot.evidence.flatMap((row) => {
+    if (
+      row.section !== "coverage"
+      || row.data.claim_type !== "coverage"
+      || !row.data.coverage
+      || typeof row.data.coverage !== "object"
+      || Array.isArray(row.data.coverage)
+    ) {
+      return [];
+    }
+    const coverage = row.data.coverage as Record<string, unknown>;
+    const visibleCount = coverage.visible_count;
+    const totalCount = coverage.total_count;
+    const complete = coverage.complete;
+    if (
+      !Number.isSafeInteger(visibleCount)
+      || !Number.isSafeInteger(totalCount)
+      || typeof complete !== "boolean"
+      || (visibleCount as number) < 0
+      || (totalCount as number) < 0
+      || (visibleCount as number) > (totalCount as number)
+      || (complete && visibleCount !== totalCount)
+    ) {
+      throw new Error("legacy snapshot coverage observation is invalid");
+    }
+    return [{
+      visible_count: visibleCount as number,
+      total_count: totalCount as number,
+      complete,
+    }];
+  });
+  if (!observations.length) {
+    return { visible_count: 0, total_count: 0, complete: false };
+  }
+  const visibleCount = observations.reduce(
+    (total, item) => total + item.visible_count,
+    0,
+  );
+  const totalCount = observations.reduce(
+    (total, item) => total + item.total_count,
+    0,
+  );
+  return {
+    visible_count: visibleCount,
+    total_count: totalCount,
+    complete: observations.every((item) => item.complete)
+      && visibleCount === totalCount,
+  };
+}
+
 /**
  * Converts any integrated page snapshot to the one strict, bounded v2 wire
  * contract. Character limits use Unicode code points; row limits use the
@@ -965,15 +1050,11 @@ export function normalizeCopilotSnapshotV2(
     }));
   return normalizeStrictSnapshotV2({
     version: "2",
-    page_kind: snapshot.page_kind,
+    page_kind: legacyPageKind(snapshot),
     page_id: snapshot.page_id,
     filters: snapshot.filters,
     query: snapshot.filters.query?.join(" ") ?? "",
-    coverage: {
-      visible_count: evidence.length,
-      total_count: evidence.length,
-      complete: false,
-    },
+    coverage: legacyObservedCoverage(snapshot),
     freshness: snapshot.freshness,
     selected_entities: deduplicatedSelected,
     evidence,

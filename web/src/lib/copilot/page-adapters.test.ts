@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { CopilotPageKind, CopilotPageKindV2, CopilotPageSnapshot } from "@/lib/types";
 import {
   buildChangesCopilotContext,
   buildComplianceCopilotContext,
@@ -2005,8 +2006,8 @@ describe("inventory Copilot page adapter", () => {
         page_kind: "remediation",
         page_id: "remediation",
         coverage: {
-          visible_count: legacy.evidence.length,
-          total_count: legacy.evidence.length,
+          visible_count: 2,
+          total_count: 5,
           complete: false,
         },
         selected_entities: expect.any(Array),
@@ -2028,6 +2029,89 @@ describe("inventory Copilot page adapter", () => {
         && Boolean(row.entity)
         && Boolean(row.source_key))).toBe(true);
     });
+
+  it.each([
+    ["/", "resource", "operations-overview", "overview"],
+    ["/network", "network", "network-topology", "network"],
+    ["/compliance", "governance", "compliance-posture", "compliance"],
+    ["/exposure", "vulnerability", "exposure", "exposure"],
+    ["/exposure/cves/[id]", "vulnerability", "cve:CVE-2026-0001", "cve_detail"],
+    ["/exposure/defender-posture", "vulnerability", "defender-posture", "defender_posture"],
+    ["/exposure/kbs/[id]", "vulnerability", "kb:KB5000001", "kb_detail"],
+    ["/exposure/patch-priorities", "vulnerability", "patch-priorities", "patch_priorities"],
+    ["/situations", "incident", "situations", "situations"],
+    ["/situations/[id]", "incident", "situation:situation-1", "situation_detail"],
+    ["/changes", "incident", "changes", "changes"],
+    ["/changes/predeploy", "governance", "predeploy", "changes_predeploy"],
+    ["/connections", "resource", "connections", "connections"],
+    ["/connections/fabric", "resource", "fabric-medallion", "connections_fabric"],
+    ["/governance", "governance", "governance", "governance"],
+    ["/identity", "governance", "identity", "identity"],
+    ["/finops", "governance", "finops", "finops"],
+    ["/remediation", "remediation", "remediation", "remediation"],
+    ["/resource-health", "resource", "resource-health", "resource_health"],
+    ["/services", "resource", "services", "services"],
+    ["/services/[name]", "resource", "service:payments", "service_detail"],
+    ["/twin", "network", "twin", "twin"],
+  ] satisfies Array<[string, CopilotPageKind, string, CopilotPageKindV2]>)(
+    "maps free-form legacy adapter output for %s to exact v2 page kind %s",
+    (route, legacyPageKind, pageId, expectedPageKind) => {
+      const legacy: CopilotPageSnapshot = {
+        version: "1",
+        page_kind: legacyPageKind,
+        page_id: pageId,
+        selected_resources: [],
+        filters: {},
+        freshness: [],
+        scope: { declared: { subscription: ["sub-a"] }, authorized: true },
+        evidence: [],
+        question: "Tell me what matters on this page.",
+        rechecks: [],
+      };
+
+      expect(normalizeCopilotSnapshotV2(legacy).page_kind).toBe(expectedPageKind);
+      expect(COPILOT_ROUTE_DISPOSITIONS[route]).toMatchObject({
+        kind: "integrated",
+        pageKind: expectedPageKind,
+      });
+    },
+  );
+
+  it("keeps the inventory adapter's exact v2 page kind without a routing hint", () => {
+    const inventory = buildInventoryCopilotContext(baseInput).snapshot;
+
+    expect(normalizeCopilotSnapshotV2(inventory).page_kind).toBe("inventory");
+    expect(COPILOT_ROUTE_DISPOSITIONS["/inventory"]).toMatchObject({
+      kind: "integrated",
+      pageKind: "inventory",
+    });
+  });
+
+  it("does not fabricate legacy coverage from arbitrary evidence rows", () => {
+    const legacy: CopilotPageSnapshot = {
+      version: "1",
+      page_kind: "resource",
+      page_id: "services",
+      selected_resources: [],
+      filters: {},
+      freshness: [],
+      scope: { declared: { subscription: ["sub-a"] }, authorized: true },
+      evidence: [{
+        evidence_id: "service:one",
+        section: "services",
+        status: "ok",
+        data: { name: "payments" },
+      }],
+      question: "Summarize this page.",
+      rechecks: [],
+    };
+
+    expect(normalizeCopilotSnapshotV2(legacy).coverage).toEqual({
+      visible_count: 0,
+      total_count: 0,
+      complete: false,
+    });
+  });
 
   it.each([
       [127, true],

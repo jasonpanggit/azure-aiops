@@ -89,6 +89,7 @@ const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
 const THREAD_RESET_MESSAGE = "This investigation is no longer available. Start a new investigation to continue.";
+const THREAD_CONFLICT_MESSAGE = "This investigation changed in another request. Start a new investigation to continue.";
 const INERT_THREAD_CONTINUITY: ThreadContinuityContextValue = {
   thread: null,
   requiresServerRevalidation: false,
@@ -386,8 +387,17 @@ export function CopilotDrawer({
         && reason.code === "not_found"
         && reason.details?.field === "thread_id"
       );
+      const isThreadConflict = (
+        reason instanceof ApiError
+        && reason.status === 409
+        && reason.code === "conflict"
+      );
       if (isThreadReset) {
         threadContinuity.resetContinuity("not_found");
+        if (providedThreadContinuity) return;
+      }
+      if (isThreadConflict) {
+        threadContinuity.resetContinuity("conflict");
         if (providedThreadContinuity) return;
       }
       setTurns((current) => [
@@ -396,6 +406,8 @@ export function CopilotDrawer({
           question: nextQuestion,
           error: isThreadReset
             ? THREAD_RESET_MESSAGE
+            : isThreadConflict
+              ? THREAD_CONFLICT_MESSAGE
             : reason instanceof Error
               ? reason.message
               : "Copilot could not answer this request.",
@@ -492,6 +504,11 @@ export function CopilotDrawer({
               {THREAD_RESET_MESSAGE}
             </p>
           )}
+          {providedThreadContinuity?.resetReason === "conflict" && (
+            <p className="copilot-fallback-note" role="alert">
+              {THREAD_CONFLICT_MESSAGE}
+            </p>
+          )}
           {visibleTurns.map((turn, index) => (
             <div className="copilot-turn" key={`${turn.question}-${index}`}>
               <div className="copilot-question"><span>You</span><p>{turn.question}</p></div>
@@ -542,7 +559,7 @@ export function CopilotDrawer({
                           </article>
                         ))}
                       </div>
-                    ) : turn.toolCalls?.length ? (
+                    ) : !turn.narration && turn.toolCalls?.length ? (
                       <div className="copilot-tool-calls">
                         {turn.toolCalls.map((call, callIndex) => (
                           <details className="copilot-tool-call" key={`${call.tool}-${callIndex}`} open={callIndex === 0}>
