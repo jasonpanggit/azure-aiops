@@ -4966,6 +4966,13 @@ body.topology-fullscreen-open {
   white-space: nowrap;
 }
 
+.copilot-drawer-trigger-floating {
+  position: fixed;
+  z-index: 200;
+  right: 24px;
+  bottom: 24px;
+}
+
 .copilot-live-status {
   min-height: 22px;
   margin-bottom: 10px;

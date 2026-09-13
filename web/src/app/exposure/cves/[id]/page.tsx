@@ -716,6 +716,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             <CopilotDrawerButton
               onClick={() => setCopilotOpen(true)}
               label={`Ask Copilot about ${cveId}`}
+              floating
             />
             {data && rows.length > 0 && (
               <button
