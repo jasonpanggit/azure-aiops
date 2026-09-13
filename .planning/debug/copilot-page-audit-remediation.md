@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T12:56:00+08:00
+updated: 2026-09-13T12:21:37+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,24 +31,25 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed and fixed: all six final-review blockers are green together, causal revert/reconfirm passes, and broad committed Phase 11 offline validation is clean."
-test: "Final committed validation passed the broad backend selection, all six web files, Ruff, strict TypeScript, evaluator/corpus syntax, and 9/9 offline specialist parity checks."
-expecting: "An independent final validation/review finds no remaining blocking issue; live/provider readiness remains explicitly BLOCKED and no deployment is attempted."
-next_action: "Run independent final validation/review of commits ae34e35ae, ed3751d79, and 6c82cf4e0; if clean, record human confirmation. Do not archive before that confirmation."
+hypothesis: "Confirmed and corrected: canonical output is normalized before scoring; unhinted exact page kinds plan from validated question plus scope-validated Azure selection context; unsafe starter hints are omitted or use canonical keys; and explicit thread revision is rechecked after conflict reload."
+test: "Complete: 693/694 selected backend tests passed with one pre-existing packaging skip; 170/170 Phase 11 web tests, Ruff, strict TypeScript, Next lint, shell syntax, 9/9 offline parity, evaluator/JSON syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
+expecting: "Independent caller review accepts the four committed fixes; live/provider/deployment evidence remains explicitly BLOCKED and was not contacted."
+next_action: "Await human verification of commits 8bfc0b52a, c0f4b6c9e, 0c9a01e15, and 4c536597d. Do not archive until confirmed."
 reasoning_checkpoint:
-  hypothesis: "The review blockers occur because shared boundaries preserve legacy or presentation-level behavior after the canonical contracts became authoritative: CAS validation is outside the store lock, evaluator dispatch/schema gates cover only legacy kinds, reviewed cross-domain grants were removed from selector policy and corpus data, fallback ignores the selector result, adapter trimming does not update trust metadata, and conflict grouping bypasses canonical entity identity."
+  hypothesis: "Four independent code-contract mismatches cause the review failures: `_run_case` reads only legacy response fields; the canonical route erases validated selected context before deterministic planning and leaves overview mapped only to a tool-less synthesizer; shared starter constants emit backend-invalid argument objects; and `authorize` retries a CAS conflict without rechecking the caller's explicit thread revision."
   confirming_evidence:
-    - "The agent-authored focused Python run produced 9 deterministic failures exactly at the six reported seams, including both ARM/domain alias variants and all routing/evaluator/CAS assertions."
-    - "The agent-authored focused Vitest run produced 7 deterministic failures across the byte- and row-retention boundary assertions; 104 unrelated tests in the same file were skipped by name filtering rather than failing."
-    - "Direct source inspection shows the stale comparison after mutating authorize, the six-kind evaluator allowlist, corpus set reductions, appended page owners, silent retention pop/limit, and raw entity serialization."
-  falsification_test: "Any focused regression passing before its corresponding source/data fix, or remaining red after reverting only that fix, would disprove that seam's causal diagnosis."
-  fix_rationale: "Move each invariant to its authoritative boundary: CAS under the store lock before mutation; canonical v2 fixture construction for every integrated case; explicit reviewed cross-domain grants with restored gold sets; selected-first valid call construction with one fallback; retention metadata plus conservative coverage; and shared canonical entity keys for conflict grouping."
-  blind_spots: "Adjacent legacy callers, release artifact recomputation, selector page-safety accounting, exact snapshot byte accounting, and full Phase 11 backend/web compatibility are not yet rerun after fixes."
+    - "A realistic canonical response with selected_specialists, selected_tools, tool_results, citations, and synthesis.claims produces an empty specialist/tool set, no narration, and failed routing before any source edit."
+    - "Exact unhinted governance, identity, finops, and overview endpoint requests with one in-scope selected Azure entity all return zero selected specialists and `no_safe_tool_arguments`."
+    - "The cross-language Vitest/Python parity regression reports 23 emitted hints rejected by backend `validate_tool_arguments`, including empty required fields and the wrong business_service/q/kb_id keys."
+    - "A two-store interleaving advances the durable thread to revision 1 between authorize load and persist; the stale expected_revision=0 caller then succeeds and narrows durable scope instead of raising."
+  falsification_test: "If canonical fields score before normalization, if typed requests can form valid calls after selected context is removed, if all exported hints pass the backend validator unchanged, or if the interleaved stale caller already raises while preserving durable scope/revision, the corresponding hypothesis is false."
+  fix_rationale: "Normalize canonical output at the evaluator boundary with legacy fallback; retain only scope-validated Azure planning identities and derive required read-only arguments from validated request text/context; omit unsafe hints or correct their canonical keys; and recheck explicit expected revision immediately after every persistence-conflict reload."
+  blind_spots: "Domain-entity server resolution is not available at this route boundary, so planning must not authorize domain source keys; adjacent legacy evaluator diagnostics, all exact page kinds, full starter exports, no-hint behavior without selected context, and conflict-free authorization retries require held-out validation."
   candidate_causes:
-    - "code: ordering/filtering/normalization logic at six shared boundaries violates the intended contracts"
-    - "data: four reviewed gold-corpus expected specialist sets were edited to bless narrowed production behavior"
-    - "config/environment: no live provider or runtime configuration is required to reproduce any failure, so these branches are currently disfavored"
-  and_gate: "yes — all six independent findings must be green for the review checkpoint to pass, although each individual deterministic symptom has its own sufficient code or corpus cause"
+    - "code: response adapters, deterministic planning context, hint construction, and CAS retry ordering each violate their canonical contracts"
+    - "data: emitted starter argument objects contain wrong keys or omit required values; the realistic canonical payload itself is valid"
+    - "environment/config: no provider, cloud, rollout flag, timing scheduler, or deployment state is involved; the defects reproduce offline with fixed inputs"
+  and_gate: "yes for the requested review outcome because all four independent defects must be corrected; no for each individual symptom because its named code/data boundary is independently sufficient"
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "The reported Foundry project has only one governed connection named `demo`; exact distinct `operations-mcp` and `azure-mcp` project-connection resource IDs and payloads remain absent."
@@ -61,6 +62,37 @@ candidate_causes:
 and_gate: "possibly — source readiness and external provider readiness are independent required conditions for release promotion"
 
 ## Evidence
+
+- timestamp: 2026-09-13T12:10:00+08:00
+  observation: `.planning/STATE.md` identifies Phase 4 planning, while the request explicitly authorizes only four final Phase 11 source/test fixes. The inherited branch is clean at `0f0f12877`, and this tracked debug session already carries the Phase 11 remediation history.
+  implication: This work is a bounded Phase 11 exception; live/provider/deployment/Terraform actions and owned Remediation/CVE/globals files remain excluded.
+- timestamp: 2026-09-13T12:10:00+08:00
+  observation: The canonical evaluator regression fails because `_run_case` reads `tool_calls`, legacy findings, and `synthesis.narration`; a realistic canonical response exposes only `selected_specialists`, `selected_tools`, `tool_results`, canonical citations, and `synthesis.claims`.
+  implication: Finding 1 is a deterministic changed-response-shape bug at the evaluator normalization boundary.
+- timestamp: 2026-09-13T12:10:00+08:00
+  observation: All four exact unhinted typed-page endpoint cases return no selected specialists despite an in-scope selected Azure entity, because the route strips selected entities/evidence before passing a planner-less request to deterministic fallback; overview additionally maps only to the tool-less executive specialist.
+  implication: Finding 2 is confirmed at the route-to-policy seam; the fix must preserve scope-validated planning identity and make overview execute cited domain reads before synthesis without model authorization.
+- timestamp: 2026-09-13T12:10:00+08:00
+  observation: The cross-language parity regression reports 23 concrete starter failures against backend `validate_tool_arguments`, including empty `name`/`subject`/`query`/`cve_id`/`vnet_id` and invalid `business_service`, `q`, and `kb_id` keys.
+  implication: Finding 3 is confirmed in shared page-adapter constants; hints without a known required value must be omitted so the governed planner runs, while known values must use canonical backend keys.
+- timestamp: 2026-09-13T12:10:00+08:00
+  observation: The two-store interleaving regression does not raise: after the competing store appends revision 1, `authorize(expected_revision=0)` reloads and retries, persists the narrower scope, and returns the concurrent revision.
+  implication: Finding 4 is confirmed; explicit caller CAS must be checked after every reload before retry mutation or persistence.
+- timestamp: 2026-09-13T12:16:00+08:00
+  observation: All four focused fixes pass together: the realistic canonical response scores specialists/tools/citations/synthesis and quality gates, four exact unhinted typed page cases execute cited domain reads, every exported integrated starter tool hint passes the backend validator, and the two-store stale caller raises while preserving the concurrent revision and broad scope.
+  implication: Every driving regression is green; proceed to held-out adjacency and static validation.
+- timestamp: 2026-09-13T12:16:00+08:00
+  observation: The directly connected suites pass 282 backend tests and 137 web tests after preserving the established selected-ARM `risk_context` precedence and updating stale page-kind/hint assertions. The first typed-page assertion incorrectly required synthesized claims when the optional executive provider was unavailable; it was tightened to require two cited domain delegations and an admitted explicit-intent synthesis decision instead.
+  implication: Legacy evaluator diagnostics, canonical APIs, thread continuity, routing/policy, drawer behavior, all page adapters, exact page kinds, and omitted-hint planner fallback remain compatible without fabricating provider narration.
+- timestamp: 2026-09-13T12:21:37+08:00
+  observation: Removing only the five production files while retaining the four driving regressions restored every defect: canonical routing/scoring failed, all four typed pages selected no specialists, all 23 invalid starter hints reappeared, and the stale two-store caller narrowed scope without raising. Restoring the stash returned every focused test to green.
+  implication: Revert-and-reconfirm proves the production fixes, rather than test or environment drift, are necessary and sufficient for the reported behaviors.
+- timestamp: 2026-09-13T12:21:37+08:00
+  observation: Final post-reapply validation passes 693 of 694 selected Phase 11 backend tests with one pre-existing wheel-build skip, all 170 Phase 11 web tests, full scoped Ruff, strict TypeScript, Next lint, three shell syntax checks, evaluator bytecode/corpus JSON parsing, the 16-test MCP bridge, and all 9 offline specialist parity checks.
+  implication: Canonical/legacy APIs, evaluator release gates, governed routing, thread continuity, MCP/provider contracts, manifest packaging, web integrations, drawer behavior, and cross-language hint schemas are green together.
+- timestamp: 2026-09-13T12:21:37+08:00
+  observation: Final diff and commit review finds only the tracked debug record plus nine authorized source/test paths. No owned Remediation page/test, Exposure CVE page/test, globals, deployment, infrastructure, Terraform, image, or live/cloud path changed. Commits `8bfc0b52a`, `c0f4b6c9e`, `0c9a01e15`, and `4c536597d` are independently scoped and include the required Copilot trailer.
+  implication: Scope, atomicity, no-op/deletion, and commit-integrity guardrails pass. No owned-file handoff remains because the KB/CVE-related invalid representative hint was corrected in the authorized shared adapter.
 
 - timestamp: 2026-09-13T11:18:23+08:00
   observation: The continuation review reports six deterministic blockers after the prior checkpoint: stale CAS is checked after authorization mutation; integrated v2 fixtures bypass exact canonical dispatch/schema gating; reviewed cross-domain grants were removed and fixture expectations weakened; fallback appends all page specialists; adapter trimming preserves false complete coverage without omission metadata; and conflict identity bypasses repository canonical entity normalization.
@@ -511,6 +543,40 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Resolution
 
+final_independent_review_root_cause: "The canonical evaluator consumed legacy response fields; the canonical route removed scope-valid selected identities before deterministic planning and left exact overview requests on a tool-less mapping; shared starter hints were grant-valid but argument-schema-invalid; and authorization retried after a storage CAS reload without rechecking an explicit caller thread revision."
+final_independent_review_fix: "Normalized canonical selected specialists/tools/results/citations/synthesis claims with legacy diagnostic fallback; built unhinted plans only from validated question text and scope-validated Azure selection identities, mapping overview planning to cited domain specialists; omitted context-free invalid hints and corrected known service-detail argument keys; and rechecked expected_revision after every authorize conflict reload."
+final_independent_review_verification:
+  target_test:
+    result: pass
+    details: "Six focused Python parameter instances and one cross-language web parity test pass after all started RED."
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No configured Python or TypeScript mutation framework exists in this repository."
+    mutant_killed: false
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: true
+    details: "Removed only invalid optional hint bindings so the governed planner handles those questions; all executable routing, scoring, and CAS changes are additive or stricter."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "Selected Phase 11 backend: 693 passed, 1 pre-existing packaging skip"
+      - "Six Phase 11 web files: 170 passed"
+      - "Full scoped Ruff; strict TypeScript; Next lint"
+      - "Shell syntax; evaluator bytecode; corpus JSON; MCP bridge 16/16"
+      - "Offline specialist parity: 9/9 checks passed"
+      - "Diff/ownership scope check: pass"
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+  guardrail_verdict: accepted
+final_independent_review_commits:
+  - "8bfc0b52a fix(copilot): score canonical evaluator responses"
+  - "c0f4b6c9e fix(copilot): plan unhinted typed page questions"
+  - "0c9a01e15 fix(web): validate Copilot starter hints"
+  - "4c536597d fix(copilot): reject stale authorization reloads"
+owned_file_handoffs: []
 review_blockers_root_cause: "Six final-review regressions remained: stale CAS was outside locked authorization and mutated continuity before rejection; integrated evaluator fixtures used legacy/question-only endpoints and only six kinds were schema-gated; explicit reviewed cross-domain grants and four gold expected sets were removed; fallback appended every page owner after question-first selection; adapter row/byte trimming did not downgrade coverage or report bounded omissions and measured only the smaller legacy shape; browser conflict grouping serialized raw ARM/domain entity text instead of canonical identity."
 review_blockers_fix: "Moved expected-revision validation into locked thread authorization before mutation; routed every integrated fixture through strict v2 `/copilot/investigations` with exact page kind and universal schema gating; restored explicit reviewed cross-domain grants, policy/page-safety recognition, legacy alias compatibility, and the four original multi-specialist gold sets; built fallback calls from selected IDs with one page-safe fallback only when none is valid; added strict-v2 retention fitting, exact bounded omission metadata, conservative completeness, and uncertainty; and reused one canonical entity-key helper for canonicalization and browser conflict exclusion."
 root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`. Blocking orchestration review: fallback construction treated page grants as proof that `{}` was valid and had no no-tool outcome; retained browser rows bypassed canonical conflict/completeness admission; and input-order retention stopped at 64 before closure despite the 200-row snapshot contract. Provider/deployment readiness: Terraform did not expose the complete deterministic non-secret provider environment, request boundaries ignored `AIOPS_COPILOT_ROLLOUT_MODE` and canary percentage, and candidate/live parity discarded exact Foundry project-connection identities; live readiness additionally lacks external evidence for two distinct governed connections and immutable provider versions."
