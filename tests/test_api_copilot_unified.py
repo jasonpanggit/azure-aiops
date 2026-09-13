@@ -2645,6 +2645,112 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
+@pytest.mark.parametrize(
+    ("page_kind", "page_id", "question", "expected_specialists"),
+    (
+        (
+            "governance",
+            "governance",
+            "Who owns governance decisions for this resource?",
+            {"governance"},
+        ),
+        (
+            "identity",
+            "identity",
+            "Which principals have risky access to this resource?",
+            {"identity_access"},
+        ),
+        (
+            "finops",
+            "finops",
+            "Where can we reduce cost for this resource?",
+            {"finops"},
+        ),
+        (
+            "overview",
+            "operations-overview",
+            "Give an executive overview of this resource.",
+            {"governance", "resource_health_observability"},
+        ),
+    ),
+)
+def test_unhinted_typed_questions_use_governed_page_context(
+    tmp_path,
+    monkeypatch,
+    page_kind,
+    page_id,
+    question,
+    expected_specialists,
+):
+    calls: list[tuple[str, dict[str, object]]] = []
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-1"
+    )
+
+    def call_tool(name, arguments, *, context, scope, principal):
+        calls.append((name, dict(arguments)))
+        return ToolResult(
+            status=STATUS_OK,
+            data={"resource_id": resource_id, "status": "observed"},
+            evidence=(
+                Evidence(
+                    source_engine="test",
+                    source_table="page_context",
+                    resource_id=resource_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", call_tool)
+    body = _canonical_body()
+    body.pop("hint")
+    body["question"] = question
+    body["snapshot"] = {
+        **body["snapshot"],
+        "page_kind": page_kind,
+        "page_id": page_id,
+        "selected_entities": [{"type": "azure", "resource_id": resource_id}],
+        "evidence": [
+            {
+                "evidence_id": f"{page_kind}:selected",
+                "source": f"{page_kind}/page",
+                "status": "ok",
+                "observed_at": "2026-09-01T00:00:00Z",
+                "resource_id": resource_id,
+                "entity": {"type": "azure", "resource_id": resource_id},
+                "selected": True,
+                "direct": True,
+                "data": {"resource_id": resource_id},
+            }
+        ],
+    }
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert expected_specialists <= set(result["selected_specialists"])
+    assert result["selected_tools"]
+    assert result["fallback_reason"] != "no_safe_tool_arguments"
+    assert calls
+    assert result["citations"]
+    assert f"{page_kind}:selected" not in {
+        citation["citation_id"] for citation in result["citations"]
+    }
+    if page_kind == "overview":
+        assert result["synthesis"]["domain_count"] >= 2
+        assert result["synthesis"]["reason"] == "explicit_intent"
+
+
 def test_canonical_endpoint_returns_409_for_stale_revision_before_tool_io(
     tmp_path,
     monkeypatch,
