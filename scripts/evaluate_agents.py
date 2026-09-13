@@ -489,11 +489,25 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         return Result(case.case_id, ok=False, error=last_error)
 
     seen: list[str] = []
-    tool_calls = data.get("tool_calls", [])
-    for call in tool_calls:
-        specialist = call.get("specialist") or call.get("specialist_id")
+    canonical_specialists = (
+        data.get("selected_specialists")
+        if "selected_specialists" in data
+        else None
+    )
+    for specialist in canonical_specialists or []:
+        specialist = str(specialist or "")
         if specialist and specialist not in seen:
             seen.append(specialist)
+    tool_calls = (
+        data.get("tool_results", [])
+        if "tool_results" in data
+        else data.get("tool_calls", [])
+    )
+    if canonical_specialists is None:
+        for call in tool_calls:
+            specialist = call.get("specialist") or call.get("specialist_id")
+            if specialist and specialist not in seen:
+                seen.append(specialist)
 
     evaluation = data.get("evaluation") or {}
     usage = data.get("usage") or evaluation.get("usage") or {}
@@ -507,7 +521,17 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     expected = case.expected_for(runtime, strategy)
     missing = sorted(expected - set(seen))
     synthesis = data.get("synthesis") or {}
-    narration = str(synthesis.get("narration") or "")
+    synthesis_claims = [
+        claim
+        for claim in (synthesis.get("claims") or [])
+        if isinstance(claim, dict)
+    ]
+    canonical_narration = "\n\n".join(
+        str(claim.get("summary") or "").strip()
+        for claim in synthesis_claims
+        if str(claim.get("summary") or "").strip()
+    )
+    narration = str(synthesis.get("narration") or canonical_narration)
     stop_reason = str(data.get("stop_reason") or "")
     # A wall-clock timeout drops specialists that would otherwise have run, so
     # reporting it as a routing miss blames the router for a budget problem.
@@ -519,20 +543,25 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         for citation in citations
         if citation.get("citation_id")
     }
-    findings = [
+    legacy_findings = [
         finding
         for finding in (data.get("findings") or [])
         if finding.get("data")
     ]
+    findings = legacy_findings or synthesis_claims
     cited_findings = [
         finding
         for finding in findings
-        if finding.get("citation_ids")
+        if finding.get("citation_ids") or finding.get("evidence_refs")
     ]
     referenced_citations = {
         str(citation_id)
         for finding in findings
-        for citation_id in (finding.get("citation_ids") or [])
+        for citation_id in (
+            finding.get("citation_ids")
+            or finding.get("evidence_refs")
+            or []
+        )
     }
     citation_valid = (
         all(bool(citation.get("citation_id")) for citation in citations)
@@ -545,11 +574,15 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     citation_reference_integrity_ok = (
         referenced_citations <= citation_ids if referenced_citations else True
     )
-    tool_names = [
-        str(call.get("tool"))
-        for call in tool_calls
-        if call.get("tool")
-    ]
+    tool_names = (
+        [str(tool) for tool in data.get("selected_tools", []) if tool]
+        if "selected_tools" in data
+        else [
+            str(call.get("tool"))
+            for call in tool_calls
+            if call.get("tool")
+        ]
+    )
     safe_operations = {"", "delegate", "read", "query"}
     mutation_denied = not bool(data.get("mutation_authorized")) and not any(
         str(call.get("operation") or "").casefold() not in safe_operations

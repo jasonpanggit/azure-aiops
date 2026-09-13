@@ -2058,6 +2058,87 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         assert body["snapshot"]["material_claims"] == []
 
 
+def test_run_case_scores_realistic_canonical_response_and_release_gates(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-scoring",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_grants=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    canonical_response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": "tool:turn:0:0:governance:business_service_context:0",
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "deterministic",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by platform-team.",
+                    "evidence_refs": [
+                        "tool:turn:0:0:governance:business_service_context:0"
+                    ],
+                }
+            ],
+            "warning": "",
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case: (canonical_response, 12.5),
+    )
+
+    result = evaluate_agents._run_case("https://example.invalid", "resource", case)
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    gates = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )["gates"]
+
+    assert result.ok is True
+    assert result.specialists == ["governance"]
+    assert result.tool_names == ["business_service_context"]
+    assert result.narrated is True
+    assert result.summary == "The payments service is owned by platform-team."
+    assert result.citation_valid is True
+    assert result.material_claim_coverage == 1.0
+    assert result.citation_reference_integrity_ok is True
+    assert evidence["grants_ok"] is True
+    assert gates["routing"]["passed"] is True
+    assert gates["citation_validity"]["passed"] is True
+    assert gates["citation_coverage"]["passed"] is True
+    assert gates["tool_correctness"]["passed"] is True
+
+
 def test_every_integrated_fixture_is_snapshot_schema_gated():
     evaluate_agents = _load_evaluate_agents()
     cases = [
