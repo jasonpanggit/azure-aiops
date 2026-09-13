@@ -421,7 +421,17 @@ class FabricRuntime:
         return agent
 
 
-def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
+def build_runtime(
+    config: FabricRuntimeConfig,
+    *,
+    require_exposure_readiness: bool = True,
+) -> FabricRuntime:
+    """Build a Fabric runtime with strict read readiness by default.
+
+    Governed publication callers may disable the pre-publication Exposure SQL
+    readiness gate so they can restore missing tables. API and other read-side
+    callers retain the fail-closed default.
+    """
     lifecycle_catalog = _lifecycle_catalog(config)
     if config.local_onelake_root is not None:
         workspace = {
@@ -522,7 +532,12 @@ def build_runtime(config: FabricRuntimeConfig) -> FabricRuntime:
         lifecycle_catalog=lifecycle_catalog,
         remediation_decision_reader=remediation_repository.decisions.list,
         remediation_plan_reader=remediation_repository.ontology_projection,
-        sql_reader=_build_lakehouse_sql_reader(lakehouse, credential, config),
+        sql_reader=_build_lakehouse_sql_reader(
+            lakehouse,
+            credential,
+            config,
+            require_exposure_readiness=require_exposure_readiness,
+        ),
     )
     return FabricRuntime(
         config,
@@ -560,7 +575,11 @@ def _remediation_decisions(root: Any) -> list[dict[str, Any]]:
 
 
 def _build_lakehouse_sql_reader(
-    lakehouse: dict, credential: Any, config: FabricRuntimeConfig
+    lakehouse: dict,
+    credential: Any,
+    config: FabricRuntimeConfig,
+    *,
+    require_exposure_readiness: bool = True,
 ):
     """Build the SQL reader under generic or production Exposure policy.
 
@@ -586,7 +605,11 @@ def _build_lakehouse_sql_reader(
     )
     if config.exposure.enabled and config.exposure.rollback_mode:
         return None
-    if config.exposure.enabled and not config.exposure.rollback_mode:
+    if (
+        config.exposure.enabled
+        and not config.exposure.rollback_mode
+        and require_exposure_readiness
+    ):
         return require_exposure_ready(endpoint, credential)
     return build_sql_reader(endpoint, credential)
 
