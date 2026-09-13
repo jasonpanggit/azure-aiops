@@ -931,6 +931,16 @@ class OrchestrationService:
                 [
                     *canonical_snapshot.uncertainty,
                     *(
+                        [
+                            (
+                                "Incomplete material claims requiring complete "
+                                "coverage were excluded."
+                            )
+                        ]
+                        if incomplete_claims
+                        else []
+                    ),
+                    *(
                         ["Conflicting page evidence was excluded from synthesis."]
                         if canonical_snapshot.conflicts
                         else []
