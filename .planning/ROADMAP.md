@@ -211,7 +211,7 @@ Plans:
 **Goal:** Reduce Fabric publication and request-time load by separating domain projection from atomic publication, retiring legacy generation remapping from production reads, and pushing inventory scope/filter/count/pagination into the Fabric-backed read path.
 **Requirements:** MED-11, MED-12, MED-13
 **Depends on:** Phase 03.1, Phase 7, Phase 9, Phase 13
-**Planning status:** 11/11 plans verified; planning completion does not authorize execution.
+**Planning status:** 12/12 plans verified; planning completion does not authorize execution.
 **Execution status:** BLOCKED — `/gsd-execute-phase 03.7` must hard-stop in Plan 01 before any file change until every dependency has all required summaries and passing phase verification evidence. Phase 03.1 remains blocked on the exact live Defender digest-to-workload evidence after successful Fabric publication (03.1-19/20 incomplete); Phase 7 lacks passing phase verification evidence; Phase 9 lacks 09-10/09-11 summary evidence; Phase 13 remains incomplete and lacks final verification consistent with its final plan set. No dependency is waived.
 **Success Criteria** (what must be TRUE):
 
@@ -220,10 +220,10 @@ Plans:
   3. Inventory list and lookup operations push authorized scope, filters, ordering, counts, and pagination into the Fabric-backed query adapter without a fixed 10,000-row pre-pagination ceiling.
   4. Existing immutable observations, generation replay, active-pointer rollback, ontology consistency, source status, Exposure Gold contracts, and bounded PageSnapshot behavior remain intact.
 
-**Plans:** 0/11 plans executed (11/11 planned; execution blocked by prerequisites)
+**Plans:** 0/12 plans executed (12/12 planned; execution blocked by prerequisites)
 Plans:
 
-- [ ] 03.7-01-PLAN.md — Create Wave 0 publication, probe, query-scale, and benchmark contracts
+- [ ] 03.7-01-PLAN.md — Create Wave 0 publication, probe, and query-scale contracts
 - [ ] 03.7-02-PLAN.md — Gate generation-qualified inventory storage and namespaced product-pointer layout
 - [ ] 03.7-03-PLAN.md — Trace one five-table inventory product through atomic promotion to a scoped SQL page
 - [ ] 03.7-04-PLAN.md — Move unrelated domain projection outside product publication while preserving outputs
@@ -234,6 +234,7 @@ Plans:
 - [ ] 03.7-09-PLAN.md — Migrate onboarding identity consumers to generation-pinned complete scans
 - [ ] 03.7-10-PLAN.md — Apply alias dispositions and prove retired aliases receive no writes
 - [ ] 03.7-11-PLAN.md — Qualify the immutable deployed baseline in the same environment and generate complete cutover/scale/rollback evidence
+- [ ] 03.7-12-PLAN.md — Capture the immutable same-environment deployed pre-change publication baseline
 **UI hint:** no
 
 ### Phase 4: Domain Coverage and Operational Twin
@@ -274,7 +275,7 @@ Plans:
 | 1. Evidence and Situation Foundation | 3/3 | In Progress|  |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
 | 3. Safe Remediation Execution | 6/6 | In Progress|  |
-| 03.7 Fabric Publication Decoupling and Query Scale | 0/8 | Not started | - |
+| 03.7 Fabric Publication Decoupling and Query Scale | 0/12 | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
