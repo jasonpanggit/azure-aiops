@@ -37,13 +37,21 @@ from operations.investigation_thread_store import (
     ThreadNotFound,
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
+    investigation_thread_store,
 )
-from operations.maf_orchestrator import canonical_orchestration_enabled
+from operations.maf_orchestrator import (
+    build_deterministic_fallback,
+    canonical_orchestration_enabled,
+    copilot_rollout_decision,
+)
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
     CandidatePlan,
+    Citation,
+    DomainEntityRef,
     EvidenceSnapshotV2,
+    OrchestrationResult,
     SnapshotCoverage,
     SnapshotEvidence,
     SnapshotFreshness,
@@ -53,14 +61,17 @@ from operations.orchestration_contract import (
 from operations.orchestration_contract import (
     InvestigationRequest as CanonicalInvestigationRequest,
 )
-from operations.orchestration_policy import PolicyViolation
+from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
 from operations.orchestration_service import (
     OrchestrationService,
     execute_from_question,
     legacy_session_history,
 )
-from operations.page_context import PageSnapshot
-from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
+from operations.specialist_manifest import (
+    INVENTORY_DATA_HEALTH_ID,
+    load_specialist_manifest,
+)
 from operations.tools import (
     STATUS_EMPTY,
     STATUS_OK,
@@ -69,7 +80,7 @@ from operations.tools import (
     call_tool,
 )
 
-from ..dependencies import Context, CurrentPrincipal, ReadScope
+from ..dependencies import Context, CurrentPrincipal, ReadScope, live_subscription_ids
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
@@ -148,16 +159,10 @@ class CanonicalPlanHint(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class CanonicalInventorySnapshot(EvidenceSnapshotV2):
-    """Inventory-only snapshot accepted by the inventory canonical endpoint."""
-
-    page_kind: Literal["inventory", "connections", "connections_fabric"]
-
-
 class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
-    """Inventory canonical request plus an optional policy-checked hint."""
+    """Canonical request plus an optional policy-checked browser hint."""
 
-    snapshot: CanonicalInventorySnapshot
+    snapshot: EvidenceSnapshotV2
     hint: CanonicalPlanHint | None = None
 
 
@@ -422,6 +427,244 @@ def _inventory_executor(
     return execute
 
 
+def _canonical_plan_preview(
+    *,
+    planner: Any,
+    request: CanonicalInvestigationRequest,
+    scope: Scope,
+) -> tuple[dict[str, Any], bool]:
+    """Resolve canonical planning and policy without model or tool execution."""
+
+    policy = OrchestrationPolicy()
+    policy_validated = True
+    try:
+        proposal = planner(request)
+        candidate = (
+            proposal
+            if isinstance(proposal, CandidatePlan)
+            else CandidatePlan.model_validate(proposal)
+        )
+        candidate = policy.validate(
+            request=request,
+            candidate=candidate,
+            effective_scope=scope,
+        )
+        policy_status = "accepted"
+        fallback_reason = ""
+    except PolicyViolation as exc:
+        policy_validated = False
+        fallback_reason = f"candidate_rejected:{exc.code}"
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        if candidate is not None:
+            candidate = policy.validate(
+                request=request,
+                candidate=candidate,
+                effective_scope=scope,
+            )
+        policy_status = "fallback"
+    except (TypeError, ValueError):
+        policy_validated = False
+        fallback_reason = "planner_parse_error"
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        if candidate is not None:
+            candidate = policy.validate(
+                request=request,
+                candidate=candidate,
+                effective_scope=scope,
+            )
+        policy_status = "fallback"
+
+    return (
+        {
+            "policy_status": policy_status,
+            "fallback_reason": (
+                fallback_reason
+                if candidate is not None
+                else "no_safe_tool_arguments"
+            ),
+            "selected_specialists": (
+                [step.specialist_id for step in candidate.steps]
+                if candidate is not None
+                else []
+            ),
+            "selected_tools": (
+                [
+                    call.tool
+                    for step in candidate.steps
+                    for call in step.tool_calls
+                ]
+                if candidate is not None
+                else []
+            ),
+            # Shadow deliberately does not know a canonical execution status:
+            # obtaining one would repeat external tool/model I/O.
+            "status": None,
+            "executed": False,
+        },
+        policy_validated,
+    )
+
+
+def _execute_retained_compatibility(
+    *,
+    payload: CanonicalInvestigationPayload,
+    request: CanonicalInvestigationRequest,
+    context: Any,
+    scope: Scope,
+    principal: Any,
+) -> OrchestrationResult:
+    """Serve the retained deterministic investigation path on the v2 wire."""
+
+    requested_scope = OrchestrationPolicy().validate_request(request, scope)
+    hint_tool = payload.hint.tool if payload.hint is not None else None
+    if hint_tool and hint_tool not in {
+        str(item.get("name") or "") for item in tool_catalog()
+    }:
+        raise PolicyViolation("unknown_tool", hint_tool)
+
+    store = investigation_thread_store()
+    if request.thread_id:
+        thread = store.authorize(
+            request.thread_id,
+            principal.subject,
+            requested_scope,
+            expected_revision=request.expected_thread_revision,
+        )
+    else:
+        thread = store.create(principal.subject, requested_scope)
+    investigation = run_investigation(
+        request.question,
+        context=context,
+        scope=requested_scope,
+        principal=principal,
+        hint_tool=hint_tool,
+        hint_args=(
+            dict(payload.hint.arguments)
+            if payload.hint is not None
+            else None
+        ),
+        page_kind=f"{request.snapshot.page_kind}_page",
+    )
+
+    tool_results: list[dict[str, Any]] = []
+    citations: list[Citation] = []
+    next_revision = thread.revision + 1
+    for call_index, call in enumerate(investigation.calls):
+        call_id = (
+            f"{thread.thread_id}:rev-{next_revision}:compatibility:"
+            f"{call_index}:{call.tool}"
+        )
+        tool_results.append(
+            {
+                "call_id": call_id,
+                # The retained planner selects tools directly; it does not
+                # claim a policy-selected canonical specialist.
+                "specialist_id": "",
+                "tool": call.tool,
+                "arguments": dict(call.arguments),
+                **call.result.to_dict(),
+            }
+        )
+        citations.extend(
+            Citation(
+                citation_id=f"tool:{call_id}:{evidence_index}",
+                source=(
+                    evidence.source_engine
+                    if not evidence.source_table
+                    else f"{evidence.source_engine}:{evidence.source_table}"
+                ),
+                status=call.result.status,
+                observed_at=evidence.timestamp,
+                resource_id=evidence.resource_id,
+            )
+            for evidence_index, evidence in enumerate(call.result.evidence)
+        )
+
+    result = OrchestrationResult(
+        status=investigation.fact_status,
+        policy_status="fallback",
+        fallback_reason="compatibility_rollout",
+        selected_specialists=[],
+        selected_tools=[call.tool for call in investigation.calls],
+        tool_results=tool_results,
+        uncertainty=list(investigation.warnings),
+        coverage=request.snapshot.coverage,
+        citations=citations,
+        thread_id=thread.thread_id,
+        thread_revision=next_revision,
+        synthesis={
+            "status": (
+                "compatibility"
+                if investigation.answer is not None
+                else "degraded"
+            ),
+            "reason": "retained_compatibility",
+            "domain_count": 0,
+            "claims": [],
+            "warning": "",
+            "compatibility_answer": investigation.answer,
+        },
+    )
+    updated = store.append(
+        thread.thread_id,
+        principal.subject,
+        requested_scope,
+        {
+            "question": request.question,
+            **result.model_dump(mode="json"),
+        },
+        expected_revision=thread.revision,
+    )
+    return result.model_copy(update={"thread_revision": updated.revision})
+
+
+def _shadow_comparison(
+    *,
+    compatibility: OrchestrationResult,
+    canonical: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare executed compatibility metadata with a no-I/O canonical preview."""
+
+    compatibility_metadata = {
+        "policy_status": "retained_compatibility",
+        "fallback_reason": compatibility.fallback_reason,
+        # The retained planner has no canonical specialist-policy concept.
+        "selected_specialists": None,
+        "selected_tools": list(compatibility.selected_tools),
+        "status": compatibility.status,
+        "executed": True,
+    }
+    matches: dict[str, bool | None] = {
+        "policy_status": (
+            compatibility_metadata["policy_status"]
+            == canonical["policy_status"]
+        ),
+        "selected_specialists": None,
+        "selected_tools": (
+            compatibility_metadata["selected_tools"]
+            == canonical["selected_tools"]
+        ),
+        # A canonical result was intentionally not executed in shadow.
+        "status": None,
+    }
+    return {
+        "compatibility": compatibility_metadata,
+        "canonical": dict(canonical),
+        "matches": matches,
+        "divergent_fields": [
+            field
+            for field, matches_value in matches.items()
+            if matches_value is False
+        ],
+    }
+
+
 def _filter_scoped(value: Any, scope: Scope) -> Any:
     """Recursively drop entities the caller is not entitled to see.
 
@@ -467,7 +710,7 @@ def ask(payload: CopilotRequest, context: Context, scope: ReadScope) -> dict[str
     warnings: list[str] = []
 
     try:
-        subscription_ids = list(scope.values("subscription"))
+        subscription_ids = live_subscription_ids(context, scope)
         live_search = question.casefold().strip().startswith("show list of") and (
             "vm" in question.casefold() or "server" in question.casefold()
         )
@@ -679,7 +922,7 @@ def investigate(
     question = payload.question.strip()
     started = time.monotonic()
 
-    if canonical_orchestration_enabled():
+    if canonical_orchestration_enabled(stable_key=principal.subject):
         return _investigate_via_canonical(
             question,
             started=started,
@@ -987,7 +1230,7 @@ def investigate_context(
         ) from exc
     try:
         if (
-            canonical_orchestration_enabled()
+            canonical_orchestration_enabled(stable_key=principal.subject)
             and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
         ):
             ledger = _run_context_via_canonical(
@@ -1005,7 +1248,7 @@ def investigate_context(
                 principal_subject=principal.subject,
                 principal=principal,
             )
-            if canonical_orchestration_enabled():
+            if canonical_orchestration_enabled(stable_key=principal.subject):
                 ledger.setdefault("warnings", []).append(
                     f"Canonical context adapter unavailable for {snapshot.page_kind}; "
                     "used the explicit legacy rollback path."
@@ -1060,75 +1303,277 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     try:
-        selector = _inventory_selector(browser_snapshot)
+        resolved_domains: dict[
+            tuple[str, str, str],
+            tuple[dict[str, Any], DomainEntityRef],
+        ] = {}
+
+        def resolve_domain_entity(
+            entity: DomainEntityRef,
+        ) -> Mapping[str, Any] | None:
+            key = (
+                entity.namespace.casefold(),
+                entity.kind.casefold(),
+                entity.source_key.casefold(),
+            )
+            cached = resolved_domains.get(key)
+            if cached is not None:
+                return cached[0]
+            semantic = context.semantic()
+            try:
+                entity_id = semantic.indexes.resolve(entity.source_key)
+            except (LookupError, ValueError):
+                return None
+            public = semantic.indexes.public(entity_id)
+            entity_type = str(public.get("entity_type") or "").strip()
+            resolved_scope = scope_attributes(public)
+            if not entity_type or not resolved_scope:
+                return None
+            resolution = {
+                "namespace": "semantic",
+                "kind": entity_type,
+                "source_key": entity_id,
+                "scope": resolved_scope,
+            }
+            resolved_domains[key] = (
+                resolution,
+                DomainEntityRef(
+                    type="domain",
+                    namespace="semantic",
+                    kind=entity_type,
+                    source_key=entity_id,
+                ),
+            )
+            return resolution
+
+        # The strict Pydantic contract above validates every browser row and
+        # byte/list bound. Resolve every domain identity against the server's
+        # semantic index before either planning or retained synthesis.
+        canonical_browser_snapshot = (
+            canonicalize_snapshot_v2(
+                browser_snapshot,
+                effective_scope=scope,
+                domain_resolver=resolve_domain_entity,
+            )
+            if browser_snapshot.page_kind != "inventory"
+            else None
+        )
+        planning_entities: list[AzureEntityRef | DomainEntityRef] = []
+        planning_entity_ids: set[str] = set()
+        for entity in [
+            *browser_snapshot.selected_entities,
+            *[
+                (
+                    item.entity
+                    if isinstance(item.entity, AzureEntityRef)
+                    else AzureEntityRef(type="azure", resource_id=item.resource_id)
+                )
+                for item in browser_snapshot.evidence
+                if (
+                    item.selected or item.direct
+                )
+                and (
+                    isinstance(item.entity, AzureEntityRef)
+                    or item.resource_id.startswith("/")
+                )
+            ],
+        ]:
+            if isinstance(entity, DomainEntityRef):
+                resolved = resolved_domains.get(
+                    (
+                        entity.namespace.casefold(),
+                        entity.kind.casefold(),
+                        entity.source_key.casefold(),
+                    )
+                )
+                if resolved is None:
+                    resolution = resolve_domain_entity(entity)
+                    if (
+                        resolution is None
+                        or not scope.matches(resolution["scope"])
+                    ):
+                        raise ValueError(
+                            "snapshot entity is outside the effective read scope"
+                        )
+                    resolved = resolved_domains.get(
+                        (
+                            entity.namespace.casefold(),
+                            entity.kind.casefold(),
+                            entity.source_key.casefold(),
+                        )
+                    )
+                if resolved is None:
+                    raise ValueError("snapshot domain entity could not be resolved")
+                entity = resolved[1]
+            if isinstance(entity, AzureEntityRef):
+                key = f"azure:{entity.resource_id.casefold()}"
+            else:
+                key = (
+                    f"domain:{entity.namespace.casefold()}:"
+                    f"{entity.kind.casefold()}:{entity.source_key.casefold()}"
+                )
+            if key in planning_entity_ids:
+                continue
+            planning_entity_ids.add(key)
+            planning_entities.append(entity)
+            if len(planning_entities) == 50:
+                break
+        planning_snapshot = browser_snapshot.model_copy(
+            update={
+                "page_kind": browser_snapshot.page_kind,
+                "coverage": browser_snapshot.coverage.model_copy(
+                    update={"complete": False}
+                ),
+                "freshness": [
+                    item.model_copy(update={"status": "unavailable"})
+                    for item in browser_snapshot.freshness
+                ],
+                "selected_entities": planning_entities,
+                "evidence": [],
+                "material_claims": [],
+            }
+        )
+        if browser_snapshot.page_kind == "inventory":
+            canonical_browser_snapshot = canonicalize_snapshot_v2(
+                planning_snapshot,
+                effective_scope=scope,
+                domain_resolver=resolve_domain_entity,
+            )
     except (TypeError, ValueError) as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
             str(exc),
-            details={"field": "snapshot.evidence"},
+            details={"field": "snapshot"},
         ) from exc
     request = request.model_copy(
         update={
-            "snapshot": browser_snapshot.model_copy(
-                update={
-                    "coverage": browser_snapshot.coverage.model_copy(
-                        update={"complete": False}
-                    ),
-                    "freshness": [
-                        item.model_copy(update={"status": "unavailable"})
-                        for item in browser_snapshot.freshness
-                    ],
-                    # Browser rows select relevant governed tools but are never
-                    # promoted into server citations or persisted as authority.
-                    "evidence": [],
-                }
-            )
+            # Only scope-validated Azure identities survive into planning.
+            # Browser facts remain non-authoritative and are passed separately
+            # for citation-closed synthesis.
+            "snapshot": planning_snapshot
         }
     )
-    specialist_id = (
-        payload.hint.specialist_id
-        if payload.hint is not None
-        else INVENTORY_DATA_HEALTH_ID
-    )
-    tool = payload.hint.tool if payload.hint is not None else "inventory_resources"
-    derived_arguments = selector.tool_arguments()
-    hint_arguments = dict(payload.hint.arguments) if payload.hint is not None else {}
-    selector_conflict = any(
-        key in hint_arguments and hint_arguments[key] != value
-        for key, value in derived_arguments.items()
-    )
-    candidate_arguments = {
-        **hint_arguments,
-        **derived_arguments,
-        **({"selector_conflict": True} if selector_conflict else {}),
-    }
-    planner = lambda _request: CandidatePlan(
-        steps=[
-            SpecialistStep(
-                specialist_id=specialist_id,
-                tool_calls=[
-                    ToolCallCandidate(
-                        tool=tool,
-                        arguments=candidate_arguments,
-                        citation_ids=[COVERAGE_CITATION_ID],
-                    )
-                ],
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
+    if browser_snapshot.page_kind == "inventory":
+        try:
+            selector = _inventory_selector(browser_snapshot)
+        except (TypeError, ValueError) as exc:
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                str(exc),
+                details={"field": "snapshot.evidence"},
+            ) from exc
+        specialist_id = (
+            payload.hint.specialist_id
+            if payload.hint is not None
+            else INVENTORY_DATA_HEALTH_ID
+        )
+        tool = (
+            payload.hint.tool
+            if payload.hint is not None
+            else "inventory_resources"
+        )
+        derived_arguments = selector.tool_arguments()
+        hint_arguments = (
+            dict(payload.hint.arguments) if payload.hint is not None else {}
+        )
+        selector_conflict = any(
+            key in hint_arguments and hint_arguments[key] != value
+            for key, value in derived_arguments.items()
+        )
+        candidate_arguments = {
+            **hint_arguments,
+            **derived_arguments,
+            **({"selector_conflict": True} if selector_conflict else {}),
+        }
+        planner = lambda _request: CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id=specialist_id,
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool=tool,
+                            arguments=candidate_arguments,
+                            citation_ids=[COVERAGE_CITATION_ID],
+                        )
+                    ],
+                )
+            ],
+            estimated_tokens=0,
+            max_wall_seconds=5,
+        )
+        executor = _inventory_executor(selector)
+    else:
+        planner = (
+            (
+                lambda _request: CandidatePlan(
+                    steps=[
+                        SpecialistStep(
+                            specialist_id=payload.hint.specialist_id,
+                            tool_calls=[
+                                ToolCallCandidate(
+                                    tool=payload.hint.tool,
+                                    arguments=dict(payload.hint.arguments),
+                                    citation_ids=[COVERAGE_CITATION_ID],
+                                )
+                            ],
+                        )
+                    ],
+                    estimated_tokens=0,
+                    max_wall_seconds=5,
+                )
             )
-        ],
-        estimated_tokens=0,
-        max_wall_seconds=5,
-    )
+            if payload.hint is not None
+            else (
+                lambda governed_request: build_deterministic_fallback(
+                    governed_request,
+                    load_specialist_manifest(),
+                )
+            )
+        )
+
+        def executor(
+            name: str,
+            arguments: Mapping[str, Any],
+            *,
+            context: Any,
+            scope: Any,
+        ) -> ToolResult:
+            try:
+                return call_tool(
+                    name,
+                    arguments,
+                    context=context,
+                    scope=scope,
+                    principal=principal,
+                )
+            except (AttributeError, LookupError, RuntimeError, TypeError, ValueError):
+                return ToolResult(
+                    status=STATUS_UNAVAILABLE,
+                    warning="Tool unavailable in canonical page mode",
+                )
 
     try:
-        result = OrchestrationService(
-            planner=planner,
-            executor=_inventory_executor(selector),
-        ).execute(
-            request,
-            context=context,
-            principal_subject=principal.subject,
-            effective_scope=scope,
-        )
+        if rollout.canonical_enabled:
+            result = OrchestrationService(
+                planner=planner,
+                executor=executor,
+            ).execute(
+                request,
+                context=context,
+                principal_subject=principal.subject,
+                effective_scope=scope,
+                selection_snapshot=browser_snapshot,
+                canonical_selection_snapshot=canonical_browser_snapshot,
+            )
+        else:
+            result = _execute_retained_compatibility(
+                payload=payload,
+                request=request,
+                context=context,
+                scope=scope,
+                principal=principal,
+            )
     except PolicyViolation as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
@@ -1152,7 +1597,38 @@ def investigate_canonical(
             details={"field": "thread_id"},
         ) from exc
 
+    shadow_validated = False
+    shadow_reason = ""
+    comparison: dict[str, Any] | None = None
+    if rollout.shadow_enabled:
+        canonical_preview, shadow_validated = _canonical_plan_preview(
+            planner=planner,
+            request=request,
+            scope=scope,
+        )
+        comparison = _shadow_comparison(
+            compatibility=result,
+            canonical=canonical_preview,
+        )
+        if not shadow_validated:
+            shadow_reason = str(canonical_preview["fallback_reason"])
+        elif comparison["divergent_fields"]:
+            shadow_reason = (
+                "diverged:" + ",".join(comparison["divergent_fields"])
+            )
+        else:
+            shadow_reason = "accepted"
+
     result_data = result.model_dump(mode="json")
+    result_data["rollout"] = {
+        "mode": rollout.mode,
+        "canonical_enabled": rollout.canonical_enabled,
+        "shadow_enabled": rollout.shadow_enabled,
+        "shadow_validated": shadow_validated,
+        "shadow_reason": shadow_reason,
+    }
+    if comparison is not None:
+        result_data["rollout"]["comparison"] = comparison
     result_data["citations"] = [
         citation
         for citation in result_data["citations"]
@@ -1175,7 +1651,7 @@ def history(session_id: str, context: Context, scope: ReadScope, principal: Curr
                 principal_subject=principal.subject,
                 scope=scope,
             )
-            if canonical_orchestration_enabled()
+            if canonical_orchestration_enabled(stable_key=principal.subject)
             else conversation_store().history(session_id, principal.subject)
         )
     except ThreadStoreUnavailable as exc:

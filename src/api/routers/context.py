@@ -8,11 +8,15 @@ projection of the knowledge layer rather than a second source of truth.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
-from ..dependencies import Context, ReadScope
+from intelligence.governance import IdentityRiskEngine
+
+from ..dependencies import Context, ReadScope, live_subscription_ids
 from ..errors import not_found
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
@@ -20,6 +24,13 @@ from ..scope import Scope, scope_attributes
 router = APIRouter(prefix="/api/v1", tags=["context"])
 
 SOURCE_ENGINE = "semantic.SemanticEngine"
+IDENTITY_ENGINE = "intelligence.governance.IdentityRiskEngine"
+GOVERNANCE_SOURCE_TABLE = "connection_generation_entities"
+_USER_ASSIGNED_MANAGED_IDENTITY_ID = re.compile(
+    r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
+    r"microsoft\.managedidentity/userassignedidentities/[^/]+/?$",
+    flags=re.IGNORECASE,
+)
 
 
 def _evidence(
@@ -85,6 +96,74 @@ def _scoped(context: dict[str, Any], scope: Scope) -> dict[str, Any]:
                     }
             visible["scope_limited"] = True
     return visible
+
+
+def _is_identity_identifier(value: str) -> bool:
+    """Return whether ``value`` is an exact Entra object or managed identity ID."""
+    candidate = value.strip()
+    if _USER_ASSIGNED_MANAGED_IDENTITY_ID.fullmatch(candidate):
+        return True
+    try:
+        UUID(candidate)
+    except ValueError:
+        return False
+    return True
+
+
+def _identity_identifier_search(
+    context: Context,
+    scope: Scope,
+    identifier: str,
+) -> tuple[dict[str, Any], Evidence, list[str]]:
+    """Search the bounded, scope-pinned identity projection by exact ID."""
+    snapshot = context.governance_snapshot(scope)
+    engine = IdentityRiskEngine(
+        role_assignments=snapshot.rows("RoleAssignment"),
+        role_definitions=snapshot.rows("RoleDefinition"),
+        managed_identities=snapshot.rows("ManagedIdentity"),
+    )
+    expected = identifier.strip().casefold()
+    candidates = [
+        record.to_dict() for record in engine.principals()
+    ] + engine.non_human_identities()
+    matches: dict[str, dict[str, Any]] = {}
+    for record in candidates:
+        identifiers = {
+            str(record.get(field) or "").strip().casefold()
+            for field in ("principal_id", "resource_id")
+        }
+        if expected not in identifiers:
+            continue
+        principal_id = str(record.get("principal_id") or "")
+        resource_id = str(record.get("resource_id") or "")
+        key = resource_id.casefold() or principal_id.casefold()
+        matches[key] = {
+            **record,
+            "id": resource_id or principal_id,
+            "name": str(record.get("name") or principal_id),
+            "entity_type": str(record.get("principal_type") or "IdentityPrincipal"),
+            "source": GOVERNANCE_SOURCE_TABLE,
+            "freshness": snapshot.observed_at,
+        }
+    results = list(matches.values())
+    return (
+        {
+            "query": identifier,
+            "intent": "identity_identifier_lookup",
+            "results": results,
+            "count": len(results),
+            "freshness": snapshot.observed_at,
+            "truncated": False,
+        },
+        Evidence(
+            source_engine=IDENTITY_ENGINE,
+            source_table=GOVERNANCE_SOURCE_TABLE,
+            resource_id=identifier,
+            confidence=CONFIDENCE_HIGH,
+            timestamp=snapshot.observed_at,
+        ),
+        list(snapshot.warnings),
+    )
 
 
 def _authorize_subject(context: dict[str, Any], scope: Scope, subject: str) -> None:
@@ -163,7 +242,15 @@ def search(
         ),
     ),
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    if _is_identity_identifier(q):
+        result, evidence, warnings = _identity_identifier_search(context, scope, q)
+        return envelope(
+            result,
+            evidence=evidence,
+            scope=scope.to_dict(),
+            warnings=warnings,
+        )
+    subscription_ids = live_subscription_ids(context, scope)
     normalized_query = q.casefold().strip()
     live_search = normalized_query.startswith("show list of") and (
         "vm" in normalized_query or "server" in normalized_query
@@ -191,7 +278,7 @@ def search(
 def business_service_context(
     name: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_business_service_provider is not None and subscription_ids:
         result = context.hybrid_business_service_provider(name, subscription_ids)
     else:
@@ -267,7 +354,7 @@ def subscription_connection_context(
 def resource_context(
     resource_id: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_resource_provider is not None and subscription_ids:
         result = context.hybrid_resource_provider(resource_id, subscription_ids)
     else:
@@ -283,7 +370,7 @@ def resource_context(
 
 @router.get("/risk/{subject}", summary="Aggregated risk for a subject")
 def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_risk_provider is not None and subscription_ids:
         result = context.hybrid_risk_provider(subject, subscription_ids)
     else:
@@ -299,7 +386,7 @@ def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, 
 
 @router.get("/impact/{subject}", summary="Blast radius for a subject")
 def impact_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_impact_provider is not None and subscription_ids:
         result = context.hybrid_impact_provider(subject, subscription_ids)
     else:

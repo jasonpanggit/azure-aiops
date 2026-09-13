@@ -592,6 +592,8 @@ class InvestigationThreadStore:
         thread_id: str,
         principal_subject: str,
         current_scope: Scope,
+        *,
+        expected_revision: int | None = None,
     ) -> InvestigationThread:
         """Return an authorized thread without revealing mismatch details.
 
@@ -602,6 +604,11 @@ class InvestigationThreadStore:
         with self._lock:
             now = self._clock()
             record = self._resolve(thread_id, principal_subject, current_scope, now)
+            if (
+                expected_revision is not None
+                and expected_revision != record.revision
+            ):
+                raise ThreadRevisionConflict(current_revision=record.revision)
             for attempt in range(2):
                 self._age_retained_turns(record)
                 record.scope = current_scope
@@ -614,12 +621,22 @@ class InvestigationThreadStore:
                     record = self._resolve(
                         thread_id, principal_subject, current_scope, now
                     )
+                    if (
+                        expected_revision is not None
+                        and expected_revision != record.revision
+                    ):
+                        raise ThreadRevisionConflict(
+                            current_revision=record.revision
+                        ) from None
                     if attempt == 1:
                         raise ThreadRevisionConflict(
                             current_revision=record.revision
                         ) from None
                     continue
-                return record
+                # Callers retain this value while external tools and models run.
+                # Never let a later in-process append mutate the revision they
+                # authorized before that work began.
+                return deepcopy(record)
             raise AssertionError("authorization retry loop terminated unexpectedly")
 
     def append(

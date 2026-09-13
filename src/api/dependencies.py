@@ -22,7 +22,7 @@ from .auth import Authenticator
 from .errors import ApiError, ErrorCode
 from .providers import ProviderRuntime, ProviderUnavailableError
 from .rbac import Authorizer, Principal
-from .scope import Scope
+from .scope import Scope, subscription_ids_for_scope
 from .telemetry import ApiTelemetry
 
 
@@ -197,6 +197,33 @@ class ApiContext:
     def semantic(self) -> SemanticEngine:
         return self.resolve_provider("semantic")
 
+    def governance_snapshot(
+        self,
+        scope: Scope,
+        *,
+        require_generation: bool = True,
+    ) -> Any:
+        """Resolve one generation-pinned governance snapshot within ``scope``."""
+        provider = (
+            self.governance_generation_provider(scope)
+            if self.governance_generation_provider is not None
+            else self.resolve_provider("governance", optional=True)
+        )
+        if provider is None:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Governance data is unavailable because no connection has synced yet",
+                {"capability": "governance", "provider_state": "unavailable"},
+            )
+        snapshot = provider.scoped(scope)
+        if require_generation and not snapshot.generation_available:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Governance data is unavailable because no active connection has synced yet",
+                {"capability": "governance", "provider_state": "unavailable"},
+            )
+        return snapshot
+
     def inventory_read_port(self) -> Any:
         """Resolve the scope-enforcing identity read port.
 
@@ -214,6 +241,26 @@ def get_context(request: Request) -> ApiContext:
 
 
 Context = Annotated[ApiContext, Depends(get_context)]
+
+
+def live_subscription_ids(
+    context: ApiContext,
+    scope: Scope,
+    *,
+    default_all: bool = False,
+) -> list[str]:
+    """Map a page's authorized scope to active onboarded Azure connections."""
+    if (
+        not default_all
+        and not scope.values("subscription")
+        and not scope.values("subscription_connection")
+    ):
+        return []
+    return subscription_ids_for_scope(
+        scope,
+        context.onboarding.registry.list(include_disabled=False),
+        default_all=default_all,
+    )
 
 
 def get_principal(request: Request, context: Context) -> Principal:

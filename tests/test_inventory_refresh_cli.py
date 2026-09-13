@@ -6,6 +6,45 @@ from pathlib import Path
 from deltalake import DeltaTable
 
 from onboarding import cli
+from onboarding.inventory_refresh import run_inventory_refresh
+
+
+def test_selected_connection_refresh_uses_registered_connection_orchestrator(
+    monkeypatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def run_registered(config_path, *, fabric_config_path="", connection_id=""):
+        captured.update(
+            config_path=config_path,
+            fabric_config_path=fabric_config_path,
+            connection_id=connection_id,
+        )
+        return {"status": "completed"}
+
+    monkeypatch.setattr(
+        "onboarding.inventory_refresh.run_inventory_refresh_all_connections",
+        run_registered,
+    )
+    monkeypatch.setattr(
+        "azure.identity.DefaultAzureCredential",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("selected connection refresh must not use managed identity")
+        ),
+    )
+
+    result = run_inventory_refresh(
+        "config.yaml",
+        fabric_config_path="fabric.yaml",
+        connection_id="conn-selected",
+    )
+
+    assert result == {"status": "completed"}
+    assert captured == {
+        "config_path": "config.yaml",
+        "fabric_config_path": "fabric.yaml",
+        "connection_id": "conn-selected",
+    }
 
 
 def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
@@ -78,8 +117,6 @@ def test_inventory_refresh_cli_publishes_to_configured_local_onelake(
             str(config),
             "--fabric-config",
             str(fabric_config),
-            "--connection-id",
-            "connection-1",
         ]
     ) == 0
 

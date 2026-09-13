@@ -56,12 +56,15 @@ from api.runtime import (
 from api.scope import Scope
 from fabric.dataset_mapper import InventoryDatasetMapper
 from intelligence.inventory.normalization import normalize_os_inventory
-from intelligence.remediation.execution_verifier import ExecutionVerifier
 from network.service import NetworkIntelligenceService
-from onboarding.credentials import KeyVaultSecretWriter
+from onboarding.credentials import (
+    CredentialResolver,
+    EnvironmentSecretProvider,
+    KeyVaultSecretWriter,
+)
 from onboarding.local_seed import DEFAULT_LOCAL_SUBSCRIPTION_ID, seed_local_environment
-from operations.defender_configuration import AzureArmDefenderConfigurationAdapter
-from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
+from onboarding.registry import ConnectionRegistry
+from ontology.subscription_connection import CredentialReference, SubscriptionConnection
 from storage.datasets import DatasetStore as NeutralDatasetStore
 
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
@@ -310,12 +313,15 @@ def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
 
     assert resolved is repeated is expected
     assert build_calls == 1
-    assert _hybrid_vulnerability_cache[
-        (
-            str(runtime_module.aiops_home()),
-            (DEFAULT_LOCAL_SUBSCRIPTION_ID,),
-        )
-    ][0] == 1_045.0
+    assert len(_hybrid_vulnerability_cache) == 1
+    (cache_key, (cached_at, cached_service)), = _hybrid_vulnerability_cache.items()
+    assert cache_key[:2] == (
+        str(runtime_module.aiops_home()),
+        (DEFAULT_LOCAL_SUBSCRIPTION_ID,),
+    )
+    assert len(cache_key) == 3
+    assert cached_at == 1_045.0
+    assert cached_service is expected
     assert captured["semantic"] is None
 
 
@@ -1016,92 +1022,226 @@ def test_managed_network_provider_normalizes_persisted_flow_relationships(
     }
 
 
-def test_azure_patch_runtime_shares_credential_with_execution_verifier(
+def test_subscription_operations_resolve_each_selected_connection_without_reuse(
     monkeypatch,
 ) -> None:
-    credential = object()
-    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
-    monkeypatch.setattr("api.runtime._azure_patch_credential", lambda: credential)
+    connections = [
+        SubscriptionConnection(
+            connection_id=f"conn-{suffix}",
+            name=f"Connection {suffix}",
+            tenant_id=f"tenant-{suffix}",
+            subscription_id=f"sub-{suffix}",
+            credential=CredentialReference(
+                credential_id=f"credential-{suffix}",
+                tenant_id=f"tenant-{suffix}",
+                client_id=f"client-{suffix}",
+                secret_ref=f"env://SECRET_{suffix}",
+            ),
+        )
+        for suffix in ("A", "B")
+    ]
+    built_credentials: list[object] = []
 
-    adapter = _patch_execution_adapter()
-    verifier = _execution_verifier()
+    def credential_factory(**kwargs):
+        credential = SimpleNamespace(client_id=kwargs["client_id"])
+        built_credentials.append(credential)
+        return credential
 
-    assert isinstance(adapter, AzureArmPatchExecutionAdapter)
-    assert isinstance(verifier, ExecutionVerifier)
-    assert adapter._credential is credential
-    assert verifier._credential is credential
-
-
-def test_azure_patch_credential_prefers_service_principal_over_managed_identity(
-    monkeypatch,
-) -> None:
-    """A configured subscription-connection SPN should win over DefaultAzureCredential.
-
-    The managed identity may lack RBAC grants (e.g. Arc ``installPatches``)
-    that the subscription's onboarding service principal already has, so
-    patch execution must prefer the SPN when both are available.
-    """
-    import api.runtime as runtime_module
-
-    monkeypatch.setattr(runtime_module, "_PATCH_EXECUTION_CREDENTIAL", runtime_module._UNSET)
-    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
-    monkeypatch.setenv("AZURE_TENANT_ID", "tenant-x")
-    monkeypatch.setenv("AZURE_SP_CLIENT_ID", "client-x")
-    monkeypatch.setenv("AZURE_SP_CLIENT_SECRET", "secret-x")
-
-    def _fail_default_credential():
-        raise AssertionError("DefaultAzureCredential should not be used when SPN is configured")
-
-    monkeypatch.setattr(
-        "azure.identity.DefaultAzureCredential",
-        _fail_default_credential,
+    onboarding = SimpleNamespace(
+        registry=SimpleNamespace(
+            list=lambda *, include_disabled=False: list(connections)
+        ),
+        resolver=CredentialResolver(
+            provider=EnvironmentSecretProvider(
+                env={"SECRET_A": "secret-a", "SECRET_B": "secret-b"}
+            ),
+            credential_factory=credential_factory,
+        ),
     )
+    observed: dict[str, list[str]] = {
+        "patch": [],
+        "defender": [],
+        "verification": [],
+    }
 
-    credential = runtime_module._azure_patch_credential()
+    class PatchAdapter:
+        def __init__(self, credential) -> None:
+            self.credential = credential
 
-    from azure.identity import ClientSecretCredential
+        def submit(self, _run, _target):
+            observed["patch"].append(self.credential.client_id)
+            return object()
 
-    assert isinstance(credential, ClientSecretCredential)
+    class DefenderAdapter:
+        def __init__(self, credential) -> None:
+            self.credential = credential
 
+        def inspect(self, _request):
+            observed["defender"].append(self.credential.client_id)
+            return {}
 
-def test_azure_patch_credential_falls_back_to_managed_identity_without_spn(
-    monkeypatch,
-) -> None:
-    import api.runtime as runtime_module
+        def submit(self, _snapshot):
+            observed["defender"].append(self.credential.client_id)
+            return object()
 
-    monkeypatch.setattr(runtime_module, "_PATCH_EXECUTION_CREDENTIAL", runtime_module._UNSET)
+    class Verifier:
+        def __init__(self, *, credential) -> None:
+            self.credential = credential
+
+        def verify(self, _record):
+            observed["verification"].append(self.credential.client_id)
+            return {"verifiable": True}
+
     monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
-    for name in ("AZURE_TENANT_ID", "AZURE_SP_CLIENT_ID", "AZURE_SP_CLIENT_SECRET", "TENANT_ID"):
-        monkeypatch.delenv(name, raising=False)
-
-    sentinel = object()
-    monkeypatch.setattr(
-        "azure.identity.DefaultAzureCredential",
-        lambda: sentinel,
-    )
-
-    credential = runtime_module._azure_patch_credential()
-
-    assert credential is sentinel
-
-
-def test_azure_defender_configuration_runtime_shares_verifier_credential(
-    monkeypatch,
-) -> None:
-    credential = object()
     monkeypatch.setenv("AIOPS_DEFENDER_CONFIGURATION_EXECUTION", "azure")
     monkeypatch.setattr(
-        "api.runtime._azure_defender_configuration_credential",
-        lambda: credential,
+        "operations.patching.azure_adapter.AzureArmPatchExecutionAdapter",
+        PatchAdapter,
+    )
+    monkeypatch.setattr(
+        runtime_module, "AzureArmDefenderConfigurationAdapter", DefenderAdapter
+    )
+    monkeypatch.setattr(runtime_module, "ExecutionVerifier", Verifier)
+
+    patch_adapter = _patch_execution_adapter(onboarding)
+    defender_adapter = _defender_configuration_adapter(onboarding)
+    verifier = _execution_verifier(onboarding)
+    assert verifier is not None
+
+    for suffix in ("A", "B"):
+        target = SimpleNamespace(
+            subscription_id=f"sub-{suffix}",
+            subscription_connection=f"conn-{suffix}",
+        )
+        patch_adapter.submit(object(), target)
+        defender_adapter.inspect(
+            {
+                "path": (
+                    f"/subscriptions/sub-{suffix}/providers/"
+                    "Microsoft.Security/pricings/virtualMachines"
+                )
+            }
+        )
+        verifier.verify(
+            {
+                "scope_attributes": {
+                    "subscription": f"sub-{suffix}",
+                    "subscription_connection": f"conn-{suffix}",
+                },
+                "provider_job_id": (
+                    f"https://management.azure.com/subscriptions/sub-{suffix}/"
+                    "providers/Microsoft.Compute/operations/op"
+                ),
+            }
+        )
+
+    assert observed == {
+        "patch": ["client-A", "client-B"],
+        "defender": ["client-A", "client-B"],
+        "verification": ["client-A", "client-B"],
+    }
+    assert len({id(credential) for credential in built_credentials}) == 6
+
+
+def test_subscription_operation_credential_resolution_preserves_request_scope(
+    monkeypatch,
+) -> None:
+    connection = SubscriptionConnection(
+        connection_id="conn-a",
+        name="Connection A",
+        tenant_id="tenant-a",
+        subscription_id="sub-a",
+        credential=CredentialReference(
+            credential_id="credential-a",
+            tenant_id="tenant-a",
+            client_id="client-a",
+            secret_ref="env://SECRET_A",
+        ),
+    )
+    credential_builds: list[str] = []
+    onboarding = SimpleNamespace(
+        registry=SimpleNamespace(
+            list=lambda *, include_disabled=False: [connection]
+        ),
+        resolver=CredentialResolver(
+            provider=EnvironmentSecretProvider(env={"SECRET_A": "secret-a"}),
+            credential_factory=lambda **kwargs: credential_builds.append(
+                kwargs["client_id"]
+            )
+            or object(),
+        ),
+    )
+    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "azure")
+    adapter = _patch_execution_adapter(
+        onboarding,
+        Scope.from_mapping({"subscription": ["sub-a"]}),
     )
 
-    adapter = _defender_configuration_adapter()
-    verifier = _execution_verifier()
+    with pytest.raises(
+        runtime_module.PatchExecutionUnavailable,
+        match="outside the authorized scope",
+    ):
+        adapter.submit(
+            object(),
+            SimpleNamespace(
+                subscription_id="sub-b",
+                subscription_connection="conn-b",
+            ),
+        )
 
-    assert isinstance(adapter, AzureArmDefenderConfigurationAdapter)
-    assert isinstance(verifier, ExecutionVerifier)
-    assert adapter._credential is credential
-    assert verifier._credential is credential
+    assert credential_builds == []
+
+
+def test_network_page_connection_scope_reaches_selected_connection_factory(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    registry = ConnectionRegistry(home)
+    for suffix in ("a", "b"):
+        registry.add(
+            SubscriptionConnection(
+                connection_id=f"conn-{suffix}",
+                name=f"Connection {suffix}",
+                tenant_id=f"tenant-{suffix}",
+                subscription_id=f"sub-{suffix}",
+                credential=CredentialReference(
+                    credential_id=f"credential-{suffix}",
+                    tenant_id=f"tenant-{suffix}",
+                    client_id=f"client-{suffix}",
+                    secret_ref=f"env://SECRET_{suffix.upper()}",
+                ),
+            )
+        )
+    selected_connections: list[str] = []
+
+    class Reader:
+        def query(self, _spec, scope_ids):
+            assert scope_ids == ["sub-b"]
+            return []
+
+    def build_reader(_config, connection, _resolver):
+        selected_connections.append(connection.connection_id)
+        return Reader()
+
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setattr(runtime_module, "build_connection_arg_client", build_reader)
+    _hybrid_network_cache.clear()
+    client = TestClient(create_app(build_context()), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/network/topology",
+        params={
+            "detail": "summary",
+            "subscription_connection": "conn-b",
+        },
+        headers={"Authorization": "Bearer demo-token-0123456789abcdef"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert selected_connections == ["conn-b"]
 
 
 def test_default_auth_mode_requires_configured_tokens():
@@ -1605,7 +1745,11 @@ def test_hybrid_remediation_provider_resolves_one_generation_per_request_window(
     # Rewrite the cached timestamp to simulate the TTL having elapsed --
     # equivalent to monkeypatching time.time() but touches only this one
     # cache entry rather than every other TTL-cached provider in the module.
-    cache_key = (str(aiops_home()), tuple(subscription_ids))
+    cache_key = next(
+        key
+        for key in _hybrid_remediation_cache
+        if key[:2] == (str(aiops_home()), tuple(subscription_ids))
+    )
     cached_at, cached_value = _hybrid_remediation_cache[cache_key]
     _hybrid_remediation_cache[cache_key] = (
         cached_at - _HYBRID_VULNERABILITY_CACHE_TTL_SECONDS - 1,

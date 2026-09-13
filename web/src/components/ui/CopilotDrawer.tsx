@@ -10,11 +10,11 @@ import {
   useOptionalThreadContinuity,
 } from "@/lib/copilot/thread-context";
 import { useScope } from "@/lib/scope-context";
-import { copilotApi } from "@/lib/services";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
 import { buildCopilotSnapshot } from "@/lib/services";
 import {
   investigateCanonical,
+  normalizeCopilotSnapshotV2,
   type CanonicalCopilotCitation,
   type CanonicalCopilotResult,
   type CopilotEvidenceSnapshotV2,
@@ -89,6 +89,7 @@ const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 const WIDE_WIDTH = 760;
 const THREAD_RESET_MESSAGE = "This investigation is no longer available. Start a new investigation to continue.";
+const THREAD_CONFLICT_MESSAGE = "This investigation changed in another request. Start a new investigation to continue.";
 const INERT_THREAD_CONTINUITY: ThreadContinuityContextValue = {
   thread: null,
   requiresServerRevalidation: false,
@@ -118,12 +119,6 @@ function stableJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function isCanonicalSnapshot(
-  snapshot: CopilotDrawerProps["snapshot"],
-): snapshot is CopilotEvidenceSnapshotV2 {
-  return snapshot?.version === "2";
 }
 
 function serverEvidenceState(observationStatus: unknown): {
@@ -168,7 +163,9 @@ export function CopilotDrawer({
   const providedThreadContinuity = useOptionalThreadContinuity();
   const threadContinuity = providedThreadContinuity ?? INERT_THREAD_CONTINUITY;
   const effectiveRequestedScope = requestedScope ?? scope;
-  const canonicalSnapshot = isCanonicalSnapshot(snapshot) ? snapshot : null;
+  const canonicalSnapshot = snapshot
+    ? normalizeCopilotSnapshotV2(snapshot)
+    : null;
   const contextFingerprint = stableJson({
     scope: effectiveRequestedScope,
     snapshot: snapshot ?? null,
@@ -181,7 +178,6 @@ export function CopilotDrawer({
   const [lastSnapshot, setLastSnapshot] = useState<CopilotDrawerProps["snapshot"] | null>(null);
   const [lastQuestion, setLastQuestion] = useState("");
   const [width, setWidth] = useState(MIN_WIDTH);
-  const sessionId = useRef(`drawer-${Math.random().toString(36).slice(2)}-${Date.now()}`);
   const contextFingerprintRef = useRef(contextFingerprint);
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
@@ -287,123 +283,121 @@ export function CopilotDrawer({
     );
     setLastQuestion(nextQuestion);
     try {
-      if (canonicalSnapshot) {
-        setLastSnapshot(canonicalSnapshot);
-        const envelope = await investigateCanonical(
-            {
-              contract_version: "1",
-              question: nextQuestion,
-              requested_scope: effectiveRequestedScope,
-              snapshot: canonicalSnapshot,
-              ...(threadContinuity.thread
-                ? { thread_id: threadContinuity.thread.threadId }
-                : {}),
-              ...(specialistId && tool
-                ? {
-                    hint: {
-                      specialist_id: specialistId,
-                      tool,
-                      arguments: toolArguments ?? {},
-                    },
-                  }
-                : {}),
-            },
-            effectiveRequestedScope,
-          );
-        if (!requestIsCurrent()) return;
-        const result = envelope.data;
-        if (!threadContinuity.acceptServerState(
-          {
-            threadId: result.thread_id,
-            threadRevision: result.thread_revision,
-          },
-          submittedContinuityGeneration,
-        )) {
-          return;
-        }
-        setTurns((current) => [
-          ...current,
-          {
+      const submittedSnapshot = canonicalSnapshot
+        ?? normalizeCopilotSnapshotV2(
+          buildCopilotSnapshot({
+            pageKind: "resource",
+            pageId: "legacy-drawer",
+            scope,
             question: nextQuestion,
-            toolCalls: result.tool_results.map((call) => ({
-              tool: call.tool,
-              arguments: {},
-              status: call.status === "partial" ? "unavailable" : call.status,
-              data: call.data,
-              evidence: [],
-              warning: call.warning,
-            })),
-            evidence: envelope.evidence ?? [],
-            knowledgeVersion: envelope.knowledge_version,
-            warnings: uniqueWarnings(envelope.warnings),
-            policyStatus: result.policy_status,
-            fallbackReason: result.fallback_reason,
-            uncertainty: result.uncertainty,
-            coverage: result.coverage,
-            citations: result.citations,
-            snapshot: canonicalSnapshot,
-          },
-        ]);
-        setStage(result.policy_status === "fallback" ? "fallback" : result.status === "partial" ? "partial" : "idle");
+          }),
+        );
+      setLastSnapshot(submittedSnapshot);
+      const envelope = await investigateCanonical(
+        {
+          contract_version: "1",
+          question: nextQuestion,
+          requested_scope: effectiveRequestedScope,
+          snapshot: submittedSnapshot,
+          ...(threadContinuity.thread
+            ? {
+                thread_id: threadContinuity.thread.threadId,
+                expected_thread_revision: threadContinuity.thread.threadRevision,
+              }
+            : {}),
+          ...(specialistId && tool
+            ? {
+                hint: {
+                  specialist_id: specialistId,
+                  tool,
+                  arguments: toolArguments ?? {},
+                },
+              }
+            : {}),
+        },
+        effectiveRequestedScope,
+      );
+      if (!requestIsCurrent()) return;
+      const result = envelope.data;
+      if (!threadContinuity.acceptServerState(
+        {
+          threadId: result.thread_id,
+          threadRevision: result.thread_revision,
+        },
+        submittedContinuityGeneration,
+      )) {
         return;
       }
-      const legacySnapshot = snapshot?.version === "1" ? snapshot : undefined;
-      const submittedSnapshot = legacySnapshot
-        ? { ...legacySnapshot, question: nextQuestion }
-        : buildCopilotSnapshot({ pageKind: "resource", pageId: "legacy-drawer", scope, question: nextQuestion });
-      setLastSnapshot(submittedSnapshot);
-      const envelope = legacySnapshot
-        ? await copilotApi.investigateContext(submittedSnapshot)
-        : await copilotApi.investigate(nextQuestion, scope, { sessionId: sessionId.current, tool, toolArguments });
-      if (!requestIsCurrent()) return;
-      const result = envelope.data as typeof envelope.data & {
-        answer?: CopilotAnswer | null;
-        synthesis?: {
-          mode?: "foundry" | "deterministic";
-          narration?: string;
-          warning?: string;
-        } | null;
-        synthesis_mode?: "foundry" | "deterministic";
-        synthesis_agent?: string;
-        findings?: CopilotContextFinding[];
-        stages?: string[];
-      };
-      const contextualNarration = result.synthesis?.narration?.trim()
-        ? {
-            text: result.synthesis.narration,
-            agent_name: result.synthesis_agent || (result.synthesis.mode === "foundry" ? "Foundry specialist" : "deterministic"),
-            model: result.synthesis.mode === "foundry" ? "Foundry" : "Deterministic",
-            grounded: true,
-          }
-        : null;
-      const narration = result.answer ?? contextualNarration;
-      const synthesisMode = result.synthesis_mode ?? result.synthesis?.mode;
       setTurns((current) => [
         ...current,
         {
           question: nextQuestion,
-          toolCalls: envelope.data.tool_calls,
-          narration,
+          toolCalls: result.tool_results.map((call) => ({
+            tool: call.tool,
+            arguments: {},
+            status: call.status === "partial" ? "unavailable" : call.status,
+            data: call.data,
+            evidence: [],
+            warning: call.warning,
+          })),
           evidence: envelope.evidence ?? [],
           knowledgeVersion: envelope.knowledge_version,
-          warnings: uniqueWarnings(envelope.warnings, result.warnings),
-          findings: narration ? undefined : result.findings,
-          synthesisMode,
+          warnings: uniqueWarnings(envelope.warnings),
+          policyStatus: result.policy_status,
+          fallbackReason: result.fallback_reason,
+          uncertainty: result.uncertainty,
+          coverage: result.coverage,
+          citations: result.citations,
+          narration: result.synthesis?.claims?.length
+            ? {
+                text: result.synthesis.claims
+                  .map(
+                    (claim) =>
+                      `${claim.summary}\n\nEvidence: ${claim.evidence_refs.join(", ")}`,
+                  )
+                  .join("\n\n"),
+                agent_name:
+                  result.synthesis.status === "synthesized"
+                    ? "Executive synthesis"
+                    : "Deterministic page evidence",
+                model:
+                  result.synthesis.status === "synthesized"
+                    ? "Foundry"
+                    : "Deterministic",
+                grounded: true,
+              }
+            : null,
+          synthesisMode:
+            result.synthesis?.status === "synthesized"
+              ? "foundry"
+              : "deterministic",
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(synthesisMode === "deterministic" ? "fallback" : result.findings?.some((finding) => finding.status !== "verified") ? "partial" : "idle");
+      setStage(result.policy_status === "fallback"
+        ? "fallback"
+        : result.status === "partial"
+          ? "partial"
+          : "idle");
     } catch (reason) {
       if (!requestIsCurrent()) return;
       const isThreadReset = (
-        canonicalSnapshot
-        && reason instanceof ApiError
+        reason instanceof ApiError
         && reason.status === 404
         && reason.code === "not_found"
         && reason.details?.field === "thread_id"
       );
+      const isThreadConflict = (
+        reason instanceof ApiError
+        && reason.status === 409
+        && reason.code === "conflict"
+      );
       if (isThreadReset) {
         threadContinuity.resetContinuity("not_found");
+        if (providedThreadContinuity) return;
+      }
+      if (isThreadConflict) {
+        threadContinuity.resetContinuity("conflict");
         if (providedThreadContinuity) return;
       }
       setTurns((current) => [
@@ -412,6 +406,8 @@ export function CopilotDrawer({
           question: nextQuestion,
           error: isThreadReset
             ? THREAD_RESET_MESSAGE
+            : isThreadConflict
+              ? THREAD_CONFLICT_MESSAGE
             : reason instanceof Error
               ? reason.message
               : "Copilot could not answer this request.",
@@ -508,6 +504,11 @@ export function CopilotDrawer({
               {THREAD_RESET_MESSAGE}
             </p>
           )}
+          {providedThreadContinuity?.resetReason === "conflict" && (
+            <p className="copilot-fallback-note" role="alert">
+              {THREAD_CONFLICT_MESSAGE}
+            </p>
+          )}
           {visibleTurns.map((turn, index) => (
             <div className="copilot-turn" key={`${turn.question}-${index}`}>
               <div className="copilot-question"><span>You</span><p>{turn.question}</p></div>
@@ -558,7 +559,7 @@ export function CopilotDrawer({
                           </article>
                         ))}
                       </div>
-                    ) : turn.toolCalls?.length ? (
+                    ) : !turn.narration && turn.toolCalls?.length ? (
                       <div className="copilot-tool-calls">
                         {turn.toolCalls.map((call, callIndex) => (
                           <details className="copilot-tool-call" key={`${call.tool}-${callIndex}`} open={callIndex === 0}>

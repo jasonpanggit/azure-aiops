@@ -149,8 +149,11 @@ def test_context_route_keeps_supported_page_evidence_deterministic(tmp_path):
     assert agent.calls == []
 
 
-def test_context_route_maf_mode_delegates_by_question_not_page(tmp_path, monkeypatch):
-    """A Network drawer ownership question must reach Governance in MAF mode."""
+def test_context_route_maf_mode_keeps_question_within_page_safe_set(
+    tmp_path,
+    monkeypatch,
+):
+    """A Network ownership question uses only its reviewed Governance grant."""
     body = _body()
     body["snapshot"]["question"] = "Who owns demo-vnet and what approval policy applies?"
 
@@ -180,17 +183,18 @@ def test_context_route_maf_mode_delegates_by_question_not_page(tmp_path, monkeyp
     data = response.json()["data"]
     assert data["orchestration"]["runtime"] in {"microsoft-agent-framework", "maf-compatible"}
     assert data["orchestration"]["strategy"] == "question_first"
-    assert [agent["id"] for agent in data["selected_agents"]] == ["network", "governance"]
-    assert data["synthesis"]["mode"] == "foundry"
-    assert data["synthesis"]["narration"] == "Governance owns this answer."
-    assert agent.calls
+    assert [agent["id"] for agent in data["selected_agents"]] == [
+        "network",
+        "governance",
+    ]
+    assert len(agent.calls) == 1
 
 
-def test_context_route_runs_question_specialist_before_optional_network_enrichment(
+def test_context_route_uses_only_reviewed_network_cross_domain_grants(
     tmp_path,
     monkeypatch,
 ):
-    """Network-only enrichment must not consume budget before selected specialists."""
+    """Cross-domain wording adds Vulnerability but no unrelated specialist."""
     body = _body()
     body["snapshot"]["question"] = "Are there CVEs on the hosts behind this hub?"
     body["snapshot"]["selected_resources"] = [{
@@ -210,24 +214,12 @@ def test_context_route_runs_question_specialist_before_optional_network_enrichme
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["orchestration"]["strategy"] == "question_first"
-    assert [agent["id"] for agent in data["selected_agents"]] == ["network", "vulnerability"]
-    delegated = [
+    assert [agent["id"] for agent in data["selected_agents"]] == [
+        "network",
+        "vulnerability",
+    ]
+    assert {
         call["specialist"]
         for call in data["tool_calls"]
-        if call["operation"] == "delegate"
-    ]
-    enrichment = [
-        call["specialist"]
-        for call in data["tool_calls"]
-        if call["operation"] == "enrichment"
-    ]
-    assert "vulnerability" in delegated
-    assert enrichment == ["network", "network", "network"]
-    vulnerability_index = data["tool_calls"].index(
-        next(call for call in data["tool_calls"] if call["specialist"] == "vulnerability")
-    )
-    enrichment_index = data["tool_calls"].index(
-        next(call for call in data["tool_calls"] if call["operation"] == "enrichment")
-    )
-    assert vulnerability_index < enrichment_index
+    } <= {"network", "vulnerability"}
     assert data["stop_reason"] == "reassessed"

@@ -32,7 +32,9 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
-from ..dependencies import Context, ReadScope
+from onboarding.runtime import connection_cache_identity
+
+from ..dependencies import Context, ReadScope, live_subscription_ids
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 
@@ -41,18 +43,14 @@ router = APIRouter(prefix="/api/v1/resource-health", tags=["resource-health"])
 SOURCE_ENGINE = "intelligence.health.ResourceHealthService"
 SOURCE_TABLE = "azure_monitor_metrics"
 
-# Keyed by the sorted subscription scope, since rows fetched for one scope
-# must never serve another. Value is (cached_at_monotonic, snapshot).
+# Keyed by subscription scope plus the full non-secret connection identities,
+# so neither a different scope nor a replaced/rotated connection can reuse an
+# earlier SPN's observation. Value is (cached_at_monotonic, snapshot).
 _RESOURCE_HEALTH_CACHE_TTL_SECONDS = 120
-_resource_health_cache: dict[tuple[str, ...], tuple[float, Any]] = {}
-
-
-def _onboarded_subscription_ids(context: Context) -> list[str]:
-    connections = context.onboarding.registry.list(include_disabled=False)
-    seen: dict[str, None] = {}
-    for connection in connections:
-        seen.setdefault(str(connection.subscription_id), None)
-    return list(seen)
+_resource_health_cache: dict[
+    tuple[tuple[str, ...], tuple[tuple[str, ...], ...]],
+    tuple[float, Any],
+] = {}
 
 
 @router.get("", summary="Live CPU/disk/network utilization for compute resources")
@@ -68,14 +66,22 @@ def resource_health(
         ),
     ),
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription")) or _onboarded_subscription_ids(context)
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     if not context.hybrid_resource_health_provider or not subscription_ids:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,
             "Resource health is unavailable because no subscription has been onboarded",
             {"capability": "resource_health", "provider_state": "unavailable"},
         )
-    cache_key = tuple(sorted(subscription_ids))
+    requested = {value.casefold() for value in subscription_ids}
+    connection_identities = tuple(
+        sorted(
+            connection_cache_identity(connection)
+            for connection in context.onboarding.registry.list(include_disabled=False)
+            if str(connection.subscription_id).casefold() in requested
+        )
+    )
+    cache_key = (tuple(sorted(requested)), connection_identities)
     now = time.monotonic()
     cached = _resource_health_cache.get(cache_key)
     is_cached = False

@@ -18,6 +18,8 @@ MAX_SELECTED_ENTITIES = 50
 MAX_MATERIAL_CLAIMS = 200
 MAX_RETAINED_CITATIONS = 64
 COVERAGE_CITATION_ID = "snapshot:coverage"
+MAX_SNAPSHOT_FILTERS = 16
+MAX_SNAPSHOT_FILTER_VALUES = 64
 
 
 class ContractModel(BaseModel):
@@ -85,8 +87,27 @@ class DomainEntityRef(ContractModel):
     source_key: str = Field(min_length=1, max_length=256)
 
 
+class ObservationRef(ContractModel):
+    """Non-authoritative page metadata that carries no domain scope claim."""
+
+    type: Literal["observation"]
+    source: str = Field(min_length=1, max_length=128)
+    source_key: str = Field(min_length=1, max_length=256)
+
+    @field_validator("source_key")
+    @classmethod
+    def validate_source_key(cls, value: str) -> str:
+        if any(character in value for character in ("\x00", "\r", "\n")):
+            raise ValueError("observation source key is invalid")
+        return value
+
+
 EntityRef = Annotated[
     AzureEntityRef | DomainEntityRef,
+    Field(discriminator="type"),
+]
+EvidenceIdentity = Annotated[
+    AzureEntityRef | DomainEntityRef | ObservationRef,
     Field(discriminator="type"),
 ]
 
@@ -112,7 +133,7 @@ class SnapshotEvidence(ContractModel):
     observed_at: str = Field(default="", max_length=128)
     resource_id: str = Field(default="", max_length=512)
     source_key: str = Field(default="", max_length=256)
-    entity: EntityRef | None = None
+    entity: EvidenceIdentity | None = None
     claim_type: str = Field(default="observation", min_length=1, max_length=128)
     citations: list[str] = Field(default_factory=list, max_length=32)
     selected: bool = False
@@ -172,6 +193,12 @@ class EvidenceSnapshotV2(ContractModel):
     version: Literal["2"] = "2"
     page_kind: PageMapping
     page_id: str = Field(min_length=1, max_length=128)
+    filters: dict[str, list[str]] = Field(default_factory=dict)
+    query: str = Field(default="", max_length=1024)
+    generation_id: str = Field(
+        default="",
+        pattern=r"^(?:|generation:[a-f0-9]{64})$",
+    )
     coverage: SnapshotCoverage
     freshness: list[SnapshotFreshness] = Field(default_factory=list, max_length=32)
     selected_entities: list[EntityRef] = Field(
@@ -187,6 +214,75 @@ class EvidenceSnapshotV2(ContractModel):
         max_length=MAX_MATERIAL_CLAIMS,
     )
 
+    @field_validator("filters")
+    @classmethod
+    def normalize_filters(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        if len(value) > MAX_SNAPSHOT_FILTERS:
+            raise ValueError("snapshot filters exceed size limit")
+        normalized: dict[str, list[str]] = {}
+        for raw_key, raw_values in value.items():
+            key = " ".join(str(raw_key).strip().casefold().split())
+            if not key or len(key) > 64:
+                raise ValueError("snapshot filter name is invalid")
+            if len(raw_values) > MAX_SNAPSHOT_FILTER_VALUES:
+                raise ValueError("snapshot filter values exceed size limit")
+            values = sorted(
+                {
+                    " ".join(str(item).strip().casefold().split())
+                    for item in raw_values
+                    if str(item).strip()
+                }
+            )
+            if any(len(item) > 256 for item in values):
+                raise ValueError("snapshot filter value is invalid")
+            if values:
+                normalized[key] = values
+        return dict(sorted(normalized.items()))
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        return " ".join(value.strip().casefold().split())
+
+    def content_generation_id(self) -> str:
+        """Return the immutable digest of the evidence generation on this page."""
+
+        payload = {
+            "coverage": self.coverage.model_dump(mode="json"),
+            "freshness": sorted(
+                (
+                    item.model_dump(mode="json")
+                    for item in self.freshness
+                ),
+                key=lambda item: json.dumps(
+                    item,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+            "evidence": sorted(
+                (
+                    item.model_dump(mode="json")
+                    for item in self.evidence
+                ),
+                key=lambda item: str(item["evidence_id"]),
+            ),
+            "material_claims": sorted(
+                (
+                    item.model_dump(mode="json")
+                    for item in self.material_claims
+                ),
+                key=lambda item: str(item["claim_id"]),
+            ),
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        return f"generation:{hashlib.sha256(encoded).hexdigest()}"
+
     @model_validator(mode="after")
     def validate_snapshot(self) -> EvidenceSnapshotV2:
         ids = [item.evidence_id for item in self.evidence]
@@ -200,6 +296,10 @@ class EvidenceSnapshotV2(ContractModel):
                     f"material claim {claim.claim_id!r} has missing evidence reference "
                     f"{missing[0]!r}"
                 )
+        # A browser-provided generation token is never authoritative. Recompute
+        # it over the strict bounded content so the identity cannot be reused
+        # after evidence, freshness, coverage, or claim closure changes.
+        self.generation_id = self.content_generation_id()
         if len(self.model_dump_json().encode()) > MAX_SNAPSHOT_BYTES:
             raise ValueError("snapshot exceeds size limit")
         return self
@@ -317,12 +417,19 @@ class InvestigationRequest(ContractModel):
         max_length=80,
         pattern=r"^thr-[a-f0-9]{32}$",
     )
+    expected_thread_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("requested_scope")
     @classmethod
     def validate_scope(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
         Scope.from_mapping(value)
         return value
+
+    @model_validator(mode="after")
+    def validate_thread_revision(self) -> InvestigationRequest:
+        if self.expected_thread_revision is not None and self.thread_id is None:
+            raise ValueError("expected thread revision requires a thread ID")
+        return self
 
 
 class Citation(ContractModel):

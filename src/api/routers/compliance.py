@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ..dependencies import Context, Page, ReadScope
+from ..dependencies import Context, Page, ReadScope, live_subscription_ids
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
 
@@ -40,7 +40,7 @@ def _service(context: Context, scope: Scope) -> Any:
     when the caller pinned explicit subscriptions, otherwise the
     snapshot-backed provider is used.
     """
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     hybrid = getattr(context, "hybrid_change_provider", None)
     if callable(hybrid) and subscription_ids:
         return hybrid(subscription_ids)

@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { CopilotPageKind, CopilotPageKindV2, CopilotPageSnapshot } from "@/lib/types";
 import {
   buildChangesCopilotContext,
   buildComplianceCopilotContext,
@@ -29,11 +31,130 @@ import {
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
   COPILOT_ROUTE_DISPOSITIONS,
+  COPILOT_ROUTE_STARTER_HINTS,
   COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
+  normalizeCopilotSnapshotV2,
   serializeCopilotSnapshot,
   type InventoryCopilotRecord,
 } from "./page-adapters";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+function expectCanonicalEndpointAccepts(
+  requests: Array<{
+    name: string;
+    requested_scope: Record<string, string[]>;
+    snapshot: ReturnType<typeof normalizeCopilotSnapshotV2>;
+  }>,
+) {
+  const validator = `
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, "src")
+sys.path.insert(0, "tests")
+
+from fastapi.testclient import TestClient
+from test_api_copilot_investigation import HEADERS, _context
+
+from api.app import create_app
+from operations.orchestration_contract import OrchestrationResult
+from semantic.semantic_engine import SemanticEngine
+from semantic.semantic_indexes import SemanticIndexes
+
+requests = json.load(sys.stdin)
+observed = []
+engine = SemanticEngine(
+    SemanticIndexes(
+        [
+            {
+                "resource_id": f"{namespace}-visible-1",
+                "entity_type": entity_type,
+                "name": f"{namespace}-visible-1",
+                "subscription_id": "sub-a",
+                "lifecycle_status": "active",
+            }
+            for namespace, entity_type in (
+                ("overview", "ExecutiveSummary"),
+                ("governance", "GovernanceRole"),
+                ("identity", "Principal"),
+                ("finops", "CostAttribution"),
+            )
+        ],
+        [],
+    ),
+    knowledge_version="page-adapter-regression",
+    freshness="2026-09-13T00:00:00Z",
+)
+
+def execute(_self, request, **kwargs):
+    selection = kwargs["selection_snapshot"]
+    canonical = kwargs["canonical_selection_snapshot"]
+    assert request.requested_scope == {"subscription": ["sub-a"]}
+    assert selection.material_claims
+    evidence_ids = {row.evidence_id for row in selection.evidence}
+    assert all(
+        set(claim.evidence_refs) <= evidence_ids
+        for claim in selection.material_claims
+    )
+    retained_refs = {
+        ref
+        for row in canonical.evidence
+        for ref in row.evidence_refs
+    }
+    assert {
+        ref
+        for claim in selection.material_claims
+        for ref in claim.evidence_refs
+    } <= retained_refs
+    return OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        coverage=selection.coverage,
+        thread_id="thr-" + ("a" * 32),
+        thread_revision=1,
+    )
+
+with tempfile.TemporaryDirectory() as directory:
+    client = TestClient(
+        create_app(_context(Path(directory), None, engine=engine)),
+        raise_server_exceptions=False,
+    )
+    with patch("api.routers.copilot.OrchestrationService.execute", execute):
+        for item in requests:
+            response = client.post(
+                "/api/v1/copilot/investigations?subscription=sub-a",
+                headers=HEADERS,
+                json={
+                    "contract_version": "1",
+                    "question": "Explain the visible page state.",
+                    "requested_scope": item["requested_scope"],
+                    "snapshot": item["snapshot"],
+                },
+            )
+            observed.append({
+                "name": item["name"],
+                "status": response.status_code,
+                "body": response.text if response.status_code != 200 else "",
+            })
+
+print(json.dumps(observed, sort_keys=True))
+`;
+  const result = spawnSync("python3", ["-c", validator], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    input: JSON.stringify(requests),
+  });
+
+  expect(result.status, result.stderr || result.stdout).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual(
+    requests.map(({ name }) => ({ name, status: 200, body: "" })),
+  );
+}
 
 const records: InventoryCopilotRecord[] = [
   {
@@ -84,6 +205,148 @@ const baseInput = {
     },
   ],
 };
+
+describe("Copilot starter hint backend parity", () => {
+  it("validates every emitted integrated hint against the backend schema", () => {
+    const hints = Object.entries(COPILOT_ROUTE_STARTER_HINTS).flatMap(
+      ([route, starters]) => starters.map((starter) => ({
+        route,
+        label: starter.label,
+        specialist_id: starter.specialistId,
+        tool: starter.tool,
+        arguments: starter.toolArguments ?? {},
+      })),
+    );
+    const validator = `
+import json
+import sys
+
+sys.path.insert(0, "src")
+from operations.mcp_server import reviewed_tools_for_specialist, validate_tool_arguments
+
+errors = []
+for hint in json.load(sys.stdin):
+    tool = hint.get("tool")
+    if not tool:
+        continue
+    specialist_id = hint.get("specialist_id") or ""
+    if tool not in reviewed_tools_for_specialist(specialist_id):
+        errors.append({**hint, "error": "tool is not granted to specialist"})
+        continue
+    try:
+        validate_tool_arguments(tool, hint.get("arguments") or {})
+    except ValueError as exc:
+        errors.append({**hint, "error": str(exc)})
+print(json.dumps(errors, sort_keys=True))
+raise SystemExit(1 if errors else 0)
+`;
+
+    const result = spawnSync("python3", ["-c", validator], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      input: JSON.stringify(hints),
+    });
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([]);
+  });
+});
+
+describe("shared page adapter canonical endpoint compatibility", () => {
+  it("posts representative Overview, Governance, Identity, FinOps, and Remediation snapshots", () => {
+    const representativeInput = (
+      namespace: string,
+      kind: string,
+      resourceId?: string,
+    ) => ({
+      scope: { subscription: ["sub-a"] },
+      filters: { view: [namespace] },
+      records: [
+        {
+          identity: `${namespace}-visible-1`,
+          namespace,
+          kind,
+          source: `${namespace}/visible`,
+          ...(resourceId ? { resourceId } : {}),
+          observedAt: "2026-09-13T00:00:00Z",
+          selected: true,
+          data: { title: `${namespace} visible observation` },
+        },
+      ],
+      evidence: [
+        {
+          source_engine: "PageAdapterRegression",
+          source_table: `${namespace}_provenance`,
+          timestamp: "2026-09-13T00:00:00Z",
+          confidence: "high" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+      coverage: [
+        {
+          key: `${namespace}_rows`,
+          visibleCount: 1,
+          totalCount: 2,
+          truncated: true,
+        },
+      ],
+      sourceStatuses: [
+        {
+          source: namespace,
+          observedAt: "2026-09-13T00:00:00Z",
+          status: "fresh" as const,
+        },
+      ],
+    });
+    const resourceId =
+      "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1";
+    const contexts = [
+      {
+        name: "Overview",
+        context: buildOverviewCopilotContext(
+          representativeInput("overview", "executive_summary"),
+        ),
+      },
+      {
+        name: "Governance",
+        context: buildGovernanceCopilotContext(
+          representativeInput("governance", "governance_role"),
+        ),
+      },
+      {
+        name: "Identity",
+        context: buildIdentityCopilotContext(
+          representativeInput("identity", "identity_principal"),
+        ),
+      },
+      {
+        name: "FinOps",
+        context: buildFinOpsCopilotContext(
+          representativeInput("finops", "cost_attribution"),
+        ),
+      },
+      {
+        name: "Remediation",
+        context: buildRemediationCopilotContext(
+          representativeInput("remediation", "remediation_plan", resourceId),
+        ),
+      },
+    ];
+    const requests = contexts.map(({ name, context }) => ({
+      name,
+      requested_scope: context.requestedScope,
+      snapshot: normalizeCopilotSnapshotV2(context.snapshot),
+    }));
+
+    expectCanonicalEndpointAccepts(requests);
+    const syntheticRows = requests
+      .flatMap(({ snapshot }) => snapshot.evidence)
+      .filter(({ claim_type }) =>
+        claim_type === "coverage" || claim_type === "source_observation");
+    expect(syntheticRows.length).toBeGreaterThan(0);
+    expect(syntheticRows.every(({ entity }) => entity.type === "observation")).toBe(true);
+  });
+});
 
 describe("inventory Copilot page adapter", () => {
   it("has an explicit integrated route disposition", () => {
@@ -397,7 +660,6 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             specialistId: "governance",
-            tool: "risk_context",
           }),
           expect.objectContaining({
             specialistId: "network",
@@ -405,6 +667,11 @@ describe("inventory Copilot page adapter", () => {
           }),
         ]),
       );
+      expect(
+        context.starterQuestions.find(
+          (starter) => starter.specialistId === "governance",
+        )?.tool,
+      ).toBeUndefined();
     });
 
     it("never marks stale, partial, or unavailable observations as actionable", () => {
@@ -624,10 +891,129 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             section: "coverage",
+            data: expect.objectContaining({
+              retention: expect.objectContaining({
+                retained_count: expect.any(Number),
+                omitted_count: records.length
+                  - context.snapshot.evidence.filter((row) => row.section !== "coverage").length,
+                row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+                byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+              }),
+            }),
           }),
         ]),
       );
+      expect(context.coverage.situations.complete).toBe(false);
+      expect(context.uncertainty).toContain(
+        `evidence retention omitted ${
+          records.length
+          - context.snapshot.evidence.filter((row) => row.section !== "coverage").length
+        } rows`,
+      );
+      expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete).toBe(false);
     });
+
+    it.each([64, 65, 66])(
+      "reports bounded byte-retention truth at the 65-row neighborhood (%i rows)",
+      (rowCount) => {
+        const records = Array.from({ length: rowCount }, (_, index) => ({
+          identity: `byte-row-${index.toString().padStart(3, "0")}`,
+          namespace: "operations",
+          kind: "situation",
+          source: "situations/visible",
+          priority: index,
+          data: {
+            title: `Situation ${index}`,
+            detail: "x".repeat(1900),
+          },
+        }));
+        const context = buildOverviewCopilotContext({
+          ...corePageInput,
+          records,
+          evidence: [],
+          coverage: [{
+            key: "situations",
+            visibleCount: rowCount,
+            totalCount: rowCount,
+          }],
+        });
+        const retainedCount = context.snapshot.evidence.filter(
+          (row) => row.section !== "coverage",
+        ).length;
+        const omittedCount = rowCount - retainedCount;
+        const coverageRow = context.snapshot.evidence.find(
+          (row) => row.section === "coverage",
+        );
+
+        expect(coverageRow?.data).toMatchObject({
+          retention: {
+            retained_count: retainedCount,
+            omitted_count: omittedCount,
+            row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+            byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+          },
+        });
+        expect(context.coverage.situations.complete).toBe(omittedCount === 0);
+        expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete)
+          .toBe(omittedCount === 0);
+        if (omittedCount) {
+          expect(context.uncertainty).toContain(
+            `evidence retention omitted ${omittedCount} rows`,
+          );
+        }
+      },
+    );
+
+    it.each([199, 200, 201])(
+      "reports bounded row-retention truth at the 200-row neighborhood (%i total rows)",
+      (totalRows) => {
+        const recordCount = totalRows - 1;
+        const records = Array.from({ length: recordCount }, (_, index) => ({
+          identity: `limit-row-${index.toString().padStart(3, "0")}`,
+          namespace: "operations",
+          kind: "situation",
+          source: "situations/visible",
+          priority: index,
+          data: { title: `Situation ${index}` },
+        }));
+        const context = buildOverviewCopilotContext({
+          ...corePageInput,
+          records,
+          evidence: [],
+          coverage: [{
+            key: "situations",
+            visibleCount: recordCount,
+            totalCount: recordCount,
+          }],
+        });
+        const retainedCount = context.snapshot.evidence.filter(
+          (row) => row.section !== "coverage",
+        ).length;
+        const omittedCount = recordCount - retainedCount;
+        const coverageRow = context.snapshot.evidence.find(
+          (row) => row.section === "coverage",
+        );
+
+        expect(context.snapshot.evidence.length)
+          .toBeLessThanOrEqual(COPILOT_SNAPSHOT_LIMITS.evidenceRows);
+        expect(coverageRow?.data).toMatchObject({
+          retention: {
+            retained_count: retainedCount,
+            omitted_count: omittedCount,
+            row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+            byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+          },
+        });
+        expect(context.coverage.situations.complete).toBe(omittedCount === 0);
+        expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete)
+          .toBe(omittedCount === 0);
+        if (omittedCount) {
+          expect(context.uncertainty).toContain(
+            `evidence retention omitted ${omittedCount} rows`,
+          );
+        }
+      },
+    );
   });
 
   describe("exposure, CVE detail, and situations Copilot page adapters", () => {
@@ -1471,8 +1857,10 @@ describe("inventory Copilot page adapter", () => {
       kb: {
         kb_id: "KB5001",
         title: "September cumulative update",
+        product: "Windows Server 2022",
         severity: "critical",
         published_at: "2026-09-01T00:00:00Z",
+        target_date: "2026-09-30",
         cve_ids: ["CVE-2026-0001", "CVE-2026-0002"],
         affected_servers: ["srv-1", "srv-2"],
         affected_server_count: 137,
@@ -1486,6 +1874,8 @@ describe("inventory Copilot page adapter", () => {
               "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
             server_id: "srv-1",
             cve_id: "CVE-2026-0001",
+            product_name: "Windows Server 2022",
+            target_date: "2026-09-30",
             application: "Ledger",
             business_service: "Payments",
             severity: "critical",
@@ -1538,6 +1928,9 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             data: expect.objectContaining({
+              product: "Windows Server 2022",
+              published_at: "2026-09-01T00:00:00Z",
+              target_date: "2026-09-30",
               affected_server_count: 137,
               affected_servers_truncated: true,
             }),
@@ -1555,6 +1948,8 @@ describe("inventory Copilot page adapter", () => {
           // Affected machine finding is a canonical ARM identity.
           expect.objectContaining({
             data: expect.objectContaining({
+              product_name: "Windows Server 2022",
+              target_date: "2026-09-30",
               entity: {
                 type: "azure",
                 resource_id:
@@ -1579,6 +1974,13 @@ describe("inventory Copilot page adapter", () => {
         ]),
       );
       expect(context.snapshot.filters).toMatchObject({ target_kind: ["server"], page: ["1"] });
+      const canonical = normalizeCopilotSnapshotV2(context.snapshot);
+      expect(canonical.filters).toEqual({
+        page: ["1"],
+        target_kind: ["server"],
+      });
+      expect(canonical.query).toBe("");
+      expect(canonical.generation_id).toMatch(/^generation:[a-f0-9]{64}$/);
       // Patch specialist hints, never mutating.
       expect(context.starterQuestions.every((starter) =>
         ["vulnerability", "remediation"].includes(starter.specialistId)
@@ -1943,8 +2345,8 @@ describe("inventory Copilot page adapter", () => {
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
 
-    it("keeps a bounded predeploy context before any assessment is submitted", () => {
-      const context = buildPredeployCopilotContext({
+    it("keeps healthy-empty predeploy distinct from unavailable assessment state", () => {
+      const emptyInput = {
         ...predeployInput,
         change: null,
         simulation: null,
@@ -1953,12 +2355,32 @@ describe("inventory Copilot page adapter", () => {
         impactedResources: [],
         impactedTotalCount: 0,
         impactedTruncated: false,
+      };
+      const healthyEmpty = buildPredeployCopilotContext({
+        ...emptyInput,
+        available: true,
+        freshness: "fresh" as const,
+      });
+      const unavailable = buildPredeployCopilotContext({
+        ...emptyInput,
         available: false,
         freshness: "unavailable" as const,
       });
-      expect(context.snapshot.page_id).toBe("predeploy");
-      expect(rowByClaim(context, "proposed_change")).toHaveLength(0);
-      expect(context.snapshot.evidence.every((row) =>
+      expect(healthyEmpty.snapshot.page_id).toBe("predeploy");
+      expect(rowByClaim(healthyEmpty, "proposed_change")).toHaveLength(0);
+      expect(healthyEmpty.coverage.impacted_resources.complete).toBe(true);
+      expect(unavailable.coverage.impacted_resources.complete).toBe(false);
+      expect(healthyEmpty.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "assessment", status: "fresh" }),
+        ]),
+      );
+      expect(unavailable.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "assessment", status: "unavailable" }),
+        ]),
+      );
+      expect(unavailable.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
   });
@@ -1975,6 +2397,195 @@ describe("inventory Copilot page adapter", () => {
     });
   });
 
+  it("normalizes an integrated remediation snapshot to the strict v2 wire shape", () => {
+      const legacy = buildRemediationCopilotContext({
+        ...corePageInput,
+        filters: { view: ["remediation"] },
+      }).snapshot;
+
+      const normalized = normalizeCopilotSnapshotV2(legacy);
+
+      expect(normalized).toMatchObject({
+        version: "2",
+        page_kind: "remediation",
+        page_id: "remediation",
+        coverage: {
+          visible_count: 2,
+          total_count: 5,
+          complete: false,
+        },
+        selected_entities: expect.any(Array),
+        filters: { view: ["remediation"] },
+        query: "",
+        generation_id: expect.stringMatching(/^generation:[a-f0-9]{64}$/),
+        material_claims: expect.arrayContaining([
+          expect.objectContaining({
+            evidence_refs: [expect.stringMatching(/^evidence:/)],
+            requires_complete_coverage: false,
+          }),
+        ]),
+      });
+      expect(normalized).not.toHaveProperty("scope");
+      expect(normalized).not.toHaveProperty("question");
+      expect(normalized.evidence.every((row) =>
+        row.actionable === false
+        && row.citations.length === 0
+        && Boolean(row.entity)
+        && Boolean(row.source_key))).toBe(true);
+    });
+
+  it.each([
+    ["/", "resource", "operations-overview", "overview"],
+    ["/network", "network", "network-topology", "network"],
+    ["/compliance", "governance", "compliance-posture", "compliance"],
+    ["/exposure", "vulnerability", "exposure", "exposure"],
+    ["/exposure/cves/[id]", "vulnerability", "cve:CVE-2026-0001", "cve_detail"],
+    ["/exposure/defender-posture", "vulnerability", "defender-posture", "defender_posture"],
+    ["/exposure/kbs/[id]", "vulnerability", "kb:KB5000001", "kb_detail"],
+    ["/exposure/patch-priorities", "vulnerability", "patch-priorities", "patch_priorities"],
+    ["/situations", "incident", "situations", "situations"],
+    ["/situations/[id]", "incident", "situation:situation-1", "situation_detail"],
+    ["/changes", "incident", "changes", "changes"],
+    ["/changes/predeploy", "governance", "predeploy", "changes_predeploy"],
+    ["/connections", "resource", "connections", "connections"],
+    ["/connections/fabric", "resource", "fabric-medallion", "connections_fabric"],
+    ["/governance", "governance", "governance", "governance"],
+    ["/identity", "governance", "identity", "identity"],
+    ["/finops", "governance", "finops", "finops"],
+    ["/remediation", "remediation", "remediation", "remediation"],
+    ["/resource-health", "resource", "resource-health", "resource_health"],
+    ["/services", "resource", "services", "services"],
+    ["/services/[name]", "resource", "service:payments", "service_detail"],
+    ["/twin", "network", "twin", "twin"],
+  ] satisfies Array<[string, CopilotPageKind, string, CopilotPageKindV2]>)(
+    "maps free-form legacy adapter output for %s to exact v2 page kind %s",
+    (route, legacyPageKind, pageId, expectedPageKind) => {
+      const legacy: CopilotPageSnapshot = {
+        version: "1",
+        page_kind: legacyPageKind,
+        page_id: pageId,
+        selected_resources: [],
+        filters: {},
+        freshness: [],
+        scope: { declared: { subscription: ["sub-a"] }, authorized: true },
+        evidence: [],
+        question: "Tell me what matters on this page.",
+        rechecks: [],
+      };
+
+      expect(normalizeCopilotSnapshotV2(legacy).page_kind).toBe(expectedPageKind);
+      expect(COPILOT_ROUTE_DISPOSITIONS[route]).toMatchObject({
+        kind: "integrated",
+        pageKind: expectedPageKind,
+      });
+    },
+  );
+
+  it("keeps the inventory adapter's exact v2 page kind without a routing hint", () => {
+    const inventory = buildInventoryCopilotContext(baseInput).snapshot;
+
+    expect(normalizeCopilotSnapshotV2(inventory).page_kind).toBe("inventory");
+    expect(COPILOT_ROUTE_DISPOSITIONS["/inventory"]).toMatchObject({
+      kind: "integrated",
+      pageKind: "inventory",
+    });
+  });
+
+  it("does not fabricate legacy coverage from arbitrary evidence rows", () => {
+    const legacy: CopilotPageSnapshot = {
+      version: "1",
+      page_kind: "resource",
+      page_id: "services",
+      selected_resources: [],
+      filters: {},
+      freshness: [],
+      scope: { declared: { subscription: ["sub-a"] }, authorized: true },
+      evidence: [{
+        evidence_id: "service:one",
+        section: "services",
+        status: "ok",
+        data: { name: "payments" },
+      }],
+      question: "Summarize this page.",
+      rechecks: [],
+    };
+
+    expect(normalizeCopilotSnapshotV2(legacy).coverage).toEqual({
+      visible_count: 0,
+      total_count: 0,
+      complete: false,
+    });
+  });
+
+  it.each([
+      [127, true],
+      [128, true],
+      [129, false],
+    ])(
+      "enforces the shared source character boundary at %i characters",
+      (sourceLength, accepted) => {
+        const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
+        snapshot.evidence[0] = {
+          ...snapshot.evidence[0],
+          source: "界".repeat(sourceLength),
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/source/i);
+      },
+    );
+
+  it.each([
+      [8, true],
+      [9, true],
+      [10, false],
+    ])(
+      "enforces the shared 8191/8192/8193-byte UTF-8 row boundary",
+      (suffixLength, accepted) => {
+        const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
+        snapshot.evidence[0] = {
+          ...snapshot.evidence[0],
+          data: { blob: `${"😀".repeat(681)}${"x".repeat(suffixLength)}` },
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/evidence row/i);
+      },
+    );
+
+  it.each([
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows - 1, true],
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows, true],
+      [COPILOT_SNAPSHOT_LIMITS.evidenceRows + 1, false],
+    ])(
+      "enforces the shared evidence-list structural boundary at %i rows",
+      (rowCount, accepted) => {
+        const base = buildInventoryCopilotContext(baseInput).snapshot;
+        const template = base.evidence[0];
+        const snapshot = {
+          ...base,
+          coverage: {
+            visible_count: rowCount,
+            total_count: rowCount,
+            complete: true,
+          },
+          evidence: Array.from({ length: rowCount }, (_, index) => ({
+            ...template,
+            evidence_id: `row-${index}`,
+            source_key: `row-${index}`,
+            entity: {
+              type: "domain" as const,
+              namespace: "inventory",
+              kind: "row",
+              source_key: `row-${index}`,
+            },
+          })),
+        };
+        const action = () => normalizeCopilotSnapshotV2(snapshot);
+        if (accepted) expect(action).not.toThrow();
+        else expect(action).toThrow(/evidence rows/i);
+      },
+    );
   it("builds the complete strict v2 wire contract without authority fields", () => {
     const context = buildInventoryCopilotContext(baseInput);
 
@@ -2758,7 +3369,10 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     // Governance starters stay within the governance specialist and never mutate.
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "governance"
-      && ["business_service_context", "application_context", "risk_context", "impact_context"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "impact_context"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -2915,7 +3529,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     // Identity hints stay within the identity_access specialist and never mutate.
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "identity_access"
-      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3080,7 +3697,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     );
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "finops"
-      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3173,7 +3793,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     );
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "resource_health_observability"
-      && ["incidents", "impact_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["incidents", "impact_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3744,12 +4367,12 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     expect(dedicated).toEqual(["/agents", "/copilot", "/investigate"]);
   });
 
-  it("redirects /vulnerabilities into Exposure and never hosts a duplicate adapter", () => {
+  it("redirects /vulnerabilities to the exact Patch priorities destination", () => {
     const disposition = COPILOT_ROUTE_DISPOSITIONS["/vulnerabilities"];
-    expect(disposition.kind).toBe("redirect");
-    expect(
-      disposition.kind === "redirect" && disposition.target.startsWith("/exposure"),
-    ).toBe(true);
+    expect(disposition).toEqual({
+      kind: "redirect",
+      target: "/exposure/patch-priorities",
+    });
     // The alias route resolves to an integrated adapter only via the canonical
     // Exposure product, so no second adapter is registered for it.
     expect(Object.prototype.hasOwnProperty.call(CORE_COPILOT_PAGE_ADAPTERS, "/vulnerabilities")).toBe(false);

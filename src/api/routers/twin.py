@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Query
 from network.service import NetworkScope
 from semantic.operational_twin import OperationalTwinComposer
 
-from ..dependencies import Context, ReadScope
+from ..dependencies import Context, ReadScope, live_subscription_ids
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 
@@ -33,7 +33,7 @@ def _resolve(
 
 
 def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     source_errors: list[dict[str, str]] = []
     generation = None
     resolver_provider = getattr(context, "generation_resolver_provider", None)

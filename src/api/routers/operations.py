@@ -26,7 +26,13 @@ from intelligence.remediation.approval_gate import (
 )
 from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 
-from ..dependencies import ApprovePrincipal, Context, Page, ReadScope
+from ..dependencies import (
+    ApprovePrincipal,
+    Context,
+    Page,
+    ReadScope,
+    live_subscription_ids,
+)
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..models import RemediationDecisionRequest
@@ -37,16 +43,14 @@ from .patching import _service as _patching_service
 router = APIRouter(prefix="/api/v1", tags=["operations"])
 
 
-def _onboarded_subscription_ids(context: Context) -> list[str]:
-    connections = context.onboarding.registry.list(include_disabled=False)
-    seen: dict[str, None] = {}
-    for connection in connections:
-        seen.setdefault(str(connection.subscription_id), None)
-    return list(seen)
-
-
 def _require(context: Context, attribute: str, capability: str, scope: Scope) -> Any:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(
+        context,
+        scope,
+        default_all=(
+            capability in {"incidents", "remediation"} and scope.is_unrestricted()
+        ),
+    )
     if subscription_ids:
         if capability == "incidents" and context.hybrid_incident_provider is not None:
             return context.hybrid_incident_provider(subscription_ids)
@@ -55,17 +59,6 @@ def _require(context: Context, attribute: str, capability: str, scope: Scope) ->
             and context.hybrid_remediation_provider is not None
         ):
             return context.hybrid_remediation_provider(subscription_ids)
-    elif (
-        capability == "remediation"
-        and context.hybrid_remediation_provider is not None
-        and scope.is_unrestricted()
-    ):
-        # No subscription picked in the operating-context selector: fall back
-        # to every onboarded subscription instead of the static Fabric
-        # snapshot, so "all subscriptions" shows live plans rather than 0.
-        all_subscription_ids = _onboarded_subscription_ids(context)
-        if all_subscription_ids:
-            return context.hybrid_remediation_provider(all_subscription_ids)
     return context.resolve_provider(capability)
 
 
@@ -272,16 +265,6 @@ def defender_remediation_cases(
 ) -> dict[str, Any]:
     planner = _require(context, "remediation_provider", "remediation", scope)
     correlator = getattr(planner, "defender_correlator", None)
-    if (
-        correlator is None
-        and context.hybrid_remediation_provider is not None
-        and not list(scope.values("subscription"))
-        and scope.is_unrestricted()
-    ):
-        subscription_ids = _onboarded_subscription_ids(context)
-        if subscription_ids:
-            live_planner = context.hybrid_remediation_provider(subscription_ids)
-            correlator = getattr(live_planner, "defender_correlator", None)
     if correlator is None:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,

@@ -60,6 +60,23 @@ Subsequent releases are steps 2 and 3 with a new tag.
 `deploy.sh` also accepts `plan`, `destroy`, `validate`, `fmt`, and `output`,
 and forwards any extra arguments to Terraform.
 
+For offline Copilot provider/parity setup, generate a sourceable file from the
+local Terraform state rather than copying endpoint, audience, connection, or
+rollout values by hand:
+
+```bash
+python3 scripts/export_copilot_provider_env.py \
+  --terraform-dir infra/terraform \
+  --output /secure/path/copilot-provider.env
+. /secure/path/copilot-provider.env
+```
+
+This exports only the allowlisted non-secret `copilot_provider_environment`
+output. It fails closed when the candidate mapping or either distinct governed
+Foundry project-connection ID is unavailable. Tenant/client credentials and
+bearer tokens remain outside this file and must come from the approved secret
+mechanism.
+
 ## The Copilot's LLM
 
 `POST /api/v1/copilot/ask` retrieves from the governed knowledge layer, filters

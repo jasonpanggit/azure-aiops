@@ -10,12 +10,7 @@ import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
 
-const { investigateContext } = vi.hoisted(() => ({ investigateContext: vi.fn() }));
 const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
-vi.mock("@/lib/services", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
-  return { ...actual, copilotApi: { ...actual.copilotApi, investigateContext } };
-});
 vi.mock("@/lib/copilot/page-adapters", async () => {
   const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>("@/lib/copilot/page-adapters");
   return { ...actual, investigateCanonical };
@@ -98,6 +93,8 @@ function SessionEndControl({ children }: { children: ReactNode }) {
 
 describe("CopilotDrawer", () => {
   beforeEach(() => {
+    investigateCanonical.mockReset();
+    window.sessionStorage.clear();
     const lockManager = new DrawerTestLockManager();
     vi.stubGlobal("navigator", Object.create(
       globalThis.navigator,
@@ -122,20 +119,37 @@ describe("CopilotDrawer", () => {
   });
 
   function canonicalSnapshot(tab: "os" | "software" | "azure") {
+    const sourceKey = `${tab}-context`;
     return {
       version: "2" as const,
       page_kind: "inventory" as const,
       page_id: "inventory" as const,
       coverage: { visible_count: 1, total_count: 1, complete: true },
       freshness: [],
+      selected_entities: [],
       evidence: [{
         evidence_id: `inventory:${tab}:context`,
         source: `inventory/${tab}_observations`,
         status: "ok" as const,
         observed_at: "2026-08-25T10:00:00Z",
-        resource_id: `inventory://${tab}/context`,
+        resource_id: "",
+        source_key: sourceKey,
+        entity: {
+          type: "domain" as const,
+          namespace: "inventory",
+          kind: "context",
+          source_key: sourceKey,
+        },
+        claim_type: "inventory-context",
+        citations: [],
+        selected: false,
+        direct: true,
+        actionable: false,
+        severity: "unknown" as const,
+        quality: "unknown" as const,
         data: { inventory_context: { tab, filters: {} } },
       }],
+      material_claims: [],
     };
   }
 
@@ -168,35 +182,24 @@ describe("CopilotDrawer", () => {
   }
 
   it("submits the exact typed page snapshot and renders deterministic citations", async () => {
-    investigateContext.mockResolvedValue({
+    const result = canonicalResult(
+      "thr-ffffffffffffffffffffffffffffffff",
+      "server:network",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
       data: {
-        page_kind: "network",
-        page_id: "network-topology",
-        snapshot_hash: "hash",
-        stages: ["validated", "deterministic"],
-        findings: [{
-          finding_id: "NET-FW-001:network:gap:1",
-          resource_ids: [],
-          check_id: "NET-FW-001",
-          policy_id: "NET-FW-001",
-          source_status: "ok",
-          status: "verified",
-          summary: "Firewall bypass",
-          evidence_refs: ["network:gap:1"],
-          confidence: "high",
-          uncertainty: [],
-          stale: false,
-          next_check: "Recheck network:gap:1",
-          actionable: true,
+        ...result.data,
+        tool_results: [{
+          call_id: "network:0",
+          specialist_id: "network",
+          tool: "network_topology",
+          status: "ok",
+          data: { finding: "Firewall bypass" },
+          evidence: [],
+          warning: "",
         }],
-        tool_calls: [],
-        synthesis_mode: "deterministic",
-        synthesis_agent: "",
-        synthesis: null,
-        warnings: [],
       },
-      evidence: [],
-      warnings: [],
     });
     render(
       <TestProviders>
@@ -205,22 +208,123 @@ describe("CopilotDrawer", () => {
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is wrong?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
-    await waitFor(() => expect(investigateContext).toHaveBeenCalledWith({ ...snapshot, question: "What is wrong?" }));
-    expect(await screen.findByText("Verified finding")).toBeInTheDocument();
-    expect(screen.getByText(/Foundry narration was not produced/)).toBeInTheDocument();
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: "What is wrong?",
+        snapshot: expect.objectContaining({
+          version: "2",
+          page_kind: "network",
+        }),
+      }),
+      {},
+    ));
+    expect(investigateCanonical).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Firewall bypass")).toBeInTheDocument();
+    expect(screen.getByText("server:network")).toBeInTheDocument();
+  });
+
+  it("normalizes integrated legacy snapshots and submits retained revision CAS", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const threadId = "thr-dddddddddddddddddddddddddddddddd";
+    window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+      thread_id: threadId,
+      thread_revision: 4,
+    }));
+    investigateCanonical.mockResolvedValue({
+      ...canonicalResult(threadId, "server:remediation"),
+      data: {
+        ...canonicalResult(threadId, "server:remediation").data,
+        thread_revision: 5,
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Remediation"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={{
+            ...snapshot,
+            page_kind: "remediation",
+            page_id: "remediation",
+          }}
+          starterQuestions={[{ label: "Explain remediation state" }]}
+        />
+      </TestProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("root continuity")).toHaveTextContent(threadId);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Explain remediation state/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contract_version: "1",
+        thread_id: threadId,
+        expected_thread_revision: 4,
+        snapshot: expect.objectContaining({
+          version: "2",
+          page_kind: "remediation",
+          page_id: "remediation",
+          selected_entities: expect.any(Array),
+          filters: { tab: ["gaps"] },
+          query: "",
+          generation_id: expect.stringMatching(/^generation:[a-f0-9]{64}$/),
+          material_claims: expect.arrayContaining([
+            expect.objectContaining({
+              evidence_refs: ["network:gap:1"],
+              requires_complete_coverage: false,
+            }),
+          ]),
+        }),
+      }),
+      { subscription: ["sub-a"] },
+    ));
+    const request = investigateCanonical.mock.calls.at(-1)?.[0];
+    expect(request.snapshot).not.toHaveProperty("scope");
+    expect(request.snapshot).not.toHaveProperty("question");
+  });
+
+  it("preserves first-turn compatibility by omitting thread CAS fields", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    investigateCanonical.mockResolvedValue(
+      canonicalResult("thr-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "server:first"),
+    );
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Network"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={snapshot}
+          starterQuestions={[{ label: "Start investigation" }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Start investigation/ }));
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+    const request = investigateCanonical.mock.calls.at(-1)?.[0];
+    expect(request).not.toHaveProperty("thread_id");
+    expect(request).not.toHaveProperty("expected_thread_revision");
+    expect(request.snapshot.version).toBe("2");
   });
 
   it("renders a duplicated backend warning only once", async () => {
     const warning = "Foundry narration unavailable; deterministic findings returned";
-    investigateContext.mockResolvedValue({
-      data: {
-        findings: [],
-        tool_calls: [],
-        synthesis_mode: "deterministic",
-        warnings: [warning],
-      },
+    investigateCanonical.mockResolvedValue({
+      ...canonicalResult(
+        "thr-11111111111111111111111111111111",
+        "server:warning",
+      ),
       evidence: [],
-      warnings: [warning],
+      warnings: [warning, warning],
     });
     render(
       <TestProviders>
@@ -230,40 +334,17 @@ describe("CopilotDrawer", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is wrong?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
 
-    await waitFor(() => expect(investigateContext).toHaveBeenCalled());
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
     expect(screen.getAllByText(warning)).toHaveLength(1);
   });
 
-  it("does not repeat narrated findings as cards", async () => {
-    investigateContext.mockResolvedValue({
-      data: {
-        findings: [{
-          finding_id: "NET-FW-001:network:gap:1",
-          resource_ids: [],
-          check_id: "NET-FW-001",
-          policy_id: "NET-FW-001",
-          source_status: "ok",
-          status: "verified",
-          summary: "Firewall bypass",
-          evidence_refs: ["network:gap:1"],
-          confidence: "high",
-          uncertainty: [],
-          stale: false,
-          next_check: "Recheck network:gap:1",
-          actionable: true,
-        }],
-        tool_calls: [],
-        synthesis_mode: "foundry",
-        synthesis_agent: "aiops-network-agent",
-        synthesis: {
-          mode: "foundry",
-          narration: "UAT cannot reach PROD on the evidence available.",
-        },
-        warnings: [],
-      },
-      evidence: [],
-      warnings: [],
-    });
+  it("does not render legacy browser finding cards on canonical responses", async () => {
+    investigateCanonical.mockResolvedValue(
+      canonicalResult(
+        "thr-22222222222222222222222222222222",
+        "server:canonical-only",
+      ),
+    );
     render(
       <TestProviders>
         <CopilotDrawer open onClose={vi.fn()} contextLabel="Network" snapshot={snapshot} starterQuestions={[]} />
@@ -272,7 +353,7 @@ describe("CopilotDrawer", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Can UAT reach PROD?" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
 
-    expect(await screen.findByText("UAT cannot reach PROD on the evidence available.")).toBeInTheDocument();
+    expect(await screen.findByText("server:canonical-only")).toBeInTheDocument();
     expect(screen.queryByText("Verified finding")).not.toBeInTheDocument();
     expect(screen.queryByText("Firewall bypass")).not.toBeInTheDocument();
   });
@@ -312,11 +393,8 @@ describe("CopilotDrawer", () => {
       warnings: [],
     });
     const inventorySnapshot = {
-      version: "2" as const,
-      page_kind: "inventory" as const,
-      page_id: "inventory" as const,
+      ...canonicalSnapshot("azure"),
       coverage: { visible_count: 1, total_count: 4, complete: false },
-      freshness: [],
       evidence: [],
     };
 
@@ -345,6 +423,116 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("inventory:azure:stable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a degraded direct answer whose material facts cite retained evidence", async () => {
+    const result = canonicalResult(
+      "thr-33333333333333333333333333333333",
+      "retained:selection:kb-current",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
+        uncertainty: [
+          "visible subset is incomplete",
+          "Foundry narration unavailable; retained current page evidence was used.",
+        ],
+        coverage: { visible_count: 1, total_count: 137, complete: false },
+        synthesis: {
+          status: "degraded",
+          reason: "deterministic_page_evidence",
+          domain_count: 1,
+          claims: [{
+            finding_id: "page:kb-current",
+            summary:
+              "KB5001 applies to Windows Server 2022, was published 2026-09-01, targets 2026-09-30, and affects 137 servers.",
+            evidence_refs: ["retained:selection:kb-current"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: ["visible subset is incomplete"],
+          }],
+          warning:
+            "Foundry narration unavailable; retained current page evidence was used.",
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="KB5001"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={snapshot}
+          starterQuestions={[{ label: "Explain this KB" }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Explain this KB/ }));
+
+    expect(await screen.findByText(/KB5001 applies to Windows Server 2022/)).toBeInTheDocument();
+    expect(screen.getByText("retained:selection:kb-current")).toBeInTheDocument();
+    expect(screen.getByText(/Foundry narration unavailable/)).toBeInTheDocument();
+    expect(screen.getByText("1 of 137 visible records")).toBeInTheDocument();
+  });
+
+  it("renders canonical synthesis claims without duplicating their tool result cards", async () => {
+    const result = canonicalResult(
+      "thr-12121212121212121212121212121212",
+      "tool:evidence:one",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        tool_results: [{
+          call_id: "network:0",
+          specialist_id: "network",
+          tool: "network_topology",
+          status: "ok",
+          data: { summary: "The payments service depends on hub-vnet." },
+          evidence: [{ evidence_id: "tool:evidence:one" }],
+          warning: "",
+        }],
+        synthesis: {
+          status: "synthesized",
+          reason: "cross_domain",
+          domain_count: 2,
+          claims: [{
+            finding_id: "finding:payments-path",
+            summary: "The payments service depends on hub-vnet.",
+            evidence_refs: ["tool:evidence:one"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+          warning: "",
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Network"
+          snapshot={snapshot}
+          starterQuestions={[{ label: "Summarize dependencies" }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Summarize dependencies/ }));
+
+    expect(await screen.findByText("The payments service depends on hub-vnet.")).toBeInTheDocument();
+    expect(screen.getByText("Evidence: tool:evidence:one")).toBeInTheDocument();
+    expect(screen.getByText("Narrated by Executive synthesis.")).toBeInTheDocument();
+    expect(screen.queryByText("network_topology")).not.toBeInTheDocument();
   });
 
   it("supports isolated direct renders without making browser continuity authoritative", async () => {
@@ -611,72 +799,6 @@ describe("CopilotDrawer", () => {
     expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
   });
 
-  it("redacts a late legacy response after the session ends", async () => {
-    investigateContext.mockReset();
-    let resolveLegacy: ((value: {
-      data: {
-        findings: Array<{
-          finding_id: string;
-          status: "verified";
-          summary: string;
-          check_id: string;
-          evidence_refs: string[];
-          next_check: string;
-        }>;
-        tool_calls: [];
-        synthesis_mode: "deterministic";
-        warnings: [];
-      };
-      evidence: [];
-      warnings: [];
-    }) => void) | undefined;
-    investigateContext.mockReturnValue(new Promise((resolve) => {
-      resolveLegacy = resolve;
-    }));
-
-    render(
-      <TestProviders>
-        <SessionEndControl>
-          <CopilotDrawer
-            open
-            onClose={vi.fn()}
-            contextLabel="Network"
-            snapshot={snapshot}
-            starterQuestions={[{ label: "Run legacy request" }]}
-          />
-        </SessionEndControl>
-      </TestProviders>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /^Run legacy request/ }));
-    await waitFor(() => expect(investigateContext).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "End session" }));
-
-    await act(async () => {
-      resolveLegacy?.({
-        data: {
-          findings: [{
-            finding_id: "late-legacy",
-            status: "verified",
-            summary: "Late legacy finding",
-            check_id: "LEGACY-1",
-            evidence_refs: ["legacy:evidence"],
-            next_check: "Recheck",
-          }],
-          tool_calls: [],
-          synthesis_mode: "deterministic",
-          warnings: [],
-        },
-        evidence: [],
-        warnings: [],
-      });
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText("Late legacy finding")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("continuity reset reason")).toHaveTextContent("session_end");
-    expect(screen.getByText(/Answers stay scoped/)).toBeInTheDocument();
-  });
-
   it("prevents an unmounted drawer response from replacing the next page thread", async () => {
     investigateCanonical.mockReset();
     window.sessionStorage.clear();
@@ -826,11 +948,8 @@ describe("CopilotDrawer", () => {
       warnings: [],
     });
     const inventorySnapshot = {
-      version: "2" as const,
-      page_kind: "inventory" as const,
-      page_id: "inventory" as const,
+      ...canonicalSnapshot("os"),
       coverage: { visible_count: 0, total_count: 0, complete: true },
-      freshness: [],
       evidence: [],
     };
     const props = {
@@ -870,11 +989,8 @@ describe("CopilotDrawer", () => {
     const expiredThread = "thr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const replacementThread = "thr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const inventorySnapshot = {
-      version: "2" as const,
-      page_kind: "inventory" as const,
-      page_id: "inventory" as const,
+      ...canonicalSnapshot("os"),
       coverage: { visible_count: 0, total_count: 0, complete: true },
-      freshness: [],
       evidence: [],
     };
     const props = {
@@ -950,6 +1066,59 @@ describe("CopilotDrawer", () => {
       thread_id: replacementThread,
       thread_revision: 1,
     });
+  });
+
+  it("clears stale CAS continuity so the next explicit attempt starts a new thread", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const staleThread = "thr-34343434343434343434343434343434";
+    const replacementThread = "thr-56565656565656565656565656565656";
+    window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+      thread_id: staleThread,
+      thread_revision: 3,
+    }));
+    investigateCanonical
+      .mockRejectedValueOnce(new ApiError(
+        409,
+        "conflict",
+        "Investigation thread revision conflict; current revision is 9",
+        { field: "expected_thread_revision", current_revision: 9 },
+      ))
+      .mockResolvedValueOnce(
+        canonicalResult(replacementThread, "server:new-thread"),
+      );
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={canonicalSnapshot("os")}
+          starterQuestions={[{ label: "Review after conflict" }]}
+        />
+      </TestProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("root continuity")).toHaveTextContent(staleThread);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review after conflict/ }));
+
+    expect(await screen.findByText(
+      "This investigation changed in another request. Start a new investigation to continue.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/current revision is 9/i)).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+    expect(screen.getByLabelText("root continuity")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: /Review after conflict/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
+    expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
+    expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty(
+      "expected_thread_revision",
+    );
+    expect(await screen.findByText("server:new-thread")).toBeInTheDocument();
   });
 
   it("redacts the transcript and revalidates the retained thread when scope narrows", async () => {

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,8 +23,9 @@ from operations.orchestration_contract import (
     CanonicalEvidence,
     CanonicalEvidenceSnapshot,
     DomainEntityRef,
-    EntityRef,
+    EvidenceIdentity,
     EvidenceSnapshotV2,
+    ObservationRef,
     SnapshotConflict,
     SnapshotEvidence,
 )
@@ -74,6 +76,38 @@ def _normalized_identity_part(value: str) -> str:
     return " ".join(str(value).strip().casefold().split())
 
 
+def canonical_entity_key(
+    entity: EvidenceIdentity,
+    *,
+    domain_identity: tuple[str, str, str] | None = None,
+) -> str:
+    """Return the one canonical identity used by evidence grouping."""
+
+    if isinstance(entity, AzureEntityRef):
+        return f"azure:{_canonical_resource_id(entity.resource_id)}"
+    if isinstance(entity, ObservationRef):
+        return ":".join(
+            (
+                "observation",
+                _normalized_identity_part(entity.source),
+                _normalized_identity_part(entity.source_key),
+            )
+        )
+    namespace, kind, source_key = domain_identity or (
+        entity.namespace,
+        entity.kind,
+        entity.source_key,
+    )
+    return ":".join(
+        (
+            "domain",
+            _normalized_identity_part(namespace),
+            _normalized_identity_part(kind),
+            _normalized_identity_part(source_key),
+        )
+    )
+
+
 def _digest(prefix: str, *parts: str) -> str:
     encoded = json.dumps(parts, separators=(",", ":"), ensure_ascii=True).encode()
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:32]}"
@@ -116,7 +150,7 @@ DomainEntityResolver = Callable[
 
 
 def _canonical_entity(
-    entity: EntityRef,
+    entity: EvidenceIdentity,
     *,
     effective_scope: Scope,
     domain_resolver: DomainEntityResolver | None,
@@ -125,7 +159,11 @@ def _canonical_entity(
         resource_id = _canonical_resource_id(entity.resource_id)
         if not effective_scope.matches(_canonical_resource_attributes(resource_id)):
             raise ValueError("snapshot entity is outside the effective read scope")
-        return f"azure:{resource_id}", None
+        return canonical_entity_key(entity), None
+    if isinstance(entity, ObservationRef):
+        return canonical_entity_key(entity), _normalized_identity_part(
+            entity.source_key
+        )
 
     if domain_resolver is None:
         raise ValueError("domain entity requires a server-side identity resolver")
@@ -146,13 +184,13 @@ def _canonical_entity(
         raise ValueError("snapshot entity is outside the effective read scope")
     normalized_source_key = _normalized_identity_part(canonical_source_key)
     return (
-        ":".join(
-            (
-                "domain",
-                _normalized_identity_part(canonical_namespace),
-                _normalized_identity_part(canonical_kind),
-                normalized_source_key,
-            )
+        canonical_entity_key(
+            entity,
+            domain_identity=(
+                canonical_namespace,
+                canonical_kind,
+                canonical_source_key,
+            ),
         ),
         normalized_source_key,
     )
@@ -257,15 +295,156 @@ def _merge_duplicate(
 
 
 def _retention_key(row: CanonicalEvidence) -> tuple[int, ...] | tuple[Any, ...]:
+    return evidence_retention_key(
+        row,
+        freshness=row.freshness,
+        stable_id=row.stable_id,
+        variant_id=row.variant_id,
+    )
+
+
+def evidence_retention_key(
+    row: SnapshotEvidence | CanonicalEvidence,
+    *,
+    freshness: str,
+    stable_id: str,
+    variant_id: str,
+) -> tuple[Any, ...]:
+    """Return the shared deterministic priority for canonical/page evidence."""
+
     return (
         -int(row.selected),
         -int(row.direct),
         -int(row.actionable),
         -_SEVERITY_PRIORITY[row.severity],
-        -_FRESHNESS_PRIORITY[row.freshness],
+        -_FRESHNESS_PRIORITY[freshness],
         -_QUALITY_PRIORITY[row.quality],
-        row.stable_id,
-        row.variant_id,
+        stable_id,
+        variant_id,
+    )
+
+
+@dataclass(frozen=True)
+class BrowserEvidenceSelection:
+    """Non-authoritative page rows admitted only for cited presentation."""
+
+    evidence: tuple[SnapshotEvidence, ...]
+    uncertainty: tuple[str, ...]
+
+
+def select_browser_evidence_for_retention(
+    snapshot: EvidenceSnapshotV2,
+    *,
+    retention_limit: int = MAX_EVIDENCE_ROWS,
+) -> BrowserEvidenceSelection:
+    """Apply canonical conflict, completeness, and ranking rules before retention.
+
+    Browser identity is used only to conservatively exclude contradictory page
+    observations. It never grants scope or tool authority.
+    """
+
+    if not 1 <= retention_limit <= MAX_EVIDENCE_ROWS:
+        raise ValueError("snapshot retention limit is outside the policy bound")
+
+    incomplete_claims = {
+        claim.claim_id
+        for claim in snapshot.material_claims
+        if claim.requires_complete_coverage and not snapshot.coverage.complete
+    }
+    admissible_refs = {
+        reference
+        for claim in snapshot.material_claims
+        if claim.claim_id not in incomplete_claims
+        for reference in claim.evidence_refs
+    }
+    candidates = [
+        row
+        for row in snapshot.evidence
+        if row.status in {"ok", "partial"} and row.evidence_id in admissible_refs
+    ]
+
+    freshness_by_source: dict[str, str] = {}
+    for record in snapshot.freshness:
+        source = _normalized_identity_part(record.source)
+        current = freshness_by_source.get(source)
+        freshness_by_source[source] = (
+            record.status
+            if current is None
+            else _stronger_value(current, record.status, _FRESHNESS_WARNING)
+        )
+
+    def identity(row: SnapshotEvidence) -> str:
+        entity = (
+            canonical_entity_key(row.entity)
+            if row.entity is not None
+            else {
+                "resource_id": (
+                    _canonical_resource_id(row.resource_id)
+                    if row.resource_id.startswith("/")
+                    else _normalized_identity_part(row.resource_id)
+                ),
+                "page_id": snapshot.page_id,
+            }
+        )
+        return json.dumps(
+            (
+                _normalized_identity_part(row.source),
+                _normalized_identity_part(row.source_key or row.evidence_id),
+                entity,
+                _normalized_identity_part(row.claim_type),
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def variant(row: SnapshotEvidence) -> str:
+        return json.dumps(
+            row.data,
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    groups: dict[str, list[SnapshotEvidence]] = {}
+    for row in candidates:
+        groups.setdefault(identity(row), []).append(row)
+    conflicting_ids = {
+        row.evidence_id
+        for group in groups.values()
+        if len({variant(row) for row in group}) > 1
+        for row in group
+    }
+    admissible = [row for row in candidates if row.evidence_id not in conflicting_ids]
+    ranked = sorted(
+        admissible,
+        key=lambda row: evidence_retention_key(
+            row,
+            freshness=freshness_by_source.get(
+                _normalized_identity_part(row.source),
+                "unknown",
+            ),
+            stable_id=identity(row),
+            variant_id=variant(row),
+        ),
+    )
+    retained = ranked[:retention_limit]
+
+    uncertainty: list[str] = []
+    if conflicting_ids:
+        uncertainty.append("Conflicting page evidence was excluded from synthesis.")
+    if incomplete_claims:
+        uncertainty.append(
+            "Incomplete material claims requiring complete coverage were excluded."
+        )
+    discarded_count = len(ranked) - len(retained)
+    if discarded_count:
+        suffix = "row" if discarded_count == 1 else "rows"
+        uncertainty.append(
+            f"Page evidence retention limit discarded {discarded_count} {suffix}."
+        )
+    return BrowserEvidenceSelection(
+        evidence=tuple(retained),
+        uncertainty=tuple(uncertainty),
     )
 
 

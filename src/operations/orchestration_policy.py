@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from api.scope import Scope
+from operations.maf_orchestrator import reviewed_specialists_for_page
 from operations.mcp_server import REVIEWED_TOOLS, validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
@@ -104,13 +105,19 @@ class OrchestrationPolicy:
             COVERAGE_CITATION_ID,
             *(item.evidence_id for item in request.snapshot.evidence),
         }
+        reviewed_specialists = set(
+            reviewed_specialists_for_page(
+                request.snapshot.page_kind,
+                self.manifest.page_mapping_projection(),
+            )
+        )
 
         for step in candidate.steps:
             try:
                 specialist = self.manifest.require(step.specialist_id)
             except ValueError as exc:
                 raise PolicyViolation("unknown_specialist", step.specialist_id) from exc
-            if request.snapshot.page_kind not in specialist.page_mappings:
+            if step.specialist_id not in reviewed_specialists:
                 raise PolicyViolation("page_not_granted", request.snapshot.page_kind)
             if not specialist.read_only:
                 raise PolicyViolation("mutation_forbidden")

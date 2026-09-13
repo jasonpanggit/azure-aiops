@@ -753,10 +753,30 @@ class GranularExposureOntologyMapper:
             source_rows,
             ontology_generation_id,
         )
-        relationships = self.relationship_builder.build(
+        exposure_entity_count = sum(
+            row.get("entity_type") == "VulnerabilityObservation"
+            for row in entities
+        )
+        relationship_limit = self.relationship_builder.max_relationships
+        construction_builder = RelationshipBuilder(
+            max_entities=self.relationship_builder.max_entities,
+            max_relationships=relationship_limit + exposure_entity_count,
+        )
+        relationships = construction_builder.build(
             entities,
             ontology_generation_id,
         )
+        relationships = [
+            row
+            for row in relationships
+            if not (
+                row.get("subject_type") == "ImageDigest"
+                and row.get("predicate") == "hasVulnerabilityObservation"
+                and row.get("object_type") == "VulnerabilityObservation"
+            )
+        ]
+        if len(relationships) > relationship_limit:
+            raise ValueError("Ontology relationship bound exceeded")
         return entities, relationships
 
     def project(
