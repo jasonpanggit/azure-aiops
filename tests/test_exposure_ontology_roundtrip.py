@@ -18,6 +18,7 @@ from fabric_pipelines.vulnerability_pipeline import (
 from ontology.entity_builder import typed_image_semantic_id
 from ontology.ontology_sync import OntologyGraphSynchronizer
 from ontology.ontology_validator import OntologyValidator
+from ontology.relationship_builder import RelationshipBuilder
 
 DIGEST = f"sha256:{'a' * 64}"
 TENANT_ID = "tenant-1"
@@ -330,6 +331,95 @@ def test_canonical_mapper_raises_only_the_source_input_bound() -> None:
     assert mapper.relationship_builder.max_relationships == 250_000
     assert mapper.synchronizer.max_entities == 100_000
     assert mapper.synchronizer.max_relationships == 250_000
+
+
+def test_granular_mapper_omits_redundant_reverse_exposure_edges() -> None:
+    products = fabric_products()
+    second_observation = deepcopy(
+        products["silver_container_vulnerability_observations"][0]
+    )
+    second_observation.update(
+        {
+            "resource_id": "vulnerability-observation:v1:second",
+            "vulnerability_observation_id": (
+                "vulnerability-observation:v1:second"
+            ),
+            "source_event_id": "defender-event-second",
+            "assessment_id": "assessment-second",
+            "cve_id": "CVE-2026-4243",
+            "change_version": "change:second",
+        }
+    )
+    products["silver_container_vulnerability_observations"].append(
+        second_observation
+    )
+    products[CONTAINER_EXPOSURE_CURRENT_TABLE] = (
+        materialize_container_exposure_tables(
+            products,
+            projected_at=OBSERVED_AT,
+            source_generation=SOURCE_GENERATION,
+        )[CONTAINER_EXPOSURE_CURRENT_TABLE]
+    )
+    mapper = GranularExposureOntologyMapper(
+        relationship_builder=RelationshipBuilder(max_relationships=14)
+    )
+
+    entities, relationships = mapper.build_rows(
+        products,
+        ontology_generation_id="ontology-generation-bounded-edges",
+    )
+
+    assert len(
+        [
+            row
+            for row in entities
+            if row["entity_type"] == "VulnerabilityObservation"
+        ]
+    ) == 2
+    assert sum(row["predicate"] == "affects" for row in relationships) == 2
+    assert sum(row["predicate"] == "identifies" for row in relationships) == 2
+    assert all(
+        row["predicate"] != "hasVulnerabilityObservation"
+        for row in relationships
+    )
+
+
+def test_granular_mapper_still_enforces_retained_relationship_bound() -> None:
+    products = fabric_products()
+    original = products["silver_container_vulnerability_observations"][0]
+    for suffix, cve_id in (("second", "CVE-2026-4243"), ("third", "CVE-2026-4244")):
+        observation = deepcopy(original)
+        observation.update(
+            {
+                "resource_id": f"vulnerability-observation:v1:{suffix}",
+                "vulnerability_observation_id": (
+                    f"vulnerability-observation:v1:{suffix}"
+                ),
+                "source_event_id": f"defender-event-{suffix}",
+                "assessment_id": f"assessment-{suffix}",
+                "cve_id": cve_id,
+                "change_version": f"change:{suffix}",
+            }
+        )
+        products["silver_container_vulnerability_observations"].append(
+            observation
+        )
+    products[CONTAINER_EXPOSURE_CURRENT_TABLE] = (
+        materialize_container_exposure_tables(
+            products,
+            projected_at=OBSERVED_AT,
+            source_generation=SOURCE_GENERATION,
+        )[CONTAINER_EXPOSURE_CURRENT_TABLE]
+    )
+    mapper = GranularExposureOntologyMapper(
+        relationship_builder=RelationshipBuilder(max_relationships=14)
+    )
+
+    with pytest.raises(ValueError, match="Ontology relationship bound exceeded"):
+        mapper.build_rows(
+            products,
+            ontology_generation_id="ontology-generation-over-bound",
+        )
 
 
 def test_legacy_source_event_nodes_are_removed_before_canonical_sync() -> None:
