@@ -724,7 +724,9 @@ class DeltaWriter:
         table_uri: str | Path,
         *,
         version: int | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Read a Delta table, optionally projecting only required columns."""
         if (
             version is not None
             and (
@@ -747,11 +749,16 @@ class DeltaWriter:
             version=version,
             storage_options=self.storage_options,
         )
+        projected_columns = list(columns) if columns is not None else None
         if urlparse(uri).scheme in {"", "file"}:
             actions = pa.table(table.get_add_actions(flatten=True))
             files = [str(Path(uri) / path) for path in actions.column("path").to_pylist()]
-            return pq.read_table(files).to_pylist() if files else []
-        return table.to_pyarrow_table().to_pylist()
+            return (
+                pq.read_table(files, columns=projected_columns).to_pylist()
+                if files
+                else []
+            )
+        return table.to_pyarrow_table(columns=projected_columns).to_pylist()
 
     def exists(self, table_uri: str | Path) -> bool:
         return DeltaTable.is_deltatable(str(table_uri), storage_options=self.storage_options)

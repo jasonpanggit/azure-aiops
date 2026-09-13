@@ -70,6 +70,50 @@ from storage.datasets import DatasetStore as NeutralDatasetStore
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
 
 
+def test_fabric_temporal_exposure_reads_observation_projection() -> None:
+    reads: list[tuple[str, tuple[str, ...] | None]] = []
+
+    class Delta:
+        def version(self, _uri: str) -> int:
+            return 1
+
+        def read(
+            self,
+            uri: str,
+            *,
+            columns: tuple[str, ...] | None = None,
+        ) -> list[dict[str, object]]:
+            reads.append((uri, columns))
+            return []
+
+    service = SimpleNamespace(
+        onelake=SimpleNamespace(
+            table_uri=lambda layer, name: f"/{layer}/{name}"
+        ),
+        delta=Delta(),
+    )
+
+    runtime_module._fabric_temporal_exposure_tables(
+        SimpleNamespace(service=service)
+    )
+
+    assert reads == [
+        ("/gold/exposure_current", None),
+        (
+            "/silver/exposure_observations",
+            (
+                "observation_id",
+                "event_time",
+                "ingested_at",
+                "run_at",
+                "published_at",
+                "enriched_at",
+            ),
+        ),
+        ("/metadata/source_status", None),
+    ]
+
+
 def test_durable_catalog_records_reuse_short_ttl_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

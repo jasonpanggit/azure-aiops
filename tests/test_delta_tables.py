@@ -160,6 +160,20 @@ def test_delta_writer_reads_exact_historical_version(tmp_path: Path) -> None:
     assert writer.read(table, version=second.version)[0]["name"] == "second"
 
 
+def test_delta_writer_projects_requested_columns(tmp_path: Path) -> None:
+    table = tmp_path / "table"
+    writer = DeltaWriter()
+    writer.write(
+        table,
+        [{**REQUIRED, "name": "first"}],
+        mode=DeltaWriteMode.OVERWRITE,
+    )
+
+    assert writer.read(table, columns=("resource_id", "name")) == [
+        {"resource_id": REQUIRED["resource_id"], "name": "first"}
+    ]
+
+
 @pytest.mark.parametrize("version", [-1, True, 1.5, "1"])
 def test_delta_writer_rejects_invalid_historical_version(
     tmp_path: Path,
