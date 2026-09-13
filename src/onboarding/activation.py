@@ -75,6 +75,8 @@ _COMPLETION_FIELDS: dict[str, frozenset[str]] = {
         {
             "dataset_count",
             "failure_count",
+            "checkpoint_rows_written",
+            "checkpoint_bytes_written",
             "checkpoint_id",
             "checkpoint_state",
             "publication_id",
@@ -135,6 +137,8 @@ _COUNT_FIELDS = frozenset(
         "remaining_tables",
         "resumed_tables",
         "skipped_tables",
+        "checkpoint_rows_written",
+        "checkpoint_bytes_written",
     }
 )
 _SAFE_ERROR_CODES = frozenset({"ACTIVATION_FAILED"})

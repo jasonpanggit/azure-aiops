@@ -340,6 +340,68 @@ def test_remote_delete_rejects_etag_race(tmp_path):
         store.delete("threads/thread.json", expected_revision=1)
 
 
+def test_remote_immutable_lines_split_only_on_newline(tmp_path):
+    from azure.core import MatchConditions
+
+    text = (
+        '{"value":"before\u2028middle\u2029after\u0085end"}\n'
+        '{"value":"unterminated\u2028line"}'
+    )
+    encoded = text.encode("utf-8")
+    chunks = [encoded[:19], encoded[19:24], encoded[24:41], encoded[41:]]
+
+    class _Download:
+        def chunks(self):
+            yield from chunks
+
+    class _FileClient:
+        def get_file_properties(self):
+            return SimpleNamespace(etag='"artifact-etag"')
+
+        def download_file(self, *, etag, match_condition):
+            assert etag == '"artifact-etag"'
+            assert match_condition is MatchConditions.IfNotModified
+            return _Download()
+
+    class _FsClient:
+        def get_file_client(self, path):
+            assert path == f"{tmp_path}/artifacts/data.jsonl"
+            return _FileClient()
+
+    store = OneLakeDocumentStore(tmp_path)
+    store.is_remote = True
+    store._file_system_client = _FsClient()
+    store._base = str(tmp_path)
+
+    lines = list(store.iter_text_lines_or_raise("artifacts/data.jsonl"))
+
+    assert lines == [
+        '{"value":"before\u2028middle\u2029after\u0085end"}\n',
+        '{"value":"unterminated\u2028line"}',
+    ]
+    assert [json.loads(line)["value"] for line in lines] == [
+        "before\u2028middle\u2029after\u0085end",
+        "unterminated\u2028line",
+    ]
+
+
+def test_immutable_line_iterator_releases_store_lock_before_yield(tmp_path):
+    store = OneLakeDocumentStore(tmp_path)
+    store.create_text_chunks_only(
+        "artifacts/data.jsonl",
+        ('{"row":1}\n{"row":2}\n',),
+    )
+    lines = store.iter_text_lines_or_raise("artifacts/data.jsonl")
+
+    assert next(lines) == '{"row":1}\n'
+    assert store._lock.acquire(blocking=False)
+    store._lock.release()
+    store.put("state/other.json", {"ok": True})
+    lines.close()
+
+    assert store.read("state/other.json")["ok"] is True
+
+
 def test_concurrent_read_does_not_observe_partial_write(tmp_path):
     """Regression test: a read racing a slow, in-flight write must never see
     a partially-written document. Before this fix, ``read()`` held no lock,

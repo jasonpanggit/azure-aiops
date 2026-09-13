@@ -53,7 +53,12 @@ from ontology.entity_builder import entity_change_version
 from ontology.ontology_sync import OntologyGraphResult
 from ontology.relationship_builder import relationship_change_version
 from ontology_discovery.publisher import OntologyGenerationCandidate
-from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.delta_writer import (
+    DeltaHistoryTruncatedError,
+    DeltaWriteMode,
+    DeltaWriter,
+    DeltaWriteResult,
+)
 from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
 
@@ -114,6 +119,28 @@ def _container_source_snapshot(
             "status": "completed",
         },
     )
+
+
+def test_explicit_replay_returns_matching_finalized_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    first = service.sync()
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail(
+            "finalized source snapshot was projected again"
+        ),
+    )
+
+    second = service.sync(replay_source_run_id=first.source_run_id)
+
+    assert second.run_id == first.run_id
+    assert second.source_run_id == first.source_run_id
+    assert second.tables == first.tables
+    assert second.replay is True
 
 
 def test_sync_deduplicates_unchanged_container_observation_across_source_generations(
@@ -513,6 +540,134 @@ def test_successful_rollback_also_preserves_immutable_snapshot_findings(
     assert restored == ["manifest-uri"]
 
 
+def test_partial_rollback_clears_only_restored_checkpoint_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    checkpoint = service.publication_checkpoints.persist(
+        source_run_id="source-run-1",
+        source_manifest_digest="a" * 64,
+        run_id="publication-run-1",
+        started_at="2026-09-13T00:00:00Z",
+        source_projected_at="2026-09-13T00:00:00Z",
+        source_watermark="",
+        failed_records=0,
+        ontology_health={"status": "healthy"},
+        ontology_entity_count=1,
+        ontology_relationship_count=1,
+        datasets={
+            "bronze_resources": [{"resource_id": "resource-1"}],
+            "ontology_entities": [{"resource_id": "entity-1"}],
+        },
+        exposure_gold_observation_rows=None,
+    )
+    expected_versions = {
+        "bronze_resources": 0,
+        "ontology_entities": 0,
+    }
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=expected_versions,
+        expected_before_versions=expected_versions,
+    )
+    for table_name in expected_versions:
+        intent = service.publication_checkpoints.begin_table_write(
+            checkpoint,
+            plan,
+            table_name=table_name,
+            outcome_digest=("b" if table_name == "bronze_resources" else "c") * 64,
+        )
+        service.publication_checkpoints.record_table_result(
+            checkpoint,
+            plan,
+            table_name=table_name,
+            expected_before_version=0,
+            result=DeltaWriteResult(rows_processed=1, version=1),
+            intent=intent,
+        )
+
+    def restore(table_uri: str, _version: int) -> None:
+        if table_uri == "failed-uri":
+            raise RuntimeError("restore unavailable")
+
+    monkeypatch.setattr(service.delta, "restore", restore)
+    service.rollback_sleep = lambda _seconds: None
+
+    errors = service._rollback_publication(
+        {
+            "bronze_resources": ("restored-uri", 0),
+            "ontology_entities": ("failed-uri", 0),
+        },
+        checkpoint=checkpoint,
+        plan=plan,
+    )
+    resumed = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=expected_versions,
+        expected_before_versions=expected_versions,
+    )
+
+    assert errors == ["ontology_entities: restore unavailable"]
+    assert set(resumed.completed) == {"ontology_entities"}
+    assert resumed.completed["ontology_entities"].resulting_version == 1
+    assert "bronze_resources" not in resumed.completed
+
+
+def test_reconciliation_reports_truncated_delta_history_actionably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    checkpoint = service.publication_checkpoints.persist(
+        source_run_id="source-run-1",
+        source_manifest_digest="a" * 64,
+        run_id="publication-run-1",
+        started_at="2026-09-13T00:00:00Z",
+        source_projected_at="2026-09-13T00:00:00Z",
+        source_watermark="",
+        failed_records=0,
+        ontology_health={"status": "healthy"},
+        ontology_entity_count=1,
+        ontology_relationship_count=0,
+        datasets={"bronze_resources": [{"resource_id": "resource-1"}]},
+        exposure_gold_observation_rows=None,
+    )
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": 7},
+    )
+    service.publication_checkpoints.begin_table_write(
+        checkpoint,
+        plan,
+        table_name="bronze_resources",
+        outcome_digest="b" * 64,
+    )
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": 7},
+    )
+    monkeypatch.setattr(
+        service.delta,
+        "committed_transaction",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DeltaHistoryTruncatedError("history is truncated")
+        ),
+    )
+
+    with pytest.raises(
+        PublicationCheckpointError,
+        match="history is truncated.*explicitly abandon",
+    ):
+        service._reconcile_publication_intents(
+            checkpoint,
+            plan,
+            table_uris={"bronze_resources": "table-uri"},
+        )
+
+
 def test_exposure_gold_input_view_retains_only_projection_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -665,6 +820,8 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
         "checkpoint_persistence": {
             "dataset_count",
             "failure_count",
+            "checkpoint_rows_written",
+            "checkpoint_bytes_written",
             "checkpoint_id",
             "checkpoint_state",
             "publication_id",
@@ -713,6 +870,8 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
         "remaining_tables",
         "resumed_tables",
         "skipped_tables",
+        "checkpoint_rows_written",
+        "checkpoint_bytes_written",
     }
     for event in stage_events:
         assert set(event) >= {"stage", "status"}
@@ -904,9 +1063,15 @@ def test_exact_historical_replay_runs_full_finalization_transaction(
     assert marker["replay"] is True
 
 
-def test_exact_replay_restores_prepared_state_and_skips_completed_writes(
+@pytest.mark.parametrize(
+    ("replay_source_run_id", "expected_replay"),
+    [("source-run-1", True), ("", False)],
+)
+def test_rerun_restores_prepared_state_and_skips_completed_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    replay_source_run_id: str,
+    expected_replay: bool,
 ) -> None:
     service = _service(tmp_path)
     pointer_store = OneLakeDocumentStore(tmp_path / "registry")
@@ -973,13 +1138,14 @@ def test_exact_replay_restores_prepared_state_and_skips_completed_writes(
     table_events: list[FabricTableWriteProgress] = []
 
     result = service.sync(
-        replay_source_run_id="source-run-1",
+        replay_source_run_id=replay_source_run_id,
         exposure_pointer_store=pointer_store,
         progress_callback=table_events.append,
         stage_progress_callback=events.append,
     )
 
     assert result.status == "completed"
+    assert result.replay is expected_replay
     assert result.run_id == checkpoint.run_id
     assert any(event["stage"] == "checkpoint_restore" for event in events)
     resume_event = next(
@@ -1003,6 +1169,45 @@ def test_exact_replay_restores_prepared_state_and_skips_completed_writes(
     assert table_events[-1].checkpoint_id == checkpoint.checkpoint_id
     assert table_events[-1].checkpoint_state == "restored"
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+
+def test_normal_nonfinalized_manifest_mismatch_fails_without_deletion(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    snapshot = Path(service._resolve_snapshot(""))
+    source_manifest = service._read_manifest(snapshot)
+    source_manifest_digest = sync_module._hash_json(source_manifest)
+    checkpoint = service.publication_checkpoints.persist(
+        source_run_id="source-run-1",
+        source_manifest_digest=source_manifest_digest,
+        run_id="interrupted-publication",
+        started_at="2026-09-13T00:00:00Z",
+        source_projected_at="2026-08-17T00:00:00Z",
+        source_watermark="2026-08-17T00:00:00Z",
+        failed_records=0,
+        ontology_health={"status": "healthy"},
+        ontology_entity_count=0,
+        ontology_relationship_count=0,
+        datasets={},
+        exposure_gold_observation_rows=None,
+    )
+    source_manifest["retryNonce"] = "changed-after-checkpoint"
+    (snapshot / "manifest.json").write_text(
+        json.dumps(source_manifest),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        PublicationCheckpointError,
+        match="source manifest does not match",
+    ):
+        service.sync()
+
+    assert service.publication_checkpoints.load(
+        "source-run-1",
+        source_manifest_digest=source_manifest_digest,
+    ) == checkpoint
 
 
 def test_fresh_process_exact_replay_survives_prepare_and_high_count_deaths(
@@ -2019,6 +2224,7 @@ def test_sync_publishes_repeatable_exposure_generation_and_pointer(
     expected_generation = str(pointer["readable_generation_id"])
     assert first.status == "completed"
     assert second.status == "completed"
+    assert second.run_id != first.run_id
     assert expected_generation.startswith("exposure-gold-")
     assert set(EXPOSURE_GOLD_TABLES) <= set(second.tables)
     assert "metadata_exposure_gold_generations" in second.tables

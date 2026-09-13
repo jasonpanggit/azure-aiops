@@ -30,6 +30,10 @@ class DeltaVersionConflictError(RuntimeError):
     """Raised when a fenced publication no longer owns the planned Delta head."""
 
 
+class DeltaHistoryTruncatedError(RuntimeError):
+    """Raised when bounded Delta history cannot prove an intent's outcome."""
+
+
 def _publication_commit_metadata(
     transaction_id: str,
     transaction_digest: str,
@@ -265,6 +269,13 @@ class DeltaWriter:
                 scan_partition_values=scan_partition_values,
             )
         )
+        if (
+            publication_expected_version is not _NO_EXPECTED_VERSION
+            and version != publication_expected_version
+        ):
+            raise DeltaVersionConflictError(
+                "Delta table changed after publication planning"
+            )
 
         if unique_indices and not pending_indices:
             return DeltaWriteResult(
@@ -769,7 +780,8 @@ class DeltaWriter:
         if not self.exists(table_uri):
             return None
         table = DeltaTable(str(table_uri), storage_options=self.storage_options)
-        for commit in table.history(limit=_PUBLICATION_HISTORY_LIMIT):
+        history = table.history(limit=_PUBLICATION_HISTORY_LIMIT)
+        for commit in history:
             if commit.get(_PUBLICATION_INTENT_ID) != transaction_id:
                 continue
             if commit.get(_PUBLICATION_OUTCOME_DIGEST) != transaction_digest:
@@ -785,6 +797,12 @@ class DeltaWriter:
             return DeltaWriteResult(
                 rows_processed=rows_processed,
                 version=version,
+            )
+        if len(history) == _PUBLICATION_HISTORY_LIMIT:
+            raise DeltaHistoryTruncatedError(
+                "Delta publication history is truncated before the transaction "
+                "could be reconciled; verify the table head and explicitly "
+                "abandon the publication checkpoint if the intent cannot be proven"
             )
         return None
 
