@@ -92,6 +92,16 @@ _OVERVIEW_DOMAIN_SPECIALISTS = (
     "finops",
     "resource_health_observability",
 )
+_OVERVIEW_SYNTHESIS_FALLBACK = ("incident", "governance")
+_EXECUTIVE_INTENT_MARKERS = (
+    "executive",
+    "leadership",
+    "cross-domain",
+    "cross domain",
+    "situation report",
+    "roll up",
+    "brief",
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +147,17 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     process-local state. The retained rollback mode is intentionally fixed to
     compatibility; an unexpected value also fails closed.
     """
+
+    if (
+        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
+        == MODE_DETERMINISTIC
+    ):
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_COMPATIBILITY,
+            canonical_enabled=False,
+            shadow_enabled=False,
+            reason="deterministic_override",
+        )
 
     rollback_mode = os.environ.get(
         ENV_COPILOT_ROLLBACK_MODE, ROLLOUT_COMPATIBILITY
@@ -225,11 +246,6 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
 def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
     """Return whether this request routes through the canonical service."""
 
-    if (
-        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
-        == MODE_DETERMINISTIC
-    ):
-        return False
     return copilot_rollout_decision(stable_key=stable_key).canonical_enabled
 
 
@@ -349,6 +365,17 @@ def select_specialists_for_turn(
             _append_unique(selected, agent_id, limit=limit)
 
     if selected:
+        if (
+            page_kind == "overview"
+            and len(selected) < min(2, limit)
+            and any(
+            marker in lowered for marker in _EXECUTIVE_INTENT_MARKERS
+            )
+        ):
+            for specialist_id in _OVERVIEW_SYNTHESIS_FALLBACK:
+                _append_unique(selected, specialist_id, limit=limit)
+                if len(selected) >= min(2, limit):
+                    break
         return OrchestrationDecision(
             selected_ids=tuple(selected),
             strategy="question_first",

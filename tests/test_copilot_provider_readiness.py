@@ -244,6 +244,28 @@ def test_missing_rollout_preserves_explicit_legacy_canonical_switch(
     assert decision.reason == "legacy_canonical_mode"
 
 
+def test_deterministic_override_disables_default_canonical_rollout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
+
+    decision = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
+    )
+
+    assert decision.mode == "compatibility"
+    assert decision.canonical_enabled is False
+    assert decision.shadow_enabled is False
+    assert decision.reason == "deterministic_override"
+    assert (
+        maf_orchestrator.canonical_orchestration_enabled(
+            stable_key="operator-a"
+        )
+        is False
+    )
+
+
 def test_rollout_modes_preserve_compatibility_shadow_canary_and_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

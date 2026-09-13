@@ -12,6 +12,8 @@ it may never add an unrelated globally matched specialist.
 
 from __future__ import annotations
 
+import pytest
+
 from operations.autonomous_investigation import (
     AGENTS,
     MAX_CONTEXT_SPECIALISTS,
@@ -192,6 +194,39 @@ def test_maf_orchestrator_uses_page_only_when_question_has_no_specialist_intent(
 
     assert decision.strategy == "page_fallback"
     assert decision.selected_ids == ("network",)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    (
+        (
+            "Summarise the top cross-domain risks for leadership.",
+            ("vulnerability", "incident"),
+        ),
+        (
+            "Give a cited cross-domain risk brief for the payments service.",
+            ("vulnerability", "incident"),
+        ),
+        (
+            "Produce a one-paragraph situation report for the payments service.",
+            ("incident", "governance"),
+        ),
+    ),
+)
+def test_explicit_overview_synthesis_delegates_to_multiple_domains(
+    question,
+    expected,
+) -> None:
+    decision = select_specialists_for_turn(
+        page_kind="overview",
+        question=question,
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+
+    assert decision.selected_ids == expected
+    assert "executive_summary" not in decision.selected_ids
 
 
 def test_reported_page_routes_use_exact_ordered_safe_sets() -> None:

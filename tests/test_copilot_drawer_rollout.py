@@ -136,6 +136,34 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
     }
 
 
+def test_drawer_default_respects_deterministic_emergency_override(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
+    body = _canonical_body()
+    body.pop("hint")
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["rollout"] == {
+        "mode": "compatibility",
+        "canonical_enabled": False,
+        "shadow_enabled": False,
+        "shadow_validated": False,
+        "shadow_reason": "",
+    }
+
+
 def test_shadow_rejection_does_not_fail_or_duplicate_primary_execution(
     tmp_path,
     monkeypatch,
