@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T12:21:37+08:00
+updated: 2026-09-13T13:05:08+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,25 +31,25 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed and corrected: canonical output is normalized before scoring; unhinted exact page kinds plan from validated question plus scope-validated Azure selection context; unsafe starter hints are omitted or use canonical keys; and explicit thread revision is rechecked after conflict reload."
-test: "Complete: 693/694 selected backend tests passed with one pre-existing packaging skip; 170/170 Phase 11 web tests, Ruff, strict TypeScript, Next lint, shell syntax, 9/9 offline parity, evaluator/JSON syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
-expecting: "Independent caller review accepts the four committed fixes; live/provider/deployment evidence remains explicitly BLOCKED and was not contacted."
-next_action: "Await human verification of commits 8bfc0b52a, c0f4b6c9e, 0c9a01e15, and 4c536597d. Do not archive until confirmed."
+hypothesis: "Confirmed and corrected: rollout is evaluated once at the drawer API boundary; canonical safety/quality signals are computed from canonical response facts while deployed grant parity remains runtime evidence; and domain evidence is server-resolved and scope-authorized before canonical retention."
+test: "Complete: 704/705 selected backend tests passed with one pre-existing packaging skip; 170/170 web tests, Ruff, TypeScript, lint, shell syntax, 9/9 parity, evaluator/corpus syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
+expecting: "Clean-room reviewer accepts stable HEAD after this debug closeout; no further branch changes."
+next_action: "Await human verification of the cumulative review commits. Do not archive until confirmed."
 reasoning_checkpoint:
-  hypothesis: "Four independent code-contract mismatches cause the review failures: `_run_case` reads only legacy response fields; the canonical route erases validated selected context before deterministic planning and leaves overview mapped only to a tool-less synthesizer; shared starter constants emit backend-invalid argument objects; and `authorize` retries a CAS conflict without rechecking the caller's explicit thread revision."
+  hypothesis: "Three independent contract gaps cause the cumulative blockers: the canonical drawer handler never evaluates `copilot_rollout_decision`; the evaluator expects response booleans the canonical contract does not expose and compares executed Operations tools to mixed capability grants; and raw DomainEntityRef rows bypass `canonicalize_snapshot_v2` with a server resolver before browser retention."
   confirming_evidence:
-    - "A realistic canonical response with selected_specialists, selected_tools, tool_results, citations, and synthesis.claims produces an empty specialist/tool set, no narration, and failed routing before any source edit."
-    - "Exact unhinted governance, identity, finops, and overview endpoint requests with one in-scope selected Azure entity all return zero selected specialists and `no_safe_tool_arguments`."
-    - "The cross-language Vitest/Python parity regression reports 23 emitted hints rejected by backend `validate_tool_arguments`, including empty required fields and the wrong business_service/q/kb_id keys."
-    - "A two-store interleaving advances the durable thread to revision 1 between authorize load and persist; the stale expected_revision=0 caller then succeeds and narrows durable scope instead of raising."
-  falsification_test: "If canonical fields score before normalization, if typed requests can form valid calls after selected context is removed, if all exported hints pass the backend validator unchanged, or if the interleaved stale caller already raises while preserving durable scope/revision, the corresponding hypothesis is false."
-  fix_rationale: "Normalize canonical output at the evaluator boundary with legacy fallback; retain only scope-validated Azure planning identities and derive required read-only arguments from validated request text/context; omit unsafe hints or correct their canonical keys; and recheck explicit expected revision immediately after every persistence-conflict reload."
-  blind_spots: "Domain-entity server resolution is not available at this route boundary, so planning must not authorize domain source keys; adjacent legacy evaluator diagnostics, all exact page kinds, full starter exports, no-hint behavior without selected context, and conflict-free authorization retries require held-out validation."
+    - "All compatibility/shadow/canary/default/invalid-rollback API cases execute the same accepted canonical branch and return no rollout decision metadata."
+    - "A canonical response with complete specialists/tools/citations/claims still leaves scope_ok, unknown_id_denied, disposition_ok, manifest_projection_ok, groundedness, tool correctness, and deterministic spend unmeasured; the full real-planner corpus artifact is HOLD."
+    - "The corpus field named expect_grants mixes Operations and Azure MCP capabilities, while canonical selected_tools contains only executed Operations MCP tools."
+    - "A sub-b-secret DomainEntityRef submitted under sub-a reaches `call_tool`; the eventual 400 is caused only by the test executor returning the wrong type, proving domain scope was not checked before I/O."
+  falsification_test: "If the drawer route already chooses a compatibility branch per rollout, if canonical response facts produce complete safety measurements without response booleans, or if the sub-b domain request is rejected before call_tool, the corresponding hypothesis is false."
+  fix_rationale: "Evaluate rollout once at the public canonical boundary and use a no-I/O shadow preflight; derive deterministic release fields from canonical response/envelope facts while moving deployed grant parity wholly to runtime parity evidence; resolve every domain identity through the server semantic index, authorize its canonical scope, and retain only canonicalized evidence."
+  blind_spots: "Compatibility uses the canonical response contract and must preserve thread behavior; semantic snapshots may not contain every browser domain key and must fail closed; corpus expected routing may expose prior expectations that disagree with the real deterministic planner."
   candidate_causes:
-    - "code: response adapters, deterministic planning context, hint construction, and CAS retry ordering each violate their canonical contracts"
-    - "data: emitted starter argument objects contain wrong keys or omit required values; the realistic canonical payload itself is valid"
-    - "environment/config: no provider, cloud, rollout flag, timing scheduler, or deployment state is involved; the defects reproduce offline with fixed inputs"
-  and_gate: "yes for the requested review outcome because all four independent defects must be corrected; no for each individual symptom because its named code/data boundary is independently sufficient"
+    - "code: rollout branching, response-derived safety measurement, and domain authorization/retention are missing at their public boundaries"
+    - "data: corpus capability expectations are mislabeled as executed grants and twelve expected specialist sets disagree with the real canonical planner"
+    - "environment/config: fixed environment variables and in-memory semantic indexes reproduce all failures; no cloud/provider/deployment condition contributes"
+  and_gate: "yes for release readiness because all three independent blockers must pass; no for each individual symptom because each named code/data mismatch is independently sufficient"
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "The reported Foundry project has only one governed connection named `demo`; exact distinct `operations-mcp` and `azure-mcp` project-connection resource IDs and payloads remain absent."
@@ -63,6 +63,39 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Evidence
 
+- timestamp: 2026-09-13T12:38:37+08:00
+  observation: The nominal phase remains Phase 4 planning, but this cumulative review explicitly authorizes three additional Phase 11 source/test blockers on the clean committed tip `c89b1e6f6`.
+  implication: Work remains limited to rollout-aware API/client behavior, evaluator/corpus contracts, domain identity authorization, focused tests, and the tracked debug record.
+- timestamp: 2026-09-13T12:38:37+08:00
+  observation: Six rollout API tests fail because `/api/v1/copilot/investigations` returns no rollout metadata and always uses the accepted canonical planner regardless of compatibility, shadow, canary share, default, or invalid rollback configuration.
+  implication: Finding 1 is confirmed at the actual drawer endpoint; the decision must be evaluated once per request and shadow may perform only no-I/O validation in addition to one primary execution.
+- timestamp: 2026-09-13T12:38:37+08:00
+  observation: Canonical safety derivation leaves all four absent response booleans as None, and a 96-case corpus driven by the real deterministic planner cannot produce PROMOTE. Twelve corpus specialist expectations also disagree with actual planner output, while expect_grants mixes Azure capabilities with executed Operations tools.
+  implication: Finding 2 requires measured canonical facts, real-planner-aligned corpus routing, and separation of deployed grant parity from per-turn executed tool correctness without changing thresholds.
+- timestamp: 2026-09-13T12:38:37+08:00
+  observation: A server semantic index resolves `sub-b-secret` to a sub-b Owner, but the sub-a canonical request reaches `call_tool`; the response becomes 400 only because the deliberately minimal test executor returns a list instead of ToolResult.
+  implication: Finding 3 is confirmed before retention: browser domain identities are neither server-resolved nor scope-authorized at the route boundary, and raw page retention remains reachable.
+- timestamp: 2026-09-13T12:46:32+08:00
+  observation: The drawer endpoint now evaluates one stable rollout decision per principal. Compatibility and canary-0 use the retained fallback planner, shadow performs policy-only canonical preflight plus one primary execution, and canary-100/default use the accepted canonical plan. Six API cases and the single-request drawer client check pass with tool-call count equal to selected-tool count and one executive call.
+  implication: Finding 1 is corrected without duplicate tool or model execution in shadow mode.
+- timestamp: 2026-09-13T12:46:32+08:00
+  observation: Canonical scoring now derives scope isolation from the response envelope and resource IDs, validates specialist/tool IDs and grants against the manifest, derives groundedness/tool correctness/deterministic spend, and treats route/schema facts as measured. The corpus capability field is no longer compared to executed Operations tools; deployed grant parity has no per-case proxy and remains gated by offline/live runtime evidence. A 96-case real-planner artifact reaches PROMOTE with unchanged thresholds.
+  implication: Finding 2 is corrected with active deterministic measurements rather than invented response booleans or weakened gates.
+- timestamp: 2026-09-13T12:46:32+08:00
+  observation: Every non-inventory DomainEntityRef now resolves through the server semantic index, canonical namespace/kind/source key and scope replace browser identity claims, and retained citations are minted only from canonical authorized evidence. The sub-b-secret request under sub-a returns 400 before tool I/O with no retained citation or secret in the response.
+  implication: Finding 3 is corrected at the identity/retention trust boundary; unresolved, ambiguous, or cross-scope domains fail closed.
+- timestamp: 2026-09-13T12:46:32+08:00
+  observation: The three fixes are committed as `df66d1d98`, `91022136a`, and `a80519229`, each with focused green tests and the required Copilot trailer.
+  implication: Full adjacency, static validation, causal reversion, and final scope review remain.
+- timestamp: 2026-09-13T13:05:08+08:00
+  observation: Reverting the three primary production commits while retaining current regressions restores every blocker: six rollout cases lack branch metadata, the domain request reaches tool I/O, canonical safety construction rejects the new capability contract, and the full corpus remains HOLD. Aborting the revert and restoring the same commits returns all focused cases to green.
+  implication: Causal revert-and-reconfirm passes for all three cumulative blockers.
+- timestamp: 2026-09-13T13:05:08+08:00
+  observation: Final post-commit validation passes 704/705 selected Phase 11 backend tests with one pre-existing wheel-build skip, 170/170 Phase 11 web tests, full Ruff, strict TypeScript, Next lint, shell syntax, evaluator bytecode/corpus JSON, MCP bridge 16/16, offline parity 9/9, and diff/ownership checks.
+  implication: Rollout selection, canonical promotion gates, domain authorization, legacy/canonical APIs, retained evidence semantics, client behavior, providers, MCP, and manifest parity are green together.
+- timestamp: 2026-09-13T13:05:08+08:00
+  observation: Final self-review added non-blocking shadow rejection metadata, nested ARM scope scanning, direct-service unresolved-domain rejection, inventory compatibility, and preserved conflict/completeness uncertainty wording. No owned Remediation/CVE/globals, deployment, infrastructure, Terraform, image, cloud, or live path changed.
+  implication: The final diff is source/test/debug-only, bounded to the three findings, and ready for clean-room read-only review.
 - timestamp: 2026-09-13T12:10:00+08:00
   observation: `.planning/STATE.md` identifies Phase 4 planning, while the request explicitly authorizes only four final Phase 11 source/test fixes. The inherited branch is clean at `0f0f12877`, and this tracked debug session already carries the Phase 11 remediation history.
   implication: This work is a bounded Phase 11 exception; live/provider/deployment/Terraform actions and owned Remediation/CVE/globals files remain excluded.
@@ -543,6 +576,44 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Resolution
 
+cumulative_final_review_root_cause: "The canonical drawer endpoint bypassed staged rollout selection; release scoring required booleans absent from the canonical result and conflated mixed deployed capabilities with per-turn Operations tools; and browser DomainEntityRef rows entered retention without server identity resolution or scope authorization."
+cumulative_final_review_fix: "Applied stable compatibility/shadow/canary/default selection at the drawer endpoint with non-blocking no-I/O shadow preflight; derived safety, grounding, tool correctness, scope, schema, and deterministic spend from canonical response/envelope facts while moving deployed grant parity to runtime evidence and aligning the corpus to the real planner; resolved non-inventory domain entities through the semantic index and minted retained citations only from canonical authorized evidence."
+cumulative_final_review_verification:
+  target_test:
+    result: pass
+    details: "Seven rollout API cases, one single-request drawer client case, two canonical release tests including a promotable 96-case real-planner artifact, and two domain authorization tests pass after starting RED."
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No configured Python or TypeScript mutation framework exists in this repository."
+    mutant_killed: false
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: true
+    details: "Changes add rollout branching, measured release evidence, server domain resolution, and canonical retention; no safety check, threshold, tool authorization, or provider gate was removed."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "Selected Phase 11 backend: 704 passed, 1 pre-existing packaging skip"
+      - "Six Phase 11 web files: 170 passed"
+      - "Full Ruff; strict TypeScript; Next lint"
+      - "Shell syntax; evaluator bytecode; corpus JSON; MCP bridge 16/16"
+      - "Offline specialist parity: 9/9"
+      - "Diff/ownership/commit checks: pass"
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+  guardrail_verdict: accepted
+cumulative_final_review_commits:
+  - "df66d1d98 fix(copilot): enforce drawer rollout modes"
+  - "91022136a fix(copilot): authorize domain evidence before retention"
+  - "a80519229 fix(copilot): make canonical corpus promotable"
+  - "50e130310 test(copilot): select canonical rollout in route tests"
+  - "6c84ea745 fix(copilot): keep shadow preflight nonblocking"
+  - "a2651c4d7 fix(copilot): inspect nested scope evidence"
+  - "5d207994a fix(copilot): harden review trust boundaries"
+  - "8eb0dd6d4 fix(copilot): preserve authorized retention compatibility"
+  - "7a5bc21a7 fix(copilot): preserve canonical evidence semantics"
 final_independent_review_root_cause: "The canonical evaluator consumed legacy response fields; the canonical route removed scope-valid selected identities before deterministic planning and left exact overview requests on a tool-less mapping; shared starter hints were grant-valid but argument-schema-invalid; and authorization retried after a storage CAS reload without rechecking an explicit caller thread revision."
 final_independent_review_fix: "Normalized canonical selected specialists/tools/results/citations/synthesis claims with legacy diagnostic fallback; built unhinted plans only from validated question text and scope-validated Azure selection identities, mapping overview planning to cited domain specialists; omitted context-free invalid hints and corrected known service-detail argument keys; and rechecked expected_revision after every authorize conflict reload."
 final_independent_review_verification:
