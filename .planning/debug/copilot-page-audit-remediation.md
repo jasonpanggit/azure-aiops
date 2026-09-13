@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T13:22:40+08:00
+updated: 2026-09-13T13:34:36+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,7 +31,7 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed and corrected: one effective rollout decision includes the deterministic emergency override; every dedicated corpus case uses its production API contract including two-principal thread denial; and explicit executive intent delegates to multiple evidence specialists while executive synthesis remains separate."
+hypothesis: "Confirmed and corrected: evaluator requests require explicit subscription scope, serialize the same scope in canonical `requested_scope` and URL query parameters, and validate against the production canonical payload contract before release scoring."
 test: "Complete: 710/711 selected backend tests passed with one pre-existing packaging skip; 170/170 web tests, Ruff, TypeScript, lint, shell syntax, 9/9 parity, evaluator/corpus syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
 expecting: "Clean-room reviewer accepts stable HEAD after this debug closeout; no further branch changes."
 next_action: "Await human verification of stable HEAD. Do not archive until confirmed."
@@ -108,6 +108,12 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 - timestamp: 2026-09-13T13:22:40+08:00
   observation: Reverting the effective selector, dedicated dispatch/scoring, and restored corpus routing returns all final failures; restoring them returns focused tests green. Final validation passes 710/711 backend tests (one pre-existing wheel-build skip), 170/170 web tests, Ruff, TypeScript, lint, shell syntax, parity 9/9, MCP bridge 16/16, and all diff/advisory/ownership checks.
   implication: The clean-room fixes are causal, complete, and confined to the requested source/test/debug scope.
+- timestamp: 2026-09-13T13:34:36+08:00
+  observation: The final request-shape regression reproduced that `_canonical_evaluation_body()` omitted required `requested_scope` and the URL omitted matching scope query parameters. Evaluation now requires at least one `--subscription`, normalizes the subscription set once, includes it in every canonical body and every production endpoint query, and validates every integrated body through `CanonicalInvestigationPayload.model_validate()`.
+  implication: A malformed 422-bound request can no longer contribute success-shaped release evidence or a PROMOTE decision.
+- timestamp: 2026-09-13T13:34:36+08:00
+  observation: Post-commit validation after `c5da93aa6` again passes 710/711 selected backend tests with one pre-existing packaging skip, 170/170 web tests, Ruff, TypeScript, lint, shell syntax, parity 9/9, MCP bridge 16/16, and diff/advisory/ownership checks.
+  implication: The explicit scope fix is complete and stable with no additional scope.
 - timestamp: 2026-09-13T12:10:00+08:00
   observation: `.planning/STATE.md` identifies Phase 4 planning, while the request explicitly authorizes only four final Phase 11 source/test fixes. The inherited branch is clean at `0f0f12877`, and this tracked debug session already carries the Phase 11 remediation history.
   implication: This work is a bounded Phase 11 exception; live/provider/deployment/Terraform actions and owned Remediation/CVE/globals files remain excluded.
@@ -588,6 +594,9 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Resolution
 
+final_scope_root_cause: "The evaluator generated canonical request bodies without the required requested_scope and sent no matching API query scope, so real integrated and cross-principal requests returned 422 while mocked dispatch could still appear promotable."
+final_scope_fix: "Required explicit `--subscription` inputs, propagated one normalized scope through `_run_case`/`_investigate`, serialized it in canonical payloads and URL query parameters for every production surface, and validated integrated payloads with the production `CanonicalInvestigationPayload` model."
+final_scope_commit: "c5da93aa6 fix(copilot): scope evaluator requests explicitly"
 clean_room_final_root_cause: "The drawer used a rollout decision that omitted the deterministic emergency override; dedicated evaluator cases were all dispatched through one legacy Copilot endpoint and the promotion test fabricated their results; and overview routing allowed explicit executive/cross-domain intent to proceed with a single evidence specialist."
 clean_room_final_fix: "Made `copilot_rollout_decision` the single effective selector including deterministic override; dispatched each dedicated surface through its actual API contract and added a primary/secondary canonical thread denial probe; made the 96-case promotion test exercise production dispatch; and restored bounded multi-domain overview delegation while keeping executive_summary synthesis-only."
 clean_room_final_verification:
