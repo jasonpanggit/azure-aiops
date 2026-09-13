@@ -1,5 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { CopilotPageKind, CopilotPageKindV2, CopilotPageSnapshot } from "@/lib/types";
@@ -30,12 +31,15 @@ import {
   canonicalEvidenceStableId,
   CORE_COPILOT_PAGE_ADAPTERS,
   COPILOT_ROUTE_DISPOSITIONS,
+  COPILOT_ROUTE_STARTER_HINTS,
   COPILOT_SNAPSHOT_LIMITS,
   copilotPageDisposition,
   normalizeCopilotSnapshotV2,
   serializeCopilotSnapshot,
   type InventoryCopilotRecord,
 } from "./page-adapters";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const records: InventoryCopilotRecord[] = [
   {
@@ -86,6 +90,52 @@ const baseInput = {
     },
   ],
 };
+
+describe("Copilot starter hint backend parity", () => {
+  it("validates every emitted integrated hint against the backend schema", () => {
+    const hints = Object.entries(COPILOT_ROUTE_STARTER_HINTS).flatMap(
+      ([route, starters]) => starters.map((starter) => ({
+        route,
+        label: starter.label,
+        specialist_id: starter.specialistId,
+        tool: starter.tool,
+        arguments: starter.toolArguments ?? {},
+      })),
+    );
+    const validator = `
+import json
+import sys
+
+sys.path.insert(0, "src")
+from operations.mcp_server import reviewed_tools_for_specialist, validate_tool_arguments
+
+errors = []
+for hint in json.load(sys.stdin):
+    tool = hint.get("tool")
+    if not tool:
+        continue
+    specialist_id = hint.get("specialist_id") or ""
+    if tool not in reviewed_tools_for_specialist(specialist_id):
+        errors.append({**hint, "error": "tool is not granted to specialist"})
+        continue
+    try:
+        validate_tool_arguments(tool, hint.get("arguments") or {})
+    except ValueError as exc:
+        errors.append({**hint, "error": str(exc)})
+print(json.dumps(errors, sort_keys=True))
+raise SystemExit(1 if errors else 0)
+`;
+
+    const result = spawnSync("python3", ["-c", validator], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      input: JSON.stringify(hints),
+    });
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([]);
+  });
+});
 
 describe("inventory Copilot page adapter", () => {
   it("has an explicit integrated route disposition", () => {
@@ -399,7 +449,6 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             specialistId: "governance",
-            tool: "risk_context",
           }),
           expect.objectContaining({
             specialistId: "network",
@@ -407,6 +456,11 @@ describe("inventory Copilot page adapter", () => {
           }),
         ]),
       );
+      expect(
+        context.starterQuestions.find(
+          (starter) => starter.specialistId === "governance",
+        )?.tool,
+      ).toBeUndefined();
     });
 
     it("never marks stale, partial, or unavailable observations as actionable", () => {
@@ -3104,7 +3158,10 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     // Governance starters stay within the governance specialist and never mutate.
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "governance"
-      && ["business_service_context", "application_context", "risk_context", "impact_context"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "impact_context"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3261,7 +3318,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     // Identity hints stay within the identity_access specialist and never mutate.
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "identity_access"
-      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3426,7 +3486,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     );
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "finops"
-      && ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
@@ -3519,7 +3582,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     );
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "resource_health_observability"
-      && ["incidents", "impact_context", "search"].includes(starter.tool ?? "")
+      && (
+        starter.tool === undefined
+        || ["incidents", "impact_context", "search"].includes(starter.tool)
+      )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
   });
 
