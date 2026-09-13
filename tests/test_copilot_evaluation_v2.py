@@ -2714,6 +2714,34 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     ("summary", "structured_data", "expected_support", "expected_groundedness", "expected_decision"),
     [
         (
+            "The owner is platform team; it is fully compliant.",
+            {"owner": "platform team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The owner is platform team. A major outage is imminent.",
+            {"owner": "platform team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The owner is platform team, causing the outage.",
+            {"owner": "platform team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The owner is platform team and the status is healthy.",
+            {"owner": "platform team", "status": "healthy"},
+            "supported",
+            1.0,
+            "PROMOTE",
+        ),
+        (
             "The payments service is owned by platform-team and is fully compliant.",
             {"owner": "platform-team"},
             "indeterminate",

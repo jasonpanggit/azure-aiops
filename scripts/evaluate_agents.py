@@ -925,9 +925,18 @@ _NON_ASSERTION_FACT_KEYS = frozenset(
     {"raw", "rows", "summary", "description", "message"}
 )
 _NEGATION_WORDS = frozenset({"no", "not", "never", "without"})
+_SENTENCE_OR_SEMICOLON_BOUNDARY = re.compile(r";+|[.!?]+(?=\s+|$)")
+_PARTICIPIAL_CLAUSE_BOUNDARY = re.compile(
+    r",\s+(?=[a-z][a-z'-]*ing\b)",
+    re.IGNORECASE,
+)
 _COMPOUND_PREDICATE_BOUNDARY = re.compile(
-    r"\band\s+(?=(?:is|are|was|were|has|have|had|will|would|can|could|"
-    r"must|should|does|do|did)\b)"
+    r"\band\s+(?=(?:(?:is|are|was|were|has|have|had|will|would|can|could|"
+    r"must|should|does|do|did)\b|"
+    r"(?:the|a|an|this|that|these|those|it|they|he|she)\b"
+    r"(?:\s+[a-z0-9]+){0,4}\s+"
+    r"(?:is|are|was|were|has|have|had|will|would|can|could|must|should|"
+    r"does|do|did)\b))"
 )
 _CONJUNCTION = re.compile(r"\band\b")
 
@@ -1093,28 +1102,40 @@ def _claim_propositions(
             propositions.append(normalized)
         return tuple(propositions)
 
-    summary = _normalized_words(claim.get("summary") or "")
-    if not summary:
+    raw_summary = str(claim.get("summary") or "").strip()
+    if not raw_summary:
         return None
-    predicate_boundaries = {
-        match.start()
-        for match in _COMPOUND_PREDICATE_BOUNDARY.finditer(summary)
-    }
-    for conjunction in _CONJUNCTION.finditer(summary):
-        if conjunction.start() in predicate_boundaries:
-            continue
-        if not _conjunction_joins_evidence_values(
-            summary,
-            conjunction.start(),
-            conjunction.end(),
-            facts,
-        ):
+    raw_clauses = [
+        clause
+        for sentence in _SENTENCE_OR_SEMICOLON_BOUNDARY.split(raw_summary)
+        for clause in _PARTICIPIAL_CLAUSE_BOUNDARY.split(sentence)
+        if clause.strip()
+    ]
+    propositions: list[str] = []
+    for raw_clause in raw_clauses:
+        clause = _normalized_words(raw_clause)
+        if not clause:
             return None
-    return tuple(
-        proposition.strip()
-        for proposition in _COMPOUND_PREDICATE_BOUNDARY.split(summary)
-        if proposition.strip()
-    )
+        predicate_boundaries = {
+            match.start()
+            for match in _COMPOUND_PREDICATE_BOUNDARY.finditer(clause)
+        }
+        for conjunction in _CONJUNCTION.finditer(clause):
+            if conjunction.start() in predicate_boundaries:
+                continue
+            if not _conjunction_joins_evidence_values(
+                clause,
+                conjunction.start(),
+                conjunction.end(),
+                facts,
+            ):
+                return None
+        propositions.extend(
+            proposition.strip()
+            for proposition in _COMPOUND_PREDICATE_BOUNDARY.split(clause)
+            if proposition.strip()
+        )
+    return tuple(propositions) or None
 
 
 def _proposition_support_status(
