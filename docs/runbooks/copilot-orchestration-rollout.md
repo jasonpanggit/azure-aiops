@@ -25,6 +25,69 @@ selection (`agent_orchestration_mode`: `maf` / `deterministic` / `canonical`) is
 orthogonal and unchanged; the **legacy `deterministic` page-anchored planners are
 retained for rollback throughout Phase 11 and are not deleted by this plan.**
 
+Runtime request selection is fail closed:
+
+- missing or invalid rollout mode serves `compatibility`;
+- `shadow` keeps the compatibility response path selected;
+- `canary` uses a stable principal-derived bucket and refuses canonical routing
+  when the percentage or stable key is missing or invalid;
+- `default` selects the canonical service unless the explicit
+  `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` emergency rollback is active;
+- an invalid `AIOPS_COPILOT_ROLLBACK_MODE` also serves `compatibility`.
+
+## Source the non-secret provider environment
+
+Terraform output `copilot_provider_environment` is the authority for the
+Foundry endpoint, both exact APIM MCP URLs, APIM audience, candidate mapping
+path, both Foundry project-connection resource IDs, and all three rollout
+settings. Generate a local source file without copying values by hand:
+
+```sh
+python3 scripts/export_copilot_provider_env.py \
+  --terraform-dir infra/terraform \
+  --output /secure/path/copilot-provider.env
+. /secure/path/copilot-provider.env
+```
+
+The exporter reads local Terraform state only, emits an allowlisted set of
+non-secret values, writes mode `0600`, and never emits tenant/client
+credentials or bearer tokens. Missing outputs or an absent candidate artifact
+return `BLOCKED`; malformed endpoints, rollout settings, candidate identities,
+or connection IDs fail. Credentials must still come from the approved secret
+mechanism.
+
+The candidate artifact binds all twelve specialist agent names and immutable
+provider version IDs to two **distinct full Foundry project-connection resource
+IDs** (`operations-mcp` and `azure-mcp`). Live parity lists the project's actual
+connections read-only, requires both IDs to exist, and checks that every pinned
+agent version uses those exact IDs. A connection display name is not accepted
+as an ID.
+
+### Current external onboarding blocker
+
+The reported live inventory contains only one governed connection named
+`demo`. That is not evidence for either required connection and must not be
+copied into both slots. Provider promotion therefore remains **BLOCKED** until
+an authorized operator supplies all of the following evidence from one target
+Foundry project:
+
+1. Full resource ID and read-only connection payload for the Terraform-created
+   `operations-mcp` project connection, with target equal to the exact exported
+   `OPERATIONS_MCP_SERVER_URL` and audience equal to exported
+   `MCP_APIM_AUDIENCE`.
+2. Full, distinct resource ID and read-only connection payload for the
+   Terraform-created `azure-mcp` project connection, with target equal to the
+   exact exported `AZURE_MCP_SERVER_URL` and the same governed audience.
+3. A candidate artifact created by `create-foundry-agent.sh` containing the
+   exact two connection IDs plus all twelve agent identities and the shared
+   coordinator's service-returned immutable provider version IDs.
+4. A read-only `validate_specialist_parity.py --live` result proving those
+   connections exist and every pinned version binds to the expected connection
+   ID and exact read-only grants.
+
+Do not invent a second connection, rewrite `demo`, synthesize provider IDs, or
+mark the live gate passed from Terraform declarations alone.
+
 ## Order of operations (create → validate → switch → observe → promote)
 
 Each promotion is an additive revision deploy. The previous revision is retained
@@ -33,9 +96,10 @@ so a rollback is a revision/mode switch, never a rebuild.
 ### Stage 0 — Preconditions
 
 1. Offline parity must pass: `.venv/bin/python scripts/validate_specialist_parity.py --offline`.
-2. Live parity must pass (read-only) before any Foundry promotion:
+2. Source the Terraform-owned non-secret provider environment as shown above.
+3. Live parity must pass (read-only) before any Foundry promotion:
    `bash infra/scripts/validate-runtime-e2e.sh` (a `blocked` live gate holds, it never counts as a pass).
-3. The full corpus must be runnable against the candidate build.
+4. The full corpus must be runnable against the candidate build.
 
 ### Stage 1 — `compatibility`
 

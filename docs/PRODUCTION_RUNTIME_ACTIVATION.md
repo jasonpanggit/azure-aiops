@@ -25,11 +25,31 @@ Resource Graph discovery. Production mode never loads fixture or mock data.
 | `FOUNDRY_PROJECT_ENDPOINT` | Operations Copilot Foundry project endpoint. |
 | `FOUNDRY_AGENT_NAME` | Existing governed prompt-agent name. |
 | `AIOPS_AGENT_ORCHESTRATION_MODE=maf` | Default Operations Copilot orchestration mode. Selects specialists by user intent first and invokes Foundry agents through Microsoft Agent Framework. Set to `deterministic` only for the legacy page-anchored rollback path. |
+| `AIOPS_COPILOT_ROLLOUT_MODE=compatibility` | Fail-closed request-bound rollout stage. Advance only through `compatibility` → `shadow` → `canary` → `default`. |
+| `AIOPS_COPILOT_CANARY_PERCENTAGE` | Stable principal-level canonical share in canary mode; invalid or missing values select compatibility. |
+| `AIOPS_COPILOT_ROLLBACK_MODE=compatibility` | Fixed rollback target; any other value fails closed to compatibility. |
 | `FOUNDRY_<SPECIALIST>_AGENT_NAME` | Optional per-specialist Foundry agent names, e.g. `FOUNDRY_NETWORK_AGENT_NAME`, `FOUNDRY_GOVERNANCE_AGENT_NAME`, and `FOUNDRY_REMEDIATION_AGENT_NAME`. |
 | `AIOPS_PROVIDER_REFRESH_SECONDS` | Safe provider refresh interval; default `30`. |
 | `AIOPS_PROVIDER_STALE_HOURS` | Freshness threshold; default `24`. |
 | `AIOPS_AKV_BOOTSTRAP_ENABLED` | Enables the startup sync of explicitly mapped container secrets into Key Vault. |
 | `AIOPS_AKV_BOOTSTRAP_SECRETS` | JSON map of Key Vault names to secret-backed environment variables. |
+
+Terraform output `copilot_provider_environment` is the authoritative non-secret
+input for provider parity and rollout validation. Generate and source it without
+retyping values:
+
+```bash
+python3 scripts/export_copilot_provider_env.py \
+  --terraform-dir infra/terraform \
+  --output /secure/path/copilot-provider.env
+. /secure/path/copilot-provider.env
+```
+
+The command reads local Terraform state only. It blocks if either governed
+Foundry MCP connection or the real candidate mapping is absent, and it never
+exports credentials or bearer tokens. See
+[`runbooks/copilot-orchestration-rollout.md`](runbooks/copilot-orchestration-rollout.md)
+for the exact external onboarding evidence required before live parity.
 
 For future rollback validation, compare MAF against the deterministic baseline:
 

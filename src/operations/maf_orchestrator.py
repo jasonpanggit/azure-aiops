@@ -10,6 +10,7 @@ the governed ``OrchestrationService``.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 from collections.abc import Mapping, Sequence
@@ -20,6 +21,21 @@ ENV_AGENT_ORCHESTRATION_MODE = "AIOPS_AGENT_ORCHESTRATION_MODE"
 MODE_DETERMINISTIC = "deterministic"
 MODE_MAF = "maf"
 MODE_CANONICAL = "canonical"
+ENV_COPILOT_ROLLOUT_MODE = "AIOPS_COPILOT_ROLLOUT_MODE"
+ENV_COPILOT_CANARY_PERCENTAGE = "AIOPS_COPILOT_CANARY_PERCENTAGE"
+ENV_COPILOT_ROLLBACK_MODE = "AIOPS_COPILOT_ROLLBACK_MODE"
+ROLLOUT_COMPATIBILITY = "compatibility"
+ROLLOUT_SHADOW = "shadow"
+ROLLOUT_CANARY = "canary"
+ROLLOUT_DEFAULT = "default"
+ROLLOUT_MODES = frozenset(
+    {
+        ROLLOUT_COMPATIBILITY,
+        ROLLOUT_SHADOW,
+        ROLLOUT_CANARY,
+        ROLLOUT_DEFAULT,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -40,16 +56,125 @@ class OrchestrationDecision:
         }
 
 
+@dataclass(frozen=True)
+class CopilotRolloutDecision:
+    """Fail-closed request-bound selection for the staged rollout."""
+
+    mode: str
+    canonical_enabled: bool
+    shadow_enabled: bool
+    reason: str
+    canary_bucket: int | None = None
+
+
 def maf_mode_enabled() -> bool:
     """Return whether the MAF orchestration route is enabled."""
 
     return os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold() != MODE_DETERMINISTIC
 
 
-def canonical_orchestration_enabled() -> bool:
-    """Return whether all surfaces route through the canonical OrchestrationService."""
+def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
+    """Resolve compatibility → shadow → canary → default without widening.
 
-    return os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold() == MODE_CANONICAL
+    A missing or malformed deployment value selects compatibility. Canary
+    assignment is stable for one principal and cannot fall back to random or
+    process-local state. The retained rollback mode is intentionally fixed to
+    compatibility; an unexpected value also fails closed.
+    """
+
+    rollback_mode = os.environ.get(
+        ENV_COPILOT_ROLLBACK_MODE, ROLLOUT_COMPATIBILITY
+    ).strip().casefold()
+    if rollback_mode != ROLLOUT_COMPATIBILITY:
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_COMPATIBILITY,
+            canonical_enabled=False,
+            shadow_enabled=False,
+            reason="rollback_mode_invalid",
+        )
+
+    raw_mode = os.environ.get(ENV_COPILOT_ROLLOUT_MODE)
+    if raw_mode is None or not raw_mode.strip():
+        if (
+            os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
+            == MODE_CANONICAL
+        ):
+            return CopilotRolloutDecision(
+                mode=ROLLOUT_DEFAULT,
+                canonical_enabled=True,
+                shadow_enabled=False,
+                reason="legacy_canonical_mode",
+            )
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_COMPATIBILITY,
+            canonical_enabled=False,
+            shadow_enabled=False,
+            reason="rollout_mode_missing",
+        )
+    mode = raw_mode.strip().casefold()
+    if mode not in ROLLOUT_MODES:
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_COMPATIBILITY,
+            canonical_enabled=False,
+            shadow_enabled=False,
+            reason="rollout_mode_invalid",
+        )
+
+    if mode == ROLLOUT_COMPATIBILITY:
+        return CopilotRolloutDecision(mode, False, False, "compatibility_selected")
+    if mode == ROLLOUT_SHADOW:
+        return CopilotRolloutDecision(mode, False, True, "shadow_selected")
+
+    if mode == ROLLOUT_CANARY:
+        percentage_text = os.environ.get(
+            ENV_COPILOT_CANARY_PERCENTAGE, ""
+        ).strip()
+        if not percentage_text.isdecimal():
+            return CopilotRolloutDecision(
+                ROLLOUT_COMPATIBILITY,
+                False,
+                False,
+                "canary_percentage_invalid",
+            )
+        percentage = int(percentage_text)
+        if not 0 <= percentage <= 100:
+            return CopilotRolloutDecision(
+                ROLLOUT_COMPATIBILITY,
+                False,
+                False,
+                "canary_percentage_invalid",
+            )
+        if not stable_key:
+            return CopilotRolloutDecision(
+                ROLLOUT_COMPATIBILITY,
+                False,
+                False,
+                "canary_stable_key_missing",
+            )
+        digest = hashlib.sha256(
+            f"copilot-rollout-v1\0{stable_key}".encode()
+        ).digest()
+        bucket = int.from_bytes(digest[:8], "big") % 100
+        return CopilotRolloutDecision(
+            mode,
+            bucket < percentage,
+            False,
+            "canary_selected",
+            canary_bucket=bucket,
+        )
+
+    return CopilotRolloutDecision(mode, True, False, "default_selected")
+
+
+def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
+    """Return whether this request routes through the canonical service."""
+
+    if (
+        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
+        == MODE_DETERMINISTIC
+    ):
+        return False
+    return copilot_rollout_decision(stable_key=stable_key).canonical_enabled
 
 
 def _maf_runtime_label() -> str:
