@@ -484,12 +484,8 @@ class OrchestrationService:
                 request.thread_id,
                 principal_subject,
                 requested_scope,
+                expected_revision=request.expected_thread_revision,
             )
-            if (
-                request.expected_thread_revision is not None
-                and request.expected_thread_revision != thread.revision
-            ):
-                raise ThreadRevisionConflict(current_revision=thread.revision)
             thread_outcome = "continued"
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
@@ -1338,12 +1334,8 @@ class OrchestrationService:
                 request.thread_id,
                 principal_subject,
                 requested_scope,
+                expected_revision=request.expected_thread_revision,
             )
-            if (
-                request.expected_thread_revision is not None
-                and request.expected_thread_revision != thread.revision
-            ):
-                raise ThreadRevisionConflict(current_revision=thread.revision)
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
         result = OrchestrationResult(
