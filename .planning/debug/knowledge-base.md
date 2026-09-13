@@ -103,3 +103,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** No existing test or verify gate asserted payload-byte boundaries for replay preflight; prior APPEND tests covered row-count bounds, atomicity, retries, and immutable semantics only with small rows.
 - **Recurrence guard:** The 32 MiB safe default in `src/storage/delta_writer.py` and `tests/test_delta_tables.py::{test_delta_writer_append_bounds_replay_preflight_by_payload_bytes,test_delta_writer_append_preflight_payload_byte_boundary}` lock indivisible-row behavior and exact N-1/N/N+1 aggregate-byte boundaries. Production-scale evidence remains deferred to the later authorized controlled immutable build/deploy/retry.
 ---
+
+## cve-detail-copilot-drawer — Exact CVE route lacked a real-browser Copilot drawer guard
+- **Date:** 2026-09-13
+- **Error patterns:** Operations Copilot drawer missing, CVE detail, exact query URL, authenticated deployment, static route audit, mocked launcher
+- **Root cause(s):** Current-main had no launcher logic omission; Phase 11's route gate inspected source text and the CVE component suite mocked the shared launcher and drawer, leaving the exact navigated URL without a real-browser recurrence guard. Authenticated deployed rendering remains a separate pending environment check because no authorized Entra session or deployment was in scope.
+- **Fix:** Added a focused exact-URL Chromium regression using the real shared launcher and drawer while evidence APIs fail closed, and corrected STATE.md to the Phase 11 Plan 11-12 Task 3 blocked truth without changing working launcher runtime logic.
+- **Files changed:** .planning/STATE.md, web/e2e/cve-detail-copilot-drawer.spec.ts, .planning/debug/resolved/cve-detail-copilot-drawer.md
+- **Why not caught:** No browser-level gate existed for the exact CVE query using the real shared launcher and drawer; static route inspection and mocked component coverage could both pass.
+- **Recurrence guard:** `web/e2e/cve-detail-copilot-drawer.spec.ts` navigates the canonical origin/row/scroll/generation query, asserts the visible accessible launcher, and opens the real Operations Copilot dialog while evidence APIs fail closed. Authenticated deployed confirmation remains an explicit post-promotion check.
+---
