@@ -352,7 +352,7 @@ describe("Governed remediation workflow", () => {
     renderPage();
 
     const reviewHeading = await screen.findByRole("heading", {
-      name: "Compliance finding review",
+      name: "Private endpoint network policy gap",
     });
     const reviewPanel = reviewHeading.closest("section");
     if (!reviewPanel) {
@@ -361,15 +361,26 @@ describe("Governed remediation workflow", () => {
     const review = within(reviewPanel);
 
     expect(reviewHeading).toBeInTheDocument();
-    expect(screen.getByText("Private endpoint network policy gap")).toBeInTheDocument();
-    expect(screen.getByText(PRIVATE_ENDPOINT_TARGET)).toBeInTheDocument();
-    expect(screen.getByText("High")).toBeInTheDocument();
+    expect(review.getByText("Compliance finding review")).toBeInTheDocument();
+    expect(review.getByText("High")).toBeInTheDocument();
+    expect(review.getByTitle(PRIVATE_ENDPOINT_TARGET)).toHaveTextContent(
+      "…/providers/Microsoft.Network/privateEndpoints/cosmos-pe",
+    );
+    expect(screen.queryByText(PRIVATE_ENDPOINT_TARGET)).not.toBeInTheDocument();
+    expect(screen.getAllByTitle(PRIVATE_ENDPOINT_TARGET)).toHaveLength(2);
+    expect(review.getByRole("heading", { name: "Recommendation" })).toBeInTheDocument();
     expect(
-      screen.getByText("Review private endpoint subnet policy and DNS linkage."),
+      review.getByText("Review private endpoint subnet policy and DNS linkage."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Manual review only")).toBeInTheDocument();
     expect(
-      screen.getByText(/No executable network action has been generated/),
+      review.getByRole("heading", { name: "Governed network-owner review" }),
+    ).toBeInTheDocument();
+    expect(review.getByText("Manual review only")).toBeInTheDocument();
+    expect(
+      review.getByText(/No executable network action has been generated/),
+    ).toBeInTheDocument();
+    expect(
+      review.getByText("Review-only handoff. No changes are submitted from this page."),
     ).toBeInTheDocument();
     expect(
       review.queryByRole("link", { name: "Show all fixes in scope" }),
@@ -403,13 +414,11 @@ describe("Governed remediation workflow", () => {
       finding_title: title,
       recommendation,
     });
-
     renderPage();
 
     expect(
-      await screen.findByRole("heading", { name: "Compliance finding review" }),
+      await screen.findByRole("heading", { name: title }),
     ).toBeInTheDocument();
-    expect(screen.getByText(title)).toBeInTheDocument();
     expect(screen.getByText(recommendation)).toBeInTheDocument();
     expect(workflow).not.toHaveBeenCalled();
   });
@@ -427,7 +436,7 @@ describe("Governed remediation workflow", () => {
     renderPage();
 
     expect(
-      await screen.findByRole("heading", { name: "Compliance finding review" }),
+      await screen.findByRole("heading", { name: "Missing accountable owner" }),
     ).toBeInTheDocument();
     expect(remediationPlans).not.toHaveBeenCalled();
     expect(screen.queryByRole("navigation", { name: "Remediation workflow" })).not.toBeInTheDocument();
@@ -456,7 +465,7 @@ describe("Governed remediation workflow", () => {
 
     expect(await screen.findByText("No fix for this resource")).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "Compliance finding review" }),
+      screen.queryByRole("heading", { name: title || "Private endpoint policy gap" }),
     ).not.toBeInTheDocument();
     expect(workflow).not.toHaveBeenCalled();
   });
@@ -494,7 +503,7 @@ describe("Governed remediation workflow", () => {
 
     expect(await screen.findByText("No fix for this resource")).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "Compliance finding review" }),
+      screen.queryByRole("heading", { name: "Private endpoint policy gap" }),
     ).not.toBeInTheDocument();
     expect(workflow).not.toHaveBeenCalled();
   });

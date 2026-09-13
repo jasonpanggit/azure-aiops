@@ -6771,6 +6771,192 @@ body.topology-fullscreen-open {
   gap: 12px;
 }
 
+.remediation-handoff-copy {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.remediation-handoff-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.remediation-handoff-heading strong {
+  color: var(--color-brand);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.remediation-handoff-heading span {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.remediation-handoff-resource {
+  display: block;
+  max-width: 100%;
+  padding: 8px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remediation-handoff-copy > p {
+  max-width: 62rem;
+}
+
+.compliance-review-card .card-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.compliance-review-heading {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.compliance-review-heading h2,
+.compliance-review-heading p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.compliance-review-heading p {
+  max-width: 48rem;
+  color: var(--color-text-secondary);
+}
+
+.compliance-review-body {
+  display: grid;
+  gap: 24px;
+}
+
+.compliance-review-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.compliance-review-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 16px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.compliance-review-fact-wide {
+  grid-column: 1 / -1;
+}
+
+.compliance-review-facts dt {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.compliance-review-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.compliance-review-resource {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compliance-review-guidance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.compliance-review-recommendation,
+.compliance-review-next-step {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.compliance-review-recommendation {
+  background: var(--color-brand-subtle);
+  border-left: 4px solid var(--color-brand);
+}
+
+.compliance-review-next-step {
+  background: var(--color-warning-subtle);
+  border-left: 4px solid var(--color-warning);
+}
+
+.compliance-review-recommendation h3,
+.compliance-review-next-step h3,
+.compliance-review-recommendation p,
+.compliance-review-next-step p {
+  margin: 0;
+}
+
+.compliance-review-recommendation h3,
+.compliance-review-next-step h3 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.compliance-review-recommendation p,
+.compliance-review-next-step p {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.compliance-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.compliance-review-actions p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.compliance-review-actions .button {
+  flex: 0 0 auto;
+}
+
 .remediation-workflow-steps {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -7361,7 +7547,8 @@ body.topology-fullscreen-open {
 @media (max-width: 900px) {
   .remediation-workflow-steps,
   .remediation-workflow-layout,
-  .remediation-review-grid {
+  .remediation-review-grid,
+  .compliance-review-guidance {
     grid-template-columns: 1fr;
   }
 
@@ -7377,5 +7564,29 @@ body.topology-fullscreen-open {
   .remediation-approval-requirement-meta,
   .remediation-snapshot-callout {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .compliance-review-card .card-header,
+  .compliance-review-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .compliance-review-card .card-header .status-badge {
+    align-self: flex-start;
+  }
+
+  .compliance-review-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .compliance-review-fact-wide {
+    grid-column: auto;
+  }
+
+  .compliance-review-actions .button {
+    width: 100%;
   }
 }
