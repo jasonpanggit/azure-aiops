@@ -220,6 +220,40 @@ def test_granular_container_products_reject_conflicting_source_digest_evidence()
         normalize_container_image_products([first, conflicting], OBSERVED)
 
 
+def test_changed_vulnerability_detail_creates_new_immutable_observation() -> None:
+    unknown = _granular_image_row(
+        "openssl",
+        ["Unknown"],
+        ["CVE-2026-1001"],
+    )
+    enriched = _granular_image_row(
+        "openssl",
+        ["Medium"],
+        ["CVE-2026-1001"],
+    )
+
+    products = normalize_container_image_products(
+        [unknown, enriched],
+        OBSERVED,
+    )
+
+    assert len(products.vulnerability_observations) == 2
+    assert {
+        row["identityVersion"]
+        for row in products.vulnerability_observations
+    } == {"2"}
+    assert len(
+        {
+            row["vulnerabilityObservationId"]
+            for row in products.vulnerability_observations
+        }
+    ) == 2
+    assert {
+        row["severity"]
+        for row in products.vulnerability_observations
+    } == {"Unknown", "Medium"}
+
+
 def test_healthy_images_are_dropped() -> None:
     row = _image_row("openssl", ["High"], ["CVE-2026-1001"])
     row["properties"]["status"] = {"code": "Healthy"}

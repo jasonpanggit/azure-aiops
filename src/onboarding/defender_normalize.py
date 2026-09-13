@@ -15,6 +15,7 @@ _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$", re.IGNORECASE)
 
 CONTAINER_EVIDENCE_CONTRACT_VERSION = "1.0.0"
 CONTAINER_IDENTITY_VERSION = "1"
+VULNERABILITY_OBSERVATION_IDENTITY_VERSION = "2"
 
 #: Severity ranking used to pick the worst finding when rolling container image
 #: package findings up into a single per-image entity.
@@ -357,6 +358,14 @@ def normalize_container_image_products(
                 cve_id,
                 source_event_id,
                 provider_event_time,
+                json.dumps(
+                    detail,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                version=VULNERABILITY_OBSERVATION_IDENTITY_VERSION,
             )
             observation = {
                 **_granular_base(
@@ -366,7 +375,7 @@ def normalize_container_image_products(
                     observation_id,
                 ),
                 "vulnerabilityObservationId": observation_id,
-                "identityVersion": CONTAINER_IDENTITY_VERSION,
+                "identityVersion": VULNERABILITY_OBSERVATION_IDENTITY_VERSION,
                 "contractVersion": CONTAINER_EVIDENCE_CONTRACT_VERSION,
                 "registryId": registry_id,
                 "logicalImageId": logical_image_id,
@@ -960,14 +969,18 @@ def _normalize_sha256(value: Any) -> str:
     return digest if _SHA256_PATTERN.fullmatch(digest) else ""
 
 
-def _container_identity(kind: str, *parts: str) -> str:
+def _container_identity(
+    kind: str,
+    *parts: str,
+    version: str = CONTAINER_IDENTITY_VERSION,
+) -> str:
     canonical = json.dumps(
-        [CONTAINER_IDENTITY_VERSION, *(str(part).strip().casefold() for part in parts)],
+        [version, *(str(part).strip().casefold() for part in parts)],
         separators=(",", ":"),
         ensure_ascii=False,
     )
     return (
-        f"{kind}:v{CONTAINER_IDENTITY_VERSION}:"
+        f"{kind}:v{version}:"
         f"{hashlib.sha256(canonical.encode()).hexdigest()}"
     )
 
