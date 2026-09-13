@@ -44,11 +44,16 @@ vi.mock("@azure/msal-react", () => ({
   }),
 }));
 
-vi.mock("@/lib/services", () => ({
-  vulnerabilityApi: api,
-  buildCopilotSnapshot: (input: unknown) => input,
-  copilotEvidenceRows: () => [],
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>(
+    "@/lib/services",
+  );
+  return {
+    ...actual,
+    vulnerabilityApi: api,
+    copilotEvidenceRows: () => [],
+  };
+});
 
 vi.mock("@/components/ui/CopilotDrawer", () => ({
   CopilotDrawer: ({
