@@ -650,17 +650,19 @@ class OneLakeDocumentStore:
         with self._lock:
             path = self._path(prefix)
             if self.is_remote:
-                pages = (
-                    self._client()
-                    .get_paths(
-                        path=path,
-                        recursive=True,
-                        max_results=page_size,
-                    )
-                    .by_page(continuation_token=continuation)
-                )
                 try:
+                    pages = (
+                        self._client()
+                        .get_paths(
+                            path=path,
+                            recursive=True,
+                            max_results=page_size,
+                        )
+                        .by_page(continuation_token=continuation)
+                    )
                     page = next(pages)
+                except ResourceNotFoundError:
+                    return [], None
                 except StopIteration:
                     return [], None
                 base_prefix = f"{self._base}/"

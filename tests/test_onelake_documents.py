@@ -304,6 +304,29 @@ def test_remote_list_names_uses_bounded_dfs_paging(tmp_path):
     assert continuation == "next-page"
 
 
+def test_remote_list_names_treats_missing_prefix_as_empty(tmp_path):
+    from azure.core.exceptions import ResourceNotFoundError
+
+    class _MissingPaths:
+        def by_page(self, *, continuation_token):
+            assert continuation_token is None
+            raise ResourceNotFoundError("path not found")
+
+    class _FakeFsClient:
+        def get_paths(self, *, path, recursive, max_results):
+            assert path == f"{tmp_path}/missing"
+            assert recursive is True
+            assert max_results == 10
+            return _MissingPaths()
+
+    store = OneLakeDocumentStore(tmp_path)
+    store.is_remote = True
+    store._file_system_client = _FakeFsClient()
+    store._base = str(tmp_path)
+
+    assert store.list_names("missing", limit=10) == ([], None)
+
+
 def test_remote_delete_rejects_etag_race(tmp_path):
     from azure.core import MatchConditions
     from azure.core.exceptions import ResourceModifiedError
