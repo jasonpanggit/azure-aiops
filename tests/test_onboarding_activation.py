@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from fabric.runtime import FabricRuntimeMode
 from fabric.sync_service import FabricTableWriteProgress
 from onboarding.activation import (
     ActivationFailure,
@@ -475,10 +476,12 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         "fabric.config.FabricRuntimeConfig.load",
         staticmethod(lambda _path: config),
     )
-    runtime_options: dict[str, object] = {}
+    runtime_modes: list[FabricRuntimeMode] = []
 
-    def build_publication_runtime(_config, **kwargs):
-        runtime_options.update(kwargs)
+    def build_publication_runtime(_config, *, mode):
+        runtime_modes.append(mode)
+        if mode is FabricRuntimeMode.READ:
+            raise RuntimeError("metadata_patch_snapshot readiness incomplete")
         return runtime
 
     monkeypatch.setattr("fabric.runtime.build_runtime", build_publication_runtime)
@@ -510,7 +513,7 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert replay_source_run_ids == [
         str(result["combined_snapshot"]["runId"])
     ]
-    assert runtime_options == {"require_exposure_readiness": False}
+    assert runtime_modes == [FabricRuntimeMode.PUBLISH]
 
 
 def test_activate_runtime_replays_exact_generation_without_upstream_work(
