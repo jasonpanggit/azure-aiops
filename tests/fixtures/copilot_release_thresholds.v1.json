@@ -28,6 +28,11 @@
       "holds": "affected_build",
       "description": "API/runtime/UI projections equal the versioned manifest exactly."
     },
+    "page_safe_specialist_routing": {
+      "max_violations": 0,
+      "holds": "all_promotion",
+      "description": "Every integrated turn's exact ordered specialist set remains within the reviewed manifest page-safe set."
+    },
     "tool_grant_parity": {
       "max_violations": 0,
       "holds": "affected_build",

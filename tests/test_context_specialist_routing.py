@@ -5,13 +5,14 @@ never consulted: asking "what changed recently?" on the Network page ran the
 network specialist and nothing else, and the operator got network findings
 back regardless of what they asked.
 
-Selection is now page-anchored *and* question-aware. These tests pin both
-halves of that contract, plus the safety properties that make it acceptable
-to widen: a bounded specialist count, deterministic selection, and no
-admission of the tool-less synthesis agent.
+Selection is page-anchored *and* question-aware. Question intent may narrow
+the manifest's page owners or use an explicit reviewed cross-domain grant, but
+it may never add an unrelated globally matched specialist.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from operations.autonomous_investigation import (
     AGENTS,
@@ -19,13 +20,9 @@ from operations.autonomous_investigation import (
     _select_context_specialists,
 )
 from operations.maf_orchestrator import select_specialists_for_turn
+from operations.specialist_manifest import load_specialist_manifest
 
-PAGE_SPECIALISTS = {
-    "network": ("network",),
-    "vulnerability": ("vulnerability", "patch"),
-    "incident": ("incident", "change"),
-    "governance": ("governance",),
-}
+PAGE_SPECIALISTS = load_specialist_manifest().page_mapping_projection()
 
 
 def _select(page_kind: str, question: str) -> list[str]:
@@ -47,16 +44,17 @@ def test_the_page_specialist_always_leads() -> None:
         assert _select("network", question)[0] == "network", question
 
 
-def test_a_change_question_on_the_network_page_reaches_the_change_specialist() -> None:
-    """The exact case that made the drawer feel broken."""
+def test_a_change_question_on_the_network_page_stays_page_safe() -> None:
     assert _select("network", "What changed recently that could explain this?") == [
-        "network",
-        "change",
+        "network"
     ]
 
 
-def test_a_governance_question_on_the_network_page_reaches_governance() -> None:
-    assert "governance" in _select("network", "Who owns this and is there an approval?")
+def test_a_governance_question_on_the_network_page_uses_the_reviewed_grant() -> None:
+    assert _select("network", "Who owns this and is there an approval?") == [
+        "network",
+        "governance",
+    ]
 
 
 def test_a_topic_free_question_stays_on_the_page_specialist() -> None:
@@ -112,9 +110,8 @@ def test_no_specialist_is_selected_twice() -> None:
     assert len(selected) == len(set(selected))
 
 
-def test_an_unknown_page_kind_falls_back_to_the_question_alone() -> None:
-    """An unmapped page must degrade to topic routing, not to nothing."""
-    assert _select("brand_new_page", "Which CVEs are exploitable?") == ["vulnerability"]
+def test_an_unknown_page_kind_fails_closed() -> None:
+    assert _select("brand_new_page", "Which CVEs are exploitable?") == []
 
 
 def test_selection_is_deterministic() -> None:
@@ -129,8 +126,7 @@ def test_every_selected_id_is_a_real_agent() -> None:
     assert set(selected) <= known
 
 
-def test_maf_orchestrator_routes_question_intent_before_page_anchor() -> None:
-    """MAF mode makes Operations Copilot own intent selection across pages."""
+def test_maf_orchestrator_intersects_question_intent_with_page_contract() -> None:
     decision = select_specialists_for_turn(
         page_kind="network",
         question="Who owns demo-vnet and what approval policy applies?",
@@ -144,6 +140,49 @@ def test_maf_orchestrator_routes_question_intent_before_page_anchor() -> None:
     assert decision.runtime in {"microsoft-agent-framework", "maf-compatible"}
 
 
+def test_reviewed_cross_domain_grants_are_exact_and_unrelated_terms_do_not_broaden() -> None:
+    cases = (
+        (
+            "network",
+            "Are there CVEs on the hosts behind this hub?",
+            ("network", "vulnerability"),
+        ),
+        (
+            "network",
+            "Who owns this and is there an approval?",
+            ("network", "governance"),
+        ),
+        (
+            "vulnerability",
+            "How do I remediate this exposure safely with a rollback?",
+            ("vulnerability", "remediation"),
+        ),
+        (
+            "finops",
+            "Is the cost spike explained by a resource-health incident?",
+            ("finops", "resource_health_observability"),
+        ),
+    )
+    for page_kind, question, expected in cases:
+        decision = select_specialists_for_turn(
+            page_kind=page_kind,
+            question=question,
+            page_specialists=PAGE_SPECIALISTS,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        )
+        assert decision.selected_ids == expected
+
+    unrelated = select_specialists_for_turn(
+        page_kind="network",
+        question="Show cost, identity, patch, and deployment details.",
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+    assert unrelated.selected_ids == ("network",)
+
+
 def test_maf_orchestrator_uses_page_only_when_question_has_no_specialist_intent() -> None:
     decision = select_specialists_for_turn(
         page_kind="network",
@@ -155,6 +194,100 @@ def test_maf_orchestrator_uses_page_only_when_question_has_no_specialist_intent(
 
     assert decision.strategy == "page_fallback"
     assert decision.selected_ids == ("network",)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    (
+        (
+            "Summarise the top cross-domain risks for leadership.",
+            ("vulnerability", "incident"),
+        ),
+        (
+            "Give a cited cross-domain risk brief for the payments service.",
+            ("vulnerability", "incident"),
+        ),
+        (
+            "Produce a one-paragraph situation report for the payments service.",
+            ("incident", "governance"),
+        ),
+    ),
+)
+def test_explicit_overview_synthesis_delegates_to_multiple_domains(
+    question,
+    expected,
+) -> None:
+    decision = select_specialists_for_turn(
+        page_kind="overview",
+        question=question,
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+
+    assert decision.selected_ids == expected
+    assert "executive_summary" not in decision.selected_ids
+
+
+def test_reported_page_routes_use_exact_ordered_safe_sets() -> None:
+    cases = (
+        (
+            "services",
+            "Which services have the highest vulnerability risk?",
+            ("resource_health_observability", "governance"),
+        ),
+        (
+            "twin",
+            "Which vulnerable services are at risk in this twin?",
+            ("network", "resource_health_observability"),
+        ),
+        (
+            "changes_predeploy",
+            "Which impacted services carry vulnerability exposure for this change?",
+            ("change",),
+        ),
+        (
+            "identity",
+            "The identity provider is partial; who owns this scope and access?",
+            ("identity_access",),
+        ),
+    )
+
+    for page_kind, question, expected in cases:
+        decision = select_specialists_for_turn(
+            page_kind=page_kind,
+            question=question,
+            page_specialists=PAGE_SPECIALISTS,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        )
+        assert decision.selected_ids == expected, page_kind
+        assert set(decision.selected_ids) <= set(PAGE_SPECIALISTS[page_kind])
+
+
+def test_free_form_no_hint_questions_preserve_each_integrated_page_safe_set() -> None:
+    manifest = load_specialist_manifest()
+    tool_bearing_ids = {
+        specialist.id
+        for specialist in manifest.specialists
+        if specialist.operations_mcp_tools and specialist.id != "executive_summary"
+    }
+    for page_kind, specialists in PAGE_SPECIALISTS.items():
+        expected = tuple(
+            specialist_id
+            for specialist_id in specialists
+            if specialist_id in tool_bearing_ids
+        )[:MAX_CONTEXT_SPECIALISTS]
+        if not expected:
+            continue
+        decision = select_specialists_for_turn(
+            page_kind=page_kind,
+            question="Summarize what I am looking at",
+            page_specialists=PAGE_SPECIALISTS,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        )
+        assert decision.selected_ids == expected, page_kind
 
 
 def test_maf_mode_is_default_unless_deterministic_rollback_requested(monkeypatch) -> None:

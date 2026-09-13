@@ -34,6 +34,14 @@ MANIFEST_PATH = REPO_ROOT / "src" / "operations" / "specialists.v1.json"
 # the API container image. Packaging must place the manifest here exactly.
 PACKAGED_MANIFEST_PATH = "operations/specialists.v1.json"
 CONTAINER_MANIFEST_PATH = "/app/src/operations/specialists.v1.json"
+OPERATIONS_CONNECTION_ID = (
+    "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
+    "accounts/account/projects/project/connections/ops-mcp"
+)
+AZURE_CONNECTION_ID = (
+    "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
+    "accounts/account/projects/project/connections/azure-mcp"
+)
 
 # Legacy eight-specialist Terraform input retained for one migration window so
 # existing tfvars keep planning and the previous revision stays selectable.
@@ -982,6 +990,12 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
         "FOUNDRY_PARITY_PYTHON": sys.executable,
         "FOUNDRY_SPECIALIST_MANIFEST_DIGEST": "digest-abc",
         "FOUNDRY_SPECIALIST_RELEASE": "2026.09",
+        "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID": (
+            OPERATIONS_CONNECTION_ID
+        ),
+        "FOUNDRY_AZURE_MCP_CONNECTION_ID": (
+            AZURE_CONNECTION_ID
+        ),
     }
     (tmp_path / "create.log").write_text("", encoding="utf-8")
 
@@ -1125,6 +1139,30 @@ def test_create_agent_fails_closed_without_a_usable_provider_version_id(
     assert result.returncode != 0
     assert "provider version id" in result.stderr.casefold()
     assert not record.exists() or record.read_text(encoding="utf-8").strip() == ""
+
+
+def test_candidate_publication_requires_two_distinct_project_connection_ids(
+    tmp_path,
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    env.pop("FOUNDRY_AZURE_MCP_CONNECTION_ID")
+
+    missing = _run_rollout(env, tmp_path)
+
+    assert missing.returncode != 0
+    assert "project connection IDs are required" in missing.stderr
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+
+    env["FOUNDRY_AZURE_MCP_CONNECTION_ID"] = OPERATIONS_CONNECTION_ID
+    duplicate = _run_rollout(env, tmp_path)
+
+    assert duplicate.returncode != 0
+    assert "must be distinct" in duplicate.stderr
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
 def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
@@ -1498,6 +1536,14 @@ def _candidate_mapping_file(tmp_path, provider_id="prov-1") -> str:
                     "agent_name": "operations-copilot",
                     "provider_version_id": provider_id,
                 },
+                "connections": {
+                    "operations-mcp": {
+                        "project_connection_id": OPERATIONS_CONNECTION_ID,
+                    },
+                    "azure-mcp": {
+                        "project_connection_id": AZURE_CONNECTION_ID,
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -1530,6 +1576,13 @@ def test_live_parity_uses_separate_foundry_and_apim_tokens(tmp_path, monkeypatch
 
     def fake_get(url, headers):
         authorizations[url] = headers["Authorization"]
+        if "/connections?" in url:
+            return {
+                "value": [
+                    {"id": OPERATIONS_CONNECTION_ID},
+                    {"id": AZURE_CONNECTION_ID},
+                ]
+            }
         return {"value": []}
 
     monkeypatch.setattr(module, "_access_token", fake_token)
@@ -1655,7 +1708,25 @@ def _live_module_with_versions(monkeypatch, module, entries):
             }
         },
     )
-    monkeypatch.setattr(module, "_get_json", lambda url, headers: {"value": entries})
+    bound_entries = json.loads(json.dumps(entries))
+    for entry in bound_entries:
+        for tool in (entry.get("definition") or {}).get("tools", []):
+            if tool.get("server_label") == "operations-mcp":
+                tool["project_connection_id"] = OPERATIONS_CONNECTION_ID
+            elif tool.get("server_label") == "azure-mcp":
+                tool["project_connection_id"] = AZURE_CONNECTION_ID
+
+    def fake_get(url, headers):
+        if "/connections?" in url:
+            return {
+                "value": [
+                    {"id": OPERATIONS_CONNECTION_ID},
+                    {"id": AZURE_CONNECTION_ID},
+                ]
+            }
+        return {"value": bound_entries}
+
+    monkeypatch.setattr(module, "_get_json", fake_get)
 
 
 def test_live_parity_validates_the_pinned_version_not_the_last_entry(
@@ -1761,6 +1832,13 @@ def test_live_parity_requires_the_pinned_shared_coordinator(tmp_path, monkeypatc
     ]
 
     def fake_get(url, headers):
+        if "/connections?" in url:
+            return {
+                "value": [
+                    {"id": OPERATIONS_CONNECTION_ID},
+                    {"id": AZURE_CONNECTION_ID},
+                ]
+            }
         if "/agents/operations-copilot/" in url:
             return {"value": []}
         return {"value": entries}
@@ -1806,6 +1884,65 @@ def test_live_provider_version_normalization_matches_rollout_capture():
     assert module._entry_provider_version_id({"id": "/agents/network"}) == ""
 
 
+def test_live_parity_requires_both_governed_project_connections(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: {
+            "value": [
+                {
+                    "id": (
+                        "/subscriptions/sub/resourceGroups/rg/providers/"
+                        "Microsoft.CognitiveServices/accounts/account/projects/"
+                        "project/connections/demo"
+                    )
+                }
+            ]
+        },
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "blocked"
+    assert report["reason"] == "governed_connections_not_onboarded"
+    assert {
+        failure["server"] for failure in report["failures"]
+    } == {"operations-mcp", "azure-mcp"}
+
+
+def test_live_parity_rejects_agent_binding_to_wrong_project_connection():
+    module = _parity_module()
+
+    failures = module.compare_connection_bindings(
+        specialist_id="network",
+        expected={
+            "operations-mcp": OPERATIONS_CONNECTION_ID,
+            "azure-mcp": AZURE_CONNECTION_ID,
+        },
+        actual={
+            "operations-mcp": OPERATIONS_CONNECTION_ID,
+            "azure-mcp": OPERATIONS_CONNECTION_ID,
+        },
+    )
+
+    assert failures == [
+        {
+            "kind": "project_connection_mismatch",
+            "specialist": "network",
+            "server": "azure-mcp",
+        }
+    ]
+
+
 def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
     tmp_path, monkeypatch
 ):
@@ -1825,6 +1962,14 @@ def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(
                 "coordinator": {
                     "agent_name": "operations-copilot",
                     "provider_version_id": "prov-1",
+                },
+                "connections": {
+                    "operations-mcp": {
+                        "project_connection_id": OPERATIONS_CONNECTION_ID,
+                    },
+                    "azure-mcp": {
+                        "project_connection_id": AZURE_CONNECTION_ID,
+                    },
                 },
             }
         ),

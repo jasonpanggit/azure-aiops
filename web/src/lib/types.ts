@@ -3100,7 +3100,37 @@ export interface CopilotPageSnapshot {
   freshness: CopilotFreshnessRecord[]; scope: CopilotScopeAuthorization;
   evidence: CopilotEvidenceRow[]; question: string; rechecks: string[];
 }
-export type CopilotPageKindV2 = "inventory" | "connections" | "connections_fabric";
+export type CopilotPageKindV2 =
+  | "overview"
+  | "network"
+  | "vulnerability"
+  | "patch"
+  | "incident"
+  | "compliance"
+  | "exposure"
+  | "cve_detail"
+  | "defender_posture"
+  | "kb_detail"
+  | "patch_priorities"
+  | "situations"
+  | "situation_detail"
+  | "changes"
+  | "changes_predeploy"
+  | "inventory"
+  | "connections"
+  | "connections_fabric"
+  | "governance"
+  | "identity"
+  | "finops"
+  | "remediation"
+  | "resource_health"
+  | "resource"
+  | "services"
+  | "service_detail"
+  | "twin"
+  | "copilot"
+  | "investigate"
+  | "agents";
 export type CopilotSnapshotStatusV2 = "ok" | "empty" | "partial" | "unavailable" | "denied";
 export type CopilotFreshnessStatusV2 = "fresh" | "stale" | "partial" | "unavailable";
 export type CopilotEvidenceSeverity = "unknown" | "low" | "medium" | "high" | "critical";
@@ -3116,6 +3146,12 @@ export interface CopilotDomainEntityRef {
   source_key: string;
 }
 export type CopilotEntityRef = CopilotAzureEntityRef | CopilotDomainEntityRef;
+export interface CopilotObservationRef {
+  type: "observation";
+  source: string;
+  source_key: string;
+}
+export type CopilotEvidenceIdentity = CopilotEntityRef | CopilotObservationRef;
 export interface CopilotSnapshotCoverageV2 {
   visible_count: number;
   total_count: number;
@@ -3133,7 +3169,7 @@ export interface CopilotSnapshotEvidenceV2 {
   observed_at: string;
   resource_id: string;
   source_key: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claim_type: string;
   citations: string[];
   selected: boolean;
@@ -3152,6 +3188,12 @@ export interface CopilotEvidenceSnapshotV2 {
   version: "2";
   page_kind: CopilotPageKindV2;
   page_id: string;
+  /** Normalized page filters that participate in retained-evidence identity. */
+  filters?: Record<string, string[]>;
+  /** Normalized page-local search/query text, distinct from the Copilot question. */
+  query?: string;
+  /** Content-derived immutable identity for this bounded evidence generation. */
+  generation_id?: string;
   coverage: CopilotSnapshotCoverageV2;
   freshness: CopilotSnapshotFreshnessV2[];
   selected_entities: CopilotEntityRef[];
@@ -3169,6 +3211,7 @@ export interface CanonicalCopilotRequest {
   requested_scope: ScopeSelection;
   snapshot: CopilotEvidenceSnapshotV2;
   thread_id?: string;
+  expected_thread_revision?: number;
   hint?: CopilotPlanHint;
 }
 export interface CanonicalCopilotCitation {
@@ -3198,6 +3241,7 @@ export interface CanonicalCopilotResult {
   uncertainty: string[];
   coverage: CopilotSnapshotCoverageV2;
   citations: CanonicalCopilotCitation[];
+  synthesis?: CanonicalInvestigationSynthesis | null;
   thread_id: string;
   thread_revision: number;
   mutation_authorized: false;
@@ -3224,7 +3268,7 @@ export interface CanonicalSynthesisClaim {
  * specialists' own deterministic findings visible instead of inventing text.
  */
 export interface CanonicalInvestigationSynthesis {
-  status: "synthesized" | "degraded" | "skipped" | string;
+  status: "synthesized" | "deterministic" | "degraded" | "skipped" | string;
   reason: string;
   domain_count: number;
   claims: CanonicalSynthesisClaim[];

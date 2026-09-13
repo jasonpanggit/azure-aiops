@@ -5,9 +5,11 @@ import type {
   CollectionCoverage,
   ComplianceDeviation,
   CopilotEntityRef,
+  CopilotEvidenceIdentity,
   CopilotEvidenceSnapshotV2 as StrictCopilotEvidenceSnapshotV2,
   CopilotFreshnessStatusV2,
   CopilotPageKind,
+  CopilotPageKindV2,
   CopilotPageSnapshot,
   CopilotSnapshotStatus,
   CopilotSnapshotEvidenceV2,
@@ -110,13 +112,13 @@ export interface InventoryCopilotContext {
 interface StableEvidenceIdentity {
   source: string;
   sourceKey: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claimType: string;
 }
 
 type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   source_key: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claim_type: string;
   citations: string[];
   selected: boolean;
@@ -126,8 +128,8 @@ type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   quality: CopilotSnapshotEvidenceV2["quality"];
 };
 
-/** The page-kind a route anchors on; `inventory` is the V2 inventory kind. */
-export type CopilotRouteAnchorPageKind = CopilotPageKind | "inventory";
+/** The exact manifest-backed v2 page kind on which an integrated route anchors. */
+export type CopilotRouteAnchorPageKind = CopilotPageKindV2;
 
 /** Exactly one reviewed Copilot disposition per Next.js route (D-03, locked page policy). */
 export type CopilotRouteDisposition =
@@ -149,36 +151,36 @@ export type CopilotRouteDisposition =
 export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition> = {
   // 23 integrated routes -- each renders the shared CopilotDrawerButton and a
   // typed page adapter over already-loaded, authorized evidence.
-  "/": { kind: "integrated", pageKind: "resource" },
+  "/": { kind: "integrated", pageKind: "overview" },
   "/network": { kind: "integrated", pageKind: "network" },
-  "/compliance": { kind: "integrated", pageKind: "governance" },
-  "/exposure": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/cves/[id]": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/defender-posture": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/kbs/[id]": { kind: "integrated", pageKind: "vulnerability" },
-  "/exposure/patch-priorities": { kind: "integrated", pageKind: "vulnerability" },
-  "/situations": { kind: "integrated", pageKind: "incident" },
-  "/situations/[id]": { kind: "integrated", pageKind: "incident" },
-  "/changes": { kind: "integrated", pageKind: "incident" },
-  "/changes/predeploy": { kind: "integrated", pageKind: "governance" },
+  "/compliance": { kind: "integrated", pageKind: "compliance" },
+  "/exposure": { kind: "integrated", pageKind: "exposure" },
+  "/exposure/cves/[id]": { kind: "integrated", pageKind: "cve_detail" },
+  "/exposure/defender-posture": { kind: "integrated", pageKind: "defender_posture" },
+  "/exposure/kbs/[id]": { kind: "integrated", pageKind: "kb_detail" },
+  "/exposure/patch-priorities": { kind: "integrated", pageKind: "patch_priorities" },
+  "/situations": { kind: "integrated", pageKind: "situations" },
+  "/situations/[id]": { kind: "integrated", pageKind: "situation_detail" },
+  "/changes": { kind: "integrated", pageKind: "changes" },
+  "/changes/predeploy": { kind: "integrated", pageKind: "changes_predeploy" },
   "/inventory": { kind: "integrated", pageKind: "inventory" },
-  "/connections": { kind: "integrated", pageKind: "resource" },
-  "/connections/fabric": { kind: "integrated", pageKind: "resource" },
+  "/connections": { kind: "integrated", pageKind: "connections" },
+  "/connections/fabric": { kind: "integrated", pageKind: "connections_fabric" },
   "/governance": { kind: "integrated", pageKind: "governance" },
-  "/identity": { kind: "integrated", pageKind: "governance" },
-  "/finops": { kind: "integrated", pageKind: "governance" },
+  "/identity": { kind: "integrated", pageKind: "identity" },
+  "/finops": { kind: "integrated", pageKind: "finops" },
   "/remediation": { kind: "integrated", pageKind: "remediation" },
-  "/resource-health": { kind: "integrated", pageKind: "resource" },
-  "/services": { kind: "integrated", pageKind: "resource" },
-  "/services/[name]": { kind: "integrated", pageKind: "resource" },
-  "/twin": { kind: "integrated", pageKind: "network" },
+  "/resource-health": { kind: "integrated", pageKind: "resource_health" },
+  "/services": { kind: "integrated", pageKind: "services" },
+  "/services/[name]": { kind: "integrated", pageKind: "service_detail" },
+  "/twin": { kind: "integrated", pageKind: "twin" },
   // 3 dedicated Copilot/investigation surfaces -- they are the reasoning
   // destination itself and never embed a second contextual launcher.
   "/copilot": { kind: "dedicated", surface: "operations-copilot" },
   "/investigate": { kind: "dedicated", surface: "guided-investigation" },
   "/agents": { kind: "dedicated", surface: "multi-agent-investigation" },
-  // 1 redirect -- the legacy vulnerability alias consolidated under Exposure.
-  "/vulnerabilities": { kind: "redirect", target: "/exposure" },
+  // 1 redirect -- the legacy collection alias is consolidated into Patch priorities.
+  "/vulnerabilities": { kind: "redirect", target: "/exposure/patch-priorities" },
   // 1 excluded -- pure navigation/query aggregation with no stable retained
   // evidence snapshot contract in Phase 11.
   "/search": {
@@ -419,9 +421,16 @@ function canonicalResourceId(resourceId: string): string {
   return canonical;
 }
 
-function entityKey(entity: CopilotEntityRef): string {
+function entityKey(entity: CopilotEvidenceIdentity): string {
   if (entity.type === "azure") {
     return `azure:${canonicalResourceId(entity.resource_id)}`;
+  }
+  if (entity.type === "observation") {
+    return [
+      "observation",
+      normalizedIdentityPart(entity.source),
+      normalizedIdentityPart(entity.source_key),
+    ].join(":");
   }
   return [
     "domain",
@@ -466,6 +475,633 @@ export function canonicalEvidenceStableId(identity: StableEvidenceIdentity): str
 /** Serializes a snapshot with stable object-key and adapter-controlled list ordering. */
 export function serializeCopilotSnapshot(snapshot: StrictCopilotEvidenceSnapshotV2): string {
   return stableJson(snapshot);
+}
+
+const SNAPSHOT_V2_PAGE_KINDS = new Set<CopilotPageKindV2>([
+  "overview",
+  "network",
+  "vulnerability",
+  "patch",
+  "incident",
+  "compliance",
+  "exposure",
+  "cve_detail",
+  "defender_posture",
+  "kb_detail",
+  "patch_priorities",
+  "situations",
+  "situation_detail",
+  "changes",
+  "changes_predeploy",
+  "inventory",
+  "connections",
+  "connections_fabric",
+  "governance",
+  "identity",
+  "finops",
+  "remediation",
+  "resource_health",
+  "resource",
+  "services",
+  "service_detail",
+  "twin",
+  "copilot",
+  "investigate",
+  "agents",
+]);
+const SNAPSHOT_EVIDENCE_ID = /^[A-Za-z0-9._:-]+$/;
+const SNAPSHOT_DOMAIN_PART = /^[A-Za-z0-9._-]+$/;
+
+function exactKeys(
+  name: string,
+  value: object,
+  expected: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  const allowed = new Set(expected);
+  const actual = Object.keys(value);
+  const unknown = actual.filter((key) => !allowed.has(key));
+  const optionalKeys = new Set(optional);
+  const missing = expected.filter(
+    (key) => !optionalKeys.has(key) && !actual.includes(key),
+  );
+  if (unknown.length || missing.length) {
+    throw new Error(
+      `${name} has invalid fields: ${[...unknown, ...missing].sort().join(", ")}`,
+    );
+  }
+}
+
+function boundedSnapshotString(
+  name: string,
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  pattern?: RegExp,
+): string {
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  const normalized = value.trim();
+  const length = Array.from(normalized).length;
+  if (length < minimum || length > maximum || (pattern && !pattern.test(normalized))) {
+    throw new Error(`${name} must contain between ${minimum} and ${maximum} valid characters`);
+  }
+  return normalized;
+}
+
+function finiteJsonValue(value: unknown, seen = new Set<object>()): void {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("snapshot data contains a non-finite number");
+  }
+  if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol") {
+    throw new Error("snapshot data is not JSON-compatible");
+  }
+  if (!value || typeof value !== "object") return;
+  if (seen.has(value)) throw new Error("snapshot data contains a cycle");
+  seen.add(value);
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    finiteJsonValue(item, seen);
+  }
+  seen.delete(value);
+}
+
+function normalizedData(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("snapshot evidence data must be an object");
+  }
+  finiteJsonValue(value);
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) {
+    throw new Error("snapshot evidence data is not JSON-compatible");
+  }
+  return JSON.parse(serialized) as Record<string, unknown>;
+}
+
+function normalizedSnapshotEntity(value: unknown): CopilotEvidenceIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("snapshot entity must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type === "azure") {
+    exactKeys("Azure snapshot entity", record, ["type", "resource_id"]);
+    return {
+      type: "azure",
+      resource_id: canonicalResourceId(
+        boundedSnapshotString("Azure resource ID", record.resource_id, 1, 512),
+      ),
+    };
+  }
+  if (record.type === "domain") {
+    exactKeys("domain snapshot entity", record, [
+      "type",
+      "namespace",
+      "kind",
+      "source_key",
+    ]);
+    const sourceKey = boundedSnapshotString(
+      "domain source key",
+      record.source_key,
+      1,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("domain source key contains an invalid control character");
+    }
+    return {
+      type: "domain",
+      namespace: boundedSnapshotString(
+        "domain namespace",
+        record.namespace,
+        1,
+        64,
+        SNAPSHOT_DOMAIN_PART,
+      ),
+      kind: boundedSnapshotString(
+        "domain kind",
+        record.kind,
+        1,
+        80,
+        SNAPSHOT_DOMAIN_PART,
+      ),
+      source_key: sourceKey,
+    };
+  }
+  if (record.type === "observation") {
+    exactKeys("observation snapshot identity", record, [
+      "type",
+      "source",
+      "source_key",
+    ]);
+    const sourceKey = boundedSnapshotString(
+      "observation source key",
+      record.source_key,
+      1,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("observation source key contains an invalid control character");
+    }
+    return {
+      type: "observation",
+      source: boundedSnapshotString(
+        "observation source",
+        record.source,
+        1,
+        128,
+      ),
+      source_key: sourceKey,
+    };
+  }
+  throw new Error("snapshot entity type is invalid");
+}
+
+function normalizeStrictSnapshotV2(
+  snapshot: StrictCopilotEvidenceSnapshotV2,
+): StrictCopilotEvidenceSnapshotV2 {
+  exactKeys("snapshot", snapshot, [
+    "version",
+    "page_kind",
+    "page_id",
+    "filters",
+    "query",
+    "generation_id",
+    "coverage",
+    "freshness",
+    "selected_entities",
+    "evidence",
+    "material_claims",
+  ], ["filters", "query", "generation_id"]);
+  if (snapshot.version !== "2" || !SNAPSHOT_V2_PAGE_KINDS.has(snapshot.page_kind)) {
+    throw new Error("snapshot version or page kind is invalid");
+  }
+  const pageId = boundedSnapshotString("snapshot page ID", snapshot.page_id, 1, 128);
+  exactKeys("snapshot coverage", snapshot.coverage, [
+    "visible_count",
+    "total_count",
+    "complete",
+  ]);
+  const { visible_count: visibleCount, total_count: totalCount, complete } = snapshot.coverage;
+  if (
+    !Number.isSafeInteger(visibleCount)
+    || !Number.isSafeInteger(totalCount)
+    || visibleCount < 0
+    || totalCount < 0
+    || visibleCount > 1_000_000
+    || totalCount > 1_000_000
+    || visibleCount > totalCount
+    || (complete && visibleCount !== totalCount)
+  ) {
+    throw new Error("snapshot coverage is invalid");
+  }
+  assertBound(
+    "freshness records",
+    snapshot.freshness.length,
+    COPILOT_SNAPSHOT_LIMITS.freshnessRecords,
+  );
+  const freshness = snapshot.freshness.map((item) => {
+    exactKeys("snapshot freshness", item, ["source", "observed_at", "status"]);
+    if (!["fresh", "stale", "partial", "unavailable"].includes(item.status)) {
+      throw new Error("snapshot freshness status is invalid");
+    }
+    return {
+      source: boundedSnapshotString("freshness source", item.source, 1, 128),
+      observed_at: boundedSnapshotString(
+        "freshness observation time",
+        item.observed_at,
+        1,
+        128,
+      ),
+      status: item.status,
+    };
+  }).sort((left, right) =>
+    compareCodePoints(
+      stableJson([left.source, left.observed_at, left.status]),
+      stableJson([right.source, right.observed_at, right.status]),
+    ));
+  assertBound(
+    "selected entities",
+    snapshot.selected_entities.length,
+    COPILOT_SNAPSHOT_LIMITS.selectedEntities,
+  );
+  const selectedEntities = snapshot.selected_entities
+    .map((value) => {
+      const entity = normalizedSnapshotEntity(value);
+      if (entity.type === "observation") {
+        throw new Error("selected snapshot identities must be domain or Azure entities");
+      }
+      return entity;
+    })
+    .sort((left, right) =>
+      compareCodePoints(entityOrderingKey(left), entityOrderingKey(right)));
+  if (
+    new Set(selectedEntities.map(entityOrderingKey)).size
+    !== selectedEntities.length
+  ) {
+    throw new Error("snapshot selected entities must be unique");
+  }
+  assertBound(
+    "evidence rows",
+    snapshot.evidence.length,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+  );
+  const evidence = snapshot.evidence.map((item) => {
+    exactKeys("snapshot evidence", item, [
+      "evidence_id",
+      "source",
+      "status",
+      "observed_at",
+      "resource_id",
+      "source_key",
+      "entity",
+      "claim_type",
+      "citations",
+      "selected",
+      "direct",
+      "actionable",
+      "severity",
+      "quality",
+      "data",
+    ]);
+    const evidenceId = boundedSnapshotString(
+      "evidence ID",
+      item.evidence_id,
+      1,
+      160,
+      SNAPSHOT_EVIDENCE_ID,
+    );
+    if (/^(snapshot|tool):/i.test(evidenceId)) {
+      throw new Error("snapshot evidence ID uses a reserved citation namespace");
+    }
+    const sourceKey = boundedSnapshotString(
+      "evidence source key",
+      item.source_key,
+      0,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("evidence source key contains an invalid control character");
+    }
+    assertBound(
+      "evidence citations",
+      item.citations.length,
+      COPILOT_SNAPSHOT_LIMITS.evidenceCitations,
+    );
+    const citations = item.citations.map((citation) => {
+      const normalized = boundedSnapshotString(
+        "evidence citation",
+        citation,
+        1,
+        200,
+      );
+      if (/[\0\r\n]/.test(normalized)) {
+        throw new Error("snapshot evidence citation is invalid");
+      }
+      return normalized;
+    });
+    if (new Set(citations).size !== citations.length) {
+      throw new Error("snapshot evidence citations must be unique");
+    }
+    if (!["ok", "empty", "partial", "unavailable", "denied"].includes(item.status)) {
+      throw new Error("snapshot evidence status is invalid");
+    }
+    if (!["unknown", "low", "medium", "high", "critical"].includes(item.severity)) {
+      throw new Error("snapshot evidence severity is invalid");
+    }
+    if (!["unknown", "low", "medium", "high"].includes(item.quality)) {
+      throw new Error("snapshot evidence quality is invalid");
+    }
+    const data = normalizedData(item.data);
+    assertEvidenceRowBound(data);
+    return {
+      evidence_id: evidenceId,
+      source: boundedSnapshotString("evidence source", item.source, 1, 128),
+      status: item.status,
+      observed_at: boundedSnapshotString(
+        "evidence observation time",
+        item.observed_at,
+        0,
+        128,
+      ),
+      resource_id: boundedSnapshotString(
+        "evidence resource ID",
+        item.resource_id,
+        0,
+        512,
+      ),
+      source_key: sourceKey,
+      entity: normalizedSnapshotEntity(item.entity),
+      claim_type: boundedSnapshotString(
+        "evidence claim type",
+        item.claim_type,
+        1,
+        128,
+      ),
+      citations,
+      selected: Boolean(item.selected),
+      direct: Boolean(item.direct),
+      actionable: Boolean(item.actionable),
+      severity: item.severity,
+      quality: item.quality,
+      data,
+    };
+  }).sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  if (evidenceIds.size !== evidence.length) {
+    throw new Error("snapshot evidence IDs must be unique");
+  }
+  assertBound(
+    "material claims",
+    snapshot.material_claims.length,
+    COPILOT_SNAPSHOT_LIMITS.materialClaims,
+  );
+  const materialClaims = snapshot.material_claims.map((claim) => {
+    exactKeys("snapshot material claim", claim, [
+      "claim_id",
+      "evidence_refs",
+      "requires_complete_coverage",
+    ]);
+    if (claim.evidence_refs.length < 1 || claim.evidence_refs.length > 32) {
+      throw new Error("material claim evidence references are outside bounds");
+    }
+    const evidenceRefs = claim.evidence_refs.map((reference) =>
+      boundedSnapshotString(
+        "material claim evidence reference",
+        reference,
+        1,
+        160,
+        SNAPSHOT_EVIDENCE_ID,
+      ));
+    if (evidenceRefs.some((reference) => !evidenceIds.has(reference))) {
+      throw new Error("material claim has a missing evidence reference");
+    }
+    return {
+      claim_id: boundedSnapshotString(
+        "material claim ID",
+        claim.claim_id,
+        1,
+        160,
+        SNAPSHOT_EVIDENCE_ID,
+      ),
+      evidence_refs: Array.from(new Set(evidenceRefs)).sort(compareCodePoints),
+      requires_complete_coverage: Boolean(claim.requires_complete_coverage),
+    };
+  }).sort((left, right) => compareCodePoints(left.claim_id, right.claim_id));
+  const filters = normalizeFilters(snapshot.filters ?? {}, undefined);
+  const query = boundedSnapshotString(
+    "snapshot query",
+    snapshot.query ?? filters.query?.join(" ") ?? "",
+    0,
+    1024,
+  ).toLocaleLowerCase("en-US");
+  const generationPayload = {
+    coverage: {
+      visible_count: visibleCount,
+      total_count: totalCount,
+      complete,
+    },
+    freshness,
+    evidence,
+    material_claims: materialClaims,
+  };
+  const normalized: StrictCopilotEvidenceSnapshotV2 = {
+    version: "2",
+    page_kind: snapshot.page_kind,
+    page_id: pageId,
+    filters,
+    query,
+    generation_id: `generation:${sha256(stableJson(generationPayload))}`,
+    coverage: generationPayload.coverage,
+    freshness,
+    selected_entities: selectedEntities,
+    evidence,
+    material_claims: materialClaims,
+  };
+  assertBound(
+    "snapshot",
+    new TextEncoder().encode(serializeCopilotSnapshot(normalized)).length
+      + numericValueCount(normalized),
+    COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+  );
+  return normalized;
+}
+
+function legacySnapshotEntity(
+  pageKind: CopilotPageKind,
+  row: CopilotPageSnapshot["evidence"][number],
+  sourceKey: string,
+): CopilotEvidenceIdentity {
+  if (row.data.entity !== undefined) {
+    return normalizedSnapshotEntity(row.data.entity);
+  }
+  if (row.resource_id) {
+    return {
+      type: "azure",
+      resource_id: canonicalResourceId(row.resource_id),
+    };
+  }
+  return {
+    type: "domain",
+    namespace: "page",
+    kind: pageKind,
+    source_key: sourceKey,
+  };
+}
+
+const LEGACY_PAGE_ID_KINDS: Readonly<Record<string, CopilotPageKindV2>> = {
+  "operations-overview": "overview",
+  "network-topology": "network",
+  "compliance-posture": "compliance",
+  exposure: "exposure",
+  "defender-posture": "defender_posture",
+  "patch-priorities": "patch_priorities",
+  situations: "situations",
+  changes: "changes",
+  predeploy: "changes_predeploy",
+  connections: "connections",
+  "fabric-medallion": "connections_fabric",
+  governance: "governance",
+  identity: "identity",
+  finops: "finops",
+  remediation: "remediation",
+  "resource-health": "resource_health",
+  services: "services",
+  twin: "twin",
+};
+
+function legacyPageKind(snapshot: CopilotPageSnapshot): CopilotPageKindV2 {
+  if (snapshot.page_id.startsWith("cve:")) return "cve_detail";
+  if (snapshot.page_id.startsWith("kb:")) return "kb_detail";
+  if (snapshot.page_id.startsWith("situation:")) return "situation_detail";
+  if (snapshot.page_id.startsWith("service:")) return "service_detail";
+  if (snapshot.page_id === "inventory" || snapshot.page_id.startsWith("inventory:")) {
+    return "inventory";
+  }
+  return LEGACY_PAGE_ID_KINDS[snapshot.page_id] ?? snapshot.page_kind;
+}
+
+function legacyObservedCoverage(
+  snapshot: CopilotPageSnapshot,
+): StrictCopilotEvidenceSnapshotV2["coverage"] {
+  const observations = snapshot.evidence.flatMap((row) => {
+    if (
+      row.section !== "coverage"
+      || row.data.claim_type !== "coverage"
+      || !row.data.coverage
+      || typeof row.data.coverage !== "object"
+      || Array.isArray(row.data.coverage)
+    ) {
+      return [];
+    }
+    const coverage = row.data.coverage as Record<string, unknown>;
+    const visibleCount = coverage.visible_count;
+    const totalCount = coverage.total_count;
+    const complete = coverage.complete;
+    if (
+      !Number.isSafeInteger(visibleCount)
+      || !Number.isSafeInteger(totalCount)
+      || typeof complete !== "boolean"
+      || (visibleCount as number) < 0
+      || (totalCount as number) < 0
+      || (visibleCount as number) > (totalCount as number)
+      || (complete && visibleCount !== totalCount)
+    ) {
+      throw new Error("legacy snapshot coverage observation is invalid");
+    }
+    return [{
+      visible_count: visibleCount as number,
+      total_count: totalCount as number,
+      complete,
+    }];
+  });
+  if (!observations.length) {
+    return { visible_count: 0, total_count: 0, complete: false };
+  }
+  const visibleCount = observations.reduce(
+    (total, item) => total + item.visible_count,
+    0,
+  );
+  const totalCount = observations.reduce(
+    (total, item) => total + item.total_count,
+    0,
+  );
+  return {
+    visible_count: visibleCount,
+    total_count: totalCount,
+    complete: observations.every((item) => item.complete)
+      && visibleCount === totalCount,
+  };
+}
+
+/**
+ * Converts any integrated page snapshot to the one strict, bounded v2 wire
+ * contract. Character limits use Unicode code points; row limits use the
+ * backend-compatible escaped JSON byte count; structural limits reject N+1
+ * rather than silently widening or dropping observations.
+ */
+export function normalizeCopilotSnapshotV2(
+  snapshot: CopilotPageSnapshot | CopilotEvidenceSnapshotV2,
+): StrictCopilotEvidenceSnapshotV2 {
+  if (snapshot.version === "2") {
+    if (!isStrictSnapshot(snapshot)) {
+      throw new Error("canonical requests require the complete snapshot v2 contract");
+    }
+    return normalizeStrictSnapshotV2(snapshot);
+  }
+
+  const selectedEntities: CopilotEntityRef[] = snapshot.selected_resources.map((resource) => ({
+    type: "azure" as const,
+    resource_id: canonicalResourceId(resource.resource_id),
+  }));
+  const evidence = snapshot.evidence.map((row) => {
+    const sourceKeyValue = typeof row.data.source_key === "string"
+      ? row.data.source_key
+      : row.evidence_id;
+    const sourceKey = boundedSourceKey(sourceKeyValue);
+    const entity = legacySnapshotEntity(snapshot.page_kind, row, sourceKey);
+    if (row.data.selected === true && entity.type !== "observation") {
+      selectedEntities.push(entity);
+    }
+    return {
+      evidence_id: row.evidence_id,
+      source: row.section,
+      status: row.status,
+      observed_at: row.observed_at ?? "",
+      resource_id: entity.type === "azure" ? entity.resource_id : "",
+      source_key: sourceKey,
+      entity,
+      claim_type: typeof row.data.claim_type === "string"
+        ? row.data.claim_type
+        : "observation",
+      citations: [],
+      selected: row.data.selected === true,
+      direct: true,
+      actionable: false,
+      severity: "unknown" as const,
+      quality: "unknown" as const,
+      data: row.data,
+    };
+  });
+  const deduplicatedSelected = selectedEntities.filter((entity, index, entities) =>
+    entities.findIndex((candidate) =>
+      entityOrderingKey(candidate) === entityOrderingKey(entity)) === index);
+  const materialClaims = evidence
+    .filter((item) => item.direct && ["ok", "partial"].includes(item.status))
+    .map((item) => ({
+      claim_id: `claim:${sha256(item.evidence_id).slice(0, 32)}`,
+      evidence_refs: [item.evidence_id],
+      requires_complete_coverage: false,
+    }));
+  return normalizeStrictSnapshotV2({
+    version: "2",
+    page_kind: legacyPageKind(snapshot),
+    page_id: snapshot.page_id,
+    filters: snapshot.filters,
+    query: snapshot.filters.query?.join(" ") ?? "",
+    coverage: legacyObservedCoverage(snapshot),
+    freshness: snapshot.freshness,
+    selected_entities: deduplicatedSelected,
+    evidence,
+    material_claims: materialClaims,
+  });
 }
 
 function freshnessStatus(status: string): CopilotFreshnessStatusV2 {
@@ -777,6 +1413,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   const selectedEntities = recordEvidence
     .filter((item) => item.selected)
     .map((item) => item.entity)
+    .filter((entity): entity is CopilotEntityRef => entity.type !== "observation")
     .filter((entity, index, entities) => {
       const key = entityKey(entity);
       return entities.findIndex((candidate) => entityKey(candidate) === key) === index;
@@ -876,10 +1513,9 @@ function buildEmptyInventoryContextEvidence(
 ): InventorySnapshotEvidence {
   const source = INVENTORY_EVIDENCE_SOURCES[input.tab];
   const sourceKey = `page-context:${input.tab}`;
-  const entity: CopilotEntityRef = {
-    type: "domain",
-    namespace: "inventory",
-    kind: `${input.tab}_page_context`,
+  const entity: CopilotEvidenceIdentity = {
+    type: "observation",
+    source,
     source_key: sourceKey,
   };
   const data = { inventory_context: inventoryContext, selected: false };
@@ -1413,8 +2049,10 @@ export interface DefenderPostureCopilotPageInput {
 export interface KbSummaryFields {
   kb_id: string;
   title?: string;
+  product?: string;
   severity?: string;
   published_at?: string;
+  target_date?: string;
   cve_ids: string[];
   affected_servers: string[];
   affected_server_count?: number;
@@ -1427,6 +2065,8 @@ export interface KbFindingObservation {
   target_id?: string;
   server_id?: string;
   cve_id?: string;
+  product_name?: string;
+  target_date?: string;
   application?: string;
   business_service?: string;
   environment?: string;
@@ -2198,7 +2838,6 @@ const COMPLIANCE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which governance risks or exceptions need review?",
     specialistId: "governance",
-    tool: "risk_context",
     toolArguments: {},
   },
 ];
@@ -2280,7 +2919,6 @@ const DEFENDER_POSTURE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which attack paths reach reachable assets?",
     specialistId: "vulnerability",
-    tool: "cve_attack_path",
     toolArguments: {},
   },
   {
@@ -2393,19 +3031,16 @@ const GOVERNANCE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Who owns governance decisions in this scope?",
     specialistId: "governance",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Where are policy or ownership gaps?",
     specialistId: "governance",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Which services need governance attention?",
     specialistId: "governance",
-    tool: "impact_context",
     toolArguments: {},
   },
 ];
@@ -2415,19 +3050,16 @@ const IDENTITY_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which principals hold the widest access?",
     specialistId: "identity_access",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Who owns access in this business service?",
     specialistId: "identity_access",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Search for stale or unused access.",
     specialistId: "identity_access",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -2437,19 +3069,16 @@ const FINOPS_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services own the most savings?",
     specialistId: "finops",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Where is spend attribution missing or uncertain?",
     specialistId: "finops",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Search cost opportunities by owner.",
     specialistId: "finops",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -2465,13 +3094,11 @@ const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which services are impacted by resource pressure?",
     specialistId: "resource_health_observability",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
     label: "Search resource utilization anomalies.",
     specialistId: "resource_health_observability",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -2489,13 +3116,11 @@ const SITUATION_DETAIL_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services are affected?",
     specialistId: "incident",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "What is the blast radius?",
     specialistId: "incident",
-    tool: "impact_context",
     toolArguments: {},
   },
 ];
@@ -2512,13 +3137,11 @@ const SERVICES_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What is the operational impact across services?",
     specialistId: "resource_health_observability",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
     label: "Find a specific service.",
     specialistId: "resource_health_observability",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -2531,19 +3154,19 @@ function serviceDetailStarters(name: string): CoreCopilotStarterQuestion[] {
       label: `Summarize the operational health of ${name}.`,
       specialistId: "resource_health_observability",
       tool: "incidents",
-      toolArguments: { business_service: name },
+      toolArguments: {},
     },
     {
       label: `What depends on ${name}?`,
       specialistId: "resource_health_observability",
       tool: "impact_context",
-      toolArguments: { business_service: name },
+      toolArguments: { subject: name },
     },
     {
       label: `Search related evidence for ${name}.`,
       specialistId: "resource_health_observability",
       tool: "search",
-      toolArguments: { q: name },
+      toolArguments: { query: name },
     },
   ];
 }
@@ -2554,7 +3177,6 @@ const TWIN_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services are affected if this changes?",
     specialistId: "network",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
@@ -2566,7 +3188,6 @@ const TWIN_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What depends on this hub or resource?",
     specialistId: "network",
-    tool: "hub_dependents",
     toolArguments: {},
   },
 ];
@@ -2618,10 +3239,14 @@ function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
   };
 }
 
-function entityOrderingKey(entity: CopilotEntityRef): string {
-  return entity.type === "domain"
-    ? `0:${entity.namespace}:${entity.kind}:${entity.source_key}`
-    : `1:${entity.resource_id}`;
+function entityOrderingKey(entity: CopilotEvidenceIdentity): string {
+  if (entity.type === "domain") {
+    return `0:${entity.namespace}:${entity.kind}:${entity.source_key}`;
+  }
+  if (entity.type === "observation") {
+    return `1:${entity.source}:${entity.source_key}`;
+  }
+  return `2:${entity.resource_id}`;
 }
 
 function normalizeFilters(
@@ -2723,12 +3348,11 @@ function sourceEvidenceRow(item: EvidenceItem) {
   const sourceKey = boundedCoreSourceKey(
     canonicalResource ?? `${item.source_engine}:${item.source_table}`,
   );
-  const entity: CopilotEntityRef = canonicalResource
+  const entity: CopilotEvidenceIdentity = canonicalResource
     ? { type: "azure", resource_id: canonicalResource }
     : {
-        type: "domain",
-        namespace: "source",
-        kind: "observation",
+        type: "observation",
+        source,
         source_key: sourceKey,
       };
   const data = {
@@ -2764,10 +3388,9 @@ function sourceEvidenceRow(item: EvidenceItem) {
 
 function coverageEvidenceRows(coverage: Record<string, CoreCopilotCoverage>) {
   return Object.entries(coverage).map(([key, value]) => {
-    const entity: CopilotEntityRef = {
-      type: "domain",
-      namespace: "page",
-      kind: "coverage",
+    const entity: CopilotEvidenceIdentity = {
+      type: "observation",
+      source: "page/coverage",
       source_key: key,
     };
     return {
@@ -2829,7 +3452,7 @@ function buildCoreCopilotContext(
   input: CoreCopilotAdapterInput,
   starters: CoreCopilotStarterQuestion[],
 ): CoreCopilotContext {
-  const coverage = normalizeCoverage(input.coverage);
+  const declaredCoverage = normalizeCoverage(input.coverage);
   const selectedRecords = input.records.filter((record) => record.selected);
   const selectedEntities = selectedRecords
     .map(coreRecordEntity)
@@ -2851,18 +3474,20 @@ function buildCoreCopilotContext(
         candidate.resource_id === resource.resource_id) === index)
     .slice(0, COPILOT_SNAPSHOT_LIMITS.selectedEntities);
 
-  const coverageRows = coverageEvidenceRows(coverage);
   const candidates = [
     ...input.records.map(coreEvidenceRow),
     ...input.evidence.map(sourceEvidenceRow),
   ].sort((left, right) =>
     left.priority - right.priority
     || compareCodePoints(left.row.evidence_id, right.row.evidence_id));
-  const candidateEvidence = new Map<string, ReturnType<typeof coreEvidenceRow>["row"]>();
+  type CandidateEvidenceRow =
+    | ReturnType<typeof coreEvidenceRow>["row"]
+    | ReturnType<typeof sourceEvidenceRow>["row"];
+  const candidateEvidence = new Map<string, CandidateEvidenceRow>();
   const retainedCandidateIds: string[] = [];
   const candidateLimit = Math.max(
     0,
-    COPILOT_SNAPSHOT_LIMITS.evidenceRows - coverageRows.length,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows - Object.keys(declaredCoverage).length,
   );
   for (const candidate of candidates) {
     const existing = candidateEvidence.get(candidate.row.evidence_id);
@@ -2876,7 +3501,39 @@ function buildCoreCopilotContext(
   const freshness = normalizedFreshness(input.sourceStatuses);
   assertBound("freshness records", freshness.length, COPILOT_SNAPSHOT_LIMITS.freshnessRecords);
 
+  const rowLimitApplied = candidateEvidence.size > candidateLimit;
+  let byteLimitApplied = false;
   const buildSnapshot = () => {
+    const omittedCount = candidateEvidence.size - retainedCandidateIds.length;
+    const coverage = Object.fromEntries(
+      Object.entries(declaredCoverage).map(([key, value]) => [
+        key,
+        omittedCount
+          ? { ...value, complete: false, truncated: true }
+          : value,
+      ]),
+    );
+    const retention = {
+      input_count: candidateEvidence.size,
+      retained_count: retainedCandidateIds.length,
+      omitted_count: omittedCount,
+      row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+      byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+      reasons: [
+        ...(rowLimitApplied ? ["row_limit"] : []),
+        ...(byteLimitApplied ? ["byte_limit"] : []),
+      ],
+    };
+    const coverageRows = coverageEvidenceRows(coverage).map((row, index) =>
+      index === 0
+        ? {
+          ...row,
+          data: {
+            ...row.data,
+            retention,
+          },
+        }
+        : row);
     const evidence = [
       ...retainedCandidateIds.flatMap((id) => {
         const row = candidateEvidence.get(id);
@@ -2884,7 +3541,7 @@ function buildCoreCopilotContext(
       }),
       ...coverageRows,
     ].sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
-    return services.buildCopilotSnapshot({
+    const snapshot = services.buildCopilotSnapshot({
       pageKind: config.pageKind,
       pageId: config.pageId,
       scope: input.scope,
@@ -2893,15 +3550,43 @@ function buildCoreCopilotContext(
       evidence,
       freshness,
     });
+    return { coverage, snapshot };
   };
-  let snapshot = buildSnapshot();
+  let built = buildSnapshot();
+  const strictSnapshotFits = (snapshot: CopilotPageSnapshot): boolean => {
+    try {
+      normalizeCopilotSnapshotV2(snapshot);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message
+          === `snapshot exceeds limit of ${COPILOT_SNAPSHOT_LIMITS.snapshotBytes}`
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  };
   while (
-    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot)
-      > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+    (
+      new TextEncoder().encode(stableJson(built.snapshot)).length
+        + numericValueCount(built.snapshot)
+        > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+      || !strictSnapshotFits(built.snapshot)
+    )
     && retainedCandidateIds.length > 0
   ) {
     retainedCandidateIds.pop();
-    snapshot = buildSnapshot();
+    byteLimitApplied = true;
+    built = buildSnapshot();
+  }
+  const { coverage, snapshot } = built;
+  const omittedCount = candidateEvidence.size - retainedCandidateIds.length;
+  if (!strictSnapshotFits(snapshot)) {
+    throw new Error(
+      `snapshot exceeds limit of ${COPILOT_SNAPSHOT_LIMITS.snapshotBytes}`,
+    );
   }
   assertBound(
     "snapshot",
@@ -2919,6 +3604,9 @@ function buildCoreCopilotContext(
       ...Object.entries(coverage)
         .filter(([, item]) => item.truncated)
         .map(([key]) => `${key} coverage is truncated`),
+      ...(omittedCount
+        ? [`evidence retention omitted ${omittedCount} rows`]
+        : []),
       ...freshness
         .filter((item) => item.status !== "fresh")
         .map((item) => `${item.source} freshness is ${item.status}`),
@@ -3777,8 +4465,10 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
       priority: 0,
       data: {
         title: kb.title,
+        product: kb.product,
         severity: kb.severity,
         published_at: kb.published_at,
+        target_date: kb.target_date,
         affected_server_count: kb.affected_server_count ?? kb.affected_servers.length,
         affected_servers_truncated: kb.affected_servers_truncated ?? false,
         affected_business_services: kb.affected_business_services,
@@ -3803,6 +4493,8 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
       data: {
         server_id: finding.server_id,
         cve_id: finding.cve_id,
+        product_name: finding.product_name,
+        target_date: finding.target_date,
         application: finding.application,
         business_service: finding.business_service,
         environment: finding.environment,
@@ -3865,8 +4557,7 @@ function kbDetailStarters(input: KbDetailCopilotPageInput): CoreCopilotStarterQu
     {
       label: `Explain ${kbId} and the CVEs it remediates`,
       specialistId: "vulnerability",
-      tool: "cve_detail",
-      toolArguments: { kb_id: kbId },
+      toolArguments: {},
     },
     {
       label: `What should we patch first for ${kbId}?`,

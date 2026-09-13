@@ -211,6 +211,14 @@ def test_catalog_page_mapping_prompt_and_output_projections_are_exact(monkeypatc
         for specialist_id, entry in runtime_catalog.items()
     } == manifest_catalog
     assert manifest.page_mapping_projection()["identity"] == ("identity_access",)
+    assert manifest.page_mapping_projection()["services"] == (
+        "resource_health_observability",
+        "governance",
+    )
+    assert manifest.page_mapping_projection()["twin"] == (
+        "network",
+        "resource_health_observability",
+    )
     assert manifest.page_mapping_projection()["finops"] == ("finops",)
     assert manifest.page_mapping_projection()["resource_health"] == (
         "resource_health_observability",

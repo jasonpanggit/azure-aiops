@@ -540,6 +540,83 @@ def test_strict_bounds_reject_oversized_rows_and_lists():
         _snapshot(rows)
 
 
+@pytest.mark.parametrize(
+    ("suffix_length", "accepted"),
+    [
+        (8, True),
+        (9, True),
+        (10, False),
+    ],
+)
+def test_evidence_row_utf8_size_boundary_is_exact(
+    suffix_length: int,
+    accepted: bool,
+):
+    # json.dumps(..., ensure_ascii=True) encodes each astral character as two
+    # six-byte surrogate escapes.  The object syntax contributes 11 bytes, so
+    # these cases exercise 8191/8192/8193 bytes exactly.
+    data = {"blob": ("😀" * 681) + ("x" * suffix_length)}
+
+    if accepted:
+        row = _evidence("utf8-boundary", source_key="utf8-boundary", data=data)
+        assert row.data == data
+    else:
+        with pytest.raises(ValidationError, match="evidence row exceeds size limit"):
+            _evidence("utf8-boundary", source_key="utf8-boundary", data=data)
+
+
+@pytest.mark.parametrize(
+    ("source_length", "accepted"),
+    [
+        (127, True),
+        (128, True),
+        (129, False),
+    ],
+)
+def test_snapshot_string_character_boundary_is_exact(
+    source_length: int,
+    accepted: bool,
+):
+    payload = {
+        "evidence_id": "character-boundary",
+        "source": "界" * source_length,
+        "source_key": "character-boundary",
+        "entity": _azure(),
+        "claim_type": "health",
+        "data": {},
+    }
+
+    if accepted:
+        assert contract.SnapshotEvidence.model_validate(payload).source == payload["source"]
+    else:
+        with pytest.raises(ValidationError):
+            contract.SnapshotEvidence.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("row_count", "accepted"),
+    [
+        (contract.MAX_SNAPSHOT_EVIDENCE - 1, True),
+        (contract.MAX_SNAPSHOT_EVIDENCE, True),
+        (contract.MAX_SNAPSHOT_EVIDENCE + 1, False),
+    ],
+)
+def test_snapshot_evidence_structural_boundary_is_exact(
+    row_count: int,
+    accepted: bool,
+):
+    rows = [
+        _evidence(f"row-{index}", source_key=f"row-{index}", data={})
+        for index in range(row_count)
+    ]
+
+    if accepted:
+        assert len(_snapshot(rows).evidence) == row_count
+    else:
+        with pytest.raises(ValidationError):
+            _snapshot(rows)
+
+
 def test_complete_empty_is_distinct_from_unavailable_or_denied():
     empty = _canonicalize(_snapshot([]))
     assert empty.classification == "empty"

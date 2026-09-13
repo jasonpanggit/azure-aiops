@@ -10,6 +10,8 @@ evidence explicitly historical until it is rechecked, and bound its own growth.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -488,6 +490,41 @@ def test_stale_revision_raises_an_explicit_conflict() -> None:
     ).revision == 2
 
 
+def test_stale_authorization_rejects_before_narrowing_or_aging() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = store.create("operator-a", BROAD)
+    store.append(
+        thread.thread_id,
+        "operator-a",
+        BROAD,
+        _turn(),
+        expected_revision=0,
+    )
+    document_name = thread_document_name(thread.thread_id)
+    before = deepcopy(documents.documents[document_name])
+    clock.advance(60)
+
+    with pytest.raises(ThreadRevisionConflict) as raised:
+        store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+
+    assert raised.value.current_revision == 1
+    assert documents.documents[document_name] == before
+    assert documents.documents[document_name]["scope"] == {
+        "subscription": ["sub-a", "sub-b"]
+    }
+    assert (
+        documents.documents[document_name]["turns"][0]["observation_status"]
+        == OBSERVATION_CURRENT
+    )
+
+
 def test_concurrent_replicas_see_the_same_revision_after_restart() -> None:
     documents = FakeDocuments()
     first = InvestigationThreadStore(documents=documents)
@@ -533,6 +570,110 @@ def test_stale_replica_cannot_overwrite_a_concurrent_turn() -> None:
     restarted = InvestigationThreadStore(documents=documents)
     history = restarted.history(thread.thread_id, "operator-a", SUB_A)
     assert [item["snapshot_id"] for item in history] == ["snap-second"]
+
+
+def test_same_process_authorizations_keep_the_revision_seen_before_tool_work() -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", BROAD)
+    both_authorized = threading.Barrier(2)
+    winner_written = threading.Event()
+
+    def write_winner():
+        authorized = store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+        both_authorized.wait(timeout=5)
+        try:
+            return store.append(
+                thread.thread_id,
+                "operator-a",
+                SUB_A,
+                _turn("winner"),
+                expected_revision=authorized.revision,
+            )
+        finally:
+            winner_written.set()
+
+    def write_loser():
+        authorized = store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+        both_authorized.wait(timeout=5)
+        assert winner_written.wait(timeout=5)
+        return store.append(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            _turn("loser"),
+            expected_revision=authorized.revision,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(write_winner)
+        loser = pool.submit(write_loser)
+
+        assert winner.result(timeout=5).revision == 1
+        with pytest.raises(ThreadRevisionConflict) as raised:
+            loser.result(timeout=5)
+
+    assert raised.value.current_revision == 1
+    persisted = store.authorize(thread.thread_id, "operator-a", SUB_A)
+    assert persisted.revision == 1
+    assert persisted.scope == SUB_A
+    assert [
+        turn.payload["snapshot_id"] for turn in persisted.turns
+    ] == ["snap-winner"]
+    with pytest.raises(ThreadNotFound):
+        store.authorize(thread.thread_id, "operator-a", BROAD)
+
+
+def test_authorize_rechecks_expected_revision_after_concurrent_reload() -> None:
+    class InterleavingDocuments(FakeDocuments):
+        before_write = None
+
+        def write(self, name, payload, *, expected_revision):
+            callback = self.before_write
+            self.before_write = None
+            if callback is not None:
+                callback()
+            super().write(name, payload, expected_revision=expected_revision)
+
+    documents = InterleavingDocuments()
+    first = InvestigationThreadStore(documents=documents)
+    second = InvestigationThreadStore(documents=documents)
+    thread = first.create("operator-a", BROAD)
+    document_name = thread_document_name(thread.thread_id)
+    documents.before_write = lambda: second.append(
+        thread.thread_id,
+        "operator-a",
+        BROAD,
+        _turn("concurrent"),
+        expected_revision=0,
+    )
+
+    with pytest.raises(ThreadRevisionConflict) as raised:
+        first.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+
+    assert raised.value.current_revision == 1
+    persisted = documents.documents[document_name]
+    assert persisted["thread_revision"] == 1
+    assert persisted["scope"] == BROAD.to_dict()
+    restarted = InvestigationThreadStore(documents=documents)
+    assert [
+        item["snapshot_id"]
+        for item in restarted.history(thread.thread_id, "operator-a", BROAD)
+    ] == ["snap-concurrent"]
 
 
 def test_document_revision_is_distinct_from_thread_revision() -> None:

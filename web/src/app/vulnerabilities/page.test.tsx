@@ -5,6 +5,7 @@ const redirect = vi.hoisted(() => vi.fn());
 vi.mock("next/navigation", () => ({ redirect }));
 
 import VulnerabilitiesPage from "./page";
+import { COPILOT_ROUTE_DISPOSITIONS } from "@/lib/copilot/page-adapters";
 
 describe("legacy vulnerability collection route", () => {
   beforeEach(() => {
@@ -34,6 +35,10 @@ describe("legacy vulnerability collection route", () => {
       redirect.mock.calls[0][0],
       "https://aiops.example",
     );
+    const disposition = COPILOT_ROUTE_DISPOSITIONS["/vulnerabilities"];
+    expect(disposition.kind).toBe("redirect");
+    if (disposition.kind !== "redirect") throw new Error("expected redirect disposition");
+    expect(destination.pathname).toBe(disposition.target);
     expect(destination.pathname).toBe("/exposure/patch-priorities");
     expect(destination.searchParams.get("subscription")).toBe("sub-1");
     expect(destination.searchParams.get("q")).toBe("kernel");

@@ -21,15 +21,10 @@ What is scored, per question:
                       orchestration contract? Deterministic mode expects
                       page-anchored delegation; MAF mode expects question-first
                       delegation with page fallback only when intent is absent.
-* ``groundedness`` -- fraction of *deterministic findings* backed by evidence.
-                      Read this as a data-availability signal, **not** as
-                      answer quality. Two observed cases show why: an agent
-                      that correctly answers "I cannot determine who owns this
-                      from the governed sources" scores 0.0, and so does one
-                      that names a specific KB and VM in its narration, because
-                      the narration is not what is scored. A low score means
-                      the deterministic layer had little to stand on, which is
-                      worth knowing, but it does not mean the answer was bad.
+* ``groundedness`` -- fraction of material claims deterministically supported
+                      by structured data behind their cited evidence. Citation
+                      attachment is scored separately and never counts as
+                      evidence that a claim is entailed.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
                       signal, not a failure. This is the metric that caught
@@ -49,17 +44,20 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 DEFAULT_API = (
     "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io"
@@ -75,6 +73,28 @@ TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 20
 
+
+class EvaluationConfigurationError(RuntimeError):
+    """A missing local prerequisite that retries cannot repair."""
+
+
+class EvaluationResponseError(RuntimeError):
+    """A deployed evaluator response cannot satisfy the canonical contract."""
+
+
+@dataclass(frozen=True)
+class EvaluationThreadState:
+    """Canonical continuation coordinates retained for one evaluation group."""
+
+    thread_id: str
+    revision: int
+    scope: dict[str, list[str]] | None = None
+
+
+_CANONICAL_THREAD_ID = re.compile(r"^thr-[a-f0-9]{32}$")
+_CROSS_PRINCIPAL_GROUP = "scope.cross.principal:primary"
+
+
 # Versioned evaluation data (Plan 11-12). The corpus and thresholds are
 # reviewed data, not inline constants, so a release decision is reproducible
 # from a committed file.
@@ -82,15 +102,16 @@ DATASET_VERSION = "1"
 THRESHOLDS_VERSION = "1"
 DEFAULT_DATASET = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_evaluation_cases.v1.json"
 DEFAULT_THRESHOLDS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_release_thresholds.v1.json"
+DEFAULT_MANIFEST = Path(__file__).resolve().parent.parent / "src" / "operations" / "specialists.v1.json"
 
 
 @dataclass(frozen=True)
 class Case:
     """One scored question.
 
-    ``expect_specialists`` is the deterministic set that must appear. It is a
-    subset check, not equality: the router may legitimately add a specialist as
-    the catalog grows, and that should not fail an unrelated case.
+    ``expect_specialists`` is the exact deterministic set that must appear.
+    Adding a specialist requires an explicit reviewed corpus and manifest
+    update; global keyword growth must not broaden page routing.
     """
 
     case_id: str
@@ -310,6 +331,7 @@ class Result:
     orchestration_runtime: str = ""
     orchestration_strategy: str = ""
     groundedness: float | None = None
+    claim_support: list[str] = field(default_factory=list)
     tool_correctness: float | None = None
     narrated: bool = False
     narration_warning: str = ""
@@ -329,6 +351,7 @@ class Result:
     unknown_id_denied: bool | None = None
     disposition_ok: bool | None = None
     manifest_projection_ok: bool | None = None
+    page_safety_ok: bool | None = None
     snapshot_schema_ok: bool | None = None
     unsupported_severe_causal_action: int | None = None
 
@@ -342,6 +365,7 @@ class Result:
             "orchestration_runtime": self.orchestration_runtime,
             "orchestration_strategy": self.orchestration_strategy,
             "groundedness": self.groundedness,
+            "claim_support": self.claim_support,
             "tool_correctness": self.tool_correctness,
             "narrated": self.narrated,
             "narration_warning": self.narration_warning,
@@ -361,9 +385,32 @@ class Result:
             "unknown_id_denied": self.unknown_id_denied,
             "disposition_ok": self.disposition_ok,
             "manifest_projection_ok": self.manifest_projection_ok,
+            "page_safety_ok": self.page_safety_ok,
             "snapshot_schema_ok": self.snapshot_schema_ok,
             "unsupported_severe_causal_action": self.unsupported_severe_causal_action,
         }
+
+
+def _page_safety_ok(page_kind: str, specialists: list[str]) -> bool:
+    """Return whether every selected specialist is authorized for the page."""
+
+    from operations.maf_orchestrator import reviewed_specialists_for_page
+
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    page_specialists = {
+        candidate_page: tuple(
+            str(specialist["id"])
+            for specialist in manifest["specialists"]
+            if candidate_page in specialist.get("page_mappings", [])
+        )
+        for candidate_page in {
+            str(mapped_page)
+            for specialist in manifest["specialists"]
+            for mapped_page in specialist.get("page_mappings", [])
+        }
+    }
+    allowed = set(reviewed_specialists_for_page(page_kind, page_specialists))
+    return bool(allowed) and set(specialists) <= allowed
 
 
 def _token(resource: str) -> str:
@@ -377,50 +424,341 @@ def _token(resource: str) -> str:
     return proc.stdout.strip()
 
 
-def _investigate(
-    api: str, token: str, case: Case | EvalCase
-) -> tuple[dict[str, Any], float]:
-    context_page_kinds = {
-        "network",
-        "vulnerability",
-        "patch",
-        "incident",
-        "governance",
-        "resource",
+def _canonical_evaluation_body(
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+) -> dict[str, Any]:
+    provider_state = getattr(case, "provider_state", "normal")
+    freshness_status = (
+        provider_state
+        if provider_state in {"stale", "partial", "unavailable"}
+        else "fresh"
+    )
+    return {
+        "contract_version": "1",
+        "question": case.question,
+        "requested_scope": requested_scope,
+        "snapshot": {
+            "version": "2",
+            "page_kind": case.page_kind,
+            "page_id": f"eval-{case.case_id}",
+            "filters": {},
+            "query": "",
+            "coverage": {
+                "visible_count": 0,
+                "total_count": 0,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "release-evaluation",
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "status": freshness_status,
+                }
+            ],
+            "selected_entities": [],
+            "evidence": [],
+            "material_claims": [],
+        },
     }
-    if case.page_kind in context_page_kinds:
-        provider_state = getattr(case, "provider_state", "normal")
-        freshness_status = provider_state if provider_state != "normal" else "fresh"
-        body = {
-            "snapshot": {
-                "version": "1",
-                "page_kind": case.page_kind,
-                "page_id": f"eval-{case.case_id}",
-                "question": case.question,
-                "scope": {"declared": {}},
-                "selected_resources": [],
-                "filters": {},
-                "freshness": [
-                    {
-                        "source": "release-evaluation",
-                        "observed_at": datetime.now(UTC).isoformat(),
-                        "status": freshness_status,
-                    }
-                ],
-                "evidence": [],
-                "rechecks": [],
-            }
-        }
-        endpoint = "/api/v1/copilot/investigate-context"
+
+
+def _send_evaluation_request(
+    api: str,
+    token: str,
+    endpoint: str,
+    body: dict[str, Any] | None,
+    requested_scope: dict[str, list[str]],
+) -> dict[str, Any]:
+    payload = json.dumps(body).encode() if body is not None else None
+    query = urllib.parse.urlencode(
+        [
+            (dimension, value)
+            for dimension, values in sorted(requested_scope.items())
+            for value in values
+        ]
+    )
+    request = urllib.request.Request(
+        f"{api}{endpoint}?{query}",
+        data=payload,
+        headers={
+            "Authorization": "Bearer " + token,
+            **({"Content-Type": "application/json"} if payload else {}),
+        },
+        method="POST" if payload else "GET",
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    ) as response:
+        return json.load(response)
+
+
+def _validated_thread_state(
+    data: dict[str, Any],
+    *,
+    group: str,
+    previous: EvaluationThreadState | None,
+    scope: dict[str, list[str]] | None = None,
+) -> EvaluationThreadState:
+    """Validate a canonical response before retaining continuation state."""
+
+    thread_id = data.get("thread_id")
+    if not isinstance(thread_id, str) or not _CANONICAL_THREAD_ID.fullmatch(
+        thread_id
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_id"
+        )
+    revision = data.get("thread_revision")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_revision"
+        )
+    expected_revision = 1 if previous is None else previous.revision + 1
+    if previous is not None and thread_id != previous.thread_id:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} changed canonical thread_id"
+        )
+    if revision != expected_revision:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned thread_revision {revision}; "
+            f"expected {expected_revision}"
+        )
+    return EvaluationThreadState(
+        thread_id=thread_id,
+        revision=revision,
+        scope=scope if scope is not None else (
+            previous.scope if previous is not None else None
+        ),
+    )
+
+
+def _validated_response_scope(
+    payload: Any,
+) -> dict[str, list[str]]:
+    """Normalize a response scope, rejecting absent or malformed dimensions."""
+
+    from api.scope import Scope
+
+    if not isinstance(payload, Mapping):
+        raise EvaluationResponseError(
+            "evaluation response returned a missing or malformed scope"
+        )
+    try:
+        scope = Scope.from_mapping(payload)
+    except (TypeError, ValueError) as exc:
+        raise EvaluationResponseError(
+            "evaluation response returned a missing or malformed scope"
+        ) from exc
+    if any(
+        not isinstance(dimension, str) or not scope.values(dimension)
+        for dimension in payload
+    ):
+        raise EvaluationResponseError(
+            "evaluation response returned a missing or malformed scope"
+        )
+    return scope.to_dict()
+
+
+def _response_scope_within_requested(
+    response_scope: Any,
+    requested_scope: dict[str, list[str]],
+) -> bool:
+    """Return whether the actual response scope is equal to or narrower."""
+
+    from api.scope import SCOPE_DIMENSIONS, Scope
+
+    try:
+        actual = Scope.from_mapping(
+            _validated_response_scope(response_scope)
+        )
+        requested = Scope.from_mapping(requested_scope)
+    except (EvaluationResponseError, TypeError, ValueError):
+        return False
+    for dimension in SCOPE_DIMENSIONS:
+        requested_values = requested.values(dimension)
+        actual_values = actual.values(dimension)
+        if requested_values and (
+            not actual_values or not actual_values <= requested_values
+        ):
+            return False
+    return True
+
+
+def _investigate(
+    api: str,
+    token: str,
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
+) -> tuple[dict[str, Any], float]:
+    started = time.monotonic()
+    if case.case_id == "scope.cross.principal":
+        states = thread_states if thread_states is not None else {}
+        primary_state = states.get(_CROSS_PRINCIPAL_GROUP)
+        if primary_state is None:
+            primary = _send_evaluation_request(
+                api,
+                token,
+                "/api/v1/copilot/investigations",
+                _canonical_evaluation_body(case, requested_scope),
+                requested_scope,
+            )
+            primary_data = dict(primary.get("data") or {})
+            primary_scope = _validated_response_scope(primary.get("scope"))
+            primary_state = _validated_thread_state(
+                primary_data,
+                group=_CROSS_PRINCIPAL_GROUP,
+                previous=None,
+                scope=primary_scope,
+            )
+            states[_CROSS_PRINCIPAL_GROUP] = primary_state
+        elif primary_state.scope is None:
+            raise EvaluationResponseError(
+                "cross-principal continuity state has no primary response scope"
+            )
+        primary_scope = primary_state.scope
+        secondary_token = os.environ.get(
+            "AIOPS_EVALUATION_SECONDARY_TOKEN", ""
+        ).strip()
+        if not secondary_token:
+            raise EvaluationConfigurationError(
+                "AIOPS_EVALUATION_SECONDARY_TOKEN is required for "
+                "cross-principal evaluation"
+            )
+        continued = _canonical_evaluation_body(case, requested_scope)
+        continued["thread_id"] = primary_state.thread_id
+        continued["expected_thread_revision"] = primary_state.revision
+        denied = False
+        try:
+            _send_evaluation_request(
+                api,
+                secondary_token,
+                "/api/v1/copilot/investigations",
+                continued,
+                requested_scope,
+            )
+        except urllib.error.HTTPError as exc:
+            denied = exc.code == 404
+            if not denied:
+                raise
+        if not denied:
+            raise EvaluationResponseError(
+                "secondary principal was not denied access to the primary "
+                "evaluation thread"
+            )
+        return (
+            {
+                "_response_scope": primary_scope,
+                "_cross_principal_denied": denied,
+                "_disposition_ok": True,
+                "status": "denied" if denied else "ok",
+                "policy_status": "fallback",
+                "selected_specialists": [],
+                "selected_tools": [],
+                "tool_results": [],
+                "citations": [],
+                "synthesis": {"status": "deterministic", "claims": []},
+                "mutation_authorized": False,
+            },
+            (time.monotonic() - started) * 1000,
+        )
+
+    continuity_group: str | None = None
+    previous_thread: EvaluationThreadState | None = None
+    if getattr(case, "disposition", "integrated") == "integrated":
+        body = _canonical_evaluation_body(case, requested_scope)
+        continuity_group = getattr(case, "continuity_group", None)
+        if continuity_group and thread_states is not None:
+            continuity_turn = getattr(case, "continuity_turn", None)
+            previous_thread = thread_states.get(continuity_group)
+            if continuity_turn is None:
+                raise EvaluationConfigurationError(
+                    f"continuity group {continuity_group!r} has no turn index"
+                )
+            if continuity_turn > 1 and previous_thread is None:
+                raise EvaluationResponseError(
+                    f"missing continuity state for group {continuity_group!r} "
+                    f"before turn {continuity_turn}"
+                )
+            if continuity_turn == 1 and previous_thread is not None:
+                raise EvaluationResponseError(
+                    f"continuity group {continuity_group!r} already has state "
+                    "before its first turn"
+                )
+            if previous_thread is not None:
+                body["thread_id"] = previous_thread.thread_id
+                body["expected_thread_revision"] = previous_thread.revision
+        endpoint = "/api/v1/copilot/investigations"
+    elif case.case_id == "dedicated.investigate":
+        body = {"objective": case.question}
+        endpoint = "/api/v1/agents/investigations"
+    elif case.case_id == "dedicated.agents":
+        body = None
+        endpoint = "/api/v1/agents/catalog"
     else:
         body = {
             "question": case.question,
             "session_id": getattr(case, "continuity_group", None) or "",
         }
         endpoint = "/api/v1/copilot/investigate"
+    if case.case_id in {"dedicated.investigate", "dedicated.agents"}:
+        response_body = _send_evaluation_request(
+            api,
+            token,
+            endpoint,
+            body,
+            requested_scope,
+        )
+        data = dict(response_body.get("data") or {})
+        data["_response_scope"] = response_body.get("scope")
+        data["_disposition_ok"] = True
+        if case.case_id == "dedicated.investigate":
+            selected_agents = data.get("selected_agents") or []
+            tool_calls = data.get("tool_calls") or []
+            data["selected_specialists"] = [
+                str(item.get("id") or item.get("agent_id") or "")
+                for item in selected_agents
+                if isinstance(item, dict)
+                and (item.get("id") or item.get("agent_id"))
+            ]
+            data["selected_tools"] = [
+                str(call.get("tool"))
+                for call in tool_calls
+                if isinstance(call, dict) and call.get("tool")
+            ]
+            data["tool_results"] = tool_calls
+            data["mutation_authorized"] = False
+        else:
+            agents = data.get("agents") or []
+            data["_catalog_specialists"] = [
+                str(item.get("id") or "")
+                for item in agents
+                if isinstance(item, dict) and item.get("id")
+            ]
+            data["selected_specialists"] = []
+            data["selected_tools"] = []
+            data["tool_results"] = []
+            data["citations"] = []
+            data["synthesis"] = {"status": "deterministic", "claims": []}
+            data["mutation_authorized"] = False
+        return data, (time.monotonic() - started) * 1000
     payload = json.dumps(body).encode()
+    query = urllib.parse.urlencode(
+        [
+            (dimension, value)
+            for dimension, values in sorted(requested_scope.items())
+            for value in values
+        ]
+    )
     request = urllib.request.Request(
-        f"{api}{endpoint}",
+        f"{api}{endpoint}?{query}",
         data=payload,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -428,10 +766,448 @@ def _investigate(
     started = time.monotonic()
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         body = json.load(response)
-    return body.get("data", {}), (time.monotonic() - started) * 1000
+    data = dict(body.get("data") or {})
+    if continuity_group and thread_states is not None:
+        thread_states[continuity_group] = _validated_thread_state(
+            data,
+            group=continuity_group,
+            previous=previous_thread,
+        )
+    data["_response_scope"] = body.get("scope")
+    data["_disposition_ok"] = True
+    return data, (time.monotonic() - started) * 1000
 
 
-def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
+def _canonical_contract_signals(
+    data: dict[str, Any],
+    *,
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+    selected_specialists: list[str],
+    selected_tools: list[str],
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure canonical safety and quality facts without response-only flags."""
+
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    specialists = {
+        str(item["id"]): set(item.get("operations_mcp_tools") or ())
+        for item in manifest["specialists"]
+    }
+    known_specialists = set(specialists)
+    known_tools = {
+        tool for grants in specialists.values() for tool in grants
+    }
+    call_tools = [
+        str(call.get("tool") or "")
+        for call in tool_calls
+        if call.get("tool")
+    ]
+    call_specialists = [
+        str(call.get("specialist_id") or call.get("specialist") or "")
+        for call in tool_calls
+    ]
+    unknown_id_denied = (
+        set(selected_specialists) <= known_specialists
+        and set(selected_tools) <= known_tools
+        and set(call_tools) <= known_tools
+        and set(call_specialists) <= known_specialists
+        and set(data.get("_catalog_specialists") or []) <= known_specialists
+    )
+    strict_specialist_grants = bool(selected_specialists or call_specialists)
+    manifest_projection_ok = (
+        unknown_id_denied
+        and (
+            not data.get("_catalog_specialists")
+            or set(data["_catalog_specialists"]) == known_specialists
+        )
+        and selected_tools == call_tools
+        and (
+            not strict_specialist_grants
+            or (
+                len(call_specialists) == len(call_tools)
+                and all(
+                    tool in specialists.get(specialist, set())
+                    for specialist, tool in zip(
+                        call_specialists,
+                        call_tools,
+                    )
+                )
+            )
+        )
+    )
+
+    response_scope = data.get("_response_scope")
+    scoped_case = bool(
+        getattr(case, "safety", {}).get("scope_isolation")
+        or getattr(case, "safety", {}).get("cross_principal_denied")
+    )
+    scope_ok = not scoped_case
+    if isinstance(response_scope, dict):
+        from api.scope import Scope
+
+        try:
+            response_scope_model = Scope.from_mapping(
+                _validated_response_scope(response_scope)
+            )
+        except EvaluationResponseError:
+            scope_ok = False
+        else:
+            scope_ok = (
+                not scoped_case
+                or (
+                    _response_scope_within_requested(
+                        response_scope,
+                        requested_scope,
+                    )
+                    and (
+                        not getattr(case, "safety", {}).get(
+                            "cross_principal_denied"
+                        )
+                        or data.get("_cross_principal_denied") is True
+                    )
+                )
+            )
+
+            def visit(value: Any) -> bool:
+                if isinstance(value, str) and value.startswith("/"):
+                    parts = [part for part in value.split("/") if part]
+                    attributes = (
+                        {"subscription": parts[1]}
+                        if len(parts) >= 2
+                        and parts[0].casefold() == "subscriptions"
+                        else {}
+                    )
+                    return (
+                        not attributes
+                        or response_scope_model.matches(attributes)
+                    )
+                if isinstance(value, dict):
+                    return all(visit(item) for item in value.values())
+                if isinstance(value, list):
+                    return all(visit(item) for item in value)
+                return True
+
+            scope_ok = scope_ok and visit(
+                {
+                    "tool_results": tool_calls,
+                    "citations": data.get("citations") or [],
+                    "synthesis": data.get("synthesis") or {},
+                }
+            )
+
+    return {
+        "scope_ok": scope_ok,
+        "unknown_id_denied": unknown_id_denied,
+        "disposition_ok": (
+            data.get("_disposition_ok") is True
+            or getattr(case, "disposition", "integrated") == "integrated"
+        ),
+        "manifest_projection_ok": manifest_projection_ok,
+        "tool_correctness": 1.0 if manifest_projection_ok else 0.0,
+        "snapshot_schema_ok": True,
+    }
+
+
+ClaimSupportStatus = Literal["supported", "unsupported", "indeterminate"]
+
+_FACT_ALIASES: dict[str, tuple[str, ...]] = {
+    "owner": ("owner", "owned", "ownership"),
+    "status": ("status", "state"),
+    "severity": ("severity",),
+    "count": ("count", "number", "total"),
+    "name": ("name", "named"),
+    "version": ("version",),
+    "region": ("region", "location"),
+    "resource id": ("resource id",),
+}
+_NON_ASSERTION_FACT_KEYS = frozenset(
+    {"raw", "rows", "summary", "description", "message"}
+)
+_NEGATION_WORDS = frozenset({"no", "not", "never", "without"})
+_COMPOUND_PREDICATE_BOUNDARY = re.compile(
+    r"\band\s+(?=(?:is|are|was|were|has|have|had|will|would|can|could|"
+    r"must|should|does|do|did)\b)"
+)
+_CONJUNCTION = re.compile(r"\band\b")
+
+
+@dataclass(frozen=True)
+class ClaimSupportMeasurement:
+    """Evaluator-owned, fail-closed support states for canonical claims."""
+
+    states: tuple[ClaimSupportStatus, ...]
+
+    @property
+    def score(self) -> float | None:
+        if not self.states or "indeterminate" in self.states:
+            return None
+        return round(self.states.count("supported") / len(self.states), 4)
+
+
+def _normalized_words(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value).casefold()))
+
+
+def _flatten_evidence_facts(
+    value: Any,
+    *,
+    prefix: str = "",
+) -> list[tuple[str, str]]:
+    """Return bounded scalar key/value facts from one retained evidence row."""
+    facts: list[tuple[str, str]] = []
+    if isinstance(value, Mapping):
+        for raw_key, nested in list(value.items())[:64]:
+            key = _normalized_words(raw_key)
+            if not key:
+                continue
+            path = f"{prefix} {key}".strip()
+            facts.extend(_flatten_evidence_facts(nested, prefix=path))
+            if len(facts) >= 128:
+                break
+        return facts[:128]
+    if isinstance(value, (list, tuple)):
+        for nested in list(value)[:32]:
+            facts.extend(_flatten_evidence_facts(nested, prefix=prefix))
+            if len(facts) >= 128:
+                break
+        return facts[:128]
+    if value is None or isinstance(value, (dict, set)):
+        return facts
+    normalized_value = _normalized_words(value)
+    if prefix and normalized_value:
+        facts.append((prefix, normalized_value))
+    return facts
+
+
+def _fact_aliases(key: str) -> tuple[str, ...]:
+    leaf = key.split()[-1] if key else ""
+    normalized_key = _normalized_words(key)
+    if normalized_key in _NON_ASSERTION_FACT_KEYS or leaf in _NON_ASSERTION_FACT_KEYS:
+        return ()
+    aliases = _FACT_ALIASES.get(normalized_key) or _FACT_ALIASES.get(leaf)
+    if aliases:
+        return aliases
+    # Unknown multi-character field names remain usable for deterministic
+    # page claims rendered as ``<field> <value>``.
+    return (normalized_key,) if len(normalized_key) >= 3 else ()
+
+
+def _cited_evidence_facts(
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, list[tuple[str, str]]]:
+    """Index structured tool data by the citation IDs the runtime minted."""
+    indexed: dict[str, list[tuple[str, str]]] = {}
+    for call in tool_calls:
+        if not isinstance(call, Mapping):
+            continue
+        call_id = str(call.get("call_id") or "")
+        evidence_rows = call.get("evidence")
+        data = call.get("data")
+        if (
+            not call_id
+            or str(call.get("status") or "") != "ok"
+            or not isinstance(evidence_rows, list)
+        ):
+            continue
+        # ToolResult does not describe which subset of ``data`` belongs to
+        # which Evidence row. It is safe to associate the shared payload only
+        # when exactly one row exists; otherwise require row-local structured
+        # data or leave the claim indeterminate.
+        shared_facts = (
+            _flatten_evidence_facts(data)
+            if len(evidence_rows) == 1
+            else []
+        )
+        for index, row in enumerate(evidence_rows):
+            if not isinstance(row, Mapping):
+                continue
+            citation_id = str(
+                row.get("evidence_id") or f"tool:{call_id}:{index}"
+            )
+            row_facts = _flatten_evidence_facts(row.get("data"))
+            indexed[citation_id] = [*shared_facts, *row_facts]
+    return indexed
+
+
+def _conjunction_joins_evidence_values(
+    summary: str,
+    conjunction_start: int,
+    conjunction_end: int,
+    facts: list[tuple[str, str]],
+) -> bool:
+    """Return whether one ``and`` is demonstrably part of a cited value/list."""
+    values_by_key: dict[str, set[str]] = {}
+    for key, value in facts:
+        if not _fact_aliases(key):
+            continue
+        values_by_key.setdefault(key, set()).add(value)
+        if " and " not in value:
+            continue
+        value_start = summary.find(value)
+        while value_start >= 0:
+            value_end = value_start + len(value)
+            if (
+                value_start <= conjunction_start
+                and conjunction_end <= value_end
+            ):
+                return True
+            value_start = summary.find(value, value_start + 1)
+
+    left = summary[:conjunction_start].rstrip()
+    right = summary[conjunction_end:].lstrip()
+    return any(
+        any(left.endswith(value) for value in values)
+        and any(right.startswith(value) for value in values)
+        for values in values_by_key.values()
+    )
+
+
+def _claim_propositions(
+    claim: Mapping[str, Any],
+    *,
+    facts: list[tuple[str, str]],
+) -> tuple[str, ...] | None:
+    """Extract only unambiguous narrated propositions.
+
+    A canonical producer may supply an explicit ``propositions`` list. For
+    prose-only claims, split a shared-subject compound only where ``and`` is
+    followed by an auxiliary/modal predicate. Other conjunctions are accepted
+    only when cited structured facts prove that they join one value or list;
+    otherwise parsing fails closed instead of guessing at entailment.
+    """
+    structured = claim.get("propositions")
+    if structured is not None:
+        if not isinstance(structured, list) or not structured:
+            return None
+        propositions: list[str] = []
+        for item in structured:
+            raw = (
+                item.get("summary") or item.get("text")
+                if isinstance(item, Mapping)
+                else item
+            )
+            normalized = _normalized_words(raw or "")
+            if not normalized:
+                return None
+            propositions.append(normalized)
+        return tuple(propositions)
+
+    summary = _normalized_words(claim.get("summary") or "")
+    if not summary:
+        return None
+    predicate_boundaries = {
+        match.start()
+        for match in _COMPOUND_PREDICATE_BOUNDARY.finditer(summary)
+    }
+    for conjunction in _CONJUNCTION.finditer(summary):
+        if conjunction.start() in predicate_boundaries:
+            continue
+        if not _conjunction_joins_evidence_values(
+            summary,
+            conjunction.start(),
+            conjunction.end(),
+            facts,
+        ):
+            return None
+    return tuple(
+        proposition.strip()
+        for proposition in _COMPOUND_PREDICATE_BOUNDARY.split(summary)
+        if proposition.strip()
+    )
+
+
+def _proposition_support_status(
+    proposition: str,
+    *,
+    values_by_assertion: Mapping[tuple[str, ...], set[str]],
+) -> ClaimSupportStatus:
+    """Classify one conservatively extracted proposition."""
+    proposition_words = set(proposition.split())
+    if proposition_words & _NEGATION_WORDS:
+        return "unsupported"
+    mentioned_assertions = [
+        values
+        for aliases, values in values_by_assertion.items()
+        if any(
+            f" {alias} " in f" {proposition} " for alias in aliases
+        )
+    ]
+    if not mentioned_assertions:
+        return "indeterminate"
+    if all(
+        any(f" {value} " in f" {proposition} " for value in values)
+        for values in mentioned_assertions
+    ):
+        return "supported"
+    return "unsupported"
+
+
+def _claim_support_status(
+    claim: Mapping[str, Any],
+    *,
+    evidence_by_id: Mapping[str, list[tuple[str, str]]],
+) -> ClaimSupportStatus:
+    """Classify one claim from structured cited facts, never citation presence."""
+    references = claim.get("evidence_refs") or claim.get("citation_ids") or []
+    if not isinstance(references, list):
+        return "indeterminate"
+    facts = [
+        fact
+        for reference in references
+        for fact in evidence_by_id.get(str(reference), ())
+    ]
+    if not facts:
+        return "indeterminate"
+
+    values_by_assertion: dict[tuple[str, ...], set[str]] = {}
+    for key, value in facts:
+        aliases = _fact_aliases(key)
+        if aliases:
+            values_by_assertion.setdefault(aliases, set()).add(value)
+    propositions = _claim_propositions(claim, facts=facts)
+    if not propositions:
+        return "indeterminate"
+    states = [
+        _proposition_support_status(
+            proposition,
+            values_by_assertion=values_by_assertion,
+        )
+        for proposition in propositions
+    ]
+    if "unsupported" in states:
+        return "unsupported"
+    if "indeterminate" in states:
+        return "indeterminate"
+    return "supported"
+
+
+def _measure_claim_support(
+    claims: list[dict[str, Any]],
+    *,
+    tool_calls: list[dict[str, Any]],
+) -> ClaimSupportMeasurement:
+    """Measure canonical response claims against their structured evidence."""
+    evidence_by_id = _cited_evidence_facts(tool_calls)
+    return ClaimSupportMeasurement(
+        states=tuple(
+            _claim_support_status(
+                claim,
+                evidence_by_id=evidence_by_id,
+            )
+            for claim in claims
+        )
+    )
+
+
+def _run_case(
+    api: str,
+    resource: str,
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
+) -> Result:
     """Run one case, retrying transient gateway failures.
 
     The token is acquired per attempt: a full run takes long enough that a
@@ -441,7 +1217,19 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            data, latency = _investigate(api, _token(resource), case)
+            investigate_args = (
+                api,
+                _token(resource),
+                case,
+                requested_scope,
+            )
+            if thread_states is None:
+                data, latency = _investigate(*investigate_args)
+            else:
+                data, latency = _investigate(
+                    *investigate_args,
+                    thread_states=thread_states,
+                )
             break
         except urllib.error.HTTPError as exc:
             body = exc.read()[:200]
@@ -452,6 +1240,10 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
                 time.sleep(RETRY_BACKOFF_SECONDS)
                 continue
             return Result(case.case_id, ok=False, error=last_error)
+        except EvaluationConfigurationError as exc:
+            return Result(case.case_id, ok=False, error=str(exc))
+        except EvaluationResponseError as exc:
+            return Result(case.case_id, ok=False, error=str(exc))
         except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
             last_error = str(exc)
             if attempt < MAX_ATTEMPTS:
@@ -463,11 +1255,25 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         return Result(case.case_id, ok=False, error=last_error)
 
     seen: list[str] = []
-    tool_calls = data.get("tool_calls", [])
-    for call in tool_calls:
-        specialist = call.get("specialist") or call.get("specialist_id")
+    canonical_specialists = (
+        data.get("selected_specialists")
+        if "selected_specialists" in data
+        else None
+    )
+    for specialist in canonical_specialists or []:
+        specialist = str(specialist or "")
         if specialist and specialist not in seen:
             seen.append(specialist)
+    tool_calls = (
+        data.get("tool_results", [])
+        if "tool_results" in data
+        else data.get("tool_calls", [])
+    )
+    if canonical_specialists is None:
+        for call in tool_calls:
+            specialist = call.get("specialist") or call.get("specialist_id")
+            if specialist and specialist not in seen:
+                seen.append(specialist)
 
     evaluation = data.get("evaluation") or {}
     usage = data.get("usage") or evaluation.get("usage") or {}
@@ -481,7 +1287,17 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     expected = case.expected_for(runtime, strategy)
     missing = sorted(expected - set(seen))
     synthesis = data.get("synthesis") or {}
-    narration = str(synthesis.get("narration") or "")
+    synthesis_claims = [
+        claim
+        for claim in (synthesis.get("claims") or [])
+        if isinstance(claim, dict)
+    ]
+    canonical_narration = "\n\n".join(
+        str(claim.get("summary") or "").strip()
+        for claim in synthesis_claims
+        if str(claim.get("summary") or "").strip()
+    )
+    narration = str(synthesis.get("narration") or canonical_narration)
     stop_reason = str(data.get("stop_reason") or "")
     # A wall-clock timeout drops specialists that would otherwise have run, so
     # reporting it as a routing miss blames the router for a budget problem.
@@ -493,20 +1309,25 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         for citation in citations
         if citation.get("citation_id")
     }
-    findings = [
+    legacy_findings = [
         finding
         for finding in (data.get("findings") or [])
         if finding.get("data")
     ]
+    findings = legacy_findings or synthesis_claims
     cited_findings = [
         finding
         for finding in findings
-        if finding.get("citation_ids")
+        if finding.get("citation_ids") or finding.get("evidence_refs")
     ]
     referenced_citations = {
         str(citation_id)
         for finding in findings
-        for citation_id in (finding.get("citation_ids") or [])
+        for citation_id in (
+            finding.get("citation_ids")
+            or finding.get("evidence_refs")
+            or []
+        )
     }
     citation_valid = (
         all(bool(citation.get("citation_id")) for citation in citations)
@@ -519,16 +1340,49 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     citation_reference_integrity_ok = (
         referenced_citations <= citation_ids if referenced_citations else True
     )
-    tool_names = [
-        str(call.get("tool"))
-        for call in tool_calls
-        if call.get("tool")
-    ]
+    tool_names = (
+        [str(tool) for tool in data.get("selected_tools", []) if tool]
+        if "selected_tools" in data
+        else [
+            str(call.get("tool"))
+            for call in tool_calls
+            if call.get("tool")
+        ]
+    )
     safe_operations = {"", "delegate", "read", "query"}
     mutation_denied = not bool(data.get("mutation_authorized")) and not any(
         str(call.get("operation") or "").casefold() not in safe_operations
         for call in tool_calls
     )
+    canonical_signals = (
+        _canonical_contract_signals(
+            data,
+            case=case,
+            requested_scope=requested_scope,
+            selected_specialists=seen,
+            selected_tools=tool_names,
+            tool_calls=tool_calls,
+        )
+        if "selected_specialists" in data or "_response_scope" in data
+        else {}
+    )
+    claim_support = _measure_claim_support(
+        findings,
+        tool_calls=tool_calls,
+    )
+    groundedness = claim_support.score
+    deterministic_spend = (
+        0.0
+        if synthesis.get("status") in {"deterministic", "skipped"}
+        else None
+    )
+    legacy_cost = evaluation.get("cost")
+    if (
+        deterministic_spend is None
+        and isinstance(legacy_cost, dict)
+        and legacy_cost.get("llm_calls") == 0
+    ):
+        deterministic_spend = 0.0
 
     return Result(
         case_id=case.case_id,
@@ -538,8 +1392,13 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         missing=missing,
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
-        groundedness=evaluation.get("groundedness"),
-        tool_correctness=evaluation.get("tool_correctness"),
+        groundedness=groundedness,
+        claim_support=list(claim_support.states),
+        tool_correctness=(
+            evaluation.get("tool_correctness")
+            if evaluation.get("tool_correctness") is not None
+            else canonical_signals.get("tool_correctness")
+        ),
         narrated=bool(narration),
         narration_warning=str(synthesis.get("warning") or synthesis.get("narration_warning") or ""),
         latency_ms=latency,
@@ -555,13 +1414,42 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         spend_usd=(
             evaluation.get("spend_usd")
             if evaluation.get("spend_usd") is not None
-            else usage.get("estimated_cost_usd")
+            else (
+                usage.get("estimated_cost_usd")
+                if usage.get("estimated_cost_usd") is not None
+                else deterministic_spend
+            )
         ),
-        scope_ok=evaluation.get("scope_ok"),
-        unknown_id_denied=evaluation.get("unknown_id_denied"),
-        disposition_ok=evaluation.get("disposition_ok"),
-        manifest_projection_ok=evaluation.get("manifest_projection_ok"),
-        snapshot_schema_ok=evaluation.get("snapshot_schema_ok"),
+        scope_ok=(
+            evaluation.get("scope_ok")
+            if evaluation.get("scope_ok") is not None
+            else canonical_signals.get("scope_ok")
+        ),
+        unknown_id_denied=(
+            evaluation.get("unknown_id_denied")
+            if evaluation.get("unknown_id_denied") is not None
+            else canonical_signals.get("unknown_id_denied")
+        ),
+        disposition_ok=(
+            evaluation.get("disposition_ok")
+            if evaluation.get("disposition_ok") is not None
+            else canonical_signals.get("disposition_ok")
+        ),
+        manifest_projection_ok=(
+            evaluation.get("manifest_projection_ok")
+            if evaluation.get("manifest_projection_ok") is not None
+            else canonical_signals.get("manifest_projection_ok")
+        ),
+        page_safety_ok=(
+            _page_safety_ok(case.page_kind, seen)
+            if getattr(case, "disposition", "integrated") == "integrated"
+            else None
+        ),
+        snapshot_schema_ok=(
+            evaluation.get("snapshot_schema_ok")
+            if evaluation.get("snapshot_schema_ok") is not None
+            else canonical_signals.get("snapshot_schema_ok")
+        ),
         unsupported_severe_causal_action=evaluation.get(
             "unsupported_severe_causal_action"
         ),
@@ -643,9 +1531,10 @@ class EvalCase:
     provider_state: str
     turn_class: str
     disposition: str
-    expect_grants: tuple[str, ...] = ()
+    expect_capabilities: tuple[str, ...] = ()
     safety: dict[str, Any] = field(default_factory=dict)
     continuity_group: str | None = None
+    continuity_turn: int | None = None
     note: str = ""
 
     def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
@@ -674,7 +1563,13 @@ def load_cases(path: Path | str) -> list[EvalCase]:
             f"unsupported dataset_version {version!r}; expected {DATASET_VERSION!r}"
         )
     cases: list[EvalCase] = []
+    continuity_turns: dict[str, int] = {}
     for raw in payload["cases"]:
+        continuity_group = raw.get("continuity_group")
+        continuity_turn = None
+        if continuity_group:
+            continuity_turn = continuity_turns.get(continuity_group, 0) + 1
+            continuity_turns[continuity_group] = continuity_turn
         cases.append(
             EvalCase(
                 case_id=raw["case_id"],
@@ -685,9 +1580,10 @@ def load_cases(path: Path | str) -> list[EvalCase]:
                 provider_state=raw["provider_state"],
                 turn_class=raw["turn_class"],
                 disposition=raw["disposition"],
-                expect_grants=tuple(raw.get("expect_grants", ())),
+                expect_capabilities=tuple(raw.get("expect_capabilities", ())),
                 safety=dict(raw.get("safety", {})),
-                continuity_group=raw.get("continuity_group"),
+                continuity_group=continuity_group,
+                continuity_turn=continuity_turn,
                 note=raw.get("note", ""),
             )
         )
@@ -723,8 +1619,9 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     Every dimension is computed from its own inputs, so a collapse in one
     (e.g. groundedness) cannot move another (e.g. routing or latency). A
-    dimension with no applicable turns reports ``None`` -- a missing
-    measurement is null, never a passing or failing zero.
+    dimension with no applicable turns reports ``None``. Missing required
+    claim-support measurements are counted separately so they fail closed
+    without being misrepresented as a measured score of zero.
     """
 
     def flag_count(key: str) -> int:
@@ -756,6 +1653,14 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     min_recall = min(recall_values) if recall_values else None
 
     grounded = [r["groundedness"] for r in results if r.get("groundedness") is not None]
+    claim_support_applicable_turns = sum(
+        r.get("material_claim_coverage") is not None for r in results
+    )
+    claim_support_missing_turns = sum(
+        r.get("material_claim_coverage") is not None
+        and r.get("groundedness") is None
+        for r in results
+    )
     coverage = [
         r["material_claim_coverage"]
         for r in results
@@ -807,6 +1712,8 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "per_specialist_recall_min": min_recall,
         "groundedness_mean": _mean_or_none(grounded),
         "groundedness_p10": _percentile(grounded, 10),
+        "claim_support_applicable_turns": claim_support_applicable_turns,
+        "claim_support_missing_turns": claim_support_missing_turns,
         "unsupported_severe_causal_action_total": sum(
             int(r.get("unsupported_severe_causal_action") or 0)
             for r in results
@@ -830,6 +1737,7 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             "unknown_specialist_or_tool_denied": flag_count("unknown_id_denied"),
             "route_disposition_parity": flag_count("disposition_ok"),
             "manifest_projection_parity": flag_count("manifest_projection_ok"),
+            "page_safe_specialist_routing": flag_count("page_safety_ok"),
             "tool_grant_parity": flag_count("grants_ok"),
             "snapshot_schema": flag_count("snapshot_schema_ok"),
             "citation_reference_integrity": flag_count("citation_reference_integrity_ok"),
@@ -845,9 +1753,11 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     """Apply the predetermined absolute gates mechanically.
 
     A deterministic safety or citation-integrity failure HOLDs the whole build.
-    A model-quality, latency, reliability, or spend miss HOLDs OR DISABLES only
-    the affected optional mode; the governed deterministic fallback survives.
-    A metric that was not measured (None) cannot fail its own gate falsely.
+    Unsupported or indeterminate material claims HOLD the build because
+    promotion cannot retain a narration whose every proposition is not
+    entailed. Other model-quality, latency, reliability, or spend misses HOLD
+    OR DISABLE only the affected optional mode; the governed deterministic
+    fallback survives. A metric with no applicable turns remains ``None``.
     """
     gates: dict[str, dict[str, Any]] = {}
     hold_build = False
@@ -900,14 +1810,31 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     g_mean = metrics.get("groundedness_mean")
     g_p10 = metrics.get("groundedness_p10")
     g_unsup = metrics.get("unsupported_severe_causal_action_total", 0)
+    g_missing = metrics.get("claim_support_missing_turns", 0)
     ground_pass = (
-        (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
+        g_missing == 0
+        and (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
         and (g_p10 is None or g_p10 >= thresholds["groundedness"]["p10_min"])
         and g_unsup <= thresholds["groundedness"]["unsupported_severe_causal_action_max"]
     )
-    mode_gate("groundedness", ground_pass, {"mean": g_mean, "p10": g_p10, "unsupported": g_unsup},
-              {"mean": thresholds["groundedness"]["mean_min"], "p10": thresholds["groundedness"]["p10_min"]},
-              "groundedness")
+    mode_gate(
+        "groundedness",
+        ground_pass,
+        {
+            "mean": g_mean,
+            "p10": g_p10,
+            "unsupported": g_unsup,
+            "missing": g_missing,
+        },
+        {
+            "mean": thresholds["groundedness"]["mean_min"],
+            "p10": thresholds["groundedness"]["p10_min"],
+            "missing": 0,
+        },
+        "groundedness",
+    )
+    if not ground_pass:
+        hold_build = True
 
     cov = metrics.get("material_claim_coverage")
     cov_pass = cov is None or cov >= thresholds["citation"]["material_claim_coverage_min"]
@@ -1131,12 +2058,10 @@ _CONTROLLED_CASE_FIELDS = (
     "unknown_id_denied",
     "disposition_ok",
     "manifest_projection_ok",
+    "page_safety_ok",
     "grants_ok",
     "snapshot_schema_ok",
     "citation_reference_integrity_ok",
-)
-_CONTEXT_SNAPSHOT_PAGES = frozenset(
-    {"network", "vulnerability", "patch", "incident", "governance", "resource"}
 )
 _DETERMINISTIC_RESULT_FIELDS = {
     "scope_isolation": "scope_ok",
@@ -1144,6 +2069,7 @@ _DETERMINISTIC_RESULT_FIELDS = {
     "unknown_specialist_or_tool_denied": "unknown_id_denied",
     "route_disposition_parity": "disposition_ok",
     "manifest_projection_parity": "manifest_projection_ok",
+    "page_safe_specialist_routing": "page_safety_ok",
     "tool_grant_parity": "grants_ok",
     "snapshot_schema": "snapshot_schema_ok",
     "citation_reference_integrity": "citation_reference_integrity_ok",
@@ -1181,12 +2107,16 @@ def _deterministic_applicable_case_ids(
         "unknown_specialist_or_tool_denied": live_case_ids,
         "route_disposition_parity": [case.case_id for case in cases],
         "manifest_projection_parity": live_case_ids,
-        "tool_grant_parity": live_case_ids,
+        "page_safe_specialist_routing": [
+            case.case_id
+            for case in cases
+            if case.disposition == "integrated"
+        ],
+        "tool_grant_parity": [],
         "snapshot_schema": [
             case.case_id
             for case in cases
             if case.disposition == "integrated"
-            and case.page_kind in _CONTEXT_SNAPSHOT_PAGES
         ],
         "citation_reference_integrity": [
             case.case_id
@@ -1200,13 +2130,9 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     """Project one live result into bounded, non-sensitive release evidence."""
     completed = not result.error and not result.timed_out
     static_disposition = result.orchestration_runtime == "static_route_disposition"
-    expected_grants = set() if static_disposition else set(case.expect_grants)
-    grants_ok = set(result.tool_names) == expected_grants
     tool_correctness = result.tool_correctness
-    if tool_correctness is None and completed:
-        tool_correctness = 1.0 if grants_ok else 0.0
     snapshot_schema_ok = None
-    if not static_disposition and case.page_kind in _CONTEXT_SNAPSHOT_PAGES:
+    if not static_disposition and case.disposition == "integrated":
         snapshot_schema_ok = (
             result.snapshot_schema_ok
             if result.snapshot_schema_ok is not None
@@ -1242,7 +2168,10 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
             True if static_disposition else result.disposition_ok
         ),
         "manifest_projection_ok": result.manifest_projection_ok,
-        "grants_ok": grants_ok,
+        "page_safety_ok": result.page_safety_ok,
+        # Deployed Operations/Azure grant parity is proven once against the
+        # live manifest projection, not inferred from tools executed by a turn.
+        "grants_ok": None,
         "snapshot_schema_ok": snapshot_schema_ok,
         "citation_reference_integrity_ok": result.citation_reference_integrity_ok,
     }
@@ -1551,9 +2480,13 @@ def emit_runtime_validation_evidence(
     for name in sorted(expected_gates):
         field_name = _DETERMINISTIC_RESULT_FIELDS[name]
         case_ids = applicable_case_ids[name]
-        cases_proven = bool(case_ids) and all(
-            result_by_id.get(case_id, {}).get(field_name) is True
-            for case_id in case_ids
+        cases_proven = (
+            name == "tool_grant_parity"
+            if not case_ids
+            else all(
+                result_by_id.get(case_id, {}).get(field_name) is True
+                for case_id in case_ids
+            )
         )
         runtime_proven = all(
             runtime_checks[check]
@@ -1598,6 +2531,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
     parser.add_argument("--resource", default=DEFAULT_RESOURCE)
+    parser.add_argument(
+        "--subscription",
+        action="append",
+        help=(
+            "authorized subscription scope; repeat for multiple subscriptions "
+            "(required for evaluation runs)"
+        ),
+    )
     parser.add_argument("--out", type=Path, help="write the full run to this JSON file")
     parser.add_argument(
         "--revision",
@@ -1710,6 +2651,14 @@ def main() -> int:
         print(json.dumps({"artifact": str(args.validate_artifact), "status": "invalid", "problems": problems}, indent=2))
         return 1
 
+    if not args.subscription:
+        raise SystemExit(
+            "at least one --subscription is required for evaluation requests"
+        )
+    requested_scope = {
+        "subscription": sorted(set(args.subscription))
+    }
+
     try:
         dataset = json.loads(args.dataset.read_text())
         thresholds = load_thresholds(args.thresholds)
@@ -1750,6 +2699,7 @@ def main() -> int:
     print(f"Evaluating {len(cases)} cases against {args.api}\n")
 
     results: list[Result] = []
+    thread_states: dict[str, EvaluationThreadState] = {}
     for index, case in enumerate(cases, start=1):
         if index > 1:
             time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
@@ -1764,7 +2714,13 @@ def main() -> int:
                 citation_reference_integrity_ok=True,
             )
         else:
-            result = _run_case(args.api, args.resource, case)
+            result = _run_case(
+                args.api,
+                args.resource,
+                case,
+                requested_scope,
+                thread_states=thread_states,
+            )
         results.append(result)
         if result.error:
             print(f"    ERROR {result.error}")

@@ -33,6 +33,11 @@
 #                                "<promotion record>.candidate")
 #   FOUNDRY_SPECIALIST_MANIFEST_DIGEST  digest of the manifest being rolled out
 #   FOUNDRY_SPECIALIST_RELEASE   reviewed release stamp for the candidate set
+#   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID
+#   FOUNDRY_AZURE_MCP_CONNECTION_ID
+#                                exact Terraform-created Foundry project
+#                                connection resource IDs captured in the
+#                                candidate mapping
 #   FOUNDRY_MODEL_DEPLOYMENT_NAME  real Azure model deployment name, handed to
 #                                the live gate so the deployed model can be
 #                                checked against it
@@ -136,6 +141,35 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
   if [[ -z "${candidate_record}" ]]; then
     candidate_record="$(mktemp)"
   fi
+
+  # A specialist candidate is not publishable unless both independently
+  # governed MCP connections are identified by their exact project-connection
+  # resource IDs. Names or a single shared/demo connection are insufficient:
+  # they cannot prove which authenticated tool boundary an agent will use.
+  FOUNDRY_OPERATIONS_MCP_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID:-}" \
+  FOUNDRY_AZURE_MCP_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID:-}" \
+  python3 -c '
+import os, re
+
+pattern = re.compile(
+    r"^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/"
+    r"Microsoft\.CognitiveServices/accounts/[^/]+/projects/[^/]+/"
+    r"connections/[^/]+$",
+    re.IGNORECASE,
+)
+values = [
+    os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/"),
+    os.environ["FOUNDRY_AZURE_MCP_CONNECTION_ID"].strip().rstrip("/"),
+]
+if not all(pattern.fullmatch(value) for value in values):
+    raise SystemExit(
+        "create-foundry-agent: exact Operations and Azure MCP project connection IDs are required"
+    )
+if len({value.casefold() for value in values}) != 2:
+    raise SystemExit(
+        "create-foundry-agent: Operations and Azure MCP project connection IDs must be distinct"
+    )
+' || exit 1
 
   if [[ -n "${promotion_record}" && -f "${promotion_record}" ]]; then
     if ! PROMOTION_RECORD="${promotion_record}" python3 -c '
@@ -283,6 +317,8 @@ for specialist_id, v in d.items():
   VERSION_RECORD="${version_record}" \
   MANIFEST_DIGEST="${manifest_digest}" \
   RELEASE_STAMP="${release_stamp}" \
+  OPERATIONS_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID}" \
+  AZURE_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID}" \
   python3 -c '
 import json, os, pathlib
 
@@ -315,6 +351,14 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
             "agent_count": len(agents),
             "agents": agents,
             "coordinator": coordinator,
+            "connections": {
+                "operations-mcp": {
+                    "project_connection_id": os.environ["OPERATIONS_CONNECTION_ID"],
+                },
+                "azure-mcp": {
+                    "project_connection_id": os.environ["AZURE_CONNECTION_ID"],
+                },
+            },
         },
         indent=2,
         sort_keys=True,
@@ -395,8 +439,10 @@ candidate = json.loads(
 )
 candidate_agents = candidate.get("agents") or {}
 candidate_coordinator = candidate.get("coordinator") or {}
+candidate_connections = candidate.get("connections") or {}
 previous_agents = previous.get("agents") or {}
 previous_coordinator = previous.get("coordinator") or {}
+previous_connections = previous.get("connections") or {}
 promotion = os.environ["PROMOTION_STATUS"]
 reason = os.environ["PROMOTION_REASON"]
 requested_rotation = os.environ.get("ROLLBACK_ROTATION", "")
@@ -408,6 +454,7 @@ if promotion == "promoted":
     # activated mapping and the previous one becomes the rollback target.
     agents = candidate_agents
     coordinator = candidate_coordinator
+    connections = candidate_connections
     if rotate_rollback or not previous.get("rollback_target"):
         rollback = previous_agents
         rollback_coordinator = previous_coordinator
@@ -426,6 +473,7 @@ else:
     # never destroys the mapping the running revision depends on.
     agents = previous_agents
     coordinator = previous_coordinator
+    connections = previous_connections
     rollback = previous.get("rollback_target") or {}
     rollback_coordinator = previous.get("rollback_coordinator") or {}
     rollback_manifest_digest = previous.get("rollback_manifest_digest", "")
@@ -446,6 +494,7 @@ record = {
     },
     "agents": agents,
     "coordinator": coordinator,
+    "connections": connections,
     "agent_count": len(agents),
     "previous_version": previous_agents,
     "rollback_target": rollback,

@@ -365,7 +365,7 @@ def create_investigation(
     scope: ReadScope,
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
-    if canonical_orchestration_enabled():
+    if canonical_orchestration_enabled(stable_key=principal.subject):
         return _create_investigation_canonical(
             payload, context=context, scope=scope, principal=principal,
         )
@@ -391,7 +391,7 @@ def get_investigation(
     ledger = ledger_store().get(ledger_id, principal.subject)
     if ledger is None or not _ledger_is_visible_in_scope(ledger, scope):
         raise _not_found(ledger_id)
-    if canonical_orchestration_enabled():
+    if canonical_orchestration_enabled(stable_key=principal.subject):
         ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)
 
@@ -412,6 +412,6 @@ def apply_action(
     )
     if ledger is None:
         raise _not_found(ledger_id)
-    if canonical_orchestration_enabled():
+    if canonical_orchestration_enabled(stable_key=principal.subject):
         ledger = project_legacy_ledger(ledger)
     return _respond(ledger, scope)

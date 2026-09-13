@@ -277,6 +277,50 @@ def test_foreign_principal_cannot_continue_thread_and_causes_zero_calls():
     assert calls == []
 
 
+def test_expected_thread_revision_rejects_stale_turn_before_tool_io():
+    calls: list[str] = []
+
+    def execute(name, arguments, *, context, scope):
+        calls.append(name)
+        return _result()
+
+    store = InvestigationThreadStore()
+    service = OrchestrationService(
+        planner=lambda request: _candidate(),
+        executor=execute,
+        thread_store=store,
+    )
+    first = service.execute(
+        _request(),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+    second_payload = _request(thread_id=first.thread_id).model_dump(mode="json")
+    second_payload["expected_thread_revision"] = first.thread_revision
+    second = service.execute(
+        InvestigationRequest.model_validate(second_payload),
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+    assert second.thread_revision == 2
+
+    calls.clear()
+    stale_payload = _request(thread_id=first.thread_id).model_dump(mode="json")
+    stale_payload["expected_thread_revision"] = first.thread_revision
+    with pytest.raises(ThreadRevisionConflict) as conflict:
+        service.execute(
+            InvestigationRequest.model_validate(stale_payload),
+            context=object(),
+            principal_subject="operator-a",
+            effective_scope=Scope({"subscription": ["sub-a"]}),
+        )
+
+    assert conflict.value.current_revision == 2
+    assert calls == []
+
+
 def test_thread_history_rechecks_current_scope():
     store = InvestigationThreadStore()
     thread = store.create("operator-a", Scope({"subscription": ["sub-a"]}))
@@ -496,7 +540,11 @@ def _canonical_body(**overrides):
     return body
 
 
-def test_authenticated_canonical_route_preserves_governed_result(tmp_path):
+def test_authenticated_canonical_route_preserves_governed_result(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     observed_calls: list[tuple[dict[str, list[str]], str | None, str | None]] = []
 
     class InventoryPort:
@@ -791,7 +839,11 @@ def test_canonical_route_rejects_conflicting_inventory_context_before_io(
     assert calls == []
 
 
-def test_canonical_route_validates_hints_and_scope_before_tool_io(tmp_path):
+def test_canonical_route_validates_hints_and_scope_before_tool_io(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[dict[str, list[str]]] = []
 
     class InventoryPort:
@@ -2582,13 +2634,14 @@ def test_incident_terms_take_precedence_over_embedded_network_markers(
     assert captured[0].snapshot.page_kind == "incident"
 
 
-def test_inventory_canonical_endpoint_rejects_non_inventory_snapshot(
+def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     tmp_path,
 ):
-    """The inventory-specific canonical route must reject other page kinds."""
+    """The shared canonical route accepts every manifest-backed page kind."""
     body = _canonical_body()
     body["snapshot"]["page_kind"] = "network"
     body["snapshot"]["page_id"] = "network"
+    body["snapshot"]["evidence"] = []
     client = TestClient(create_app(_context(tmp_path, None)))
 
     response = client.post(
@@ -2597,7 +2650,182 @@ def test_inventory_canonical_endpoint_rejects_non_inventory_snapshot(
         json=body,
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["data"]["mutation_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    ("page_kind", "page_id", "question", "expected_specialists"),
+    (
+        (
+            "governance",
+            "governance",
+            "Who owns governance decisions for this resource?",
+            {"governance"},
+        ),
+        (
+            "identity",
+            "identity",
+            "Which principals have risky access to this resource?",
+            {"identity_access"},
+        ),
+        (
+            "finops",
+            "finops",
+            "Where can we reduce cost for this resource?",
+            {"finops"},
+        ),
+        (
+            "overview",
+            "operations-overview",
+            "Give an executive overview of network, vulnerability, incident, and cost risk.",
+            {"network", "vulnerability", "incident", "finops"},
+        ),
+    ),
+)
+def test_unhinted_typed_questions_use_governed_page_context(
+    tmp_path,
+    monkeypatch,
+    page_kind,
+    page_id,
+    question,
+    expected_specialists,
+):
+    calls: list[tuple[str, dict[str, object]]] = []
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-1"
+    )
+
+    def call_tool(name, arguments, *, context, scope, principal):
+        calls.append((name, dict(arguments)))
+        return ToolResult(
+            status=STATUS_OK,
+            data={"resource_id": resource_id, "status": "observed"},
+            evidence=(
+                Evidence(
+                    source_engine="test",
+                    source_table="page_context",
+                    resource_id=resource_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", call_tool)
+    body = _canonical_body()
+    body.pop("hint")
+    body["question"] = question
+    body["snapshot"] = {
+        **body["snapshot"],
+        "page_kind": page_kind,
+        "page_id": page_id,
+        "selected_entities": [{"type": "azure", "resource_id": resource_id}],
+        "evidence": [
+            {
+                "evidence_id": f"{page_kind}:selected",
+                "source": f"{page_kind}/page",
+                "status": "ok",
+                "observed_at": "2026-09-01T00:00:00Z",
+                "resource_id": resource_id,
+                "entity": {"type": "azure", "resource_id": resource_id},
+                "selected": True,
+                "direct": True,
+                "data": {"resource_id": resource_id},
+            }
+        ],
+    }
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert expected_specialists <= set(result["selected_specialists"])
+    assert result["selected_tools"]
+    assert result["fallback_reason"] != "no_safe_tool_arguments"
+    assert calls
+    assert result["citations"]
+    assert f"{page_kind}:selected" not in {
+        citation["citation_id"] for citation in result["citations"]
+    }
+    if page_kind == "overview":
+        assert result["synthesis"]["domain_count"] >= 2
+        assert result["synthesis"]["reason"] == "explicit_intent"
+
+
+def test_canonical_endpoint_returns_409_for_stale_revision_before_tool_io(
+    tmp_path,
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    def execute(name, arguments, *, context, scope):
+        calls.append(name)
+        return _result()
+
+    service = OrchestrationService(
+        planner=lambda _request: CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id=INVENTORY_DATA_HEALTH_ID,
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool="inventory_resources",
+                            arguments={},
+                            citation_ids=["snapshot:coverage"],
+                        )
+                    ],
+                )
+            ],
+        ),
+        executor=execute,
+        thread_store=InvestigationThreadStore(),
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.OrchestrationService",
+        lambda **_kwargs: service,
+    )
+    client = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    )
+
+    first = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_canonical_body(),
+    )
+    assert first.status_code == 200, first.text
+    thread_id = first.json()["data"]["thread_id"]
+    second_body = _canonical_body(
+        thread_id=thread_id,
+        expected_thread_revision=1,
+    )
+    second = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=second_body,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["data"]["thread_revision"] == 2
+    assert calls == ["inventory_resources", "inventory_resources"]
+
+    stale = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=second_body,
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "conflict"
+    assert calls == ["inventory_resources", "inventory_resources"]
 
 
 def test_concurrent_first_legacy_session_turns_share_one_thread(monkeypatch):

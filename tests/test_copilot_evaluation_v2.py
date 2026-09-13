@@ -10,6 +10,7 @@ principal, a resource id, or anything resembling hidden reasoning.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 
@@ -32,11 +33,15 @@ from operations.investigation_thread_store import (
     ThreadRevisionConflict,
 )
 from operations.orchestration_contract import (
+    AzureEntityRef,
     CandidatePlan,
+    DomainEntityRef,
     EvidenceSnapshotV2,
     InvestigationRequest,
+    MaterialClaim,
     OrchestrationResult,
     SnapshotCoverage,
+    SnapshotEvidence,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -300,6 +305,183 @@ def test_repeated_retained_snapshot_ids_are_qualified_per_turn() -> None:
         "page_snapshot:inventory:coverage",
         "page_snapshot:vulnerability:coverage",
     }
+
+
+def test_retained_evidence_requires_the_exact_current_selection_identity() -> None:
+    """A stale zero-count page must not outrank the current filtered page."""
+
+    thread = InvestigationThread(
+        thread_id="thr-" + "a" * 32,
+        principal_subject="operator-a",
+        scope=Scope({"subscription": ["sub-a"]}),
+        scope_fingerprint="fingerprint",
+        turns=[
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "evidence_selection_id": "selection:stale",
+                    "retained_evidence": [
+                        {
+                            "evidence_id": "retained:stale-zero-count",
+                            "source": "page_snapshot:kb_detail:findings",
+                            "status": "empty",
+                            "observation_status": "historical",
+                            "data": {"visible_count": 0, "total_count": 0},
+                        }
+                    ],
+                },
+            ),
+            InvestigationThreadTurn(
+                scope=Scope({"subscription": ["sub-a"]}),
+                payload={
+                    "evidence_selection_id": "selection:current",
+                    "retained_evidence": [
+                        {
+                            "evidence_id": "retained:current-count",
+                            "source": "page_snapshot:kb_detail:findings",
+                            "status": "ok",
+                            "observation_status": "historical",
+                            "data": {"visible_count": 1, "total_count": 137},
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+
+    retained = OrchestrationService._retained_evidence(
+        thread,
+        Scope({"subscription": ["sub-a"]}),
+        evidence_selection_id="selection:current",
+    )
+
+    assert [item["evidence_id"] for item in retained] == [
+        "retained:current-count"
+    ]
+    assert retained[0]["data"] == {"visible_count": 1, "total_count": 137}
+
+
+def test_selection_identity_binds_page_entity_filter_query_generation_and_scope() -> None:
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="kb",
+        source_key="KB5001",
+    )
+    evidence = SnapshotEvidence(
+        evidence_id="kb-current",
+        source="exposure/kb",
+        source_key="KB5001",
+        entity=entity,
+        claim_type="kb",
+        selected=True,
+        direct=True,
+        data={"title": "September cumulative update"},
+    )
+    base = InvestigationRequest(
+        question="Which products and targets are affected?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="vulnerability",
+            page_id="kb:KB5001",
+            filters={"environment": [" PROD ", "uat"], "query": [" Ledger "]},
+            query=" Ledger ",
+            selected_entities=[entity],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+            evidence=[evidence],
+        ),
+    )
+    scope = Scope({"subscription": ["sub-a"]})
+    identity = OrchestrationService._evidence_selection_identity(base, scope)
+
+    reordered = base.model_copy(
+        update={
+            "snapshot": base.snapshot.model_copy(
+                update={
+                    "filters": {
+                        "query": ["ledger"],
+                        "environment": ["uat", "prod"],
+                    },
+                    "query": "ledger",
+                }
+            )
+        }
+    )
+    assert OrchestrationService._evidence_selection_identity(reordered, scope) == identity
+
+    variants = [
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"page_kind": "patch"}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"page_id": "kb:KB5002"}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={
+                        "selected_entities": [
+                            entity.model_copy(update={"source_key": "KB5002"})
+                        ]
+                    }
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={"filters": {"environment": ["dev"]}}
+                )
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(update={"query": "payments"})
+            }
+        ),
+        base.model_copy(
+            update={
+                "snapshot": base.snapshot.model_copy(
+                    update={
+                        "evidence": [
+                            evidence.model_copy(
+                                update={
+                                    "data": {
+                                        "title": "October cumulative update"
+                                    }
+                                }
+                            )
+                        ]
+                    }
+                )
+            }
+        ),
+    ]
+    identities = {
+        OrchestrationService._evidence_selection_identity(candidate, scope)
+        for candidate in variants
+    }
+    identities.add(
+        OrchestrationService._evidence_selection_identity(
+            base,
+            Scope({"subscription": ["sub-b"]}),
+        )
+    )
+
+    assert identity not in identities
+    assert len(identities) == len(variants) + 1
 
 
 def test_executive_claim_can_cite_authorized_retained_evidence() -> None:
@@ -748,6 +930,362 @@ def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
     assert turn.synthesis.warning in turn.result.uncertainty
 
 
+def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() -> None:
+    from operations.page_context import canonicalize_snapshot_v2
+
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="kb",
+        source_key="KB5001",
+    )
+    request = InvestigationRequest(
+        question="Which product and targets does KB5001 affect, and when was it published?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="vulnerability",
+            page_id="kb:KB5001",
+            filters={"target_kind": ["server"]},
+            query="KB5001 product targets published",
+            selected_entities=[entity],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=137,
+                complete=False,
+            ),
+            evidence=[
+                SnapshotEvidence(
+                    evidence_id="kb-current",
+                    source="exposure/kb",
+                    source_key="KB5001",
+                    entity=entity,
+                    claim_type="kb",
+                    selected=True,
+                    direct=True,
+                    quality="high",
+                    data={
+                        "kb_id": "KB5001",
+                        "product": "Windows Server 2022",
+                        "published_at": "2026-09-01T00:00:00Z",
+                        "target_date": "2026-09-30",
+                        "affected_server_count": 137,
+                        "priority_rank": 3,
+                    },
+                )
+            ],
+            material_claims=[
+                MaterialClaim(
+                    claim_id="kb-current-facts",
+                    evidence_refs=["kb-current"],
+                )
+            ],
+        ),
+    )
+    service = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=lambda *_args, **_kwargs: ToolResult(status="unavailable"),
+        thread_store=InvestigationThreadStore(),
+        executive_agent=None,
+    )
+
+    canonical = canonicalize_snapshot_v2(
+        request.snapshot,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        domain_resolver=lambda item: {
+            "namespace": "vulnerability",
+            "kind": "kb",
+            "source_key": item.source_key,
+            "scope": {"subscription": "sub-a"},
+        },
+    )
+    turn = service.execute_turn(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        canonical_selection_snapshot=canonical,
+    )
+
+    assert turn.synthesis.status == "degraded"
+    assert "unavailable" in turn.synthesis.warning.casefold()
+    assert turn.synthesis.claims
+    summaries = " ".join(claim["summary"] for claim in turn.synthesis.claims)
+    assert "Windows Server 2022" in summaries
+    assert "2026-09-01T00:00:00Z" in summaries
+    assert "2026-09-30" in summaries
+    assert "137" in summaries
+    assert "3" in summaries
+    retained_citation_ids = {
+        citation.citation_id
+        for citation in turn.result.citations
+        if citation.citation_id.startswith("retained:")
+    }
+    assert retained_citation_ids
+    assert all(
+        set(claim["evidence_refs"]) <= retained_citation_ids
+        for claim in turn.synthesis.claims
+    )
+    assert all(claim["evidence_refs"] for claim in turn.synthesis.claims)
+    assert "visible subset is incomplete" in turn.result.uncertainty
+
+
+def _browser_claim_snapshot(
+    rows: list[SnapshotEvidence],
+    *,
+    complete: bool = True,
+    requires_complete_coverage: bool = False,
+) -> EvidenceSnapshotV2:
+    return EvidenceSnapshotV2(
+        page_kind="vulnerability",
+        page_id="vulnerability",
+        coverage=SnapshotCoverage(
+            visible_count=len(rows),
+            total_count=len(rows) if complete else 100,
+            complete=complete,
+        ),
+        freshness=[],
+        evidence=rows,
+        material_claims=[
+            MaterialClaim(
+                claim_id=f"claim-{index:03d}",
+                evidence_refs=[row.evidence_id],
+                requires_complete_coverage=requires_complete_coverage,
+            )
+            for index, row in enumerate(rows)
+        ],
+    )
+
+
+def _execute_browser_claim_snapshot(
+    snapshot: EvidenceSnapshotV2,
+) -> Any:
+    from operations.page_context import canonicalize_snapshot_v2
+
+    request = InvestigationRequest(
+        question="Summarize the reported totals and names.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=snapshot.model_copy(
+            update={
+                "evidence": [],
+                "selected_entities": [],
+                "material_claims": [],
+            }
+        ),
+    )
+    service = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=lambda *_args, **_kwargs: ToolResult(status="unavailable"),
+        thread_store=InvestigationThreadStore(),
+        executive_agent=None,
+    )
+    canonical = canonicalize_snapshot_v2(
+        snapshot,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        domain_resolver=lambda item: {
+            "namespace": item.namespace,
+            "kind": item.kind,
+            "source_key": item.source_key,
+            "scope": {"subscription": "sub-a"},
+        },
+    )
+    return service.execute_turn(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        selection_snapshot=snapshot,
+        canonical_selection_snapshot=canonical,
+    )
+
+
+def test_conflicting_browser_totals_are_excluded_with_explicit_uncertainty() -> None:
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="summary",
+        source_key="estate",
+    )
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"estate-total-{total}",
+            source="exposure/summary",
+            source_key="estate",
+            entity=entity,
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"total_count": total},
+        )
+        for total in (7, 11)
+    ]
+
+    turn = _execute_browser_claim_snapshot(_browser_claim_snapshot(rows))
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Conflicting page evidence was excluded from synthesis."
+        in turn.result.uncertainty
+    )
+
+
+@pytest.mark.parametrize(
+    "entities",
+    [
+        (
+            AzureEntityRef(
+                type="azure",
+                resource_id=(
+                    "/subscriptions/SUB-A/resourceGroups/Payments/providers/"
+                    "Microsoft.Compute/virtualMachines/VM-1"
+                ),
+            ),
+            AzureEntityRef(
+                type="azure",
+                resource_id=(
+                    "/subscriptions/sub-a/resourcegroups/payments/providers/"
+                    "microsoft.compute/virtualmachines/vm-1"
+                ),
+            ),
+        ),
+        (
+            DomainEntityRef(
+                type="domain",
+                namespace="Vulnerability",
+                kind="Summary",
+                source_key="Estate",
+            ),
+            DomainEntityRef(
+                type="domain",
+                namespace="vulnerability",
+                kind="summary",
+                source_key="estate",
+            ),
+        ),
+    ],
+    ids=("arm-case-alias", "domain-case-alias"),
+)
+def test_canonical_entity_alias_conflicts_are_excluded_with_uncertainty(
+    entities,
+) -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"alias-total-{index}",
+            source="exposure/summary",
+            source_key="estate",
+            entity=entity,
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"total_count": total},
+        )
+        for index, (entity, total) in enumerate(zip(entities, (7, 11), strict=True))
+    ]
+
+    turn = _execute_browser_claim_snapshot(_browser_claim_snapshot(rows))
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Conflicting page evidence was excluded from synthesis."
+        in turn.result.uncertainty
+    )
+
+
+def test_incomplete_completeness_required_claim_is_excluded_and_never_high_confidence() -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id="partial-estate-total",
+            source="exposure/summary",
+            source_key="estate",
+            entity=DomainEntityRef(
+                type="domain",
+                namespace="vulnerability",
+                kind="summary",
+                source_key="estate",
+            ),
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"visible_count": 1, "total_count": 100},
+        )
+    ]
+
+    turn = _execute_browser_claim_snapshot(
+        _browser_claim_snapshot(
+            rows,
+            complete=False,
+            requires_complete_coverage=True,
+        )
+    )
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Incomplete material claims requiring complete coverage were excluded."
+        in turn.result.uncertainty
+    )
+
+
+@pytest.mark.parametrize("row_count", [65, 200])
+def test_material_browser_rows_retain_deterministic_citation_closure(
+    row_count: int,
+) -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"service-{index:03d}",
+            source="services/summary",
+            source_key=f"service-{index:03d}",
+            entity=DomainEntityRef(
+                type="domain",
+                namespace="operations",
+                kind="service",
+                source_key=f"service-{index:03d}",
+            ),
+            claim_type="service-summary",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={
+                "name": f"service-{index:03d}",
+                "total_count": index + 1,
+            },
+        )
+        for index in range(row_count)
+    ]
+    snapshot = _browser_claim_snapshot(rows)
+
+    turn = _execute_browser_claim_snapshot(snapshot)
+    reversed_turn = _execute_browser_claim_snapshot(
+        snapshot.model_copy(update={"evidence": list(reversed(rows))})
+    )
+
+    retained_ids = {
+        citation.citation_id
+        for citation in turn.result.citations
+        if citation.citation_id.startswith("retained:")
+    }
+    assert len(retained_ids) == row_count
+    assert turn.synthesis.claims
+    assert all(
+        set(claim["evidence_refs"]) <= retained_ids
+        for claim in turn.synthesis.claims
+    )
+    assert turn.synthesis.claims == reversed_turn.synthesis.claims
+
+
 def test_execute_still_returns_the_canonical_result_only() -> None:
     service = _service(planner=lambda _r: _plan("vulnerability"))
 
@@ -1122,7 +1660,7 @@ def test_corpus_is_versioned_and_typed():
 
 def test_corpus_has_five_routing_cases_per_specialist():
     payload = json.loads(_CASES_PATH.read_text())
-    manifest_ids = _manifest_specialist_ids()
+    manifest_ids = _manifest_specialist_ids() - {"executive_summary"}
     routing = [c for c in payload["cases"] if c["category"] == "routing"]
     per_specialist: dict[str, int] = {sid: 0 for sid in manifest_ids}
     for case in routing:
@@ -1131,6 +1669,9 @@ def test_corpus_has_five_routing_cases_per_specialist():
                 per_specialist[sid] += 1
     missing = {sid: n for sid, n in per_specialist.items() if n < 5}
     assert not missing, f"specialists below the 5-routing-case floor: {missing}"
+    assert sum(
+        case["page_kind"] == "overview" for case in routing
+    ) >= 5, "executive synthesis requires five overview delegation cases"
 
 
 def test_corpus_covers_four_new_specialists():
@@ -1179,6 +1720,28 @@ def test_corpus_expected_specialists_are_manifest_ids():
     for case in payload["cases"]:
         for sid in case["expect_specialists"]:
             assert sid in manifest_ids, f"{case['case_id']} routes to unknown specialist {sid}"
+
+
+def test_reviewed_cross_domain_cases_keep_multi_specialist_gold_sets():
+    payload = json.loads(_CASES_PATH.read_text())
+    by_id = {case["case_id"]: case for case in payload["cases"]}
+
+    assert by_id["cross.net.cve"]["expect_specialists"] == [
+        "network",
+        "vulnerability",
+    ]
+    assert by_id["cross.net.gov"]["expect_specialists"] == [
+        "network",
+        "governance",
+    ]
+    assert by_id["cross.vuln.rem"]["expect_specialists"] == [
+        "vulnerability",
+        "remediation",
+    ]
+    assert by_id["cross.cost.health"]["expect_specialists"] == [
+        "finops",
+        "resource_health_observability",
+    ]
 
 
 # --- thresholds are exact and machine-readable ----------------------------
@@ -1255,6 +1818,7 @@ def _passing_result(**overrides):
         "unknown_id_denied": True,
         "disposition_ok": True,
         "manifest_projection_ok": True,
+        "page_safety_ok": True,
         "grants_ok": True,
         "snapshot_schema_ok": True,
         "citation_reference_integrity_ok": True,
@@ -1326,6 +1890,26 @@ def test_missing_measurement_is_null_not_zero():
     metrics = evaluate_agents.aggregate_release_metrics(results)
     assert metrics["groundedness_mean"] is None
     assert metrics["groundedness_p10"] is None
+
+
+def test_missing_claim_support_holds_narrated_answer_promotion():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [
+        _passing_result(
+            groundedness=None,
+            material_claim_coverage=1.0,
+        )
+    ]
+
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["decision"] == "HOLD"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
 
 
 def test_metrics_dimensions_are_independent():
@@ -1449,42 +2033,44 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
     assert any("canonical case-id set" in problem for problem in problems)
 
 
-def test_release_evidence_requires_exact_tool_grant_parity():
+def test_release_evidence_keeps_deployed_grants_separate_from_executed_tools():
     evaluate_agents = _load_evaluate_agents()
     case = evaluate_agents.load_cases(_CASES_PATH)[0]
     result = evaluate_agents.Result(
         case_id=case.case_id,
         ok=True,
         specialists=list(case.expect_specialists),
-        tool_names=[case.expect_grants[0]],
+        tool_names=[case.expect_capabilities[0]],
+        tool_correctness=1.0,
         mutation_denied=True,
     )
 
     evidence = evaluate_agents.result_to_release_evidence(result, case)
 
-    assert len(case.expect_grants) == 2
-    assert evidence["grants_ok"] is False
-    assert evidence["tool_correctness"] == 0.0
+    assert len(case.expect_capabilities) == 2
+    assert evidence["grants_ok"] is None
+    assert evidence["tool_correctness"] == 1.0
 
 
-def test_zero_grant_case_rejects_an_executed_tool():
+def test_zero_capability_case_keeps_deployed_grant_parity_external():
     evaluate_agents = _load_evaluate_agents()
     case = next(
         case
         for case in evaluate_agents.load_cases(_CASES_PATH)
-        if not case.expect_grants and case.disposition == "integrated"
+        if not case.expect_capabilities and case.disposition == "integrated"
     )
     result = evaluate_agents.Result(
         case_id=case.case_id,
         ok=True,
         specialists=list(case.expect_specialists),
         tool_names=["unexpected_tool"],
+        tool_correctness=0.0,
         mutation_denied=True,
     )
 
     evidence = evaluate_agents.result_to_release_evidence(result, case)
 
-    assert evidence["grants_ok"] is False
+    assert evidence["grants_ok"] is None
     assert evidence["tool_correctness"] == 0.0
 
 
@@ -1497,6 +2083,1479 @@ def test_release_case_selection_uses_the_external_versioned_corpus():
     assert [case.case_id for case in selected] == ["scope.cross.principal"]
     with pytest.raises(ValueError, match="unknown case id"):
         evaluate_agents.select_cases(cases, ["legacy-inline-case"])
+
+
+def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "integrated"
+    ]
+    requests: list[tuple[str, dict[str, Any], str]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        requests.append(
+            (
+                request.full_url,
+                json.loads(request.data.decode()),
+                request.get_header("Authorization") or "",
+            )
+        )
+        return io.BytesIO(b'{"data": {}}')
+
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+
+    for case in cases:
+        evaluate_agents._investigate(
+            "https://example.invalid",
+            "token",
+            case,
+            {"subscription": ["sub-a"]},
+        )
+
+    assert len(requests) == len(cases)
+    for case, (url, body, authorization) in zip(cases, requests, strict=True):
+        assert url == (
+            "https://example.invalid/api/v1/copilot/investigations"
+            "?subscription=sub-a"
+        )
+        from api.routers.copilot import CanonicalInvestigationPayload
+
+        CanonicalInvestigationPayload.model_validate(body)
+        assert authorization == "Bearer " + "token"
+        assert body["question"] == case.question
+        assert body["requested_scope"] == {"subscription": ["sub-a"]}
+        assert body["snapshot"]["version"] == "2"
+        assert body["snapshot"]["page_kind"] == case.page_kind
+        assert body["snapshot"]["page_id"] == f"eval-{case.case_id}"
+        assert body["snapshot"]["selected_entities"] == []
+        assert body["snapshot"]["evidence"] == []
+        assert body["snapshot"]["material_claims"] == []
+
+
+def test_production_dispatch_propagates_canonical_continuity_state(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.continuity_group == "cont-inv-cve"
+    ]
+    requests: list[tuple[str, dict[str, Any], str]] = []
+    thread_id = "thr-" + "a" * 32
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        revision = len(requests)
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": revision,
+                        "selected_specialists": list(
+                            cases[revision - 1].expect_specialists
+                        ),
+                        "selected_tools": [],
+                        "tool_results": [],
+                        "citations": [],
+                        "synthesis": {
+                            "status": "deterministic",
+                            "claims": [],
+                        },
+                        "mutation_authorized": False,
+                    },
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    thread_states = {}
+
+    results = [
+        evaluate_agents._run_case(
+            "https://example.invalid",
+            "resource",
+            case,
+            {"subscription": ["sub-a"]},
+            thread_states=thread_states,
+        )
+        for case in cases
+    ]
+
+    assert len(requests) == 2
+    first_url, first_body, first_authorization = requests[0]
+    second_url, second_body, second_authorization = requests[1]
+    assert first_url == second_url == (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert first_authorization == second_authorization == "Bearer token"
+    assert "thread_id" not in first_body
+    assert "expected_thread_revision" not in first_body
+    assert second_body["thread_id"] == thread_id
+    assert second_body["expected_thread_revision"] == 1
+    assert first_body["requested_scope"] == second_body["requested_scope"] == {
+        "subscription": ["sub-a"]
+    }
+    assert [result.error for result in results] == ["", ""]
+    assert thread_states["cont-inv-cve"].thread_id == thread_id
+    assert thread_states["cont-inv-cve"].revision == 2
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "thread_revision", "error_fragment"),
+    [
+        (None, 1, "thread_id"),
+        ("not-a-canonical-thread", 1, "thread_id"),
+        ("thr-" + "b" * 32, None, "thread_revision"),
+        ("thr-" + "b" * 32, True, "thread_revision"),
+        ("thr-" + "b" * 32, 2, "expected 1"),
+    ],
+)
+def test_production_dispatch_fails_on_invalid_canonical_thread_state(
+    monkeypatch,
+    thread_id,
+    thread_revision,
+    error_fragment,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn1"
+    )
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": thread_revision,
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert error_fragment in result.error
+
+
+def test_production_dispatch_fails_when_a_later_turn_has_no_group_state(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn2"
+    )
+    called = False
+
+    def urlopen(_request, *, timeout):
+        del timeout
+        nonlocal called
+        called = True
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert "missing continuity state" in result.error
+    assert called is False
+
+
+def test_production_dispatch_rejects_a_skipped_thread_revision(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.continuity_group == "cont-net-rem"
+    ]
+    thread_id = "thr-" + "c" * 32
+    response_revisions = iter((1, 3))
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": next(response_revisions),
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    thread_states = {}
+
+    first = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[0],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+    second = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[1],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    assert first.error == ""
+    assert second.ok is False
+    assert "thread_revision 3; expected 2" in second.error
+    assert thread_states["cont-net-rem"].revision == 1
+
+
+def test_cross_principal_dispatch_rejects_different_primary_response_scope(
+    monkeypatch,
+):
+    import urllib.error
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    thread_id = "thr-" + "d" * 32
+    requests: list[tuple[str, dict[str, Any], str]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if len(requests) == 1:
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "data": {
+                            "thread_id": thread_id,
+                            "thread_revision": 1,
+                        },
+                        "scope": {"subscription": [" SUB-B "]},
+                    }
+                ).encode()
+            )
+        raise urllib.error.HTTPError(
+            request.full_url,
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"error":{"code":"not_found"}}'),
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    thread_states = {}
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    expected_url = (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert [url for url, _body, _authorization in requests] == [
+        expected_url,
+        expected_url,
+    ]
+    assert [authorization for _url, _body, authorization in requests] == [
+        "Bearer primary-token",
+        "Bearer secondary-token",
+    ]
+    primary_body = requests[0][1]
+    secondary_body = requests[1][1]
+    assert "thread_id" not in primary_body
+    assert "expected_thread_revision" not in primary_body
+    assert primary_body["requested_scope"] == {"subscription": ["sub-a"]}
+    assert secondary_body["requested_scope"] == {"subscription": ["sub-a"]}
+    assert secondary_body["thread_id"] == thread_id
+    assert secondary_body["expected_thread_revision"] == 1
+    assert result.scope_ok is False
+    assert thread_states["scope.cross.principal:primary"].scope == {
+        "subscription": ["sub-b"]
+    }
+
+
+@pytest.mark.parametrize(
+    ("response_scope", "expected"),
+    [
+        (
+            {
+                "subscription": ["SUB-A"],
+                "environment": ["prod"],
+                "region": ["eastus"],
+            },
+            True,
+        ),
+        (
+            {
+                "subscription": ["sub-a", "sub-c"],
+                "environment": ["prod"],
+            },
+            False,
+        ),
+        ({"subscription": ["sub-a"]}, False),
+        ({"unsupported": ["value"]}, False),
+        ({"subscription": []}, False),
+        (None, False),
+    ],
+)
+def test_response_scope_subset_is_checked_per_supported_dimension(
+    response_scope,
+    expected,
+):
+    evaluate_agents = _load_evaluate_agents()
+
+    assert (
+        evaluate_agents._response_scope_within_requested(
+            response_scope,
+            {
+                "subscription": ["sub-a", "sub-b"],
+                "environment": ["PROD"],
+            },
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "response_scope",
+    [None, {"subscription": []}, {"unsupported": ["value"]}],
+)
+def test_cross_principal_dispatch_fails_closed_on_invalid_response_scope(
+    monkeypatch,
+    response_scope,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    requests = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        requests.append(request)
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": "thr-" + "f" * 32,
+                        "thread_revision": 1,
+                    },
+                    "scope": response_scope,
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert "missing or malformed scope" in result.error
+    assert len(requests) == 1
+
+
+def test_cross_principal_retry_cannot_sanitize_invalid_primary_scope(
+    monkeypatch,
+):
+    import urllib.error
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    thread_id = "thr-" + "e" * 32
+    requests: list[tuple[str, dict[str, Any], str]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if len(requests) == 1:
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "data": {
+                            "thread_id": thread_id,
+                            "thread_revision": 1,
+                        },
+                        "scope": {"subscription": ["sub-b"]},
+                    }
+                ).encode()
+            )
+        if len(requests) == 2:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                503,
+                "unavailable",
+                {},
+                io.BytesIO(b'{"error":{"code":"unavailable"}}'),
+            )
+        raise urllib.error.HTTPError(
+            request.full_url,
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"error":{"code":"not_found"}}'),
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    monkeypatch.setattr(evaluate_agents.time, "sleep", lambda _seconds: None)
+    thread_states = {}
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    expected_url = (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert [url for url, _body, _authorization in requests] == [
+        expected_url,
+        expected_url,
+        expected_url,
+    ]
+    assert [authorization for _url, _body, authorization in requests] == [
+        "Bearer primary-token",
+        "Bearer secondary-token",
+        "Bearer secondary-token",
+    ]
+    for _url, body, _authorization in requests[1:]:
+        assert body["requested_scope"] == {"subscription": ["sub-a"]}
+        assert body["thread_id"] == thread_id
+        assert body["expected_thread_revision"] == 1
+    assert result.scope_ok is False
+    assert thread_states["scope.cross.principal:primary"].scope == {
+        "subscription": ["sub-b"]
+    }
+
+
+def test_run_case_scores_realistic_canonical_response_and_release_gates(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-scoring",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    canonical_response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": "tool:turn:0:0:governance:business_service_context:0",
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "deterministic",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by platform-team.",
+                    "evidence_refs": [
+                        "tool:turn:0:0:governance:business_service_context:0"
+                    ],
+                }
+            ],
+            "warning": "",
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (canonical_response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    gates = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )["gates"]
+
+    assert result.ok is True
+    assert result.specialists == ["governance"]
+    assert result.tool_names == ["business_service_context"]
+    assert result.narrated is True
+    assert result.summary == "The payments service is owned by platform-team."
+    assert result.citation_valid is True
+    assert result.material_claim_coverage == 1.0
+    assert result.groundedness == 1.0
+    assert result.claim_support == ["supported"]
+    assert result.citation_reference_integrity_ok is True
+    assert evidence["grants_ok"] is None
+    assert gates["routing"]["passed"] is True
+    assert gates["citation_validity"]["passed"] is True
+    assert gates["citation_coverage"]["passed"] is True
+    assert gates["groundedness"]["passed"] is True
+    assert gates["tool_correctness"]["passed"] is True
+
+
+@pytest.mark.parametrize(
+    ("summary", "structured_data", "expected_support", "expected_groundedness", "expected_decision"),
+    [
+        (
+            "The payments service is owned by platform-team and is fully compliant.",
+            {"owner": "platform-team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The payments service is owned by platform-team and will recover automatically.",
+            {"owner": "platform-team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The payments service is owned by platform-team and has status healthy.",
+            {"owner": "platform-team", "status": "healthy"},
+            "supported",
+            1.0,
+            "PROMOTE",
+        ),
+    ],
+)
+def test_canonical_compound_claim_requires_support_for_every_proposition(
+    monkeypatch,
+    summary,
+    structured_data,
+    expected_support,
+    expected_groundedness,
+    expected_decision,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-compound-claim",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service and what is its state?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": structured_data,
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": summary,
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.claim_support == [expected_support]
+    assert result.groundedness == expected_groundedness
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["decision"] == expected_decision
+
+
+@pytest.mark.parametrize(
+    ("summary", "facts"),
+    [
+        (
+            "The service is owned by Research and Development.",
+            [("owner", "research and development")],
+        ),
+        ("The replica count is 3.", [("replica count", "3")]),
+        ("The feature enabled value is true.", [("enabled", "true")]),
+        (
+            "The supported regions are eastus and westus.",
+            [("regions", "eastus"), ("regions", "westus")],
+        ),
+    ],
+)
+def test_claim_support_preserves_structured_scalar_and_list_facts(
+    summary,
+    facts,
+):
+    evaluate_agents = _load_evaluate_agents()
+
+    support = evaluate_agents._claim_support_status(
+        {
+            "summary": summary,
+            "evidence_refs": ["evidence-1"],
+        },
+        evidence_by_id={"evidence-1": facts},
+    )
+
+    assert support == "supported"
+
+
+def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-unsupported-cited",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by another team.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.citation_reference_integrity_ok is True
+    assert result.groundedness == 0.0
+    assert result.claim_support == ["unsupported"]
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
+
+
+def test_unverifiable_cited_claim_is_indeterminate_and_holds_narration(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-missing-support",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "A major outage is imminent.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.groundedness is None
+    assert result.claim_support == ["indeterminate"]
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD"
+
+
+def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-safety",
+        category="scope",
+        page_kind="governance",
+        question="Who owns this resource?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+        safety={"scope_isolation": True, "mutation_denied": True},
+    )
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-1"
+    )
+    response = {
+        "_response_scope": {"subscription": ["sub-a"]},
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "call-1",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {
+                    "owner": "payments",
+                    "resource_id": resource_id,
+                },
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "entities",
+                        "resource_id": resource_id,
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": "tool:call-1:0",
+                "source": "semantic:entities",
+                "status": "ok",
+                "resource_id": resource_id,
+            }
+        ],
+        "synthesis": {
+            "status": "deterministic",
+            "claims": [
+                {
+                    "summary": "The resource is owned by payments.",
+                    "evidence_refs": ["tool:call-1:0"],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 5.0),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+
+    assert result.scope_ok is True
+    assert result.unknown_id_denied is True
+    assert result.disposition_ok is True
+    assert result.manifest_projection_ok is True
+    assert result.tool_correctness == 1.0
+    assert result.groundedness == 1.0
+    assert result.spend_usd == 0.0
+
+    response["selected_specialists"] = ["unreviewed-specialist"]
+    unsafe = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    assert unsafe.unknown_id_denied is False
+    assert unsafe.manifest_projection_ok is False
+
+    response["selected_specialists"] = ["governance"]
+    response["tool_results"][0]["data"] = {
+        "id": (
+            "/subscriptions/sub-b/resourceGroups/rg/providers/"
+            "Microsoft.Compute/virtualMachines/secret"
+        )
+    }
+    leaked = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    assert leaked.scope_ok is False
+
+
+def test_dedicated_cases_use_production_contracts_and_two_principals(
+    monkeypatch,
+):
+    import urllib.error
+    import urllib.parse
+
+    evaluate_agents = _load_evaluate_agents()
+    cases = {
+        case.case_id: case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "dedicated"
+    }
+    requests: list[tuple[str, str, dict[str, Any] | None, str]] = []
+    thread_id = "thr-" + "a" * 32
+
+    def response(data):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": data,
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode()) if request.data else None
+        request_path = urllib.parse.urlparse(request.full_url).path
+        requests.append(
+            (
+                request.full_url,
+                request.method,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if (
+            request_path.endswith("/api/v1/copilot/investigations")
+            and body
+            and body.get("thread_id")
+        ):
+            assert body["thread_id"] == thread_id
+            assert body["expected_thread_revision"] == 1
+            assert (
+                request.get_header("Authorization")
+                == "Bearer secondary-token"
+            )
+            raise urllib.error.HTTPError(
+                request.full_url,
+                404,
+                "not found",
+                {},
+                io.BytesIO(b'{"error":{"code":"not_found"}}'),
+            )
+        if request_path.endswith("/api/v1/copilot/investigations"):
+            return response(
+                {
+                    "thread_id": thread_id,
+                    "thread_revision": 1,
+                }
+            )
+        if request_path.endswith("/api/v1/agents/investigations"):
+            return response(
+                {
+                    "selected_agents": [{"id": "incident"}],
+                    "tool_calls": [
+                        {
+                            "specialist_id": "incident",
+                            "tool": "incidents",
+                            "status": "ok",
+                            "evidence": [],
+                        }
+                    ],
+                    "synthesis": {
+                        "status": "deterministic",
+                        "claims": [],
+                    },
+                    "evaluation": {
+                        "groundedness": 1.0,
+                        "cost": {"llm_calls": 0},
+                    },
+                }
+            )
+        if request_path.endswith("/api/v1/agents/catalog"):
+            manifest = json.loads(_MANIFEST_PATH.read_text())
+            return response(
+                {
+                    "agents": [
+                        {"id": specialist["id"]}
+                        for specialist in manifest["specialists"]
+                    ]
+                }
+            )
+        return response(
+            {
+                "tool_calls": [],
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": [],
+                },
+                "evaluation": {
+                    "groundedness": 1.0,
+                    "cost": {"llm_calls": 0},
+                },
+            }
+        )
+
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    thread_states = {}
+
+    results = {
+        case_id: evaluate_agents._investigate(
+            "https://example.invalid",
+            "primary-token",
+            case,
+            {"subscription": ["sub-a"]},
+            thread_states=thread_states,
+        )[0]
+        for case_id, case in cases.items()
+    }
+
+    assert (
+        results["scope.cross.principal"]["_cross_principal_denied"]
+        is True
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].thread_id
+        == thread_id
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].revision
+        == 1
+    )
+    assert results["dedicated.investigate"]["selected_specialists"] == [
+        "incident"
+    ]
+    assert results["dedicated.agents"]["selected_specialists"] == []
+    assert any(
+        urllib.parse.urlparse(url).path.endswith("/api/v1/copilot/investigate")
+        and method == "POST"
+        for url, method, _body, _authorization in requests
+    )
+    assert any(
+        urllib.parse.urlparse(url).path.endswith("/api/v1/agents/investigations")
+        and method == "POST"
+        for url, method, _body, _authorization in requests
+    )
+    assert any(
+        urllib.parse.urlparse(url).path.endswith("/api/v1/agents/catalog")
+        and method == "GET"
+        for url, method, _body, _authorization in requests
+    )
+    assert sum(
+        urllib.parse.urlparse(url).path.endswith(
+            "/api/v1/copilot/investigations"
+        )
+        for url, _method, _body, _authorization in requests
+    ) == 2
+    principal_headers = {
+        authorization
+        for url, _method, _body, authorization in requests
+        if urllib.parse.urlparse(url).path.endswith(
+            "/api/v1/copilot/investigations"
+        )
+    }
+    assert len(principal_headers) == 2
+    assert all(principal_headers)
+
+
+def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
+    from operations.maf_orchestrator import build_deterministic_fallback
+    from operations.orchestration_contract import (
+        EvidenceSnapshotV2,
+        InvestigationRequest,
+        SnapshotCoverage,
+    )
+    from operations.specialist_manifest import load_specialist_manifest
+
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    manifest = load_specialist_manifest()
+
+    def investigate(_api, _token, case):
+        request = InvestigationRequest(
+            question=case.question,
+            requested_scope={"subscription": ["sub-a"]},
+            snapshot=EvidenceSnapshotV2(
+                page_kind=case.page_kind,
+                page_id=case.case_id,
+                coverage=SnapshotCoverage(
+                    visible_count=0,
+                    total_count=0,
+                    complete=False,
+                ),
+            ),
+        )
+        candidate = build_deterministic_fallback(request, manifest)
+        steps = candidate.steps if candidate is not None else []
+        calls = [
+            {
+                "call_id": f"{index}:0:{step.specialist_id}:{step.tool_calls[0].tool}",
+                "specialist_id": step.specialist_id,
+                "tool": step.tool_calls[0].tool,
+                "arguments": step.tool_calls[0].arguments,
+                "status": "ok",
+                "data": {"status": "observed"},
+                "evidence": [
+                    {
+                        "source_engine": "test",
+                        "source_table": step.specialist_id,
+                        "resource_id": "",
+                    }
+                ],
+            }
+            for index, step in enumerate(steps)
+        ]
+        citations = [
+            {
+                "citation_id": f"tool:{call['call_id']}:0",
+                "source": f"test:{call['specialist_id']}",
+                "status": "ok",
+            }
+            for call in calls
+        ]
+        claims = [
+            {
+                "summary": f"{call['specialist_id']} status is observed.",
+                "evidence_refs": [f"tool:{call['call_id']}:0"],
+            }
+            for call in calls
+        ]
+        return (
+            {
+                "_response_scope": {"subscription": ["sub-a"]},
+                "status": "ok",
+                "policy_status": "accepted",
+                "selected_specialists": [
+                    step.specialist_id for step in steps
+                ],
+                "selected_tools": [call["tool"] for call in calls],
+                "tool_results": calls,
+                "citations": citations,
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": claims,
+                },
+                "mutation_authorized": False,
+            },
+            5.0,
+        )
+
+    cases_by_id = {case.case_id: case for case in cases}
+    thread_id = "thr-" + "b" * 32
+
+    def response(data):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": data,
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    def urlopen(request, *, timeout):
+        import urllib.error
+        import urllib.parse
+
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode()) if request.data else None
+        request_path = urllib.parse.urlparse(request.full_url).path
+        if request_path.endswith("/api/v1/copilot/investigations"):
+            if body.get("thread_id"):
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    404,
+                    "not found",
+                    {},
+                    io.BytesIO(b'{"error":{"code":"not_found"}}'),
+                )
+            case_id = body["snapshot"]["page_id"].removeprefix("eval-")
+            if case_id == "scope.cross.principal":
+                return response(
+                    {
+                        "thread_id": thread_id,
+                        "thread_revision": 1,
+                    }
+                )
+            return response(
+                investigate(
+                    "https://example.invalid",
+                    "primary-token",
+                    cases_by_id[case_id],
+                )[0]
+            )
+        if request_path.endswith("/api/v1/agents/investigations"):
+            return response(
+                {
+                    "selected_agents": [{"id": "incident"}],
+                    "tool_calls": [
+                        {
+                            "specialist_id": "incident",
+                            "tool": "incidents",
+                            "status": "ok",
+                            "evidence": [],
+                        }
+                    ],
+                    "synthesis": {
+                        "status": "deterministic",
+                        "claims": [],
+                    },
+                    "evaluation": {
+                        "groundedness": 1.0,
+                        "cost": {"llm_calls": 0},
+                    },
+                }
+            )
+        if request_path.endswith("/api/v1/agents/catalog"):
+            return response(
+                {
+                    "agents": [
+                        {"id": specialist.id}
+                        for specialist in manifest.specialists
+                    ]
+                }
+            )
+        return response(
+            {
+                "tool_calls": [],
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": [],
+                },
+                "evaluation": {
+                    "groundedness": 1.0,
+                    "cost": {"llm_calls": 0},
+                },
+            }
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    results = []
+    for case in cases:
+        if case.disposition not in {"redirect", "excluded"}:
+            result = evaluate_agents._run_case(
+                "https://example.invalid",
+                "resource",
+                case,
+                {"subscription": ["sub-a"]},
+            )
+        else:
+            result = evaluate_agents.Result(
+                case_id=case.case_id,
+                ok=True,
+                specialists=list(case.expect_specialists),
+                expected_specialists=list(case.expect_specialists),
+                groundedness=1.0,
+                tool_correctness=1.0,
+                narrated=True,
+                latency_ms=5.0,
+                tool_names=[],
+                citation_valid=True,
+                material_claim_coverage=1.0,
+                citation_reference_integrity_ok=True,
+                mutation_denied=True,
+                spend_usd=0.0,
+                scope_ok=True,
+                unknown_id_denied=True,
+                disposition_ok=True,
+                manifest_projection_ok=True,
+                page_safety_ok=True,
+                snapshot_schema_ok=True,
+                unsupported_severe_causal_action=0,
+                orchestration_runtime="static_route_disposition",
+            )
+        results.append(evaluate_agents.result_to_release_evidence(result, case))
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "PROMOTE", artifact["gates"]
+    assert all(
+        gate["passed"]
+        for gate in artifact["gates"].values()
+    )
+
+
+def test_every_integrated_fixture_is_snapshot_schema_gated():
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "integrated"
+    ]
+
+    for case in cases:
+        evidence = evaluate_agents.result_to_release_evidence(
+            evaluate_agents.Result(
+                case_id=case.case_id,
+                ok=True,
+                specialists=list(case.expect_specialists),
+                expected_specialists=list(case.expect_specialists),
+            ),
+            case,
+        )
+        assert evidence["snapshot_schema_ok"] is True, case.case_id
 
 
 def test_main_release_run_executes_cases_from_the_external_corpus(
@@ -1529,7 +3588,21 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     )
     seen: list[str] = []
 
-    def run_case(_api, _resource, case):
+    dispatched_thread_states = None
+
+    def run_case(
+        _api,
+        _resource,
+        case,
+        requested_scope,
+        *,
+        thread_states,
+    ):
+        nonlocal dispatched_thread_states
+        assert requested_scope == {"subscription": ["sub-a"]}
+        if dispatched_thread_states is None:
+            dispatched_thread_states = thread_states
+        assert thread_states is dispatched_thread_states
         seen.append(case.case_id)
         return evaluate_agents.Result(
             case_id=case.case_id,
@@ -1543,12 +3616,13 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             material_claim_coverage=1.0,
             citation_reference_integrity_ok=True,
             mutation_denied=True,
-            tool_names=list(case.expect_grants),
+            tool_names=[],
             spend_usd=0.05,
             scope_ok=True,
             unknown_id_denied=True,
             disposition_ok=True,
             manifest_projection_ok=True,
+            page_safety_ok=True,
             snapshot_schema_ok=True,
             unsupported_severe_causal_action=0,
         )
@@ -1567,6 +3641,8 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             str(_THRESHOLDS_PATH),
             "--revision",
             "api--phase11-canary",
+            "--subscription",
+            "sub-a",
             "--provider",
             "foundry=available",
             "--provider",
@@ -1668,6 +3744,45 @@ def test_release_artifact_holds_when_any_live_case_lacks_spend():
     assert artifact["gates"]["measurement_completeness"]["observed"][
         "missing_spend_case_ids"
     ] == [cases[0].case_id]
+
+
+def test_missing_page_safety_measurement_forces_hold():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    target = next(case for case in cases if case.disposition == "integrated")
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            page_safety_ok=None if case.case_id == target.case_id else True,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD"
+    gate = artifact["gates"]["page_safe_specialist_routing"]
+    assert gate["passed"] is False
+    assert gate["observed"]["missing_case_ids"] == [target.case_id]
 
 
 def test_release_artifact_rejects_boolean_spend_values():
