@@ -1405,11 +1405,15 @@ class FabricSyncService:
                 )
 
             _release_transient_publication_memory()
-            write_intents: dict[str, TableWriteIntent] = {}
-
             def write_table(
                 item: tuple[str, list[dict[str, Any]]],
-            ) -> tuple[str, str, int | None, DeltaWriteResult]:
+            ) -> tuple[
+                str,
+                str,
+                int | None,
+                DeltaWriteResult,
+                TableWriteIntent,
+            ]:
                 assert_lock_held()
                 table_name, rows = item
                 _LOGGER.info(
@@ -1425,6 +1429,31 @@ class FabricSyncService:
                 before_version = known_versions.get(table_name)
                 if table_name not in known_versions and rows:
                     before_version = self.delta.version(table_uri)
+                intent = self.publication_checkpoints.begin_table_write(
+                    prepared_checkpoint,
+                    publication_plan,
+                    table_name=table_name,
+                    outcome_digest=_table_write_outcome_digest(
+                        table_name,
+                        rows,
+                        mode=mode,
+                        key_columns=(
+                            ("event_id",)
+                            if table_name == "metadata_audit_events"
+                            else ("resource_id",)
+                        ),
+                        partition_by=(
+                            (
+                                *self.partitioning.columns_for(table_name),
+                                "ingestion_run_id",
+                            )
+                            if table_name
+                            == "silver_patch_snapshot_findings"
+                            else self.partitioning.columns_for(table_name)
+                        ),
+                        checkpoint_digest=prepared_checkpoint.manifest_digest,
+                    ),
+                )
                 result = self.delta.write(
                     table_uri,
                     rows,
@@ -1450,14 +1479,12 @@ class FabricSyncService:
                         if table_name == "silver_patch_snapshot_findings"
                         else ()
                     ),
-                    transaction_id=write_intents[table_name].intent_id,
-                    transaction_digest=(
-                        write_intents[table_name].outcome_digest
-                    ),
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
                     expected_version=before_version,
                 )
                 assert_lock_held()
-                return table_name, table_uri, before_version, result
+                return table_name, table_uri, before_version, result, intent
 
             # Empty projections do not need a Fabric transaction unless the
             # table already exists and must be cleared for this snapshot.
@@ -1548,6 +1575,7 @@ class FabricSyncService:
                 table_uri: str,
                 before_version: int | None,
                 result: DeltaWriteResult,
+                intent: TableWriteIntent | None = None,
                 *,
                 resumed: bool = False,
                 current_phase: str = "table_publication",
@@ -1562,7 +1590,6 @@ class FabricSyncService:
                 if not resumed:
                     assert prepared_checkpoint is not None
                     assert publication_plan is not None
-                    intent = write_intents.get(table_name)
                     if intent is None:
                         raise PublicationCheckpointError(
                             f"Table {table_name} result has no durable intent"
@@ -1719,43 +1746,6 @@ class FabricSyncService:
             publish_items = [
                 item for item in publish_items if item[0] not in resumable_completed
             ]
-            pending_items = [
-                *patch_items,
-                *([barrier_item] if barrier_item is not None else []),
-                *publish_items,
-            ]
-            write_intents.update(
-                self.publication_checkpoints.begin_table_writes(
-                    prepared_checkpoint,
-                    publication_plan,
-                    outcome_digests={
-                        table_name: _table_write_outcome_digest(
-                            table_name,
-                            rows,
-                            mode=self._write_mode_for_table(table_name),
-                            key_columns=(
-                                ("event_id",)
-                                if table_name == "metadata_audit_events"
-                                else ("resource_id",)
-                            ),
-                            partition_by=(
-                                (
-                                    *self.partitioning.columns_for(table_name),
-                                    "ingestion_run_id",
-                                )
-                                if table_name
-                                == "silver_patch_snapshot_findings"
-                                else self.partitioning.columns_for(table_name)
-                            ),
-                            checkpoint_digest=(
-                                prepared_checkpoint.manifest_digest
-                            ),
-                        )
-                        for table_name, rows in pending_items
-                    },
-                )
-            )
-
             for item in patch_items:
                 record_table_result(*write_table(item))
             if barrier_item is not None:
@@ -1779,7 +1769,13 @@ class FabricSyncService:
                 write_error = None
                 for future in as_completed(futures):
                     try:
-                        table_name, table_uri, before_version, result = future.result()
+                        (
+                            table_name,
+                            table_uri,
+                            before_version,
+                            result,
+                            intent,
+                        ) = future.result()
                     except Exception as exc:  # noqa: BLE001 - collect all worker failures before rollback.
                         write_error = write_error or exc
                         continue
@@ -1788,6 +1784,7 @@ class FabricSyncService:
                         table_uri,
                         before_version,
                         result,
+                        intent,
                     )
                 if write_error is not None:
                     raise write_error
@@ -1866,6 +1863,7 @@ class FabricSyncService:
                     "gold_staging",
                     "started",
                 )
+                gold_write_intents: dict[str, TableWriteIntent] = {}
 
                 def record_gold_table_result(
                     table_name: str,
@@ -1876,6 +1874,7 @@ class FabricSyncService:
                         str(table_uris[table_name]),
                         publication_plan.expected_before_versions[table_name],
                         result,
+                        gold_write_intents.get(table_name),
                         resumed=table_name in publication_plan.completed,
                         current_phase="gold_staging",
                     )
@@ -1904,7 +1903,7 @@ class FabricSyncService:
                         table_name=table_name,
                         outcome_digest=outcome_digest,
                     )
-                    write_intents[table_name] = intent
+                    gold_write_intents[table_name] = intent
                     return intent.intent_id, intent.outcome_digest
 
                 if publication_plan.activation_pending is not None:

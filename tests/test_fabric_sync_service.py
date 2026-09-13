@@ -1411,6 +1411,7 @@ def test_fresh_process_exact_replay_survives_prepare_and_high_count_deaths(
     planned_tables = set(interrupted_progress["table_names"])
     assert len(completed_before_final_resume) == interruption_target - 1
     assert commit_gap_table in interrupted_progress["in_flight"]
+    assert set(interrupted_progress["in_flight"]) == {commit_gap_table}
 
     third = fresh_service()
     forbid_expensive_projection(third)
