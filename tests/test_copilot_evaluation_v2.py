@@ -2072,7 +2072,7 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         for case in evaluate_agents.load_cases(_CASES_PATH)
         if case.disposition == "integrated"
     ]
-    requests: list[tuple[str, dict[str, Any]]] = []
+    requests: list[tuple[str, dict[str, Any], str]] = []
 
     def urlopen(request, *, timeout):
         assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
@@ -2080,6 +2080,7 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
             (
                 request.full_url,
                 json.loads(request.data.decode()),
+                request.get_header("Authorization") or "",
             )
         )
         return io.BytesIO(b'{"data": {}}')
@@ -2095,7 +2096,7 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         )
 
     assert len(requests) == len(cases)
-    for case, (url, body) in zip(cases, requests, strict=True):
+    for case, (url, body, authorization) in zip(cases, requests, strict=True):
         assert url == (
             "https://example.invalid/api/v1/copilot/investigations"
             "?subscription=sub-a"
@@ -2103,6 +2104,7 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         from api.routers.copilot import CanonicalInvestigationPayload
 
         CanonicalInvestigationPayload.model_validate(body)
+        assert authorization == "Bearer " + "token"
         assert body["question"] == case.question
         assert body["requested_scope"] == {"subscription": ["sub-a"]}
         assert body["snapshot"]["version"] == "2"
