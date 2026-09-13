@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T13:05:08+08:00
+updated: 2026-09-13T13:22:40+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,10 +31,10 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed and corrected: rollout is evaluated once at the drawer API boundary; canonical safety/quality signals are computed from canonical response facts while deployed grant parity remains runtime evidence; and domain evidence is server-resolved and scope-authorized before canonical retention."
-test: "Complete: 704/705 selected backend tests passed with one pre-existing packaging skip; 170/170 web tests, Ruff, TypeScript, lint, shell syntax, 9/9 parity, evaluator/corpus syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
+hypothesis: "Confirmed and corrected: one effective rollout decision includes the deterministic emergency override; every dedicated corpus case uses its production API contract including two-principal thread denial; and explicit executive intent delegates to multiple evidence specialists while executive synthesis remains separate."
+test: "Complete: 710/711 selected backend tests passed with one pre-existing packaging skip; 170/170 web tests, Ruff, TypeScript, lint, shell syntax, 9/9 parity, evaluator/corpus syntax, MCP bridge, diff/scope checks, and causal revert-and-reconfirm passed."
 expecting: "Clean-room reviewer accepts stable HEAD after this debug closeout; no further branch changes."
-next_action: "Await human verification of the cumulative review commits. Do not archive until confirmed."
+next_action: "Await human verification of stable HEAD. Do not archive until confirmed."
 reasoning_checkpoint:
   hypothesis: "Three independent contract gaps cause the cumulative blockers: the canonical drawer handler never evaluates `copilot_rollout_decision`; the evaluator expects response booleans the canonical contract does not expose and compares executed Operations tools to mixed capability grants; and raw DomainEntityRef rows bypass `canonicalize_snapshot_v2` with a server resolver before browser retention."
   confirming_evidence:
@@ -96,6 +96,18 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 - timestamp: 2026-09-13T13:05:08+08:00
   observation: Final self-review added non-blocking shadow rejection metadata, nested ARM scope scanning, direct-service unresolved-domain rejection, inventory compatibility, and preserved conflict/completeness uncertainty wording. No owned Remediation/CVE/globals, deployment, infrastructure, Terraform, image, cloud, or live path changed.
   implication: The final diff is source/test/debug-only, bounded to the three findings, and ready for clean-room read-only review.
+- timestamp: 2026-09-13T13:22:40+08:00
+  observation: The effective rollout selector now applies `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` before default/canary/shadow evaluation, and both the selector and real drawer endpoint prove default plus deterministic resolves to compatibility.
+  implication: The emergency rollback override can no longer be bypassed by the canonical drawer route.
+- timestamp: 2026-09-13T13:22:40+08:00
+  observation: Dedicated evaluation dispatch calls `/copilot/investigate`, `/agents/investigations`, and `/agents/catalog` according to the reviewed surface. The cross-principal case creates a canonical thread with the primary token and requires 404 when a distinct secondary token attempts continuation. The full 96-case promotion test drives production `_investigate` dispatch.
+  implication: Dedicated safety and parity measurements come from actual contracts, and passing behavior can genuinely produce PROMOTE without fabricated Result objects.
+- timestamp: 2026-09-13T13:22:40+08:00
+  observation: Explicit overview synthesis intent now requires at least two domain specialists when fewer than two intent matches exist. `route.exec.risks` and `cross.exec.payments` use Vulnerability plus Incident; `route.exec.sitrep` uses Incident plus Governance; executive_summary remains synthesis-only.
+  implication: Multi-domain cited evidence precedes executive synthesis and the corpus no longer blesses weakened single-specialist fixtures.
+- timestamp: 2026-09-13T13:22:40+08:00
+  observation: Reverting the effective selector, dedicated dispatch/scoring, and restored corpus routing returns all final failures; restoring them returns focused tests green. Final validation passes 710/711 backend tests (one pre-existing wheel-build skip), 170/170 web tests, Ruff, TypeScript, lint, shell syntax, parity 9/9, MCP bridge 16/16, and all diff/advisory/ownership checks.
+  implication: The clean-room fixes are causal, complete, and confined to the requested source/test/debug scope.
 - timestamp: 2026-09-13T12:10:00+08:00
   observation: `.planning/STATE.md` identifies Phase 4 planning, while the request explicitly authorizes only four final Phase 11 source/test fixes. The inherited branch is clean at `0f0f12877`, and this tracked debug session already carries the Phase 11 remediation history.
   implication: This work is a bounded Phase 11 exception; live/provider/deployment/Terraform actions and owned Remediation/CVE/globals files remain excluded.
@@ -576,6 +588,37 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Resolution
 
+clean_room_final_root_cause: "The drawer used a rollout decision that omitted the deterministic emergency override; dedicated evaluator cases were all dispatched through one legacy Copilot endpoint and the promotion test fabricated their results; and overview routing allowed explicit executive/cross-domain intent to proceed with a single evidence specialist."
+clean_room_final_fix: "Made `copilot_rollout_decision` the single effective selector including deterministic override; dispatched each dedicated surface through its actual API contract and added a primary/secondary canonical thread denial probe; made the 96-case promotion test exercise production dispatch; and restored bounded multi-domain overview delegation while keeping executive_summary synthesis-only."
+clean_room_final_verification:
+  target_test:
+    result: pass
+    details: "Deterministic override selector/API cases, three explicit multi-domain overview cases, actual dedicated endpoint dispatch, two-principal denial, and full production-dispatch promotion all pass after starting RED."
+  mutation_check:
+    result: skipped
+    reason_if_skipped: "No configured Python or TypeScript mutation framework exists."
+    mutant_killed: false
+  no_op_deletion:
+    result: pass
+    deletion_justified_by_rca: true
+    details: "Changes add override precedence, production dispatch, safety normalization, and domain delegation; no threshold, gate, authorization, or provider check was removed."
+  adjacent_tests:
+    result: pass
+    suites_run:
+      - "Selected Phase 11 backend: 710 passed, 1 pre-existing packaging skip"
+      - "Six Phase 11 web files: 170 passed"
+      - "Full Ruff; strict TypeScript; Next lint"
+      - "Shell syntax; evaluator bytecode; corpus JSON; MCP bridge 16/16"
+      - "Offline specialist parity: 9/9"
+      - "Diff/advisory/ownership checks: pass"
+  revert_and_reconfirm:
+    result: pass
+    bug_returned_on_revert: true
+    fixed_on_reapply: true
+  guardrail_verdict: accepted
+clean_room_final_commits:
+  - "a4564303b fix(copilot): honor effective rollout routing"
+  - "0c9b36a30 fix(copilot): exercise dedicated evaluation contracts"
 cumulative_final_review_root_cause: "The canonical drawer endpoint bypassed staged rollout selection; release scoring required booleans absent from the canonical result and conflated mixed deployed capabilities with per-turn Operations tools; and browser DomainEntityRef rows entered retention without server identity resolution or scope authorization."
 cumulative_final_review_fix: "Applied stable compatibility/shadow/canary/default selection at the drawer endpoint with non-blocking no-I/O shadow preflight; derived safety, grounding, tool correctness, scope, schema, and deterministic spend from canonical response/envelope facts while moving deployed grant parity to runtime evidence and aligning the corpus to the real planner; resolved non-inventory domain entities through the semantic index and minted retained citations only from canonical authorized evidence."
 cumulative_final_review_verification:
