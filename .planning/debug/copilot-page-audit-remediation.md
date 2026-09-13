@@ -1,8 +1,8 @@
 ---
-status: investigating
+status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T15:12:00+08:00
+updated: 2026-09-13T17:02:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,13 +31,16 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "The three blocking orchestration review issues are fixed and verified; the remaining active-session work is source/config readiness, including rollout-mode consumption and immutable provider deployment parity that cannot be inferred from offline tests."
-test: "In the next explicitly scoped continuation, trace source-only rollout configuration and compare deploy/runtime declarations without contacting providers or mutating deployment state."
-expecting: "Local source may still omit rollout-mode consumption, while live Foundry/provider readiness remains blocked until externally supplied immutable evidence exists."
-next_action: "Resume with source/config readiness only; keep provider/live deployment work blocked and do not archive until that readiness is separately evidenced and human-verified."
+hypothesis: "Confirmed and fixed in source: provider values now have one non-secret Terraform/export authority, rollout stages drive request-bound routing fail closed, and candidate/live parity binds immutable agents/providers to two distinct governed project-connection IDs."
+test: "Focused/adjacent offline suites, Ruff, shell syntax, Terraform formatting, offline parity, empty-env BLOCKED behavior, exact-FQDN/bearer guards, and revert/reconfirm all pass."
+expecting: "A final whole-branch validation/review should find no regression in unrelated clusters; live provider/deployment gates remain BLOCKED until external evidence is supplied."
+next_action: "Run final whole-branch validation and review only; do not deploy, contact providers, create a second connection, publish candidates, or alter traffic."
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
-  - "Live Foundry/provider onboarding and immutable deployment parity remain external readiness evidence and were not fabricated or contacted."
+  - "The reported Foundry project has only one governed connection named `demo`; exact distinct `operations-mcp` and `azure-mcp` project-connection resource IDs and payloads remain absent."
+  - "No real candidate artifact proving all twelve specialist plus coordinator provider-version IDs exists in this offline cycle."
+  - "Live Foundry/MCP parity, deployed revision identity, compatibility→shadow→canary observation, and promotion baseline remain BLOCKED and were not fabricated or contacted."
+  - "Terraform provider-schema validation remains locally blocked because the existing `.terraform` cache lacks all locked provider packages; no provider initialization was attempted."
 candidate_causes:
   - "config: rollout mode may be declared but not consumed by runtime wiring"
   - "environment: provider onboarding/deployed revision evidence is unavailable in this offline cycle"
@@ -45,6 +48,45 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Evidence
 
+- timestamp: 2026-09-13T15:20:00+08:00
+  observation: The active session and `.planning/STATE.md` confirm this is an explicitly authorized Phase 11 source/config exception while Phase 4 remains the nominal planning phase; the worktree is clean except for the active debug session, and no configured debugger skill overlay was returned.
+  implication: Investigation may touch only the requested provider/deployment-readiness source, tests, and documentation; live infrastructure and the listed owned-file exclusions remain out of scope.
+- timestamp: 2026-09-13T15:28:00+08:00
+  observation: Phase 11 Plan 05 requires persisted real provider-version mappings and a BLOCKED live gate when external configuration is absent; Plan 12 and its runbook promise compatibility→shadow→canary→default via `AIOPS_COPILOT_ROLLOUT_MODE`, while the continuation explicitly forbids treating absent deployed evidence as a pass.
+  implication: Offline remediation must wire deterministic non-secret values and runtime control only; it must not create a second governed connection, provider ID, candidate mapping, or deployed baseline.
+- timestamp: 2026-09-13T15:36:00+08:00
+  observation: `outputs.tf` exposes only `foundry_project_endpoint` among the requested provider values. Terraform computes both exact APIM MCP URLs, the APIM audience, rollout mode/percentage/rollback mode, and a promotion-artifact path internally, but provides no authoritative sourceable output contract for them.
+  implication: Operators currently must hand-author deterministic non-secret parity inputs, creating drift risk even though Terraform already owns the values.
+- timestamp: 2026-09-13T15:36:00+08:00
+  observation: Repository runtime code has no reference to `AIOPS_COPILOT_ROLLOUT_MODE`, `AIOPS_COPILOT_CANARY_PERCENTAGE`, or `AIOPS_COPILOT_ROLLBACK_MODE`; route branches consume only `canonical_orchestration_enabled()` from `AIOPS_AGENT_ORCHESTRATION_MODE`.
+  implication: The runbook's compatibility/shadow/canary/default behavior is declarative only; a deployed rollout variable cannot currently alter request routing or fail closed on malformed/missing values.
+- timestamp: 2026-09-13T15:36:00+08:00
+  observation: Live parity loads specialist names/provider version IDs from `FOUNDRY_CANDIDATE_MAPPING` and compares allowed tool names by `server_label`, but `_agent_allowed_tools` discards each Foundry tool's `project_connection_id`.
+  implication: A candidate can appear grant-correct while pointing at a wrong, absent, or hand-invented project connection; real governed connection identity is not part of the live parity proof.
+- timestamp: 2026-09-13T15:51:00+08:00
+  observation: The agent-authored focused readiness suite produced 22 deterministic RED failures: the sourceable exporter is absent, the rollout decision API is absent, the Terraform output map is absent, route calls do not provide stable canary identity, and candidate parsing still returns only agents/coordinator.
+  implication: The regressions independently reproduce each source/config omission before production changes; the oracle is specified by the Phase 11 rollout/provider contracts.
+- timestamp: 2026-09-13T16:15:00+08:00
+  observation: After adding the allowlisted exporter/output map, fail-closed stable rollout selector, request-bound consumption, and candidate connection identities, all 22 focused readiness tests pass; the 66-test specialist packaging suite also passes with one pre-existing package-build skip, and focused Ruff is clean.
+  implication: The direct regressions are green; adjacent canonical API behavior and stronger live connection/binding negative cases remain to be verified.
+- timestamp: 2026-09-13T16:31:00+08:00
+  observation: The expanded provider/package suite now proves publication stops before any provider call when either connection ID is missing or duplicated, a live inventory containing only `demo` returns `BLOCKED`, and an agent version bound to the wrong project connection fails parity. All focused and adjacent route/provider tests pass.
+  implication: Source wiring no longer converts one observed connection into two invented identities; live promotion remains held until both Terraform-created connection resource IDs and pinned agent versions are externally observable.
+- timestamp: 2026-09-13T16:31:00+08:00
+  observation: `terraform fmt -check`, shell syntax, scoped Ruff, and the strengthened nine-check offline specialist parity gate pass. `terraform validate -no-color` cannot run because the local `.terraform` cache lacks all locked provider packages; no init was attempted because this cycle forbids provider/network contact.
+  implication: HCL formatting and source-level parity are verified offline; provider-backed Terraform schema validation remains an explicit local-tooling blocker rather than a fabricated pass.
+- timestamp: 2026-09-13T16:43:00+08:00
+  observation: The complete selected provider/orchestration adjacency passes, including focused readiness, packaging, canonical/legacy API, context routing, manifest/policy parity, Foundry, and Operations MCP tests; scoped Ruff, shell syntax, Terraform formatting, and strengthened offline parity pass.
+  implication: The new source/config behavior coexists with legacy compatibility, deterministic rollback, exact-FQDN/bearer guards, and existing provider degradation contracts.
+- timestamp: 2026-09-13T16:43:00+08:00
+  observation: Running live parity in an empty environment makes zero network calls, reports only the eight missing variable names, returns `status=blocked`, and exits 3.
+  implication: External prerequisites remain explicitly BLOCKED and no credential, endpoint, provider identity, or successful live status was fabricated.
+- timestamp: 2026-09-13T16:52:00+08:00
+  observation: Reverting only the provider/rollout production and config source restored every focused readiness failure plus the connection-publication/parity failures; restoring the source returned the focused provider/package suite to green.
+  implication: Revert-and-reconfirm proves the implementation—not environment or test drift—closes the reproduced source/config defects.
+- timestamp: 2026-09-13T17:02:00+08:00
+  observation: Commit `d09843e87` contains the complete provider/readiness source, tests, Terraform, and runbook changes with the required Copilot co-author trailer. Its 13 paths exclude every owned remediation, Fabric mapper, Exposure CVE/quarantined launcher, and Patch Priorities publication/data file.
+  implication: The final source/config cluster is atomically committed within scope; only final whole-branch validation/review and human confirmation remain, not live deployment.
 - timestamp: 2026-09-13T13:53:00+08:00
   observation: Independent orchestration review reports three deterministic blockers before provider/config work: invalid `{}` no-hint tool fallback across exact v2 pages, retained browser claims bypassing canonical conflict/completeness admissibility, and a 64-citation preselection cap suppressing synthesis for 65-200 accepted material rows.
   implication: The active session remains in shared orchestration/MAF/evidence-selection scope; focused RED tests must reproduce all three before source changes, and provider/config work remains deferred.
@@ -363,20 +405,23 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 4. Specialist routing broadens from global keywords rather than intersecting question intent
    with the page manifest's reviewed safe set.
 5. Redirect declarations, implementation, and tests encode different exact destinations.
-6. Runtime rollout/provider configuration is only partially wired; remaining live provider
-   parity requires external onboarding evidence that must not be fabricated.
+6. Runtime rollout/provider configuration has three source omissions: Terraform lacks a
+   complete sourceable non-secret provider environment, request boundaries ignore the staged
+   rollout controls, and candidate/live parity omits exact governed project-connection
+   identities. Remaining live provider parity additionally requires external onboarding
+   evidence that must not be fabricated.
 7. Deterministic fallback construction did not validate required tool arguments or represent
    a no-tool result, while retained browser evidence bypassed canonical conflict/completeness
    admission and stopped at 64 rows before the strict 200-row snapshot closure boundary.
 
 ## Resolution
 
-root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`. Blocking orchestration review: fallback construction treated page grants as proof that `{}` was valid and had no no-tool outcome; retained browser rows bypassed canonical conflict/completeness admission; and input-order retention stopped at 64 before closure despite the 200-row snapshot contract."
-fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist. The blocking review fix now validates every fallback call, derives only explicit selected-entity/query arguments, supports a deterministic no-tool result, applies shared conflict/completeness/ranking rules before retained citation minting, and aligns bounded page retention to the strict 200-row snapshot contract with explicit exclusion/truncation uncertainty."
+root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`. Blocking orchestration review: fallback construction treated page grants as proof that `{}` was valid and had no no-tool outcome; retained browser rows bypassed canonical conflict/completeness admission; and input-order retention stopped at 64 before closure despite the 200-row snapshot contract. Provider/deployment readiness: Terraform did not expose the complete deterministic non-secret provider environment, request boundaries ignored `AIOPS_COPILOT_ROLLOUT_MODE` and canary percentage, and candidate/live parity discarded exact Foundry project-connection identities; live readiness additionally lacks external evidence for two distinct governed connections and immutable provider versions."
+fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist. The blocking review fix validates every fallback call, supports a deterministic no-tool result, and applies shared conflict/completeness/ranking rules through the 200-row closure boundary. Provider readiness now exports one allowlisted non-secret Terraform environment through an atomic mode-0600 source file, consumes compatibility/shadow/canary/default controls at every request boundary with stable fail-closed canary selection and deterministic rollback, publishes candidates only with two distinct full project-connection resource IDs, validates those IDs against the live governed connection inventory and every pinned agent definition, and documents exact external evidence while leaving `demo`-only onboarding BLOCKED."
 verification:
   target_test:
     result: pass
-    details: "31 exact-page/selected-entity fallback tests pass after 11 RED failures; four retained-evidence tests pass after reproducing conflicting high-confidence totals, an incomplete completeness-required claim, and 64-row truncation at both 65 and 200 rows."
+    details: "Provider/readiness RED suite failed all 22 initial cases; final focused provider/package suite passes missing, malformed, complete, rollout-boundary, connection-identity, exact-FQDN, bearer-secrecy, and BLOCKED cases with one pre-existing wheel-build skip."
   mutation_check:
     result: skipped
     reason_if_skipped: "No Stryker, mutmut, or cosmic-ray configuration exists."
@@ -384,7 +429,7 @@ verification:
   no_op_deletion:
     result: pass
     deletion_justified_by_rca: true
-    details: "Fallback changes replace invalid call construction with validated safe selection/no-tool degradation; retained-evidence changes add fail-closed admission and deterministic ranking without deleting canonical evidence or tool behavior."
+    details: "Provider readiness is additive authority/validation/routing logic; it does not delete provider behavior, weaken grants, bypass gates, or silently enable candidates. Earlier fallback/evidence changes remain root-cause-directed."
   adjacent_tests:
     result: pass
     suites_run:
@@ -398,12 +443,30 @@ verification:
       - "371 selected cluster 1-4/Phase 11 Python tests: 370 passed, 1 pre-existing skip"
       - "Full Ruff check across src and tests"
       - "Offline specialist parity: 8/8 checks passed"
+      - "Complete provider/orchestration adjacency: readiness, packaging, canonical/legacy APIs, context routing, manifest/policy parity, Foundry, and Operations MCP"
+      - "Scoped Ruff across src, tests, and both changed scripts"
+      - "Shell syntax for create-foundry-agent.sh and validate-runtime-e2e.sh"
+      - "Terraform fmt -check"
+      - "Offline specialist parity: 9/9 checks passed, including runtime rollout consumption and provider environment"
+      - "Empty-env live parity: BLOCKED, exit 3, no network"
   revert_and_reconfirm:
     result: pass
     bug_returned_on_revert: true
     fixed_on_reapply: true
   guardrail_verdict: accepted
+  terraform_validate:
+    result: blocked
+    details: "Local `.terraform` cache lacks the locked azurerm, azapi, Fabric, and random provider packages; validation was not initialized because provider/network contact is forbidden."
+external_blockers:
+  status: BLOCKED
+  required_evidence:
+    - "Full immutable Foundry project-connection resource ID and read-only payload for `operations-mcp`, matching the exported exact endpoint and audience."
+    - "Full distinct immutable Foundry project-connection resource ID and read-only payload for `azure-mcp`, matching the exported exact endpoint and audience."
+    - "Script-created candidate artifact containing all twelve exact specialist identities, shared coordinator identity, service-returned provider-version IDs, and both exact connection IDs."
+    - "Read-only live parity result proving both connections exist and every pinned definition has exact connection/grant/model parity."
+    - "Immutable deployed revision evidence plus compatibility→shadow→canary observation and one real corpus artifact recording PROMOTE/HOLD."
 commits:
+  - "d09843e87 fix(copilot): wire provider rollout readiness"
   - "b9b199ac4 test(copilot): align legacy page-safe routing"
   - "37cd88f6e fix(copilot): admit retained evidence consistently"
   - "401f1bd44 fix(copilot): validate deterministic fallback calls"
@@ -413,10 +476,19 @@ commits:
   - "8143a0207 fix(copilot): bind retained evidence to page context"
   - "ec491f753 fix(copilot): close canonical migration review gaps"
 files_changed:
+  - docs/PRODUCTION_RUNTIME_ACTIVATION.md
+  - docs/runbooks/copilot-orchestration-rollout.md
+  - infra/README.md
+  - infra/scripts/create-foundry-agent.sh
+  - infra/terraform/foundry.tf
+  - infra/terraform/outputs.tf
+  - scripts/export_copilot_provider_env.py
   - scripts/evaluate_agents.py
-  - src/operations/autonomous_investigation.py
-  - src/operations/maf_orchestrator.py
+  - scripts/validate_specialist_parity.py
   - src/api/routers/copilot.py
+  - src/api/routers/multi_agent.py
+  - src/operations/maf_orchestrator.py
+  - src/operations/autonomous_investigation.py
   - src/operations/orchestration_contract.py
   - src/operations/orchestration_service.py
   - src/operations/page_context.py
@@ -429,6 +501,8 @@ files_changed:
   - tests/test_orchestration_policy.py
   - tests/test_api_copilot_snapshot.py
   - tests/test_orchestration_parity.py
+  - tests/test_copilot_provider_readiness.py
+  - tests/test_specialist_manifest_packaging.py
   - web/src/app/vulnerabilities/page.test.tsx
   - web/src/components/ui/CopilotDrawer.test.tsx
   - web/src/components/ui/CopilotDrawer.tsx
