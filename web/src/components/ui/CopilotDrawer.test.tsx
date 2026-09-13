@@ -269,14 +269,21 @@ describe("CopilotDrawer", () => {
           page_kind: "remediation",
           page_id: "remediation",
           selected_entities: expect.any(Array),
-          material_claims: [],
+          filters: { tab: ["gaps"] },
+          query: "",
+          generation_id: expect.stringMatching(/^generation:[a-f0-9]{64}$/),
+          material_claims: expect.arrayContaining([
+            expect.objectContaining({
+              evidence_refs: ["network:gap:1"],
+              requires_complete_coverage: false,
+            }),
+          ]),
         }),
       }),
       { subscription: ["sub-a"] },
     ));
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
     expect(request.snapshot).not.toHaveProperty("scope");
-    expect(request.snapshot).not.toHaveProperty("filters");
     expect(request.snapshot).not.toHaveProperty("question");
   });
 
@@ -415,6 +422,62 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("inventory:azure:stable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a degraded direct answer whose material facts cite retained evidence", async () => {
+    const result = canonicalResult(
+      "thr-33333333333333333333333333333333",
+      "retained:selection:kb-current",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
+        uncertainty: [
+          "visible subset is incomplete",
+          "Foundry narration unavailable; retained current page evidence was used.",
+        ],
+        coverage: { visible_count: 1, total_count: 137, complete: false },
+        synthesis: {
+          status: "degraded",
+          reason: "deterministic_page_evidence",
+          domain_count: 1,
+          claims: [{
+            finding_id: "page:kb-current",
+            summary:
+              "KB5001 applies to Windows Server 2022, was published 2026-09-01, targets 2026-09-30, and affects 137 servers.",
+            evidence_refs: ["retained:selection:kb-current"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: ["visible subset is incomplete"],
+          }],
+          warning:
+            "Foundry narration unavailable; retained current page evidence was used.",
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="KB5001"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={snapshot}
+          starterQuestions={[{ label: "Explain this KB" }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Explain this KB/ }));
+
+    expect(await screen.findByText(/KB5001 applies to Windows Server 2022/)).toBeInTheDocument();
+    expect(screen.getByText("retained:selection:kb-current")).toBeInTheDocument();
+    expect(screen.getByText(/Foundry narration unavailable/)).toBeInTheDocument();
+    expect(screen.getByText("1 of 137 visible records")).toBeInTheDocument();
   });
 
   it("supports isolated direct renders without making browser continuity authoritative", async () => {

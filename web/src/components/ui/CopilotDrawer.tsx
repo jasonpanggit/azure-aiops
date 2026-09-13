@@ -347,6 +347,29 @@ export function CopilotDrawer({
           uncertainty: result.uncertainty,
           coverage: result.coverage,
           citations: result.citations,
+          narration: result.synthesis?.claims?.length
+            ? {
+                text: result.synthesis.claims
+                  .map(
+                    (claim) =>
+                      `${claim.summary}\n\nEvidence: ${claim.evidence_refs.join(", ")}`,
+                  )
+                  .join("\n\n"),
+                agent_name:
+                  result.synthesis.status === "synthesized"
+                    ? "Executive synthesis"
+                    : "Deterministic page evidence",
+                model:
+                  result.synthesis.status === "synthesized"
+                    ? "Foundry"
+                    : "Deterministic",
+                grounded: true,
+              }
+            : null,
+          synthesisMode:
+            result.synthesis?.status === "synthesized"
+              ? "foundry"
+              : "deterministic",
           snapshot: submittedSnapshot,
         },
       ]);

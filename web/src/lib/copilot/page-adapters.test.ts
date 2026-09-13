@@ -1472,8 +1472,10 @@ describe("inventory Copilot page adapter", () => {
       kb: {
         kb_id: "KB5001",
         title: "September cumulative update",
+        product: "Windows Server 2022",
         severity: "critical",
         published_at: "2026-09-01T00:00:00Z",
+        target_date: "2026-09-30",
         cve_ids: ["CVE-2026-0001", "CVE-2026-0002"],
         affected_servers: ["srv-1", "srv-2"],
         affected_server_count: 137,
@@ -1487,6 +1489,8 @@ describe("inventory Copilot page adapter", () => {
               "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1",
             server_id: "srv-1",
             cve_id: "CVE-2026-0001",
+            product_name: "Windows Server 2022",
+            target_date: "2026-09-30",
             application: "Ledger",
             business_service: "Payments",
             severity: "critical",
@@ -1539,6 +1543,9 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             data: expect.objectContaining({
+              product: "Windows Server 2022",
+              published_at: "2026-09-01T00:00:00Z",
+              target_date: "2026-09-30",
               affected_server_count: 137,
               affected_servers_truncated: true,
             }),
@@ -1556,6 +1563,8 @@ describe("inventory Copilot page adapter", () => {
           // Affected machine finding is a canonical ARM identity.
           expect.objectContaining({
             data: expect.objectContaining({
+              product_name: "Windows Server 2022",
+              target_date: "2026-09-30",
               entity: {
                 type: "azure",
                 resource_id:
@@ -1580,6 +1589,13 @@ describe("inventory Copilot page adapter", () => {
         ]),
       );
       expect(context.snapshot.filters).toMatchObject({ target_kind: ["server"], page: ["1"] });
+      const canonical = normalizeCopilotSnapshotV2(context.snapshot);
+      expect(canonical.filters).toEqual({
+        page: ["1"],
+        target_kind: ["server"],
+      });
+      expect(canonical.query).toBe("");
+      expect(canonical.generation_id).toMatch(/^generation:[a-f0-9]{64}$/);
       // Patch specialist hints, never mutating.
       expect(context.starterQuestions.every((starter) =>
         ["vulnerability", "remediation"].includes(starter.specialistId)
@@ -1994,10 +2010,17 @@ describe("inventory Copilot page adapter", () => {
           complete: false,
         },
         selected_entities: expect.any(Array),
-        material_claims: [],
+        filters: { view: ["remediation"] },
+        query: "",
+        generation_id: expect.stringMatching(/^generation:[a-f0-9]{64}$/),
+        material_claims: expect.arrayContaining([
+          expect.objectContaining({
+            evidence_refs: [expect.stringMatching(/^evidence:/)],
+            requires_complete_coverage: false,
+          }),
+        ]),
       });
       expect(normalized).not.toHaveProperty("scope");
-      expect(normalized).not.toHaveProperty("filters");
       expect(normalized).not.toHaveProperty("question");
       expect(normalized.evidence.every((row) =>
         row.actionable === false

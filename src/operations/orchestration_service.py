@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 import threading
 import time
@@ -40,6 +42,7 @@ from operations.maf_orchestrator import (
 from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
+    AzureEntityRef,
     CandidatePlan,
     Citation,
     EvidenceSnapshotV2,
@@ -416,6 +419,7 @@ class OrchestrationService:
         principal_subject: str,
         effective_scope: Scope,
         max_wall_seconds: float | None = None,
+        selection_snapshot: EvidenceSnapshotV2 | None = None,
     ) -> OrchestrationResult:
         """Execute one canonical request and return only the canonical result."""
 
@@ -425,6 +429,7 @@ class OrchestrationService:
             principal_subject=principal_subject,
             effective_scope=effective_scope,
             max_wall_seconds=max_wall_seconds,
+            selection_snapshot=selection_snapshot,
         ).result
 
     def execute_turn(
@@ -435,6 +440,7 @@ class OrchestrationService:
         principal_subject: str,
         effective_scope: Scope,
         max_wall_seconds: float | None = None,
+        selection_snapshot: EvidenceSnapshotV2 | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
@@ -450,6 +456,20 @@ class OrchestrationService:
                     self.executive_agent = None
 
         requested_scope = self.policy.validate_request(request, effective_scope)
+        page_snapshot = selection_snapshot or request.snapshot
+        self._validate_page_snapshot_scope(page_snapshot, requested_scope)
+        evidence_selection_id = self._evidence_selection_identity(
+            request.model_copy(update={"snapshot": page_snapshot}),
+            requested_scope,
+        )
+        current_retained_evidence = (
+            []
+            if page_snapshot.page_kind == "inventory"
+            else self._current_retained_evidence(
+                page_snapshot,
+                evidence_selection_id=evidence_selection_id,
+            )
+        )
         if request.thread_id:
             thread = self.thread_store.authorize(
                 request.thread_id,
@@ -481,6 +501,16 @@ class OrchestrationService:
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
+        citations.extend(
+            Citation(
+                citation_id=str(item["evidence_id"]),
+                source=str(item["source"]),
+                status=str(item["status"]),
+                observed_at=str(item.get("observed_at") or ""),
+                resource_id=str(item.get("resource_id") or ""),
+            )
+            for item in current_retained_evidence
+        )
         selected_specialists: list[str] = []
         selected_tools: list[str] = []
         budget_exhausted = False
@@ -555,11 +585,17 @@ class OrchestrationService:
             uncertainty,
             budget_exhausted=budget_exhausted,
         )
-        retained_evidence = self._retained_evidence(thread, requested_scope)
+        retained_evidence = self._retained_evidence(
+            thread,
+            requested_scope,
+            evidence_selection_id=evidence_selection_id,
+        )
         synthesis = self._synthesize(
             request.question,
             tool_results,
             retained_evidence=retained_evidence,
+            current_retained_evidence=current_retained_evidence,
+            snapshot=page_snapshot,
             deadline=deadline,
         )
         if synthesis.warning:
@@ -604,6 +640,11 @@ class OrchestrationService:
                 question=request.question,
                 result=result,
                 reconcile_conflict=request.expected_thread_revision is None,
+                evidence_selection_id=evidence_selection_id,
+                evidence_generation_id=(
+                    page_snapshot.content_generation_id()
+                ),
+                retained_evidence=current_retained_evidence,
             ),
             synthesis=synthesis,
         )
@@ -614,17 +655,47 @@ class OrchestrationService:
     def _retained_evidence(
         thread: InvestigationThread,
         current_scope: Scope,
+        *,
+        evidence_selection_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Project the thread's retained citations for synthesis reconciliation.
 
-        Only identity, source, status, and observation status travel: carried
-        evidence exists so synthesis can say "this was true an hour ago", not
-        so a second model can re-read raw provider payloads.
+        Exact-selection retained page facts stay available to deterministic
+        synthesis. The optional model projection still strips those facts in
+        ``executive_synthesis_input`` and receives only citation metadata.
         """
 
         retained: list[dict[str, Any]] = []
         for turn in thread.turns:
             if not scope_within(turn.scope, current_scope):
+                continue
+            if (
+                evidence_selection_id is not None
+                and turn.payload.get("evidence_selection_id")
+                != evidence_selection_id
+            ):
+                continue
+            retained_payload = turn.payload.get("retained_evidence")
+            if isinstance(retained_payload, list):
+                for item in retained_payload:
+                    if not isinstance(item, Mapping):
+                        continue
+                    evidence_id = str(item.get("evidence_id") or "")
+                    if not evidence_id:
+                        continue
+                    retained.append(
+                        {
+                            "evidence_id": evidence_id,
+                            "source": str(item.get("source") or ""),
+                            "status": str(item.get("status") or ""),
+                            "observation_status": OBSERVATION_HISTORICAL,
+                            **(
+                                {"data": dict(item["data"])}
+                                if isinstance(item.get("data"), Mapping)
+                                else {}
+                            ),
+                        }
+                    )
                 continue
             turn_revision = int(turn.payload.get("thread_revision") or 0)
             turn_identity = (
@@ -670,23 +741,230 @@ class OrchestrationService:
                 )
         return retained
 
+    @staticmethod
+    def _validate_page_snapshot_scope(
+        snapshot: EvidenceSnapshotV2,
+        current_scope: Scope,
+    ) -> None:
+        """Reject Azure page observations outside the authorized read scope."""
+
+        entities = [
+            *snapshot.selected_entities,
+            *[
+                item.entity
+                for item in snapshot.evidence
+                if item.entity is not None
+            ],
+        ]
+        for entity in entities:
+            if not isinstance(entity, AzureEntityRef):
+                continue
+            parts = [
+                part.casefold()
+                for part in entity.resource_id.split("/")
+                if part
+            ]
+            attributes = {"subscription": parts[1]}
+            if len(parts) >= 4 and parts[2] == "resourcegroups":
+                attributes["resource_group"] = parts[3]
+            if not current_scope.matches(attributes):
+                raise PolicyViolation(
+                    "scope_widening",
+                    "page evidence is outside the effective read scope",
+                )
+
+    @staticmethod
+    def _current_retained_evidence(
+        snapshot: EvidenceSnapshotV2,
+        *,
+        evidence_selection_id: str,
+    ) -> list[dict[str, Any]]:
+        """Retain bounded scalar page facts under server-minted citation IDs."""
+
+        def bounded_facts(data: Mapping[str, Any]) -> dict[str, Any]:
+            retained: dict[str, Any] = {}
+            for key, value in sorted(data.items()):
+                normalized_key = str(key).strip()
+                if not normalized_key or normalized_key in {
+                    "actionable",
+                    "claim_type",
+                    "entity",
+                    "mutation_authorized",
+                    "selected",
+                    "source_key",
+                }:
+                    continue
+                if (
+                    value is None
+                    or isinstance(value, (bool, int))
+                    or (
+                        isinstance(value, float)
+                        and math.isfinite(value)
+                    )
+                    or (
+                        isinstance(value, str)
+                        and len(value) <= 512
+                    )
+                ):
+                    retained[normalized_key] = value
+                elif (
+                    isinstance(value, list)
+                    and len(value) <= 16
+                    and all(
+                        item is None
+                        or isinstance(item, (bool, int, str))
+                        or (
+                            isinstance(item, float)
+                            and math.isfinite(item)
+                        )
+                        for item in value
+                    )
+                ):
+                    retained[normalized_key] = list(value)
+                if len(retained) >= 16:
+                    break
+            return retained
+
+        material_refs = {
+            reference
+            for claim in snapshot.material_claims
+            for reference in claim.evidence_refs
+        }
+        retained: list[dict[str, Any]] = []
+        for item in snapshot.evidence:
+            if (
+                item.status not in {STATUS_OK, "partial"}
+                or item.evidence_id not in material_refs
+            ):
+                continue
+            data = bounded_facts(item.data)
+            if not data:
+                continue
+            citation_seed = f"{evidence_selection_id}:{item.evidence_id}".encode()
+            citation_id = (
+                "retained:"
+                + hashlib.sha256(citation_seed).hexdigest()[:32]
+            )
+            retained.append(
+                {
+                    "evidence_id": citation_id,
+                    "original_evidence_id": item.evidence_id,
+                    "source": (
+                        f"page_snapshot:{snapshot.page_kind}:{item.source}"
+                    ),
+                    "status": item.status,
+                    "observed_at": item.observed_at,
+                    "resource_id": item.resource_id,
+                    "observation_status": OBSERVATION_CURRENT,
+                    "claim_type": item.claim_type,
+                    "selected": item.selected,
+                    "direct": item.direct,
+                    "quality": item.quality,
+                    "data": data,
+                }
+            )
+            if len(retained) >= 64:
+                break
+        return retained
+
+    @staticmethod
+    def _evidence_selection_identity(
+        request: InvestigationRequest,
+        current_scope: Scope,
+    ) -> str:
+        """Bind retained evidence to one normalized authorized page selection."""
+
+        snapshot = request.snapshot
+        selected_entities = sorted(
+            (
+                item.model_dump(mode="json")
+                for item in snapshot.selected_entities
+            ),
+            key=lambda item: json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+        )
+        payload = {
+            "page_kind": snapshot.page_kind,
+            "page_id": snapshot.page_id,
+            "selected_entities": selected_entities,
+            "filters": {
+                " ".join(str(key).strip().casefold().split()): sorted(
+                    {
+                        " ".join(str(item).strip().casefold().split())
+                        for item in values
+                        if str(item).strip()
+                    }
+                )
+                for key, values in sorted(snapshot.filters.items())
+                if str(key).strip()
+            },
+            "query": " ".join(snapshot.query.strip().casefold().split()),
+            "generation_id": snapshot.content_generation_id(),
+            "authorized_scope": current_scope.to_dict(),
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        return f"selection:{hashlib.sha256(encoded).hexdigest()}"
+
     def _synthesize(
         self,
         question: str,
         tool_results: Sequence[Mapping[str, Any]],
         *,
         retained_evidence: Sequence[Mapping[str, Any]],
+        current_retained_evidence: Sequence[Mapping[str, Any]] = (),
+        snapshot: EvidenceSnapshotV2 | None = None,
         deadline: float | None = None,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
         findings = normalize_cited_findings(tool_results)
         decision = executive_synthesis_decision(question, findings)
+        deterministic_claims = self._deterministic_page_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
+        if deterministic_claims and self.executive_agent is None:
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason="deterministic_page_evidence",
+                domain_count=max(1, decision.domain_count),
+                claims=deterministic_claims,
+                warning=(
+                    "Foundry narration unavailable; retained current page "
+                    "evidence was used."
+                ),
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if not decision.admitted:
             synthesis = ExecutiveSynthesis(
-                status="skipped",
-                reason=decision.reason,
-                domain_count=decision.domain_count,
+                status="deterministic" if deterministic_claims else "skipped",
+                reason=(
+                    "deterministic_page_evidence"
+                    if deterministic_claims
+                    else decision.reason
+                ),
+                domain_count=max(
+                    int(bool(deterministic_claims)),
+                    decision.domain_count,
+                ),
+                claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -699,6 +977,10 @@ class OrchestrationService:
                     "Executive synthesis was skipped because the canonical "
                     "wall-clock budget was exhausted."
                 ),
+                claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -709,8 +991,13 @@ class OrchestrationService:
                 domain_count=decision.domain_count,
                 warning=(
                     "Executive synthesis was unavailable; direct specialist "
-                    "findings are shown instead."
+                    "findings and retained current page evidence are shown "
+                    "instead."
                 ),
+                claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -744,6 +1031,10 @@ class OrchestrationService:
                     "Executive synthesis was skipped because the canonical "
                     "wall-clock budget was exhausted."
                 ),
+                claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -767,20 +1058,30 @@ class OrchestrationService:
                 status="degraded",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
+                claims=deterministic_claims,
                 warning=(
                     "Executive synthesis was withheld; direct specialist "
-                    "findings are shown instead."
+                    "findings and retained current page evidence are shown "
+                    "instead."
                 ),
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
         except (AttributeError, ConnectionError, TimeoutError, TypeError, ValueError):
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
+                claims=deterministic_claims,
                 warning=(
                     "Executive synthesis was withheld; direct specialist "
-                    "findings are shown instead."
+                    "findings and retained current page evidence are shown "
+                    "instead."
                 ),
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
             )
         else:
             used_refs = {
@@ -802,6 +1103,131 @@ class OrchestrationService:
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)
         return synthesis
+
+    @staticmethod
+    def _deterministic_page_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build direct factual claims only from citation-closed current rows."""
+
+        if snapshot is None or not retained_evidence:
+            return []
+        by_original_id = {
+            str(item.get("original_evidence_id") or ""): item
+            for item in retained_evidence
+            if item.get("original_evidence_id")
+        }
+        material_refs = {
+            reference
+            for claim in snapshot.material_claims
+            for reference in claim.evidence_refs
+        }
+        if material_refs and not material_refs <= set(by_original_id):
+            return []
+        candidates = [
+            item
+            for item in retained_evidence
+            if (
+                not material_refs
+                or str(item.get("original_evidence_id") or "") in material_refs
+            )
+            and (item.get("selected") or item.get("direct"))
+        ]
+        question_terms = {
+            term
+            for term in re.findall(r"[a-z0-9][a-z0-9_.-]+", question.casefold())
+            if len(term) > 2
+        }
+        material_markers = (
+            "count",
+            "total",
+            "visible",
+            "rank",
+            "priority",
+            "score",
+            "date",
+            "_at",
+            "product",
+            "target",
+            "version",
+            "kb_id",
+            "cve_id",
+            "title",
+            "name",
+            "severity",
+            "application",
+            "business_service",
+        )
+        claims: list[dict[str, Any]] = []
+        for item in candidates:
+            data = item.get("data")
+            if not isinstance(data, Mapping):
+                continue
+            facts: list[tuple[str, Any]] = []
+            for key, value in sorted(data.items()):
+                normalized_key = str(key).casefold()
+                value_text = (
+                    ", ".join(str(part) for part in value)
+                    if isinstance(value, list)
+                    else str(value)
+                ).strip()
+                if not value_text:
+                    continue
+                if not (
+                    any(marker in normalized_key for marker in material_markers)
+                    or any(term in normalized_key for term in question_terms)
+                    or any(term in value_text.casefold() for term in question_terms)
+                ):
+                    continue
+                facts.append((str(key), value_text))
+                if len(facts) >= 8:
+                    break
+            if not facts:
+                continue
+            subject = (
+                str(data.get("kb_id") or data.get("title") or "").strip()
+                or snapshot.page_id
+            )
+            rendered = "; ".join(
+                f"{key.replace('_', ' ')} {value}"
+                for key, value in facts
+            )
+            evidence_id = str(item.get("evidence_id") or "")
+            if not evidence_id:
+                continue
+            uncertainty = []
+            if not snapshot.coverage.complete:
+                uncertainty.append("visible subset is incomplete")
+            claims.append(
+                {
+                    "finding_id": (
+                        "page:"
+                        + hashlib.sha256(evidence_id.encode()).hexdigest()[:24]
+                    ),
+                    "summary": (
+                        f"The current {snapshot.page_id} page reports for "
+                        f"{subject}: {rendered}."
+                    )[:1000],
+                    "evidence_refs": [evidence_id],
+                    "confidence": (
+                        "high" if item.get("quality") == "high" else "medium"
+                    ),
+                    "freshness": (
+                        "fresh"
+                        if item.get("status") == STATUS_OK
+                        else "partial"
+                    ),
+                    "uncertainty": uncertainty,
+                    "actionable": False,
+                    "next_check": "Recheck the cited page evidence after refresh.",
+                }
+            )
+            if len(claims) >= 8:
+                break
+        return claims
 
     # -- telemetry --------------------------------------------------------
 
@@ -921,6 +1347,9 @@ class OrchestrationService:
         question: str,
         result: OrchestrationResult,
         reconcile_conflict: bool = True,
+        evidence_selection_id: str = "",
+        evidence_generation_id: str = "",
+        retained_evidence: Sequence[Mapping[str, Any]] = (),
     ) -> OrchestrationResult:
         """Append one turn under optimistic concurrency and report the outcome.
 
@@ -930,7 +1359,29 @@ class OrchestrationService:
         to a newer revision would violate that request contract.
         """
 
-        payload = {"question": question, **result.model_dump(mode="json")}
+        payload = {
+            "question": question,
+            **result.model_dump(mode="json"),
+            **(
+                {"evidence_selection_id": evidence_selection_id}
+                if evidence_selection_id
+                else {}
+            ),
+            **(
+                {"evidence_generation_id": evidence_generation_id}
+                if evidence_generation_id
+                else {}
+            ),
+            **(
+                {
+                    "retained_evidence": [
+                        dict(item) for item in retained_evidence
+                    ]
+                }
+                if retained_evidence
+                else {}
+            ),
+        }
         try:
             updated = self.thread_store.append(
                 thread.thread_id,
@@ -957,6 +1408,25 @@ class OrchestrationService:
             reconciled_payload = {
                 "question": question,
                 **reconciled.model_dump(mode="json"),
+                **(
+                    {"evidence_selection_id": evidence_selection_id}
+                    if evidence_selection_id
+                    else {}
+                ),
+                **(
+                    {"evidence_generation_id": evidence_generation_id}
+                    if evidence_generation_id
+                    else {}
+                ),
+                **(
+                    {
+                        "retained_evidence": [
+                            dict(item) for item in retained_evidence
+                        ]
+                    }
+                    if retained_evidence
+                    else {}
+                ),
             }
             updated = self.thread_store.append(
                 thread.thread_id,

@@ -508,11 +508,15 @@ function exactKeys(
   name: string,
   value: object,
   expected: readonly string[],
+  optional: readonly string[] = [],
 ): void {
   const allowed = new Set(expected);
   const actual = Object.keys(value);
   const unknown = actual.filter((key) => !allowed.has(key));
-  const missing = expected.filter((key) => !actual.includes(key));
+  const optionalKeys = new Set(optional);
+  const missing = expected.filter(
+    (key) => !optionalKeys.has(key) && !actual.includes(key),
+  );
   if (unknown.length || missing.length) {
     throw new Error(
       `${name} has invalid fields: ${[...unknown, ...missing].sort().join(", ")}`,
@@ -623,12 +627,15 @@ function normalizeStrictSnapshotV2(
     "version",
     "page_kind",
     "page_id",
+    "filters",
+    "query",
+    "generation_id",
     "coverage",
     "freshness",
     "selected_entities",
     "evidence",
     "material_claims",
-  ]);
+  ], ["filters", "query", "generation_id"]);
   if (snapshot.version !== "2" || !SNAPSHOT_V2_PAGE_KINDS.has(snapshot.page_kind)) {
     throw new Error("snapshot version or page kind is invalid");
   }
@@ -838,15 +845,31 @@ function normalizeStrictSnapshotV2(
       requires_complete_coverage: Boolean(claim.requires_complete_coverage),
     };
   }).sort((left, right) => compareCodePoints(left.claim_id, right.claim_id));
-  const normalized: StrictCopilotEvidenceSnapshotV2 = {
-    version: "2",
-    page_kind: snapshot.page_kind,
-    page_id: pageId,
+  const filters = normalizeFilters(snapshot.filters ?? {}, undefined);
+  const query = boundedSnapshotString(
+    "snapshot query",
+    snapshot.query ?? filters.query?.join(" ") ?? "",
+    0,
+    1024,
+  ).toLocaleLowerCase("en-US");
+  const generationPayload = {
     coverage: {
       visible_count: visibleCount,
       total_count: totalCount,
       complete,
     },
+    freshness,
+    evidence,
+    material_claims: materialClaims,
+  };
+  const normalized: StrictCopilotEvidenceSnapshotV2 = {
+    version: "2",
+    page_kind: snapshot.page_kind,
+    page_id: pageId,
+    filters,
+    query,
+    generation_id: `generation:${sha256(stableJson(generationPayload))}`,
+    coverage: generationPayload.coverage,
     freshness,
     selected_entities: selectedEntities,
     evidence,
@@ -933,10 +956,19 @@ export function normalizeCopilotSnapshotV2(
   const deduplicatedSelected = selectedEntities.filter((entity, index, entities) =>
     entities.findIndex((candidate) =>
       entityOrderingKey(candidate) === entityOrderingKey(entity)) === index);
+  const materialClaims = evidence
+    .filter((item) => item.direct && ["ok", "partial"].includes(item.status))
+    .map((item) => ({
+      claim_id: `claim:${sha256(item.evidence_id).slice(0, 32)}`,
+      evidence_refs: [item.evidence_id],
+      requires_complete_coverage: false,
+    }));
   return normalizeStrictSnapshotV2({
     version: "2",
     page_kind: snapshot.page_kind,
     page_id: snapshot.page_id,
+    filters: snapshot.filters,
+    query: snapshot.filters.query?.join(" ") ?? "",
     coverage: {
       visible_count: evidence.length,
       total_count: evidence.length,
@@ -945,7 +977,7 @@ export function normalizeCopilotSnapshotV2(
     freshness: snapshot.freshness,
     selected_entities: deduplicatedSelected,
     evidence,
-    material_claims: [],
+    material_claims: materialClaims,
   });
 }
 
@@ -1894,8 +1926,10 @@ export interface DefenderPostureCopilotPageInput {
 export interface KbSummaryFields {
   kb_id: string;
   title?: string;
+  product?: string;
   severity?: string;
   published_at?: string;
+  target_date?: string;
   cve_ids: string[];
   affected_servers: string[];
   affected_server_count?: number;
@@ -1908,6 +1942,8 @@ export interface KbFindingObservation {
   target_id?: string;
   server_id?: string;
   cve_id?: string;
+  product_name?: string;
+  target_date?: string;
   application?: string;
   business_service?: string;
   environment?: string;
@@ -4258,8 +4294,10 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
       priority: 0,
       data: {
         title: kb.title,
+        product: kb.product,
         severity: kb.severity,
         published_at: kb.published_at,
+        target_date: kb.target_date,
         affected_server_count: kb.affected_server_count ?? kb.affected_servers.length,
         affected_servers_truncated: kb.affected_servers_truncated ?? false,
         affected_business_services: kb.affected_business_services,
@@ -4284,6 +4322,8 @@ function kbDetailCoreInput(input: KbDetailCopilotPageInput): CoreCopilotAdapterI
       data: {
         server_id: finding.server_id,
         cve_id: finding.cve_id,
+        product_name: finding.product_name,
+        target_date: finding.target_date,
         application: finding.application,
         business_service: finding.business_service,
         environment: finding.environment,
