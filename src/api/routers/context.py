@@ -8,6 +8,7 @@ projection of the knowledge layer rather than a second source of truth.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +26,11 @@ router = APIRouter(prefix="/api/v1", tags=["context"])
 SOURCE_ENGINE = "semantic.SemanticEngine"
 IDENTITY_ENGINE = "intelligence.governance.IdentityRiskEngine"
 GOVERNANCE_SOURCE_TABLE = "connection_generation_entities"
+_USER_ASSIGNED_MANAGED_IDENTITY_ID = re.compile(
+    r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
+    r"microsoft\.managedidentity/userassignedidentities/[^/]+/?$",
+    flags=re.IGNORECASE,
+)
 
 
 def _evidence(
@@ -95,7 +101,7 @@ def _scoped(context: dict[str, Any], scope: Scope) -> dict[str, Any]:
 def _is_identity_identifier(value: str) -> bool:
     """Return whether ``value`` is an exact Entra object or managed identity ID."""
     candidate = value.strip()
-    if candidate.casefold().startswith("/subscriptions/"):
+    if _USER_ASSIGNED_MANAGED_IDENTITY_ID.fullmatch(candidate):
         return True
     try:
         UUID(candidate)
