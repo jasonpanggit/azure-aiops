@@ -519,18 +519,19 @@ def _canonical_contract_signals(
         scope_ok = not scoped_case or not response_scope_model.is_unrestricted()
 
         def visit(value: Any) -> bool:
+            if isinstance(value, str) and value.startswith("/"):
+                parts = [part for part in value.split("/") if part]
+                attributes = (
+                    {"subscription": parts[1]}
+                    if len(parts) >= 2
+                    and parts[0].casefold() == "subscriptions"
+                    else {}
+                )
+                return (
+                    not attributes
+                    or response_scope_model.matches(attributes)
+                )
             if isinstance(value, dict):
-                resource_id = value.get("resource_id")
-                if isinstance(resource_id, str) and resource_id.startswith("/"):
-                    parts = [part for part in resource_id.split("/") if part]
-                    attributes = (
-                        {"subscription": parts[1]}
-                        if len(parts) >= 2
-                        and parts[0].casefold() == "subscriptions"
-                        else {}
-                    )
-                    if attributes and not response_scope_model.matches(attributes):
-                        return False
                 return all(visit(item) for item in value.values())
             if isinstance(value, list):
                 return all(visit(item) for item in value)
