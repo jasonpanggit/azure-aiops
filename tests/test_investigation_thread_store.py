@@ -488,6 +488,41 @@ def test_stale_revision_raises_an_explicit_conflict() -> None:
     ).revision == 2
 
 
+def test_stale_authorization_rejects_before_narrowing_or_aging() -> None:
+    clock = FakeClock()
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = store.create("operator-a", BROAD)
+    store.append(
+        thread.thread_id,
+        "operator-a",
+        BROAD,
+        _turn(),
+        expected_revision=0,
+    )
+    document_name = thread_document_name(thread.thread_id)
+    before = deepcopy(documents.documents[document_name])
+    clock.advance(60)
+
+    with pytest.raises(ThreadRevisionConflict) as raised:
+        store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+
+    assert raised.value.current_revision == 1
+    assert documents.documents[document_name] == before
+    assert documents.documents[document_name]["scope"] == {
+        "subscription": ["sub-a", "sub-b"]
+    }
+    assert (
+        documents.documents[document_name]["turns"][0]["observation_status"]
+        == OBSERVATION_CURRENT
+    )
+
+
 def test_concurrent_replicas_see_the_same_revision_after_restart() -> None:
     documents = FakeDocuments()
     first = InvestigationThreadStore(documents=documents)
