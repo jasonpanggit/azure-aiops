@@ -1066,10 +1066,18 @@ def test_enqueue_full_sync_restarts_inventory_and_enqueues_ontology(
 
     for _ in range(50):
         legacy = service.registry.get("prod-core").sync_state
-        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+        if (
+            legacy is not None
+            and legacy.run_id == result["inventory_sync"]["run_id"]
+            and (
+                legacy.status == "failed"
+                or (legacy.status == "succeeded" and legacy.record_count > 0)
+            )
+        ):
             break
         time.sleep(0.05)
     legacy = service.registry.get("prod-core").sync_state
+    assert legacy.run_id == result["inventory_sync"]["run_id"]
     assert legacy.status == "succeeded"
     assert legacy.record_count > 0
 

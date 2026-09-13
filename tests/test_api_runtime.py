@@ -313,12 +313,15 @@ def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
 
     assert resolved is repeated is expected
     assert build_calls == 1
-    assert _hybrid_vulnerability_cache[
-        (
-            str(runtime_module.aiops_home()),
-            (DEFAULT_LOCAL_SUBSCRIPTION_ID,),
-        )
-    ][0] == 1_045.0
+    assert len(_hybrid_vulnerability_cache) == 1
+    (cache_key, (cached_at, cached_service)), = _hybrid_vulnerability_cache.items()
+    assert cache_key[:2] == (
+        str(runtime_module.aiops_home()),
+        (DEFAULT_LOCAL_SUBSCRIPTION_ID,),
+    )
+    assert len(cache_key) == 3
+    assert cached_at == 1_045.0
+    assert cached_service is expected
     assert captured["semantic"] is None
 
 
