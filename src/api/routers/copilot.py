@@ -47,6 +47,7 @@ from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
     CandidatePlan,
+    DomainEntityRef,
     EvidenceSnapshotV2,
     SnapshotCoverage,
     SnapshotEvidence,
@@ -1061,10 +1062,62 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     try:
+        resolved_domains: dict[
+            tuple[str, str, str],
+            tuple[dict[str, Any], DomainEntityRef],
+        ] = {}
+
+        def resolve_domain_entity(
+            entity: DomainEntityRef,
+        ) -> Mapping[str, Any] | None:
+            key = (
+                entity.namespace.casefold(),
+                entity.kind.casefold(),
+                entity.source_key.casefold(),
+            )
+            cached = resolved_domains.get(key)
+            if cached is not None:
+                return cached[0]
+            semantic = context.semantic()
+            try:
+                entity_id = semantic.indexes.resolve(entity.source_key)
+            except (LookupError, ValueError):
+                return None
+            public = semantic.indexes.public(entity_id)
+            entity_type = str(public.get("entity_type") or "").strip()
+            resolved_scope = scope_attributes(public)
+            if not entity_type or not resolved_scope:
+                return None
+            resolution = {
+                "namespace": "semantic",
+                "kind": entity_type,
+                "source_key": entity_id,
+                "scope": resolved_scope,
+            }
+            resolved_domains[key] = (
+                resolution,
+                DomainEntityRef(
+                    type="domain",
+                    namespace="semantic",
+                    kind=entity_type,
+                    source_key=entity_id,
+                ),
+            )
+            return resolution
+
         # The strict Pydantic contract above validates every browser row and
-        # byte/list bound. Only scope-valid Azure identities may influence the
-        # deterministic plan; browser facts remain presentation evidence.
-        planning_entities: list[AzureEntityRef] = []
+        # byte/list bound. Resolve every domain identity against the server's
+        # semantic index before either planning or retained synthesis.
+        canonical_browser_snapshot = (
+            None
+            if browser_snapshot.page_kind == "inventory"
+            else canonicalize_snapshot_v2(
+                browser_snapshot,
+                effective_scope=scope,
+                domain_resolver=resolve_domain_entity,
+            )
+        )
+        planning_entities: list[AzureEntityRef | DomainEntityRef] = []
         planning_entity_ids: set[str] = set()
         for entity in [
             *browser_snapshot.selected_entities,
@@ -1084,9 +1137,24 @@ def investigate_canonical(
                 )
             ],
         ]:
-            if not isinstance(entity, AzureEntityRef):
-                continue
-            key = entity.resource_id.casefold()
+            if isinstance(entity, DomainEntityRef):
+                resolved = resolved_domains.get(
+                    (
+                        entity.namespace.casefold(),
+                        entity.kind.casefold(),
+                        entity.source_key.casefold(),
+                    )
+                )
+                if resolved is None:
+                    continue
+                entity = resolved[1]
+            if isinstance(entity, AzureEntityRef):
+                key = f"azure:{entity.resource_id.casefold()}"
+            else:
+                key = (
+                    f"domain:{entity.namespace.casefold()}:"
+                    f"{entity.kind.casefold()}:{entity.source_key.casefold()}"
+                )
             if key in planning_entity_ids:
                 continue
             planning_entity_ids.add(key)
@@ -1112,10 +1180,11 @@ def investigate_canonical(
                 "material_claims": [],
             }
         )
-        canonicalize_snapshot_v2(
-            planning_snapshot,
-            effective_scope=scope,
-        )
+        if canonical_browser_snapshot is None:
+            canonicalize_snapshot_v2(
+                planning_snapshot,
+                effective_scope=scope,
+            )
     except (TypeError, ValueError) as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
@@ -1253,6 +1322,7 @@ def investigate_canonical(
             principal_subject=principal.subject,
             effective_scope=scope,
             selection_snapshot=browser_snapshot,
+            canonical_selection_snapshot=canonical_browser_snapshot,
         )
     except PolicyViolation as exc:
         raise ApiError(

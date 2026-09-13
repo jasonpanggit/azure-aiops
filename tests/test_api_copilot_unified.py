@@ -2633,6 +2633,7 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     body = _canonical_body()
     body["snapshot"]["page_kind"] = "network"
     body["snapshot"]["page_id"] = "network"
+    body["snapshot"]["evidence"] = []
     client = TestClient(create_app(_context(tmp_path, None)))
 
     response = client.post(
