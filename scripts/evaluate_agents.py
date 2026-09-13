@@ -21,15 +21,10 @@ What is scored, per question:
                       orchestration contract? Deterministic mode expects
                       page-anchored delegation; MAF mode expects question-first
                       delegation with page fallback only when intent is absent.
-* ``groundedness`` -- fraction of *deterministic findings* backed by evidence.
-                      Read this as a data-availability signal, **not** as
-                      answer quality. Two observed cases show why: an agent
-                      that correctly answers "I cannot determine who owns this
-                      from the governed sources" scores 0.0, and so does one
-                      that names a specific KB and VM in its narration, because
-                      the narration is not what is scored. A low score means
-                      the deterministic layer had little to stand on, which is
-                      worth knowing, but it does not mean the answer was bad.
+* ``groundedness`` -- fraction of material claims explicitly judged supported
+                      by a deterministic response signal or controlled proxy
+                      evaluator. Citation attachment is scored separately and
+                      never counts as evidence that a claim is entailed.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
                       signal, not a failure. This is the metric that caught
@@ -836,6 +831,71 @@ def _canonical_contract_signals(
     }
 
 
+def _claim_support_score(
+    claim_support: Any,
+    *,
+    claim_count: int,
+) -> float | None:
+    """Validate and score an explicit claim-support measurement.
+
+    Citation references deliberately are not inputs here: attachment and
+    reference integrity are separate metrics and do not establish entailment.
+    Missing support remains unmeasured so the narrated-answer gate can fail
+    closed. A present signal must cover every material claim exactly once.
+    """
+    if claim_count == 0:
+        return None
+    if claim_support is None:
+        return None
+    if not isinstance(claim_support, dict):
+        raise EvaluationResponseError("claim_support must be an object")
+    expected_keys = {"version", "method", "claims"}
+    if set(claim_support) != expected_keys:
+        raise EvaluationResponseError(
+            "claim_support must contain exactly version, method, and claims"
+        )
+    if claim_support["version"] != "1":
+        raise EvaluationResponseError("claim_support version must be '1'")
+    if claim_support["method"] not in {
+        "deterministic_response",
+        "proxy_evaluator",
+    }:
+        raise EvaluationResponseError(
+            "claim_support method must be deterministic_response or proxy_evaluator"
+        )
+    claims = claim_support["claims"]
+    if not isinstance(claims, list):
+        raise EvaluationResponseError("claim_support claims must be a list")
+    expected_indexes = list(range(claim_count))
+    observed_indexes: list[int] = []
+    supported = 0
+    for claim in claims:
+        if not isinstance(claim, dict) or set(claim) != {
+            "claim_index",
+            "supported",
+        }:
+            raise EvaluationResponseError(
+                "claim_support claims must contain exactly claim_index and supported"
+            )
+        claim_index = claim["claim_index"]
+        support_value = claim["supported"]
+        if isinstance(claim_index, bool) or not isinstance(claim_index, int):
+            raise EvaluationResponseError(
+                "claim_support claim_index must be an integer"
+            )
+        if not isinstance(support_value, bool):
+            raise EvaluationResponseError(
+                "claim_support supported must be a boolean"
+            )
+        observed_indexes.append(claim_index)
+        supported += int(support_value)
+    if observed_indexes != expected_indexes:
+        raise EvaluationResponseError(
+            "claim_support must cover every claim exactly once in index order"
+        )
+    return round(supported / claim_count, 4)
+
+
 def _run_case(
     api: str,
     resource: str,
@@ -1001,11 +1061,27 @@ def _run_case(
         if "selected_specialists" in data or "_response_scope" in data
         else {}
     )
-    derived_groundedness = (
-        material_claim_coverage
-        if synthesis_claims
-        else evaluation.get("groundedness")
-    )
+    try:
+        groundedness = _claim_support_score(
+            evaluation.get("claim_support"),
+            claim_count=len(findings),
+        )
+    except EvaluationResponseError as exc:
+        return Result(
+            case_id=case.case_id,
+            ok=False,
+            specialists=seen,
+            expected_specialists=sorted(expected),
+            missing=missing,
+            latency_ms=latency,
+            summary=str(synthesis.get("summary") or narration),
+            narration=narration,
+            tool_names=tool_names,
+            citation_valid=citation_valid,
+            material_claim_coverage=material_claim_coverage,
+            citation_reference_integrity_ok=citation_reference_integrity_ok,
+            error=str(exc),
+        )
     deterministic_spend = (
         0.0
         if synthesis.get("status") in {"deterministic", "skipped"}
@@ -1027,11 +1103,7 @@ def _run_case(
         missing=missing,
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
-        groundedness=(
-            evaluation.get("groundedness")
-            if evaluation.get("groundedness") is not None
-            else derived_groundedness
-        ),
+        groundedness=groundedness,
         tool_correctness=(
             evaluation.get("tool_correctness")
             if evaluation.get("tool_correctness") is not None
@@ -1257,8 +1329,9 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     Every dimension is computed from its own inputs, so a collapse in one
     (e.g. groundedness) cannot move another (e.g. routing or latency). A
-    dimension with no applicable turns reports ``None`` -- a missing
-    measurement is null, never a passing or failing zero.
+    dimension with no applicable turns reports ``None``. Missing required
+    claim-support measurements are counted separately so they fail closed
+    without being misrepresented as a measured score of zero.
     """
 
     def flag_count(key: str) -> int:
@@ -1290,6 +1363,14 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     min_recall = min(recall_values) if recall_values else None
 
     grounded = [r["groundedness"] for r in results if r.get("groundedness") is not None]
+    claim_support_applicable_turns = sum(
+        r.get("material_claim_coverage") is not None for r in results
+    )
+    claim_support_missing_turns = sum(
+        r.get("material_claim_coverage") is not None
+        and r.get("groundedness") is None
+        for r in results
+    )
     coverage = [
         r["material_claim_coverage"]
         for r in results
@@ -1341,6 +1422,8 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "per_specialist_recall_min": min_recall,
         "groundedness_mean": _mean_or_none(grounded),
         "groundedness_p10": _percentile(grounded, 10),
+        "claim_support_applicable_turns": claim_support_applicable_turns,
+        "claim_support_missing_turns": claim_support_missing_turns,
         "unsupported_severe_causal_action_total": sum(
             int(r.get("unsupported_severe_causal_action") or 0)
             for r in results
@@ -1382,7 +1465,8 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     A deterministic safety or citation-integrity failure HOLDs the whole build.
     A model-quality, latency, reliability, or spend miss HOLDs OR DISABLES only
     the affected optional mode; the governed deterministic fallback survives.
-    A metric that was not measured (None) cannot fail its own gate falsely.
+    A metric with no applicable turns remains ``None``. Required claim support
+    that is absent is counted explicitly and fails the narrated-answer gate.
     """
     gates: dict[str, dict[str, Any]] = {}
     hold_build = False
@@ -1435,14 +1519,29 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     g_mean = metrics.get("groundedness_mean")
     g_p10 = metrics.get("groundedness_p10")
     g_unsup = metrics.get("unsupported_severe_causal_action_total", 0)
+    g_missing = metrics.get("claim_support_missing_turns", 0)
     ground_pass = (
-        (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
+        g_missing == 0
+        and (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
         and (g_p10 is None or g_p10 >= thresholds["groundedness"]["p10_min"])
         and g_unsup <= thresholds["groundedness"]["unsupported_severe_causal_action_max"]
     )
-    mode_gate("groundedness", ground_pass, {"mean": g_mean, "p10": g_p10, "unsupported": g_unsup},
-              {"mean": thresholds["groundedness"]["mean_min"], "p10": thresholds["groundedness"]["p10_min"]},
-              "groundedness")
+    mode_gate(
+        "groundedness",
+        ground_pass,
+        {
+            "mean": g_mean,
+            "p10": g_p10,
+            "unsupported": g_unsup,
+            "missing": g_missing,
+        },
+        {
+            "mean": thresholds["groundedness"]["mean_min"],
+            "p10": thresholds["groundedness"]["p10_min"],
+            "missing": 0,
+        },
+        "groundedness",
+    )
 
     cov = metrics.get("material_claim_coverage")
     cov_pass = cov is None or cov >= thresholds["citation"]["material_claim_coverage_min"]

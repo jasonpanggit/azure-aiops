@@ -131,6 +131,14 @@ so a rollback is a revision/mode switch, never a rebuild.
   whole build; a model-quality, provider-parity, latency, reliability, or spend
   failure HOLDs OR DISABLES only the affected optional mode while the governed
   deterministic fallback stays available.
+- **Claim support:** narrated groundedness is measured only from the controlled
+  `evaluation.claim_support` result produced by a deterministic response path or
+  proxy evaluator. The object must use version `1`, identify its method as
+  `deterministic_response` or `proxy_evaluator`, and provide one ordered
+  `{claim_index, supported}` boolean record for every material claim. Missing or
+  malformed support evidence holds narrated-answer promotion. Citation validity
+  and material-claim citation coverage remain separate gates; attaching a valid
+  citation does not establish that the cited evidence entails a claim.
 - **Validate:** completed-turn rate ≥ 0.98, timeout rate ≤ 0.01, latency and spend
   ceilings met for the served share.
 - **Evaluate the immutable revision once:**

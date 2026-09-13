@@ -1892,6 +1892,26 @@ def test_missing_measurement_is_null_not_zero():
     assert metrics["groundedness_p10"] is None
 
 
+def test_missing_claim_support_holds_narrated_answer_promotion():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [
+        _passing_result(
+            groundedness=None,
+            material_claim_coverage=1.0,
+        )
+    ]
+
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
+
+
 def test_metrics_dimensions_are_independent():
     evaluate_agents = _load_evaluate_agents()
     # A groundedness collapse must not move routing/latency/spend numbers.
@@ -2381,6 +2401,13 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
             ],
             "warning": "",
         },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "deterministic_response",
+                "claims": [{"claim_index": 0, "supported": True}],
+            }
+        },
         "mutation_authorized": False,
     }
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
@@ -2410,12 +2437,211 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     assert result.summary == "The payments service is owned by platform-team."
     assert result.citation_valid is True
     assert result.material_claim_coverage == 1.0
+    assert result.groundedness == 1.0
     assert result.citation_reference_integrity_ok is True
     assert evidence["grants_ok"] is None
     assert gates["routing"]["passed"] is True
     assert gates["citation_validity"]["passed"] is True
     assert gates["citation_coverage"]["passed"] is True
+    assert gates["groundedness"]["passed"] is True
     assert gates["tool_correctness"]["passed"] is True
+
+
+def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-unsupported-cited",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by another team.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "proxy_evaluator",
+                "claims": [{"claim_index": 0, "supported": False}],
+            }
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.citation_reference_integrity_ok is True
+    assert result.groundedness == 0.0
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
+
+
+def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-missing-support",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by another team.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        # This legacy value was citation attachment coverage. It must not be
+        # accepted as claim-evidence entailment.
+        "evaluation": {"groundedness": 1.0},
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.groundedness is None
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+
+
+@pytest.mark.parametrize(
+    "claim_support",
+    [
+        {
+            "version": "1",
+            "method": "proxy_evaluator",
+            "claims": [{"claim_index": 0, "supported": "true"}],
+        },
+        {
+            "version": "1",
+            "method": "proxy_evaluator",
+            "claims": [],
+        },
+        {
+            "version": "1",
+            "method": "citation_presence",
+            "claims": [{"claim_index": 0, "supported": True}],
+        },
+    ],
+)
+def test_claim_support_proxy_schema_is_strict_and_fails_closed(claim_support):
+    evaluate_agents = _load_evaluate_agents()
+
+    with pytest.raises(
+        evaluate_agents.EvaluationResponseError,
+        match="claim_support",
+    ):
+        evaluate_agents._claim_support_score(
+            claim_support,
+            claim_count=1,
+        )
 
 
 def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
@@ -2475,6 +2701,13 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
                     "evidence_refs": ["tool:call-1:0"],
                 }
             ],
+        },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "deterministic_response",
+                "claims": [{"claim_index": 0, "supported": True}],
+            }
         },
         "mutation_authorized": False,
     }
@@ -2774,6 +3007,19 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                 "synthesis": {
                     "status": "deterministic",
                     "claims": claims,
+                },
+                "evaluation": {
+                    "claim_support": {
+                        "version": "1",
+                        "method": "deterministic_response",
+                        "claims": [
+                            {
+                                "claim_index": index,
+                                "supported": True,
+                            }
+                            for index, _claim in enumerate(claims)
+                        ],
+                    }
                 },
                 "mutation_authorized": False,
             },
