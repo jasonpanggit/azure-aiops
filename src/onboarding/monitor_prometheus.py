@@ -161,7 +161,7 @@ class AzureMonitorPrometheusClient:
         self, endpoint: PrometheusEndpoint, *, access_token: str, query: str
     ) -> httpx.Response:
         response: httpx.Response | None = None
-        headers = {"Authorization": "******"}
+        headers = {"Authorization": f"Bearer {access_token}"}
         if endpoint.scoping_id:
             headers["x-ms-azure-scoping"] = endpoint.scoping_id
         params = {"query": query, "time": _iso_z(datetime.now(UTC))}

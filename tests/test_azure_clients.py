@@ -191,6 +191,7 @@ def test_cost_management_client_queries_daily_actual_costs() -> None:
     assert rows[0]["serviceName"] == "Virtual Machines"
     assert requests[0]["json"]["type"] == "ActualCost"
     assert requests[0]["json"]["dataset"]["granularity"] == "Daily"
+    assert requests[0]["headers"]["Authorization"] == "Bearer connection-token"
     assert requests[0]["url"].endswith(
         "/subscriptions/sub-1/providers/Microsoft.CostManagement/query"
     )

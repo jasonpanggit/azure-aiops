@@ -73,8 +73,14 @@ from intelligence.remediation.execution_service import (
     VERIFICATION_DEADLINE_SECONDS,
     RemediationExecutionService,
 )
-from intelligence.remediation.execution_store import RemediationExecutionStore
-from intelligence.remediation.execution_verifier import ExecutionVerifier
+from intelligence.remediation.execution_store import (
+    RemediationExecutionStore,
+    execution_scope_attributes,
+)
+from intelligence.remediation.execution_verifier import (
+    ExecutionVerificationUnavailable,
+    ExecutionVerifier,
+)
 from intelligence.remediation.plan_repository import PlanRepository
 from intelligence.remediation.verification_coordinator import (
     RemediationVerificationCoordinator,
@@ -91,10 +97,12 @@ from onboarding.monitor_prometheus import (
 from onboarding.registry import ConnectionRegistry
 from onboarding.runtime import (
     build_connection_arg_client,
+    build_connection_credential,
     build_connection_logs_client,
     build_connection_monitor_metrics_client,
     build_connection_prometheus_client,
     build_onboarding_service,
+    connection_cache_identity,
 )
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import _slug
@@ -106,6 +114,7 @@ from ontology_discovery.generation_resolver import (
 from operations.autonomous_investigation import configure_ledger_store
 from operations.defender_configuration import (
     AzureArmDefenderConfigurationAdapter,
+    DefenderConfigurationUnavailable,
     UnconfiguredDefenderConfigurationAdapter,
 )
 from operations.foundry_agent import (
@@ -117,6 +126,7 @@ from operations.foundry_agent import (
 from operations.maf_orchestrator import maf_mode_enabled
 from operations.patching import (
     InMemoryPatchRunStore,
+    PatchExecutionUnavailable,
     PatchingService,
     UnconfiguredPatchExecutionAdapter,
 )
@@ -142,7 +152,7 @@ from .dependencies import ApiContext
 from .governance_snapshot import GovernanceSnapshot
 from .providers import ProviderRuntime, ProviderSpec, ProviderValue
 from .rbac import Authorizer, Grant, Principal
-from .scope import Scope
+from .scope import Scope, subscription_ids_for_scope
 from .telemetry import ApiTelemetry
 
 ENV_HOME = "AIOPS_HOME"
@@ -1029,18 +1039,24 @@ _governance_snapshot_cache: dict[
 # remains in the response so this bounded staleness is explicit.
 _HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
 _hybrid_network_cache: dict[
-    tuple[str, tuple[str, ...]],
+    tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]],
     tuple[float, tuple[list[dict], str, int]],
 ] = {}
-_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 300
-_hybrid_vulnerability_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
+_HYBRID_VULNERABILITY_CACHE_TTL_SECONDS = 30
+_hybrid_vulnerability_cache: dict[
+    tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]],
+    tuple[float, Any],
+] = {}
 # Resolves the request-consistency half of WR-07: both the router's scope-
 # validation path (operations.py::_require's remediation branch) and the
 # execution-construction path (runtime.py::_execution_service_for_scope) call
 # hybrid_remediation independently within one HTTP request. Without a cache
 # they could observe two different LiveRemediationPlanner/PlanRepository
 # generations even though 03.2-01 already made plan_id itself stable.
-_hybrid_remediation_cache: dict[tuple[str, tuple[str, ...]], tuple[float, Any]] = {}
+_hybrid_remediation_cache: dict[
+    tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]],
+    tuple[float, Any],
+] = {}
 
 
 # WR-05: guards creation of the per-(cache, key) locks below. Held only
@@ -3794,72 +3810,150 @@ def _build_provider_runtime(
 # they use a process-level store handle like risk exceptions. The store is
 # shared across provider rebuilds so a rebuild never loses run history.
 _patch_run_store = InMemoryPatchRunStore()
-_PATCH_EXECUTION_CREDENTIAL: Any = _UNSET
-_DEFENDER_CONFIGURATION_CREDENTIAL: Any = _UNSET
+class _ConnectionCredentialRouter:
+    """Resolve a fresh selected-connection SPN for one subscription operation."""
+
+    def __init__(
+        self,
+        onboarding: SubscriptionOnboardingService,
+        scope: Scope | None = None,
+    ) -> None:
+        self._onboarding = onboarding
+        self._allowed_subscriptions = {
+            value.casefold() for value in (scope.values("subscription") if scope else ())
+        }
+        self._allowed_connections = {
+            value.casefold()
+            for value in (scope.values("subscription_connection") if scope else ())
+        }
+
+    def credential(
+        self,
+        subscription_id: str,
+        *,
+        connection_id: str = "",
+    ) -> Any:
+        subscription = str(subscription_id or "").strip()
+        selected_connection = str(connection_id or "").strip()
+        if not subscription:
+            raise RuntimeError("Azure subscription scope is required")
+        if (
+            self._allowed_subscriptions
+            and subscription.casefold() not in self._allowed_subscriptions
+        ):
+            raise RuntimeError("Azure subscription is outside the authorized scope")
+        candidates = [
+            connection
+            for connection in self._onboarding.registry.list(include_disabled=False)
+            if str(connection.subscription_id).casefold() == subscription.casefold()
+            and (
+                not selected_connection
+                or str(connection.connection_id).casefold()
+                == selected_connection.casefold()
+            )
+            and (
+                not self._allowed_connections
+                or str(connection.connection_id).casefold()
+                in self._allowed_connections
+            )
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "Exactly one active subscription connection must match the Azure operation"
+            )
+        return build_connection_credential(candidates[0], self._onboarding.resolver)
 
 
-def _service_principal_patch_credential() -> Any | None:
-    """Build a service-principal credential for patch execution, if configured.
+class _ConnectionScopedPatchExecutionAdapter:
+    name = "azure-arm"
 
-    Some deployments provision a subscription-connection service principal
-    (``AZURE_SP_CLIENT_ID`` / ``AZURE_SP_CLIENT_SECRET`` / ``AZURE_TENANT_ID``)
-    with broader RBAC than the container app's managed identity — for
-    example when the identity was never granted the ARM action a specific
-    provider (e.g. ``Microsoft.HybridCompute/machines/installPatches``)
-    requires. When present, this SPN is preferred over the managed identity
-    for patch execution; any resolution failure returns ``None`` so callers
-    fall back to the managed identity path instead of failing outright.
-    """
-    tenant_id = (os.environ.get("AZURE_TENANT_ID") or os.environ.get("TENANT_ID") or "").strip()
-    client_id = (os.environ.get("AZURE_SP_CLIENT_ID") or "").strip()
-    client_secret = os.environ.get("AZURE_SP_CLIENT_SECRET") or ""
-    if not tenant_id or not client_id or not client_secret:
-        return None
-    try:
-        from azure.identity import ClientSecretCredential
+    def __init__(self, router: _ConnectionCredentialRouter) -> None:
+        self._router = router
 
-        return ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret,
+    def submit(self, run: Any, target: Any) -> Any:
+        try:
+            subscription_id = str(
+                getattr(target, "subscription_id", "") or ""
+            ) or _subscription_id_from_resource_id(
+                str(getattr(target, "target_id", "") or "")
+            )
+            credential = self._router.credential(
+                subscription_id,
+                connection_id=str(
+                    getattr(target, "subscription_connection", "") or ""
+                ),
+            )
+        except Exception as exc:
+            raise PatchExecutionUnavailable(
+                f"Could not resolve the target subscription connection: {exc}",
+                provider_submitted=False,
+                failure_class="provider_authorization",
+            ) from exc
+        from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
+
+        return AzureArmPatchExecutionAdapter(credential).submit(run, target)
+
+
+class _ConnectionScopedDefenderConfigurationAdapter:
+    def __init__(self, router: _ConnectionCredentialRouter) -> None:
+        self._router = router
+
+    def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._adapter_for_target(str(request.get("path") or "")).inspect(request)
+
+    def submit(self, snapshot: dict[str, Any]) -> Any:
+        return self._adapter_for_target(str(snapshot.get("target_id") or "")).submit(
+            snapshot
         )
-    except Exception:  # noqa: BLE001 - callers safely fall back without this credential
-        _LOGGER.warning(
-            "AZURE_SP_CLIENT_ID/AZURE_SP_CLIENT_SECRET are set but the service "
-            "principal credential could not be built; falling back to the "
-            "managed identity for patch execution.",
-        )
-        return None
+
+    def _adapter_for_target(
+        self, target_id: str
+    ) -> AzureArmDefenderConfigurationAdapter:
+        try:
+            credential = self._router.credential(
+                _subscription_id_from_resource_id(target_id)
+            )
+        except Exception as exc:
+            raise DefenderConfigurationUnavailable(
+                f"Could not resolve the target subscription connection: {exc}",
+                reason="azure_arm_token_unavailable",
+                provider_submitted=False,
+                failure_class="provider_authorization",
+            ) from exc
+        return AzureArmDefenderConfigurationAdapter(credential)
 
 
-def _azure_patch_credential() -> Any | None:
-    """Return one process credential shared by patch submit and verification.
+class _ConnectionScopedExecutionVerifier:
+    def __init__(self, router: _ConnectionCredentialRouter) -> None:
+        self._router = router
 
-    Prefers a configured subscription-connection service principal (see
-    ``_service_principal_patch_credential``) over the container app's managed
-    identity, since the managed identity may lack RBAC grants (e.g. Arc
-    ``installPatches``) that the subscription's onboarding/discovery service
-    principal already has. Falls back to ``DefaultAzureCredential`` when no
-    service principal is configured.
-    """
-    global _PATCH_EXECUTION_CREDENTIAL
-    mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
-    if mode not in {"azure", "arm", "azure-arm"}:
-        return None
-    if _PATCH_EXECUTION_CREDENTIAL is _UNSET:
-        credential = _service_principal_patch_credential()
-        if credential is None:
-            try:
-                from azure.identity import DefaultAzureCredential
-
-                credential = DefaultAzureCredential()
-            except Exception:  # noqa: BLE001 - callers safely refuse without identity
-                credential = None
-        _PATCH_EXECUTION_CREDENTIAL = credential
-    return _PATCH_EXECUTION_CREDENTIAL
+    def verify(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+        attributes = execution_scope_attributes(execution_record)
+        try:
+            credential = self._router.credential(
+                attributes.get("subscription", ""),
+                connection_id=attributes.get("subscription_connection", ""),
+            )
+        except Exception as exc:
+            raise ExecutionVerificationUnavailable(
+                f"Could not resolve the execution's subscription connection: {exc}",
+                capability="azure_arm_token",
+            ) from exc
+        return ExecutionVerifier(credential=credential).verify(execution_record)
 
 
-def _patch_execution_adapter() -> Any:
+def _subscription_id_from_resource_id(resource_id: str) -> str:
+    parts = [part for part in str(resource_id or "").strip("/").split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.casefold() == "subscriptions":
+            return parts[index + 1]
+    return ""
+
+
+def _patch_execution_adapter(
+    onboarding: SubscriptionOnboardingService,
+    scope: Scope | None = None,
+) -> Any:
     """Resolve the configured execution backend.
 
     Defaults to the refusing adapter: triggering real Azure writes must be an
@@ -3868,55 +3962,44 @@ def _patch_execution_adapter() -> Any:
     and even then a missing or unusable credential falls back to refusing
     rather than failing at import time.
     """
-    credential = _azure_patch_credential()
-    if credential is None:
+    mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
+    if mode not in {"azure", "arm", "azure-arm"}:
         return UnconfiguredPatchExecutionAdapter()
-    try:
-        from operations.patching.azure_adapter import AzureArmPatchExecutionAdapter
-
-        return AzureArmPatchExecutionAdapter(credential)
-    except Exception:  # noqa: BLE001 - refusing is the safe outcome here
-        _LOGGER.warning(
-            "%s requested Azure patch execution but no usable credential was "
-            "available; patch runs will refuse.",
-            ENV_PATCH_EXECUTION,
-        )
-        return UnconfiguredPatchExecutionAdapter()
+    return _ConnectionScopedPatchExecutionAdapter(
+        _ConnectionCredentialRouter(onboarding, scope)
+    )
 
 
-def _azure_defender_configuration_credential() -> Any | None:
-    """Return the managed identity credential only after explicit opt-in."""
-    global _DEFENDER_CONFIGURATION_CREDENTIAL
+def _defender_configuration_adapter(
+    onboarding: SubscriptionOnboardingService,
+    scope: Scope | None = None,
+) -> Any:
+    """Resolve the opt-in Defender adapter through the selected connection."""
     mode = (
         os.environ.get(ENV_DEFENDER_CONFIGURATION_EXECUTION) or ""
     ).strip().casefold()
     if mode not in {"azure", "arm", "azure-arm"}:
-        return None
-    if _DEFENDER_CONFIGURATION_CREDENTIAL is _UNSET:
-        try:
-            from azure.identity import DefaultAzureCredential
-
-            _DEFENDER_CONFIGURATION_CREDENTIAL = DefaultAzureCredential()
-        except Exception:  # noqa: BLE001 - unconfigured execution must refuse
-            _DEFENDER_CONFIGURATION_CREDENTIAL = None
-    return _DEFENDER_CONFIGURATION_CREDENTIAL
-
-
-def _defender_configuration_adapter() -> Any:
-    """Resolve the opt-in, bounded Defender configuration adapter."""
-    credential = _azure_defender_configuration_credential()
-    if credential is None:
         return UnconfiguredDefenderConfigurationAdapter()
-    return AzureArmDefenderConfigurationAdapter(credential)
-
-
-def _execution_verifier() -> ExecutionVerifier | None:
-    """Build the read-only verifier at the same ARM credential boundary."""
-    credential = (
-        _azure_patch_credential()
-        or _azure_defender_configuration_credential()
+    return _ConnectionScopedDefenderConfigurationAdapter(
+        _ConnectionCredentialRouter(onboarding, scope)
     )
-    return ExecutionVerifier(credential=credential) if credential is not None else None
+
+
+def _execution_verifier(
+    onboarding: SubscriptionOnboardingService,
+    scope: Scope | None = None,
+) -> Any | None:
+    """Build a verifier that resolves the execution connection on every poll."""
+    patch_mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
+    defender_mode = (
+        os.environ.get(ENV_DEFENDER_CONFIGURATION_EXECUTION) or ""
+    ).strip().casefold()
+    enabled = {"azure", "arm", "azure-arm"}
+    if patch_mode not in enabled and defender_mode not in enabled:
+        return None
+    return _ConnectionScopedExecutionVerifier(
+        _ConnectionCredentialRouter(onboarding, scope)
+    )
 
 
 def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | None:
@@ -3928,7 +4011,7 @@ def _load_patching_service(vulnerability_loader: Callable[[], Any]) -> Any | Non
     return PatchingService(
         service,
         store=_patch_run_store,
-        adapter=_patch_execution_adapter(),
+        adapter=_patch_execution_adapter(_onboarding_service()),
         require_human_approval=_require_human_approval,
         allow_self_approval=_allow_self_approval,
     )
@@ -4447,6 +4530,18 @@ def build_context() -> ApiContext:
         max_rows=50_000,
     )
 
+    def live_connection_cache_key(
+        subscription_ids: list[str],
+    ) -> tuple[tuple[str, ...], ...]:
+        requested = {str(value).casefold() for value in subscription_ids}
+        return tuple(
+            sorted(
+                connection_cache_identity(connection)
+                for connection in onboarding.registry.list(include_disabled=False)
+                if str(connection.subscription_id).casefold() in requested
+            )
+        )
+
     def live_connection_business_context() -> dict[str, dict[str, Any]]:
         contexts: dict[str, dict[str, Any]] = {}
         for connection in onboarding.registry.list(include_disabled=False):
@@ -4525,9 +4620,10 @@ def build_context() -> ApiContext:
         return result
 
     def hybrid_network(subscription_ids: list[str]) -> NetworkIntelligenceService:
-        # Cached per (root, subscription set): every scoped network route hits
-        # this path, and each miss is a live ARG round trip. The TTL matches
-        # the snapshot-table cache so freshness behaviour is consistent.
+        # Cached per (root, subscription set, complete connection identity):
+        # every scoped network route hits this path, and each miss is a live
+        # ARG round trip. Credential rotation or connection replacement must
+        # never reuse an observation fetched through a different SPN.
         #
         # Thread-safe (WR-05): reachable from the background remediation-
         # verification-coordinator thread too, transitively via
@@ -4535,7 +4631,11 @@ def build_context() -> ApiContext:
         # `_target_evidence_refresher`), not only from request threads.
         # Double-checked locking on a miss, matching `hybrid_vulnerability`
         # immediately below -- never a single cache-wide lock.
-        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
+        cache_key = (
+            str(aiops_home()),
+            tuple(sorted(subscription_ids)),
+            live_connection_cache_key(subscription_ids),
+        )
         def load_network_rows() -> tuple[list[dict], str, int]:
             # Private Link candidates are fetched alongside the network plane
             # so private-endpoint coverage can be judged per resource rather
@@ -4597,11 +4697,10 @@ def build_context() -> ApiContext:
     def hybrid_vulnerability(
         subscription_ids: list[str],
     ) -> VulnerabilityIntelligenceService | None:
-        # Cached per (root, subscription set): a single remediation workflow
-        # request resolves this several times over (plan list, scoped plan
-        # lookup, preview snapshot, patch target lookup), and each miss is two
-        # live ARG round trips. The TTL matches the network cache above so
-        # freshness behaviour is consistent across hybrid providers.
+        # Cached per (root, subscription set, complete connection identity): a
+        # single remediation workflow request resolves this several times over
+        # (plan list, scoped plan lookup, preview snapshot, patch target
+        # lookup), and each miss is two live ARG round trips.
         #
         # Thread-safe (WR-05): the background remediation-verification-
         # coordinator thread (Plan 03.4-03) now also reads/writes this same
@@ -4613,7 +4712,11 @@ def build_context() -> ApiContext:
         # lock-free read serves the common warm-cache case, and only a miss
         # serializes on a lock scoped to this specific `(cache, key)` pair,
         # never a single cache-wide lock.
-        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
+        cache_key = (
+            str(aiops_home()),
+            tuple(sorted(subscription_ids)),
+            live_connection_cache_key(subscription_ids),
+        )
 
         def build() -> VulnerabilityIntelligenceService | None:
             graph = providers.get("semantic_graph", optional=True)
@@ -4654,7 +4757,11 @@ def build_context() -> ApiContext:
         # remediation branch) and execution construction
         # (_execution_service_for_scope -> _planner_for_scope) observe the
         # same generation instead of each building a fresh repository (D-03).
-        cache_key = (str(aiops_home()), tuple(sorted(subscription_ids)))
+        cache_key = (
+            str(aiops_home()),
+            tuple(sorted(subscription_ids)),
+            live_connection_cache_key(subscription_ids),
+        )
 
         def _build_planner() -> LiveRemediationPlanner:
             vulnerability_service = hybrid_vulnerability(subscription_ids)
@@ -4680,7 +4787,10 @@ def build_context() -> ApiContext:
         return PatchingService(
             service,
             store=_patch_run_store,
-            adapter=_patch_execution_adapter(),
+            adapter=_patch_execution_adapter(
+                onboarding,
+                Scope.from_mapping({"subscription": subscription_ids}),
+            ),
             require_human_approval=_require_human_approval,
             allow_self_approval=_allow_self_approval,
         )
@@ -4701,42 +4811,23 @@ def build_context() -> ApiContext:
         return DefenderRemediationCorrelator.from_exposure_read_port(read_port)
 
     def _planner_for_scope(scope: Scope) -> Any:
-        subscription_ids = list(scope.values("subscription"))
+        subscription_ids = subscription_ids_for_scope(
+            scope,
+            onboarding.registry.list(include_disabled=False),
+            default_all=scope.is_unrestricted(),
+        )
         if subscription_ids:
             return hybrid_remediation(subscription_ids)
-        if scope.is_unrestricted():
-            # Mirror operations.py::_require: an unrestricted read scope
-            # should see the live plan across every onboarded subscription
-            # (not the empty static snapshot), so eligibility lookups for
-            # plans surfaced by the "all subscriptions" view resolve
-            # against the same planner that generated them.
-            all_subscription_ids = list(
-                {
-                    str(connection.subscription_id)
-                    for connection in onboarding.registry.list(include_disabled=False)
-                }
-            )
-            if all_subscription_ids:
-                return hybrid_remediation(all_subscription_ids)
         return _attach_remediation_decisions(providers.get("remediation", optional=True))
 
     def _patching_for_scope(scope: Scope) -> Any:
-        subscription_ids = list(scope.values("subscription"))
+        subscription_ids = subscription_ids_for_scope(
+            scope,
+            onboarding.registry.list(include_disabled=False),
+            default_all=scope.is_unrestricted(),
+        )
         if subscription_ids:
             return hybrid_patching(subscription_ids)
-        if scope.is_unrestricted():
-            # Keep preview and execution target resolution aligned with the
-            # unrestricted live remediation planner. Without this fallback the
-            # all-subscriptions view generates a live plan but tries to resolve
-            # its target through the static Fabric patching provider.
-            all_subscription_ids = list(
-                {
-                    str(connection.subscription_id)
-                    for connection in onboarding.registry.list(include_disabled=False)
-                }
-            )
-            if all_subscription_ids:
-                return hybrid_patching(all_subscription_ids)
         return providers.get("patching", optional=True)
 
     def _target_evidence_refresher(subscription_id: str, target_id: str) -> dict[str, Any] | None:
@@ -4814,9 +4905,11 @@ def build_context() -> ApiContext:
         return RemediationExecutionService(
             plan_repository=getattr(planner, "repository", None),
             patching_service=_patching_for_scope(scope),
-            defender_configuration_adapter=_defender_configuration_adapter(),
+            defender_configuration_adapter=_defender_configuration_adapter(
+                onboarding, scope
+            ),
             execution_store=_remediation_execution_store(),
-            execution_verifier=_execution_verifier(),
+            execution_verifier=_execution_verifier(onboarding, scope),
             target_evidence_refresher=_target_evidence_refresher,
             verification_deadline_seconds=deadline_seconds,
             # CR-03 fix: both PatchingService production factories in this
@@ -4862,7 +4955,7 @@ def build_context() -> ApiContext:
                 plan_repository=None,
                 patching_service=None,
                 execution_store=_remediation_execution_store(),
-                execution_verifier=_execution_verifier(),
+                execution_verifier=_execution_verifier(onboarding),
                 target_evidence_refresher=_target_evidence_refresher,
                 verification_deadline_seconds=deadline_seconds,
             ),

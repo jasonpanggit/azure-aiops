@@ -32,7 +32,12 @@ from onboarding.validation import (
     ArgConnectionProbe,
     ConnectionValidator,
 )
-from ontology.subscription_connection import ConnectionHealth, SyncState
+from ontology.subscription_connection import (
+    ConnectionHealth,
+    CredentialReference,
+    SubscriptionConnection,
+    SyncState,
+)
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
@@ -647,8 +652,6 @@ def test_resolver_never_returns_secret_in_description() -> None:
 
 
 def test_resolver_builds_managed_identity_without_secret() -> None:
-    from ontology.subscription_connection import CredentialReference
-
     resolver = CredentialResolver(
         provider=EnvironmentSecretProvider(env={}),
         managed_identity_factory=lambda **kwargs: kwargs,
@@ -661,6 +664,90 @@ def test_resolver_builds_managed_identity_without_secret() -> None:
     )
 
     assert resolver.build(reference) == {"client_id": CLIENT}
+
+
+@pytest.mark.parametrize(
+    "builder_name",
+    [
+        "build_connection_arg_client",
+        "build_connection_cost_client",
+        "build_connection_monitor_metrics_client",
+        "build_connection_logs_client",
+        "build_connection_prometheus_client",
+    ],
+)
+def test_subscription_read_clients_use_the_selected_connection_spn(
+    builder_name: str,
+    tmp_path: Path,
+) -> None:
+    resolver = CredentialResolver(
+        provider=EnvironmentSecretProvider(
+            env={"SECRET_A": "secret-a", "SECRET_B": "secret-b"}
+        ),
+        credential_factory=lambda **kwargs: SimpleNamespace(
+            client_id=kwargs["client_id"],
+            secret=kwargs["client_secret"],
+        ),
+    )
+    config = onboarding_runtime.ConnectorConfig(output_dir=tmp_path)
+    connections = [
+        SubscriptionConnection(
+            connection_id=f"conn-{suffix}",
+            name=f"Connection {suffix}",
+            tenant_id=f"tenant-{suffix}",
+            subscription_id=f"subscription-{suffix}",
+            credential=CredentialReference(
+                credential_id=f"credential-{suffix}",
+                tenant_id=f"tenant-{suffix}",
+                client_id=f"client-{suffix}",
+                secret_ref=f"env://SECRET_{suffix}",
+            ),
+        )
+        for suffix in ("A", "B")
+    ]
+
+    builder = getattr(onboarding_runtime, builder_name)
+    clients = [builder(config, connection, resolver) for connection in connections]
+
+    assert [client.credential.client_id for client in clients] == [
+        "client-A",
+        "client-B",
+    ]
+    assert [client.credential.secret for client in clients] == [
+        "secret-a",
+        "secret-b",
+    ]
+    assert clients[0].credential is not clients[1].credential
+
+
+def test_subscription_read_client_rejects_managed_identity_connection(
+    tmp_path: Path,
+) -> None:
+    connection = SubscriptionConnection(
+        connection_id="managed-identity-connection",
+        name="Managed identity connection",
+        tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION,
+        credential=CredentialReference(
+            credential_id="managed-identity",
+            kind="managed_identity",
+            client_id=CLIENT,
+            tenant_id=TENANT,
+        ),
+    )
+
+    with pytest.raises(
+        SecretNotFoundError,
+        match="requires a service_principal credential",
+    ):
+        onboarding_runtime.build_connection_arg_client(
+            onboarding_runtime.ConnectorConfig(output_dir=tmp_path),
+            connection,
+            CredentialResolver(
+                provider=EnvironmentSecretProvider(env={}),
+                managed_identity_factory=lambda **kwargs: kwargs,
+            ),
+        )
 
 
 def test_inactive_credential_cannot_be_resolved() -> None:
@@ -979,10 +1066,18 @@ def test_enqueue_full_sync_restarts_inventory_and_enqueues_ontology(
 
     for _ in range(50):
         legacy = service.registry.get("prod-core").sync_state
-        if legacy is not None and legacy.status in {"succeeded", "failed"}:
+        if (
+            legacy is not None
+            and legacy.run_id == result["inventory_sync"]["run_id"]
+            and (
+                legacy.status == "failed"
+                or (legacy.status == "succeeded" and legacy.record_count > 0)
+            )
+        ):
             break
         time.sleep(0.05)
     legacy = service.registry.get("prod-core").sync_state
+    assert legacy.run_id == result["inventory_sync"]["run_id"]
     assert legacy.status == "succeeded"
     assert legacy.record_count > 0
 

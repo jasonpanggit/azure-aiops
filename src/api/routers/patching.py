@@ -11,20 +11,12 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ..dependencies import Context, Page, ReadScope
+from ..dependencies import Context, Page, ReadScope, live_subscription_ids
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 
 router = APIRouter(prefix="/api/v1", tags=["patching"])
-
-
-def _onboarded_subscription_ids(context: Context) -> list[str]:
-    connections = context.onboarding.registry.list(include_disabled=False)
-    seen: dict[str, None] = {}
-    for connection in connections:
-        seen.setdefault(str(connection.subscription_id), None)
-    return list(seen)
 
 
 def _service(context: Context, scope: Scope) -> Any:
@@ -34,9 +26,11 @@ def _service(context: Context, scope: Scope) -> Any:
     the caller pinned explicit subscriptions, otherwise the snapshot-backed
     provider is used.
     """
-    subscription_ids = list(scope.values("subscription"))
-    if not subscription_ids and scope.is_unrestricted():
-        subscription_ids = _onboarded_subscription_ids(context)
+    subscription_ids = live_subscription_ids(
+        context,
+        scope,
+        default_all=scope.is_unrestricted(),
+    )
     hybrid = getattr(context, "hybrid_patching_provider", None)
     if callable(hybrid) and subscription_ids:
         return hybrid(subscription_ids)

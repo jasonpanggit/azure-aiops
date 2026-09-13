@@ -812,6 +812,11 @@ def _headers(token: str = READER_TOKEN) -> dict[str, str]:
     return {"Authorization": "Bearer " + token}
 
 
+def _fail_if_registry_listed(*, include_disabled: bool = False):
+    del include_disabled
+    raise AssertionError("snapshot-backed search must not access connection registry")
+
+
 def test_governance_routes_report_unavailable_before_any_sync(tmp_path):
     """No data must never be presented as a clean bill of health."""
     client = _client(tmp_path, snapshot=None)
@@ -850,6 +855,7 @@ def test_search_resolves_exact_identity_id_without_semantic_provider(tmp_path):
         observed_at="2026-01-15T00:00:00Z",
     )
     client = _client(tmp_path, snapshot)
+    client.app.state.context.onboarding.registry.list = _fail_if_registry_listed
 
     response = client.get(f"/api/v1/search?q={principal_id}", headers=_headers())
 
@@ -885,6 +891,7 @@ def test_search_resolves_exact_user_assigned_managed_identity_arm_id(tmp_path):
         observed_at="2026-01-15T00:00:00Z",
     )
     client = _client(tmp_path, snapshot)
+    client.app.state.context.onboarding.registry.list = _fail_if_registry_listed
 
     response = client.get(
         "/api/v1/search",
@@ -926,6 +933,7 @@ def test_search_does_not_classify_ordinary_arm_resource_as_identity(tmp_path):
         semantic_provider=lambda: semantic,
     )
     client = TestClient(create_app(context), raise_server_exceptions=False)
+    client.app.state.context.onboarding.registry.list = _fail_if_registry_listed
 
     response = client.get(
         "/api/v1/search",

@@ -13,7 +13,6 @@ acquisition run, merged into one Fabric-facing snapshot.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 from api.inventory_orchestration import run_inventory_refresh_all_connections
@@ -125,13 +124,20 @@ def run_inventory_refresh(
     """Run one single-config inventory refresh and return the manifest.
 
     Mirrors the ``aiops-inventory inventory-refresh`` CLI command so
-    both entry points execute identical acquisition/publication logic. This
-    entry point targets exactly the subscriptions listed in ``config_path``
-    (or all subscriptions visible to the configured credential, if none are
-    listed) -- it does not fan out across the onboarding connection
-    registry. Use :func:`run_inventory_refresh_all_connections` for
-    production rollouts spanning multiple registered subscriptions.
+    both entry points execute identical acquisition/publication logic. When a
+    ``connection_id`` is selected, acquisition is delegated to the registered
+    connection orchestrator so ARG and Logs use that connection's SPN. With no
+    selected connection, this legacy local/development entry point targets the
+    subscriptions listed in ``config_path`` (or those visible to the local
+    Azure CLI identity). Production rollouts must use registered connections.
     """
+    if connection_id:
+        return run_inventory_refresh_all_connections(
+            config_path,
+            fabric_config_path=fabric_config_path,
+            connection_id=connection_id,
+        )
+
     from fabric.auth import build_credential, build_delta_storage_options
     from fabric.config import FabricRuntimeConfig
     from fabric.fabric_client import FabricClient
@@ -149,14 +155,6 @@ def run_inventory_refresh(
     from .monitor_logs import AzureMonitorLogsClient
 
     config = ConnectorConfig.load(config_path)
-    if connection_id:
-        config = replace(
-            config,
-            connection_context={
-                **dict(config.connection_context),
-                "connection_id": connection_id,
-            },
-        )
     source = AzureResourceGraphSource(
         mcp=AzureMcpClient(
             command_prefix=config.azure_mcp_command,

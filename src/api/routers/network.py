@@ -34,7 +34,13 @@ from network.rule_engine import (
 from network.service import NetworkIntelligenceService, NetworkScope
 from network.topology import TopologyDetail
 
-from ..dependencies import Context, Page, ReadScope, WritePrincipal
+from ..dependencies import (
+    Context,
+    Page,
+    ReadScope,
+    WritePrincipal,
+    live_subscription_ids,
+)
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
@@ -81,27 +87,18 @@ SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
 
 
-def _onboarded_subscription_ids(context: Context) -> list[str]:
-    connections = context.onboarding.registry.list(include_disabled=False)
-    seen: dict[str, None] = {}
-    for connection in connections:
-        seen.setdefault(str(connection.subscription_id), None)
-    return list(seen)
-
-
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     network_scope = _network_scope(scope)
     if context.hybrid_network_provider is not None:
         if not subscription_ids:
-            subscription_ids = _onboarded_subscription_ids(context)
-            if not subscription_ids:
-                raise ApiError(
-                    ErrorCode.PROVIDER_UNAVAILABLE,
-                    "Network data is unavailable because no active subscription "
-                    "connection is configured",
-                    {"capability": "network", "provider_state": "unavailable"},
-                )
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Network data is unavailable because no active subscription "
+                "connection matches the authorized scope",
+                {"capability": "network", "provider_state": "unavailable"},
+            )
+        if not scope.values("subscription"):
             network_scope = replace(
                 network_scope,
                 subscription_ids=tuple(subscription_ids),

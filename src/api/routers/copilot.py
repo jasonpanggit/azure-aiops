@@ -69,7 +69,7 @@ from operations.tools import (
     call_tool,
 )
 
-from ..dependencies import Context, CurrentPrincipal, ReadScope
+from ..dependencies import Context, CurrentPrincipal, ReadScope, live_subscription_ids
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
@@ -467,7 +467,7 @@ def ask(payload: CopilotRequest, context: Context, scope: ReadScope) -> dict[str
     warnings: list[str] = []
 
     try:
-        subscription_ids = list(scope.values("subscription"))
+        subscription_ids = live_subscription_ids(context, scope)
         live_search = question.casefold().strip().startswith("show list of") and (
             "vm" in question.casefold() or "server" in question.casefold()
         )
