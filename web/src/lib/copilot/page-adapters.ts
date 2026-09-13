@@ -178,8 +178,8 @@ export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition>
   "/copilot": { kind: "dedicated", surface: "operations-copilot" },
   "/investigate": { kind: "dedicated", surface: "guided-investigation" },
   "/agents": { kind: "dedicated", surface: "multi-agent-investigation" },
-  // 1 redirect -- the legacy vulnerability alias consolidated under Exposure.
-  "/vulnerabilities": { kind: "redirect", target: "/exposure" },
+  // 1 redirect -- the legacy collection alias is consolidated into Patch priorities.
+  "/vulnerabilities": { kind: "redirect", target: "/exposure/patch-priorities" },
   // 1 excluded -- pure navigation/query aggregation with no stable retained
   // evidence snapshot contract in Phase 11.
   "/search": {
