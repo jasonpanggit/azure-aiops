@@ -18,6 +18,11 @@ import fabric.sync_service as sync_module
 from fabric.config import FabricRuntimeConfig
 from fabric.data_quality import DataQualityValidator
 from fabric.dataset_mapper import GranularExposureOntologyMapper
+from fabric.publication_checkpoint import (
+    CompletedTableWrite,
+    PublicationCheckpointError,
+    PublicationResumePlan,
+)
 from fabric.schema_registry import schema_for
 from fabric.sync_service import (
     DedicatedOntologyPublisherAdapter,
@@ -32,6 +37,7 @@ from fabric.sync_service import (
     _prepare_publish_items,
     _should_publish_table,
     _state_row,
+    _validate_checkpoint_table_versions,
 )
 from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_GOLD_GENERATIONS_TABLE,
@@ -40,6 +46,7 @@ from fabric_pipelines.vulnerability_pipeline import (
     EXPOSURE_OBSERVATIONS_TABLE,
     TemporalExposureMaterialization,
 )
+from onboarding.activation import ActivationProgressReporter
 from onboarding.graph_normalize import Normalizer
 from onboarding.ingestion_storage import DatasetStore
 from ontology.entity_builder import entity_change_version
@@ -56,7 +63,9 @@ def _service(tmp_path: Path) -> FabricSyncService:
     _source_snapshot(source)
     return FabricSyncService(
         source_root=source,
-        onelake=OneLakeWriter("workspace", "lakehouse", local_root=tmp_path / "lakehouse"),
+        onelake=OneLakeWriter(
+            "workspace", "lakehouse", local_root=tmp_path / "lakehouse"
+        ),
         delta_writer=DeltaWriter(),
         validator=DataQualityValidator(),
     )
@@ -91,9 +100,7 @@ def _container_source_snapshot(
         image_assessment["properties"].pop("timeGenerated", None)
     image_assessment["tenantId"] = "tenant1"
     payload["defender_assessments"].append(image_assessment)
-    graph = Normalizer(
-        {"connection_id": "connection-1"}
-    ).normalize(
+    graph = Normalizer({"connection_id": "connection-1"}).normalize(
         payload,
         observed_at,
         run_id=run_id,
@@ -189,7 +196,9 @@ def test_sync_reports_successful_table_writes_in_completion_order(
 
     assert result.status == "completed"
     assert events
-    assert [event.completed_tables for event in events] == list(range(1, len(events) + 1))
+    assert [event.completed_tables for event in events] == list(
+        range(1, len(events) + 1)
+    )
     assert all(event.total_tables == len(events) for event in events)
     assert {event.table_name for event in events} == set(result.tables)
     assert all(event.result is not None for event in events)
@@ -227,7 +236,9 @@ def test_sync_releases_transient_memory_before_table_publication(
     assert "table" in sequence
 
 
-def test_patch_publication_items_precede_manifest_barrier_and_remaining_tables() -> None:
+def test_patch_publication_items_precede_manifest_barrier_and_remaining_tables() -> (
+    None
+):
     patch_items, barrier_item, remaining = _partition_patch_publication_items(
         [
             ("ontology_entities", []),
@@ -334,9 +345,7 @@ def test_full_sync_without_patch_barrier_preserves_existing_patch_group(
         barrier_table="metadata_patch_snapshot",
     )
 
-    assert items == [
-        ("silver_exposure_observations", [{"resource_id": "observation"}])
-    ]
+    assert items == [("silver_exposure_observations", [{"resource_id": "observation"}])]
     assert known_versions == {}
 
 
@@ -368,10 +377,7 @@ def test_patch_only_sync_writes_patch_tables_and_manifest_last(
 ) -> None:
     service = _service(tmp_path)
     manifest_row = {"resource_id": "patch-snapshot://sub-1"}
-    mapped = {
-        table_name: []
-        for table_name in service._PATCH_PUBLICATION_TABLES
-    }
+    mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
     mapped[service._PATCH_PUBLICATION_BARRIER] = [manifest_row]
     monkeypatch.setattr(
         service.mapper,
@@ -401,13 +407,16 @@ def test_patch_only_sync_writes_patch_tables_and_manifest_last(
     )
     assert all(event.total_tables == len(expected_names) for event in events)
     assert writes[-1][0].endswith("/Tables/metadata_patch_snapshot")
-    assert dict(writes)[
-        next(
-            uri
-            for uri, _mode in writes
-            if uri.endswith("/Tables/silver_patch_snapshot_findings")
-        )
-    ] is DeltaWriteMode.APPEND
+    assert (
+        dict(writes)[
+            next(
+                uri
+                for uri, _mode in writes
+                if uri.endswith("/Tables/silver_patch_snapshot_findings")
+            )
+        ]
+        is DeltaWriteMode.APPEND
+    )
 
 
 def test_patch_only_registration_failure_rolls_back_mutable_tables(
@@ -415,10 +424,7 @@ def test_patch_only_registration_failure_rolls_back_mutable_tables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _service(tmp_path)
-    mapped = {
-        table_name: []
-        for table_name in service._PATCH_PUBLICATION_TABLES
-    }
+    mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
     mapped[service._PATCH_PUBLICATION_BARRIER] = [
         {"resource_id": "patch-snapshot://sub-1"}
     ]
@@ -452,17 +458,10 @@ def test_patch_only_registration_failure_rolls_back_mutable_tables(
         service.sync_patch_tables()
 
     assert all(
-        not uri.endswith("/Tables/silver_patch_snapshot_findings")
-        for uri in restored
+        not uri.endswith("/Tables/silver_patch_snapshot_findings") for uri in restored
     )
-    assert any(
-        uri.endswith("/Tables/metadata_patch_snapshot")
-        for uri in restored
-    )
-    assert any(
-        uri.endswith("/Tables/bronze_patchassessment")
-        for uri in restored
-    )
+    assert any(uri.endswith("/Tables/metadata_patch_snapshot") for uri in restored)
+    assert any(uri.endswith("/Tables/bronze_patchassessment") for uri in restored)
 
 
 def test_failed_patch_manifest_restore_preserves_snapshot_findings(
@@ -538,9 +537,7 @@ def test_exposure_gold_input_view_retains_only_projection_tables(
         match="stop after Gold input construction",
     ):
         _service(tmp_path).sync(
-            exposure_pointer_store=OneLakeDocumentStore(
-                str(tmp_path / "pointer")
-            )
+            exposure_pointer_store=OneLakeDocumentStore(str(tmp_path / "pointer"))
         )
 
     assert captured_keys == set(sync_module._EXPOSURE_GOLD_INPUT_TABLES)
@@ -568,9 +565,7 @@ def test_deployed_publication_orders_observations_after_workload_checkpoint(
         ).write_tables()
     )
     table_names = list(datasets)
-    checkpoint_index = table_names.index(
-        "metadata_workload_source_checkpoints"
-    )
+    checkpoint_index = table_names.index("metadata_workload_source_checkpoints")
 
     assert FabricRuntimeConfig.load("fabric.config.deploy.yaml").write_workers == 1
     assert table_names[checkpoint_index + 1] == EXPOSURE_OBSERVATIONS_TABLE
@@ -604,24 +599,30 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
 
     assert result.status == "completed"
     lifecycle_stages = [
-        event["stage"]
-        for event in stage_events
-        if event["status"] == "started"
+        event["stage"] for event in stage_events if event["status"] == "started"
     ]
     assert lifecycle_stages == [
         "dataset_mapping",
         "workload_projection",
+        "temporal_retained_load",
         "temporal_projection",
+        "temporal_legacy_normalization",
+        "temporal_observation_combination",
+        "temporal_current_projection",
+        "temporal_immutable_checks",
         "container_projection",
         "ontology_construction",
         "ontology_validation",
+        "checkpoint_persistence",
         "table_publication",
         "fabric_asset_registration",
         "ontology_publication",
         "gold_staging",
         "fabric_asset_registration",
         "shortcut_finalization",
+        "checkpoint_activation_pending",
         "pointer_activation",
+        "checkpoint_finalization",
     ]
     completion_fields = {
         "dataset_mapping": {"dataset_count", "failure_count"},
@@ -635,6 +636,11 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
             "relationship_count",
             "failure_count",
         },
+        "temporal_retained_load": {"row_count", "failure_count"},
+        "temporal_legacy_normalization": {"row_count", "failure_count"},
+        "temporal_observation_combination": {"row_count", "failure_count"},
+        "temporal_current_projection": {"row_count", "failure_count"},
+        "temporal_immutable_checks": {"row_count", "failure_count"},
         "container_projection": {
             "entity_count",
             "relationship_count",
@@ -656,6 +662,57 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
         "gold_staging": set(),
         "shortcut_finalization": set(),
         "pointer_activation": set(),
+        "checkpoint_persistence": {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        },
+        "checkpoint_restore": {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        },
+        "publication_resume": {
+            "completed",
+            "total",
+            "remaining_tables",
+            "resumed_tables",
+            "skipped_tables",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        },
+        "checkpoint_finalization": {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        },
+        "checkpoint_activation_pending": {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        },
+    }
+    count_fields = {
+        "dataset_count",
+        "entity_count",
+        "relationship_count",
+        "failure_count",
+        "row_count",
+        "completed",
+        "total",
+        "remaining_tables",
+        "resumed_tables",
+        "skipped_tables",
     }
     for event in stage_events:
         assert set(event) >= {"stage", "status"}
@@ -664,7 +721,7 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
             expected_fields |= completion_fields[event["stage"]]
         assert set(event) == expected_fields
         if event["status"] == "completed":
-            for field in completion_fields[event["stage"]]:
+            for field in completion_fields[event["stage"]] & count_fields:
                 assert isinstance(event[field], int)
                 assert not isinstance(event[field], bool)
                 assert 0 <= event[field] <= 2_147_483_647
@@ -674,6 +731,11 @@ def test_sync_emits_exact_fabric_stage_contract_and_shared_table_total(
     )
     assert all(event.total_tables == len(table_events) for event in table_events)
     assert all(event.result.rows_processed >= 0 for event in table_events)
+    assert all(event.remaining_tables >= 0 for event in table_events)
+    assert all(event.resumed_tables == 0 for event in table_events)
+    assert all(event.skipped_tables == 0 for event in table_events)
+    assert all(len(event.checkpoint_id) == 64 for event in table_events)
+    assert all(event.checkpoint_state == "persisted" for event in table_events)
 
 
 @pytest.mark.parametrize(
@@ -740,15 +802,14 @@ def test_fabric_stage_order_keeps_pointer_activation_last(tmp_path: Path) -> Non
         exposure_pointer_store=pointer_store,
     )
 
-    completed = [
-        event["stage"]
-        for event in events
-        if event["status"] == "completed"
-    ]
+    completed = [event["stage"] for event in events if event["status"] == "completed"]
     assert completed.index("ontology_publication") < completed.index("gold_staging")
     assert completed.index("gold_staging") < completed.index("shortcut_finalization")
     assert completed.index("shortcut_finalization") < completed.index(
         "pointer_activation"
+    )
+    assert completed.index("pointer_activation") < completed.index(
+        "checkpoint_finalization"
     )
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
 
@@ -815,9 +876,7 @@ def test_exact_historical_replay_runs_full_finalization_transaction(
         stage_progress_callback=events.append,
     )
 
-    resources = service.delta.read(
-        service.onelake.table_uri("bronze", "resources")
-    )
+    resources = service.delta.read(service.onelake.table_uri("bronze", "resources"))
     names = {str(row.get("name") or "") for row in resources}
     assert "historical-resource" in names
     assert "current-resource" not in names
@@ -832,25 +891,804 @@ def test_exact_historical_replay_runs_full_finalization_transaction(
         EXPOSURE_GOLD_GENERATIONS_TABLE,
     } <= set(result.tables)
     assert shortcuts == ["finalized"]
-    completed = [
-        event["stage"]
-        for event in events
-        if event["status"] == "completed"
-    ]
+    completed = [event["stage"] for event in events if event["status"] == "completed"]
     assert completed.index("shortcut_finalization") < completed.index(
         "pointer_activation"
     )
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
     marker = max(
-        (
-            row
-            for row in service.status()
-            if row.get("status") == "completed"
-        ),
+        (row for row in service.status() if row.get("status") == "completed"),
         key=lambda row: str(row.get("timestamp") or ""),
     )
     assert marker["source_run_id"] == "historical-generation"
     assert marker["replay"] is True
+
+
+def test_exact_replay_restores_prepared_state_and_skips_completed_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    pointer_store = OneLakeDocumentStore(tmp_path / "registry")
+    original_publish = service._publish_ontology
+    publish_attempts = 0
+
+    def interrupt_once(datasets):
+        nonlocal publish_attempts
+        publish_attempts += 1
+        if publish_attempts == 1:
+            raise RuntimeError("simulated process interruption")
+        return original_publish(datasets)
+
+    monkeypatch.setattr(service, "_publish_ontology", interrupt_once)
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        service.sync(exposure_pointer_store=pointer_store)
+
+    source_manifest = service._read_manifest(service._resolve_snapshot("source-run-1"))
+    checkpoint = service.publication_checkpoints.load(
+        "source-run-1",
+        source_manifest_digest=sync_module._hash_json(source_manifest),
+    )
+    assert checkpoint is not None
+    progress_paths = list((tmp_path / "lakehouse" / "Files").rglob("progress.json"))
+    progress = json.loads(progress_paths[0].read_text(encoding="utf-8"))
+    completed_before_resume = set(progress["completed_tables"])
+    assert completed_before_resume
+
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail("dataset mapping was repeated"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_workload_products",
+        lambda *_args, **_kwargs: pytest.fail("workload projection was repeated"),
+    )
+    monkeypatch.setattr(
+        sync_module,
+        "materialize_temporal_exposure_tables",
+        lambda *_args, **_kwargs: pytest.fail("temporal projection was repeated"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_synchronize_ontology",
+        lambda *_args, **_kwargs: pytest.fail("ontology construction was repeated"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate",
+        lambda *_args, **_kwargs: pytest.fail("ontology validation was repeated"),
+    )
+    original_write = service.delta.write
+
+    def reject_completed_rewrite(uri, rows, **kwargs):
+        table_name = Path(str(uri)).name
+        if table_name in completed_before_resume:
+            pytest.fail(f"completed table was rewritten: {table_name}")
+        return original_write(uri, rows, **kwargs)
+
+    monkeypatch.setattr(service.delta, "write", reject_completed_rewrite)
+    events: list[dict[str, object]] = []
+    table_events: list[FabricTableWriteProgress] = []
+
+    result = service.sync(
+        replay_source_run_id="source-run-1",
+        exposure_pointer_store=pointer_store,
+        progress_callback=table_events.append,
+        stage_progress_callback=events.append,
+    )
+
+    assert result.status == "completed"
+    assert result.run_id == checkpoint.run_id
+    assert any(event["stage"] == "checkpoint_restore" for event in events)
+    resume_event = next(
+        event
+        for event in events
+        if event["stage"] == "publication_resume"
+        and event["status"] == "completed"
+    )
+    assert resume_event["checkpoint_id"] == checkpoint.checkpoint_id
+    assert resume_event["publication_id"] == checkpoint.checkpoint_id
+    assert resume_event["checkpoint_state"] == "restored"
+    assert resume_event["resumed_tables"] == len(completed_before_resume)
+    assert resume_event["skipped_tables"] == len(completed_before_resume)
+    assert resume_event["remaining_tables"] == (
+        resume_event["total"] - resume_event["completed"]
+    )
+    assert table_events[-1].remaining_tables == 0
+    assert table_events[-1].completed_tables == table_events[-1].total_tables
+    assert table_events[-1].resumed_tables == len(completed_before_resume)
+    assert table_events[-1].skipped_tables == len(completed_before_resume)
+    assert table_events[-1].checkpoint_id == checkpoint.checkpoint_id
+    assert table_events[-1].checkpoint_state == "restored"
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+
+
+def test_fresh_process_exact_replay_survives_prepare_and_high_count_deaths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    class LazyFuture:
+        def __init__(self, operation, args) -> None:
+            self._operation = operation
+            self._args = args
+
+        def result(self):
+            return self._operation(*self._args)
+
+    class SerialExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers >= 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def submit(self, operation, *args):
+            return LazyFuture(operation, args)
+
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    registry = tmp_path / "registry"
+    _source_snapshot(source)
+
+    def fresh_service() -> FabricSyncService:
+        return FabricSyncService(
+            source_root=source,
+            onelake=OneLakeWriter(
+                "workspace",
+                "lakehouse",
+                local_root=lakehouse,
+            ),
+            delta_writer=DeltaWriter(),
+            validator=DataQualityValidator(),
+            write_workers=1,
+        )
+
+    pointer_store = OneLakeDocumentStore(registry)
+    first = fresh_service()
+    original_persist = first.publication_checkpoints.persist
+
+    def persist_then_die(**kwargs):
+        original_persist(**kwargs)
+        raise SimulatedProcessDeath("after durable prepared projection")
+
+    monkeypatch.setattr(
+        first.publication_checkpoints,
+        "persist",
+        persist_then_die,
+    )
+    with pytest.raises(
+        SimulatedProcessDeath,
+        match="after durable prepared projection",
+    ):
+        first.sync(exposure_pointer_store=pointer_store)
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+
+    source_manifest = first._read_manifest(
+        first._resolve_snapshot("source-run-1")
+    )
+    source_manifest_digest = sync_module._hash_json(source_manifest)
+    prepared = first.publication_checkpoints.load(
+        "source-run-1",
+        source_manifest_digest=source_manifest_digest,
+    )
+    assert prepared is not None
+    publish_items, _known_versions = _prepare_publish_items(
+        prepared.datasets,
+        onelake=first.onelake,
+        delta=first.delta,
+        patch_barrier_present=bool(
+            prepared.datasets.get(first._PATCH_PUBLICATION_BARRIER)
+        ),
+        patch_tables=first._PATCH_PUBLICATION_TABLES,
+        barrier_table=first._PATCH_PUBLICATION_BARRIER,
+    )
+    expected_total = len(publish_items) + len(EXPOSURE_GOLD_TABLES) + 1
+    interruption_target = (
+        453
+        if expected_total > 453
+        else max(1, expected_total - 2)
+    )
+
+    def forbid_expensive_projection(service: FabricSyncService) -> None:
+        monkeypatch.setattr(
+            service.mapper,
+            "load",
+            lambda *_args, **_kwargs: pytest.fail(
+                "dataset mapping was repeated"
+            ),
+        )
+        monkeypatch.setattr(
+            service,
+            "_load_workload_products",
+            lambda *_args, **_kwargs: pytest.fail(
+                "workload projection was repeated"
+            ),
+        )
+        monkeypatch.setattr(
+            service,
+            "_synchronize_ontology",
+            lambda *_args, **_kwargs: pytest.fail(
+                "ontology construction was repeated"
+            ),
+        )
+        monkeypatch.setattr(
+            service,
+            "_validate",
+            lambda *_args, **_kwargs: pytest.fail(
+                "ontology validation was repeated"
+            ),
+        )
+
+    monkeypatch.setattr(
+        sync_module,
+        "materialize_temporal_exposure_tables",
+        lambda *_args, **_kwargs: pytest.fail(
+            "temporal projection was repeated"
+        ),
+    )
+    monkeypatch.setattr(
+        sync_module,
+        "materialize_container_exposure_tables",
+        lambda *_args, **_kwargs: pytest.fail(
+            "container projection was repeated"
+        ),
+    )
+
+    second = fresh_service()
+    forbid_expensive_projection(second)
+    original_record = second.publication_checkpoints.record_table_result
+    durable_results = 0
+    commit_gap_table = ""
+
+    def record_then_die(*args, **kwargs):
+        nonlocal commit_gap_table, durable_results
+        durable_results += 1
+        if durable_results == interruption_target:
+            commit_gap_table = str(kwargs["table_name"])
+            raise RuntimeError(
+                "after Delta commit before checkpoint completion"
+            )
+        original_record(*args, **kwargs)
+
+    with monkeypatch.context() as process_death:
+        process_death.setattr(
+            sync_module,
+            "ThreadPoolExecutor",
+            SerialExecutor,
+        )
+        process_death.setattr(
+            sync_module,
+            "as_completed",
+            lambda futures: futures,
+        )
+        process_death.setattr(
+            second.publication_checkpoints,
+            "record_table_result",
+            record_then_die,
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="after Delta commit before checkpoint completion",
+        ):
+            second.sync(
+                replay_source_run_id="source-run-1",
+                exposure_pointer_store=pointer_store,
+            )
+    assert durable_results == interruption_target
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+
+    progress_path = next(
+        (lakehouse / "Files").rglob("progress.json")
+    )
+    interrupted_progress = json.loads(
+        progress_path.read_text(encoding="utf-8")
+    )
+    completed_before_final_resume = set(
+        interrupted_progress["completed_tables"]
+    )
+    planned_tables = set(interrupted_progress["table_names"])
+    assert len(completed_before_final_resume) == interruption_target - 1
+    assert commit_gap_table in interrupted_progress["in_flight"]
+
+    third = fresh_service()
+    forbid_expensive_projection(third)
+    original_write = third.delta.write
+    final_writes: list[str] = []
+
+    def write_only_remaining(uri, rows, **kwargs):
+        table_name = Path(str(uri)).name
+        if table_name in {
+            *completed_before_final_resume,
+            commit_gap_table,
+        }:
+            pytest.fail(f"validated completed table was rewritten: {table_name}")
+        if table_name in planned_tables:
+            final_writes.append(table_name)
+        return original_write(uri, rows, **kwargs)
+
+    monkeypatch.setattr(third.delta, "write", write_only_remaining)
+    structured_events: list[dict[str, object]] = []
+    reporter = ActivationProgressReporter(
+        structured_events.append,
+        heartbeat_interval=3_600,
+    )
+    original_activate = sync_module.ExposureGoldFabricPublisher.activate
+
+    def die_before_pointer(_publisher, _stage):
+        raise SimulatedProcessDeath(
+            "after activation-pending before pointer activation"
+        )
+
+    try:
+        with monkeypatch.context() as activation_death:
+            activation_death.setattr(
+                sync_module.ExposureGoldFabricPublisher,
+                "activate",
+                die_before_pointer,
+            )
+            with pytest.raises(
+                SimulatedProcessDeath,
+                match="after activation-pending before pointer activation",
+            ):
+                third.sync(
+                    replay_source_run_id="source-run-1",
+                    exposure_pointer_store=pointer_store,
+                    progress_callback=reporter.fabric_table_progress,
+                    stage_progress_callback=reporter.fabric_stage_progress,
+                )
+    finally:
+        reporter.close()
+
+    assert set(final_writes) == (
+        planned_tables
+        - completed_before_final_resume
+        - {commit_gap_table}
+    )
+    activation_pending = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert activation_pending["status"] == "activation_pending"
+    assert activation_pending["activation"]["generation_id"]
+    assert set(activation_pending["completed_tables"]) == planned_tables
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
+
+    restore_event = next(
+        event
+        for event in structured_events
+        if event["stage"] == "checkpoint_restore"
+        and event["status"] == "completed"
+    )
+    resume_event = next(
+        event
+        for event in structured_events
+        if event["stage"] == "publication_resume"
+        and event["status"] == "completed"
+    )
+    table_event = next(
+        event
+        for event in reversed(structured_events)
+        if event["stage"] == "table_publication"
+    )
+    assert restore_event["checkpoint_state"] == "restored"
+    assert restore_event["publication_id"] == prepared.checkpoint_id
+    assert resume_event["resumed_tables"] == interruption_target
+    assert resume_event["skipped_tables"] == interruption_target
+    assert resume_event["completed"] == interruption_target
+    assert resume_event["total"] == expected_total
+    assert resume_event["remaining_tables"] == (
+        expected_total - interruption_target
+    )
+    assert table_event["completed"] == expected_total
+    assert table_event["total"] == expected_total
+    assert table_event["remaining_tables"] == 0
+    assert table_event["resumed_tables"] == interruption_target
+    assert table_event["skipped_tables"] == interruption_target
+    assert table_event["publication_id"] == prepared.checkpoint_id
+    assert table_event["current_phase"] in {
+        "table_publication",
+        "gold_staging",
+    }
+
+    fourth = fresh_service()
+    forbid_expensive_projection(fourth)
+    fourth_write = fourth.delta.write
+
+    def reject_restage_write(uri, rows, **kwargs):
+        if Path(str(uri)).name in planned_tables:
+            pytest.fail("activation-pending replay rewrote a staged table")
+        return fourth_write(uri, rows, **kwargs)
+
+    monkeypatch.setattr(fourth.delta, "write", reject_restage_write)
+    monkeypatch.setattr(
+        sync_module.ExposureGoldFabricPublisher,
+        "stage",
+        lambda *_args, **_kwargs: pytest.fail(
+            "activation-pending replay restaged Gold"
+        ),
+    )
+    activation_order: list[str] = []
+
+    def activate_once(publisher, stage):
+        activation_order.append("pointer_activation")
+        return original_activate(publisher, stage)
+
+    def die_after_pointer(*_args, **_kwargs):
+        raise SimulatedProcessDeath(
+            "after pointer activation before checkpoint finalization"
+        )
+
+    with monkeypatch.context() as pointer_death:
+        pointer_death.setattr(
+            sync_module.ExposureGoldFabricPublisher,
+            "activate",
+            activate_once,
+        )
+        pointer_death.setattr(
+            fourth.publication_checkpoints,
+            "finalize",
+            die_after_pointer,
+        )
+        with pytest.raises(
+            SimulatedProcessDeath,
+            match="after pointer activation before checkpoint finalization",
+        ):
+            fourth.sync(
+                replay_source_run_id="source-run-1",
+                exposure_pointer_store=pointer_store,
+            )
+
+    after_pointer = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert after_pointer["status"] == "activation_pending"
+    pointer = pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    assert pointer["readable_generation_id"] == (
+        activation_pending["activation"]["generation_id"]
+    )
+
+    fifth = fresh_service()
+    forbid_expensive_projection(fifth)
+    fifth_write = fifth.delta.write
+
+    def reject_post_pointer_rewrite(uri, rows, **kwargs):
+        if Path(str(uri)).name in planned_tables:
+            pytest.fail("post-pointer replay rewrote a staged table")
+        return fifth_write(uri, rows, **kwargs)
+
+    monkeypatch.setattr(
+        fifth.delta,
+        "write",
+        reject_post_pointer_rewrite,
+    )
+    monkeypatch.setattr(
+        sync_module.ExposureGoldFabricPublisher,
+        "stage",
+        lambda *_args, **_kwargs: pytest.fail(
+            "post-pointer replay restaged Gold"
+        ),
+    )
+    final_events: list[dict[str, object]] = []
+    final_reporter = ActivationProgressReporter(
+        final_events.append,
+        heartbeat_interval=3_600,
+    )
+    try:
+        result = fifth.sync(
+            replay_source_run_id="source-run-1",
+            exposure_pointer_store=pointer_store,
+            progress_callback=final_reporter.fabric_table_progress,
+            stage_progress_callback=final_reporter.fabric_stage_progress,
+        )
+    finally:
+        final_reporter.close()
+
+    assert result.status == "completed"
+    assert activation_order == ["pointer_activation"]
+    finalized_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert finalized_progress["status"] == "finalized"
+    assert set(finalized_progress["completed_tables"]) == planned_tables
+    pointer = pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    assert pointer["readable_generation_id"] == (
+        activation_pending["activation"]["generation_id"]
+    )
+    completed_stages = [
+        event["stage"]
+        for event in final_events
+        if event["status"] == "completed"
+    ]
+    assert completed_stages[-2:] == [
+        "pointer_activation",
+        "checkpoint_finalization",
+    ]
+
+    sixth = fresh_service()
+    monkeypatch.setattr(
+        sixth.mapper,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail(
+            "finalized replay remapped datasets"
+        ),
+    )
+    repeated = sixth.sync(
+        replay_source_run_id="source-run-1",
+        exposure_pointer_store=pointer_store,
+    )
+    assert repeated.status == "completed"
+    assert repeated.replay is True
+    assert repeated.run_id == result.run_id
+    assert repeated.tables == result.tables
+
+
+def test_453_completed_table_versions_resume_without_rewrite() -> None:
+    names = tuple(f"silver_resume_{index:03d}" for index in range(460))
+    completed = {
+        name: CompletedTableWrite(
+            table_name=name,
+            expected_before_version=4,
+            resulting_version=5,
+            result=DeltaWriteResult(rows_processed=1, version=5),
+        )
+        for name in names[:453]
+    }
+    plan = PublicationResumePlan(
+        plan_hash="plan",
+        table_names=names,
+        expected_before_versions={name: 4 for name in names},
+        completed=completed,
+        in_flight={},
+        activation_pending=None,
+    )
+    versions = {name: 5 if name in completed else 4 for name in names}
+
+    resumed = _validate_checkpoint_table_versions(
+        plan,
+        table_uris={name: name for name in names},
+        version_reader=versions.__getitem__,
+    )
+
+    assert len(resumed) == 453
+    assert resumed == frozenset(names[:453])
+
+
+def test_completed_table_version_drift_refuses_resume() -> None:
+    completed = CompletedTableWrite(
+        table_name="silver_exposure",
+        expected_before_version=4,
+        resulting_version=5,
+        result=DeltaWriteResult(rows_processed=1, version=5),
+    )
+    plan = PublicationResumePlan(
+        plan_hash="plan",
+        table_names=("silver_exposure",),
+        expected_before_versions={"silver_exposure": 4},
+        completed={"silver_exposure": completed},
+        in_flight={},
+        activation_pending=None,
+    )
+
+    with pytest.raises(PublicationCheckpointError, match="version drifted"):
+        _validate_checkpoint_table_versions(
+            plan,
+            table_uris={"silver_exposure": "silver_exposure"},
+            version_reader=lambda _uri: 6,
+        )
+
+
+def test_partial_patch_checkpoint_restarts_entire_barrier_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    original_load = service.mapper.load
+
+    def load_with_patch_barrier(*args, **kwargs):
+        datasets = original_load(*args, **kwargs)
+        content = {
+            "source_generation": "source-run-1",
+            "status": "succeeded",
+            "completeness": "healthy-empty",
+            "freshness": "fresh",
+            "freshness_at": "2026-08-17T00:00:00Z",
+            "freshness_threshold_seconds": 3600,
+            "represented_count": 0,
+            "expected_count": 0,
+        }
+        datasets[service._PATCH_PUBLICATION_BARRIER] = [
+            {
+                "tenant_id": "system",
+                "subscription_id": "sub-1",
+                "resource_id": "patch-snapshot://sub-1",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "change_version": sync_module._hash_json(content),
+                "ingestion_run_id": "publication-run",
+                **content,
+            }
+        ]
+        return datasets
+
+    monkeypatch.setattr(service.mapper, "load", load_with_patch_barrier)
+    original_record = service.publication_checkpoints.record_table_result
+    crashed = False
+
+    def interrupt_after_first_patch(*args, table_name, **kwargs):
+        nonlocal crashed
+        original_record(*args, table_name=table_name, **kwargs)
+        if table_name in service._PATCH_PUBLICATION_TABLES and not crashed:
+            crashed = True
+            raise SystemExit("simulated process death")
+
+    monkeypatch.setattr(
+        service.publication_checkpoints,
+        "record_table_result",
+        interrupt_after_first_patch,
+    )
+    with pytest.raises(SystemExit, match="simulated process death"):
+        service.sync()
+
+    monkeypatch.setattr(
+        service.publication_checkpoints,
+        "record_table_result",
+        original_record,
+    )
+    writes: list[str] = []
+    original_write = service.delta.write
+
+    def record_write(uri, rows, **kwargs):
+        writes.append(Path(str(uri)).name)
+        return original_write(uri, rows, **kwargs)
+
+    monkeypatch.setattr(service.delta, "write", record_write)
+    result = service.sync(replay_source_run_id="source-run-1")
+
+    expected_group = [
+        *service._PATCH_PUBLICATION_TABLES,
+        service._PATCH_PUBLICATION_BARRIER,
+    ]
+    published_group = [name for name in writes if name in expected_group]
+    assert result.status == "completed"
+    assert published_group[-len(expected_group) :] == expected_group
+    assert published_group[0] in service._PATCH_PUBLICATION_TABLES
+
+
+def test_patch_reset_restore_commit_gap_reconciles_new_version_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _source_snapshot(source)
+
+    def fresh_service() -> FabricSyncService:
+        return FabricSyncService(
+            source_root=source,
+            onelake=OneLakeWriter(
+                "workspace",
+                "lakehouse",
+                local_root=lakehouse,
+            ),
+            delta_writer=DeltaWriter(),
+            validator=DataQualityValidator(),
+            write_workers=1,
+        )
+
+    first = fresh_service()
+    original_load = first.mapper.load
+
+    def load_with_patch_barrier(*args, **kwargs):
+        datasets = original_load(*args, **kwargs)
+        content = {
+            "source_generation": "source-run-1",
+            "status": "succeeded",
+            "completeness": "healthy-empty",
+            "freshness": "fresh",
+            "freshness_at": "2026-08-17T00:00:00Z",
+            "freshness_threshold_seconds": 3600,
+            "represented_count": 0,
+            "expected_count": 0,
+        }
+        datasets[first._PATCH_PUBLICATION_BARRIER] = [
+            {
+                "tenant_id": "system",
+                "subscription_id": "sub-1",
+                "resource_id": "patch-snapshot://sub-1",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "change_version": sync_module._hash_json(content),
+                "ingestion_run_id": "publication-run",
+                **content,
+            }
+        ]
+        return datasets
+
+    monkeypatch.setattr(first.mapper, "load", load_with_patch_barrier)
+    reset_table = first._PATCH_PUBLICATION_TABLES[0]
+    layer, logical_name = reset_table.split("_", 1)
+    table_uri = first.onelake.table_uri(layer, logical_name)
+    baseline = first.delta.write(
+        table_uri,
+        [],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for(reset_table),
+        partition_by=first.partitioning.columns_for(reset_table),
+    ).version
+    assert baseline == 0
+    original_record = first.publication_checkpoints.record_table_result
+
+    def die_after_first_patch(*args, table_name, **kwargs):
+        original_record(*args, table_name=table_name, **kwargs)
+        if table_name == reset_table:
+            raise SimulatedProcessDeath("after first patch completion")
+
+    monkeypatch.setattr(
+        first.publication_checkpoints,
+        "record_table_result",
+        die_after_first_patch,
+    )
+    with pytest.raises(SimulatedProcessDeath, match="first patch completion"):
+        first.sync()
+
+    second = fresh_service()
+    restore_completed = False
+
+    def die_after_restore(*args, **kwargs):
+        nonlocal restore_completed
+        restore_completed = True
+        raise SimulatedProcessDeath(
+            "after Delta restore before checkpoint fence"
+        )
+
+    monkeypatch.setattr(
+        second.publication_checkpoints,
+        "complete_table_restore",
+        die_after_restore,
+    )
+    with pytest.raises(
+        SimulatedProcessDeath,
+        match="after Delta restore before checkpoint fence",
+    ):
+        second.sync(replay_source_run_id="source-run-1")
+    assert restore_completed is True
+    restored_delta_version = second.delta.version(table_uri)
+    assert restored_delta_version is not None
+    assert restored_delta_version > baseline
+
+    progress_path = next(
+        (lakehouse / "Files").rglob("progress.json")
+    )
+    restore_gap = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert restore_gap["in_flight"][reset_table]["operation"] == "restore"
+
+    third = fresh_service()
+    monkeypatch.setattr(
+        third.mapper,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail(
+            "patch reset replay remapped datasets"
+        ),
+    )
+    monkeypatch.setattr(
+        third.delta,
+        "restore",
+        lambda *_args, **_kwargs: pytest.fail(
+            "committed patch restore was repeated"
+        ),
+    )
+    result = third.sync(replay_source_run_id="source-run-1")
+
+    assert result.status == "completed"
+    finalized = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert finalized["status"] == "finalized"
+    assert finalized["in_flight"] == {}
+    assert (
+        finalized["expected_before_versions"][reset_table]
+        == restored_delta_version
+    )
 
 
 def test_missing_exact_replay_does_not_fallback_or_activate_pointer(
@@ -866,9 +1704,7 @@ def test_missing_exact_replay_does_not_fallback_or_activate_pointer(
         )
 
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
-    assert not any(
-        row.get("status") == "completed" for row in service.status()
-    )
+    assert not any(row.get("status") == "completed" for row in service.status())
 
 
 def test_successful_publication_hooks_follow_exact_side_effect_order(
@@ -889,6 +1725,7 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
     original_state = service._write_state
     original_shortcuts = service._create_shortcuts
     original_activate = sync_module.ExposureGoldFabricPublisher.activate
+    original_finalize = service.publication_checkpoints.finalize
     registrations = 0
     catalogs = 0
     gold_tables = {
@@ -923,11 +1760,7 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
     def register(tables):
         nonlocal registrations
         registrations += 1
-        record(
-            "first_registration"
-            if registrations == 1
-            else "second_registration"
-        )
+        record("first_registration" if registrations == 1 else "second_registration")
         return original_register(tables)
 
     def write_json(path, payload):
@@ -958,6 +1791,10 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
         record("pointer_activation")
         return original_activate(publisher, stage_result)
 
+    def finalize(*args, **kwargs):
+        record("checkpoint_finalization")
+        return original_finalize(*args, **kwargs)
+
     monkeypatch.setattr(service.delta, "write", delta_write)
     monkeypatch.setattr(service, "_register_fabric_assets", register)
     monkeypatch.setattr(service.onelake, "write_json", write_json)
@@ -969,6 +1806,11 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
         sync_module.ExposureGoldFabricPublisher,
         "activate",
         activate,
+    )
+    monkeypatch.setattr(
+        service.publication_checkpoints,
+        "finalize",
+        finalize,
     )
 
     result = service.sync(exposure_pointer_store=pointer_store)
@@ -990,9 +1832,10 @@ def test_successful_publication_hooks_follow_exact_side_effect_order(
         "shortcut_finalization",
         "completed_state",
         "pointer_activation",
+        "checkpoint_finalization",
     ]
     assert trace.count("pointer_activation") == 1
-    assert trace[-1] == "pointer_activation"
+    assert trace[-2:] == ["pointer_activation", "checkpoint_finalization"]
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
 
 
@@ -1119,19 +1962,13 @@ def test_completed_version_marker_is_written_before_pointer_activation(
     assert len(pointer_at_completed_state) == 1
     assert pointer_at_completed_state == [{}]
     marker = max(
-        (
-            row
-            for row in service.status()
-            if row.get("status") == "completed"
-        ),
+        (row for row in service.status() if row.get("status") == "completed"),
         key=lambda row: str(row.get("timestamp") or ""),
     )
     assert marker["ontology_entity_version"] == service.delta.version(
         service.onelake.table_uri("ontology", "entities")
     )
-    assert marker[
-        "ontology_relationship_version"
-    ] == service.delta.version(
+    assert marker["ontology_relationship_version"] == service.delta.version(
         service.onelake.table_uri("ontology", "relationships")
     )
 
@@ -1159,9 +1996,7 @@ def test_pointer_activation_failure_publishes_no_completed_version_marker(
         service.sync(exposure_pointer_store=pointer_store)
 
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
-    assert not any(
-        row.get("status") == "completed" for row in service.status()
-    )
+    assert not any(row.get("status") == "completed" for row in service.status())
 
 
 def test_sync_publishes_repeatable_exposure_generation_and_pointer(
@@ -1190,8 +2025,9 @@ def test_sync_publishes_repeatable_exposure_generation_and_pointer(
     assert pointer["retained_generations"][expected_generation]
     assert pointer["revision"] > first_pointer["revision"]
     assert pointer["activated_at"] == first_pointer["activated_at"]
-    assert pointer["retained_generations"][expected_generation] == (
-        first_pointer["retained_generations"][expected_generation]
+    assert (
+        pointer["retained_generations"][expected_generation]
+        == (first_pointer["retained_generations"][expected_generation])
     )
     assert second_facts == first_facts
     generation_rows = service.delta.read(
@@ -1200,12 +2036,13 @@ def test_sync_publishes_repeatable_exposure_generation_and_pointer(
             "exposure_gold_generations",
         )
     )
-    assert {
-        row["read_model_generation_id"] for row in generation_rows
-    } == {expected_generation}
+    assert {row["read_model_generation_id"] for row in generation_rows} == {
+        expected_generation
+    }
     assert generation_rows[0]["published_at"] == pointer["activated_at"]
-    assert generation_rows[0]["retain_until"] == (
-        pointer["retained_generations"][expected_generation]["retain_until"]
+    assert (
+        generation_rows[0]["retain_until"]
+        == (pointer["retained_generations"][expected_generation]["retain_until"])
     )
     observations = service.delta.read(
         service.onelake.table_uri(
@@ -1213,15 +2050,16 @@ def test_sync_publishes_repeatable_exposure_generation_and_pointer(
             "exposure_observations",
         )
     )
-    assert len(observations) == len(
-        {row["observation_id"] for row in observations}
+    assert len(observations) == len({row["observation_id"] for row in observations})
+    assert (
+        service.delta.read(
+            service.onelake.table_uri(
+                "gold",
+                "container_exposure_coverage",
+            )
+        )[0]["timestamp"]
+        != "1970-01-01T00:00:00Z"
     )
-    assert service.delta.read(
-        service.onelake.table_uri(
-            "gold",
-            "container_exposure_coverage",
-        )
-    )[0]["timestamp"] != "1970-01-01T00:00:00Z"
 
 
 def test_identical_source_produces_identical_gold_in_clean_lakehouses(
@@ -1235,11 +2073,10 @@ def test_identical_source_produces_identical_gold_in_clean_lakehouses(
     first_service.sync(exposure_pointer_store=first_pointer)
     second_service.sync(exposure_pointer_store=second_pointer)
 
-    assert first_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)[
-        "readable_generation_id"
-    ] == second_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)[
-        "readable_generation_id"
-    ]
+    assert (
+        first_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)["readable_generation_id"]
+        == second_pointer.read(EXPOSURE_GOLD_POINTER_DOCUMENT)["readable_generation_id"]
+    )
     assert first_service.delta.read(
         first_service.onelake.table_uri("gold", "exposure_facts")
     ) == second_service.delta.read(
@@ -1291,9 +2128,7 @@ def test_sync_deduplicates_granular_ontology_scope_rows(
     )
 
     assert result.status == "completed"
-    entity_rows = service.delta.read(
-        service.onelake.table_uri("ontology", "entities")
-    )
+    entity_rows = service.delta.read(service.onelake.table_uri("ontology", "entities"))
     relationship_rows = service.delta.read(
         service.onelake.table_uri("ontology", "relationships")
     )
@@ -1446,9 +2281,7 @@ def test_granular_relationship_merge_unions_lineage_and_versions_row() -> None:
         "lifecycle_status": "active",
         "confidence": 1.0,
         "payload_json": "{}",
-        "lineage_json": json.dumps(
-            {"source_entity_ids": ["subscription"]}
-        ),
+        "lineage_json": json.dumps({"source_entity_ids": ["subscription"]}),
         "change_version": "old",
     }
     granular = {
@@ -1462,9 +2295,7 @@ def test_granular_relationship_merge_unions_lineage_and_versions_row() -> None:
     _merge_granular_ontology_relationships(rows, [granular])
 
     assert rows[0]["subject_id"] == "/Subscriptions/Sub-A"
-    assert rows[0]["object_id"] == (
-        "/Subscriptions/Sub-A/resourceGroups/one"
-    )
+    assert rows[0]["object_id"] == ("/Subscriptions/Sub-A/resourceGroups/one")
     assert json.loads(rows[0]["lineage_json"])["source_entity_ids"] == [
         "group-one",
         "subscription",
@@ -1487,13 +2318,14 @@ def test_sync_does_not_activate_gold_pointer_before_finalization(
         service.sync(exposure_pointer_store=pointer_store)
 
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == {}
-    assert not any(
-        row.get("status") == "completed" for row in service.status()
+    assert not any(row.get("status") == "completed" for row in service.status())
+    assert (
+        max(
+            service.status(),
+            key=lambda row: str(row.get("timestamp") or ""),
+        )["status"]
+        == "failed"
     )
-    assert max(
-        service.status(),
-        key=lambda row: str(row.get("timestamp") or ""),
-    )["status"] == "failed"
 
 
 def _persist_uncommitted_canonical_head(
@@ -1533,9 +2365,7 @@ def test_initial_gold_retry_ignores_partial_canonical_head_from_dead_process(
 ) -> None:
     seed = _service(tmp_path / "seed")
     seed.sync()
-    partial_entities = seed.delta.read(
-        seed.onelake.table_uri("ontology", "entities")
-    )
+    partial_entities = seed.delta.read(seed.onelake.table_uri("ontology", "entities"))
     partial_relationships = seed.delta.read(
         seed.onelake.table_uri("ontology", "relationships")
     )[:-1]
@@ -1561,9 +2391,7 @@ def test_initial_gold_retry_ignores_partial_canonical_head_from_dead_process(
     class NoUncommittedPredecessor(synchronizer_type):
         def synchronize(self, *args, **kwargs):
             previous_entities = list(kwargs.get("previous_entities", ()))
-            previous_relationships = list(
-                kwargs.get("previous_relationships", ())
-            )
+            previous_relationships = list(kwargs.get("previous_relationships", ()))
             assert previous_entities == [], (
                 "process-death partial canonical entities became predecessor"
             )
@@ -1580,9 +2408,7 @@ def test_initial_gold_retry_ignores_partial_canonical_head_from_dead_process(
         NoUncommittedPredecessor,
     )
 
-    result = _service(tmp_path / "target").sync(
-        exposure_pointer_store=pointer_store
-    )
+    result = _service(tmp_path / "target").sync(exposure_pointer_store=pointer_store)
 
     assert result.status == "completed"
     assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT)
@@ -1650,16 +2476,10 @@ def test_post_pointer_retry_reads_last_completed_versions_after_partial_write(
         mode=DeltaWriteMode.OVERWRITE,
         schema=schema_for("ontology_relationships"),
     )
-    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == (
-        pointer_before_death
-    )
+    assert pointer_store.read(EXPOSURE_GOLD_POINTER_DOCUMENT) == (pointer_before_death)
 
-    expected_entity_ids = {
-        row["resource_id"] for row in completed_entities
-    }
-    expected_relationship_ids = {
-        row["resource_id"] for row in completed_relationships
-    }
+    expected_entity_ids = {row["resource_id"] for row in completed_entities}
+    expected_relationship_ids = {row["resource_id"] for row in completed_relationships}
     authoritative = _service(tmp_path).semantic_graph_snapshot()
     assert {
         row["resource_id"] for row in authoritative["entities"]
@@ -1679,9 +2499,7 @@ def test_post_pointer_retry_reads_last_completed_versions_after_partial_write(
     class ExactCompletedPredecessor(synchronizer_type):
         def synchronize(self, *args, **kwargs):
             previous_entities = list(kwargs.get("previous_entities", ()))
-            previous_relationships = list(
-                kwargs.get("previous_relationships", ())
-            )
+            previous_relationships = list(kwargs.get("previous_relationships", ()))
             assert {
                 row["resource_id"] for row in previous_entities
             } == expected_entity_ids
@@ -1722,11 +2540,7 @@ def test_replayed_generation_excludes_later_observation_history() -> None:
 
 
 def test_gold_generation_identity_changes_with_late_observation() -> None:
-    datasets = {
-        "silver_exposure_observations": [
-            {"observation_id": "observation-a"}
-        ]
-    }
+    datasets = {"silver_exposure_observations": [{"observation_id": "observation-a"}]}
     first = _exposure_gold_generation_id("source-a", datasets)
     datasets["silver_exposure_observations"].append(
         {"observation_id": "observation-late"}
@@ -1761,7 +2575,11 @@ def test_dedicated_publisher_promotes_before_fabric_materialization() -> None:
             return type(
                 "Result",
                 (),
-                {"run_id": "fabric-run", "status": "completed", "tables": ("ontology_entities",)},
+                {
+                    "run_id": "fabric-run",
+                    "status": "completed",
+                    "tables": ("ontology_entities",),
+                },
             )()
 
     candidate = OntologyGenerationCandidate(

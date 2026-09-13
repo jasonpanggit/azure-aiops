@@ -34,6 +34,8 @@ import json
 import os
 import tempfile
 import threading
+from codecs import getincrementaldecoder
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +185,23 @@ class OneLakeDocumentStore:
             return f"{self._base}/{safe.as_posix()}"
         return f"{self._base}/{safe.as_posix()}"
 
+    def ensure_directory(self, name: str) -> None:
+        """Create a contained local or OneLake directory hierarchy."""
+
+        path = self._path(name)
+        if not self.is_remote:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return
+        relative = Path(name)
+        current = str(self._base).rstrip("/")
+        for part in relative.parts:
+            current = f"{current}/{part}"
+            directory = self._client().get_directory_client(current)
+            try:
+                directory.create_directory()
+            except ResourceExistsError:
+                continue
+
     def read(self, name: str) -> dict[str, Any]:
         """Return the document, or ``{}`` when it does not exist yet.
 
@@ -267,6 +286,138 @@ class OneLakeDocumentStore:
         if not isinstance(content, str):
             raise TypeError("immutable text content must be a string")
         return self._create_bytes_only(name, content.encode("utf-8"))
+
+    def create_text_chunks_only(
+        self,
+        name: str,
+        chunks: Iterable[str],
+    ) -> str:
+        """Create immutable UTF-8 text from bounded chunks.
+
+        The destination is create-only on both local disk and OneLake. A
+        failed remote append removes the incomplete artifact before raising.
+        """
+
+        with self._lock:
+            path = self._path(name)
+            if self.is_remote:
+                file_client = self._client().get_file_client(path)
+                try:
+                    created = file_client.create_file(if_none_match="*")
+                except (ResourceExistsError, ResourceModifiedError) as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} already exists"
+                    ) from exc
+                offset = 0
+                try:
+                    for chunk in chunks:
+                        if not isinstance(chunk, str):
+                            raise TypeError("immutable text chunks must be strings")
+                        data = chunk.encode("utf-8")
+                        if not data:
+                            continue
+                        file_client.append_data(
+                            data,
+                            offset=offset,
+                            length=len(data),
+                        )
+                        offset += len(data)
+                    flushed = file_client.flush_data(offset)
+                except Exception:
+                    with suppress(Exception):
+                        file_client.delete_file()
+                    raise
+                etag = str(
+                    (flushed or {}).get("etag") or (created or {}).get("etag") or ""
+                )
+                if not etag:
+                    etag = str(file_client.get_file_properties().etag)
+                return etag
+
+            local_path = Path(path)
+            with _interprocess_lock(local_path):
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    descriptor = os.open(
+                        local_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                        0o600,
+                    )
+                except FileExistsError as exc:
+                    raise DocumentConflictError(
+                        f"Document {name} already exists"
+                    ) from exc
+                try:
+                    digest = hashlib.sha256()
+                    with os.fdopen(descriptor, "wb") as handle:
+                        for chunk in chunks:
+                            if not isinstance(chunk, str):
+                                raise TypeError("immutable text chunks must be strings")
+                            data = chunk.encode("utf-8")
+                            handle.write(data)
+                            digest.update(data)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    return f'"sha256:{digest.hexdigest()}"'
+                except Exception:
+                    local_path.unlink(missing_ok=True)
+                    raise
+
+    def iter_text_lines_or_raise(self, name: str) -> Iterator[str]:
+        """Yield UTF-8 lines from an immutable artifact, failing closed."""
+
+        def iterate() -> Iterator[str]:
+            with self._lock:
+                path = self._path(name)
+                if self.is_remote:
+                    file_client = self._client().get_file_client(path)
+                    try:
+                        properties = file_client.get_file_properties()
+                        etag = str(properties.etag)
+                        downloaded = file_client.download_file(
+                            etag=etag,
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                    except ResourceNotFoundError as exc:
+                        raise FileNotFoundError(
+                            f"Document {name} does not exist"
+                        ) from exc
+                    decoder = getincrementaldecoder("utf-8")("strict")
+                    pending = ""
+                    try:
+                        for chunk in downloaded.chunks():
+                            pending += decoder.decode(chunk)
+                            lines = pending.splitlines(keepends=True)
+                            pending = ""
+                            for line in lines:
+                                if line.endswith(("\n", "\r")):
+                                    yield line
+                                else:
+                                    pending = line
+                        pending += decoder.decode(b"", final=True)
+                    except ResourceModifiedError as exc:
+                        raise DocumentConflictError(
+                            f"Document {name} changed while it was read"
+                        ) from exc
+                    if pending:
+                        yield pending
+                    return
+
+                local_path = Path(path)
+                with _interprocess_lock(local_path):
+                    try:
+                        with local_path.open(
+                            "r",
+                            encoding="utf-8",
+                            newline="",
+                        ) as handle:
+                            yield from handle
+                    except FileNotFoundError as exc:
+                        raise FileNotFoundError(
+                            f"Document {name} does not exist"
+                        ) from exc
+
+        return iterate()
 
     def _create_bytes_only(self, name: str, body: bytes) -> str:
         with self._lock:
@@ -395,7 +546,9 @@ class OneLakeDocumentStore:
             return {}
         raise ValueError(f"Document {name} must contain a JSON object")
 
-    def write(self, name: str, payload: dict[str, Any], *, expected_revision: int) -> None:
+    def write(
+        self, name: str, payload: dict[str, Any], *, expected_revision: int
+    ) -> None:
         """Persist ``payload`` if the stored revision still matches.
 
         Local updates use an inter-process lock and atomic replacement.
@@ -417,9 +570,7 @@ class OneLakeDocumentStore:
                     )
                     current_payload = json.loads(downloaded.readall())
                     if not isinstance(current_payload, dict):
-                        raise TypeError(
-                            f"Document {name} must contain a JSON object"
-                        )
+                        raise TypeError(f"Document {name} must contain a JSON object")
                 except ResourceNotFoundError:
                     etag = ""
                     current_payload = {}
@@ -499,11 +650,15 @@ class OneLakeDocumentStore:
         with self._lock:
             path = self._path(prefix)
             if self.is_remote:
-                pages = self._client().get_paths(
-                    path=path,
-                    recursive=True,
-                    max_results=page_size,
-                ).by_page(continuation_token=continuation)
+                pages = (
+                    self._client()
+                    .get_paths(
+                        path=path,
+                        recursive=True,
+                        max_results=page_size,
+                    )
+                    .by_page(continuation_token=continuation)
+                )
                 try:
                     page = next(pages)
                 except StopIteration:
