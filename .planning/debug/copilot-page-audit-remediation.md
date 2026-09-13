@@ -2,7 +2,7 @@
 status: investigating
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T12:50:00+08:00
+updated: 2026-09-13T13:47:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,20 +31,80 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: The four independent-review gaps in the canonical migration are corrected and committed; the next unresolved root cause is cluster 4, where global keyword routing can broaden beyond the exact specialist set allowed by the newly precise manifest-backed page kind.
-test: Add exact-set routing tests across Services, Twin, Predeploy, and Identity that vary only free-form question keywords and assert selected specialists equal the reviewed page mapping rather than a broader global match.
-expecting: Current substring routing can add globally matching specialists outside the active exact page mapping, and existing tests permit subset behavior.
-next_action: Trace `select_specialists_for_turn` and canonical fallback with the now-exact v2 page kinds, then begin exact-set specialist-routing RED tests; do not modify redirects/readiness or archive this session.
+hypothesis: "Clusters 1-5 are fixed and committed; the remaining cluster is source/config readiness, including rollout-mode consumption and immutable provider deployment parity that cannot be inferred from local tests."
+test: "In a future explicitly scoped continuation, trace source-only rollout configuration and compare deploy/runtime declarations without contacting providers or mutating deployment state."
+expecting: "Local source may still omit rollout-mode consumption, while live Foundry/provider readiness remains blocked until externally supplied immutable evidence exists."
+next_action: "Resume with source/config readiness only; do not archive until provider/config readiness is separately evidenced and human-verified."
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "Live Foundry/provider onboarding and immutable deployment parity remain external readiness evidence and were not fabricated or contacted."
 candidate_causes:
-  - "code: compatibility normalization and UI/retry projections discard canonical contract fields or reuse stale client state"
-  - "data: legacy snapshots may omit hints and contain evidence counts unrelated to source coverage, while server 409 bodies may intentionally omit authorized revision metadata"
-and_gate: "no for each reported gap — each is independently reproducible from a deterministic code path; data shape selects the branch but does not need to be corrupt"
+  - "config: rollout mode may be declared but not consumed by runtime wiring"
+  - "environment: provider onboarding/deployed revision evidence is unavailable in this offline cycle"
+and_gate: "possibly — source readiness and external provider readiness are independent required conditions for release promotion"
 
 ## Evidence
 
+- timestamp: 2026-09-13T12:53:00+08:00
+  observation: `.planning/STATE.md` still identifies Phase 4 planning and its unrelated entry gate, while this continuation explicitly authorizes the Phase 11 page-audit exception; the worktree contains only this active debug-file edit on top of the already committed cluster fixes.
+  implication: The requested exact-set routing and redirect-contract work remains a safely isolated exception and must not touch Phase 4/provider/deployment scope.
+- timestamp: 2026-09-13T12:53:00+08:00
+  observation: The configured `gsd-debugger` agent-skills query returned no skills, and no repository-owned `rules/*.md` files exist outside installed dependencies.
+  implication: No additional project rule overlay applies; the loaded debugger workflow and repository tests/contracts remain authoritative.
+- timestamp: 2026-09-13T12:57:00+08:00
+  observation: Git history shows `/vulnerabilities` began redirecting to `/exposure/patch-priorities` in Phase 03.1 commit `d29c24b74`, before Phase 11 commit `629c1023e` added the reviewed disposition described only as consolidation under Exposure; the implementation and query allowlist have remained unchanged.
+  implication: Product navigation history favors patch-priority consolidation, while the later disposition appears to have lost target precision rather than intentionally changing navigation.
+- timestamp: 2026-09-13T12:57:00+08:00
+  observation: Phase 11 summaries explicitly describe `select_specialists_for_turn` as constrained by `page_mappings`, but also identify it as keyword-based deterministic fallback; Plan 11-16 requires exact manifest parity and exact-set equality for contract gates.
+  implication: The intended shared fix is an exact page-safe manifest intersection at selection time, not per-question special cases or another routing table.
+- timestamp: 2026-09-13T13:03:00+08:00
+  observation: `select_specialists_for_turn` scans every catalog keyword and returns globally matched IDs without intersecting `page_specialists[page_kind]`; `build_deterministic_fallback` then drops non-page IDs and, when none survive, adds only the first tool-bearing page owner.
+  implication: The same root cause has two deterministic failure modes: direct/legacy callers can over-route outside the page-safe set, while canonical callers can under-route by collapsing an exact multi-owner page mapping to one specialist.
+- timestamp: 2026-09-13T13:03:00+08:00
+  observation: Existing routing tests explicitly require Network questions to add Change or Governance even though the supplied page map contains only Network, while manifest parity tests validate only global portfolio reachability and a few broad page projections.
+  implication: Current tests encode permissive cross-page broadening and do not assert route-specific exact ordered sets for the newly precise page kinds.
+- timestamp: 2026-09-13T13:03:00+08:00
+  observation: The vulnerability page test already asserts the full implementation pathname and unsafe-query rejection, but `COPILOT_ROUTE_DISPOSITIONS` declares only `/exposure`; Plan 11-16's prose used the broad product destination without changing the earlier Phase 03.1 navigation.
+  implication: Redirect remediation should update the authoritative disposition and add cross-contract exact equality, preserving implementation and allowlist behavior.
+- timestamp: 2026-09-13T13:10:00+08:00
+  observation: The exact manifest projections are currently Services=`[resource_health_observability]`, Twin=`[network]`, Predeploy=`[change]`, and Identity=`[identity_access]`; Services starters are Resource Health-only and Twin starters are Network-only, while the supplied acceptance explicitly requires Services Governance and Twin Resource Health participation.
+  implication: Selector filtering alone cannot satisfy the reviewed target; the manifest must explicitly authorize those two co-owners, with routing tests pinning deterministic order.
+- timestamp: 2026-09-13T13:10:00+08:00
+  observation: Both legacy contextual modes are unsafe: deterministic `_select_context_specialists` anchors page owners then appends any global keyword match, and MAF `select_specialists_for_turn` returns only global keyword matches; the canonical builder filters afterward and may collapse to one owner.
+  implication: Page authorization must occur inside the shared selector so every caller receives the same fail-closed ordered set.
+- timestamp: 2026-09-13T13:10:00+08:00
+  observation: The release artifact's deterministic fields cover scope, mutation, unknown IDs, route/manifest/tool parity, schema, and citations, but contain no page-safe routing measurement; metric gates also treat `None` as pass until later generic completeness checks and do not identify page safety.
+  implication: A dedicated deterministic page-safety field/gate is required so missing measurements produce a whole-build HOLD rather than an optional-mode pass.
+- timestamp: 2026-09-13T13:14:00+08:00
+  observation: The focused RED run failed seven routing/evaluation assertions: Network broadened to Change/Governance, an unknown page routed to Vulnerability, Services routed only to Vulnerability, Services lacked Governance in the manifest, and the new page-safety threshold had no result-field mapping. The redirect RED test independently observed `/exposure` versus `/exposure/patch-priorities`.
+  implication: The tests reproduce the reported broadening, manifest under-specification, missing fail-closed measurement, and exact redirect mismatch without touching production code.
+- timestamp: 2026-09-13T13:22:00+08:00
+  observation: After the routing implementation, 139 focused routing, policy, manifest parity, and evaluation tests pass. Services resolves exactly to Resource Health then Governance, Twin to Network then Resource Health, Predeploy to Change, Identity to Identity & Access, and all mapped no-hint page kinds preserve their ordered manifest set.
+  implication: Moving page authorization inside the shared selector and adding manifest-owned co-owner/priority metadata removes both broadening and canonical under-routing in the focused reproductions.
+- timestamp: 2026-09-13T13:22:00+08:00
+  observation: The new deterministic `page_safe_specialist_routing` gate carries a controlled per-case Boolean, applies to every integrated case, and the focused missing-measurement test now produces a false gate and whole-build HOLD.
+  implication: Missing page-safety evidence can no longer be interpreted as a passing zero-violation measurement.
+- timestamp: 2026-09-13T13:28:00+08:00
+  observation: Adjacent verification passes all selected canonical/legacy API, routing, policy, manifest packaging/parity, and release-evaluation tests; 110 web adapter/integration tests preserve Predeploy, Services, Identity, and Twin healthy-empty versus unavailable semantics; Ruff and all eight offline specialist parity checks pass.
+  implication: The routing fix preserves prior endpoint/security/adapter contracts and updates the versioned manifest consistently across runtime, API, Terraform, package, and model projections.
+- timestamp: 2026-09-13T13:34:00+08:00
+  observation: Reverting only the routing production/config files restored six focused failures, including global Network broadening, Services→Vulnerability, missing co-owners, and a PROMOTE decision with absent page-safety evidence; reapplying returned all seven focused tests to green.
+  implication: Revert-and-reconfirm proves the routing/manifest/evaluation patch, not fixture or environment drift, removes the reproduced failures.
+- timestamp: 2026-09-13T13:34:00+08:00
+  observation: No Stryker, mutmut, or cosmic-ray configuration is present. Diff review shows root-cause-directed intersection/manifest/evaluation additions plus replacement of the duplicate legacy selector; excluded page/provider/deployment/Fabric/Exposure publication files are untouched.
+  implication: Mutation checking is unavailable and explicitly skipped; target, adjacent, no-op/deletion, offline parity, and revert/reconfirm guardrail signals pass.
+- timestamp: 2026-09-13T13:37:00+08:00
+  observation: The accepted routing/evaluation change was committed atomically as `fe8599f17` with the required Copilot co-author trailer.
+  implication: Redirect alignment can proceed as an independent one-line declaration fix and focused test commit.
+- timestamp: 2026-09-13T13:41:00+08:00
+  observation: The exact redirect test failed before the fix because runtime produced `/exposure/patch-priorities` while the disposition declared `/exposure`; after changing only the declaration and replacing the prefix assertion with exact equality, 122 focused/adjacent web tests and strict TypeScript pass.
+  implication: Current navigation and query allowlisting remain unchanged while implementation, authoritative disposition, and tests now agree exactly.
+- timestamp: 2026-09-13T13:44:00+08:00
+  observation: Reverting only `COPILOT_ROUTE_DISPOSITIONS` restored both exact redirect failures; reapplying it returned both tests green. The diff is one declaration change plus stronger tests, and no mutation framework is configured.
+  implication: All applicable redirect guardrail signals pass, including revert-and-reconfirm, with no behavior deletion or unsafe query propagation.
+- timestamp: 2026-09-13T13:47:00+08:00
+  observation: Redirect alignment was committed independently as `5cf201a5a`; both new commits contain the required Copilot co-author trailer, and neither commit includes an excluded remediation, Fabric, Exposure CVE, Patch Priorities publication/data, provider, deployment, or infrastructure file.
+  implication: The requested routing and redirect scope is complete and atomic, while the debug session remains active for provider/config readiness.
 - timestamp: 2026-09-13T12:18:00+08:00
   observation: `normalizeCopilotSnapshotV2` copies the legacy seven-value `page_kind` directly into v2 and sets coverage to `{visible_count: evidence.length, total_count: evidence.length, complete: false}` even though every typed core adapter emits explicit `page/coverage` observations with visible/total/complete fields.
   implication: Exact manifest routing and observed partial coverage are both lost at the same compatibility boundary; evidence cardinality is not a coverage observation.
@@ -248,12 +308,12 @@ and_gate: "no for each reported gap — each is independently reproducible from 
 
 ## Resolution
 
-root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409."
-fix: "Clusters 1-3 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; now maps every integrated page ID/route to its exact manifest v2 kind, aggregates only typed coverage observations with unknown 0/0 fallback, renders synthesis claims with adjacent citations while suppressing overlapping tool cards, and clears stale continuity on 409 so the next explicit attempt starts a new thread. Exact-set specialist routing remains next."
+root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`."
+fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist."
 verification:
   target_test:
     result: pass
-    details: "130 focused page-adapter/drawer tests pass after 23 targeted RED failures were reproduced."
+    details: "139 focused Python routing/policy/parity/evaluation tests pass after seven targeted RED failures; both exact redirect tests pass after reproducing the disposition mismatch."
   mutation_check:
     result: skipped
     reason_if_skipped: "No Stryker dependency or configuration exists."
@@ -261,7 +321,7 @@ verification:
   no_op_deletion:
     result: pass
     deletion_justified_by_rca: true
-    details: "The review fix adds exact mapping/coverage validation and conflict recovery; the only render suppression removes raw tool cards when a citation-bearing synthesis already presents the same result."
+    details: "Routing changes move authorization before intent matching and replace a duplicate permissive selector; redirect changes alter one declaration and strengthen exact assertions without removing product behavior."
   adjacent_tests:
     result: pass
     suites_run:
@@ -270,19 +330,33 @@ verification:
       - "Two adjacent web runs (47 and 33 passing assertions, with manifest/continuity overlap) covering integration, Inventory, Investigate, and drawer-button behavior"
       - "Ruff on src and tests"
       - "TypeScript `tsc --noEmit`"
+      - "Offline specialist parity: 8/8 checks passed"
+      - "122 focused/adjacent redirect, manifest, route-disposition, and page-adapter web tests"
   revert_and_reconfirm:
     result: pass
     bug_returned_on_revert: true
     fixed_on_reapply: true
   guardrail_verdict: accepted
 commits:
+  - "5cf201a5a fix(web): align vulnerability redirect contract"
+  - "fe8599f17 fix(copilot): constrain specialists to page-safe sets"
   - "8143a0207 fix(copilot): bind retained evidence to page context"
   - "ec491f753 fix(copilot): close canonical migration review gaps"
 files_changed:
+  - scripts/evaluate_agents.py
+  - src/operations/autonomous_investigation.py
+  - src/operations/maf_orchestrator.py
   - src/api/routers/copilot.py
   - src/operations/orchestration_contract.py
   - src/operations/orchestration_service.py
+  - src/operations/specialist_manifest.py
+  - src/operations/specialists.v1.json
+  - tests/fixtures/copilot_evaluation_cases.v1.json
+  - tests/fixtures/copilot_release_thresholds.v1.json
+  - tests/test_context_specialist_routing.py
   - tests/test_copilot_evaluation_v2.py
+  - tests/test_orchestration_parity.py
+  - web/src/app/vulnerabilities/page.test.tsx
   - web/src/components/ui/CopilotDrawer.test.tsx
   - web/src/components/ui/CopilotDrawer.tsx
   - web/src/lib/copilot/thread-context.tsx
