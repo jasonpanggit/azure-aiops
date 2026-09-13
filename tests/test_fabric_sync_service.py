@@ -665,6 +665,7 @@ def test_reconciliation_reports_truncated_delta_history_actionably(
             DeltaHistoryTruncatedError("history is truncated")
         ),
     )
+    monkeypatch.setattr(service.delta, "version", lambda _uri: 8)
 
     with pytest.raises(
         PublicationCheckpointError,
@@ -675,6 +676,60 @@ def test_reconciliation_reports_truncated_delta_history_actionably(
             plan,
             table_uris={"bronze_resources": "table-uri"},
         )
+
+
+def test_reconciliation_clears_uncommitted_intent_before_history_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    checkpoint = service.publication_checkpoints.persist(
+        source_run_id="source-run-1",
+        source_manifest_digest="a" * 64,
+        run_id="publication-run-1",
+        started_at="2026-09-13T00:00:00Z",
+        source_projected_at="2026-09-13T00:00:00Z",
+        source_watermark="",
+        failed_records=0,
+        ontology_health={"status": "healthy"},
+        ontology_entity_count=1,
+        ontology_relationship_count=0,
+        datasets={"bronze_resources": [{"resource_id": "resource-1"}]},
+        exposure_gold_observation_rows=None,
+    )
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": 7},
+    )
+    service.publication_checkpoints.begin_table_write(
+        checkpoint,
+        plan,
+        table_name="bronze_resources",
+        outcome_digest="b" * 64,
+    )
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": 7},
+    )
+    monkeypatch.setattr(service.delta, "version", lambda _uri: 7)
+    monkeypatch.setattr(
+        service.delta,
+        "committed_transaction",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged table head must not scan transaction history"
+        ),
+    )
+
+    reconciled = service._reconcile_publication_intents(
+        checkpoint,
+        plan,
+        table_uris={"bronze_resources": "table-uri"},
+    )
+
+    assert reconciled.in_flight == {}
+    assert reconciled.completed == {}
 
 
 def test_exposure_gold_input_view_retains_only_projection_tables(

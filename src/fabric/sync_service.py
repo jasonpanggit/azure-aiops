@@ -2261,6 +2261,14 @@ class FabricSyncService:
             intent = plan.in_flight[table_name]
             table_uri = table_uris[table_name]
             if intent.operation == "write":
+                current = self.delta.version(table_uri)
+                if current == intent.expected_before_version:
+                    self.publication_checkpoints.clear_table_intent(
+                        checkpoint,
+                        plan,
+                        intent,
+                    )
+                    continue
                 try:
                     committed = self.delta.committed_transaction(
                         table_uri,
@@ -2274,7 +2282,6 @@ class FabricSyncService:
                         "the table head and explicitly abandon the checkpoint if "
                         "the intent cannot be proven"
                     ) from history_error
-                current = self.delta.version(table_uri)
                 if committed is not None:
                     if current != committed.version:
                         raise PublicationCheckpointError(
@@ -2287,12 +2294,6 @@ class FabricSyncService:
                         expected_before_version=intent.expected_before_version,
                         result=committed,
                         intent=intent,
-                    )
-                elif current == intent.expected_before_version:
-                    self.publication_checkpoints.clear_table_intent(
-                        checkpoint,
-                        plan,
-                        intent,
                     )
                 else:
                     raise PublicationCheckpointError(
