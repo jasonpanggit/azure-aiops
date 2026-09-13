@@ -3206,7 +3206,8 @@ def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceServic
 def _fabric_vulnerability_service(
     runtime: FabricRuntime,
 ) -> VulnerabilityIntelligenceService | None:
-    semantic_snapshot = runtime.service.semantic_snapshot()
+    semantic = runtime.semantic_engine()
+    network = _fabric_network_service(runtime)
     patch = runtime.service.patch_intelligence_snapshot()
     defender = runtime.service.defender_intelligence_snapshot()
     findings = [
@@ -3239,8 +3240,6 @@ def _fabric_vulnerability_service(
         }
         for row in defender.get("assessments") or []
     ]
-    semantic = runtime.semantic_engine()
-    network = _fabric_network_service(runtime)
     exposure = getattr(runtime.config, "exposure", None)
     use_temporal_projection = bool(
         exposure is not None
@@ -3265,7 +3264,7 @@ def _fabric_vulnerability_service(
                 },
             }
         ],
-        str(semantic_snapshot.get("freshness") or ""),
+        str(getattr(semantic, "freshness", "") or ""),
         semantic=semantic,
         network=network,
         use_temporal_projection=use_temporal_projection,
@@ -3277,16 +3276,30 @@ def _fabric_temporal_exposure_tables(
 ) -> dict[str, list[dict[str, Any]]]:
     """Read Plan 08 temporal products without replacing Fabric composition."""
 
-    def read(layer: str, name: str) -> list[dict[str, Any]]:
+    def read(
+        layer: str,
+        name: str,
+        *,
+        columns: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         uri = runtime.service.onelake.table_uri(layer, name)
         if runtime.service.delta.version(uri) is None:
             return []
-        return runtime.service.delta.read(uri)
+        return runtime.service.delta.read(uri, columns=columns)
 
     return {
         "gold_exposure_current": read("gold", "exposure_current"),
         "silver_exposure_observations": read(
-            "silver", "exposure_observations"
+            "silver",
+            "exposure_observations",
+            columns=(
+                "observation_id",
+                "event_time",
+                "ingested_at",
+                "run_at",
+                "published_at",
+                "enriched_at",
+            ),
         ),
         "metadata_source_status": read("metadata", "source_status"),
     }
