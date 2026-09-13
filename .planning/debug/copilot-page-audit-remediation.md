@@ -2,7 +2,7 @@
 status: investigating
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T13:52:00+08:00
+updated: 2026-09-13T15:12:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,10 +31,10 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Clusters 1-5 are fixed and committed; the remaining cluster is source/config readiness, including rollout-mode consumption and immutable provider deployment parity that cannot be inferred from local tests."
-test: "In a future explicitly scoped continuation, trace source-only rollout configuration and compare deploy/runtime declarations without contacting providers or mutating deployment state."
+hypothesis: "The three blocking orchestration review issues are fixed and verified; the remaining active-session work is source/config readiness, including rollout-mode consumption and immutable provider deployment parity that cannot be inferred from offline tests."
+test: "In the next explicitly scoped continuation, trace source-only rollout configuration and compare deploy/runtime declarations without contacting providers or mutating deployment state."
 expecting: "Local source may still omit rollout-mode consumption, while live Foundry/provider readiness remains blocked until externally supplied immutable evidence exists."
-next_action: "Resume with source/config readiness only; do not archive until provider/config readiness is separately evidenced and human-verified."
+next_action: "Resume with source/config readiness only; keep provider/live deployment work blocked and do not archive until that readiness is separately evidenced and human-verified."
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "Live Foundry/provider onboarding and immutable deployment parity remain external readiness evidence and were not fabricated or contacted."
@@ -45,6 +45,60 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Evidence
 
+- timestamp: 2026-09-13T13:53:00+08:00
+  observation: Independent orchestration review reports three deterministic blockers before provider/config work: invalid `{}` no-hint tool fallback across exact v2 pages, retained browser claims bypassing canonical conflict/completeness admissibility, and a 64-citation preselection cap suppressing synthesis for 65-200 accepted material rows.
+  implication: The active session remains in shared orchestration/MAF/evidence-selection scope; focused RED tests must reproduce all three before source changes, and provider/config work remains deferred.
+- timestamp: 2026-09-13T14:05:00+08:00
+  observation: `build_deterministic_fallback` chooses each selected specialist's first tool with `{}` and raises when no tool-bearing specialist exists. Manifest/tool-schema inspection proves Governance, Identity, and FinOps have no empty-argument-valid tool, while Overview/Copilot/Agents map only to tool-less `executive_summary`; multi-owner pages may also include an invalid Governance step.
+  implication: A policy-valid candidate cannot be guaranteed by page mapping alone. The fallback must validate each proposed call, derive only explicit snapshot-backed arguments, omit invalid steps, and support a deterministic no-tool result.
+- timestamp: 2026-09-13T14:05:00+08:00
+  observation: `execute_turn` passes the original browser snapshot directly to `_current_retained_evidence`; that method admits every material-referenced `ok`/`partial` row in input order and never consults canonical conflict groups or `MaterialClaim.requires_complete_coverage`.
+  implication: Browser claims can bypass the fail-closed admissibility used by canonical evidence, so contradictory variants and completeness-dependent partial claims can directly drive synthesis and confidence.
+- timestamp: 2026-09-13T14:05:00+08:00
+  observation: `_current_retained_evidence` breaks at 64 rows even though `EvidenceSnapshotV2.evidence` and `material_claims` each accept 200 and `OrchestrationResult.citations` accepts 256; `_deterministic_page_claims` then rejects all claims unless every material reference survived.
+  implication: At 65-200 material rows, pre-closure input-order truncation can suppress all deterministic synthesis. The retained page-evidence capacity must be bounded to the existing 200-row contract, selected deterministically before closure, with any exclusion/truncation surfaced.
+- timestamp: 2026-09-13T14:05:00+08:00
+  observation: The defects reproduce from static deterministic branches and no per-test coverage artifact is configured for this focused path.
+  implication: Failure class remains Bohrbug; SBFL is skipped with a logged reason and test-first working-backwards reproduction is the appropriate first move.
+- timestamp: 2026-09-13T14:09:00+08:00
+  observation: Focused RED retained-evidence tests fail exactly as predicted: conflicting totals 7 and 11 both become high-confidence claims, a 1/100 completeness-required total becomes a high-confidence claim, and both 65-row and 200-row snapshots retain only 64 citations.
+  implication: Issues 2 and 3 are directly reproduced with specified output oracles; the 64-row pre-closure limit, not snapshot validation or environment drift, causes the cardinality failures.
+- timestamp: 2026-09-13T14:13:00+08:00
+  observation: The all-page no-hint RED test fails for exactly 10 of 30 PageMapping values—Overview, Compliance, Governance, Identity, FinOps, Remediation, Resource, Services, Copilot, and Agents—and the selected-Identity derivation test also fails with `invalid_arguments: business_service_context`.
+  implication: Failure spans tool-less pages, required-argument specialists, and mixed valid/invalid multi-owner sets; validating and selecting each call before CandidatePlan construction plus an explicit no-tool service branch is required.
+- timestamp: 2026-09-13T14:19:00+08:00
+  observation: After fallback construction validates every call, derives only `subject` or `query` from explicit snapshot context, omits invalid mapped steps, and returns `None` for a no-tool outcome handled by the service, all 31 exact-page/selected-entity focused tests pass.
+  implication: Every PageMapping now produces either policy-valid read-only calls or an explicit `no_safe_tool_arguments` result without a ValueError; adjacent and causal guardrails remain.
+- timestamp: 2026-09-13T14:25:00+08:00
+  observation: Fallback-adjacent orchestration policy/routing/parity tests pass, Ruff passes, reverting only the two fallback production files restores the same 11 failures, and reapplying returns 31/31 focused cases to green.
+  implication: All applicable fallback fix-acceptance signals pass except mutation testing, which remains unavailable because no configured Python mutation framework exists; the change is ready for an isolated atomic commit.
+- timestamp: 2026-09-13T14:29:00+08:00
+  observation: The validated deterministic fallback fix and its focused exact-page tests were committed atomically as `401f1bd44` with the required Copilot co-author trailer.
+  implication: The remaining uncommitted test changes isolate retained-evidence conflict/completeness/cardinality behavior for the second coherent fix.
+- timestamp: 2026-09-13T14:36:00+08:00
+  observation: A shared page-context selector now excludes contradictory variants and incomplete completeness-required claims before citation minting, reuses canonical selected/direct/actionable/severity/freshness/quality ranking, and caps at the existing 200-row snapshot contract. All four retained-evidence regression tests pass, including deterministic 65-row and 200-row closure.
+  implication: The focused behavior is corrected without raising an unbounded cap; adjacent canonicalization, synthesis, API, and lint validation are now required.
+- timestamp: 2026-09-13T14:42:00+08:00
+  observation: The full focused synthesis/page-context suite and adjacent canonical API suites pass, and Ruff reports no findings for the shared selector, service integration, and regression tests.
+  implication: Canonical normalization, API scope/CAS behavior, and existing synthesis contracts remain intact; causal revert/reconfirm is the remaining acceptance signal for this fix.
+- timestamp: 2026-09-13T14:49:00+08:00
+  observation: Reverting only `page_context.py` and the uncommitted retained-evidence portion of `orchestration_service.py` restores all four exact failures—two inadmissible claims and the 64-row cap at both 65 and 200 rows—while reapplying returns 4/4 to green.
+  implication: Revert-and-reconfirm establishes that shared admission/ranking causes the corrected behavior; mutation testing remains unavailable, and the additive selector does not delete or bypass evidence behavior.
+- timestamp: 2026-09-13T14:53:00+08:00
+  observation: The retained-evidence admission/ranking fix and its focused conflict, completeness, 65-row, and 200-row tests were committed atomically as `37cd88f6e` with the required Copilot co-author trailer.
+  implication: Both coherent root-cause fixes are committed; only combined Phase 11 validation, scope review, and active debug checkpoint documentation remain.
+- timestamp: 2026-09-13T15:00:00+08:00
+  observation: Combined validation passes all selected tests except two legacy `/investigate-context` tests that still assert Network questions broaden to Governance or Vulnerability. Those expectations directly contradict the already accepted exact page-safe selector contract; Ruff and all 8 offline specialist parity checks pass.
+  implication: This is stale test debt exposed by the broader run, not a regression in the two new fixes. The tests must assert Network-only delegation and no out-of-page agent call.
+- timestamp: 2026-09-13T15:04:00+08:00
+  observation: The two stale assertions were replaced with Network-only page-safe expectations; all 8 tests in `test_api_copilot_snapshot.py` pass, and the test-only correction was committed as `b9b199ac4` with the required trailer.
+  implication: The broader cluster suite can now measure current exact-routing behavior instead of requiring the superseded permissive contract.
+- timestamp: 2026-09-13T15:12:00+08:00
+  observation: Final combined validation collected 371 selected cluster 1-4/Phase 11 tests and completed with 370 passing and 1 pre-existing skip; full `ruff check src tests` passes and offline specialist parity passes all 8 checks.
+  implication: The no-hint, canonical admission, citation closure, scope/CAS, routing, packaging, and parity contracts remain green together; no TypeScript or response-rendering file changed, so web/tsc reruns are not applicable to this correction.
+- timestamp: 2026-09-13T15:12:00+08:00
+  observation: Commits `401f1bd44`, `37cd88f6e`, and `b9b199ac4` each contain the required Copilot co-author trailer. Their six changed paths are limited to shared MAF/orchestration/page-context code and focused tests; no excluded remediation, Fabric, Exposure CVE, Patch Priorities publication/data, provider, deployment, or infrastructure file changed.
+  implication: The orchestration blockers are atomically committed within the authorized ownership boundary, and the active session can return to source/config readiness without archive.
 - timestamp: 2026-09-13T12:53:00+08:00
   observation: `.planning/STATE.md` still identifies Phase 4 planning and its unrelated entry gate, while this continuation explicitly authorizes the Phase 11 page-audit exception; the worktree contains only this active debug-file edit on top of the already committed cluster fixes.
   implication: The requested exact-set routing and redirect-contract work remains a safely isolated exception and must not touch Phase 4/provider/deployment scope.
@@ -311,23 +365,26 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 5. Redirect declarations, implementation, and tests encode different exact destinations.
 6. Runtime rollout/provider configuration is only partially wired; remaining live provider
    parity requires external onboarding evidence that must not be fabricated.
+7. Deterministic fallback construction did not validate required tool arguments or represent
+   a no-tool result, while retained browser evidence bypassed canonical conflict/completeness
+   admission and stopped at 64 rows before the strict 200-row snapshot closure boundary.
 
 ## Resolution
 
-root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`."
-fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist."
+root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`. Blocking orchestration review: fallback construction treated page grants as proof that `{}` was valid and had no no-tool outcome; retained browser rows bypassed canonical conflict/completeness admission; and input-order retention stopped at 64 before closure despite the 200-row snapshot contract."
+fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist. The blocking review fix now validates every fallback call, derives only explicit selected-entity/query arguments, supports a deterministic no-tool result, applies shared conflict/completeness/ranking rules before retained citation minting, and aligns bounded page retention to the strict 200-row snapshot contract with explicit exclusion/truncation uncertainty."
 verification:
   target_test:
     result: pass
-    details: "139 focused Python routing/policy/parity/evaluation tests pass after seven targeted RED failures; both exact redirect tests pass after reproducing the disposition mismatch."
+    details: "31 exact-page/selected-entity fallback tests pass after 11 RED failures; four retained-evidence tests pass after reproducing conflicting high-confidence totals, an incomplete completeness-required claim, and 64-row truncation at both 65 and 200 rows."
   mutation_check:
     result: skipped
-    reason_if_skipped: "No Stryker dependency or configuration exists."
+    reason_if_skipped: "No Stryker, mutmut, or cosmic-ray configuration exists."
     mutant_killed: false
   no_op_deletion:
     result: pass
     deletion_justified_by_rca: true
-    details: "Routing changes move authorization before intent matching and replace a duplicate permissive selector; redirect changes alter one declaration and strengthen exact assertions without removing product behavior."
+    details: "Fallback changes replace invalid call construction with validated safe selection/no-tool degradation; retained-evidence changes add fail-closed admission and deterministic ranking without deleting canonical evidence or tool behavior."
   adjacent_tests:
     result: pass
     suites_run:
@@ -338,12 +395,18 @@ verification:
       - "TypeScript `tsc --noEmit`"
       - "Offline specialist parity: 8/8 checks passed"
       - "122 focused/adjacent redirect, manifest, route-disposition, and page-adapter web tests"
+      - "371 selected cluster 1-4/Phase 11 Python tests: 370 passed, 1 pre-existing skip"
+      - "Full Ruff check across src and tests"
+      - "Offline specialist parity: 8/8 checks passed"
   revert_and_reconfirm:
     result: pass
     bug_returned_on_revert: true
     fixed_on_reapply: true
   guardrail_verdict: accepted
 commits:
+  - "b9b199ac4 test(copilot): align legacy page-safe routing"
+  - "37cd88f6e fix(copilot): admit retained evidence consistently"
+  - "401f1bd44 fix(copilot): validate deterministic fallback calls"
   - "069c01bdf test(copilot): pin predeploy empty-state semantics"
   - "5cf201a5a fix(web): align vulnerability redirect contract"
   - "fe8599f17 fix(copilot): constrain specialists to page-safe sets"
@@ -356,12 +419,15 @@ files_changed:
   - src/api/routers/copilot.py
   - src/operations/orchestration_contract.py
   - src/operations/orchestration_service.py
+  - src/operations/page_context.py
   - src/operations/specialist_manifest.py
   - src/operations/specialists.v1.json
   - tests/fixtures/copilot_evaluation_cases.v1.json
   - tests/fixtures/copilot_release_thresholds.v1.json
   - tests/test_context_specialist_routing.py
   - tests/test_copilot_evaluation_v2.py
+  - tests/test_orchestration_policy.py
+  - tests/test_api_copilot_snapshot.py
   - tests/test_orchestration_parity.py
   - web/src/app/vulnerabilities/page.test.tsx
   - web/src/components/ui/CopilotDrawer.test.tsx
