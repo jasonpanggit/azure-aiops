@@ -626,10 +626,129 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             section: "coverage",
+            data: expect.objectContaining({
+              retention: expect.objectContaining({
+                retained_count: expect.any(Number),
+                omitted_count: records.length
+                  - context.snapshot.evidence.filter((row) => row.section !== "coverage").length,
+                row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+                byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+              }),
+            }),
           }),
         ]),
       );
+      expect(context.coverage.situations.complete).toBe(false);
+      expect(context.uncertainty).toContain(
+        `evidence retention omitted ${
+          records.length
+          - context.snapshot.evidence.filter((row) => row.section !== "coverage").length
+        } rows`,
+      );
+      expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete).toBe(false);
     });
+
+    it.each([64, 65, 66])(
+      "reports bounded byte-retention truth at the 65-row neighborhood (%i rows)",
+      (rowCount) => {
+        const records = Array.from({ length: rowCount }, (_, index) => ({
+          identity: `byte-row-${index.toString().padStart(3, "0")}`,
+          namespace: "operations",
+          kind: "situation",
+          source: "situations/visible",
+          priority: index,
+          data: {
+            title: `Situation ${index}`,
+            detail: "x".repeat(1900),
+          },
+        }));
+        const context = buildOverviewCopilotContext({
+          ...corePageInput,
+          records,
+          evidence: [],
+          coverage: [{
+            key: "situations",
+            visibleCount: rowCount,
+            totalCount: rowCount,
+          }],
+        });
+        const retainedCount = context.snapshot.evidence.filter(
+          (row) => row.section !== "coverage",
+        ).length;
+        const omittedCount = rowCount - retainedCount;
+        const coverageRow = context.snapshot.evidence.find(
+          (row) => row.section === "coverage",
+        );
+
+        expect(coverageRow?.data).toMatchObject({
+          retention: {
+            retained_count: retainedCount,
+            omitted_count: omittedCount,
+            row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+            byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+          },
+        });
+        expect(context.coverage.situations.complete).toBe(omittedCount === 0);
+        expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete)
+          .toBe(omittedCount === 0);
+        if (omittedCount) {
+          expect(context.uncertainty).toContain(
+            `evidence retention omitted ${omittedCount} rows`,
+          );
+        }
+      },
+    );
+
+    it.each([199, 200, 201])(
+      "reports bounded row-retention truth at the 200-row neighborhood (%i total rows)",
+      (totalRows) => {
+        const recordCount = totalRows - 1;
+        const records = Array.from({ length: recordCount }, (_, index) => ({
+          identity: `limit-row-${index.toString().padStart(3, "0")}`,
+          namespace: "operations",
+          kind: "situation",
+          source: "situations/visible",
+          priority: index,
+          data: { title: `Situation ${index}` },
+        }));
+        const context = buildOverviewCopilotContext({
+          ...corePageInput,
+          records,
+          evidence: [],
+          coverage: [{
+            key: "situations",
+            visibleCount: recordCount,
+            totalCount: recordCount,
+          }],
+        });
+        const retainedCount = context.snapshot.evidence.filter(
+          (row) => row.section !== "coverage",
+        ).length;
+        const omittedCount = recordCount - retainedCount;
+        const coverageRow = context.snapshot.evidence.find(
+          (row) => row.section === "coverage",
+        );
+
+        expect(context.snapshot.evidence.length)
+          .toBeLessThanOrEqual(COPILOT_SNAPSHOT_LIMITS.evidenceRows);
+        expect(coverageRow?.data).toMatchObject({
+          retention: {
+            retained_count: retainedCount,
+            omitted_count: omittedCount,
+            row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+            byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+          },
+        });
+        expect(context.coverage.situations.complete).toBe(omittedCount === 0);
+        expect(normalizeCopilotSnapshotV2(context.snapshot).coverage.complete)
+          .toBe(omittedCount === 0);
+        if (omittedCount) {
+          expect(context.uncertainty).toContain(
+            `evidence retention omitted ${omittedCount} rows`,
+          );
+        }
+      },
+    );
   });
 
   describe("exposure, CVE detail, and situations Copilot page adapters", () => {
