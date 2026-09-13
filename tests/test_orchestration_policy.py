@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import get_args
 
 import pytest
 
 from api.scope import Scope
+from operations.investigation_thread_store import InvestigationThreadStore
+from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
+    AzureEntityRef,
     CandidatePlan,
     EvidenceSnapshotV2,
     InvestigationRequest,
@@ -17,10 +21,13 @@ from operations.orchestration_contract import (
     ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
+from operations.orchestration_service import OrchestrationService
 from operations.specialist_manifest import (
     INVENTORY_DATA_HEALTH_ID,
+    PageMapping,
     load_specialist_manifest,
 )
+from operations.tools import ToolResult
 
 
 def _request(*, scope: dict[str, list[str]] | None = None) -> InvestigationRequest:
@@ -309,3 +316,86 @@ def test_keyword_fallback_no_mutation_intent():
     for step in candidate.steps:
         for call in step.tool_calls:
             assert call.mutation is False
+
+
+@pytest.mark.parametrize("page_kind", get_args(PageMapping))
+def test_no_hint_fallback_is_safe_for_every_exact_v2_page_kind(page_kind):
+    """Every page either executes validated calls or degrades without tool I/O."""
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def executor(name, arguments, *, context, scope):
+        validated, _ = validate_tool_arguments(name, arguments)
+        calls.append((name, validated))
+        return ToolResult(status="unavailable")
+
+    request = InvestigationRequest(
+        question="Summarize what I am looking at.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind=page_kind,
+            page_id=page_kind,
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    result = OrchestrationService(
+        executor=executor,
+        thread_store=InvestigationThreadStore(),
+    ).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    if calls:
+        assert result.selected_tools == [name for name, _ in calls]
+    else:
+        assert result.selected_tools == []
+        assert result.fallback_reason == "no_safe_tool_arguments"
+        assert (
+            "No safe page tool call could be formed from validated snapshot context."
+            in result.uncertainty
+        )
+
+
+def test_no_hint_fallback_derives_subject_only_from_selected_snapshot_entity():
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.ManagedIdentity/userAssignedIdentities/identity-a"
+    )
+    request = InvestigationRequest(
+        question="Summarize what I am looking at.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="identity",
+            page_id="identity",
+            selected_entities=[
+                AzureEntityRef(type="azure", resource_id=resource_id)
+            ],
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+        ),
+    )
+
+    candidate = OrchestrationService(
+        thread_store=InvestigationThreadStore(),
+    )._resolve_candidate(
+        request,
+        Scope({"subscription": ["sub-a"]}),
+    )[0]
+
+    assert candidate is not None
+    assert candidate.steps[0].specialist_id == "identity_access"
+    assert candidate.steps[0].tool_calls[0].tool == "risk_context"
+    assert candidate.steps[0].tool_calls[0].arguments == {
+        "subject": resource_id
+    }
