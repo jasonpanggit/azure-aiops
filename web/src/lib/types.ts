@@ -3199,6 +3199,7 @@ export interface CanonicalCopilotRequest {
   requested_scope: ScopeSelection;
   snapshot: CopilotEvidenceSnapshotV2;
   thread_id?: string;
+  expected_thread_revision?: number;
   hint?: CopilotPlanHint;
 }
 export interface CanonicalCopilotCitation {

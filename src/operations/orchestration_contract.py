@@ -317,12 +317,19 @@ class InvestigationRequest(ContractModel):
         max_length=80,
         pattern=r"^thr-[a-f0-9]{32}$",
     )
+    expected_thread_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("requested_scope")
     @classmethod
     def validate_scope(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
         Scope.from_mapping(value)
         return value
+
+    @model_validator(mode="after")
+    def validate_thread_revision(self) -> InvestigationRequest:
+        if self.expected_thread_revision is not None and self.thread_id is None:
+            raise ValueError("expected thread revision requires a thread ID")
+        return self
 
 
 class Citation(ContractModel):
