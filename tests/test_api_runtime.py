@@ -56,7 +56,6 @@ from api.runtime import (
 from api.scope import Scope
 from fabric.dataset_mapper import InventoryDatasetMapper
 from intelligence.inventory.normalization import normalize_os_inventory
-from intelligence.remediation.execution_verifier import ExecutionVerifier
 from network.service import NetworkIntelligenceService
 from onboarding.credentials import (
     CredentialResolver,
