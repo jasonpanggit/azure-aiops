@@ -41,6 +41,7 @@ from operations.investigation_thread_store import (
 from operations.maf_orchestrator import (
     build_deterministic_fallback,
     canonical_orchestration_enabled,
+    copilot_rollout_decision,
 )
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
@@ -56,7 +57,7 @@ from operations.orchestration_contract import (
 from operations.orchestration_contract import (
     InvestigationRequest as CanonicalInvestigationRequest,
 )
-from operations.orchestration_policy import PolicyViolation
+from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
 from operations.orchestration_service import (
     OrchestrationService,
     execute_from_question,
@@ -1129,6 +1130,7 @@ def investigate_canonical(
             "snapshot": planning_snapshot
         }
     )
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
     if browser_snapshot.page_kind == "inventory":
         try:
             selector = _inventory_selector(browser_snapshot)
@@ -1228,6 +1230,19 @@ def investigate_canonical(
                     warning="Tool unavailable in canonical page mode",
                 )
 
+    shadow_validated = False
+    if not rollout.canonical_enabled:
+        if rollout.shadow_enabled:
+            shadow_candidate = planner(request)
+            if shadow_candidate is not None:
+                OrchestrationPolicy().validate(
+                    request=request,
+                    candidate=shadow_candidate,
+                    effective_scope=scope,
+                )
+            shadow_validated = True
+        planner = None
+
     try:
         result = OrchestrationService(
             planner=planner,
@@ -1263,6 +1278,12 @@ def investigate_canonical(
         ) from exc
 
     result_data = result.model_dump(mode="json")
+    result_data["rollout"] = {
+        "mode": rollout.mode,
+        "canonical_enabled": rollout.canonical_enabled,
+        "shadow_enabled": rollout.shadow_enabled,
+        "shadow_validated": shadow_validated,
+    }
     result_data["citations"] = [
         citation
         for citation in result_data["citations"]
