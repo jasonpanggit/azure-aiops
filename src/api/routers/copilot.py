@@ -1296,16 +1296,23 @@ def investigate_canonical(
                 )
 
     shadow_validated = False
+    shadow_reason = ""
     if not rollout.canonical_enabled:
         if rollout.shadow_enabled:
-            shadow_candidate = planner(request)
-            if shadow_candidate is not None:
-                OrchestrationPolicy().validate(
-                    request=request,
-                    candidate=shadow_candidate,
-                    effective_scope=scope,
-                )
-            shadow_validated = True
+            try:
+                shadow_candidate = planner(request)
+                if shadow_candidate is not None:
+                    OrchestrationPolicy().validate(
+                        request=request,
+                        candidate=shadow_candidate,
+                        effective_scope=scope,
+                    )
+            except (TypeError, ValueError) as exc:
+                code = exc.code if isinstance(exc, PolicyViolation) else "invalid_candidate"
+                shadow_reason = f"candidate_rejected:{code}"
+            else:
+                shadow_validated = True
+                shadow_reason = "accepted"
         planner = None
 
     try:
@@ -1349,6 +1356,7 @@ def investigate_canonical(
         "canonical_enabled": rollout.canonical_enabled,
         "shadow_enabled": rollout.shadow_enabled,
         "shadow_validated": shadow_validated,
+        "shadow_reason": shadow_reason,
     }
     result_data["citations"] = [
         citation

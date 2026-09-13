@@ -52,7 +52,7 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
     )
     tool_calls: list[str] = []
 
-    def call_tool(name, arguments, *, context, scope, principal):
+    def call_tool(name, arguments, *, context, scope, principal=None):
         tool_calls.append(name)
         return ToolResult(
             status=STATUS_OK,
@@ -98,6 +98,7 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
         "canonical_enabled": canonical_enabled,
         "shadow_enabled": mode == "shadow",
         "shadow_validated": shadow_validated,
+        "shadow_reason": "accepted" if shadow_validated else "",
     }
     assert result["policy_status"] == (
         "accepted" if canonical_enabled else "fallback"
@@ -131,4 +132,42 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
         "canonical_enabled": False,
         "shadow_enabled": False,
         "shadow_validated": False,
+        "shadow_reason": "",
     }
+
+
+def test_shadow_rejection_does_not_fail_or_duplicate_primary_execution(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLBACK_MODE", "compatibility")
+    calls: list[str] = []
+
+    def call_tool(name, arguments, *, context, scope, principal=None):
+        calls.append(name)
+        return ToolResult(status=STATUS_OK)
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", call_tool)
+    body = _canonical_body(
+        hint={
+            "specialist_id": "remediation",
+            "tool": "inventory_resources",
+            "arguments": {},
+        }
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["rollout"]["shadow_validated"] is False
+    assert result["rollout"]["shadow_reason"].startswith("candidate_rejected:")
+    assert calls == ["inventory_resources"]
