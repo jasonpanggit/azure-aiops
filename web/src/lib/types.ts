@@ -3100,7 +3100,37 @@ export interface CopilotPageSnapshot {
   freshness: CopilotFreshnessRecord[]; scope: CopilotScopeAuthorization;
   evidence: CopilotEvidenceRow[]; question: string; rechecks: string[];
 }
-export type CopilotPageKindV2 = "inventory" | "connections" | "connections_fabric";
+export type CopilotPageKindV2 =
+  | "overview"
+  | "network"
+  | "vulnerability"
+  | "patch"
+  | "incident"
+  | "compliance"
+  | "exposure"
+  | "cve_detail"
+  | "defender_posture"
+  | "kb_detail"
+  | "patch_priorities"
+  | "situations"
+  | "situation_detail"
+  | "changes"
+  | "changes_predeploy"
+  | "inventory"
+  | "connections"
+  | "connections_fabric"
+  | "governance"
+  | "identity"
+  | "finops"
+  | "remediation"
+  | "resource_health"
+  | "resource"
+  | "services"
+  | "service_detail"
+  | "twin"
+  | "copilot"
+  | "investigate"
+  | "agents";
 export type CopilotSnapshotStatusV2 = "ok" | "empty" | "partial" | "unavailable" | "denied";
 export type CopilotFreshnessStatusV2 = "fresh" | "stale" | "partial" | "unavailable";
 export type CopilotEvidenceSeverity = "unknown" | "low" | "medium" | "high" | "critical";
