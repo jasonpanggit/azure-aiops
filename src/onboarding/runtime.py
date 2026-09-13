@@ -18,7 +18,12 @@ from .azure_clients import (
     AzureMonitorMetricsClient,
     AzureResourceGraphClient,
 )
-from .credentials import CredentialResolver, SecretWriter, default_secret_provider
+from .credentials import (
+    CredentialResolver,
+    SecretNotFoundError,
+    SecretWriter,
+    default_secret_provider,
+)
 from .discovery_source import AzureResourceGraphSource, CostActualsSource
 from .ingestion_service import IngestionService
 from .metadata import BusinessMetadata
@@ -156,9 +161,8 @@ def build_connection_arg_client(
     resolver: CredentialResolver | None = None,
 ) -> AzureResourceGraphClient:
     """Build an ARG client authenticated with one connection's service principal."""
-    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     return AzureResourceGraphClient(
-        credential_resolver.build(connection.credential),
+        build_connection_credential(connection, resolver),
         page_size=config.page_size,
         max_pages=config.max_pages,
         timeout=config.command_timeout_seconds,
@@ -171,9 +175,8 @@ def build_connection_cost_client(
     resolver: CredentialResolver | None = None,
 ) -> AzureCostManagementClient:
     """Build a Cost Management client authenticated with one connection SPN."""
-    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     return AzureCostManagementClient(
-        credential_resolver.build(connection.credential),
+        build_connection_credential(connection, resolver),
         timeout=config.command_timeout_seconds,
         max_workers=config.max_query_workers,
     )
@@ -185,9 +188,8 @@ def build_connection_monitor_metrics_client(
     resolver: CredentialResolver | None = None,
 ) -> AzureMonitorMetricsClient:
     """Build a Monitor Metrics client authenticated with one connection SPN."""
-    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     return AzureMonitorMetricsClient(
-        credential_resolver.build(connection.credential),
+        build_connection_credential(connection, resolver),
         timeout=config.command_timeout_seconds,
     )
 
@@ -203,9 +205,8 @@ def build_connection_logs_client(
     Azure Monitor Logs Query API (KQL), used for classic guest performance
     counters (memory/disk-free) that the platform Metrics API cannot supply.
     """
-    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     return AzureMonitorLogsClient(
-        credential_resolver.build(connection.credential),
+        build_connection_credential(connection, resolver),
         limits=LogsQueryLimits(timeout_seconds=config.command_timeout_seconds),
     )
 
@@ -222,10 +223,41 @@ def build_connection_prometheus_client(
     (memory/disk-free) that land in an Azure Monitor Workspace instead of a
     Log Analytics workspace.
     """
-    credential_resolver = resolver or CredentialResolver(provider=default_secret_provider())
     return AzureMonitorPrometheusClient(
-        credential_resolver.build(connection.credential),
+        build_connection_credential(connection, resolver),
         timeout=config.command_timeout_seconds,
+    )
+
+
+def build_connection_credential(
+    connection: SubscriptionConnection,
+    resolver: CredentialResolver | None = None,
+) -> Any:
+    """Resolve one subscription connection's service-principal credential."""
+    credential = connection.credential
+    if credential is None or credential.kind != "service_principal":
+        raise SecretNotFoundError(
+            f"Subscription connection '{connection.connection_id}' requires a "
+            "service_principal credential"
+        )
+    credential_resolver = resolver or CredentialResolver(
+        provider=default_secret_provider()
+    )
+    return credential_resolver.build(credential)
+
+
+def connection_cache_identity(connection: SubscriptionConnection) -> tuple[str, ...]:
+    """Return the complete non-secret identity used to partition live-data caches."""
+    credential = connection.credential
+    return (
+        str(connection.tenant_id).casefold(),
+        str(connection.subscription_id).casefold(),
+        str(connection.connection_id).casefold(),
+        str(getattr(credential, "credential_id", "") or "").casefold(),
+        str(getattr(credential, "kind", "") or "").casefold(),
+        str(getattr(credential, "tenant_id", "") or "").casefold(),
+        str(getattr(credential, "client_id", "") or "").casefold(),
+        str(getattr(credential, "secret_ref", "") or ""),
     )
 
 
@@ -263,11 +295,13 @@ def _slug(value: str) -> str:
 __all__ = [
     "build_connection_arg_client",
     "build_connection_cost_client",
+    "build_connection_credential",
     "build_connection_ingestion",
     "build_connection_inventory_pipeline",
     "build_connection_logs_client",
     "build_connection_monitor_metrics_client",
     "build_connection_prometheus_client",
     "build_onboarding_service",
+    "connection_cache_identity",
     "connection_context",
 ]

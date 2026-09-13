@@ -16,7 +16,7 @@ from fastapi import APIRouter, Query
 
 from intelligence.governance import IdentityRiskEngine
 
-from ..dependencies import Context, ReadScope
+from ..dependencies import Context, ReadScope, live_subscription_ids
 from ..errors import not_found
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
@@ -242,7 +242,7 @@ def search(
         ),
     ),
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     normalized_query = q.casefold().strip()
     live_search = normalized_query.startswith("show list of") and (
         "vm" in normalized_query or "server" in normalized_query
@@ -278,7 +278,7 @@ def search(
 def business_service_context(
     name: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_business_service_provider is not None and subscription_ids:
         result = context.hybrid_business_service_provider(name, subscription_ids)
     else:
@@ -354,7 +354,7 @@ def subscription_connection_context(
 def resource_context(
     resource_id: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_resource_provider is not None and subscription_ids:
         result = context.hybrid_resource_provider(resource_id, subscription_ids)
     else:
@@ -370,7 +370,7 @@ def resource_context(
 
 @router.get("/risk/{subject}", summary="Aggregated risk for a subject")
 def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_risk_provider is not None and subscription_ids:
         result = context.hybrid_risk_provider(subject, subscription_ids)
     else:
@@ -386,7 +386,7 @@ def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, 
 
 @router.get("/impact/{subject}", summary="Blast radius for a subject")
 def impact_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = list(scope.values("subscription"))
+    subscription_ids = live_subscription_ids(context, scope)
     if context.hybrid_impact_provider is not None and subscription_ids:
         result = context.hybrid_impact_provider(subject, subscription_ids)
     else:

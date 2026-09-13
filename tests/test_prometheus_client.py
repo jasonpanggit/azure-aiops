@@ -80,6 +80,7 @@ def test_query_guest_performance_merges_memory_and_disk_by_resource() -> None:
     for call in calls:
         assert call["method"] == "GET"
         assert call["url"] == endpoint.query_url
+        assert call["headers"]["Authorization"] == "Bearer prom-token"
         assert call["headers"]["x-ms-azure-scoping"] == "/subscriptions/sub-1"
 
 
