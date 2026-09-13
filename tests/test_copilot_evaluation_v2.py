@@ -1908,7 +1908,7 @@ def test_missing_claim_support_holds_narrated_answer_promotion():
     assert metrics["claim_support_missing_turns"] == 1
     assert report["gates"]["groundedness"]["passed"] is False
     assert report["gates"]["citation_coverage"]["passed"] is True
-    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert report["decision"] == "HOLD"
     assert "narrated_answer_promotion" in report["disabled_modes"]
 
 
@@ -2710,6 +2710,151 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     assert gates["tool_correctness"]["passed"] is True
 
 
+@pytest.mark.parametrize(
+    ("summary", "structured_data", "expected_support", "expected_groundedness", "expected_decision"),
+    [
+        (
+            "The payments service is owned by platform-team and is fully compliant.",
+            {"owner": "platform-team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The payments service is owned by platform-team and will recover automatically.",
+            {"owner": "platform-team"},
+            "indeterminate",
+            None,
+            "HOLD",
+        ),
+        (
+            "The payments service is owned by platform-team and has status healthy.",
+            {"owner": "platform-team", "status": "healthy"},
+            "supported",
+            1.0,
+            "PROMOTE",
+        ),
+    ],
+)
+def test_canonical_compound_claim_requires_support_for_every_proposition(
+    monkeypatch,
+    summary,
+    structured_data,
+    expected_support,
+    expected_groundedness,
+    expected_decision,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-compound-claim",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service and what is its state?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": structured_data,
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": summary,
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.claim_support == [expected_support]
+    assert result.groundedness == expected_groundedness
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["decision"] == expected_decision
+
+
+@pytest.mark.parametrize(
+    ("summary", "facts"),
+    [
+        (
+            "The service is owned by Research and Development.",
+            [("owner", "research and development")],
+        ),
+        ("The replica count is 3.", [("replica count", "3")]),
+        ("The feature enabled value is true.", [("enabled", "true")]),
+        (
+            "The supported regions are eastus and westus.",
+            [("regions", "eastus"), ("regions", "westus")],
+        ),
+    ],
+)
+def test_claim_support_preserves_structured_scalar_and_list_facts(
+    summary,
+    facts,
+):
+    evaluate_agents = _load_evaluate_agents()
+
+    support = evaluate_agents._claim_support_status(
+        {
+            "summary": summary,
+            "evidence_refs": ["evidence-1"],
+        },
+        evidence_by_id={"evidence-1": facts},
+    )
+
+    assert support == "supported"
+
+
 def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
     monkeypatch,
 ):
@@ -2791,7 +2936,7 @@ def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
     assert result.claim_support == ["unsupported"]
     assert report["gates"]["citation_coverage"]["passed"] is True
     assert report["gates"]["groundedness"]["passed"] is False
-    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert report["decision"] == "HOLD"
     assert "narrated_answer_promotion" in report["disabled_modes"]
 
 
@@ -2875,7 +3020,7 @@ def test_unverifiable_cited_claim_is_indeterminate_and_holds_narration(
     assert metrics["claim_support_missing_turns"] == 1
     assert report["gates"]["citation_coverage"]["passed"] is True
     assert report["gates"]["groundedness"]["passed"] is False
-    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert report["decision"] == "HOLD"
 
 
 def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):

@@ -925,6 +925,11 @@ _NON_ASSERTION_FACT_KEYS = frozenset(
     {"raw", "rows", "summary", "description", "message"}
 )
 _NEGATION_WORDS = frozenset({"no", "not", "never", "without"})
+_COMPOUND_PREDICATE_BOUNDARY = re.compile(
+    r"\band\s+(?=(?:is|are|was|were|has|have|had|will|would|can|could|"
+    r"must|should|does|do|did)\b)"
+)
+_CONJUNCTION = re.compile(r"\band\b")
 
 
 @dataclass(frozen=True)
@@ -1025,15 +1030,127 @@ def _cited_evidence_facts(
     return indexed
 
 
+def _conjunction_joins_evidence_values(
+    summary: str,
+    conjunction_start: int,
+    conjunction_end: int,
+    facts: list[tuple[str, str]],
+) -> bool:
+    """Return whether one ``and`` is demonstrably part of a cited value/list."""
+    values_by_key: dict[str, set[str]] = {}
+    for key, value in facts:
+        if not _fact_aliases(key):
+            continue
+        values_by_key.setdefault(key, set()).add(value)
+        if " and " not in value:
+            continue
+        value_start = summary.find(value)
+        while value_start >= 0:
+            value_end = value_start + len(value)
+            if (
+                value_start <= conjunction_start
+                and conjunction_end <= value_end
+            ):
+                return True
+            value_start = summary.find(value, value_start + 1)
+
+    left = summary[:conjunction_start].rstrip()
+    right = summary[conjunction_end:].lstrip()
+    return any(
+        any(left.endswith(value) for value in values)
+        and any(right.startswith(value) for value in values)
+        for values in values_by_key.values()
+    )
+
+
+def _claim_propositions(
+    claim: Mapping[str, Any],
+    *,
+    facts: list[tuple[str, str]],
+) -> tuple[str, ...] | None:
+    """Extract only unambiguous narrated propositions.
+
+    A canonical producer may supply an explicit ``propositions`` list. For
+    prose-only claims, split a shared-subject compound only where ``and`` is
+    followed by an auxiliary/modal predicate. Other conjunctions are accepted
+    only when cited structured facts prove that they join one value or list;
+    otherwise parsing fails closed instead of guessing at entailment.
+    """
+    structured = claim.get("propositions")
+    if structured is not None:
+        if not isinstance(structured, list) or not structured:
+            return None
+        propositions: list[str] = []
+        for item in structured:
+            raw = (
+                item.get("summary") or item.get("text")
+                if isinstance(item, Mapping)
+                else item
+            )
+            normalized = _normalized_words(raw or "")
+            if not normalized:
+                return None
+            propositions.append(normalized)
+        return tuple(propositions)
+
+    summary = _normalized_words(claim.get("summary") or "")
+    if not summary:
+        return None
+    predicate_boundaries = {
+        match.start()
+        for match in _COMPOUND_PREDICATE_BOUNDARY.finditer(summary)
+    }
+    for conjunction in _CONJUNCTION.finditer(summary):
+        if conjunction.start() in predicate_boundaries:
+            continue
+        if not _conjunction_joins_evidence_values(
+            summary,
+            conjunction.start(),
+            conjunction.end(),
+            facts,
+        ):
+            return None
+    return tuple(
+        proposition.strip()
+        for proposition in _COMPOUND_PREDICATE_BOUNDARY.split(summary)
+        if proposition.strip()
+    )
+
+
+def _proposition_support_status(
+    proposition: str,
+    *,
+    values_by_assertion: Mapping[tuple[str, ...], set[str]],
+) -> ClaimSupportStatus:
+    """Classify one conservatively extracted proposition."""
+    proposition_words = set(proposition.split())
+    if proposition_words & _NEGATION_WORDS:
+        return "unsupported"
+    mentioned_assertions = [
+        values
+        for aliases, values in values_by_assertion.items()
+        if any(
+            f" {alias} " in f" {proposition} " for alias in aliases
+        )
+    ]
+    if not mentioned_assertions:
+        return "indeterminate"
+    if all(
+        any(f" {value} " in f" {proposition} " for value in values)
+        for values in mentioned_assertions
+    ):
+        return "supported"
+    return "unsupported"
+
+
 def _claim_support_status(
     claim: Mapping[str, Any],
     *,
     evidence_by_id: Mapping[str, list[tuple[str, str]]],
 ) -> ClaimSupportStatus:
     """Classify one claim from structured cited facts, never citation presence."""
-    summary = _normalized_words(claim.get("summary") or "")
     references = claim.get("evidence_refs") or claim.get("citation_ids") or []
-    if not summary or not isinstance(references, list):
+    if not isinstance(references, list):
         return "indeterminate"
     facts = [
         fact
@@ -1043,31 +1160,26 @@ def _claim_support_status(
     if not facts:
         return "indeterminate"
 
-    summary_words = set(summary.split())
-    negated = bool(summary_words & _NEGATION_WORDS)
     values_by_assertion: dict[tuple[str, ...], set[str]] = {}
     for key, value in facts:
         aliases = _fact_aliases(key)
         if aliases:
             values_by_assertion.setdefault(aliases, set()).add(value)
-
-    mentioned_assertions = [
-        values
-        for aliases, values in values_by_assertion.items()
-        if any(
-            f" {alias} " in f" {summary} " for alias in aliases
-        )
-    ]
-    if not mentioned_assertions:
+    propositions = _claim_propositions(claim, facts=facts)
+    if not propositions:
         return "indeterminate"
-    if negated:
+    states = [
+        _proposition_support_status(
+            proposition,
+            values_by_assertion=values_by_assertion,
+        )
+        for proposition in propositions
+    ]
+    if "unsupported" in states:
         return "unsupported"
-    if all(
-        any(f" {value} " in f" {summary} " for value in values)
-        for values in mentioned_assertions
-    ):
-        return "supported"
-    return "unsupported"
+    if "indeterminate" in states:
+        return "indeterminate"
+    return "supported"
 
 
 def _measure_claim_support(
@@ -1641,10 +1753,11 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     """Apply the predetermined absolute gates mechanically.
 
     A deterministic safety or citation-integrity failure HOLDs the whole build.
-    A model-quality, latency, reliability, or spend miss HOLDs OR DISABLES only
-    the affected optional mode; the governed deterministic fallback survives.
-    A metric with no applicable turns remains ``None``. Required claim support
-    that is absent is counted explicitly and fails the narrated-answer gate.
+    Unsupported or indeterminate material claims HOLD the build because
+    promotion cannot retain a narration whose every proposition is not
+    entailed. Other model-quality, latency, reliability, or spend misses HOLD
+    OR DISABLE only the affected optional mode; the governed deterministic
+    fallback survives. A metric with no applicable turns remains ``None``.
     """
     gates: dict[str, dict[str, Any]] = {}
     hold_build = False
@@ -1720,6 +1833,8 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
         },
         "groundedness",
     )
+    if not ground_pass:
+        hold_build = True
 
     cov = metrics.get("material_claim_coverage")
     cov_pass = cov is None or cov >= thresholds["citation"]["material_claim_coverage_min"]
