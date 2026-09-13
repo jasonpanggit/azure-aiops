@@ -523,11 +523,37 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     loaded: rows.length,
     empty: Boolean(findings.data && rows.length === 0),
   });
-  const attackState = presentSection(attack, common, {
-    loaded: attack.data?.edges.length,
-    empty: Boolean(attack.data && attack.data.edges.length === 0),
-    inheritCommon: !containerOnly,
-  });
+  const attackNotFound =
+    typeof attack.error === "object" &&
+    attack.error !== null &&
+    "status" in attack.error &&
+    attack.error.status === 404;
+  const attackState = (() => {
+    const base = presentSection(attack, common, {
+      loaded: attack.data?.edges.length,
+      empty: Boolean(attack.data && attack.data.edges.length === 0),
+      inheritCommon: !containerOnly,
+    });
+
+    if (
+      !containerOnly &&
+      !attack.data &&
+      attackNotFound &&
+      coreState.status !== "unavailable"
+    ) {
+      return {
+        ...base,
+        status: "healthy-empty" as const,
+        error: null,
+        metadata: {
+          ...base.metadata,
+          safeErrorMessage: "",
+        },
+      };
+    }
+
+    return base;
+  })();
   const nvdSource = catalogSource(catalogItem, "nvd");
   const epssSource = catalogSource(catalogItem, "epss");
   const kevSource = catalogSource(catalogItem, "kev");
@@ -908,7 +934,12 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
               />
             </section>
           ) : (
-            <Section label="Attack path" sourceName="Attack path" itemLabel="reachable paths" state={attackState}>
+            <Section
+              label="Attack path"
+              sourceName="Attack path"
+              itemLabel="supported paths"
+              state={attackState}
+            >
               {attack.data && <AttackPathGraphView graph={attack.data} />}
             </Section>
           )}

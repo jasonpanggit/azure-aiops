@@ -410,6 +410,34 @@ describe("CVE detail", () => {
     expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
   });
 
+  it("renders a healthy-empty no-supported-path state for legacy attack-path 404s", async () => {
+    api.attackPath.mockRejectedValueOnce(
+      Object.assign(new Error("Not found"), { status: 404 }),
+    );
+
+    renderPage();
+
+    const attack = await screen.findByRole("region", { name: "Attack path section" });
+    expect(
+      within(attack).getByText(
+        "No supported paths reported by Attack path",
+      ),
+    ).toBeInTheDocument();
+    expect(within(attack).queryByText("Attack path is unavailable")).not.toBeInTheDocument();
+  });
+
+  it("keeps genuine attack-path provider failures unavailable", async () => {
+    api.attackPath.mockRejectedValueOnce(new Error("Provider unavailable"));
+
+    renderPage();
+
+    const attack = await screen.findByRole("region", { name: "Attack path section" });
+    expect(within(attack).getByText("Attack path is unavailable")).toBeInTheDocument();
+    expect(
+      within(attack).queryByText("No supported paths reported by Attack path"),
+    ).not.toBeInTheDocument();
+  });
+
   it("opens Copilot when catalog metadata is unavailable", async () => {
     api.exposureExternalCatalog.mockRejectedValue(
       new Error("Catalog metadata unavailable"),

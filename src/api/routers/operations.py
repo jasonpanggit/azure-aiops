@@ -55,17 +55,23 @@ def _require(context: Context, attribute: str, capability: str, scope: Scope) ->
             and context.hybrid_remediation_provider is not None
         ):
             return context.hybrid_remediation_provider(subscription_ids)
-    elif (
-        capability == "remediation"
-        and context.hybrid_remediation_provider is not None
-        and scope.is_unrestricted()
-    ):
+    elif scope.is_unrestricted():
+        hybrid_provider = (
+            context.hybrid_incident_provider
+            if capability == "incidents"
+            else (
+                context.hybrid_remediation_provider
+                if capability == "remediation"
+                else None
+            )
+        )
         # No subscription picked in the operating-context selector: fall back
         # to every onboarded subscription instead of the static Fabric
-        # snapshot, so "all subscriptions" shows live plans rather than 0.
-        all_subscription_ids = _onboarded_subscription_ids(context)
-        if all_subscription_ids:
-            return context.hybrid_remediation_provider(all_subscription_ids)
+        # snapshot, so "all subscriptions" shows live results rather than 0.
+        if hybrid_provider is not None:
+            all_subscription_ids = _onboarded_subscription_ids(context)
+            if all_subscription_ids:
+                return hybrid_provider(all_subscription_ids)
     return context.resolve_provider(capability)
 
 

@@ -197,6 +197,33 @@ class ApiContext:
     def semantic(self) -> SemanticEngine:
         return self.resolve_provider("semantic")
 
+    def governance_snapshot(
+        self,
+        scope: Scope,
+        *,
+        require_generation: bool = True,
+    ) -> Any:
+        """Resolve one generation-pinned governance snapshot within ``scope``."""
+        provider = (
+            self.governance_generation_provider(scope)
+            if self.governance_generation_provider is not None
+            else self.resolve_provider("governance", optional=True)
+        )
+        if provider is None:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Governance data is unavailable because no connection has synced yet",
+                {"capability": "governance", "provider_state": "unavailable"},
+            )
+        snapshot = provider.scoped(scope)
+        if require_generation and not snapshot.generation_available:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Governance data is unavailable because no active connection has synced yet",
+                {"capability": "governance", "provider_state": "unavailable"},
+            )
+        return snapshot
+
     def inventory_read_port(self) -> Any:
         """Resolve the scope-enforcing identity read port.
 

@@ -432,6 +432,15 @@ def test_runtime_requires_readiness_only_for_enabled_nonrollback_exposure(
         )
         is required_reader
     )
+    assert (
+        fabric_runtime._build_lakehouse_sql_reader(
+            lakehouse,
+            object(),
+            enabled_config,
+            mode=fabric_runtime.FabricRuntimeMode.PUBLISH,
+        )
+        is None
+    )
 
     rollback_config = _write_fabric_config(
         tmp_path / "rollback.yaml",
@@ -448,3 +457,56 @@ def test_runtime_requires_readiness_only_for_enabled_nonrollback_exposure(
         )
         is None
     )
+
+
+def test_runtime_default_exposure_reader_blocks_when_readiness_is_incomplete(
+    monkeypatch, tmp_path
+):
+    lakehouse = {
+        "displayName": "lakehouse",
+        "properties": {
+            "sqlEndpointProperties": {
+                "connectionString": "server",
+                "id": "database",
+            }
+        },
+    }
+    config = _write_fabric_config(
+        tmp_path / "enabled.yaml",
+        """
+  exposure:
+    enabled: true
+    adapter: fabric_sql
+    rollback_mode: false
+""",
+    )
+    calls: list[tuple[object, object]] = []
+
+    def block_incomplete_readiness(endpoint, credential):
+        calls.append((endpoint, credential))
+        raise RuntimeError("readiness incomplete")
+
+    monkeypatch.setattr(
+        fabric_runtime,
+        "require_exposure_ready",
+        block_incomplete_readiness,
+    )
+    credential = object()
+
+    with pytest.raises(RuntimeError, match="readiness incomplete"):
+        fabric_runtime._build_lakehouse_sql_reader(
+            lakehouse,
+            credential,
+            config,
+        )
+
+    assert calls == [
+        (
+            {
+                "server": "server",
+                "database": "database",
+                "schema": "dbo",
+            },
+            credential,
+        )
+    ]
