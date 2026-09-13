@@ -1,8 +1,8 @@
 ---
-status: fixing
+status: investigating
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T11:24:00+08:00
+updated: 2026-09-13T12:07:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,10 +31,17 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: Clusters 1 and 2 are fixed and guardrail-verified; the next unresolved root cause is cluster 3, where evidence and claims lack immutable page/entity/filter/query/generation identity and retained claim-level citation closure.
-test: Add focused RED tests that distinguish current page evidence from stale or unrelated retained evidence and require every material response claim to close over retained citations.
-expecting: Existing orchestration can select stale/unrelated evidence or return material claims whose evidence identity is not bound to the current page/query/generation.
-next_action: Start cluster 3 by tracing canonical snapshot identity through retained thread evidence and synthesis claim citation closure; do not alter clusters 4-6 yet.
+hypothesis: Cluster 3 is fixed and guardrail-verified; the next unresolved root cause is cluster 4, where global keyword routing can broaden beyond the current page manifest's reviewed specialist set instead of producing an exact deterministic intersection.
+test: Add exact-set routing tests across Services, Twin, Predeploy, and Identity that vary only question keywords and assert selected specialists remain within the page manifest allowlist with no silent broadening.
+expecting: Current substring routing can add globally matching specialists that are not approved for the active page kind, and existing tests encode subset rather than exact-set expectations.
+next_action: Start exact-set routing by tracing `select_specialists_for_turn` and canonical fallback through the manifest page mappings; do not change redirects/readiness or archive this session.
+remaining_external_uncertainty:
+  - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
+  - "Live Foundry/provider onboarding and immutable deployment parity remain external readiness evidence and were not fabricated or contacted."
+candidate_causes:
+  - "code: selection/ranking keys omit one or more immutable context dimensions and fallback synthesis does not construct citation-bearing claims"
+  - "data: retained thread entries can legitimately contain multiple page generations whose scalar facts conflict, exposing the incomplete code identity"
+and_gate: "yes — stale dominance requires both mixed retained generations in data and code that fails to exclude identity mismatches; unsupported fallback claims require supported row facts plus missing claim/citation closure logic"
 
 ## Evidence
 
@@ -146,6 +153,42 @@ next_action: Start cluster 3 by tracing canonical snapshot identity through reta
 - timestamp: 2026-09-13T11:20:00+08:00
   observation: Cluster 2 was committed atomically as `3e30cb8b1`; both code commits contain the required Copilot co-author trailer.
   implication: The requested implementation is durable in two reviewable commits while the overall debug session remains open for later clusters.
+- timestamp: 2026-09-13T11:35:00+08:00
+  observation: The first RED commands repeated two known harness mistakes: root-level npm could not find `package.json`, and the worktree `.venv` lacked pytest.
+  implication: These are invocation failures only; corrected commands are `npm --prefix web ...` and `uv run --extra test pytest ...`.
+- timestamp: 2026-09-13T11:39:00+08:00
+  observation: The corrected focused Python RED run fails three tests exactly at the missing seams: `_retained_evidence` rejects an `evidence_selection_id`, and snapshot v2 rejects normalized `filters` and `query`.
+  implication: Current retained selection cannot distinguish stale zero-count evidence by page/entity/filter/query/generation, and the identity dimensions are absent from the canonical contract.
+- timestamp: 2026-09-13T11:40:00+08:00
+  observation: The focused KB adapter RED test shows visible `product`, `target_date`, `product_name`, and finding `target_date` inputs are dropped while publication date and affected count remain.
+  implication: KB detail cannot answer product/target factual questions from retained evidence even when the page provides those values.
+- timestamp: 2026-09-13T11:41:00+08:00
+  observation: The focused drawer RED test renders the generic fallback status, 1-of-137 coverage, uncertainty, and retained citation but omits the supplied direct claim and renders `No matching context was found`.
+  implication: Provider-unavailable canonical output has no visible direct-answer projection even when a citation-closed deterministic claim is present.
+- timestamp: 2026-09-13T11:47:00+08:00
+  observation: The first adjacent run exposed four inventory authority regressions because newly minted page citations were returned beside authoritative inventory tool citations, including one citation-bound overflow.
+  implication: Browser inventory rows must remain selector-only; retained page-observation citations are now limited to non-inventory material claims, preserving the existing inventory authority fence and citation bound.
+- timestamp: 2026-09-13T11:48:00+08:00
+  observation: The first web adjacent run exposed two intentional contract-expectation changes: normalized v2 snapshots now retain filters/query/generation and generate per-row material claims instead of dropping all of them.
+  implication: Updating the old assertions to require the stronger contract is appropriate; no runtime regression caused those two failures.
+- timestamp: 2026-09-13T11:50:00+08:00
+  observation: Focused and immediate adjacent verification now passes 184 Python canonical snapshot/API/synthesis tests, 104 web adapter/drawer tests, Ruff, and strict TypeScript checking.
+  implication: Exact selection identity, KB fact retention, deterministic cited answers, inventory authority isolation, and visible output projection coexist without weakening the tested scope/CAS/citation boundaries.
+- timestamp: 2026-09-13T11:56:00+08:00
+  observation: Broader Phase 11 adjacency passes 142 Python orchestration/policy/thread/provider tests and 52 web manifest-parity/thread/integration/Inventory/Investigate tests; the web run emits only pre-existing Inventory React `act(...)` warnings.
+  implication: The cluster preserves specialist policy, durable continuity, provider contracts, route integration, and inventory behavior beyond the driving tests.
+- timestamp: 2026-09-13T11:57:00+08:00
+  observation: Diff review shows additive validation, identity, bounded retained-fact, deterministic-claim, and UI projection logic; no excluded or Patch Priorities publication/data file is modified.
+  implication: The no-op/deletion guard passes and scope constraints remain intact; revert-and-reconfirm is the final applicable acceptance signal.
+- timestamp: 2026-09-13T12:01:00+08:00
+  observation: With only the seven production files stashed, all three Python identity/fallback tests, the KB adapter test, and the drawer direct-answer test returned to their original RED failures; restoring the stash returned all five focused tests to green.
+  implication: Revert-and-reconfirm proves this implementation, not environment or fixture drift, removes the stale-selection and generic-fallback defects.
+- timestamp: 2026-09-13T12:02:00+08:00
+  observation: No Stryker dependency or configuration is present; mutation testing is unavailable. The diff is additive/root-cause-directed, target and adjacent suites pass, and the temporary guardrail stash was dropped.
+  implication: All applicable fix-acceptance signals pass, with mutation checking explicitly skipped rather than assumed.
+- timestamp: 2026-09-13T12:06:00+08:00
+  observation: Cluster 3 code and focused tests were committed atomically as `8143a0207` with the required Copilot co-author trailer; no excluded file is present in the commit.
+  implication: Immutable evidence selection and deterministic cited fallback are durable while the debug session remains open for exact-set routing, redirect, and readiness clusters.
 
 ## Eliminated
 
@@ -175,12 +218,12 @@ next_action: Start cluster 3 by tracing canonical snapshot identity through reta
 
 ## Resolution
 
-root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS."
-fix: "Clusters 1-2 complete: added strict shared TypeScript v2 normalization with matching character/UTF-8/structural bounds; invoked backend canonicalization on the authority-free production projection; accepted all manifest-backed page kinds while preserving the inventory selector adapter; moved every CopilotDrawer turn to `/copilot/investigations`; added optional same-tab expected revision and pre-I/O conflict rejection. Clusters 3-6 remain open."
+root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts."
+fix: "Clusters 1-3 complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior from clusters 1-2; added normalized filter/query plus content-derived generation identity, an authorized exact selection digest, exact-match retained evidence filtering, bounded material page-fact retention outside the authoritative Inventory path, KB product/date/target preservation, deterministic no-model claim synthesis, and adjacent retained citation IDs in the drawer. Clusters 4-6 remain open."
 verification:
   target_test:
     result: pass
-    details: "Python snapshot/API/CAS targets and web normalizer/drawer targets pass."
+    details: "Three focused Python selection/fallback tests plus focused KB-adapter and drawer direct-answer tests pass."
   mutation_check:
     result: skipped
     reason_if_skipped: "No Stryker dependency or configuration exists."
@@ -188,12 +231,14 @@ verification:
   no_op_deletion:
     result: pass
     deletion_justified_by_rca: true
-    details: "The removed drawer branches were the divergent legacy endpoints identified by root cause 2."
+    details: "Cluster 3 is additive validation/selection/synthesis/output logic; no behavior was deleted or short-circuited."
   adjacent_tests:
     result: pass
     suites_run:
-      - "163 Python canonical API, snapshot, thread-store, and orchestration parity tests"
-      - "139 web drawer, thread continuity, page adapter, Inventory, and Investigate tests"
+      - "184 Python canonical API, snapshot, and synthesis tests"
+      - "142 Python orchestration policy/parity, thread-store, Foundry, and compatibility tests"
+      - "104 web drawer and page-adapter tests"
+      - "52 web manifest parity, continuity, integration, Inventory, and Investigate tests"
       - "Ruff on touched Python files"
       - "TypeScript `tsc --noEmit`"
   revert_and_reconfirm:
@@ -201,13 +246,13 @@ verification:
     bug_returned_on_revert: true
     fixed_on_reapply: true
   guardrail_verdict: accepted
+commits:
+  - "8143a0207 fix(copilot): bind retained evidence to page context"
 files_changed:
   - src/api/routers/copilot.py
   - src/operations/orchestration_contract.py
   - src/operations/orchestration_service.py
-  - tests/test_api_copilot_snapshot_v2.py
-  - tests/test_api_copilot_unified.py
-  - tests/test_page_context_v2.py
+  - tests/test_copilot_evaluation_v2.py
   - web/src/components/ui/CopilotDrawer.test.tsx
   - web/src/components/ui/CopilotDrawer.tsx
   - web/src/lib/copilot/page-adapters.test.ts
