@@ -1037,41 +1037,25 @@ class FabricSyncService:
                     row_count=len(legacy_temporal.observations),
                     failure_count=0,
                 )
-                for temporal_stage in (
-                    "temporal_observation_combination",
-                    "temporal_current_projection",
-                    "temporal_immutable_checks",
-                ):
-                    _notify_stage_progress(
-                        stage_progress_callback,
-                        temporal_stage,
-                        "started",
-                    )
                 temporal = materialize_temporal_exposure_tables(
                     legacy_temporal,
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
-                )
-                _notify_stage_progress(
-                    stage_progress_callback,
-                    "temporal_observation_combination",
-                    "completed",
-                    row_count=len(temporal.all_observation_rows),
-                    failure_count=0,
-                )
-                _notify_stage_progress(
-                    stage_progress_callback,
-                    "temporal_current_projection",
-                    "completed",
-                    row_count=len(temporal.current_rows),
-                    failure_count=0,
-                )
-                _notify_stage_progress(
-                    stage_progress_callback,
-                    "temporal_immutable_checks",
-                    "completed",
-                    row_count=len(persisted_observations),
-                    failure_count=0,
+                    stage_callback=lambda stage, status, row_count: (
+                        _notify_stage_progress(
+                            stage_progress_callback,
+                            stage,
+                            status,
+                            **(
+                                {
+                                    "row_count": row_count,
+                                    "failure_count": 0,
+                                }
+                                if status == "completed"
+                                else {}
+                            ),
+                        )
+                    ),
                 )
                 del persisted_observations, existing_observations
                 temporal_tables = temporal.write_tables(copy_rows=False)
