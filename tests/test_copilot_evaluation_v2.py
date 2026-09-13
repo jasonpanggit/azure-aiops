@@ -2380,6 +2380,12 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
                 "arguments": {"name": "payments"},
                 "status": "ok",
                 "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
             }
         ],
         "citations": [
@@ -2400,13 +2406,6 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
                 }
             ],
             "warning": "",
-        },
-        "evaluation": {
-            "claim_support": {
-                "version": "1",
-                "method": "deterministic_response",
-                "claims": [{"claim_index": 0, "supported": True}],
-            }
         },
         "mutation_authorized": False,
     }
@@ -2438,6 +2437,7 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     assert result.citation_valid is True
     assert result.material_claim_coverage == 1.0
     assert result.groundedness == 1.0
+    assert result.claim_support == ["supported"]
     assert result.citation_reference_integrity_ok is True
     assert evidence["grants_ok"] is None
     assert gates["routing"]["passed"] is True
@@ -2476,6 +2476,12 @@ def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
                 "arguments": {"name": "payments"},
                 "status": "ok",
                 "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
             }
         ],
         "citations": [
@@ -2493,13 +2499,6 @@ def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
                     "evidence_refs": [citation_id],
                 }
             ],
-        },
-        "evaluation": {
-            "claim_support": {
-                "version": "1",
-                "method": "proxy_evaluator",
-                "claims": [{"claim_index": 0, "supported": False}],
-            }
         },
         "mutation_authorized": False,
     }
@@ -2526,13 +2525,14 @@ def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
     assert result.material_claim_coverage == 1.0
     assert result.citation_reference_integrity_ok is True
     assert result.groundedness == 0.0
+    assert result.claim_support == ["unsupported"]
     assert report["gates"]["citation_coverage"]["passed"] is True
     assert report["gates"]["groundedness"]["passed"] is False
     assert report["decision"] == "HOLD_OR_DISABLE_MODE"
     assert "narrated_answer_promotion" in report["disabled_modes"]
 
 
-def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
+def test_unverifiable_cited_claim_is_indeterminate_and_holds_narration(
     monkeypatch,
 ):
     evaluate_agents = _load_evaluate_agents()
@@ -2560,6 +2560,12 @@ def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
                 "tool": "business_service_context",
                 "status": "ok",
                 "data": {"owner": "platform-team"},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "business_service",
+                    }
+                ],
             }
         ],
         "citations": [
@@ -2573,14 +2579,11 @@ def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
             "status": "synthesized",
             "claims": [
                 {
-                    "summary": "The payments service is owned by another team.",
+                    "summary": "A major outage is imminent.",
                     "evidence_refs": [citation_id],
                 }
             ],
         },
-        # This legacy value was citation attachment coverage. It must not be
-        # accepted as claim-evidence entailment.
-        "evaluation": {"groundedness": 1.0},
         "mutation_authorized": False,
     }
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
@@ -2605,43 +2608,11 @@ def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
 
     assert result.material_claim_coverage == 1.0
     assert result.groundedness is None
+    assert result.claim_support == ["indeterminate"]
     assert metrics["claim_support_missing_turns"] == 1
     assert report["gates"]["citation_coverage"]["passed"] is True
     assert report["gates"]["groundedness"]["passed"] is False
     assert report["decision"] == "HOLD_OR_DISABLE_MODE"
-
-
-@pytest.mark.parametrize(
-    "claim_support",
-    [
-        {
-            "version": "1",
-            "method": "proxy_evaluator",
-            "claims": [{"claim_index": 0, "supported": "true"}],
-        },
-        {
-            "version": "1",
-            "method": "proxy_evaluator",
-            "claims": [],
-        },
-        {
-            "version": "1",
-            "method": "citation_presence",
-            "claims": [{"claim_index": 0, "supported": True}],
-        },
-    ],
-)
-def test_claim_support_proxy_schema_is_strict_and_fails_closed(claim_support):
-    evaluate_agents = _load_evaluate_agents()
-
-    with pytest.raises(
-        evaluate_agents.EvaluationResponseError,
-        match="claim_support",
-    ):
-        evaluate_agents._claim_support_score(
-            claim_support,
-            claim_count=1,
-        )
 
 
 def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
@@ -2675,7 +2646,10 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
                 "tool": "business_service_context",
                 "arguments": {"name": "payments"},
                 "status": "ok",
-                "data": {"resource_id": resource_id},
+                "data": {
+                    "owner": "payments",
+                    "resource_id": resource_id,
+                },
                 "evidence": [
                     {
                         "source_engine": "semantic",
@@ -2701,13 +2675,6 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
                     "evidence_refs": ["tool:call-1:0"],
                 }
             ],
-        },
-        "evaluation": {
-            "claim_support": {
-                "version": "1",
-                "method": "deterministic_response",
-                "claims": [{"claim_index": 0, "supported": True}],
-            }
         },
         "mutation_authorized": False,
     }
@@ -2967,7 +2934,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                 "tool": step.tool_calls[0].tool,
                 "arguments": step.tool_calls[0].arguments,
                 "status": "ok",
-                "data": {"summary": f"{step.specialist_id} observation"},
+                "data": {"status": "observed"},
                 "evidence": [
                     {
                         "source_engine": "test",
@@ -2988,7 +2955,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
         ]
         claims = [
             {
-                "summary": f"{call['specialist_id']} reported an observation.",
+                "summary": f"{call['specialist_id']} status is observed.",
                 "evidence_refs": [f"tool:{call['call_id']}:0"],
             }
             for call in calls
@@ -3007,19 +2974,6 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                 "synthesis": {
                     "status": "deterministic",
                     "claims": claims,
-                },
-                "evaluation": {
-                    "claim_support": {
-                        "version": "1",
-                        "method": "deterministic_response",
-                        "claims": [
-                            {
-                                "claim_index": index,
-                                "supported": True,
-                            }
-                            for index, _claim in enumerate(claims)
-                        ],
-                    }
                 },
                 "mutation_authorized": False,
             },

@@ -21,10 +21,10 @@ What is scored, per question:
                       orchestration contract? Deterministic mode expects
                       page-anchored delegation; MAF mode expects question-first
                       delegation with page fallback only when intent is absent.
-* ``groundedness`` -- fraction of material claims explicitly judged supported
-                      by a deterministic response signal or controlled proxy
-                      evaluator. Citation attachment is scored separately and
-                      never counts as evidence that a claim is entailed.
+* ``groundedness`` -- fraction of material claims deterministically supported
+                      by structured data behind their cited evidence. Citation
+                      attachment is scored separately and never counts as
+                      evidence that a claim is entailed.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
                       signal, not a failure. This is the metric that caught
@@ -53,10 +53,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 DEFAULT_API = (
     "https://aiops-dev-api.greenpond-732382e3.australiaeast.azurecontainerapps.io"
@@ -329,6 +330,7 @@ class Result:
     orchestration_runtime: str = ""
     orchestration_strategy: str = ""
     groundedness: float | None = None
+    claim_support: list[str] = field(default_factory=list)
     tool_correctness: float | None = None
     narrated: bool = False
     narration_warning: str = ""
@@ -362,6 +364,7 @@ class Result:
             "orchestration_runtime": self.orchestration_runtime,
             "orchestration_strategy": self.orchestration_strategy,
             "groundedness": self.groundedness,
+            "claim_support": self.claim_support,
             "tool_correctness": self.tool_correctness,
             "narrated": self.narrated,
             "narration_warning": self.narration_warning,
@@ -831,69 +834,183 @@ def _canonical_contract_signals(
     }
 
 
-def _claim_support_score(
-    claim_support: Any,
-    *,
-    claim_count: int,
-) -> float | None:
-    """Validate and score an explicit claim-support measurement.
+ClaimSupportStatus = Literal["supported", "unsupported", "indeterminate"]
 
-    Citation references deliberately are not inputs here: attachment and
-    reference integrity are separate metrics and do not establish entailment.
-    Missing support remains unmeasured so the narrated-answer gate can fail
-    closed. A present signal must cover every material claim exactly once.
-    """
-    if claim_count == 0:
-        return None
-    if claim_support is None:
-        return None
-    if not isinstance(claim_support, dict):
-        raise EvaluationResponseError("claim_support must be an object")
-    expected_keys = {"version", "method", "claims"}
-    if set(claim_support) != expected_keys:
-        raise EvaluationResponseError(
-            "claim_support must contain exactly version, method, and claims"
+_FACT_ALIASES: dict[str, tuple[str, ...]] = {
+    "owner": ("owner", "owned", "ownership"),
+    "status": ("status", "state"),
+    "severity": ("severity",),
+    "count": ("count", "number", "total"),
+    "name": ("name", "named"),
+    "version": ("version",),
+    "region": ("region", "location"),
+    "resource id": ("resource id",),
+}
+_NON_ASSERTION_FACT_KEYS = frozenset(
+    {"raw", "rows", "summary", "description", "message"}
+)
+_NEGATION_WORDS = frozenset({"no", "not", "never", "without"})
+
+
+@dataclass(frozen=True)
+class ClaimSupportMeasurement:
+    """Evaluator-owned, fail-closed support states for canonical claims."""
+
+    states: tuple[ClaimSupportStatus, ...]
+
+    @property
+    def score(self) -> float | None:
+        if not self.states or "indeterminate" in self.states:
+            return None
+        return round(self.states.count("supported") / len(self.states), 4)
+
+
+def _normalized_words(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value).casefold()))
+
+
+def _flatten_evidence_facts(
+    value: Any,
+    *,
+    prefix: str = "",
+) -> list[tuple[str, str]]:
+    """Return bounded scalar key/value facts from one retained evidence row."""
+    facts: list[tuple[str, str]] = []
+    if isinstance(value, Mapping):
+        for raw_key, nested in list(value.items())[:64]:
+            key = _normalized_words(raw_key)
+            if not key:
+                continue
+            path = f"{prefix} {key}".strip()
+            facts.extend(_flatten_evidence_facts(nested, prefix=path))
+            if len(facts) >= 128:
+                break
+        return facts[:128]
+    if isinstance(value, (list, tuple)):
+        for nested in list(value)[:32]:
+            facts.extend(_flatten_evidence_facts(nested, prefix=prefix))
+            if len(facts) >= 128:
+                break
+        return facts[:128]
+    if value is None or isinstance(value, (dict, set)):
+        return facts
+    normalized_value = _normalized_words(value)
+    if prefix and normalized_value:
+        facts.append((prefix, normalized_value))
+    return facts
+
+
+def _fact_aliases(key: str) -> tuple[str, ...]:
+    leaf = key.split()[-1] if key else ""
+    normalized_key = _normalized_words(key)
+    if normalized_key in _NON_ASSERTION_FACT_KEYS or leaf in _NON_ASSERTION_FACT_KEYS:
+        return ()
+    aliases = _FACT_ALIASES.get(normalized_key) or _FACT_ALIASES.get(leaf)
+    if aliases:
+        return aliases
+    # Unknown multi-character field names remain usable for deterministic
+    # page claims rendered as ``<field> <value>``.
+    return (normalized_key,) if len(normalized_key) >= 3 else ()
+
+
+def _cited_evidence_facts(
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, list[tuple[str, str]]]:
+    """Index structured tool data by the citation IDs the runtime minted."""
+    indexed: dict[str, list[tuple[str, str]]] = {}
+    for call in tool_calls:
+        if not isinstance(call, Mapping):
+            continue
+        call_id = str(call.get("call_id") or "")
+        evidence_rows = call.get("evidence")
+        data = call.get("data")
+        if (
+            not call_id
+            or str(call.get("status") or "") != "ok"
+            or not isinstance(evidence_rows, list)
+        ):
+            continue
+        # ToolResult does not describe which subset of ``data`` belongs to
+        # which Evidence row. It is safe to associate the shared payload only
+        # when exactly one row exists; otherwise require row-local structured
+        # data or leave the claim indeterminate.
+        shared_facts = (
+            _flatten_evidence_facts(data)
+            if len(evidence_rows) == 1
+            else []
         )
-    if claim_support["version"] != "1":
-        raise EvaluationResponseError("claim_support version must be '1'")
-    if claim_support["method"] not in {
-        "deterministic_response",
-        "proxy_evaluator",
-    }:
-        raise EvaluationResponseError(
-            "claim_support method must be deterministic_response or proxy_evaluator"
+        for index, row in enumerate(evidence_rows):
+            if not isinstance(row, Mapping):
+                continue
+            citation_id = str(
+                row.get("evidence_id") or f"tool:{call_id}:{index}"
+            )
+            row_facts = _flatten_evidence_facts(row.get("data"))
+            indexed[citation_id] = [*shared_facts, *row_facts]
+    return indexed
+
+
+def _claim_support_status(
+    claim: Mapping[str, Any],
+    *,
+    evidence_by_id: Mapping[str, list[tuple[str, str]]],
+) -> ClaimSupportStatus:
+    """Classify one claim from structured cited facts, never citation presence."""
+    summary = _normalized_words(claim.get("summary") or "")
+    references = claim.get("evidence_refs") or claim.get("citation_ids") or []
+    if not summary or not isinstance(references, list):
+        return "indeterminate"
+    facts = [
+        fact
+        for reference in references
+        for fact in evidence_by_id.get(str(reference), ())
+    ]
+    if not facts:
+        return "indeterminate"
+
+    summary_words = set(summary.split())
+    negated = bool(summary_words & _NEGATION_WORDS)
+    values_by_assertion: dict[tuple[str, ...], set[str]] = {}
+    for key, value in facts:
+        aliases = _fact_aliases(key)
+        if aliases:
+            values_by_assertion.setdefault(aliases, set()).add(value)
+
+    mentioned_assertions = [
+        values
+        for aliases, values in values_by_assertion.items()
+        if any(
+            f" {alias} " in f" {summary} " for alias in aliases
         )
-    claims = claim_support["claims"]
-    if not isinstance(claims, list):
-        raise EvaluationResponseError("claim_support claims must be a list")
-    expected_indexes = list(range(claim_count))
-    observed_indexes: list[int] = []
-    supported = 0
-    for claim in claims:
-        if not isinstance(claim, dict) or set(claim) != {
-            "claim_index",
-            "supported",
-        }:
-            raise EvaluationResponseError(
-                "claim_support claims must contain exactly claim_index and supported"
+    ]
+    if not mentioned_assertions:
+        return "indeterminate"
+    if negated:
+        return "unsupported"
+    if all(
+        any(f" {value} " in f" {summary} " for value in values)
+        for values in mentioned_assertions
+    ):
+        return "supported"
+    return "unsupported"
+
+
+def _measure_claim_support(
+    claims: list[dict[str, Any]],
+    *,
+    tool_calls: list[dict[str, Any]],
+) -> ClaimSupportMeasurement:
+    """Measure canonical response claims against their structured evidence."""
+    evidence_by_id = _cited_evidence_facts(tool_calls)
+    return ClaimSupportMeasurement(
+        states=tuple(
+            _claim_support_status(
+                claim,
+                evidence_by_id=evidence_by_id,
             )
-        claim_index = claim["claim_index"]
-        support_value = claim["supported"]
-        if isinstance(claim_index, bool) or not isinstance(claim_index, int):
-            raise EvaluationResponseError(
-                "claim_support claim_index must be an integer"
-            )
-        if not isinstance(support_value, bool):
-            raise EvaluationResponseError(
-                "claim_support supported must be a boolean"
-            )
-        observed_indexes.append(claim_index)
-        supported += int(support_value)
-    if observed_indexes != expected_indexes:
-        raise EvaluationResponseError(
-            "claim_support must cover every claim exactly once in index order"
+            for claim in claims
         )
-    return round(supported / claim_count, 4)
+    )
 
 
 def _run_case(
@@ -1061,27 +1178,11 @@ def _run_case(
         if "selected_specialists" in data or "_response_scope" in data
         else {}
     )
-    try:
-        groundedness = _claim_support_score(
-            evaluation.get("claim_support"),
-            claim_count=len(findings),
-        )
-    except EvaluationResponseError as exc:
-        return Result(
-            case_id=case.case_id,
-            ok=False,
-            specialists=seen,
-            expected_specialists=sorted(expected),
-            missing=missing,
-            latency_ms=latency,
-            summary=str(synthesis.get("summary") or narration),
-            narration=narration,
-            tool_names=tool_names,
-            citation_valid=citation_valid,
-            material_claim_coverage=material_claim_coverage,
-            citation_reference_integrity_ok=citation_reference_integrity_ok,
-            error=str(exc),
-        )
+    claim_support = _measure_claim_support(
+        findings,
+        tool_calls=tool_calls,
+    )
+    groundedness = claim_support.score
     deterministic_spend = (
         0.0
         if synthesis.get("status") in {"deterministic", "skipped"}
@@ -1104,6 +1205,7 @@ def _run_case(
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
         groundedness=groundedness,
+        claim_support=list(claim_support.states),
         tool_correctness=(
             evaluation.get("tool_correctness")
             if evaluation.get("tool_correctness") is not None
