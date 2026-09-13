@@ -135,6 +135,82 @@ raise SystemExit(1 if errors else 0)
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([]);
   });
+
+  it("submits synthetic coverage and provenance through the canonical API", () => {
+    const context = buildOverviewCopilotContext({
+      scope: { subscription: ["sub-a"] },
+      filters: {},
+      records: [],
+      evidence: [{
+        source_engine: "test",
+        source_table: "page-provenance",
+        confidence: "high",
+      }],
+      coverage: [{
+        key: "situations",
+        visibleCount: 0,
+        totalCount: 0,
+        available: true,
+      }],
+      sourceStatuses: [{
+        source: "situations",
+        observedAt: "2026-09-13T00:00:00Z",
+        status: "fresh",
+      }],
+    });
+    const snapshot = normalizeCopilotSnapshotV2(context.snapshot);
+    expect(snapshot.evidence.map((row) => row.claim_type)).toEqual(
+      expect.arrayContaining(["coverage", "source_observation"]),
+    );
+    const script = `
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path[:0] = ["src", "tests"]
+from fastapi.testclient import TestClient
+from api.app import create_app
+from test_api_copilot_investigation import HEADERS, _context
+
+snapshot = json.load(sys.stdin)
+os.environ["AIOPS_COPILOT_ROLLOUT_MODE"] = "default"
+with tempfile.TemporaryDirectory() as directory:
+    response = TestClient(
+        create_app(_context(Path(directory), None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json={
+            "contract_version": "1",
+            "question": "Summarize this page.",
+            "requested_scope": {"subscription": ["sub-a"]},
+            "snapshot": snapshot,
+        },
+    )
+print(json.dumps({
+    "status": response.status_code,
+    "body": response.json(),
+}, sort_keys=True))
+`;
+    const result = spawnSync("python3", ["-c", script], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      input: JSON.stringify(snapshot),
+    });
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    const response = JSON.parse(result.stdout);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(response.body)).not.toContain(
+      snapshot.evidence.find((row) => row.claim_type === "coverage")?.evidence_id,
+    );
+    expect(JSON.stringify(response.body)).not.toContain(
+      snapshot.evidence.find((row) => row.claim_type === "source_observation")?.evidence_id,
+    );
+  });
 });
 
 describe("inventory Copilot page adapter", () => {

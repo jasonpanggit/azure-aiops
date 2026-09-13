@@ -39,6 +39,7 @@ from operations.investigation_thread_store import (
     ThreadStoreUnavailable,
 )
 from operations.maf_orchestrator import (
+    build_compatibility_fallback,
     build_deterministic_fallback,
     canonical_orchestration_enabled,
     copilot_rollout_decision,
@@ -1062,6 +1063,38 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     try:
+        def is_page_local_synthetic(row: SnapshotEvidence) -> bool:
+            entity = row.entity
+            if not isinstance(entity, DomainEntityRef):
+                return False
+            identity = (
+                entity.namespace.casefold(),
+                entity.kind.casefold(),
+                row.claim_type.casefold(),
+            )
+            return identity in {
+                ("page", "coverage", "coverage"),
+                ("source", "observation", "source_observation"),
+            }
+
+        authoritative_evidence = [
+            row
+            for row in browser_snapshot.evidence
+            if not is_page_local_synthetic(row)
+        ]
+        authoritative_ids = {
+            row.evidence_id for row in authoritative_evidence
+        }
+        authoritative_snapshot = browser_snapshot.model_copy(
+            update={
+                "evidence": authoritative_evidence,
+                "material_claims": [
+                    claim
+                    for claim in browser_snapshot.material_claims
+                    if set(claim.evidence_refs) <= authoritative_ids
+                ],
+            }
+        )
         resolved_domains: dict[
             tuple[str, str, str],
             tuple[dict[str, Any], DomainEntityRef],
@@ -1110,7 +1143,7 @@ def investigate_canonical(
         # semantic index before either planning or retained synthesis.
         canonical_browser_snapshot = (
             canonicalize_snapshot_v2(
-                browser_snapshot,
+                authoritative_snapshot,
                 effective_scope=scope,
                 domain_resolver=resolve_domain_entity,
             )
@@ -1312,16 +1345,35 @@ def investigate_canonical(
                     warning="Tool unavailable in canonical page mode",
                 )
 
+    canonical_planner = planner
+    compatibility_planner = (
+        planner
+        if browser_snapshot.page_kind == "inventory"
+        else (
+            lambda governed_request: build_compatibility_fallback(
+                governed_request,
+                load_specialist_manifest(),
+            )
+        )
+    )
     shadow_validated = False
     shadow_reason = ""
+    shadow_comparison: dict[str, Any] | None = None
     if not rollout.canonical_enabled:
         if rollout.shadow_enabled:
             try:
-                shadow_candidate = planner(request)
+                shadow_candidate = canonical_planner(request)
+                compatibility_candidate = compatibility_planner(request)
                 if shadow_candidate is not None:
                     OrchestrationPolicy().validate(
                         request=request,
                         candidate=shadow_candidate,
+                        effective_scope=scope,
+                    )
+                if compatibility_candidate is not None:
+                    OrchestrationPolicy().validate(
+                        request=request,
+                        candidate=compatibility_candidate,
                         effective_scope=scope,
                     )
             except (TypeError, ValueError) as exc:
@@ -1330,7 +1382,25 @@ def investigate_canonical(
             else:
                 shadow_validated = True
                 shadow_reason = "accepted"
-        planner = None
+                def project(candidate: CandidatePlan | None) -> list[dict[str, Any]]:
+                    return [
+                        {
+                            "specialist_id": step.specialist_id,
+                            "tools": [call.tool for call in step.tool_calls],
+                        }
+                        for step in (candidate.steps if candidate else ())
+                    ]
+
+                canonical_projection = project(shadow_candidate)
+                compatibility_projection = project(compatibility_candidate)
+                shadow_comparison = {
+                    "canonical": canonical_projection,
+                    "compatibility": compatibility_projection,
+                    "matched": (
+                        canonical_projection == compatibility_projection
+                    ),
+                }
+        planner = compatibility_planner
 
     try:
         result = OrchestrationService(
@@ -1368,12 +1438,16 @@ def investigate_canonical(
         ) from exc
 
     result_data = result.model_dump(mode="json")
+    if not rollout.canonical_enabled:
+        result_data["policy_status"] = "fallback"
+        result_data["fallback_reason"] = "compatibility_rollout"
     result_data["rollout"] = {
         "mode": rollout.mode,
         "canonical_enabled": rollout.canonical_enabled,
         "shadow_enabled": rollout.shadow_enabled,
         "shadow_validated": shadow_validated,
         "shadow_reason": shadow_reason,
+        "shadow_comparison": shadow_comparison,
     }
     result_data["citations"] = [
         citation
