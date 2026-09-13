@@ -142,10 +142,12 @@ def maf_mode_enabled() -> bool:
 def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     """Resolve compatibility → shadow → canary → default without widening.
 
-    A missing or malformed deployment value selects compatibility. Canary
-    assignment is stable for one principal and cannot fall back to random or
-    process-local state. The retained rollback mode is intentionally fixed to
-    compatibility; an unexpected value also fails closed.
+    An unspecified rollout preserves the canonical endpoint's established
+    behavior, while a blank or malformed deployment value selects
+    compatibility. Canary assignment is stable for one principal and cannot
+    fall back to random or process-local state. The retained rollback mode is
+    intentionally fixed to compatibility; an unexpected value also fails
+    closed.
     """
 
     if (
@@ -171,22 +173,19 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
         )
 
     raw_mode = os.environ.get(ENV_COPILOT_ROLLOUT_MODE)
-    if raw_mode is None or not raw_mode.strip():
-        if (
-            os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
-            == MODE_CANONICAL
-        ):
-            return CopilotRolloutDecision(
-                mode=ROLLOUT_DEFAULT,
-                canonical_enabled=True,
-                shadow_enabled=False,
-                reason="legacy_canonical_mode",
-            )
+    if raw_mode is None:
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_DEFAULT,
+            canonical_enabled=True,
+            shadow_enabled=False,
+            reason="rollout_mode_unspecified",
+        )
+    if not raw_mode.strip():
         return CopilotRolloutDecision(
             mode=ROLLOUT_COMPATIBILITY,
             canonical_enabled=False,
             shadow_enabled=False,
-            reason="rollout_mode_missing",
+            reason="rollout_mode_invalid",
         )
     mode = raw_mode.strip().casefold()
     if mode not in ROLLOUT_MODES:
@@ -244,9 +243,19 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
 
 
 def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
-    """Return whether this request routes through the canonical service."""
+    """Return whether a legacy endpoint opts into the canonical service.
 
-    return copilot_rollout_decision(stable_key=stable_key).canonical_enabled
+    The rollout decision governs the canonical ``/copilot/investigations``
+    endpoint. Existing context, investigation, history, and multi-agent
+    endpoints retain their legacy behavior unless their original
+    ``AIOPS_AGENT_ORCHESTRATION_MODE=canonical`` switch is explicit.
+    """
+
+    decision = copilot_rollout_decision(stable_key=stable_key)
+    legacy_mode = (
+        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
+    )
+    return legacy_mode == MODE_CANONICAL and decision.canonical_enabled
 
 
 def _maf_runtime_label() -> str:
@@ -410,26 +419,6 @@ def build_deterministic_fallback(
     request: Any,
     manifest: Any,
 ) -> Any | None:
-    """Build the canonical question-first deterministic fallback."""
-
-    return _build_fallback_candidate(request, manifest, compatibility=False)
-
-
-def build_compatibility_fallback(
-    request: Any,
-    manifest: Any,
-) -> Any | None:
-    """Build the retained page-anchor compatibility fallback."""
-
-    return _build_fallback_candidate(request, manifest, compatibility=True)
-
-
-def _build_fallback_candidate(
-    request: Any,
-    manifest: Any,
-    *,
-    compatibility: bool,
-) -> Any | None:
     """Construct a keyword-selected CandidatePlan that passes the same policy.
 
     Uses ``select_specialists_for_turn`` for keyword matching, constrained to
@@ -458,23 +447,13 @@ def _build_fallback_candidate(
         for spec in manifest.specialists
     ]
 
-    selected_ids = (
-        tuple(
-            specialist_id
-            for specialist_id in page_mapping.get(page_kind, ())
-            if specialist_id != "executive_summary"
-        )[:4]
-        if compatibility
-        else select_specialists_for_turn(
-            page_kind=page_kind,
-            question=request.question,
-            page_specialists=page_mapping,
-            catalog=catalog,
-            limit=4,
-        ).selected_ids
+    decision = select_specialists_for_turn(
+        page_kind=page_kind,
+        question=request.question,
+        page_specialists=page_mapping,
+        catalog=catalog,
+        limit=4,
     )
-    if compatibility and not selected_ids and page_kind == "overview":
-        selected_ids = _OVERVIEW_DOMAIN_SPECIALISTS[:4]
 
     citation_ids = [item.evidence_id for item in request.snapshot.evidence]
     if not citation_ids:
@@ -552,7 +531,7 @@ def _build_fallback_candidate(
 
     steps: list[SpecialistStep] = []
     reviewed_ids = set(reviewed_specialists_for_page(page_kind, page_mapping))
-    for sid in selected_ids:
+    for sid in decision.selected_ids:
         try:
             spec = manifest.require(sid)
         except ValueError:

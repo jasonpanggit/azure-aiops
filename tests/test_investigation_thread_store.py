@@ -10,6 +10,8 @@ evidence explicitly historical until it is rechecked, and bound its own growth.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -568,6 +570,67 @@ def test_stale_replica_cannot_overwrite_a_concurrent_turn() -> None:
     restarted = InvestigationThreadStore(documents=documents)
     history = restarted.history(thread.thread_id, "operator-a", SUB_A)
     assert [item["snapshot_id"] for item in history] == ["snap-second"]
+
+
+def test_same_process_authorizations_keep_the_revision_seen_before_tool_work() -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", BROAD)
+    both_authorized = threading.Barrier(2)
+    winner_written = threading.Event()
+
+    def write_winner():
+        authorized = store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+        both_authorized.wait(timeout=5)
+        try:
+            return store.append(
+                thread.thread_id,
+                "operator-a",
+                SUB_A,
+                _turn("winner"),
+                expected_revision=authorized.revision,
+            )
+        finally:
+            winner_written.set()
+
+    def write_loser():
+        authorized = store.authorize(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            expected_revision=0,
+        )
+        both_authorized.wait(timeout=5)
+        assert winner_written.wait(timeout=5)
+        return store.append(
+            thread.thread_id,
+            "operator-a",
+            SUB_A,
+            _turn("loser"),
+            expected_revision=authorized.revision,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(write_winner)
+        loser = pool.submit(write_loser)
+
+        assert winner.result(timeout=5).revision == 1
+        with pytest.raises(ThreadRevisionConflict) as raised:
+            loser.result(timeout=5)
+
+    assert raised.value.current_revision == 1
+    persisted = store.authorize(thread.thread_id, "operator-a", SUB_A)
+    assert persisted.revision == 1
+    assert persisted.scope == SUB_A
+    assert [
+        turn.payload["snapshot_id"] for turn in persisted.turns
+    ] == ["snap-winner"]
+    with pytest.raises(ThreadNotFound):
+        store.authorize(thread.thread_id, "operator-a", BROAD)
 
 
 def test_authorize_rechecks_expected_revision_after_concurrent_reload() -> None:

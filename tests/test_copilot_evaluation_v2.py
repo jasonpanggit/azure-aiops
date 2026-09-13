@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import io
 import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -1343,7 +1341,6 @@ def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> N
 
     reconciled = service._record_turn(
         thread,
-        authorized_revision=0,
         principal_subject="operator-a",
         requested_scope=thread.scope,
         question="What changed?",
@@ -1355,71 +1352,6 @@ def test_cas_retry_persists_committed_revision_and_reconciliation_warning() -> N
     assert store.persisted["uncertainty"] == [
         "A concurrent turn superseded this thread revision."
     ]
-
-
-def test_same_process_concurrent_turn_rejects_stale_authorized_revision() -> None:
-    store = InvestigationThreadStore()
-    thread = store.create(
-        "operator-a",
-        Scope({"subscription": ["sub-a"]}),
-    )
-    first_entered = threading.Event()
-    release_first = threading.Event()
-
-    def blocked_executor(name, arguments, *, context, scope):
-        first_entered.set()
-        assert release_first.wait(timeout=5)
-        return _executor(
-            name,
-            arguments,
-            context=context,
-            scope=scope,
-        )
-
-    request = _request("Which CVEs are exposed?").model_copy(
-        update={
-            "thread_id": thread.thread_id,
-            "expected_thread_revision": 0,
-        }
-    )
-    first = OrchestrationService(
-        planner=lambda _request: _plan("vulnerability"),
-        executor=blocked_executor,
-        thread_store=store,
-    )
-    second = OrchestrationService(
-        planner=lambda _request: _plan("vulnerability"),
-        executor=_executor,
-        thread_store=store,
-    )
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            first.execute,
-            request,
-            context=object(),
-            principal_subject="operator-a",
-            effective_scope=Scope({"subscription": ["sub-a"]}),
-        )
-        assert first_entered.wait(timeout=5)
-        committed = second.execute(
-            request,
-            context=object(),
-            principal_subject="operator-a",
-            effective_scope=Scope({"subscription": ["sub-a"]}),
-        )
-        release_first.set()
-        with pytest.raises(ThreadRevisionConflict):
-            future.result(timeout=5)
-
-    assert committed.thread_revision == 1
-    assert len(
-        store.history(
-            thread.thread_id,
-            "operator-a",
-            Scope({"subscription": ["sub-a"]}),
-        )
-    ) == 1
 
 
 def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> None:
@@ -1960,6 +1892,26 @@ def test_missing_measurement_is_null_not_zero():
     assert metrics["groundedness_p10"] is None
 
 
+def test_missing_claim_support_holds_narrated_answer_promotion():
+    evaluate_agents = _load_evaluate_agents()
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    results = [
+        _passing_result(
+            groundedness=None,
+            material_claim_coverage=1.0,
+        )
+    ]
+
+    metrics = evaluate_agents.aggregate_release_metrics(results)
+    report = evaluate_agents.evaluate_gates(metrics, thresholds)
+
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
+
+
 def test_metrics_dimensions_are_independent():
     evaluate_agents = _load_evaluate_agents()
     # A groundedness collapse must not move routing/latency/spend numbers.
@@ -2183,51 +2135,221 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         assert body["snapshot"]["material_claims"] == []
 
 
-def test_continuity_groups_propagate_thread_revision(monkeypatch):
+def test_production_dispatch_propagates_canonical_continuity_state(
+    monkeypatch,
+):
     evaluate_agents = _load_evaluate_agents()
-    cases = {
-        case.case_id: case
+    cases = [
+        case
         for case in evaluate_agents.load_cases(_CASES_PATH)
-    }
-    captured: list[dict[str, Any]] = []
-    revisions = iter((1, 2))
+        if case.continuity_group == "cont-inv-cve"
+    ]
+    requests: list[tuple[str, dict[str, Any], str]] = []
+    thread_id = "thr-" + "a" * 32
 
     def urlopen(request, *, timeout):
         assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
         body = json.loads(request.data.decode())
-        captured.append(body)
-        revision = next(revisions)
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        revision = len(requests)
         return io.BytesIO(
             json.dumps(
                 {
                     "data": {
-                        "thread_id": "thr-" + "a" * 32,
+                        "thread_id": thread_id,
                         "thread_revision": revision,
+                        "selected_specialists": list(
+                            cases[revision - 1].expect_specialists
+                        ),
+                        "selected_tools": [],
+                        "tool_results": [],
+                        "citations": [],
+                        "synthesis": {
+                            "status": "deterministic",
+                            "claims": [],
+                        },
+                        "mutation_authorized": False,
                     },
                     "scope": {"subscription": ["sub-a"]},
                 }
             ).encode()
         )
 
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
     monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
-    continuity_state: dict[str, tuple[str, int]] = {}
-    for case_id in ("cont.inv.turn1", "cont.inv.turn2"):
-        evaluate_agents._investigate(
+    thread_states = {}
+
+    results = [
+        evaluate_agents._run_case(
             "https://example.invalid",
-            "token",
-            cases[case_id],
+            "resource",
+            case,
             {"subscription": ["sub-a"]},
-            continuity_state,
+            thread_states=thread_states,
+        )
+        for case in cases
+    ]
+
+    assert len(requests) == 2
+    first_url, first_body, first_authorization = requests[0]
+    second_url, second_body, second_authorization = requests[1]
+    assert first_url == second_url == (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert first_authorization == second_authorization == "Bearer token"
+    assert "thread_id" not in first_body
+    assert "expected_thread_revision" not in first_body
+    assert second_body["thread_id"] == thread_id
+    assert second_body["expected_thread_revision"] == 1
+    assert first_body["requested_scope"] == second_body["requested_scope"] == {
+        "subscription": ["sub-a"]
+    }
+    assert [result.error for result in results] == ["", ""]
+    assert thread_states["cont-inv-cve"].thread_id == thread_id
+    assert thread_states["cont-inv-cve"].revision == 2
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "thread_revision", "error_fragment"),
+    [
+        (None, 1, "thread_id"),
+        ("not-a-canonical-thread", 1, "thread_id"),
+        ("thr-" + "b" * 32, None, "thread_revision"),
+        ("thr-" + "b" * 32, True, "thread_revision"),
+        ("thr-" + "b" * 32, 2, "expected 1"),
+    ],
+)
+def test_production_dispatch_fails_on_invalid_canonical_thread_state(
+    monkeypatch,
+    thread_id,
+    thread_revision,
+    error_fragment,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn1"
+    )
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": thread_revision,
+                    }
+                }
+            ).encode()
         )
 
-    assert "thread_id" not in captured[0]
-    assert "expected_thread_revision" not in captured[0]
-    assert captured[1]["thread_id"] == "thr-" + "a" * 32
-    assert captured[1]["expected_thread_revision"] == 1
-    assert continuity_state["cont-inv-cve"] == (
-        "thr-" + "a" * 32,
-        2,
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
     )
+
+    assert result.ok is False
+    assert error_fragment in result.error
+
+
+def test_production_dispatch_fails_when_a_later_turn_has_no_group_state(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn2"
+    )
+    called = False
+
+    def urlopen(_request, *, timeout):
+        del timeout
+        nonlocal called
+        called = True
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert "missing continuity state" in result.error
+    assert called is False
+
+
+def test_production_dispatch_rejects_a_skipped_thread_revision(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.continuity_group == "cont-net-rem"
+    ]
+    thread_id = "thr-" + "c" * 32
+    response_revisions = iter((1, 3))
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": next(response_revisions),
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    thread_states = {}
+
+    first = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[0],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+    second = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[1],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    assert first.error == ""
+    assert second.ok is False
+    assert "thread_revision 3; expected 2" in second.error
+    assert thread_states["cont-net-rem"].revision == 1
 
 
 def test_run_case_scores_realistic_canonical_response_and_release_gates(
@@ -2279,16 +2401,20 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
             ],
             "warning": "",
         },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "deterministic_response",
+                "claims": [{"claim_index": 0, "supported": True}],
+            }
+        },
         "mutation_authorized": False,
     }
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case, _scope, _continuity=None: (
-            canonical_response,
-            12.5,
-        ),
+        lambda _api, _token, _case, _scope: (canonical_response, 12.5),
     )
 
     result = evaluate_agents._run_case(
@@ -2311,12 +2437,211 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     assert result.summary == "The payments service is owned by platform-team."
     assert result.citation_valid is True
     assert result.material_claim_coverage == 1.0
+    assert result.groundedness == 1.0
     assert result.citation_reference_integrity_ok is True
     assert evidence["grants_ok"] is None
     assert gates["routing"]["passed"] is True
     assert gates["citation_validity"]["passed"] is True
     assert gates["citation_coverage"]["passed"] is True
+    assert gates["groundedness"]["passed"] is True
     assert gates["tool_correctness"]["passed"] is True
+
+
+def test_unsupported_but_cited_claim_fails_groundedness_and_holds_narration(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-unsupported-cited",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by another team.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "proxy_evaluator",
+                "claims": [{"claim_index": 0, "supported": False}],
+            }
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.citation_reference_integrity_ok is True
+    assert result.groundedness == 0.0
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+    assert "narrated_answer_promotion" in report["disabled_modes"]
+
+
+def test_citation_coverage_and_legacy_groundedness_do_not_supply_claim_support(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-missing-support",
+        category="routing",
+        page_kind="governance",
+        question="Who owns the payments service?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+    )
+    citation_id = "tool:turn:0:0:governance:business_service_context:0"
+    response = {
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "turn:0:0:governance:business_service_context",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "status": "ok",
+                "data": {"owner": "platform-team"},
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": citation_id,
+                "source": "semantic:business_service",
+                "status": "ok",
+            }
+        ],
+        "synthesis": {
+            "status": "synthesized",
+            "claims": [
+                {
+                    "summary": "The payments service is owned by another team.",
+                    "evidence_refs": [citation_id],
+                }
+            ],
+        },
+        # This legacy value was citation attachment coverage. It must not be
+        # accepted as claim-evidence entailment.
+        "evaluation": {"groundedness": 1.0},
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case, _scope: (response, 12.5),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
+    evidence = evaluate_agents.result_to_release_evidence(result, case)
+    metrics = evaluate_agents.aggregate_release_metrics([evidence])
+    report = evaluate_agents.evaluate_gates(
+        metrics,
+        evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+    )
+
+    assert result.material_claim_coverage == 1.0
+    assert result.groundedness is None
+    assert metrics["claim_support_missing_turns"] == 1
+    assert report["gates"]["citation_coverage"]["passed"] is True
+    assert report["gates"]["groundedness"]["passed"] is False
+    assert report["decision"] == "HOLD_OR_DISABLE_MODE"
+
+
+@pytest.mark.parametrize(
+    "claim_support",
+    [
+        {
+            "version": "1",
+            "method": "proxy_evaluator",
+            "claims": [{"claim_index": 0, "supported": "true"}],
+        },
+        {
+            "version": "1",
+            "method": "proxy_evaluator",
+            "claims": [],
+        },
+        {
+            "version": "1",
+            "method": "citation_presence",
+            "claims": [{"claim_index": 0, "supported": True}],
+        },
+    ],
+)
+def test_claim_support_proxy_schema_is_strict_and_fails_closed(claim_support):
+    evaluate_agents = _load_evaluate_agents()
+
+    with pytest.raises(
+        evaluate_agents.EvaluationResponseError,
+        match="claim_support",
+    ):
+        evaluate_agents._claim_support_score(
+            claim_support,
+            claim_count=1,
+        )
 
 
 def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
@@ -2377,16 +2702,20 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
                 }
             ],
         },
+        "evaluation": {
+            "claim_support": {
+                "version": "1",
+                "method": "deterministic_response",
+                "claims": [{"claim_index": 0, "supported": True}],
+            }
+        },
         "mutation_authorized": False,
     }
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case, _scope, _continuity=None: (
-            response,
-            5.0,
-        ),
+        lambda _api, _token, _case, _scope: (response, 5.0),
     )
 
     result = evaluate_agents._run_case(
@@ -2401,8 +2730,7 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     assert result.disposition_ok is True
     assert result.manifest_projection_ok is True
     assert result.tool_correctness == 1.0
-    assert result.groundedness is None
-    assert result.material_claim_coverage == 1.0
+    assert result.groundedness == 1.0
     assert result.spend_usd == 0.0
 
     response["selected_specialists"] = ["unreviewed-specialist"]
@@ -2429,47 +2757,6 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
         {"subscription": ["sub-a"]},
     )
     assert leaked.scope_ok is False
-
-
-def test_citation_attachment_does_not_imply_groundedness() -> None:
-    evaluate_agents = _load_evaluate_agents()
-    dataset = json.loads(_CASES_PATH.read_text())
-    cases = evaluate_agents.load_cases(_CASES_PATH)
-    results = [
-        _passing_result(
-            case_id=case.case_id,
-            category=case.category,
-            expected_specialists=list(case.expect_specialists),
-            specialists=list(case.expect_specialists),
-            turn_class=case.turn_class,
-            provider_state=case.provider_state,
-            groundedness=None,
-            material_claim_coverage=1.0,
-        )
-        for case in cases
-    ]
-
-    artifact = evaluate_agents.build_release_artifact(
-        results,
-        cases=cases,
-        dataset=dataset,
-        thresholds=evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
-        revision="api--phase11-canary",
-        provider_availability={
-            "foundry": "available",
-            "operations_mcp": "available",
-            "azure_mcp": "available",
-        },
-        validation_evidence=_passing_validation_evidence(),
-    )
-
-    assert artifact["metrics"]["material_claim_coverage"] == 1.0
-    assert artifact["metrics"]["groundedness_mean"] is None
-    assert artifact["decision"] != "PROMOTE"
-    assert artifact["gates"]["measurement_completeness"]["passed"] is False
-    assert "groundedness_mean" in artifact["gates"][
-        "measurement_completeness"
-    ]["observed"]["missing_metrics"]
 
 
 def test_dedicated_cases_use_production_contracts_and_two_principals(
@@ -2514,6 +2801,12 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             and body
             and body.get("thread_id")
         ):
+            assert body["thread_id"] == thread_id
+            assert body["expected_thread_revision"] == 1
+            assert (
+                request.get_header("Authorization")
+                == "Bearer secondary-token"
+            )
             raise urllib.error.HTTPError(
                 request.full_url,
                 404,
@@ -2576,6 +2869,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
 
     monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
     monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    thread_states = {}
 
     results = {
         case_id: evaluate_agents._investigate(
@@ -2583,6 +2877,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             "primary-token",
             case,
             {"subscription": ["sub-a"]},
+            thread_states=thread_states,
         )[0]
         for case_id, case in cases.items()
     }
@@ -2590,6 +2885,14 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
     assert (
         results["scope.cross.principal"]["_cross_principal_denied"]
         is True
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].thread_id
+        == thread_id
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].revision
+        == 1
     )
     assert results["dedicated.investigate"]["selected_specialists"] == [
         "incident"
@@ -2705,7 +3008,19 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                     "status": "deterministic",
                     "claims": claims,
                 },
-                "evaluation": {"groundedness": 1.0},
+                "evaluation": {
+                    "claim_support": {
+                        "version": "1",
+                        "method": "deterministic_response",
+                        "claims": [
+                            {
+                                "claim_index": index,
+                                "supported": True,
+                            }
+                            for index, _claim in enumerate(claims)
+                        ],
+                    }
+                },
                 "mutation_authorized": False,
             },
             5.0,
@@ -2911,14 +3226,21 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     )
     seen: list[str] = []
 
+    dispatched_thread_states = None
+
     def run_case(
         _api,
         _resource,
         case,
         requested_scope,
-        _continuity_state,
+        *,
+        thread_states,
     ):
+        nonlocal dispatched_thread_states
         assert requested_scope == {"subscription": ["sub-a"]}
+        if dispatched_thread_states is None:
+            dispatched_thread_states = thread_states
+        assert thread_states is dispatched_thread_states
         seen.append(case.case_id)
         return evaluate_agents.Result(
             case_id=case.case_id,

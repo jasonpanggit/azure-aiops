@@ -23,8 +23,9 @@ from operations.orchestration_contract import (
     CanonicalEvidence,
     CanonicalEvidenceSnapshot,
     DomainEntityRef,
-    EntityRef,
+    EvidenceIdentity,
     EvidenceSnapshotV2,
+    ObservationRef,
     SnapshotConflict,
     SnapshotEvidence,
 )
@@ -76,7 +77,7 @@ def _normalized_identity_part(value: str) -> str:
 
 
 def canonical_entity_key(
-    entity: EntityRef,
+    entity: EvidenceIdentity,
     *,
     domain_identity: tuple[str, str, str] | None = None,
 ) -> str:
@@ -84,6 +85,14 @@ def canonical_entity_key(
 
     if isinstance(entity, AzureEntityRef):
         return f"azure:{_canonical_resource_id(entity.resource_id)}"
+    if isinstance(entity, ObservationRef):
+        return ":".join(
+            (
+                "observation",
+                _normalized_identity_part(entity.source),
+                _normalized_identity_part(entity.source_key),
+            )
+        )
     namespace, kind, source_key = domain_identity or (
         entity.namespace,
         entity.kind,
@@ -141,7 +150,7 @@ DomainEntityResolver = Callable[
 
 
 def _canonical_entity(
-    entity: EntityRef,
+    entity: EvidenceIdentity,
     *,
     effective_scope: Scope,
     domain_resolver: DomainEntityResolver | None,
@@ -151,6 +160,10 @@ def _canonical_entity(
         if not effective_scope.matches(_canonical_resource_attributes(resource_id)):
             raise ValueError("snapshot entity is outside the effective read scope")
         return canonical_entity_key(entity), None
+    if isinstance(entity, ObservationRef):
+        return canonical_entity_key(entity), _normalized_identity_part(
+            entity.source_key
+        )
 
     if domain_resolver is None:
         raise ValueError("domain entity requires a server-side identity resolver")

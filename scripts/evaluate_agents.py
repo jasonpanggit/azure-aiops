@@ -21,10 +21,10 @@ What is scored, per question:
                       orchestration contract? Deterministic mode expects
                       page-anchored delegation; MAF mode expects question-first
                       delegation with page fallback only when intent is absent.
-* ``groundedness`` -- explicit entailment score emitted by the evaluation
-                      contract. Citation attachment is measured separately and
-                      never substitutes for entailment; without an entailment
-                      measurement, release evaluation remains incomplete.
+* ``groundedness`` -- fraction of material claims explicitly judged supported
+                      by a deterministic response signal or controlled proxy
+                      evaluator. Citation attachment is scored separately and
+                      never counts as evidence that a claim is entailed.
 * ``narration``    -- did Foundry narration succeed? A degraded run still
                       returns deterministic findings, so this is a quality
                       signal, not a failure. This is the metric that caught
@@ -44,6 +44,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -74,6 +75,22 @@ RETRY_BACKOFF_SECONDS = 20
 
 class EvaluationConfigurationError(RuntimeError):
     """A missing local prerequisite that retries cannot repair."""
+
+
+class EvaluationResponseError(RuntimeError):
+    """A deployed evaluator response cannot satisfy the canonical contract."""
+
+
+@dataclass(frozen=True)
+class EvaluationThreadState:
+    """Canonical continuation coordinates retained for one evaluation group."""
+
+    thread_id: str
+    revision: int
+
+
+_CANONICAL_THREAD_ID = re.compile(r"^thr-[a-f0-9]{32}$")
+_CROSS_PRINCIPAL_GROUP = "scope.cross.principal:primary"
 
 
 # Versioned evaluation data (Plan 11-12). The corpus and thresholds are
@@ -473,23 +490,72 @@ def _send_evaluation_request(
         return json.load(response)
 
 
+def _validated_thread_state(
+    data: dict[str, Any],
+    *,
+    group: str,
+    previous: EvaluationThreadState | None,
+) -> EvaluationThreadState:
+    """Validate a canonical response before retaining continuation state."""
+
+    thread_id = data.get("thread_id")
+    if not isinstance(thread_id, str) or not _CANONICAL_THREAD_ID.fullmatch(
+        thread_id
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_id"
+        )
+    revision = data.get("thread_revision")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_revision"
+        )
+    expected_revision = 1 if previous is None else previous.revision + 1
+    if previous is not None and thread_id != previous.thread_id:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} changed canonical thread_id"
+        )
+    if revision != expected_revision:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned thread_revision {revision}; "
+            f"expected {expected_revision}"
+        )
+    return EvaluationThreadState(thread_id=thread_id, revision=revision)
+
+
 def _investigate(
     api: str,
     token: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
-    continuity_state: dict[str, tuple[str, int]] | None = None,
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     if case.case_id == "scope.cross.principal":
-        primary = _send_evaluation_request(
-            api,
-            token,
-            "/api/v1/copilot/investigations",
-            _canonical_evaluation_body(case, requested_scope),
-            requested_scope,
-        )
-        primary_data = dict(primary.get("data") or {})
+        states = thread_states if thread_states is not None else {}
+        primary_state = states.get(_CROSS_PRINCIPAL_GROUP)
+        primary_scope: Any = requested_scope
+        if primary_state is None:
+            primary = _send_evaluation_request(
+                api,
+                token,
+                "/api/v1/copilot/investigations",
+                _canonical_evaluation_body(case, requested_scope),
+                requested_scope,
+            )
+            primary_data = dict(primary.get("data") or {})
+            primary_state = _validated_thread_state(
+                primary_data,
+                group=_CROSS_PRINCIPAL_GROUP,
+                previous=None,
+            )
+            states[_CROSS_PRINCIPAL_GROUP] = primary_state
+            primary_scope = primary.get("scope")
         secondary_token = os.environ.get(
             "AIOPS_EVALUATION_SECONDARY_TOKEN", ""
         ).strip()
@@ -499,10 +565,8 @@ def _investigate(
                 "cross-principal evaluation"
             )
         continued = _canonical_evaluation_body(case, requested_scope)
-        continued["thread_id"] = primary_data.get("thread_id")
-        continued["expected_thread_revision"] = primary_data.get(
-            "thread_revision"
-        )
+        continued["thread_id"] = primary_state.thread_id
+        continued["expected_thread_revision"] = primary_state.revision
         denied = False
         try:
             _send_evaluation_request(
@@ -516,9 +580,14 @@ def _investigate(
             denied = exc.code == 404
             if not denied:
                 raise
+        if not denied:
+            raise EvaluationResponseError(
+                "secondary principal was not denied access to the primary "
+                "evaluation thread"
+            )
         return (
             {
-                "_response_scope": primary.get("scope"),
+                "_response_scope": primary_scope,
                 "_cross_principal_denied": denied,
                 "_disposition_ok": True,
                 "status": "denied" if denied else "ok",
@@ -533,16 +602,31 @@ def _investigate(
             (time.monotonic() - started) * 1000,
         )
 
+    continuity_group: str | None = None
+    previous_thread: EvaluationThreadState | None = None
     if getattr(case, "disposition", "integrated") == "integrated":
         body = _canonical_evaluation_body(case, requested_scope)
         continuity_group = getattr(case, "continuity_group", None)
-        previous = (
-            continuity_state.get(continuity_group)
-            if continuity_state is not None and continuity_group
-            else None
-        )
-        if previous is not None:
-            body["thread_id"], body["expected_thread_revision"] = previous
+        if continuity_group and thread_states is not None:
+            continuity_turn = getattr(case, "continuity_turn", None)
+            previous_thread = thread_states.get(continuity_group)
+            if continuity_turn is None:
+                raise EvaluationConfigurationError(
+                    f"continuity group {continuity_group!r} has no turn index"
+                )
+            if continuity_turn > 1 and previous_thread is None:
+                raise EvaluationResponseError(
+                    f"missing continuity state for group {continuity_group!r} "
+                    f"before turn {continuity_turn}"
+                )
+            if continuity_turn == 1 and previous_thread is not None:
+                raise EvaluationResponseError(
+                    f"continuity group {continuity_group!r} already has state "
+                    "before its first turn"
+                )
+            if previous_thread is not None:
+                body["thread_id"] = previous_thread.thread_id
+                body["expected_thread_revision"] = previous_thread.revision
         endpoint = "/api/v1/copilot/investigations"
     elif case.case_id == "dedicated.investigate":
         body = {"objective": case.question}
@@ -615,17 +699,14 @@ def _investigate(
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         body = json.load(response)
     data = dict(body.get("data") or {})
+    if continuity_group and thread_states is not None:
+        thread_states[continuity_group] = _validated_thread_state(
+            data,
+            group=continuity_group,
+            previous=previous_thread,
+        )
     data["_response_scope"] = body.get("scope")
     data["_disposition_ok"] = True
-    continuity_group = getattr(case, "continuity_group", None)
-    if continuity_state is not None and continuity_group:
-        thread_id = str(data.get("thread_id") or "")
-        thread_revision = data.get("thread_revision")
-        if thread_id and isinstance(thread_revision, int):
-            continuity_state[continuity_group] = (
-                thread_id,
-                thread_revision,
-            )
     return data, (time.monotonic() - started) * 1000
 
 
@@ -750,12 +831,78 @@ def _canonical_contract_signals(
     }
 
 
+def _claim_support_score(
+    claim_support: Any,
+    *,
+    claim_count: int,
+) -> float | None:
+    """Validate and score an explicit claim-support measurement.
+
+    Citation references deliberately are not inputs here: attachment and
+    reference integrity are separate metrics and do not establish entailment.
+    Missing support remains unmeasured so the narrated-answer gate can fail
+    closed. A present signal must cover every material claim exactly once.
+    """
+    if claim_count == 0:
+        return None
+    if claim_support is None:
+        return None
+    if not isinstance(claim_support, dict):
+        raise EvaluationResponseError("claim_support must be an object")
+    expected_keys = {"version", "method", "claims"}
+    if set(claim_support) != expected_keys:
+        raise EvaluationResponseError(
+            "claim_support must contain exactly version, method, and claims"
+        )
+    if claim_support["version"] != "1":
+        raise EvaluationResponseError("claim_support version must be '1'")
+    if claim_support["method"] not in {
+        "deterministic_response",
+        "proxy_evaluator",
+    }:
+        raise EvaluationResponseError(
+            "claim_support method must be deterministic_response or proxy_evaluator"
+        )
+    claims = claim_support["claims"]
+    if not isinstance(claims, list):
+        raise EvaluationResponseError("claim_support claims must be a list")
+    expected_indexes = list(range(claim_count))
+    observed_indexes: list[int] = []
+    supported = 0
+    for claim in claims:
+        if not isinstance(claim, dict) or set(claim) != {
+            "claim_index",
+            "supported",
+        }:
+            raise EvaluationResponseError(
+                "claim_support claims must contain exactly claim_index and supported"
+            )
+        claim_index = claim["claim_index"]
+        support_value = claim["supported"]
+        if isinstance(claim_index, bool) or not isinstance(claim_index, int):
+            raise EvaluationResponseError(
+                "claim_support claim_index must be an integer"
+            )
+        if not isinstance(support_value, bool):
+            raise EvaluationResponseError(
+                "claim_support supported must be a boolean"
+            )
+        observed_indexes.append(claim_index)
+        supported += int(support_value)
+    if observed_indexes != expected_indexes:
+        raise EvaluationResponseError(
+            "claim_support must cover every claim exactly once in index order"
+        )
+    return round(supported / claim_count, 4)
+
+
 def _run_case(
     api: str,
     resource: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
-    continuity_state: dict[str, tuple[str, int]] | None = None,
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
 ) -> Result:
     """Run one case, retrying transient gateway failures.
 
@@ -766,13 +913,19 @@ def _run_case(
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            data, latency = _investigate(
+            investigate_args = (
                 api,
                 _token(resource),
                 case,
                 requested_scope,
-                continuity_state,
             )
+            if thread_states is None:
+                data, latency = _investigate(*investigate_args)
+            else:
+                data, latency = _investigate(
+                    *investigate_args,
+                    thread_states=thread_states,
+                )
             break
         except urllib.error.HTTPError as exc:
             body = exc.read()[:200]
@@ -784,6 +937,8 @@ def _run_case(
                 continue
             return Result(case.case_id, ok=False, error=last_error)
         except EvaluationConfigurationError as exc:
+            return Result(case.case_id, ok=False, error=str(exc))
+        except EvaluationResponseError as exc:
             return Result(case.case_id, ok=False, error=str(exc))
         except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
             last_error = str(exc)
@@ -906,6 +1061,27 @@ def _run_case(
         if "selected_specialists" in data or "_response_scope" in data
         else {}
     )
+    try:
+        groundedness = _claim_support_score(
+            evaluation.get("claim_support"),
+            claim_count=len(findings),
+        )
+    except EvaluationResponseError as exc:
+        return Result(
+            case_id=case.case_id,
+            ok=False,
+            specialists=seen,
+            expected_specialists=sorted(expected),
+            missing=missing,
+            latency_ms=latency,
+            summary=str(synthesis.get("summary") or narration),
+            narration=narration,
+            tool_names=tool_names,
+            citation_valid=citation_valid,
+            material_claim_coverage=material_claim_coverage,
+            citation_reference_integrity_ok=citation_reference_integrity_ok,
+            error=str(exc),
+        )
     deterministic_spend = (
         0.0
         if synthesis.get("status") in {"deterministic", "skipped"}
@@ -927,7 +1103,7 @@ def _run_case(
         missing=missing,
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
-        groundedness=evaluation.get("groundedness"),
+        groundedness=groundedness,
         tool_correctness=(
             evaluation.get("tool_correctness")
             if evaluation.get("tool_correctness") is not None
@@ -1068,6 +1244,7 @@ class EvalCase:
     expect_capabilities: tuple[str, ...] = ()
     safety: dict[str, Any] = field(default_factory=dict)
     continuity_group: str | None = None
+    continuity_turn: int | None = None
     note: str = ""
 
     def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
@@ -1096,7 +1273,13 @@ def load_cases(path: Path | str) -> list[EvalCase]:
             f"unsupported dataset_version {version!r}; expected {DATASET_VERSION!r}"
         )
     cases: list[EvalCase] = []
+    continuity_turns: dict[str, int] = {}
     for raw in payload["cases"]:
+        continuity_group = raw.get("continuity_group")
+        continuity_turn = None
+        if continuity_group:
+            continuity_turn = continuity_turns.get(continuity_group, 0) + 1
+            continuity_turns[continuity_group] = continuity_turn
         cases.append(
             EvalCase(
                 case_id=raw["case_id"],
@@ -1109,7 +1292,8 @@ def load_cases(path: Path | str) -> list[EvalCase]:
                 disposition=raw["disposition"],
                 expect_capabilities=tuple(raw.get("expect_capabilities", ())),
                 safety=dict(raw.get("safety", {})),
-                continuity_group=raw.get("continuity_group"),
+                continuity_group=continuity_group,
+                continuity_turn=continuity_turn,
                 note=raw.get("note", ""),
             )
         )
@@ -1145,8 +1329,9 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     Every dimension is computed from its own inputs, so a collapse in one
     (e.g. groundedness) cannot move another (e.g. routing or latency). A
-    dimension with no applicable turns reports ``None`` -- a missing
-    measurement is null, never a passing or failing zero.
+    dimension with no applicable turns reports ``None``. Missing required
+    claim-support measurements are counted separately so they fail closed
+    without being misrepresented as a measured score of zero.
     """
 
     def flag_count(key: str) -> int:
@@ -1178,6 +1363,14 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     min_recall = min(recall_values) if recall_values else None
 
     grounded = [r["groundedness"] for r in results if r.get("groundedness") is not None]
+    claim_support_applicable_turns = sum(
+        r.get("material_claim_coverage") is not None for r in results
+    )
+    claim_support_missing_turns = sum(
+        r.get("material_claim_coverage") is not None
+        and r.get("groundedness") is None
+        for r in results
+    )
     coverage = [
         r["material_claim_coverage"]
         for r in results
@@ -1229,6 +1422,8 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "per_specialist_recall_min": min_recall,
         "groundedness_mean": _mean_or_none(grounded),
         "groundedness_p10": _percentile(grounded, 10),
+        "claim_support_applicable_turns": claim_support_applicable_turns,
+        "claim_support_missing_turns": claim_support_missing_turns,
         "unsupported_severe_causal_action_total": sum(
             int(r.get("unsupported_severe_causal_action") or 0)
             for r in results
@@ -1270,7 +1465,8 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     A deterministic safety or citation-integrity failure HOLDs the whole build.
     A model-quality, latency, reliability, or spend miss HOLDs OR DISABLES only
     the affected optional mode; the governed deterministic fallback survives.
-    A metric that was not measured (None) cannot fail its own gate falsely.
+    A metric with no applicable turns remains ``None``. Required claim support
+    that is absent is counted explicitly and fails the narrated-answer gate.
     """
     gates: dict[str, dict[str, Any]] = {}
     hold_build = False
@@ -1323,14 +1519,29 @@ def evaluate_gates(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[
     g_mean = metrics.get("groundedness_mean")
     g_p10 = metrics.get("groundedness_p10")
     g_unsup = metrics.get("unsupported_severe_causal_action_total", 0)
+    g_missing = metrics.get("claim_support_missing_turns", 0)
     ground_pass = (
-        (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
+        g_missing == 0
+        and (g_mean is None or g_mean >= thresholds["groundedness"]["mean_min"])
         and (g_p10 is None or g_p10 >= thresholds["groundedness"]["p10_min"])
         and g_unsup <= thresholds["groundedness"]["unsupported_severe_causal_action_max"]
     )
-    mode_gate("groundedness", ground_pass, {"mean": g_mean, "p10": g_p10, "unsupported": g_unsup},
-              {"mean": thresholds["groundedness"]["mean_min"], "p10": thresholds["groundedness"]["p10_min"]},
-              "groundedness")
+    mode_gate(
+        "groundedness",
+        ground_pass,
+        {
+            "mean": g_mean,
+            "p10": g_p10,
+            "unsupported": g_unsup,
+            "missing": g_missing,
+        },
+        {
+            "mean": thresholds["groundedness"]["mean_min"],
+            "p10": thresholds["groundedness"]["p10_min"],
+            "missing": 0,
+        },
+        "groundedness",
+    )
 
     cov = metrics.get("material_claim_coverage")
     cov_pass = cov is None or cov >= thresholds["citation"]["material_claim_coverage_min"]
@@ -2195,7 +2406,7 @@ def main() -> int:
     print(f"Evaluating {len(cases)} cases against {args.api}\n")
 
     results: list[Result] = []
-    continuity_state: dict[str, tuple[str, int]] = {}
+    thread_states: dict[str, EvaluationThreadState] = {}
     for index, case in enumerate(cases, start=1):
         if index > 1:
             time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
@@ -2215,7 +2426,7 @@ def main() -> int:
                 args.resource,
                 case,
                 requested_scope,
-                continuity_state,
+                thread_states=thread_states,
             )
         results.append(result)
         if result.error:

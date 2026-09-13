@@ -210,19 +210,29 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
     assert "FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path" in outputs
 
 
-def test_rollout_mode_missing_or_invalid_fails_closed_to_compatibility(
+def test_unspecified_rollout_preserves_canonical_but_explicit_compatibility_wins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
     monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
-    missing = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-    assert missing.mode == "compatibility"
-    assert missing.canonical_enabled is False
-    assert missing.reason == "rollout_mode_missing"
+    unspecified = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
+    )
+    assert unspecified.mode == "default"
+    assert unspecified.canonical_enabled is True
+    assert unspecified.reason == "rollout_mode_unspecified"
     assert (
         maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
         is False
     )
+
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    compatibility = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
+    )
+    assert compatibility.mode == "compatibility"
+    assert compatibility.canonical_enabled is False
+    assert compatibility.reason == "compatibility_selected"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "enabled")
     invalid = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
@@ -241,7 +251,11 @@ def test_missing_rollout_preserves_explicit_legacy_canonical_switch(
 
     assert decision.mode == "default"
     assert decision.canonical_enabled is True
-    assert decision.reason == "legacy_canonical_mode"
+    assert decision.reason == "rollout_mode_unspecified"
+    assert (
+        maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
+        is True
+    )
 
 
 def test_deterministic_override_disables_default_canonical_rollout(
@@ -283,15 +297,15 @@ def test_rollout_modes_preserve_compatibility_shadow_canary_and_default(
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "canary")
     monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "0")
-    assert (
-        maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
-        is False
+    canary_zero = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
     )
+    assert canary_zero.canonical_enabled is False
     monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
-    assert (
-        maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
-        is True
+    canary_hundred = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
     )
+    assert canary_hundred.canonical_enabled is True
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     default = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")

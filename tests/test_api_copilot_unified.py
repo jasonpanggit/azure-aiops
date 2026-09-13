@@ -2691,7 +2691,6 @@ def test_unhinted_typed_questions_use_governed_page_context(
     question,
     expected_specialists,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[tuple[str, dict[str, object]]] = []
     resource_id = (
         "/subscriptions/sub-a/resourceGroups/rg/providers/"
