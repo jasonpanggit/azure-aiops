@@ -2,7 +2,7 @@
 status: investigating
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T13:47:00+08:00
+updated: 2026-09-13T13:52:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -105,6 +105,12 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 - timestamp: 2026-09-13T13:47:00+08:00
   observation: Redirect alignment was committed independently as `5cf201a5a`; both new commits contain the required Copilot co-author trailer, and neither commit includes an excluded remediation, Fabric, Exposure CVE, Patch Priorities publication/data, provider, deployment, or infrastructure file.
   implication: The requested routing and redirect scope is complete and atomic, while the debug session remains active for provider/config readiness.
+- timestamp: 2026-09-13T13:49:00+08:00
+  observation: A focused Predeploy regression now proves authorized 0/0 assessment state is complete and fresh while unavailable 0/0 state is incomplete and explicitly unavailable; it passes with strict TypeScript and was committed as `069c01bdf`.
+  implication: Exact-set routing did not collapse the required healthy-empty versus unavailable semantics.
+- timestamp: 2026-09-13T13:52:00+08:00
+  observation: Final post-commit verification passes the complete selected Python routing/policy/parity/packaging/API/evaluation suite, 122 web redirect/manifest/integration/adapter tests, Ruff, strict TypeScript, and all eight offline specialist parity checks.
+  implication: The committed routing and redirect fixes remain green together and preserve the adjacent cluster 1-3 contracts; only the intentionally deferred provider/config readiness cluster remains open.
 - timestamp: 2026-09-13T12:18:00+08:00
   observation: `normalizeCopilotSnapshotV2` copies the legacy seven-value `page_kind` directly into v2 and sets coverage to `{visible_count: evidence.length, total_count: evidence.length, complete: false}` even though every typed core adapter emits explicit `page/coverage` observations with visible/total/complete fields.
   implication: Exact manifest routing and observed partial coverage are both lost at the same compatibility boundary; evidence cardinality is not a coverage observation.
@@ -338,6 +344,7 @@ verification:
     fixed_on_reapply: true
   guardrail_verdict: accepted
 commits:
+  - "069c01bdf test(copilot): pin predeploy empty-state semantics"
   - "5cf201a5a fix(web): align vulnerability redirect contract"
   - "fe8599f17 fix(copilot): constrain specialists to page-safe sets"
   - "8143a0207 fix(copilot): bind retained evidence to page context"
