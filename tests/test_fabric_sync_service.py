@@ -306,6 +306,40 @@ def test_forced_empty_patch_table_captures_prior_version_for_rollback(
     assert known_versions == {"silver_patch_snapshot_findings": 7}
 
 
+def test_full_sync_without_patch_barrier_preserves_existing_patch_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    existing_versions = {
+        str(service.onelake.table_uri("silver", "patch_snapshot_findings")): 7,
+        str(service.onelake.table_uri("metadata", "patch_snapshot")): 8,
+    }
+    monkeypatch.setattr(
+        service.delta,
+        "version",
+        lambda table_uri: existing_versions.get(str(table_uri)),
+    )
+
+    items, known_versions = _prepare_publish_items(
+        {
+            "silver_patch_snapshot_findings": [],
+            "metadata_patch_snapshot": [],
+            "silver_exposure_observations": [{"resource_id": "observation"}],
+        },
+        onelake=service.onelake,
+        delta=service.delta,
+        patch_barrier_present=False,
+        patch_tables=("silver_patch_snapshot_findings",),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+    assert items == [
+        ("silver_exposure_observations", [{"resource_id": "observation"}])
+    ]
+    assert known_versions == {}
+
+
 def test_patch_manifest_barrier_commits_bronze_and_silver_independently() -> None:
     written_versions = {
         "bronze_patchassessment": ("bronze-uri", 1),

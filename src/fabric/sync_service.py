@@ -270,7 +270,14 @@ def _prepare_publish_items(
 ]:
     known_versions: dict[str, int | None] = {}
     publish_items: list[tuple[str, list[dict[str, Any]]]] = []
+    patch_group = {*patch_tables, barrier_table}
     for table_name, rows in datasets.items():
+        # Patch findings and their metadata barrier are one atomic publication
+        # group. A full sync without a newly generated barrier must not clear
+        # or republish any existing member merely because the Delta table
+        # already exists.
+        if not patch_barrier_present and table_name in patch_group:
+            continue
         selected = _should_publish_table(
             table_name,
             rows,

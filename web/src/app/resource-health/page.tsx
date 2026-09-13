@@ -27,6 +27,13 @@ function formatPercent(value: number | null): string {
   return value == null ? "—" : `${value.toFixed(1)}%`;
 }
 
+function resourceTypeLabel(resourceType: string): string {
+  const normalized = resourceType.trim().toLowerCase();
+  if (normalized === "microsoft.app/containerapps") return "Container App";
+  if (normalized === "microsoft.compute/virtualmachines") return "Virtual Machine";
+  return resourceType.split("/").pop()?.trim() || "Resource";
+}
+
 function ResourceCard({ resource }: { resource: ResourceUtilization }) {
   const isContainerApp = resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
 
@@ -37,7 +44,10 @@ function ResourceCard({ resource }: { resource: ResourceUtilization }) {
           <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{resource.resource_name}</div>
           <div className="cell-subtext">{resource.resource_group}</div>
         </div>
-        <StatusBadge label={resource.status} tone={statusTone(resource.status)} compact />
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "0.35rem" }}>
+          <StatusBadge label={resourceTypeLabel(resource.resource_type)} tone="info" compact />
+          <StatusBadge label={resource.status} tone={statusTone(resource.status)} compact />
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
