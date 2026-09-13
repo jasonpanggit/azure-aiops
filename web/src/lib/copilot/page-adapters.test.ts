@@ -41,6 +41,121 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
+function expectCanonicalEndpointAccepts(
+  requests: Array<{
+    name: string;
+    requested_scope: Record<string, string[]>;
+    snapshot: ReturnType<typeof normalizeCopilotSnapshotV2>;
+  }>,
+) {
+  const validator = `
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, "src")
+sys.path.insert(0, "tests")
+
+from fastapi.testclient import TestClient
+from test_api_copilot_investigation import HEADERS, _context
+
+from api.app import create_app
+from operations.orchestration_contract import OrchestrationResult
+from semantic.semantic_engine import SemanticEngine
+from semantic.semantic_indexes import SemanticIndexes
+
+requests = json.load(sys.stdin)
+observed = []
+engine = SemanticEngine(
+    SemanticIndexes(
+        [
+            {
+                "resource_id": f"{namespace}-visible-1",
+                "entity_type": entity_type,
+                "name": f"{namespace}-visible-1",
+                "subscription_id": "sub-a",
+                "lifecycle_status": "active",
+            }
+            for namespace, entity_type in (
+                ("overview", "ExecutiveSummary"),
+                ("governance", "GovernanceRole"),
+                ("identity", "Principal"),
+                ("finops", "CostAttribution"),
+            )
+        ],
+        [],
+    ),
+    knowledge_version="page-adapter-regression",
+    freshness="2026-09-13T00:00:00Z",
+)
+
+def execute(_self, request, **kwargs):
+    selection = kwargs["selection_snapshot"]
+    canonical = kwargs["canonical_selection_snapshot"]
+    assert request.requested_scope == {"subscription": ["sub-a"]}
+    assert selection.material_claims
+    evidence_ids = {row.evidence_id for row in selection.evidence}
+    assert all(
+        set(claim.evidence_refs) <= evidence_ids
+        for claim in selection.material_claims
+    )
+    retained_refs = {
+        ref
+        for row in canonical.evidence
+        for ref in row.evidence_refs
+    }
+    assert {
+        ref
+        for claim in selection.material_claims
+        for ref in claim.evidence_refs
+    } <= retained_refs
+    return OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        coverage=selection.coverage,
+        thread_id="thr-" + ("a" * 32),
+        thread_revision=1,
+    )
+
+with tempfile.TemporaryDirectory() as directory:
+    client = TestClient(
+        create_app(_context(Path(directory), None, engine=engine)),
+        raise_server_exceptions=False,
+    )
+    with patch("api.routers.copilot.OrchestrationService.execute", execute):
+        for item in requests:
+            response = client.post(
+                "/api/v1/copilot/investigations?subscription=sub-a",
+                headers=HEADERS,
+                json={
+                    "contract_version": "1",
+                    "question": "Explain the visible page state.",
+                    "requested_scope": item["requested_scope"],
+                    "snapshot": item["snapshot"],
+                },
+            )
+            observed.append({
+                "name": item["name"],
+                "status": response.status_code,
+                "body": response.text if response.status_code != 200 else "",
+            })
+
+print(json.dumps(observed, sort_keys=True))
+`;
+  const result = spawnSync("python3", ["-c", validator], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    input: JSON.stringify(requests),
+  });
+
+  expect(result.status, result.stderr || result.stdout).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual(
+    requests.map(({ name }) => ({ name, status: 200, body: "" })),
+  );
+}
+
 const records: InventoryCopilotRecord[] = [
   {
     identity: "Windows Server|2019",
@@ -134,6 +249,102 @@ raise SystemExit(1 if errors else 0)
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([]);
+  });
+});
+
+describe("shared page adapter canonical endpoint compatibility", () => {
+  it("posts representative Overview, Governance, Identity, FinOps, and Remediation snapshots", () => {
+    const representativeInput = (
+      namespace: string,
+      kind: string,
+      resourceId?: string,
+    ) => ({
+      scope: { subscription: ["sub-a"] },
+      filters: { view: [namespace] },
+      records: [
+        {
+          identity: `${namespace}-visible-1`,
+          namespace,
+          kind,
+          source: `${namespace}/visible`,
+          ...(resourceId ? { resourceId } : {}),
+          observedAt: "2026-09-13T00:00:00Z",
+          selected: true,
+          data: { title: `${namespace} visible observation` },
+        },
+      ],
+      evidence: [
+        {
+          source_engine: "PageAdapterRegression",
+          source_table: `${namespace}_provenance`,
+          timestamp: "2026-09-13T00:00:00Z",
+          confidence: "high" as const,
+          freshness: "fresh" as const,
+        },
+      ],
+      coverage: [
+        {
+          key: `${namespace}_rows`,
+          visibleCount: 1,
+          totalCount: 2,
+          truncated: true,
+        },
+      ],
+      sourceStatuses: [
+        {
+          source: namespace,
+          observedAt: "2026-09-13T00:00:00Z",
+          status: "fresh" as const,
+        },
+      ],
+    });
+    const resourceId =
+      "/subscriptions/SUB-A/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1";
+    const contexts = [
+      {
+        name: "Overview",
+        context: buildOverviewCopilotContext(
+          representativeInput("overview", "executive_summary"),
+        ),
+      },
+      {
+        name: "Governance",
+        context: buildGovernanceCopilotContext(
+          representativeInput("governance", "governance_role"),
+        ),
+      },
+      {
+        name: "Identity",
+        context: buildIdentityCopilotContext(
+          representativeInput("identity", "identity_principal"),
+        ),
+      },
+      {
+        name: "FinOps",
+        context: buildFinOpsCopilotContext(
+          representativeInput("finops", "cost_attribution"),
+        ),
+      },
+      {
+        name: "Remediation",
+        context: buildRemediationCopilotContext(
+          representativeInput("remediation", "remediation_plan", resourceId),
+        ),
+      },
+    ];
+    const requests = contexts.map(({ name, context }) => ({
+      name,
+      requested_scope: context.requestedScope,
+      snapshot: normalizeCopilotSnapshotV2(context.snapshot),
+    }));
+
+    expectCanonicalEndpointAccepts(requests);
+    const syntheticRows = requests
+      .flatMap(({ snapshot }) => snapshot.evidence)
+      .filter(({ claim_type }) =>
+        claim_type === "coverage" || claim_type === "source_observation");
+    expect(syntheticRows.length).toBeGreaterThan(0);
+    expect(syntheticRows.every(({ entity }) => entity.type === "observation")).toBe(true);
   });
 });
 

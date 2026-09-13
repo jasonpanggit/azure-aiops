@@ -106,6 +106,65 @@ def test_cross_scope_domain_entity_is_rejected_before_retention(
     assert "sub-b-secret" not in response.text
 
 
+def test_canonical_endpoint_rejects_unresolved_real_domain_entity(
+    tmp_path,
+    monkeypatch,
+):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda name, *_args, **_kwargs: calls.append(name),
+    )
+    body = _canonical_body()
+    body.pop("hint")
+    body["snapshot"] = {
+        **body["snapshot"],
+        "page_kind": "governance",
+        "page_id": "identity",
+        "coverage": {
+            "visible_count": 1,
+            "total_count": 1,
+            "complete": True,
+        },
+        "selected_entities": [],
+        "evidence": [
+            {
+                "evidence_id": "identity:unresolved-principal",
+                "source": "identity/page",
+                "source_key": "principal-not-in-semantic-index",
+                "entity": {
+                    "type": "domain",
+                    "namespace": "identity",
+                    "kind": "principal",
+                    "source_key": "principal-not-in-semantic-index",
+                },
+                "status": "ok",
+                "quality": "high",
+                "data": {"principal_type": "ServicePrincipal"},
+            }
+        ],
+        "material_claims": [
+            {
+                "claim_id": "identity-principal",
+                "evidence_refs": ["identity:unresolved-principal"],
+            }
+        ],
+    }
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
+
+
 def test_service_rejects_unresolved_domain_selection_before_execution():
     calls: list[str] = []
     request = InvestigationRequest(

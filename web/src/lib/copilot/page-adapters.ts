@@ -5,6 +5,7 @@ import type {
   CollectionCoverage,
   ComplianceDeviation,
   CopilotEntityRef,
+  CopilotEvidenceIdentity,
   CopilotEvidenceSnapshotV2 as StrictCopilotEvidenceSnapshotV2,
   CopilotFreshnessStatusV2,
   CopilotPageKind,
@@ -111,13 +112,13 @@ export interface InventoryCopilotContext {
 interface StableEvidenceIdentity {
   source: string;
   sourceKey: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claimType: string;
 }
 
 type InventorySnapshotEvidence = CopilotSnapshotEvidenceV2 & {
   source_key: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claim_type: string;
   citations: string[];
   selected: boolean;
@@ -420,9 +421,16 @@ function canonicalResourceId(resourceId: string): string {
   return canonical;
 }
 
-function entityKey(entity: CopilotEntityRef): string {
+function entityKey(entity: CopilotEvidenceIdentity): string {
   if (entity.type === "azure") {
     return `azure:${canonicalResourceId(entity.resource_id)}`;
+  }
+  if (entity.type === "observation") {
+    return [
+      "observation",
+      normalizedIdentityPart(entity.source),
+      normalizedIdentityPart(entity.source_key),
+    ].join(":");
   }
   return [
     "domain",
@@ -568,7 +576,7 @@ function normalizedData(value: unknown): Record<string, unknown> {
   return JSON.parse(serialized) as Record<string, unknown>;
 }
 
-function normalizedSnapshotEntity(value: unknown): CopilotEntityRef {
+function normalizedSnapshotEntity(value: unknown): CopilotEvidenceIdentity {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("snapshot entity must be an object");
   }
@@ -613,6 +621,32 @@ function normalizedSnapshotEntity(value: unknown): CopilotEntityRef {
         1,
         80,
         SNAPSHOT_DOMAIN_PART,
+      ),
+      source_key: sourceKey,
+    };
+  }
+  if (record.type === "observation") {
+    exactKeys("observation snapshot identity", record, [
+      "type",
+      "source",
+      "source_key",
+    ]);
+    const sourceKey = boundedSnapshotString(
+      "observation source key",
+      record.source_key,
+      1,
+      256,
+    );
+    if (/[\0\r\n]/.test(sourceKey)) {
+      throw new Error("observation source key contains an invalid control character");
+    }
+    return {
+      type: "observation",
+      source: boundedSnapshotString(
+        "observation source",
+        record.source,
+        1,
+        128,
       ),
       source_key: sourceKey,
     };
@@ -689,7 +723,13 @@ function normalizeStrictSnapshotV2(
     COPILOT_SNAPSHOT_LIMITS.selectedEntities,
   );
   const selectedEntities = snapshot.selected_entities
-    .map(normalizedSnapshotEntity)
+    .map((value) => {
+      const entity = normalizedSnapshotEntity(value);
+      if (entity.type === "observation") {
+        throw new Error("selected snapshot identities must be domain or Azure entities");
+      }
+      return entity;
+    })
     .sort((left, right) =>
       compareCodePoints(entityOrderingKey(left), entityOrderingKey(right)));
   if (
@@ -888,7 +928,7 @@ function legacySnapshotEntity(
   pageKind: CopilotPageKind,
   row: CopilotPageSnapshot["evidence"][number],
   sourceKey: string,
-): CopilotEntityRef {
+): CopilotEvidenceIdentity {
   if (row.data.entity !== undefined) {
     return normalizedSnapshotEntity(row.data.entity);
   }
@@ -1017,7 +1057,9 @@ export function normalizeCopilotSnapshotV2(
       : row.evidence_id;
     const sourceKey = boundedSourceKey(sourceKeyValue);
     const entity = legacySnapshotEntity(snapshot.page_kind, row, sourceKey);
-    if (row.data.selected === true) selectedEntities.push(entity);
+    if (row.data.selected === true && entity.type !== "observation") {
+      selectedEntities.push(entity);
+    }
     return {
       evidence_id: row.evidence_id,
       source: row.section,
@@ -1371,6 +1413,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   const selectedEntities = recordEvidence
     .filter((item) => item.selected)
     .map((item) => item.entity)
+    .filter((entity): entity is CopilotEntityRef => entity.type !== "observation")
     .filter((entity, index, entities) => {
       const key = entityKey(entity);
       return entities.findIndex((candidate) => entityKey(candidate) === key) === index;
@@ -1470,10 +1513,9 @@ function buildEmptyInventoryContextEvidence(
 ): InventorySnapshotEvidence {
   const source = INVENTORY_EVIDENCE_SOURCES[input.tab];
   const sourceKey = `page-context:${input.tab}`;
-  const entity: CopilotEntityRef = {
-    type: "domain",
-    namespace: "inventory",
-    kind: `${input.tab}_page_context`,
+  const entity: CopilotEvidenceIdentity = {
+    type: "observation",
+    source,
     source_key: sourceKey,
   };
   const data = { inventory_context: inventoryContext, selected: false };
@@ -3197,10 +3239,14 @@ function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
   };
 }
 
-function entityOrderingKey(entity: CopilotEntityRef): string {
-  return entity.type === "domain"
-    ? `0:${entity.namespace}:${entity.kind}:${entity.source_key}`
-    : `1:${entity.resource_id}`;
+function entityOrderingKey(entity: CopilotEvidenceIdentity): string {
+  if (entity.type === "domain") {
+    return `0:${entity.namespace}:${entity.kind}:${entity.source_key}`;
+  }
+  if (entity.type === "observation") {
+    return `1:${entity.source}:${entity.source_key}`;
+  }
+  return `2:${entity.resource_id}`;
 }
 
 function normalizeFilters(
@@ -3302,12 +3348,11 @@ function sourceEvidenceRow(item: EvidenceItem) {
   const sourceKey = boundedCoreSourceKey(
     canonicalResource ?? `${item.source_engine}:${item.source_table}`,
   );
-  const entity: CopilotEntityRef = canonicalResource
+  const entity: CopilotEvidenceIdentity = canonicalResource
     ? { type: "azure", resource_id: canonicalResource }
     : {
-        type: "domain",
-        namespace: "source",
-        kind: "observation",
+        type: "observation",
+        source,
         source_key: sourceKey,
       };
   const data = {
@@ -3343,10 +3388,9 @@ function sourceEvidenceRow(item: EvidenceItem) {
 
 function coverageEvidenceRows(coverage: Record<string, CoreCopilotCoverage>) {
   return Object.entries(coverage).map(([key, value]) => {
-    const entity: CopilotEntityRef = {
-      type: "domain",
-      namespace: "page",
-      kind: "coverage",
+    const entity: CopilotEvidenceIdentity = {
+      type: "observation",
+      source: "page/coverage",
       source_key: key,
     };
     return {
@@ -3436,7 +3480,10 @@ function buildCoreCopilotContext(
   ].sort((left, right) =>
     left.priority - right.priority
     || compareCodePoints(left.row.evidence_id, right.row.evidence_id));
-  const candidateEvidence = new Map<string, ReturnType<typeof coreEvidenceRow>["row"]>();
+  type CandidateEvidenceRow =
+    | ReturnType<typeof coreEvidenceRow>["row"]
+    | ReturnType<typeof sourceEvidenceRow>["row"];
+  const candidateEvidence = new Map<string, CandidateEvidenceRow>();
   const retainedCandidateIds: string[] = [];
   const candidateLimit = Math.max(
     0,

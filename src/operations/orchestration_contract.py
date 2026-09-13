@@ -87,8 +87,27 @@ class DomainEntityRef(ContractModel):
     source_key: str = Field(min_length=1, max_length=256)
 
 
+class ObservationRef(ContractModel):
+    """Non-authoritative page metadata that carries no domain scope claim."""
+
+    type: Literal["observation"]
+    source: str = Field(min_length=1, max_length=128)
+    source_key: str = Field(min_length=1, max_length=256)
+
+    @field_validator("source_key")
+    @classmethod
+    def validate_source_key(cls, value: str) -> str:
+        if any(character in value for character in ("\x00", "\r", "\n")):
+            raise ValueError("observation source key is invalid")
+        return value
+
+
 EntityRef = Annotated[
     AzureEntityRef | DomainEntityRef,
+    Field(discriminator="type"),
+]
+EvidenceIdentity = Annotated[
+    AzureEntityRef | DomainEntityRef | ObservationRef,
     Field(discriminator="type"),
 ]
 
@@ -114,7 +133,7 @@ class SnapshotEvidence(ContractModel):
     observed_at: str = Field(default="", max_length=128)
     resource_id: str = Field(default="", max_length=512)
     source_key: str = Field(default="", max_length=256)
-    entity: EntityRef | None = None
+    entity: EvidenceIdentity | None = None
     claim_type: str = Field(default="observation", min_length=1, max_length=128)
     citations: list[str] = Field(default_factory=list, max_length=32)
     selected: bool = False

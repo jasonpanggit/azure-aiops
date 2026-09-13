@@ -3146,6 +3146,12 @@ export interface CopilotDomainEntityRef {
   source_key: string;
 }
 export type CopilotEntityRef = CopilotAzureEntityRef | CopilotDomainEntityRef;
+export interface CopilotObservationRef {
+  type: "observation";
+  source: string;
+  source_key: string;
+}
+export type CopilotEvidenceIdentity = CopilotEntityRef | CopilotObservationRef;
 export interface CopilotSnapshotCoverageV2 {
   visible_count: number;
   total_count: number;
@@ -3163,7 +3169,7 @@ export interface CopilotSnapshotEvidenceV2 {
   observed_at: string;
   resource_id: string;
   source_key: string;
-  entity: CopilotEntityRef;
+  entity: CopilotEvidenceIdentity;
   claim_type: string;
   citations: string[];
   selected: boolean;
