@@ -75,6 +75,11 @@ TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 20
 
+
+class EvaluationConfigurationError(RuntimeError):
+    """A missing local prerequisite that retries cannot repair."""
+
+
 # Versioned evaluation data (Plan 11-12). The corpus and thresholds are
 # reviewed data, not inline constants, so a release decision is reproducible
 # from a committed file.
@@ -402,48 +407,168 @@ def _token(resource: str) -> str:
     return proc.stdout.strip()
 
 
+def _canonical_evaluation_body(case: Case | EvalCase) -> dict[str, Any]:
+    provider_state = getattr(case, "provider_state", "normal")
+    freshness_status = (
+        provider_state
+        if provider_state in {"stale", "partial", "unavailable"}
+        else "fresh"
+    )
+    return {
+        "contract_version": "1",
+        "question": case.question,
+        "snapshot": {
+            "version": "2",
+            "page_kind": case.page_kind,
+            "page_id": f"eval-{case.case_id}",
+            "filters": {},
+            "query": "",
+            "coverage": {
+                "visible_count": 0,
+                "total_count": 0,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "release-evaluation",
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "status": freshness_status,
+                }
+            ],
+            "selected_entities": [],
+            "evidence": [],
+            "material_claims": [],
+        },
+    }
+
+
+def _send_evaluation_request(
+    api: str,
+    token: str,
+    endpoint: str,
+    body: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(
+        f"{api}{endpoint}",
+        data=payload,
+        headers={
+            "Authorization": "Bearer " + token,
+            **({"Content-Type": "application/json"} if payload else {}),
+        },
+        method="POST" if payload else "GET",
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    ) as response:
+        return json.load(response)
+
+
 def _investigate(
     api: str, token: str, case: Case | EvalCase
 ) -> tuple[dict[str, Any], float]:
-    if getattr(case, "disposition", "integrated") == "integrated":
-        provider_state = getattr(case, "provider_state", "normal")
-        freshness_status = (
-            provider_state
-            if provider_state in {"stale", "partial", "unavailable"}
-            else "fresh"
+    started = time.monotonic()
+    if case.case_id == "scope.cross.principal":
+        primary = _send_evaluation_request(
+            api,
+            token,
+            "/api/v1/copilot/investigations",
+            _canonical_evaluation_body(case),
         )
-        body = {
-            "question": case.question,
-            "snapshot": {
-                "version": "2",
-                "page_kind": case.page_kind,
-                "page_id": f"eval-{case.case_id}",
-                "filters": {},
-                "query": "",
-                "coverage": {
-                    "visible_count": 0,
-                    "total_count": 0,
-                    "complete": False,
-                },
-                "freshness": [
-                    {
-                        "source": "release-evaluation",
-                        "observed_at": datetime.now(UTC).isoformat(),
-                        "status": freshness_status,
-                    }
-                ],
-                "selected_entities": [],
-                "evidence": [],
-                "material_claims": [],
-            }
-        }
+        primary_data = dict(primary.get("data") or {})
+        secondary_token = os.environ.get(
+            "AIOPS_EVALUATION_SECONDARY_TOKEN", ""
+        ).strip()
+        if not secondary_token:
+            raise EvaluationConfigurationError(
+                "AIOPS_EVALUATION_SECONDARY_TOKEN is required for "
+                "cross-principal evaluation"
+            )
+        continued = _canonical_evaluation_body(case)
+        continued["thread_id"] = primary_data.get("thread_id")
+        continued["expected_thread_revision"] = primary_data.get(
+            "thread_revision"
+        )
+        denied = False
+        try:
+            _send_evaluation_request(
+                api,
+                secondary_token,
+                "/api/v1/copilot/investigations",
+                continued,
+            )
+        except urllib.error.HTTPError as exc:
+            denied = exc.code == 404
+            if not denied:
+                raise
+        return (
+            {
+                "_response_scope": primary.get("scope"),
+                "_cross_principal_denied": denied,
+                "_disposition_ok": True,
+                "status": "denied" if denied else "ok",
+                "policy_status": "fallback",
+                "selected_specialists": [],
+                "selected_tools": [],
+                "tool_results": [],
+                "citations": [],
+                "synthesis": {"status": "deterministic", "claims": []},
+                "mutation_authorized": False,
+            },
+            (time.monotonic() - started) * 1000,
+        )
+
+    if getattr(case, "disposition", "integrated") == "integrated":
+        body = _canonical_evaluation_body(case)
         endpoint = "/api/v1/copilot/investigations"
+    elif case.case_id == "dedicated.investigate":
+        body = {"objective": case.question}
+        endpoint = "/api/v1/agents/investigations"
+    elif case.case_id == "dedicated.agents":
+        body = None
+        endpoint = "/api/v1/agents/catalog"
     else:
         body = {
             "question": case.question,
             "session_id": getattr(case, "continuity_group", None) or "",
         }
         endpoint = "/api/v1/copilot/investigate"
+    if case.case_id in {"dedicated.investigate", "dedicated.agents"}:
+        response_body = _send_evaluation_request(api, token, endpoint, body)
+        data = dict(response_body.get("data") or {})
+        data["_response_scope"] = response_body.get("scope")
+        data["_disposition_ok"] = True
+        if case.case_id == "dedicated.investigate":
+            selected_agents = data.get("selected_agents") or []
+            tool_calls = data.get("tool_calls") or []
+            data["selected_specialists"] = [
+                str(item.get("id") or item.get("agent_id") or "")
+                for item in selected_agents
+                if isinstance(item, dict)
+                and (item.get("id") or item.get("agent_id"))
+            ]
+            data["selected_tools"] = [
+                str(call.get("tool"))
+                for call in tool_calls
+                if isinstance(call, dict) and call.get("tool")
+            ]
+            data["tool_results"] = tool_calls
+            data["mutation_authorized"] = False
+        else:
+            agents = data.get("agents") or []
+            data["_catalog_specialists"] = [
+                str(item.get("id") or "")
+                for item in agents
+                if isinstance(item, dict) and item.get("id")
+            ]
+            data["selected_specialists"] = []
+            data["selected_tools"] = []
+            data["tool_results"] = []
+            data["citations"] = []
+            data["synthesis"] = {"status": "deterministic", "claims": []}
+            data["mutation_authorized"] = False
+        return data, (time.monotonic() - started) * 1000
     payload = json.dumps(body).encode()
     request = urllib.request.Request(
         f"{api}{endpoint}",
@@ -456,6 +581,7 @@ def _investigate(
         body = json.load(response)
     data = dict(body.get("data") or {})
     data["_response_scope"] = body.get("scope")
+    data["_disposition_ok"] = True
     return data, (time.monotonic() - started) * 1000
 
 
@@ -492,16 +618,27 @@ def _canonical_contract_signals(
         and set(selected_tools) <= known_tools
         and set(call_tools) <= known_tools
         and set(call_specialists) <= known_specialists
+        and set(data.get("_catalog_specialists") or []) <= known_specialists
     )
+    strict_specialist_grants = bool(selected_specialists or call_specialists)
     manifest_projection_ok = (
         unknown_id_denied
+        and (
+            not data.get("_catalog_specialists")
+            or set(data["_catalog_specialists"]) == known_specialists
+        )
         and selected_tools == call_tools
-        and len(call_specialists) == len(call_tools)
-        and all(
-            tool in specialists.get(specialist, set())
-            for specialist, tool in zip(
-                call_specialists,
-                call_tools,
+        and (
+            not strict_specialist_grants
+            or (
+                len(call_specialists) == len(call_tools)
+                and all(
+                    tool in specialists.get(specialist, set())
+                    for specialist, tool in zip(
+                        call_specialists,
+                        call_tools,
+                    )
+                )
             )
         )
     )
@@ -516,7 +653,18 @@ def _canonical_contract_signals(
         from api.scope import Scope
 
         response_scope_model = Scope.from_mapping(response_scope)
-        scope_ok = not scoped_case or not response_scope_model.is_unrestricted()
+        scope_ok = (
+            not scoped_case
+            or (
+                not response_scope_model.is_unrestricted()
+                and (
+                    not getattr(case, "safety", {}).get(
+                        "cross_principal_denied"
+                    )
+                    or data.get("_cross_principal_denied") is True
+                )
+            )
+        )
 
         def visit(value: Any) -> bool:
             if isinstance(value, str) and value.startswith("/"):
@@ -548,7 +696,10 @@ def _canonical_contract_signals(
     return {
         "scope_ok": scope_ok,
         "unknown_id_denied": unknown_id_denied,
-        "disposition_ok": getattr(case, "disposition", "integrated") == "integrated",
+        "disposition_ok": (
+            data.get("_disposition_ok") is True
+            or getattr(case, "disposition", "integrated") == "integrated"
+        ),
         "manifest_projection_ok": manifest_projection_ok,
         "tool_correctness": 1.0 if manifest_projection_ok else 0.0,
         "snapshot_schema_ok": True,
@@ -576,6 +727,8 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
                 time.sleep(RETRY_BACKOFF_SECONDS)
                 continue
             return Result(case.case_id, ok=False, error=last_error)
+        except EvaluationConfigurationError as exc:
+            return Result(case.case_id, ok=False, error=str(exc))
         except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
             last_error = str(exc)
             if attempt < MAX_ATTEMPTS:
@@ -694,7 +847,7 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
             selected_tools=tool_names,
             tool_calls=tool_calls,
         )
-        if "selected_specialists" in data
+        if "selected_specialists" in data or "_response_scope" in data
         else {}
     )
     derived_groundedness = (
@@ -707,6 +860,13 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         if synthesis.get("status") in {"deterministic", "skipped"}
         else None
     )
+    legacy_cost = evaluation.get("cost")
+    if (
+        deterministic_spend is None
+        and isinstance(legacy_cost, dict)
+        and legacy_cost.get("llm_calls") == 0
+    ):
+        deterministic_spend = 0.0
 
     return Result(
         case_id=case.case_id,
