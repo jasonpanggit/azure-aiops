@@ -1014,6 +1014,171 @@ def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() ->
     assert "visible subset is incomplete" in turn.result.uncertainty
 
 
+def _browser_claim_snapshot(
+    rows: list[SnapshotEvidence],
+    *,
+    complete: bool = True,
+    requires_complete_coverage: bool = False,
+) -> EvidenceSnapshotV2:
+    return EvidenceSnapshotV2(
+        page_kind="vulnerability",
+        page_id="vulnerability",
+        coverage=SnapshotCoverage(
+            visible_count=len(rows),
+            total_count=len(rows) if complete else 100,
+            complete=complete,
+        ),
+        freshness=[],
+        evidence=rows,
+        material_claims=[
+            MaterialClaim(
+                claim_id=f"claim-{index:03d}",
+                evidence_refs=[row.evidence_id],
+                requires_complete_coverage=requires_complete_coverage,
+            )
+            for index, row in enumerate(rows)
+        ],
+    )
+
+
+def _execute_browser_claim_snapshot(
+    snapshot: EvidenceSnapshotV2,
+) -> Any:
+    request = InvestigationRequest(
+        question="Summarize the reported totals and names.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=snapshot.model_copy(
+            update={
+                "evidence": [],
+                "selected_entities": [],
+                "material_claims": [],
+            }
+        ),
+    )
+    service = OrchestrationService(
+        planner=lambda _request: _plan("vulnerability"),
+        executor=lambda *_args, **_kwargs: ToolResult(status="unavailable"),
+        thread_store=InvestigationThreadStore(),
+        executive_agent=None,
+    )
+    return service.execute_turn(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        selection_snapshot=snapshot,
+    )
+
+
+def test_conflicting_browser_totals_are_excluded_with_explicit_uncertainty() -> None:
+    entity = DomainEntityRef(
+        type="domain",
+        namespace="vulnerability",
+        kind="summary",
+        source_key="estate",
+    )
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"estate-total-{total}",
+            source="exposure/summary",
+            source_key="estate",
+            entity=entity,
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"total_count": total},
+        )
+        for total in (7, 11)
+    ]
+
+    turn = _execute_browser_claim_snapshot(_browser_claim_snapshot(rows))
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Conflicting page evidence was excluded from synthesis."
+        in turn.result.uncertainty
+    )
+
+
+def test_incomplete_completeness_required_claim_is_excluded_and_never_high_confidence() -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id="partial-estate-total",
+            source="exposure/summary",
+            source_key="estate",
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"visible_count": 1, "total_count": 100},
+        )
+    ]
+
+    turn = _execute_browser_claim_snapshot(
+        _browser_claim_snapshot(
+            rows,
+            complete=False,
+            requires_complete_coverage=True,
+        )
+    )
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Incomplete material claims requiring complete coverage were excluded."
+        in turn.result.uncertainty
+    )
+
+
+@pytest.mark.parametrize("row_count", [65, 200])
+def test_material_browser_rows_retain_deterministic_citation_closure(
+    row_count: int,
+) -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"service-{index:03d}",
+            source="services/summary",
+            source_key=f"service-{index:03d}",
+            claim_type="service-summary",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={
+                "name": f"service-{index:03d}",
+                "total_count": index + 1,
+            },
+        )
+        for index in range(row_count)
+    ]
+    snapshot = _browser_claim_snapshot(rows)
+
+    turn = _execute_browser_claim_snapshot(snapshot)
+    reversed_turn = _execute_browser_claim_snapshot(
+        snapshot.model_copy(update={"evidence": list(reversed(rows))})
+    )
+
+    retained_ids = {
+        citation.citation_id
+        for citation in turn.result.citations
+        if citation.citation_id.startswith("retained:")
+    }
+    assert len(retained_ids) == row_count
+    assert turn.synthesis.claims
+    assert all(
+        set(claim["evidence_refs"]) <= retained_ids
+        for claim in turn.synthesis.claims
+    )
+    assert turn.synthesis.claims == reversed_turn.synthesis.claims
+
+
 def test_execute_still_returns_the_canonical_result_only() -> None:
     service = _service(planner=lambda _r: _plan("vulnerability"))
 

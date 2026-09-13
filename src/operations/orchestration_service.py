@@ -53,6 +53,7 @@ from operations.orchestration_contract import (
     ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
+from operations.page_context import select_browser_evidence_for_retention
 from operations.specialist_manifest import (
     PageMapping,
     SpecialistDefinition,
@@ -470,10 +471,10 @@ class OrchestrationService:
             request.model_copy(update={"snapshot": page_snapshot}),
             requested_scope,
         )
-        current_retained_evidence = (
-            []
+        current_retained_evidence, retained_uncertainty = (
+            ([], [])
             if page_snapshot.page_kind == "inventory"
-            else self._current_retained_evidence(
+            else self._current_retained_evidence_with_uncertainty(
                 page_snapshot,
                 evidence_selection_id=evidence_selection_id,
             )
@@ -592,6 +593,7 @@ class OrchestrationService:
             uncertainty.append(
                 "No safe page tool call could be formed from validated snapshot context."
             )
+        uncertainty.extend(retained_uncertainty)
         status = self._result_status(
             tool_statuses,
             uncertainty,
@@ -793,6 +795,20 @@ class OrchestrationService:
     ) -> list[dict[str, Any]]:
         """Retain bounded scalar page facts under server-minted citation IDs."""
 
+        retained, _ = OrchestrationService._current_retained_evidence_with_uncertainty(
+            snapshot,
+            evidence_selection_id=evidence_selection_id,
+        )
+        return retained
+
+    @staticmethod
+    def _current_retained_evidence_with_uncertainty(
+        snapshot: EvidenceSnapshotV2,
+        *,
+        evidence_selection_id: str,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Select admissible page facts, then mint bounded server citations."""
+
         def bounded_facts(data: Mapping[str, Any]) -> dict[str, Any]:
             retained: dict[str, Any] = {}
             for key, value in sorted(data.items()):
@@ -837,18 +853,9 @@ class OrchestrationService:
                     break
             return retained
 
-        material_refs = {
-            reference
-            for claim in snapshot.material_claims
-            for reference in claim.evidence_refs
-        }
+        selection = select_browser_evidence_for_retention(snapshot)
         retained: list[dict[str, Any]] = []
-        for item in snapshot.evidence:
-            if (
-                item.status not in {STATUS_OK, "partial"}
-                or item.evidence_id not in material_refs
-            ):
-                continue
+        for item in selection.evidence:
             data = bounded_facts(item.data)
             if not data:
                 continue
@@ -875,9 +882,7 @@ class OrchestrationService:
                     "data": data,
                 }
             )
-            if len(retained) >= 64:
-                break
-        return retained
+        return retained, list(selection.uncertainty)
 
     @staticmethod
     def _evidence_selection_identity(
@@ -1135,6 +1140,10 @@ class OrchestrationService:
         material_refs = {
             reference
             for claim in snapshot.material_claims
+            if (
+                snapshot.coverage.complete
+                or not claim.requires_complete_coverage
+            )
             for reference in claim.evidence_refs
         }
         if material_refs and not material_refs <= set(by_original_id):
@@ -1225,7 +1234,13 @@ class OrchestrationService:
                     )[:1000],
                     "evidence_refs": [evidence_id],
                     "confidence": (
-                        "high" if item.get("quality") == "high" else "medium"
+                        "high"
+                        if (
+                            item.get("quality") == "high"
+                            and item.get("status") == STATUS_OK
+                            and snapshot.coverage.complete
+                        )
+                        else "medium"
                     ),
                     "freshness": (
                         "fresh"

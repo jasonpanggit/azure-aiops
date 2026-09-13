@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -257,15 +258,152 @@ def _merge_duplicate(
 
 
 def _retention_key(row: CanonicalEvidence) -> tuple[int, ...] | tuple[Any, ...]:
+    return evidence_retention_key(
+        row,
+        freshness=row.freshness,
+        stable_id=row.stable_id,
+        variant_id=row.variant_id,
+    )
+
+
+def evidence_retention_key(
+    row: SnapshotEvidence | CanonicalEvidence,
+    *,
+    freshness: str,
+    stable_id: str,
+    variant_id: str,
+) -> tuple[Any, ...]:
+    """Return the shared deterministic priority for canonical/page evidence."""
+
     return (
         -int(row.selected),
         -int(row.direct),
         -int(row.actionable),
         -_SEVERITY_PRIORITY[row.severity],
-        -_FRESHNESS_PRIORITY[row.freshness],
+        -_FRESHNESS_PRIORITY[freshness],
         -_QUALITY_PRIORITY[row.quality],
-        row.stable_id,
-        row.variant_id,
+        stable_id,
+        variant_id,
+    )
+
+
+@dataclass(frozen=True)
+class BrowserEvidenceSelection:
+    """Non-authoritative page rows admitted only for cited presentation."""
+
+    evidence: tuple[SnapshotEvidence, ...]
+    uncertainty: tuple[str, ...]
+
+
+def select_browser_evidence_for_retention(
+    snapshot: EvidenceSnapshotV2,
+    *,
+    retention_limit: int = MAX_EVIDENCE_ROWS,
+) -> BrowserEvidenceSelection:
+    """Apply canonical conflict, completeness, and ranking rules before retention.
+
+    Browser identity is used only to conservatively exclude contradictory page
+    observations. It never grants scope or tool authority.
+    """
+
+    if not 1 <= retention_limit <= MAX_EVIDENCE_ROWS:
+        raise ValueError("snapshot retention limit is outside the policy bound")
+
+    incomplete_claims = {
+        claim.claim_id
+        for claim in snapshot.material_claims
+        if claim.requires_complete_coverage and not snapshot.coverage.complete
+    }
+    admissible_refs = {
+        reference
+        for claim in snapshot.material_claims
+        if claim.claim_id not in incomplete_claims
+        for reference in claim.evidence_refs
+    }
+    candidates = [
+        row
+        for row in snapshot.evidence
+        if row.status in {"ok", "partial"} and row.evidence_id in admissible_refs
+    ]
+
+    freshness_by_source: dict[str, str] = {}
+    for record in snapshot.freshness:
+        source = _normalized_identity_part(record.source)
+        current = freshness_by_source.get(source)
+        freshness_by_source[source] = (
+            record.status
+            if current is None
+            else _stronger_value(current, record.status, _FRESHNESS_WARNING)
+        )
+
+    def identity(row: SnapshotEvidence) -> str:
+        entity = (
+            row.entity.model_dump(mode="json")
+            if row.entity is not None
+            else {
+                "resource_id": row.resource_id.casefold(),
+                "page_id": snapshot.page_id,
+            }
+        )
+        return json.dumps(
+            (
+                _normalized_identity_part(row.source),
+                _normalized_identity_part(row.source_key or row.evidence_id),
+                entity,
+                _normalized_identity_part(row.claim_type),
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def variant(row: SnapshotEvidence) -> str:
+        return json.dumps(
+            row.data,
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    groups: dict[str, list[SnapshotEvidence]] = {}
+    for row in candidates:
+        groups.setdefault(identity(row), []).append(row)
+    conflicting_ids = {
+        row.evidence_id
+        for group in groups.values()
+        if len({variant(row) for row in group}) > 1
+        for row in group
+    }
+    admissible = [row for row in candidates if row.evidence_id not in conflicting_ids]
+    ranked = sorted(
+        admissible,
+        key=lambda row: evidence_retention_key(
+            row,
+            freshness=freshness_by_source.get(
+                _normalized_identity_part(row.source),
+                "unknown",
+            ),
+            stable_id=identity(row),
+            variant_id=variant(row),
+        ),
+    )
+    retained = ranked[:retention_limit]
+
+    uncertainty: list[str] = []
+    if conflicting_ids:
+        uncertainty.append("Conflicting page evidence was excluded from synthesis.")
+    if incomplete_claims:
+        uncertainty.append(
+            "Incomplete material claims requiring complete coverage were excluded."
+        )
+    discarded_count = len(ranked) - len(retained)
+    if discarded_count:
+        suffix = "row" if discarded_count == 1 else "rows"
+        uncertainty.append(
+            f"Page evidence retention limit discarded {discarded_count} {suffix}."
+        )
+    return BrowserEvidenceSelection(
+        evidence=tuple(retained),
+        uncertainty=tuple(uncertainty),
     )
 
 
