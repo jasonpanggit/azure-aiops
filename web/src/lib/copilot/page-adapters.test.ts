@@ -1961,8 +1961,8 @@ describe("inventory Copilot page adapter", () => {
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
 
-    it("keeps a bounded predeploy context before any assessment is submitted", () => {
-      const context = buildPredeployCopilotContext({
+    it("keeps healthy-empty predeploy distinct from unavailable assessment state", () => {
+      const emptyInput = {
         ...predeployInput,
         change: null,
         simulation: null,
@@ -1971,12 +1971,32 @@ describe("inventory Copilot page adapter", () => {
         impactedResources: [],
         impactedTotalCount: 0,
         impactedTruncated: false,
+      };
+      const healthyEmpty = buildPredeployCopilotContext({
+        ...emptyInput,
+        available: true,
+        freshness: "fresh" as const,
+      });
+      const unavailable = buildPredeployCopilotContext({
+        ...emptyInput,
         available: false,
         freshness: "unavailable" as const,
       });
-      expect(context.snapshot.page_id).toBe("predeploy");
-      expect(rowByClaim(context, "proposed_change")).toHaveLength(0);
-      expect(context.snapshot.evidence.every((row) =>
+      expect(healthyEmpty.snapshot.page_id).toBe("predeploy");
+      expect(rowByClaim(healthyEmpty, "proposed_change")).toHaveLength(0);
+      expect(healthyEmpty.coverage.impacted_resources.complete).toBe(true);
+      expect(unavailable.coverage.impacted_resources.complete).toBe(false);
+      expect(healthyEmpty.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "assessment", status: "fresh" }),
+        ]),
+      );
+      expect(unavailable.snapshot.freshness).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "assessment", status: "unavailable" }),
+        ]),
+      );
+      expect(unavailable.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
   });
