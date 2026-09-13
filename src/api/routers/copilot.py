@@ -37,6 +37,7 @@ from operations.investigation_thread_store import (
     ThreadNotFound,
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
+    investigation_thread_store,
 )
 from operations.maf_orchestrator import (
     build_deterministic_fallback,
@@ -47,8 +48,10 @@ from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
     CandidatePlan,
+    Citation,
     DomainEntityRef,
     EvidenceSnapshotV2,
+    OrchestrationResult,
     SnapshotCoverage,
     SnapshotEvidence,
     SnapshotFreshness,
@@ -422,6 +425,244 @@ def _inventory_executor(
             )
 
     return execute
+
+
+def _canonical_plan_preview(
+    *,
+    planner: Any,
+    request: CanonicalInvestigationRequest,
+    scope: Scope,
+) -> tuple[dict[str, Any], bool]:
+    """Resolve canonical planning and policy without model or tool execution."""
+
+    policy = OrchestrationPolicy()
+    policy_validated = True
+    try:
+        proposal = planner(request)
+        candidate = (
+            proposal
+            if isinstance(proposal, CandidatePlan)
+            else CandidatePlan.model_validate(proposal)
+        )
+        candidate = policy.validate(
+            request=request,
+            candidate=candidate,
+            effective_scope=scope,
+        )
+        policy_status = "accepted"
+        fallback_reason = ""
+    except PolicyViolation as exc:
+        policy_validated = False
+        fallback_reason = f"candidate_rejected:{exc.code}"
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        if candidate is not None:
+            candidate = policy.validate(
+                request=request,
+                candidate=candidate,
+                effective_scope=scope,
+            )
+        policy_status = "fallback"
+    except (TypeError, ValueError):
+        policy_validated = False
+        fallback_reason = "planner_parse_error"
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        if candidate is not None:
+            candidate = policy.validate(
+                request=request,
+                candidate=candidate,
+                effective_scope=scope,
+            )
+        policy_status = "fallback"
+
+    return (
+        {
+            "policy_status": policy_status,
+            "fallback_reason": (
+                fallback_reason
+                if candidate is not None
+                else "no_safe_tool_arguments"
+            ),
+            "selected_specialists": (
+                [step.specialist_id for step in candidate.steps]
+                if candidate is not None
+                else []
+            ),
+            "selected_tools": (
+                [
+                    call.tool
+                    for step in candidate.steps
+                    for call in step.tool_calls
+                ]
+                if candidate is not None
+                else []
+            ),
+            # Shadow deliberately does not know a canonical execution status:
+            # obtaining one would repeat external tool/model I/O.
+            "status": None,
+            "executed": False,
+        },
+        policy_validated,
+    )
+
+
+def _execute_retained_compatibility(
+    *,
+    payload: CanonicalInvestigationPayload,
+    request: CanonicalInvestigationRequest,
+    context: Any,
+    scope: Scope,
+    principal: Any,
+) -> OrchestrationResult:
+    """Serve the retained deterministic investigation path on the v2 wire."""
+
+    requested_scope = OrchestrationPolicy().validate_request(request, scope)
+    hint_tool = payload.hint.tool if payload.hint is not None else None
+    if hint_tool and hint_tool not in {
+        str(item.get("name") or "") for item in tool_catalog()
+    }:
+        raise PolicyViolation("unknown_tool", hint_tool)
+
+    store = investigation_thread_store()
+    if request.thread_id:
+        thread = store.authorize(
+            request.thread_id,
+            principal.subject,
+            requested_scope,
+            expected_revision=request.expected_thread_revision,
+        )
+    else:
+        thread = store.create(principal.subject, requested_scope)
+    investigation = run_investigation(
+        request.question,
+        context=context,
+        scope=requested_scope,
+        principal=principal,
+        hint_tool=hint_tool,
+        hint_args=(
+            dict(payload.hint.arguments)
+            if payload.hint is not None
+            else None
+        ),
+        page_kind=f"{request.snapshot.page_kind}_page",
+    )
+
+    tool_results: list[dict[str, Any]] = []
+    citations: list[Citation] = []
+    next_revision = thread.revision + 1
+    for call_index, call in enumerate(investigation.calls):
+        call_id = (
+            f"{thread.thread_id}:rev-{next_revision}:compatibility:"
+            f"{call_index}:{call.tool}"
+        )
+        tool_results.append(
+            {
+                "call_id": call_id,
+                # The retained planner selects tools directly; it does not
+                # claim a policy-selected canonical specialist.
+                "specialist_id": "",
+                "tool": call.tool,
+                "arguments": dict(call.arguments),
+                **call.result.to_dict(),
+            }
+        )
+        citations.extend(
+            Citation(
+                citation_id=f"tool:{call_id}:{evidence_index}",
+                source=(
+                    evidence.source_engine
+                    if not evidence.source_table
+                    else f"{evidence.source_engine}:{evidence.source_table}"
+                ),
+                status=call.result.status,
+                observed_at=evidence.timestamp,
+                resource_id=evidence.resource_id,
+            )
+            for evidence_index, evidence in enumerate(call.result.evidence)
+        )
+
+    result = OrchestrationResult(
+        status=investigation.fact_status,
+        policy_status="fallback",
+        fallback_reason="compatibility_rollout",
+        selected_specialists=[],
+        selected_tools=[call.tool for call in investigation.calls],
+        tool_results=tool_results,
+        uncertainty=list(investigation.warnings),
+        coverage=request.snapshot.coverage,
+        citations=citations,
+        thread_id=thread.thread_id,
+        thread_revision=next_revision,
+        synthesis={
+            "status": (
+                "compatibility"
+                if investigation.answer is not None
+                else "degraded"
+            ),
+            "reason": "retained_compatibility",
+            "domain_count": 0,
+            "claims": [],
+            "warning": "",
+            "compatibility_answer": investigation.answer,
+        },
+    )
+    updated = store.append(
+        thread.thread_id,
+        principal.subject,
+        requested_scope,
+        {
+            "question": request.question,
+            **result.model_dump(mode="json"),
+        },
+        expected_revision=thread.revision,
+    )
+    return result.model_copy(update={"thread_revision": updated.revision})
+
+
+def _shadow_comparison(
+    *,
+    compatibility: OrchestrationResult,
+    canonical: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare executed compatibility metadata with a no-I/O canonical preview."""
+
+    compatibility_metadata = {
+        "policy_status": "retained_compatibility",
+        "fallback_reason": compatibility.fallback_reason,
+        # The retained planner has no canonical specialist-policy concept.
+        "selected_specialists": None,
+        "selected_tools": list(compatibility.selected_tools),
+        "status": compatibility.status,
+        "executed": True,
+    }
+    matches: dict[str, bool | None] = {
+        "policy_status": (
+            compatibility_metadata["policy_status"]
+            == canonical["policy_status"]
+        ),
+        "selected_specialists": None,
+        "selected_tools": (
+            compatibility_metadata["selected_tools"]
+            == canonical["selected_tools"]
+        ),
+        # A canonical result was intentionally not executed in shadow.
+        "status": None,
+    }
+    return {
+        "compatibility": compatibility_metadata,
+        "canonical": dict(canonical),
+        "matches": matches,
+        "divergent_fields": [
+            field
+            for field, matches_value in matches.items()
+            if matches_value is False
+        ],
+    }
 
 
 def _filter_scoped(value: Any, scope: Scope) -> Any:
@@ -1312,38 +1553,27 @@ def investigate_canonical(
                     warning="Tool unavailable in canonical page mode",
                 )
 
-    shadow_validated = False
-    shadow_reason = ""
-    if not rollout.canonical_enabled:
-        if rollout.shadow_enabled:
-            try:
-                shadow_candidate = planner(request)
-                if shadow_candidate is not None:
-                    OrchestrationPolicy().validate(
-                        request=request,
-                        candidate=shadow_candidate,
-                        effective_scope=scope,
-                    )
-            except (TypeError, ValueError) as exc:
-                code = exc.code if isinstance(exc, PolicyViolation) else "invalid_candidate"
-                shadow_reason = f"candidate_rejected:{code}"
-            else:
-                shadow_validated = True
-                shadow_reason = "accepted"
-        planner = None
-
     try:
-        result = OrchestrationService(
-            planner=planner,
-            executor=executor,
-        ).execute(
-            request,
-            context=context,
-            principal_subject=principal.subject,
-            effective_scope=scope,
-            selection_snapshot=browser_snapshot,
-            canonical_selection_snapshot=canonical_browser_snapshot,
-        )
+        if rollout.canonical_enabled:
+            result = OrchestrationService(
+                planner=planner,
+                executor=executor,
+            ).execute(
+                request,
+                context=context,
+                principal_subject=principal.subject,
+                effective_scope=scope,
+                selection_snapshot=browser_snapshot,
+                canonical_selection_snapshot=canonical_browser_snapshot,
+            )
+        else:
+            result = _execute_retained_compatibility(
+                payload=payload,
+                request=request,
+                context=context,
+                scope=scope,
+                principal=principal,
+            )
     except PolicyViolation as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
@@ -1367,6 +1597,28 @@ def investigate_canonical(
             details={"field": "thread_id"},
         ) from exc
 
+    shadow_validated = False
+    shadow_reason = ""
+    comparison: dict[str, Any] | None = None
+    if rollout.shadow_enabled:
+        canonical_preview, shadow_validated = _canonical_plan_preview(
+            planner=planner,
+            request=request,
+            scope=scope,
+        )
+        comparison = _shadow_comparison(
+            compatibility=result,
+            canonical=canonical_preview,
+        )
+        if not shadow_validated:
+            shadow_reason = str(canonical_preview["fallback_reason"])
+        elif comparison["divergent_fields"]:
+            shadow_reason = (
+                "diverged:" + ",".join(comparison["divergent_fields"])
+            )
+        else:
+            shadow_reason = "accepted"
+
     result_data = result.model_dump(mode="json")
     result_data["rollout"] = {
         "mode": rollout.mode,
@@ -1375,6 +1627,8 @@ def investigate_canonical(
         "shadow_validated": shadow_validated,
         "shadow_reason": shadow_reason,
     }
+    if comparison is not None:
+        result_data["rollout"]["comparison"] = comparison
     result_data["citations"] = [
         citation
         for citation in result_data["citations"]
