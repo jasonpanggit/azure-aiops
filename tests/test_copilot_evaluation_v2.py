@@ -2352,6 +2352,269 @@ def test_production_dispatch_rejects_a_skipped_thread_revision(
     assert thread_states["cont-net-rem"].revision == 1
 
 
+def test_cross_principal_dispatch_rejects_different_primary_response_scope(
+    monkeypatch,
+):
+    import urllib.error
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    thread_id = "thr-" + "d" * 32
+    requests: list[tuple[str, dict[str, Any], str]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if len(requests) == 1:
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "data": {
+                            "thread_id": thread_id,
+                            "thread_revision": 1,
+                        },
+                        "scope": {"subscription": [" SUB-B "]},
+                    }
+                ).encode()
+            )
+        raise urllib.error.HTTPError(
+            request.full_url,
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"error":{"code":"not_found"}}'),
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    thread_states = {}
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    expected_url = (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert [url for url, _body, _authorization in requests] == [
+        expected_url,
+        expected_url,
+    ]
+    assert [authorization for _url, _body, authorization in requests] == [
+        "Bearer primary-token",
+        "Bearer secondary-token",
+    ]
+    primary_body = requests[0][1]
+    secondary_body = requests[1][1]
+    assert "thread_id" not in primary_body
+    assert "expected_thread_revision" not in primary_body
+    assert primary_body["requested_scope"] == {"subscription": ["sub-a"]}
+    assert secondary_body["requested_scope"] == {"subscription": ["sub-a"]}
+    assert secondary_body["thread_id"] == thread_id
+    assert secondary_body["expected_thread_revision"] == 1
+    assert result.scope_ok is False
+    assert thread_states["scope.cross.principal:primary"].scope == {
+        "subscription": ["sub-b"]
+    }
+
+
+@pytest.mark.parametrize(
+    ("response_scope", "expected"),
+    [
+        (
+            {
+                "subscription": ["SUB-A"],
+                "environment": ["prod"],
+                "region": ["eastus"],
+            },
+            True,
+        ),
+        (
+            {
+                "subscription": ["sub-a", "sub-c"],
+                "environment": ["prod"],
+            },
+            False,
+        ),
+        ({"subscription": ["sub-a"]}, False),
+        ({"unsupported": ["value"]}, False),
+        ({"subscription": []}, False),
+        (None, False),
+    ],
+)
+def test_response_scope_subset_is_checked_per_supported_dimension(
+    response_scope,
+    expected,
+):
+    evaluate_agents = _load_evaluate_agents()
+
+    assert (
+        evaluate_agents._response_scope_within_requested(
+            response_scope,
+            {
+                "subscription": ["sub-a", "sub-b"],
+                "environment": ["PROD"],
+            },
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "response_scope",
+    [None, {"subscription": []}, {"unsupported": ["value"]}],
+)
+def test_cross_principal_dispatch_fails_closed_on_invalid_response_scope(
+    monkeypatch,
+    response_scope,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    requests = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        requests.append(request)
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": "thr-" + "f" * 32,
+                        "thread_revision": 1,
+                    },
+                    "scope": response_scope,
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert "missing or malformed scope" in result.error
+    assert len(requests) == 1
+
+
+def test_cross_principal_retry_cannot_sanitize_invalid_primary_scope(
+    monkeypatch,
+):
+    import urllib.error
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "scope.cross.principal"
+    )
+    thread_id = "thr-" + "e" * 32
+    requests: list[tuple[str, dict[str, Any], str]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if len(requests) == 1:
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "data": {
+                            "thread_id": thread_id,
+                            "thread_revision": 1,
+                        },
+                        "scope": {"subscription": ["sub-b"]},
+                    }
+                ).encode()
+            )
+        if len(requests) == 2:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                503,
+                "unavailable",
+                {},
+                io.BytesIO(b'{"error":{"code":"unavailable"}}'),
+            )
+        raise urllib.error.HTTPError(
+            request.full_url,
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"error":{"code":"not_found"}}'),
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "primary-token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    monkeypatch.setattr(evaluate_agents.time, "sleep", lambda _seconds: None)
+    thread_states = {}
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    expected_url = (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert [url for url, _body, _authorization in requests] == [
+        expected_url,
+        expected_url,
+        expected_url,
+    ]
+    assert [authorization for _url, _body, authorization in requests] == [
+        "Bearer primary-token",
+        "Bearer secondary-token",
+        "Bearer secondary-token",
+    ]
+    for _url, body, _authorization in requests[1:]:
+        assert body["requested_scope"] == {"subscription": ["sub-a"]}
+        assert body["thread_id"] == thread_id
+        assert body["expected_thread_revision"] == 1
+    assert result.scope_ok is False
+    assert thread_states["scope.cross.principal:primary"].scope == {
+        "subscription": ["sub-b"]
+    }
+
+
 def test_run_case_scores_realistic_canonical_response_and_release_gates(
     monkeypatch,
 ):
