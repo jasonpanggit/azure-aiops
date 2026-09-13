@@ -633,7 +633,10 @@ class InvestigationThreadStore:
                             current_revision=record.revision
                         ) from None
                     continue
-                return record
+                # Callers retain this value while external tools and models run.
+                # Never let a later in-process append mutate the revision they
+                # authorized before that work began.
+                return deepcopy(record)
             raise AssertionError("authorization retry loop terminated unexpectedly")
 
     def append(
