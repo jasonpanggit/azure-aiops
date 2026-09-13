@@ -44,6 +44,7 @@ from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
     CandidatePlan,
+    CanonicalEvidenceSnapshot,
     Citation,
     EvidenceSnapshotV2,
     InvestigationRequest,
@@ -429,6 +430,7 @@ class OrchestrationService:
         effective_scope: Scope,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
+        canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
     ) -> OrchestrationResult:
         """Execute one canonical request and return only the canonical result."""
 
@@ -439,6 +441,7 @@ class OrchestrationService:
             effective_scope=effective_scope,
             max_wall_seconds=max_wall_seconds,
             selection_snapshot=selection_snapshot,
+            canonical_selection_snapshot=canonical_selection_snapshot,
         ).result
 
     def execute_turn(
@@ -450,6 +453,7 @@ class OrchestrationService:
         effective_scope: Scope,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
+        canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
@@ -471,14 +475,23 @@ class OrchestrationService:
             request.model_copy(update={"snapshot": page_snapshot}),
             requested_scope,
         )
-        current_retained_evidence, retained_uncertainty = (
-            ([], [])
-            if page_snapshot.page_kind == "inventory"
-            else self._current_retained_evidence_with_uncertainty(
-                page_snapshot,
-                evidence_selection_id=evidence_selection_id,
+        if page_snapshot.page_kind == "inventory":
+            current_retained_evidence, retained_uncertainty = [], []
+        elif canonical_selection_snapshot is not None:
+            current_retained_evidence, retained_uncertainty = (
+                self._current_authorized_evidence_with_uncertainty(
+                    page_snapshot,
+                    canonical_selection_snapshot,
+                    evidence_selection_id=evidence_selection_id,
+                )
             )
-        )
+        else:
+            current_retained_evidence, retained_uncertainty = (
+                self._current_retained_evidence_with_uncertainty(
+                    page_snapshot,
+                    evidence_selection_id=evidence_selection_id,
+                )
+            )
         if request.thread_id:
             thread = self.thread_store.authorize(
                 request.thread_id,
@@ -879,6 +892,114 @@ class OrchestrationService:
                 }
             )
         return retained, list(selection.uncertainty)
+
+    @staticmethod
+    def _current_authorized_evidence_with_uncertainty(
+        snapshot: EvidenceSnapshotV2,
+        canonical_snapshot: CanonicalEvidenceSnapshot,
+        *,
+        evidence_selection_id: str,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Mint retained citations only from server-resolved canonical rows."""
+
+        incomplete_claims = {
+            claim.claim_id
+            for claim in snapshot.material_claims
+            if claim.requires_complete_coverage and not snapshot.coverage.complete
+        }
+        admissible_refs = {
+            reference
+            for claim in snapshot.material_claims
+            if claim.claim_id not in incomplete_claims
+            for reference in claim.evidence_refs
+        }
+        conflicting_ids = {
+            conflict.stable_id for conflict in canonical_snapshot.conflicts
+        }
+        retained: list[dict[str, Any]] = []
+        for item in canonical_snapshot.evidence:
+            if (
+                item.stable_id in conflicting_ids
+                or item.status not in {"ok", "partial"}
+                or not admissible_refs.intersection(item.evidence_refs)
+            ):
+                continue
+            data = OrchestrationService._bounded_page_facts(item.data)
+            if not data:
+                continue
+            original_id = min(
+                admissible_refs.intersection(item.evidence_refs)
+            )
+            citation_seed = f"{evidence_selection_id}:{original_id}".encode()
+            retained.append(
+                {
+                    "evidence_id": (
+                        "retained:"
+                        + hashlib.sha256(citation_seed).hexdigest()[:32]
+                    ),
+                    "original_evidence_id": original_id,
+                    "source": (
+                        f"page_snapshot:{snapshot.page_kind}:{item.source}"
+                    ),
+                    "status": item.status,
+                    "observed_at": item.observed_at,
+                    "resource_id": (
+                        item.entity_key.removeprefix("azure:")
+                        if item.entity_key.startswith("azure:")
+                        else ""
+                    ),
+                    "observation_status": OBSERVATION_CURRENT,
+                    "claim_type": item.claim_type,
+                    "selected": item.selected,
+                    "direct": item.direct,
+                    "quality": item.quality,
+                    "data": data,
+                }
+            )
+        return retained, list(
+            dict.fromkeys(
+                [
+                    *canonical_snapshot.uncertainty,
+                    *canonical_snapshot.insufficiency_reasons,
+                ]
+            )
+        )
+
+    @staticmethod
+    def _bounded_page_facts(data: Mapping[str, Any]) -> dict[str, Any]:
+        retained: dict[str, Any] = {}
+        for key, value in sorted(data.items()):
+            normalized_key = str(key).strip()
+            if not normalized_key or normalized_key in {
+                "actionable",
+                "claim_type",
+                "entity",
+                "mutation_authorized",
+                "selected",
+                "source_key",
+            }:
+                continue
+            if (
+                value is None
+                or isinstance(value, (bool, int))
+                or (isinstance(value, float) and math.isfinite(value))
+                or (isinstance(value, str) and len(value) <= 512)
+            ):
+                retained[normalized_key] = value
+            elif (
+                isinstance(value, list)
+                and len(value) <= 16
+                and all(
+                    item is None
+                    or isinstance(item, (bool, int, str))
+                    or (isinstance(item, float) and math.isfinite(item))
+                    for item in value
+                )
+            ):
+                retained[normalized_key] = list(value)
+            if len(retained) >= 16:
+                break
+        return retained
 
     @staticmethod
     def _evidence_selection_identity(
