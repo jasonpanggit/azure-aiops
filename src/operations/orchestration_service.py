@@ -182,10 +182,18 @@ def _question_route(
         )()
         for specialist in manifest.specialists
     )
+    dedicated_page = "__dedicated_question__"
     decision = select_specialists_for_turn(
-        page_kind="investigate",
+        page_kind=dedicated_page,
         question=question,
-        page_specialists=manifest.page_mapping_projection(),
+        page_specialists={
+            dedicated_page: tuple(
+                specialist.id
+                for specialist in manifest.specialists
+                if specialist.id != "executive_summary"
+                and specialist.operations_mcp_tools
+            )
+        },
         catalog=catalog,
         limit=1,
     )

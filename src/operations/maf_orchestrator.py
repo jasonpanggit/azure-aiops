@@ -75,11 +75,11 @@ def select_specialists_for_turn(
 ) -> OrchestrationDecision:
     """Select specialists for a page turn using the MAF pivot contract.
 
-    The old page-anchored selector made a Network drawer behave like a Network
-    agent, even when the user asked an ownership, change, or patch question.
-    MAF mode inverts that: Operations Copilot owns intent selection, then
-    delegates to the matching specialists. The current page is used only as a
-    fallback when the question has no specialist signal.
+    The manifest's ordered page mapping is the authorization boundary. Question
+    intent may narrow that reviewed set, but globally matching keywords can
+    never add a specialist that the active page does not permit. If no allowed
+    specialist matches, the exact page mapping is used as the deterministic
+    fallback. Unknown pages fail closed.
 
     Keyword matching is sourced from each catalog entry's own ``keywords``
     field (the single source of truth already used by the deterministic
@@ -87,12 +87,28 @@ def select_specialists_for_turn(
     so the two orchestration paths cannot silently drift apart.
     """
 
+    allowed = tuple(
+        agent_id
+        for agent_id in page_specialists.get(page_kind, ())
+        if agent_id != "executive_summary"
+    )
+    if not allowed:
+        return OrchestrationDecision(
+            selected_ids=(),
+            strategy="page_unmapped",
+            runtime=_maf_runtime_label(),
+            reason="the active page has no reviewed specialist mapping",
+        )
+
+    catalog_by_id = {
+        getattr(agent, "id", ""): agent
+        for agent in catalog
+        if getattr(agent, "id", "")
+    }
     lowered = question.casefold()
     selected: list[str] = []
-    for agent in catalog:
-        agent_id = getattr(agent, "id", "")
-        if agent_id == "executive_summary":
-            continue
+    for agent_id in allowed:
+        agent = catalog_by_id.get(agent_id)
         keywords = getattr(agent, "keywords", None) or ()
         if any(marker in lowered for marker in keywords):
             _append_unique(selected, agent_id, limit=limit)
@@ -105,9 +121,8 @@ def select_specialists_for_turn(
             reason="matched specialist intent from the operator question",
         )
 
-    for agent_id in page_specialists.get(page_kind, ()):
-        if agent_id != "executive_summary":
-            _append_unique(selected, agent_id, limit=limit)
+    for agent_id in allowed:
+        _append_unique(selected, agent_id, limit=limit)
 
     return OrchestrationDecision(
         selected_ids=tuple(selected),

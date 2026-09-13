@@ -50,7 +50,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "a67a7de2d7d017cb985c1838e8a9c85361a5d5262dbac463ebbd2429535c4e30"
+_LOCKED_POLICY_DIGEST = "8d41328b03f13c195a7023770058a6f1f5afc2b9eb69afca64f8047c21844f88"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",
@@ -159,6 +159,7 @@ class SpecialistDefinition(ManifestModel):
     azure_mcp_tools: tuple[str, ...] = Field(default=(), max_length=16)
     knowledge_policy: KnowledgePolicy
     page_mappings: tuple[PageMapping, ...] = Field(min_length=1, max_length=8)
+    primary_page_mappings: tuple[PageMapping, ...] = Field(default=(), max_length=8)
     output_contract: OutputContract
     ui_metadata: UIMetadata
     foundry: FoundryMetadata
@@ -172,12 +173,15 @@ class SpecialistDefinition(ManifestModel):
             self.operations_mcp_tools,
             self.azure_mcp_tools,
             self.page_mappings,
+            self.primary_page_mappings,
         )
         if any(len(values) != len(set(values)) for values in collections):
             raise ValueError("specialist contract collections must not contain duplicates")
         tool_names = (*self.operations_mcp_tools, *self.azure_mcp_tools)
         if any(_is_mutation_tool(tool) for tool in tool_names):
             raise ValueError("specialist contracts may contain only read-only tools")
+        if not set(self.primary_page_mappings) <= set(self.page_mappings):
+            raise ValueError("primary page mappings must also be page mappings")
         return self
 
 
@@ -354,14 +358,24 @@ class SpecialistManifest(ManifestModel):
         )
 
     def page_mapping_projection(self) -> dict[str, tuple[str, ...]]:
-        """Project page kinds to their bounded specialist candidates."""
+        """Project page kinds to their ordered, bounded specialist candidates."""
 
         pages: dict[str, list[str]] = {}
+        specialists = {specialist.id: specialist for specialist in self.specialists}
         for specialist in self.specialists:
             for page in specialist.page_mappings:
                 pages.setdefault(page, []).append(specialist.id)
         return {
-            page: tuple(sorted(ids, key=lambda specialist_id: specialist_id != page))
+            page: tuple(
+                sorted(
+                    ids,
+                    key=lambda specialist_id: (
+                        specialist_id != page
+                        and page
+                        not in specialists[specialist_id].primary_page_mappings
+                    ),
+                )
+            )
             for page, ids in pages.items()
         }
 
