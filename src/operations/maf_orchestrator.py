@@ -243,9 +243,19 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
 
 
 def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
-    """Return whether this request routes through the canonical service."""
+    """Return whether a legacy endpoint opts into the canonical service.
 
-    return copilot_rollout_decision(stable_key=stable_key).canonical_enabled
+    The rollout decision governs the canonical ``/copilot/investigations``
+    endpoint. Existing context, investigation, history, and multi-agent
+    endpoints retain their legacy behavior unless their original
+    ``AIOPS_AGENT_ORCHESTRATION_MODE=canonical`` switch is explicit.
+    """
+
+    decision = copilot_rollout_decision(stable_key=stable_key)
+    legacy_mode = (
+        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
+    )
+    return legacy_mode == MODE_CANONICAL and decision.canonical_enabled
 
 
 def _maf_runtime_label() -> str:
