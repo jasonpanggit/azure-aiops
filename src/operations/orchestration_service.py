@@ -46,6 +46,7 @@ from operations.orchestration_contract import (
     CandidatePlan,
     CanonicalEvidenceSnapshot,
     Citation,
+    DomainEntityRef,
     EvidenceSnapshotV2,
     InvestigationRequest,
     OrchestrationResult,
@@ -470,7 +471,11 @@ class OrchestrationService:
 
         requested_scope = self.policy.validate_request(request, effective_scope)
         page_snapshot = selection_snapshot or request.snapshot
-        self._validate_page_snapshot_scope(page_snapshot, requested_scope)
+        self._validate_page_snapshot_scope(
+            page_snapshot,
+            requested_scope,
+            domains_authorized=canonical_selection_snapshot is not None,
+        )
         evidence_selection_id = self._evidence_selection_identity(
             request.model_copy(update={"snapshot": page_snapshot}),
             requested_scope,
@@ -768,6 +773,8 @@ class OrchestrationService:
     def _validate_page_snapshot_scope(
         snapshot: EvidenceSnapshotV2,
         current_scope: Scope,
+        *,
+        domains_authorized: bool = False,
     ) -> None:
         """Reject Azure page observations outside the authorized read scope."""
 
@@ -780,6 +787,13 @@ class OrchestrationService:
             ],
         ]
         for entity in entities:
+            if isinstance(entity, DomainEntityRef):
+                if not domains_authorized:
+                    raise PolicyViolation(
+                        "unresolved_domain_entity",
+                        "domain page evidence requires server resolution",
+                    )
+                continue
             if not isinstance(entity, AzureEntityRef):
                 continue
             parts = [
@@ -818,54 +832,10 @@ class OrchestrationService:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Select admissible page facts, then mint bounded server citations."""
 
-        def bounded_facts(data: Mapping[str, Any]) -> dict[str, Any]:
-            retained: dict[str, Any] = {}
-            for key, value in sorted(data.items()):
-                normalized_key = str(key).strip()
-                if not normalized_key or normalized_key in {
-                    "actionable",
-                    "claim_type",
-                    "entity",
-                    "mutation_authorized",
-                    "selected",
-                    "source_key",
-                }:
-                    continue
-                if (
-                    value is None
-                    or isinstance(value, (bool, int))
-                    or (
-                        isinstance(value, float)
-                        and math.isfinite(value)
-                    )
-                    or (
-                        isinstance(value, str)
-                        and len(value) <= 512
-                    )
-                ):
-                    retained[normalized_key] = value
-                elif (
-                    isinstance(value, list)
-                    and len(value) <= 16
-                    and all(
-                        item is None
-                        or isinstance(item, (bool, int, str))
-                        or (
-                            isinstance(item, float)
-                            and math.isfinite(item)
-                        )
-                        for item in value
-                    )
-                ):
-                    retained[normalized_key] = list(value)
-                if len(retained) >= 16:
-                    break
-            return retained
-
         selection = select_browser_evidence_for_retention(snapshot)
         retained: list[dict[str, Any]] = []
         for item in selection.evidence:
-            data = bounded_facts(item.data)
+            data = OrchestrationService._bounded_page_facts(item.data)
             if not data:
                 continue
             citation_seed = f"{evidence_selection_id}:{item.evidence_id}".encode()
