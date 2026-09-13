@@ -218,7 +218,7 @@ Plans:
   3. Inventory list and lookup operations push authorized scope, filters, ordering, counts, and pagination into the Fabric-backed query adapter without a fixed 10,000-row pre-pagination ceiling.
   4. Existing immutable observations, generation replay, active-pointer rollback, ontology consistency, source status, Exposure Gold contracts, and bounded PageSnapshot behavior remain intact.
 
-**Plans:** 8 plans
+**Plans:** 10 plans
 Plans:
 
 - [ ] 03.7-01-PLAN.md — Create Wave 0 publication, probe, query-scale, and benchmark contracts
@@ -226,9 +226,11 @@ Plans:
 - [ ] 03.7-03-PLAN.md — Trace one five-table inventory product through atomic promotion to a scoped SQL page
 - [ ] 03.7-04-PLAN.md — Move unrelated domain projection outside product publication while preserving outputs
 - [ ] 03.7-05-PLAN.md — Cut production providers and health probes to published status/read ports
-- [ ] 03.7-06-PLAN.md — Complete scope-first inventory querying and migrate every fixed-ceiling identity scan
-- [ ] 03.7-07-PLAN.md — Add measured shadow, staged cutover, telemetry, and non-destructive rollback
-- [ ] 03.7-08-PLAN.md — Approve deployed evidence, observe duplicate writes, and disposition compatibility aliases
+- [ ] 03.7-06-PLAN.md — Complete scope-first inventory querying and wire the request read port
+- [ ] 03.7-07-PLAN.md — Add measured shadow, staged cutover, alias registry/telemetry, and non-destructive rollback
+- [ ] 03.7-08-PLAN.md — Approve deployed evidence, observe duplicate writes, and record per-alias dispositions
+- [ ] 03.7-09-PLAN.md — Migrate onboarding identity consumers to generation-pinned complete scans
+- [ ] 03.7-10-PLAN.md — Apply alias dispositions and prove retired aliases receive no writes
 **UI hint:** no
 
 ### Phase 4: Domain Coverage and Operational Twin
