@@ -38,7 +38,10 @@ from operations.investigation_thread_store import (
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
 )
-from operations.maf_orchestrator import canonical_orchestration_enabled
+from operations.maf_orchestrator import (
+    build_deterministic_fallback,
+    canonical_orchestration_enabled,
+)
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
@@ -60,7 +63,10 @@ from operations.orchestration_service import (
     legacy_session_history,
 )
 from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
-from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.specialist_manifest import (
+    INVENTORY_DATA_HEALTH_ID,
+    load_specialist_manifest,
+)
 from operations.tools import (
     STATUS_EMPTY,
     STATUS_OK,
@@ -1055,17 +1061,58 @@ def investigate_canonical(
     browser_snapshot = request.snapshot
     try:
         # The strict Pydantic contract above validates every browser row and
-        # byte/list bound. Canonicalize the authority-free projection here so
-        # the production boundary executes the shared v2 normalization path
-        # without treating browser identities as server-resolved evidence.
+        # byte/list bound. Only scope-valid Azure identities may influence the
+        # deterministic plan; browser facts remain presentation evidence.
+        planning_entities: list[AzureEntityRef] = []
+        planning_entity_ids: set[str] = set()
+        for entity in [
+            *browser_snapshot.selected_entities,
+            *[
+                (
+                    item.entity
+                    if isinstance(item.entity, AzureEntityRef)
+                    else AzureEntityRef(type="azure", resource_id=item.resource_id)
+                )
+                for item in browser_snapshot.evidence
+                if (
+                    item.selected or item.direct
+                )
+                and (
+                    isinstance(item.entity, AzureEntityRef)
+                    or item.resource_id.startswith("/")
+                )
+            ],
+        ]:
+            if not isinstance(entity, AzureEntityRef):
+                continue
+            key = entity.resource_id.casefold()
+            if key in planning_entity_ids:
+                continue
+            planning_entity_ids.add(key)
+            planning_entities.append(entity)
+            if len(planning_entities) == 50:
+                break
+        planning_snapshot = browser_snapshot.model_copy(
+            update={
+                "page_kind": (
+                    "resource"
+                    if browser_snapshot.page_kind == "overview"
+                    else browser_snapshot.page_kind
+                ),
+                "coverage": browser_snapshot.coverage.model_copy(
+                    update={"complete": False}
+                ),
+                "freshness": [
+                    item.model_copy(update={"status": "unavailable"})
+                    for item in browser_snapshot.freshness
+                ],
+                "selected_entities": planning_entities,
+                "evidence": [],
+                "material_claims": [],
+            }
+        )
         canonicalize_snapshot_v2(
-            browser_snapshot.model_copy(
-                update={
-                    "evidence": [],
-                    "selected_entities": [],
-                    "material_claims": [],
-                }
-            ),
+            planning_snapshot,
             effective_scope=scope,
         )
     except (TypeError, ValueError) as exc:
@@ -1076,23 +1123,10 @@ def investigate_canonical(
         ) from exc
     request = request.model_copy(
         update={
-            "snapshot": browser_snapshot.model_copy(
-                update={
-                    "coverage": browser_snapshot.coverage.model_copy(
-                        update={"complete": False}
-                    ),
-                    "freshness": [
-                        item.model_copy(update={"status": "unavailable"})
-                        for item in browser_snapshot.freshness
-                    ],
-                    # Browser rows never become tool authority. The original
-                    # bounded snapshot is passed separately so orchestration
-                    # can label citation-closed facts as page observations.
-                    "evidence": [],
-                    "selected_entities": [],
-                    "material_claims": [],
-                }
-            )
+            # Only scope-validated Azure identities survive into planning.
+            # Browser facts remain non-authoritative and are passed separately
+            # for citation-closed synthesis.
+            "snapshot": planning_snapshot
         }
     )
     if browser_snapshot.page_kind == "inventory":
@@ -1165,7 +1199,12 @@ def investigate_canonical(
                 )
             )
             if payload.hint is not None
-            else None
+            else (
+                lambda governed_request: build_deterministic_fallback(
+                    governed_request,
+                    load_specialist_manifest(),
+                )
+            )
         )
 
         def executor(

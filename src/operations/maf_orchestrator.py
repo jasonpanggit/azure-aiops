@@ -420,6 +420,12 @@ def build_deterministic_fallback(
             source_key = str(getattr(entity, "source_key", "") or "").strip()
             if source_key:
                 return source_key
+        for item in request.snapshot.evidence:
+            if not (item.selected or item.direct):
+                continue
+            resource_id = str(item.resource_id or "").strip()
+            if resource_id:
+                return resource_id
         return ""
 
     def safe_call(spec: Any) -> ToolCallCandidate | None:
@@ -437,10 +443,15 @@ def build_deterministic_fallback(
                     continue
                 derived: dict[str, Any] = {}
                 for field in missing:
-                    if field == "subject" and explicit_subject():
-                        derived[field] = explicit_subject()
-                    elif field == "query" and request.snapshot.query:
-                        derived[field] = request.snapshot.query
+                    subject = explicit_subject()
+                    if field == "name":
+                        if subject:
+                            break
+                        derived[field] = request.question
+                    elif field == "subject":
+                        derived[field] = subject or request.question
+                    elif field == "query":
+                        derived[field] = request.snapshot.query or request.question
                     else:
                         break
                 else:
