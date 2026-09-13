@@ -142,10 +142,12 @@ def maf_mode_enabled() -> bool:
 def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     """Resolve compatibility → shadow → canary → default without widening.
 
-    A missing or malformed deployment value selects compatibility. Canary
-    assignment is stable for one principal and cannot fall back to random or
-    process-local state. The retained rollback mode is intentionally fixed to
-    compatibility; an unexpected value also fails closed.
+    An unspecified rollout preserves the canonical endpoint's established
+    behavior, while a blank or malformed deployment value selects
+    compatibility. Canary assignment is stable for one principal and cannot
+    fall back to random or process-local state. The retained rollback mode is
+    intentionally fixed to compatibility; an unexpected value also fails
+    closed.
     """
 
     if (
@@ -171,22 +173,19 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
         )
 
     raw_mode = os.environ.get(ENV_COPILOT_ROLLOUT_MODE)
-    if raw_mode is None or not raw_mode.strip():
-        if (
-            os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
-            == MODE_CANONICAL
-        ):
-            return CopilotRolloutDecision(
-                mode=ROLLOUT_DEFAULT,
-                canonical_enabled=True,
-                shadow_enabled=False,
-                reason="legacy_canonical_mode",
-            )
+    if raw_mode is None:
+        return CopilotRolloutDecision(
+            mode=ROLLOUT_DEFAULT,
+            canonical_enabled=True,
+            shadow_enabled=False,
+            reason="rollout_mode_unspecified",
+        )
+    if not raw_mode.strip():
         return CopilotRolloutDecision(
             mode=ROLLOUT_COMPATIBILITY,
             canonical_enabled=False,
             shadow_enabled=False,
-            reason="rollout_mode_missing",
+            reason="rollout_mode_invalid",
         )
     mode = raw_mode.strip().casefold()
     if mode not in ROLLOUT_MODES:
