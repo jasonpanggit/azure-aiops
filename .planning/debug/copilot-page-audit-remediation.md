@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: verifying
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T17:02:00+08:00
+updated: 2026-09-13T11:18:23+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,10 +31,24 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "Confirmed and fixed in source: provider values now have one non-secret Terraform/export authority, rollout stages drive request-bound routing fail closed, and candidate/live parity binds immutable agents/providers to two distinct governed project-connection IDs."
-test: "Focused/adjacent offline suites, Ruff, shell syntax, Terraform formatting, offline parity, empty-env BLOCKED behavior, exact-FQDN/bearer guards, and revert/reconfirm all pass."
-expecting: "A final whole-branch validation/review should find no regression in unrelated clusters; live provider/deployment gates remain BLOCKED until external evidence is supplied."
-next_action: "Run final whole-branch validation and review only; do not deploy, contact providers, create a second connection, publish candidates, or alter traffic."
+hypothesis: "All six root-cause fixes are implemented and each individual focused regression has turned green."
+test: "Run final post-commit focused tests, broad Phase 11 backend/web tests, Ruff, strict TypeScript, script/corpus validation, offline parity, trailer/scope review, and clean-worktree check."
+expecting: "Commits ae34e35ae, ed3751d79, and 6c82cf4e0 remain green together; no excluded paths or uncommitted changes remain except this active debug update until its docs commit."
+next_action: "Commit this active debug checkpoint, then run final post-commit validation/review only; do not archive, deploy, contact providers, or mutate external state."
+reasoning_checkpoint:
+  hypothesis: "The review blockers occur because shared boundaries preserve legacy or presentation-level behavior after the canonical contracts became authoritative: CAS validation is outside the store lock, evaluator dispatch/schema gates cover only legacy kinds, reviewed cross-domain grants were removed from selector policy and corpus data, fallback ignores the selector result, adapter trimming does not update trust metadata, and conflict grouping bypasses canonical entity identity."
+  confirming_evidence:
+    - "The agent-authored focused Python run produced 9 deterministic failures exactly at the six reported seams, including both ARM/domain alias variants and all routing/evaluator/CAS assertions."
+    - "The agent-authored focused Vitest run produced 7 deterministic failures across the byte- and row-retention boundary assertions; 104 unrelated tests in the same file were skipped by name filtering rather than failing."
+    - "Direct source inspection shows the stale comparison after mutating authorize, the six-kind evaluator allowlist, corpus set reductions, appended page owners, silent retention pop/limit, and raw entity serialization."
+  falsification_test: "Any focused regression passing before its corresponding source/data fix, or remaining red after reverting only that fix, would disprove that seam's causal diagnosis."
+  fix_rationale: "Move each invariant to its authoritative boundary: CAS under the store lock before mutation; canonical v2 fixture construction for every integrated case; explicit reviewed cross-domain grants with restored gold sets; selected-first valid call construction with one fallback; retention metadata plus conservative coverage; and shared canonical entity keys for conflict grouping."
+  blind_spots: "Adjacent legacy callers, release artifact recomputation, selector page-safety accounting, exact snapshot byte accounting, and full Phase 11 backend/web compatibility are not yet rerun after fixes."
+  candidate_causes:
+    - "code: ordering/filtering/normalization logic at six shared boundaries violates the intended contracts"
+    - "data: four reviewed gold-corpus expected specialist sets were edited to bless narrowed production behavior"
+    - "config/environment: no live provider or runtime configuration is required to reproduce any failure, so these branches are currently disfavored"
+  and_gate: "yes — all six independent findings must be green for the review checkpoint to pass, although each individual deterministic symptom has its own sufficient code or corpus cause"
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "The reported Foundry project has only one governed connection named `demo`; exact distinct `operations-mcp` and `azure-mcp` project-connection resource IDs and payloads remain absent."
@@ -48,6 +62,84 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Evidence
 
+- timestamp: 2026-09-13T11:18:23+08:00
+  observation: The continuation review reports six deterministic blockers after the prior checkpoint: stale CAS is checked after authorization mutation; integrated v2 fixtures bypass exact canonical dispatch/schema gating; reviewed cross-domain grants were removed and fixture expectations weakened; fallback appends all page specialists; adapter trimming preserves false complete coverage without omission metadata; and conflict identity bypasses repository canonical entity normalization.
+  implication: Human verification failed. The session returns to investigation; all six require focused RED tests and root-cause fixes before final validation, while live/deployment actions and listed owned files remain excluded.
+- timestamp: 2026-09-13T11:21:00+08:00
+  observation: `.planning/STATE.md` still names Phase 4 planning and its unrelated entry gate, but this continuation explicitly authorizes the six Phase 11 review blockers. Git status contains only the active debug-file update on top of the prior checkpoint commits, and no project `rules/*.md` overlay exists.
+  implication: The work remains an isolated Phase 11 exception. Shared thread/orchestration/evaluation/routing/page-context/adapter files and focused tests are in scope; all listed ownership exclusions and live operations remain out of scope.
+- timestamp: 2026-09-13T11:21:00+08:00
+  observation: Initial source search directly locates expected-revision comparisons after both `thread_store.authorize` calls, a context-page allowlist in evaluator dispatch, fallback construction that starts from `decision.selected_ids` and later references page specialists, raw conflict logic in page context, and explicit adapter trimming paths.
+  implication: The review findings map to deterministic code paths suitable for test-first reproduction; SBFL remains skipped because these are static contract failures with no per-test coverage spectrum.
+- timestamp: 2026-09-13T11:26:00+08:00
+  observation: `InvestigationThreadStore.authorize()` runs under its lock but unconditionally ages every retained turn, replaces scope/fingerprint, updates `last_seen`, and persists. Both `execute_turn()` and `unsupported()` compare `expected_thread_revision` only after this method returns.
+  implication: Finding 1 is confirmed at the mechanism level: stale CAS is side-effecting before rejection, and the correct atomic seam is an optional expected revision checked inside locked authorization before any mutation or persistence.
+- timestamp: 2026-09-13T11:26:00+08:00
+  observation: `_investigate()` in `scripts/evaluate_agents.py` sends only six legacy page kinds to `/copilot/investigate-context`; every other integrated v2 case falls through to question-only `/copilot/investigate`. `_deterministic_applicable_case_ids()` and `result_to_release_evidence()` likewise limit snapshot-schema evidence to those six kinds.
+  implication: Finding 2 is source-confirmed: most integrated fixtures neither carry their exact `page_kind` nor produce fail-closed schema evidence, so the live release gate cannot validate the canonical v2 contract for the full integrated corpus.
+- timestamp: 2026-09-13T11:26:00+08:00
+  observation: `select_specialists_for_turn()` now intersects intent only with the page-owned set, removing reviewed cross-domain grants; `build_deterministic_fallback()` then appends every page owner after the question-first `selected_ids`, even when a selected valid call already exists.
+  implication: Findings 3 and 4 share the routing seam but are distinct: reviewed cross-domain pairs need explicit allowlisted grants, while fallback call construction must honor the selected result and add at most one page-safe call only when selection yields no valid call.
+- timestamp: 2026-09-13T11:26:00+08:00
+  observation: `buildCoreCopilotContext()` limits rows to 200 and repeatedly pops retained IDs until the 128-KiB snapshot bound fits, but it does not alter coverage or uncertainty when these retention operations omit candidate rows. `select_browser_evidence_for_retention()` groups conflicts using raw `row.entity.model_dump()` or raw fallback resource text rather than the canonical entity key used by canonicalization.
+  implication: Findings 5 and 6 are source-confirmed data-contract defects: truncation can be mislabeled complete, and semantically identical ARM/domain aliases can evade conflict exclusion.
+- timestamp: 2026-09-13T11:35:00+08:00
+  observation: The complete agent-authored RED set fails as predicted before production changes: 9 Python failures cover store-level CAS API absence/no-mutation, two canonical alias conflicts, four weakened corpus sets, legacy/noncanonical integrated dispatch, missing v2 schema gating, absent reviewed cross-domain grants, and fallback over-invocation. Seven focused Vitest cases fail across the existing trim case plus 64/65/66 byte-neighborhood and 199/200/201 total-row-neighborhood checks.
+  implication: All six findings are reproducible offline with specified oracles and no live provider, environment, secret, or excluded-file dependency. Root cause is confirmed and implementation may begin.
+- timestamp: 2026-09-13T11:39:00+08:00
+  observation: After moving expected-revision comparison into locked `authorize()` before mutation and passing it from both service paths, the new durable no-mutation regression and existing stale-before-tool-I/O regression both pass.
+  implication: Finding 1 is corrected at the atomic store boundary; stale narrower requests no longer alter scope, retained observation state, last_seen, or durable storage revision before 409.
+- timestamp: 2026-09-13T11:42:00+08:00
+  observation: After replacing the evaluator's six-kind branch with strict v2 construction and `/api/v1/copilot/investigations` for every integrated disposition, both all-integrated request-capture and snapshot-schema-gating regressions pass.
+  implication: Finding 2 is corrected; every integrated fixture now carries its exact page kind through the canonical contract and contributes required schema evidence.
+- timestamp: 2026-09-13T11:49:00+08:00
+  observation: Five of six focused routing/fallback checks pass after introducing reviewed grants and selected-only call construction. The sole failure is the corpus assertion: `cross.net.cve` remains narrowed, proving the generic JSON hunk did not target the named case and may have touched earlier matching arrays.
+  implication: Production findings 3-4 are behaviorally corrected, but corpus data must be repaired by case identity rather than context-free textual replacement before acceptance.
+- timestamp: 2026-09-13T11:54:00+08:00
+  observation: After reverting the four accidental generic JSON edits and restoring only the four named reviewed cases, all six focused selector, policy, corpus, page-safety, and fallback checks pass.
+  implication: Findings 3 and 4 are corrected: reviewed cross-domain pairs are explicit and exact, unrelated keyword broadening remains denied, the gold corpus is no longer weakened, and fallback no longer appends unselected page owners.
+- timestamp: 2026-09-13T11:58:00+08:00
+  observation: Refactoring canonical entity identity into one helper used by both canonicalization and browser conflict grouping makes the existing conflict test plus ARM-case and domain-case alias regressions pass.
+  implication: Finding 6 is corrected without a competing normalization algorithm; contradictory aliases are excluded and surface uncertainty before synthesis.
+- timestamp: 2026-09-13T12:02:00+08:00
+  observation: The first retention implementation run fails all seven cases at one new `Object.entries(coverage)` TypeError, before any boundary assertion.
+  implication: This is an implementation control-flow error in the new build closure, not evidence against the retention root cause; inspect and correct the return shape before evaluating semantics.
+- timestamp: 2026-09-13T12:05:00+08:00
+  observation: After correcting the return shape, metadata assembly succeeds, but all seven tests fail only when normalizing the retained v1 adapter snapshot to strict v2 because v2 expansion exceeds 128 KiB.
+  implication: The original trimming measured the smaller legacy shape rather than the actual canonical wire payload. Byte retention must be gated against strict v2 serialization to satisfy the cross-runtime bound.
+- timestamp: 2026-09-13T12:09:00+08:00
+  observation: After gating retention against the normalized strict-v2 wire size, all seven adapter tests pass across the existing large-payload case, 64/65/66 byte-pressure neighborhood, and 199/200/201 total-row neighborhood.
+  implication: Finding 5 is corrected: omissions are bounded and counted, returned and wire coverage become incomplete, uncertainty names the exact omitted count, and both 200-row and 128-KiB limits remain enforced.
+- timestamp: 2026-09-13T12:12:00+08:00
+  observation: The complete focused regression set passes together: 10 Python cases (including two canonical alias parameters) and 7 web retention cases.
+  implication: All six blockers are green in their driving tests; proceed to held-out Phase 11 adjacency and static validation.
+- timestamp: 2026-09-13T12:18:00+08:00
+  observation: All six Copilot web files pass 169/169. The broad backend run has only three routing failures: two API tests still require the now-rejected narrowed Network-only behavior for the explicitly restored Governance/Vulnerability grants, and one legacy `remediation_page` test loses its existing Governance selection because grants are keyed by canonical `remediation`.
+  implication: The first two are stale assertions directly contradicted by the required reviewed grant restoration; the third is a real compatibility gap in legacy page-kind alias handling and needs a minimal canonical-key lookup fix.
+- timestamp: 2026-09-13T12:22:00+08:00
+  observation: The two corrected Network API tests pass and the remediation alias now preserves Governance, but the same held-out remediation test also requires the previously reviewed Vulnerability grant for CVE intent.
+  implication: Positive grant restoration must include both existing remediation-page cross-domain paths; this is not global keyword broadening because the grant remains an explicit page-and-intent pair.
+- timestamp: 2026-09-13T12:27:00+08:00
+  observation: After adding the explicit remediation-to-Vulnerability grant, all three held-out routing tests pass. The complete backend Phase 11 selection then passes with one pre-existing packaging skip, and all six web files pass 169/169.
+  implication: Canonical and legacy API routing, reviewed cross-domain grants, fallback, thread continuity, evaluation, providers, specialists, MCP contracts, adapters, drawer continuity, and manifest parity remain compatible.
+- timestamp: 2026-09-13T12:31:00+08:00
+  observation: Strict TypeScript passes, the changed Python evaluator compiles, the corpus parses as JSON, and offline specialist parity passes all 9 checks. Ruff reports only one auto-fixable import-order issue in `orchestration_policy.py`; the first collection-count command ended on warning text rather than the summary line.
+  implication: No semantic/static regression is present in those gates; apply the deterministic import reorder and recollect the test count explicitly.
+- timestamp: 2026-09-13T12:34:00+08:00
+  observation: After the import reorder, full Ruff passes. No shell file changed, so shell syntax validation is not applicable; the changed Python script and JSON corpus already passed syntax/parse checks.
+  implication: Static validation is green. Remaining guardrails are final diff/scope review and causal revert-and-reconfirm.
+- timestamp: 2026-09-13T12:38:00+08:00
+  observation: Final changed paths are limited to the active debug file, seven shared backend source/policy files, the evaluator script and reviewed corpus, five focused backend tests, and the shared web adapter/test. `git diff --check` passes, no excluded ownership file appears, and no Stryker/mutmut/cosmic-ray configuration exists.
+  implication: The no-op/deletion and scope guardrails pass; mutation testing is unavailable and explicitly skipped. Revert-and-reconfirm remains.
+- timestamp: 2026-09-13T12:43:00+08:00
+  observation: With only production/evaluator/corpus fixes path-stashed and all driving tests retained, the focused run restores 9 Python failures and all 7 web failures at the original six seams; the pre-existing service-level stale-before-tool test remains green because it does not assert authorization persistence.
+  implication: The bug set causally returns when the fixes are removed. Restore the same stash and require every focused case to return green to complete guardrail signal 5.
+- timestamp: 2026-09-13T12:47:00+08:00
+  observation: The path-scoped stash restored without conflict, and the identical focused commands returned 10/10 Python cases and 7/7 web cases to green.
+  implication: Revert-and-reconfirm passes for all six blockers; the fix—not environment or test drift—is necessary and sufficient for the focused behavior.
+- timestamp: 2026-09-13T12:51:00+08:00
+  observation: The six review fixes were committed atomically as `ae34e35ae` (locked stale-CAS rejection), `ed3751d79` (canonical evaluator dispatch, reviewed routing/fallback, canonical conflicts), and `6c82cf4e0` (truthful bounded web retention); each commit contains the required Copilot co-author trailer.
+  implication: Source and tests are durably separated by concern. Final post-commit validation and review is now the only remaining action; the session must remain active and unarchived.
 - timestamp: 2026-09-13T15:20:00+08:00
   observation: The active session and `.planning/STATE.md` confirm this is an explicitly authorized Phase 11 source/config exception while Phase 4 remains the nominal planning phase; the worktree is clean except for the active debug session, and no configured debugger skill overlay was returned.
   implication: Investigation may touch only the requested provider/deployment-readiness source, tests, and documentation; live infrastructure and the listed owned-file exclusions remain out of scope.
@@ -416,9 +508,37 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 
 ## Resolution
 
+review_blockers_root_cause: "Six final-review regressions remained: stale CAS was outside locked authorization and mutated continuity before rejection; integrated evaluator fixtures used legacy/question-only endpoints and only six kinds were schema-gated; explicit reviewed cross-domain grants and four gold expected sets were removed; fallback appended every page owner after question-first selection; adapter row/byte trimming did not downgrade coverage or report bounded omissions and measured only the smaller legacy shape; browser conflict grouping serialized raw ARM/domain entity text instead of canonical identity."
+review_blockers_fix: "Moved expected-revision validation into locked thread authorization before mutation; routed every integrated fixture through strict v2 `/copilot/investigations` with exact page kind and universal schema gating; restored explicit reviewed cross-domain grants, policy/page-safety recognition, legacy alias compatibility, and the four original multi-specialist gold sets; built fallback calls from selected IDs with one page-safe fallback only when none is valid; added strict-v2 retention fitting, exact bounded omission metadata, conservative completeness, and uncertainty; and reused one canonical entity-key helper for canonicalization and browser conflict exclusion."
 root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409. Cluster 4: both legacy and MAF selectors admitted global keyword matches before page authorization, canonical filtering happened too late, the manifest omitted reviewed Services/Twin co-owners/order, and release evidence had no fail-closed page-safety measurement. Cluster 5: the Phase 11 route disposition retained `/exposure` after Phase 03.1 intentionally moved the legacy alias to `/exposure/patch-priorities`. Blocking orchestration review: fallback construction treated page grants as proof that `{}` was valid and had no no-tool outcome; retained browser rows bypassed canonical conflict/completeness admission; and input-order retention stopped at 64 before closure despite the 200-row snapshot contract. Provider/deployment readiness: Terraform did not expose the complete deterministic non-secret provider environment, request boundaries ignored `AIOPS_COPILOT_ROLLOUT_MODE` and canary percentage, and candidate/live parity discarded exact Foundry project-connection identities; live readiness additionally lacks external evidence for two distinct governed connections and immutable provider versions."
 fix: "Clusters 1-5 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; maps every integrated page ID/route to its exact manifest v2 kind and typed coverage; renders citation-adjacent synthesis without duplicate tool cards; clears stale 409 continuity; intersects intent inside the shared selector with an ordered manifest page-safe set, adds Services Governance and Twin Resource Health ownership with manifest-declared primary ordering, makes missing page-safety release evidence a deterministic HOLD, and aligns the `/vulnerabilities` disposition exactly to the established `/exposure/patch-priorities` implementation while preserving its query allowlist. The blocking review fix validates every fallback call, supports a deterministic no-tool result, and applies shared conflict/completeness/ranking rules through the 200-row closure boundary. Provider readiness now exports one allowlisted non-secret Terraform environment through an atomic mode-0600 source file, consumes compatibility/shadow/canary/default controls at every request boundary with stable fail-closed canary selection and deterministic rollback, publishes candidates only with two distinct full project-connection resource IDs, validates those IDs against the live governed connection inventory and every pinned agent definition, and documents exact external evidence while leaving `demo`-only onboarding BLOCKED."
 verification:
+  review_round_2:
+    target_test:
+      result: pass
+      details: "10 focused Python cases and 7 focused web boundary cases pass after starting RED across all six review findings."
+    mutation_check:
+      result: skipped
+      reason_if_skipped: "No Stryker, mutmut, or cosmic-ray configuration exists."
+      mutant_killed: false
+    no_op_deletion:
+      result: pass
+      deletion_justified_by_rca: true
+      details: "Diff adds or tightens atomic validation, exact dispatch/grants, canonical identity, and retention truthfulness; no production behavior is deleted or bypassed."
+    adjacent_tests:
+      result: pass
+      suites_run:
+        - "Complete selected Phase 11 backend Copilot/orchestration/thread/provider/specialist suite: pass with one pre-existing packaging skip"
+        - "All six Copilot web test files: 169 passed"
+        - "Full Ruff across src, tests, and evaluate_agents.py"
+        - "Strict TypeScript tsc --noEmit"
+        - "Python evaluator bytecode compilation and corpus JSON parse"
+        - "Offline specialist parity: 9/9 checks passed"
+    revert_and_reconfirm:
+      result: pass
+      bug_returned_on_revert: true
+      fixed_on_reapply: true
+    guardrail_verdict: accepted
   target_test:
     result: pass
     details: "Provider/readiness RED suite failed all 22 initial cases; final focused provider/package suite passes missing, malformed, complete, rollout-boundary, connection-identity, exact-FQDN, bearer-secrecy, and BLOCKED cases with one pre-existing wheel-build skip."
@@ -466,6 +586,9 @@ external_blockers:
     - "Read-only live parity result proving both connections exist and every pinned definition has exact connection/grant/model parity."
     - "Immutable deployed revision evidence plus compatibility→shadow→canary observation and one real corpus artifact recording PROMOTE/HOLD."
 commits:
+  - "6c82cf4e0 fix(web): report Copilot evidence truncation"
+  - "ed3751d79 fix(copilot): close orchestration review blockers"
+  - "ae34e35ae fix(copilot): reject stale thread CAS before mutation"
   - "d09843e87 fix(copilot): wire provider rollout readiness"
   - "b9b199ac4 test(copilot): align legacy page-safe routing"
   - "37cd88f6e fix(copilot): admit retained evidence consistently"
@@ -499,6 +622,8 @@ files_changed:
   - tests/test_context_specialist_routing.py
   - tests/test_copilot_evaluation_v2.py
   - tests/test_orchestration_policy.py
+  - tests/test_investigation_thread_store.py
+  - tests/test_api_copilot_snapshot.py
   - tests/test_api_copilot_snapshot.py
   - tests/test_orchestration_parity.py
   - tests/test_copilot_provider_readiness.py
