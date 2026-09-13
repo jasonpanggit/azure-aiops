@@ -1288,6 +1288,63 @@ def test_network_page_connection_scope_reaches_selected_connection_factory(
     assert selected_connections == ["conn-b"]
 
 
+def test_scoped_live_search_does_not_require_deferred_semantic_graph(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    ConnectionRegistry(home).add(
+        SubscriptionConnection(
+            connection_id="conn-a",
+            name="Connection a",
+            tenant_id="tenant-a",
+            subscription_id="sub-a",
+            credential=CredentialReference(
+                credential_id="credential-a",
+                tenant_id="tenant-a",
+                client_id="client-a",
+                secret_ref="env://SECRET_A",
+            ),
+        )
+    )
+
+    class Reader:
+        def query(self, spec, scope_ids):
+            assert spec.name == "live_resource_search"
+            assert scope_ids == ["sub-a"]
+            return [
+                {
+                    "id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                    "Microsoft.Compute/virtualMachines/vm-a",
+                    "name": "vm-a",
+                    "type": "microsoft.compute/virtualmachines",
+                    "subscriptionId": "sub-a",
+                }
+            ]
+
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setattr(
+        runtime_module,
+        "build_connection_arg_client",
+        lambda _config, _connection, _resolver: Reader(),
+    )
+    client = TestClient(create_app(build_context()), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/search",
+        params={"q": "show list of VMs", "subscription": "sub-a"},
+        headers={
+            "Authorization": f"Bearer {next(iter(json.loads(TOKENS)))}"
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["results"][0]["name"] == "vm-a"
+    assert response.json()["data"]["graph_freshness"] == ""
+
+
 def test_default_auth_mode_requires_configured_tokens():
     with pytest.raises(RuntimeError, match="AIOPS_API_TOKENS"):
         build_authenticator()
