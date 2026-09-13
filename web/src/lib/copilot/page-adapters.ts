@@ -3427,7 +3427,7 @@ function buildCoreCopilotContext(
   input: CoreCopilotAdapterInput,
   starters: CoreCopilotStarterQuestion[],
 ): CoreCopilotContext {
-  const coverage = normalizeCoverage(input.coverage);
+  const declaredCoverage = normalizeCoverage(input.coverage);
   const selectedRecords = input.records.filter((record) => record.selected);
   const selectedEntities = selectedRecords
     .map(coreRecordEntity)
@@ -3449,7 +3449,6 @@ function buildCoreCopilotContext(
         candidate.resource_id === resource.resource_id) === index)
     .slice(0, COPILOT_SNAPSHOT_LIMITS.selectedEntities);
 
-  const coverageRows = coverageEvidenceRows(coverage);
   const candidates = [
     ...input.records.map(coreEvidenceRow),
     ...input.evidence.map(sourceEvidenceRow),
@@ -3460,7 +3459,7 @@ function buildCoreCopilotContext(
   const retainedCandidateIds: string[] = [];
   const candidateLimit = Math.max(
     0,
-    COPILOT_SNAPSHOT_LIMITS.evidenceRows - coverageRows.length,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows - Object.keys(declaredCoverage).length,
   );
   for (const candidate of candidates) {
     const existing = candidateEvidence.get(candidate.row.evidence_id);
@@ -3474,7 +3473,39 @@ function buildCoreCopilotContext(
   const freshness = normalizedFreshness(input.sourceStatuses);
   assertBound("freshness records", freshness.length, COPILOT_SNAPSHOT_LIMITS.freshnessRecords);
 
+  const rowLimitApplied = candidateEvidence.size > candidateLimit;
+  let byteLimitApplied = false;
   const buildSnapshot = () => {
+    const omittedCount = candidateEvidence.size - retainedCandidateIds.length;
+    const coverage = Object.fromEntries(
+      Object.entries(declaredCoverage).map(([key, value]) => [
+        key,
+        omittedCount
+          ? { ...value, complete: false, truncated: true }
+          : value,
+      ]),
+    );
+    const retention = {
+      input_count: candidateEvidence.size,
+      retained_count: retainedCandidateIds.length,
+      omitted_count: omittedCount,
+      row_limit: COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+      byte_limit: COPILOT_SNAPSHOT_LIMITS.snapshotBytes,
+      reasons: [
+        ...(rowLimitApplied ? ["row_limit"] : []),
+        ...(byteLimitApplied ? ["byte_limit"] : []),
+      ],
+    };
+    const coverageRows = coverageEvidenceRows(coverage).map((row, index) =>
+      index === 0
+        ? {
+          ...row,
+          data: {
+            ...row.data,
+            retention,
+          },
+        }
+        : row);
     const evidence = [
       ...retainedCandidateIds.flatMap((id) => {
         const row = candidateEvidence.get(id);
@@ -3482,7 +3513,7 @@ function buildCoreCopilotContext(
       }),
       ...coverageRows,
     ].sort((left, right) => compareCodePoints(left.evidence_id, right.evidence_id));
-    return services.buildCopilotSnapshot({
+    const snapshot = services.buildCopilotSnapshot({
       pageKind: config.pageKind,
       pageId: config.pageId,
       scope: input.scope,
@@ -3491,15 +3522,43 @@ function buildCoreCopilotContext(
       evidence,
       freshness,
     });
+    return { coverage, snapshot };
   };
-  let snapshot = buildSnapshot();
+  let built = buildSnapshot();
+  const strictSnapshotFits = (snapshot: CopilotPageSnapshot): boolean => {
+    try {
+      normalizeCopilotSnapshotV2(snapshot);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message
+          === `snapshot exceeds limit of ${COPILOT_SNAPSHOT_LIMITS.snapshotBytes}`
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  };
   while (
-    new TextEncoder().encode(stableJson(snapshot)).length + numericValueCount(snapshot)
-      > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+    (
+      new TextEncoder().encode(stableJson(built.snapshot)).length
+        + numericValueCount(built.snapshot)
+        > COPILOT_SNAPSHOT_LIMITS.snapshotBytes
+      || !strictSnapshotFits(built.snapshot)
+    )
     && retainedCandidateIds.length > 0
   ) {
     retainedCandidateIds.pop();
-    snapshot = buildSnapshot();
+    byteLimitApplied = true;
+    built = buildSnapshot();
+  }
+  const { coverage, snapshot } = built;
+  const omittedCount = candidateEvidence.size - retainedCandidateIds.length;
+  if (!strictSnapshotFits(snapshot)) {
+    throw new Error(
+      `snapshot exceeds limit of ${COPILOT_SNAPSHOT_LIMITS.snapshotBytes}`,
+    );
   }
   assertBound(
     "snapshot",
@@ -3517,6 +3576,9 @@ function buildCoreCopilotContext(
       ...Object.entries(coverage)
         .filter(([, item]) => item.truncated)
         .map(([key]) => `${key} coverage is truncated`),
+      ...(omittedCount
+        ? [`evidence retention omitted ${omittedCount} rows`]
+        : []),
       ...freshness
         .filter((item) => item.status !== "fresh")
         .map((item) => `${item.source} freshness is ${item.status}`),
