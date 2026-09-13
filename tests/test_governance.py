@@ -820,6 +820,93 @@ def test_governance_routes_report_unavailable_before_any_sync(tmp_path):
     assert response.json()["error"]["code"] == "provider_unavailable"
 
 
+def test_search_resolves_exact_identity_id_without_semantic_provider(tmp_path):
+    principal_id = "377ec4a4-4482-4433-975f-46e69461cb65"
+    snapshot = GovernanceSnapshot(
+        [
+            _entity(
+                "RoleAssignment",
+                "/ra/exact",
+                {
+                    "principalId": principal_id,
+                    "principalType": "ServicePrincipal",
+                    "assignmentScope": "/subscriptions/sub-a",
+                    "roleDefinitionId": "/roles/owner",
+                    "subscriptionId": "sub-a",
+                    "updatedOn": NOW.isoformat(),
+                },
+            ),
+            _entity(
+                "RoleDefinition",
+                "/roles/owner",
+                {
+                    "id": "/roles/owner",
+                    "roleName": "Owner",
+                    "actions": ["*"],
+                    "subscriptionId": "sub-a",
+                },
+            ),
+        ],
+        observed_at="2026-01-15T00:00:00Z",
+    )
+    client = _client(tmp_path, snapshot)
+
+    response = client.get(f"/api/v1/search?q={principal_id}", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["intent"] == "identity_identifier_lookup"
+    assert body["data"]["count"] == 1
+    assert body["data"]["results"][0]["principal_id"] == principal_id
+    assert body["data"]["results"][0]["entity_type"] == "ServicePrincipal"
+    assert body["evidence"][0]["source_engine"] == (
+        "intelligence.governance.IdentityRiskEngine"
+    )
+
+
+def test_identity_id_search_does_not_leak_out_of_scope_principal(tmp_path):
+    principal_id = "377ec4a4-4482-4433-975f-46e69461cb65"
+    snapshot = GovernanceSnapshot(
+        [
+            _entity(
+                "RoleAssignment",
+                "/ra/exact",
+                {
+                    "principalId": principal_id,
+                    "principalType": "User",
+                    "assignmentScope": "/subscriptions/sub-b",
+                    "roleDefinitionId": "/roles/reader",
+                    "subscriptionId": "sub-b",
+                    "updatedOn": NOW.isoformat(),
+                },
+            )
+        ],
+        observed_at="2026-01-15T00:00:00Z",
+    )
+    scoped = Scope({"subscription": frozenset({"sub-a"})})
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {
+                READER_TOKEN: Principal(
+                    subject="scoped@example.com",
+                    grants=(Grant("reader", scoped),),
+                )
+            }
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        governance_provider=lambda: snapshot,
+        settings_store=EnterpriseSettingsStore(),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(f"/api/v1/search?q={principal_id}", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["data"]["results"] == []
+
+
 def _publish_governance_generation(
     home,
     connection: dict,

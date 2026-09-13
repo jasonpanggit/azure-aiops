@@ -69,25 +69,10 @@ def _snapshot(
     require_generation: bool = True,
 ) -> GovernanceSnapshot:
     """Resolve the governance snapshot already narrowed to the caller's scope."""
-    provider = (
-        context.governance_generation_provider(scope)
-        if context.governance_generation_provider is not None
-        else context.resolve_provider("governance", optional=True)
+    return context.governance_snapshot(
+        scope,
+        require_generation=require_generation,
     )
-    if provider is None:
-        raise ApiError(
-            ErrorCode.PROVIDER_UNAVAILABLE,
-            "Governance data is unavailable because no connection has synced yet",
-            {"capability": "governance", "provider_state": "unavailable"},
-        )
-    snapshot = provider.scoped(scope)
-    if require_generation and not snapshot.generation_available:
-        raise ApiError(
-            ErrorCode.PROVIDER_UNAVAILABLE,
-            "Governance data is unavailable because no active connection has synced yet",
-            {"capability": "governance", "provider_state": "unavailable"},
-        )
-    return snapshot
 
 
 def _evidence(

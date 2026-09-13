@@ -31,7 +31,7 @@ function textValue(record: SearchRecord, keys: string[], fallback = "Not observe
 
 function navigationFor(record: SearchRecord): { href: string; label: string } {
   const entityType = textValue(record, ["entity_type", "entityType", "kind", "type"], "record");
-  const id = textValue(record, ["id", "resource_id", "incident_id", "name"], "");
+  const id = textValue(record, ["id", "resource_id", "principal_id", "incident_id", "name"], "");
   const encoded = encodeURIComponent(id);
   const normalized = entityType.toLowerCase();
   if (normalized.includes("incident") || normalized.includes("situation")) {
@@ -49,7 +49,7 @@ function navigationFor(record: SearchRecord): { href: string; label: string } {
 function keyAttributes(record: SearchRecord): Array<[string, string]> {
   const excluded = new Set([
     "id", "name", "title", "display_name", "entity_type", "entityType", "kind", "type",
-    "resource_id", "incident_id", "subscription_id", "subscription_connection", "environment",
+    "resource_id", "principal_id", "incident_id", "subscription_id", "subscription_connection", "environment",
     "source", "source_engine", "source_table", "freshness", "observed_at", "live_observed_at",
     "ingested_at", "timestamp", "provenance", "properties", "payload_json",
   ]);
@@ -67,7 +67,8 @@ function scopeLabel(scope: Record<string, string[]>): string {
 }
 
 /**
- * Intent-driven search that presents semantic entities instead of raw payloads.
+ * Operational search that presents semantic entities and exact identity records
+ * instead of raw payloads.
  *
  * Copilot disposition (Plan 11-16): `excluded`. Search is a pure
  * navigation/query aggregation surface -- Phase 11 defines no stable retained
@@ -124,7 +125,7 @@ function SearchPageContent() {
       <PageHeader
         eyebrow="Operational discovery"
         title="Find authorized records"
-        description="Use a supported operational intent to find scoped entities, understand how they were interpreted, and open the context you are authorized to see."
+        description="Use a supported operational intent or an exact identity identifier to find scoped entities, understand how they were interpreted, and open the context you are authorized to see."
       />
       <div className="search-hero card">
         <div className="search-hero-form">
@@ -180,8 +181,8 @@ function SearchPageContent() {
             <div className="search-result-grid">
               {recordsFrom(envelope.data).map((result, index) => {
                 const entityType = textValue(result, ["entity_type", "entityType", "kind", "type"], "Operational record");
-                const title = textValue(result, ["title", "name", "display_name", "resource_name", "id"], "Untitled record");
-                const id = textValue(result, ["id", "resource_id", "incident_id"], "ID unavailable");
+                const title = textValue(result, ["title", "name", "display_name", "resource_name", "principal_id", "id"], "Untitled record");
+                const id = textValue(result, ["id", "resource_id", "principal_id", "incident_id"], "ID unavailable");
                 const navigation = navigationFor(result);
                 const attributes = keyAttributes(result);
                 const source = textValue(result, ["source", "source_engine", "source_table"], envelope.evidence[0]?.source_engine ?? envelope.evidence[0]?.source_table ?? "Source unavailable");
