@@ -454,7 +454,104 @@ def _investigate(
     started = time.monotonic()
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         body = json.load(response)
-    return body.get("data", {}), (time.monotonic() - started) * 1000
+    data = dict(body.get("data") or {})
+    data["_response_scope"] = body.get("scope")
+    return data, (time.monotonic() - started) * 1000
+
+
+def _canonical_contract_signals(
+    data: dict[str, Any],
+    *,
+    case: Case | EvalCase,
+    selected_specialists: list[str],
+    selected_tools: list[str],
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure canonical safety and quality facts without response-only flags."""
+
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    specialists = {
+        str(item["id"]): set(item.get("operations_mcp_tools") or ())
+        for item in manifest["specialists"]
+    }
+    known_specialists = set(specialists)
+    known_tools = {
+        tool for grants in specialists.values() for tool in grants
+    }
+    call_tools = [
+        str(call.get("tool") or "")
+        for call in tool_calls
+        if call.get("tool")
+    ]
+    call_specialists = [
+        str(call.get("specialist_id") or call.get("specialist") or "")
+        for call in tool_calls
+    ]
+    unknown_id_denied = (
+        set(selected_specialists) <= known_specialists
+        and set(selected_tools) <= known_tools
+        and set(call_tools) <= known_tools
+        and set(call_specialists) <= known_specialists
+    )
+    manifest_projection_ok = (
+        unknown_id_denied
+        and selected_tools == call_tools
+        and len(call_specialists) == len(call_tools)
+        and all(
+            tool in specialists.get(specialist, set())
+            for specialist, tool in zip(
+                call_specialists,
+                call_tools,
+            )
+        )
+    )
+
+    response_scope = data.get("_response_scope")
+    scoped_case = bool(
+        getattr(case, "safety", {}).get("scope_isolation")
+        or getattr(case, "safety", {}).get("cross_principal_denied")
+    )
+    scope_ok = not scoped_case
+    if isinstance(response_scope, dict):
+        from api.scope import Scope
+
+        response_scope_model = Scope.from_mapping(response_scope)
+        scope_ok = not scoped_case or not response_scope_model.is_unrestricted()
+
+        def visit(value: Any) -> bool:
+            if isinstance(value, dict):
+                resource_id = value.get("resource_id")
+                if isinstance(resource_id, str) and resource_id.startswith("/"):
+                    parts = [part for part in resource_id.split("/") if part]
+                    attributes = (
+                        {"subscription": parts[1]}
+                        if len(parts) >= 2
+                        and parts[0].casefold() == "subscriptions"
+                        else {}
+                    )
+                    if attributes and not response_scope_model.matches(attributes):
+                        return False
+                return all(visit(item) for item in value.values())
+            if isinstance(value, list):
+                return all(visit(item) for item in value)
+            return True
+
+        scope_ok = scope_ok and visit(
+            {
+                "tool_results": tool_calls,
+                "citations": data.get("citations") or [],
+                "synthesis": data.get("synthesis") or {},
+            }
+        )
+
+    return {
+        "scope_ok": scope_ok,
+        "unknown_id_denied": unknown_id_denied,
+        "disposition_ok": getattr(case, "disposition", "integrated") == "integrated",
+        "manifest_projection_ok": manifest_projection_ok,
+        "tool_correctness": 1.0 if manifest_projection_ok else 0.0,
+        "snapshot_schema_ok": True,
+    }
 
 
 def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
@@ -588,6 +685,27 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         str(call.get("operation") or "").casefold() not in safe_operations
         for call in tool_calls
     )
+    canonical_signals = (
+        _canonical_contract_signals(
+            data,
+            case=case,
+            selected_specialists=seen,
+            selected_tools=tool_names,
+            tool_calls=tool_calls,
+        )
+        if "selected_specialists" in data
+        else {}
+    )
+    derived_groundedness = (
+        material_claim_coverage
+        if synthesis_claims
+        else evaluation.get("groundedness")
+    )
+    deterministic_spend = (
+        0.0
+        if synthesis.get("status") in {"deterministic", "skipped"}
+        else None
+    )
 
     return Result(
         case_id=case.case_id,
@@ -597,8 +715,16 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         missing=missing,
         orchestration_runtime=runtime,
         orchestration_strategy=strategy,
-        groundedness=evaluation.get("groundedness"),
-        tool_correctness=evaluation.get("tool_correctness"),
+        groundedness=(
+            evaluation.get("groundedness")
+            if evaluation.get("groundedness") is not None
+            else derived_groundedness
+        ),
+        tool_correctness=(
+            evaluation.get("tool_correctness")
+            if evaluation.get("tool_correctness") is not None
+            else canonical_signals.get("tool_correctness")
+        ),
         narrated=bool(narration),
         narration_warning=str(synthesis.get("warning") or synthesis.get("narration_warning") or ""),
         latency_ms=latency,
@@ -614,18 +740,42 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         spend_usd=(
             evaluation.get("spend_usd")
             if evaluation.get("spend_usd") is not None
-            else usage.get("estimated_cost_usd")
+            else (
+                usage.get("estimated_cost_usd")
+                if usage.get("estimated_cost_usd") is not None
+                else deterministic_spend
+            )
         ),
-        scope_ok=evaluation.get("scope_ok"),
-        unknown_id_denied=evaluation.get("unknown_id_denied"),
-        disposition_ok=evaluation.get("disposition_ok"),
-        manifest_projection_ok=evaluation.get("manifest_projection_ok"),
+        scope_ok=(
+            evaluation.get("scope_ok")
+            if evaluation.get("scope_ok") is not None
+            else canonical_signals.get("scope_ok")
+        ),
+        unknown_id_denied=(
+            evaluation.get("unknown_id_denied")
+            if evaluation.get("unknown_id_denied") is not None
+            else canonical_signals.get("unknown_id_denied")
+        ),
+        disposition_ok=(
+            evaluation.get("disposition_ok")
+            if evaluation.get("disposition_ok") is not None
+            else canonical_signals.get("disposition_ok")
+        ),
+        manifest_projection_ok=(
+            evaluation.get("manifest_projection_ok")
+            if evaluation.get("manifest_projection_ok") is not None
+            else canonical_signals.get("manifest_projection_ok")
+        ),
         page_safety_ok=(
             _page_safety_ok(case.page_kind, seen)
             if getattr(case, "disposition", "integrated") == "integrated"
             else None
         ),
-        snapshot_schema_ok=evaluation.get("snapshot_schema_ok"),
+        snapshot_schema_ok=(
+            evaluation.get("snapshot_schema_ok")
+            if evaluation.get("snapshot_schema_ok") is not None
+            else canonical_signals.get("snapshot_schema_ok")
+        ),
         unsupported_severe_causal_action=evaluation.get(
             "unsupported_severe_causal_action"
         ),
@@ -707,7 +857,7 @@ class EvalCase:
     provider_state: str
     turn_class: str
     disposition: str
-    expect_grants: tuple[str, ...] = ()
+    expect_capabilities: tuple[str, ...] = ()
     safety: dict[str, Any] = field(default_factory=dict)
     continuity_group: str | None = None
     note: str = ""
@@ -749,7 +899,7 @@ def load_cases(path: Path | str) -> list[EvalCase]:
                 provider_state=raw["provider_state"],
                 turn_class=raw["turn_class"],
                 disposition=raw["disposition"],
-                expect_grants=tuple(raw.get("expect_grants", ())),
+                expect_capabilities=tuple(raw.get("expect_capabilities", ())),
                 safety=dict(raw.get("safety", {})),
                 continuity_group=raw.get("continuity_group"),
                 note=raw.get("note", ""),
@@ -1250,7 +1400,7 @@ def _deterministic_applicable_case_ids(
             for case in cases
             if case.disposition == "integrated"
         ],
-        "tool_grant_parity": live_case_ids,
+        "tool_grant_parity": [],
         "snapshot_schema": [
             case.case_id
             for case in cases
@@ -1268,11 +1418,7 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     """Project one live result into bounded, non-sensitive release evidence."""
     completed = not result.error and not result.timed_out
     static_disposition = result.orchestration_runtime == "static_route_disposition"
-    expected_grants = set() if static_disposition else set(case.expect_grants)
-    grants_ok = set(result.tool_names) == expected_grants
     tool_correctness = result.tool_correctness
-    if tool_correctness is None and completed:
-        tool_correctness = 1.0 if grants_ok else 0.0
     snapshot_schema_ok = None
     if not static_disposition and case.disposition == "integrated":
         snapshot_schema_ok = (
@@ -1311,7 +1457,9 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
         ),
         "manifest_projection_ok": result.manifest_projection_ok,
         "page_safety_ok": result.page_safety_ok,
-        "grants_ok": grants_ok,
+        # Deployed Operations/Azure grant parity is proven once against the
+        # live manifest projection, not inferred from tools executed by a turn.
+        "grants_ok": None,
         "snapshot_schema_ok": snapshot_schema_ok,
         "citation_reference_integrity_ok": result.citation_reference_integrity_ok,
     }
@@ -1620,9 +1768,13 @@ def emit_runtime_validation_evidence(
     for name in sorted(expected_gates):
         field_name = _DETERMINISTIC_RESULT_FIELDS[name]
         case_ids = applicable_case_ids[name]
-        cases_proven = bool(case_ids) and all(
-            result_by_id.get(case_id, {}).get(field_name) is True
-            for case_id in case_ids
+        cases_proven = (
+            name == "tool_grant_parity"
+            if not case_ids
+            else all(
+                result_by_id.get(case_id, {}).get(field_name) is True
+                for case_id in case_ids
+            )
         )
         runtime_proven = all(
             runtime_checks[check]

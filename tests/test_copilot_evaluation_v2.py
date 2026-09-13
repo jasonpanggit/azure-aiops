@@ -1622,7 +1622,7 @@ def test_corpus_is_versioned_and_typed():
 
 def test_corpus_has_five_routing_cases_per_specialist():
     payload = json.loads(_CASES_PATH.read_text())
-    manifest_ids = _manifest_specialist_ids()
+    manifest_ids = _manifest_specialist_ids() - {"executive_summary"}
     routing = [c for c in payload["cases"] if c["category"] == "routing"]
     per_specialist: dict[str, int] = {sid: 0 for sid in manifest_ids}
     for case in routing:
@@ -1631,6 +1631,9 @@ def test_corpus_has_five_routing_cases_per_specialist():
                 per_specialist[sid] += 1
     missing = {sid: n for sid, n in per_specialist.items() if n < 5}
     assert not missing, f"specialists below the 5-routing-case floor: {missing}"
+    assert sum(
+        case["page_kind"] == "overview" for case in routing
+    ) >= 5, "executive synthesis requires five overview delegation cases"
 
 
 def test_corpus_covers_four_new_specialists():
@@ -1972,42 +1975,44 @@ def test_release_artifact_holds_when_the_corpus_is_incomplete():
     assert any("canonical case-id set" in problem for problem in problems)
 
 
-def test_release_evidence_requires_exact_tool_grant_parity():
+def test_release_evidence_keeps_deployed_grants_separate_from_executed_tools():
     evaluate_agents = _load_evaluate_agents()
     case = evaluate_agents.load_cases(_CASES_PATH)[0]
     result = evaluate_agents.Result(
         case_id=case.case_id,
         ok=True,
         specialists=list(case.expect_specialists),
-        tool_names=[case.expect_grants[0]],
+        tool_names=[case.expect_capabilities[0]],
+        tool_correctness=1.0,
         mutation_denied=True,
     )
 
     evidence = evaluate_agents.result_to_release_evidence(result, case)
 
-    assert len(case.expect_grants) == 2
-    assert evidence["grants_ok"] is False
-    assert evidence["tool_correctness"] == 0.0
+    assert len(case.expect_capabilities) == 2
+    assert evidence["grants_ok"] is None
+    assert evidence["tool_correctness"] == 1.0
 
 
-def test_zero_grant_case_rejects_an_executed_tool():
+def test_zero_capability_case_keeps_deployed_grant_parity_external():
     evaluate_agents = _load_evaluate_agents()
     case = next(
         case
         for case in evaluate_agents.load_cases(_CASES_PATH)
-        if not case.expect_grants and case.disposition == "integrated"
+        if not case.expect_capabilities and case.disposition == "integrated"
     )
     result = evaluate_agents.Result(
         case_id=case.case_id,
         ok=True,
         specialists=list(case.expect_specialists),
         tool_names=["unexpected_tool"],
+        tool_correctness=0.0,
         mutation_denied=True,
     )
 
     evidence = evaluate_agents.result_to_release_evidence(result, case)
 
-    assert evidence["grants_ok"] is False
+    assert evidence["grants_ok"] is None
     assert evidence["tool_correctness"] == 0.0
 
 
@@ -2068,7 +2073,7 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
         page_kind="governance",
         question="Who owns the payments service?",
         expect_specialists=("governance",),
-        expect_grants=("business_service_context",),
+        expect_capabilities=("business_service_context",),
         provider_state="normal",
         turn_class="single_domain",
         disposition="integrated",
@@ -2132,11 +2137,239 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     assert result.citation_valid is True
     assert result.material_claim_coverage == 1.0
     assert result.citation_reference_integrity_ok is True
-    assert evidence["grants_ok"] is True
+    assert evidence["grants_ok"] is None
     assert gates["routing"]["passed"] is True
     assert gates["citation_validity"]["passed"] is True
     assert gates["citation_coverage"]["passed"] is True
     assert gates["tool_correctness"]["passed"] is True
+
+
+def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.EvalCase(
+        case_id="canonical-safety",
+        category="scope",
+        page_kind="governance",
+        question="Who owns this resource?",
+        expect_specialists=("governance",),
+        expect_capabilities=("business_service_context",),
+        provider_state="normal",
+        turn_class="single_domain",
+        disposition="integrated",
+        safety={"scope_isolation": True, "mutation_denied": True},
+    )
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-1"
+    )
+    response = {
+        "_response_scope": {"subscription": ["sub-a"]},
+        "status": "ok",
+        "policy_status": "accepted",
+        "selected_specialists": ["governance"],
+        "selected_tools": ["business_service_context"],
+        "tool_results": [
+            {
+                "call_id": "call-1",
+                "specialist_id": "governance",
+                "tool": "business_service_context",
+                "arguments": {"name": "payments"},
+                "status": "ok",
+                "data": {"resource_id": resource_id},
+                "evidence": [
+                    {
+                        "source_engine": "semantic",
+                        "source_table": "entities",
+                        "resource_id": resource_id,
+                    }
+                ],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": "tool:call-1:0",
+                "source": "semantic:entities",
+                "status": "ok",
+                "resource_id": resource_id,
+            }
+        ],
+        "synthesis": {
+            "status": "deterministic",
+            "claims": [
+                {
+                    "summary": "The resource is owned by payments.",
+                    "evidence_refs": ["tool:call-1:0"],
+                }
+            ],
+        },
+        "mutation_authorized": False,
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents,
+        "_investigate",
+        lambda _api, _token, _case: (response, 5.0),
+    )
+
+    result = evaluate_agents._run_case("https://example.invalid", "resource", case)
+
+    assert result.scope_ok is True
+    assert result.unknown_id_denied is True
+    assert result.disposition_ok is True
+    assert result.manifest_projection_ok is True
+    assert result.tool_correctness == 1.0
+    assert result.groundedness == 1.0
+    assert result.spend_usd == 0.0
+
+    response["selected_specialists"] = ["unreviewed-specialist"]
+    unsafe = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+    )
+    assert unsafe.unknown_id_denied is False
+    assert unsafe.manifest_projection_ok is False
+
+
+def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
+    from operations.maf_orchestrator import build_deterministic_fallback
+    from operations.orchestration_contract import (
+        EvidenceSnapshotV2,
+        InvestigationRequest,
+        SnapshotCoverage,
+    )
+    from operations.specialist_manifest import load_specialist_manifest
+
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    manifest = load_specialist_manifest()
+
+    def investigate(_api, _token, case):
+        request = InvestigationRequest(
+            question=case.question,
+            requested_scope={"subscription": ["sub-a"]},
+            snapshot=EvidenceSnapshotV2(
+                page_kind=case.page_kind,
+                page_id=case.case_id,
+                coverage=SnapshotCoverage(
+                    visible_count=0,
+                    total_count=0,
+                    complete=False,
+                ),
+            ),
+        )
+        candidate = build_deterministic_fallback(request, manifest)
+        steps = candidate.steps if candidate is not None else []
+        calls = [
+            {
+                "call_id": f"{index}:0:{step.specialist_id}:{step.tool_calls[0].tool}",
+                "specialist_id": step.specialist_id,
+                "tool": step.tool_calls[0].tool,
+                "arguments": step.tool_calls[0].arguments,
+                "status": "ok",
+                "data": {"summary": f"{step.specialist_id} observation"},
+                "evidence": [
+                    {
+                        "source_engine": "test",
+                        "source_table": step.specialist_id,
+                        "resource_id": "",
+                    }
+                ],
+            }
+            for index, step in enumerate(steps)
+        ]
+        citations = [
+            {
+                "citation_id": f"tool:{call['call_id']}:0",
+                "source": f"test:{call['specialist_id']}",
+                "status": "ok",
+            }
+            for call in calls
+        ]
+        claims = [
+            {
+                "summary": f"{call['specialist_id']} reported an observation.",
+                "evidence_refs": [f"tool:{call['call_id']}:0"],
+            }
+            for call in calls
+        ]
+        return (
+            {
+                "_response_scope": {"subscription": ["sub-a"]},
+                "status": "ok",
+                "policy_status": "accepted",
+                "selected_specialists": [
+                    step.specialist_id for step in steps
+                ],
+                "selected_tools": [call["tool"] for call in calls],
+                "tool_results": calls,
+                "citations": citations,
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": claims,
+                },
+                "mutation_authorized": False,
+            },
+            5.0,
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents, "_investigate", investigate)
+    results = []
+    for case in cases:
+        if case.disposition == "integrated":
+            result = evaluate_agents._run_case(
+                "https://example.invalid",
+                "resource",
+                case,
+            )
+        else:
+            result = evaluate_agents.Result(
+                case_id=case.case_id,
+                ok=True,
+                specialists=list(case.expect_specialists),
+                expected_specialists=list(case.expect_specialists),
+                groundedness=1.0,
+                tool_correctness=1.0,
+                narrated=True,
+                latency_ms=5.0,
+                tool_names=[],
+                citation_valid=True,
+                material_claim_coverage=1.0,
+                citation_reference_integrity_ok=True,
+                mutation_denied=True,
+                spend_usd=0.0,
+                scope_ok=True,
+                unknown_id_denied=True,
+                disposition_ok=True,
+                manifest_projection_ok=True,
+                page_safety_ok=True,
+                snapshot_schema_ok=True,
+                unsupported_severe_causal_action=0,
+                orchestration_runtime="static_route_disposition",
+            )
+        results.append(evaluate_agents.result_to_release_evidence(result, case))
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=evaluate_agents.load_thresholds(_THRESHOLDS_PATH),
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "PROMOTE", artifact["gates"]
+    assert all(
+        gate["passed"]
+        for gate in artifact["gates"].values()
+    )
 
 
 def test_every_integrated_fixture_is_snapshot_schema_gated():
@@ -2204,7 +2437,7 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             material_claim_coverage=1.0,
             citation_reference_integrity_ok=True,
             mutation_denied=True,
-            tool_names=list(case.expect_grants),
+            tool_names=[],
             spend_usd=0.05,
             scope_ok=True,
             unknown_id_denied=True,

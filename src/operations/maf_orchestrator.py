@@ -79,6 +79,19 @@ _REVIEWED_CROSS_DOMAIN_GRANTS: Mapping[
         ),
     ),
 }
+_OVERVIEW_DOMAIN_SPECIALISTS = (
+    "network",
+    "vulnerability",
+    "patch",
+    "incident",
+    "change",
+    "governance",
+    "remediation",
+    "inventory_data_health",
+    "identity_access",
+    "finops",
+    "resource_health_observability",
+)
 
 
 @dataclass(frozen=True)
@@ -240,7 +253,10 @@ def reviewed_specialists_for_page(
     """Return the page owners plus explicitly reviewed cross-domain grants."""
 
     reviewed: list[str] = []
-    for specialist_id in page_specialists.get(page_kind, ()):
+    page_owners = tuple(page_specialists.get(page_kind, ()))
+    if page_kind == "overview" and "executive_summary" in page_owners:
+        page_owners = _OVERVIEW_DOMAIN_SPECIALISTS
+    for specialist_id in page_owners:
         if specialist_id != "executive_summary":
             _append_unique(reviewed, specialist_id, limit=64)
     grant_page_kind = (
@@ -277,9 +293,12 @@ def select_specialists_for_turn(
     so the two orchestration paths cannot silently drift apart.
     """
 
+    page_owners = tuple(page_specialists.get(page_kind, ()))
+    if page_kind == "overview" and "executive_summary" in page_owners:
+        page_owners = _OVERVIEW_DOMAIN_SPECIALISTS
     allowed = tuple(
         agent_id
-        for agent_id in page_specialists.get(page_kind, ())
+        for agent_id in page_owners
         if agent_id != "executive_summary"
     )
     if not allowed:
@@ -384,6 +403,8 @@ def build_deterministic_fallback(
 
     page_kind: str = request.snapshot.page_kind
     page_mapping = manifest.page_mapping_projection()
+    if page_kind == "overview":
+        page_mapping[page_kind] = _OVERVIEW_DOMAIN_SPECIALISTS
 
     catalog = [
         _ManifestCatalogEntry(id=spec.id, keywords=spec.intent_examples)

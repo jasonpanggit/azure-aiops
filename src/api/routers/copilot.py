@@ -1163,11 +1163,7 @@ def investigate_canonical(
                 break
         planning_snapshot = browser_snapshot.model_copy(
             update={
-                "page_kind": (
-                    "resource"
-                    if browser_snapshot.page_kind == "overview"
-                    else browser_snapshot.page_kind
-                ),
+                "page_kind": browser_snapshot.page_kind,
                 "coverage": browser_snapshot.coverage.model_copy(
                     update={"complete": False}
                 ),

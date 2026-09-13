@@ -2670,8 +2670,8 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
         (
             "overview",
             "operations-overview",
-            "Give an executive overview of this resource.",
-            {"governance", "resource_health_observability"},
+            "Give an executive overview of network, vulnerability, incident, and cost risk.",
+            {"network", "vulnerability", "incident", "finops"},
         ),
     ),
 )
