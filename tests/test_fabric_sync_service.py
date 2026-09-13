@@ -143,7 +143,7 @@ def test_explicit_replay_returns_matching_finalized_checkpoint(
     assert second.replay is True
 
 
-def test_sync_deduplicates_unchanged_container_observation_across_source_generations(
+def test_sync_deduplicates_unchanged_and_appends_changed_container_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -192,7 +192,7 @@ def test_sync_deduplicates_unchanged_container_observation_across_source_generat
     assert first.status == "completed"
     assert second.status == "completed"
     assert len(observations) == 1
-    observation_key = (observations[0]["resource_id"],)
+    original_observation_id = observations[0]["resource_id"]
 
     _container_source_snapshot(
         source,
@@ -201,9 +201,18 @@ def test_sync_deduplicates_unchanged_container_observation_across_source_generat
         severity="Low",
         provider_event_time=False,
     )
-    with pytest.raises(ValueError) as error:
-        service.sync()
-    assert str(error.value) == f"Append row mutation for key {observation_key}"
+    third = service.sync()
+    observations = service.delta.read(
+        lakehouse / "Tables/silver_container_vulnerability_observations"
+    )
+
+    assert third.status == "completed"
+    assert len(observations) == 2
+    assert {row["severity"] for row in observations} == {"Critical", "Low"}
+    assert len({row["resource_id"] for row in observations}) == 2
+    assert original_observation_id in {
+        row["resource_id"] for row in observations
+    }
 
 
 def test_sync_reports_successful_table_writes_in_completion_order(
