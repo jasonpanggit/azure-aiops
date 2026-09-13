@@ -82,15 +82,16 @@ DATASET_VERSION = "1"
 THRESHOLDS_VERSION = "1"
 DEFAULT_DATASET = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_evaluation_cases.v1.json"
 DEFAULT_THRESHOLDS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_release_thresholds.v1.json"
+DEFAULT_MANIFEST = Path(__file__).resolve().parent.parent / "src" / "operations" / "specialists.v1.json"
 
 
 @dataclass(frozen=True)
 class Case:
     """One scored question.
 
-    ``expect_specialists`` is the deterministic set that must appear. It is a
-    subset check, not equality: the router may legitimately add a specialist as
-    the catalog grows, and that should not fail an unrelated case.
+    ``expect_specialists`` is the exact deterministic set that must appear.
+    Adding a specialist requires an explicit reviewed corpus and manifest
+    update; global keyword growth must not broaden page routing.
     """
 
     case_id: str
@@ -329,6 +330,7 @@ class Result:
     unknown_id_denied: bool | None = None
     disposition_ok: bool | None = None
     manifest_projection_ok: bool | None = None
+    page_safety_ok: bool | None = None
     snapshot_schema_ok: bool | None = None
     unsupported_severe_causal_action: int | None = None
 
@@ -361,9 +363,22 @@ class Result:
             "unknown_id_denied": self.unknown_id_denied,
             "disposition_ok": self.disposition_ok,
             "manifest_projection_ok": self.manifest_projection_ok,
+            "page_safety_ok": self.page_safety_ok,
             "snapshot_schema_ok": self.snapshot_schema_ok,
             "unsupported_severe_causal_action": self.unsupported_severe_causal_action,
         }
+
+
+def _page_safety_ok(page_kind: str, specialists: list[str]) -> bool:
+    """Return whether every selected specialist is authorized for the page."""
+
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    allowed = {
+        str(specialist["id"])
+        for specialist in manifest["specialists"]
+        if page_kind in specialist.get("page_mappings", [])
+    }
+    return bool(allowed) and set(specialists) <= allowed
 
 
 def _token(resource: str) -> str:
@@ -561,6 +576,11 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
         unknown_id_denied=evaluation.get("unknown_id_denied"),
         disposition_ok=evaluation.get("disposition_ok"),
         manifest_projection_ok=evaluation.get("manifest_projection_ok"),
+        page_safety_ok=(
+            _page_safety_ok(case.page_kind, seen)
+            if getattr(case, "disposition", "integrated") == "integrated"
+            else None
+        ),
         snapshot_schema_ok=evaluation.get("snapshot_schema_ok"),
         unsupported_severe_causal_action=evaluation.get(
             "unsupported_severe_causal_action"
@@ -830,6 +850,7 @@ def aggregate_release_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             "unknown_specialist_or_tool_denied": flag_count("unknown_id_denied"),
             "route_disposition_parity": flag_count("disposition_ok"),
             "manifest_projection_parity": flag_count("manifest_projection_ok"),
+            "page_safe_specialist_routing": flag_count("page_safety_ok"),
             "tool_grant_parity": flag_count("grants_ok"),
             "snapshot_schema": flag_count("snapshot_schema_ok"),
             "citation_reference_integrity": flag_count("citation_reference_integrity_ok"),
@@ -1131,6 +1152,7 @@ _CONTROLLED_CASE_FIELDS = (
     "unknown_id_denied",
     "disposition_ok",
     "manifest_projection_ok",
+    "page_safety_ok",
     "grants_ok",
     "snapshot_schema_ok",
     "citation_reference_integrity_ok",
@@ -1144,6 +1166,7 @@ _DETERMINISTIC_RESULT_FIELDS = {
     "unknown_specialist_or_tool_denied": "unknown_id_denied",
     "route_disposition_parity": "disposition_ok",
     "manifest_projection_parity": "manifest_projection_ok",
+    "page_safe_specialist_routing": "page_safety_ok",
     "tool_grant_parity": "grants_ok",
     "snapshot_schema": "snapshot_schema_ok",
     "citation_reference_integrity": "citation_reference_integrity_ok",
@@ -1181,6 +1204,11 @@ def _deterministic_applicable_case_ids(
         "unknown_specialist_or_tool_denied": live_case_ids,
         "route_disposition_parity": [case.case_id for case in cases],
         "manifest_projection_parity": live_case_ids,
+        "page_safe_specialist_routing": [
+            case.case_id
+            for case in cases
+            if case.disposition == "integrated"
+        ],
         "tool_grant_parity": live_case_ids,
         "snapshot_schema": [
             case.case_id
@@ -1242,6 +1270,7 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
             True if static_disposition else result.disposition_ok
         ),
         "manifest_projection_ok": result.manifest_projection_ok,
+        "page_safety_ok": result.page_safety_ok,
         "grants_ok": grants_ok,
         "snapshot_schema_ok": snapshot_schema_ok,
         "citation_reference_integrity_ok": result.citation_reference_integrity_ok,

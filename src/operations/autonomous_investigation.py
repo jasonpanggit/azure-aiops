@@ -177,39 +177,16 @@ def _select_context_specialists(
     question: str,
     page_specialists: Mapping[str, tuple[str, ...]],
 ) -> list[str]:
-    """Choose specialists for one page question: page anchor first, then topic.
-
-    The page's own specialists always lead, so the drawer keeps answering as
-    the specialist for the page the operator is looking at. Specialists whose
-    keywords match the question are appended after them, because operators
-    routinely ask cross-cutting questions without changing page -- "what
-    changed recently?" asked on the Network page is a change question, and
-    previously only the network specialist ever ran.
-
-    Selection stays deterministic keyword matching over the fixed catalog: no
-    model output chooses a specialist, the result is capped at
-    MAX_CONTEXT_SPECIALISTS, and each specialist's tools remain scope-filtered,
-    so this widens topical relevance without widening data access.
-
-    ``executive_summary`` is excluded: it is a synthesis agent with no tools of
-    its own and depends on every other specialist, so admitting it here would
-    spend the budget without gathering evidence.
-    """
-    ordered: list[str] = []
-    for specialist_id in page_specialists.get(page_kind, ()):
-        if specialist_id not in ordered:
-            ordered.append(specialist_id)
-
-    lowered = question.casefold()
-    for agent in AGENTS:
-        if len(ordered) >= MAX_CONTEXT_SPECIALISTS:
-            break
-        if agent.id in ordered or agent.id == "executive_summary":
-            continue
-        if any(marker in lowered for marker in agent.keywords):
-            ordered.append(agent.id)
-
-    return ordered[:MAX_CONTEXT_SPECIALISTS]
+    """Choose specialists within the manifest's ordered page-safe set."""
+    return list(
+        select_specialists_for_turn(
+            page_kind=page_kind,
+            question=question,
+            page_specialists=page_specialists,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        ).selected_ids
+    )
 
 
 def _tool_args(

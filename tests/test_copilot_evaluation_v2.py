@@ -1521,6 +1521,7 @@ def _passing_result(**overrides):
         "unknown_id_denied": True,
         "disposition_ok": True,
         "manifest_projection_ok": True,
+        "page_safety_ok": True,
         "grants_ok": True,
         "snapshot_schema_ok": True,
         "citation_reference_integrity_ok": True,
@@ -1815,6 +1816,7 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             unknown_id_denied=True,
             disposition_ok=True,
             manifest_projection_ok=True,
+            page_safety_ok=True,
             snapshot_schema_ok=True,
             unsupported_severe_causal_action=0,
         )
@@ -1934,6 +1936,45 @@ def test_release_artifact_holds_when_any_live_case_lacks_spend():
     assert artifact["gates"]["measurement_completeness"]["observed"][
         "missing_spend_case_ids"
     ] == [cases[0].case_id]
+
+
+def test_missing_page_safety_measurement_forces_hold():
+    evaluate_agents = _load_evaluate_agents()
+    dataset = json.loads(_CASES_PATH.read_text())
+    thresholds = evaluate_agents.load_thresholds(_THRESHOLDS_PATH)
+    cases = evaluate_agents.load_cases(_CASES_PATH)
+    target = next(case for case in cases if case.disposition == "integrated")
+    results = [
+        _passing_result(
+            case_id=case.case_id,
+            category=case.category,
+            expected_specialists=list(case.expect_specialists),
+            specialists=list(case.expect_specialists),
+            turn_class=case.turn_class,
+            provider_state=case.provider_state,
+            page_safety_ok=None if case.case_id == target.case_id else True,
+        )
+        for case in cases
+    ]
+
+    artifact = evaluate_agents.build_release_artifact(
+        results,
+        cases=cases,
+        dataset=dataset,
+        thresholds=thresholds,
+        revision="api--phase11-canary",
+        provider_availability={
+            "foundry": "available",
+            "operations_mcp": "available",
+            "azure_mcp": "available",
+        },
+        validation_evidence=_passing_validation_evidence(),
+    )
+
+    assert artifact["decision"] == "HOLD"
+    gate = artifact["gates"]["page_safe_specialist_routing"]
+    assert gate["passed"] is False
+    assert gate["observed"]["missing_case_ids"] == [target.case_id]
 
 
 def test_release_artifact_rejects_boolean_spend_values():
