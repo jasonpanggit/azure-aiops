@@ -2283,6 +2283,151 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     assert leaked.scope_ok is False
 
 
+def test_dedicated_cases_use_production_contracts_and_two_principals(
+    monkeypatch,
+):
+    import urllib.error
+
+    evaluate_agents = _load_evaluate_agents()
+    cases = {
+        case.case_id: case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "dedicated"
+    }
+    requests: list[tuple[str, str, dict[str, Any] | None, str]] = []
+    thread_id = "thr-" + "a" * 32
+
+    def response(data):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": data,
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode()) if request.data else None
+        requests.append(
+            (
+                request.full_url,
+                request.method,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        if (
+            request.full_url.endswith("/api/v1/copilot/investigations")
+            and body
+            and body.get("thread_id")
+        ):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                404,
+                "not found",
+                {},
+                io.BytesIO(b'{"error":{"code":"not_found"}}'),
+            )
+        if request.full_url.endswith("/api/v1/copilot/investigations"):
+            return response(
+                {
+                    "thread_id": thread_id,
+                    "thread_revision": 1,
+                }
+            )
+        if request.full_url.endswith("/api/v1/agents/investigations"):
+            return response(
+                {
+                    "selected_agents": [{"id": "incident"}],
+                    "tool_calls": [
+                        {
+                            "specialist_id": "incident",
+                            "tool": "incidents",
+                            "status": "ok",
+                            "evidence": [],
+                        }
+                    ],
+                    "synthesis": {
+                        "status": "deterministic",
+                        "claims": [],
+                    },
+                    "evaluation": {
+                        "groundedness": 1.0,
+                        "cost": {"llm_calls": 0},
+                    },
+                }
+            )
+        if request.full_url.endswith("/api/v1/agents/catalog"):
+            manifest = json.loads(_MANIFEST_PATH.read_text())
+            return response(
+                {
+                    "agents": [
+                        {"id": specialist["id"]}
+                        for specialist in manifest["specialists"]
+                    ]
+                }
+            )
+        return response(
+            {
+                "tool_calls": [],
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": [],
+                },
+                "evaluation": {
+                    "groundedness": 1.0,
+                    "cost": {"llm_calls": 0},
+                },
+            }
+        )
+
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+
+    results = {
+        case_id: evaluate_agents._investigate(
+            "https://example.invalid",
+            "primary-token",
+            case,
+        )[0]
+        for case_id, case in cases.items()
+    }
+
+    assert (
+        results["scope.cross.principal"]["_cross_principal_denied"]
+        is True
+    )
+    assert results["dedicated.investigate"]["selected_specialists"] == [
+        "incident"
+    ]
+    assert results["dedicated.agents"]["selected_specialists"] == []
+    assert any(
+        url.endswith("/api/v1/copilot/investigate") and method == "POST"
+        for url, method, _body, _authorization in requests
+    )
+    assert any(
+        url.endswith("/api/v1/agents/investigations") and method == "POST"
+        for url, method, _body, _authorization in requests
+    )
+    assert any(
+        url.endswith("/api/v1/agents/catalog") and method == "GET"
+        for url, method, _body, _authorization in requests
+    )
+    assert sum(
+        url.endswith("/api/v1/copilot/investigations")
+        for url, _method, _body, _authorization in requests
+    ) == 2
+    principal_headers = {
+        authorization
+        for url, _method, _body, authorization in requests
+        if url.endswith("/api/v1/copilot/investigations")
+    }
+    assert len(principal_headers) == 2
+    assert all(principal_headers)
+
+
 def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
     from operations.maf_orchestrator import build_deterministic_fallback
     from operations.orchestration_contract import (
@@ -2366,11 +2511,99 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
             5.0,
         )
 
+    cases_by_id = {case.case_id: case for case in cases}
+    thread_id = "thr-" + "b" * 32
+
+    def response(data):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": data,
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    def urlopen(request, *, timeout):
+        import urllib.error
+
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode()) if request.data else None
+        if request.full_url.endswith("/api/v1/copilot/investigations"):
+            if body.get("thread_id"):
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    404,
+                    "not found",
+                    {},
+                    io.BytesIO(b'{"error":{"code":"not_found"}}'),
+                )
+            case_id = body["snapshot"]["page_id"].removeprefix("eval-")
+            if case_id == "scope.cross.principal":
+                return response(
+                    {
+                        "thread_id": thread_id,
+                        "thread_revision": 1,
+                    }
+                )
+            return response(
+                investigate(
+                    "https://example.invalid",
+                    "primary-token",
+                    cases_by_id[case_id],
+                )[0]
+            )
+        if request.full_url.endswith("/api/v1/agents/investigations"):
+            return response(
+                {
+                    "selected_agents": [{"id": "incident"}],
+                    "tool_calls": [
+                        {
+                            "specialist_id": "incident",
+                            "tool": "incidents",
+                            "status": "ok",
+                            "evidence": [],
+                        }
+                    ],
+                    "synthesis": {
+                        "status": "deterministic",
+                        "claims": [],
+                    },
+                    "evaluation": {
+                        "groundedness": 1.0,
+                        "cost": {"llm_calls": 0},
+                    },
+                }
+            )
+        if request.full_url.endswith("/api/v1/agents/catalog"):
+            return response(
+                {
+                    "agents": [
+                        {"id": specialist.id}
+                        for specialist in manifest.specialists
+                    ]
+                }
+            )
+        return response(
+            {
+                "tool_calls": [],
+                "synthesis": {
+                    "status": "deterministic",
+                    "claims": [],
+                },
+                "evaluation": {
+                    "groundedness": 1.0,
+                    "cost": {"llm_calls": 0},
+                },
+            }
+        )
+
     monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
-    monkeypatch.setattr(evaluate_agents, "_investigate", investigate)
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
     results = []
     for case in cases:
-        if case.disposition == "integrated":
+        if case.disposition not in {"redirect", "excluded"}:
             result = evaluate_agents._run_case(
                 "https://example.invalid",
                 "resource",
