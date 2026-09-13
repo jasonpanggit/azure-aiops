@@ -318,6 +318,30 @@ def test_keyword_fallback_no_mutation_intent():
             assert call.mutation is False
 
 
+def test_keyword_fallback_invokes_only_question_selected_valid_calls():
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = InvestigationRequest(
+        question="Show the network topology for this twin.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="twin",
+            page_id="twin",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    candidate = build_deterministic_fallback(request, manifest)
+
+    assert candidate is not None
+    assert [step.specialist_id for step in candidate.steps] == ["network"]
+
+
 @pytest.mark.parametrize("page_kind", get_args(PageMapping))
 def test_no_hint_fallback_is_safe_for_every_exact_v2_page_kind(page_kind):
     """Every page either executes validated calls or degrades without tool I/O."""
