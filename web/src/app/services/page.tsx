@@ -31,7 +31,7 @@ interface ServiceRow {
 /** Business service catalog synthesized from onboarding context and active Situations. */
 export default function ServicesPage() {
   const { scope } = useScope();
-  const connections = useApi(() => connectionsApi.list(scope), [scope]);
+  const connections = useApi(() => connectionsApi.listAll(scope), [scope]);
   const incidents = useApi(() => operationsApi.incidents(scope), [scope]);
 
   const services = useMemo(() => {
@@ -87,7 +87,7 @@ export default function ServicesPage() {
 
   const [copilotOpen, setCopilotOpen] = useState(false);
 
-  const error = connections.error ?? incidents.error;
+  const error = connections.error;
 
   const connectionsAvailable = !connections.error && Boolean(connections.data);
   const incidentsAvailable = !incidents.error && Boolean(incidents.data);
@@ -132,16 +132,27 @@ export default function ServicesPage() {
       <EvidenceBar
         evidence={[...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])]}
         knowledgeVersion={incidents.data?.knowledge_version}
-        warnings={[...(connections.data?.warnings ?? []), ...(incidents.data?.warnings ?? [])]}
+        warnings={[
+          ...(connections.data?.warnings ?? []),
+          ...(incidents.data?.warnings ?? []),
+          ...(incidents.error ? [incidents.error.message] : []),
+        ]}
       />
       {error ? (
         <StatePanel title="Service catalog is incomplete" message={error.message} tone="error" />
-      ) : connections.loading || incidents.loading ? (
+      ) : connections.loading || (!connections.data && incidents.loading) ? (
         <StatePanel title="Building service catalog" message="Joining business metadata with active operational risk." tone="loading" />
       ) : services.length === 0 ? (
         <StatePanel title="No business services mapped" message="Map subscription connections to business services to activate this operating view." />
       ) : (
         <>
+          {incidents.error && (
+            <StatePanel
+              title="Incident data deferred"
+              message={`Service catalog rows are available, but active situation data is unavailable: ${incidents.error.message}`}
+              tone="partial"
+            />
+          )}
           <section className="card dashboard-visual-card service-overview-card">
             <div className="card-header">
               <div>
