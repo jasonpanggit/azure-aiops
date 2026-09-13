@@ -695,7 +695,8 @@
       "page_kind": "overview",
       "question": "Summarise the top cross-domain risks for leadership.",
       "expect_specialists": [
-        "vulnerability"
+        "vulnerability",
+        "incident"
       ],
       "expect_capabilities": [],
       "provider_state": "normal",
@@ -729,7 +730,8 @@
       "page_kind": "overview",
       "question": "Produce a one-paragraph situation report for the payments service.",
       "expect_specialists": [
-        "incident"
+        "incident",
+        "governance"
       ],
       "expect_capabilities": [],
       "provider_state": "normal",
@@ -1530,7 +1532,8 @@
       "page_kind": "overview",
       "question": "Give a cited cross-domain risk brief for the payments service.",
       "expect_specialists": [
-        "vulnerability"
+        "vulnerability",
+        "incident"
       ],
       "expect_capabilities": [],
       "provider_state": "normal",
@@ -1745,9 +1748,7 @@
       "category": "dedicated",
       "page_kind": "copilot",
       "question": "Ask across all pages: what are today's top risks?",
-      "expect_specialists": [
-        "executive_summary"
-      ],
+      "expect_specialists": [],
       "expect_capabilities": [],
       "provider_state": "normal",
       "turn_class": "cross_domain",
@@ -1780,9 +1781,7 @@
       "category": "dedicated",
       "page_kind": "agents",
       "question": "Which specialists are available and what can they do?",
-      "expect_specialists": [
-        "executive_summary"
-      ],
+      "expect_specialists": [],
       "expect_capabilities": [],
       "provider_state": "normal",
       "turn_class": "single_domain",
