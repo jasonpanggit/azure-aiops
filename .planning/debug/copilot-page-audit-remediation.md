@@ -2,7 +2,7 @@
 status: investigating
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T12:07:00+08:00
+updated: 2026-09-13T12:50:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,20 +31,50 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: Cluster 3 is fixed and guardrail-verified; the next unresolved root cause is cluster 4, where global keyword routing can broaden beyond the current page manifest's reviewed specialist set instead of producing an exact deterministic intersection.
-test: Add exact-set routing tests across Services, Twin, Predeploy, and Identity that vary only question keywords and assert selected specialists remain within the page manifest allowlist with no silent broadening.
-expecting: Current substring routing can add globally matching specialists that are not approved for the active page kind, and existing tests encode subset rather than exact-set expectations.
-next_action: Start exact-set routing by tracing `select_specialists_for_turn` and canonical fallback through the manifest page mappings; do not change redirects/readiness or archive this session.
+hypothesis: The four independent-review gaps in the canonical migration are corrected and committed; the next unresolved root cause is cluster 4, where global keyword routing can broaden beyond the exact specialist set allowed by the newly precise manifest-backed page kind.
+test: Add exact-set routing tests across Services, Twin, Predeploy, and Identity that vary only free-form question keywords and assert selected specialists equal the reviewed page mapping rather than a broader global match.
+expecting: Current substring routing can add globally matching specialists outside the active exact page mapping, and existing tests permit subset behavior.
+next_action: Trace `select_specialists_for_turn` and canonical fallback with the now-exact v2 page kinds, then begin exact-set specialist-routing RED tests; do not modify redirects/readiness or archive this session.
 remaining_external_uncertainty:
   - "The referenced live 11-UAT matrix and correlation payloads remain absent, so exact production replay is still unavailable."
   - "Live Foundry/provider onboarding and immutable deployment parity remain external readiness evidence and were not fabricated or contacted."
 candidate_causes:
-  - "code: selection/ranking keys omit one or more immutable context dimensions and fallback synthesis does not construct citation-bearing claims"
-  - "data: retained thread entries can legitimately contain multiple page generations whose scalar facts conflict, exposing the incomplete code identity"
-and_gate: "yes — stale dominance requires both mixed retained generations in data and code that fails to exclude identity mismatches; unsupported fallback claims require supported row facts plus missing claim/citation closure logic"
+  - "code: compatibility normalization and UI/retry projections discard canonical contract fields or reuse stale client state"
+  - "data: legacy snapshots may omit hints and contain evidence counts unrelated to source coverage, while server 409 bodies may intentionally omit authorized revision metadata"
+and_gate: "no for each reported gap — each is independently reproducible from a deterministic code path; data shape selects the branch but does not need to be corrupt"
 
 ## Evidence
 
+- timestamp: 2026-09-13T12:18:00+08:00
+  observation: `normalizeCopilotSnapshotV2` copies the legacy seven-value `page_kind` directly into v2 and sets coverage to `{visible_count: evidence.length, total_count: evidence.length, complete: false}` even though every typed core adapter emits explicit `page/coverage` observations with visible/total/complete fields.
+  implication: Exact manifest routing and observed partial coverage are both lost at the same compatibility boundary; evidence cardinality is not a coverage observation.
+- timestamp: 2026-09-13T12:18:00+08:00
+  observation: The 23 integrated routes already have stable page IDs and exact v2 manifest keys, but `COPILOT_ROUTE_DISPOSITIONS` and legacy builders still use broad v1 anchors for Connections, Identity, FinOps, Services, Twin, and other route-specific adapters.
+  implication: A deterministic page-ID-to-v2-kind projection can migrate every integrated adapter without editing excluded page components.
+- timestamp: 2026-09-13T12:18:00+08:00
+  observation: Cluster 3 already added `synthesis` to `CanonicalCopilotResult` and maps cited claims into drawer narration, but the render branch displays narration and `toolCalls` together; tool result data is therefore duplicated when synthesis summarizes it.
+  implication: The independent synthesis gap is partially corrected in HEAD, leaving a focused presentation de-duplication defect rather than a missing contract field.
+- timestamp: 2026-09-13T12:18:00+08:00
+  observation: `CopilotDrawer` resets continuity only for a non-disclosing thread 404. A 409 conflict becomes a normal error turn, while the provider retains the rejected `{thread_id, thread_revision}`, so pressing Retry submits the identical stale CAS.
+  implication: Without exposing server revision metadata, fail-closed recovery is to discard local continuity on 409 and require the next explicit user action to start a new server thread.
+- timestamp: 2026-09-13T12:25:00+08:00
+  observation: The focused RED run produced 23 failures and 107 passes: 18 broad-to-exact page-kind failures, two coverage failures, one synthesis/tool duplication failure, and one stale-CAS reset failure (plus the route-disposition half of the table assertions folded into the same page-kind cases).
+  implication: All four review gaps are reproducible before production edits, while 107 neighboring tests establish a stable local baseline.
+- timestamp: 2026-09-13T12:31:00+08:00
+  observation: After the surgical implementation, the two focused Vitest files pass 130/130 tests, including all route-specific no-hint mappings, observed partial coverage, synthesis de-duplication, and threadless recovery after a stale 409.
+  implication: The targeted fixes satisfy their regression oracles; adjacent manifest, continuity, cluster 1-3, lint, and type gates remain to be checked.
+- timestamp: 2026-09-13T12:38:00+08:00
+  observation: Adjacent web manifest/continuity/integration/Inventory/Investigate tests pass 47/47; 281 adjacent Python canonical snapshot/API/evaluation/policy/parity/thread tests pass; Ruff and strict TypeScript checking pass.
+  implication: The corrections preserve clusters 1-3, backend authorization/CAS behavior, route-manifest parity, and same-tab continuity; only revert-and-reconfirm and final scope/diff review remain.
+- timestamp: 2026-09-13T12:45:00+08:00
+  observation: With only the three production files stashed, the focused suite returned to the exact 23 RED failures; restoring them returned 130/130 tests and strict TypeScript to green. The citation-adjacency assertion also passes.
+  implication: Revert-and-reconfirm proves the implementation removes all four reproduced gaps, including adjacent claim citations, rather than the environment or test fixtures masking them.
+- timestamp: 2026-09-13T12:45:00+08:00
+  observation: No Stryker dependency or configuration exists; mutation testing is unavailable. Diff review is additive or directly replaces the incorrect broad mapping/evidence-count behavior, and no excluded page, Fabric mapper, Exposure CVE page, launcher, or Patch Priorities publication/data file is touched.
+  implication: All applicable fix-acceptance signals pass and the constrained ownership boundary is preserved.
+- timestamp: 2026-09-13T12:50:00+08:00
+  observation: The five scoped web source/test files were committed atomically as `ec491f753` with the required Copilot co-author trailer.
+  implication: The independent-review corrections are durable and isolated; the active session can proceed to exact-set specialist routing without reopening canonical migration work.
 - timestamp: 2026-09-13T09:37:49+08:00
   observation: `.planning/STATE.md` declares Phase 4 active with one unrelated entry blocker.
   implication: Parent explicitly authorized this Phase 11 gap-closure exception.
@@ -218,12 +248,12 @@ and_gate: "yes — stale dominance requires both mixed retained generations in d
 
 ## Resolution
 
-root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts."
-fix: "Clusters 1-3 complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior from clusters 1-2; added normalized filter/query plus content-derived generation identity, an authorized exact selection digest, exact-match retained evidence filtering, bounded material page-fact retention outside the authoritative Inventory path, KB product/date/target preservation, deterministic no-model claim synthesis, and adjacent retained citation IDs in the drawer. Clusters 4-6 remain open."
+root_cause: "Cluster 1: v1/v2 schema drift plus an inventory-only canonical boundary bypassed the shared v2 canonicalizer. Cluster 2: integrated drawers selected legacy endpoints and omitted the retained thread revision, while the service reconciled conflicts instead of honoring caller CAS. Cluster 3: v2 dropped normalized page filters/query and retained turns had no immutable page/entity/scope/generation selection identity; the no-Foundry path emitted no direct citation-closed page claims and the KB adapter dropped provided product/target facts. Independent-review correction: the compatibility seam still copied broad v1 page kinds and fabricated coverage from evidence cardinality; the drawer rendered canonical synthesis beside duplicate tool cards and retained stale CAS continuity after 409."
+fix: "Clusters 1-3 plus independent-review corrections complete: added strict shared TypeScript v2 normalization and canonical-only drawer/CAS behavior; added normalized filter/query plus content-derived generation identity, exact retained-evidence selection, deterministic cited fallback, and KB fact retention; now maps every integrated page ID/route to its exact manifest v2 kind, aggregates only typed coverage observations with unknown 0/0 fallback, renders synthesis claims with adjacent citations while suppressing overlapping tool cards, and clears stale continuity on 409 so the next explicit attempt starts a new thread. Exact-set specialist routing remains next."
 verification:
   target_test:
     result: pass
-    details: "Three focused Python selection/fallback tests plus focused KB-adapter and drawer direct-answer tests pass."
+    details: "130 focused page-adapter/drawer tests pass after 23 targeted RED failures were reproduced."
   mutation_check:
     result: skipped
     reason_if_skipped: "No Stryker dependency or configuration exists."
@@ -231,15 +261,14 @@ verification:
   no_op_deletion:
     result: pass
     deletion_justified_by_rca: true
-    details: "Cluster 3 is additive validation/selection/synthesis/output logic; no behavior was deleted or short-circuited."
+    details: "The review fix adds exact mapping/coverage validation and conflict recovery; the only render suppression removes raw tool cards when a citation-bearing synthesis already presents the same result."
   adjacent_tests:
     result: pass
     suites_run:
-      - "184 Python canonical API, snapshot, and synthesis tests"
-      - "142 Python orchestration policy/parity, thread-store, Foundry, and compatibility tests"
-      - "104 web drawer and page-adapter tests"
-      - "52 web manifest parity, continuity, integration, Inventory, and Investigate tests"
-      - "Ruff on touched Python files"
+      - "281 Python canonical snapshot/API/evaluation/policy/parity/thread tests"
+      - "130 web drawer and page-adapter tests"
+      - "Two adjacent web runs (47 and 33 passing assertions, with manifest/continuity overlap) covering integration, Inventory, Investigate, and drawer-button behavior"
+      - "Ruff on src and tests"
       - "TypeScript `tsc --noEmit`"
   revert_and_reconfirm:
     result: pass
@@ -248,6 +277,7 @@ verification:
   guardrail_verdict: accepted
 commits:
   - "8143a0207 fix(copilot): bind retained evidence to page context"
+  - "ec491f753 fix(copilot): close canonical migration review gaps"
 files_changed:
   - src/api/routers/copilot.py
   - src/operations/orchestration_contract.py
@@ -255,6 +285,7 @@ files_changed:
   - tests/test_copilot_evaluation_v2.py
   - web/src/components/ui/CopilotDrawer.test.tsx
   - web/src/components/ui/CopilotDrawer.tsx
+  - web/src/lib/copilot/thread-context.tsx
   - web/src/lib/copilot/page-adapters.test.ts
   - web/src/lib/copilot/page-adapters.ts
   - web/src/lib/types.ts
