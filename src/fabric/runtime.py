@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from types import MethodType
 from typing import Any
@@ -23,6 +24,13 @@ from .lakehouse_manager import LakehouseManager
 from .sql_endpoint import build_sql_reader, require_exposure_ready
 from .sync_service import FabricSyncService
 from .workspace_manager import WorkspaceManager
+
+
+class FabricRuntimeMode(Enum):
+    """Select whether runtime construction serves readers or the publisher."""
+
+    READ = "read"
+    PUBLISH = "publish"
 
 
 def _select_factory_kwargs(
@@ -424,14 +432,9 @@ class FabricRuntime:
 def build_runtime(
     config: FabricRuntimeConfig,
     *,
-    require_exposure_readiness: bool = True,
+    mode: FabricRuntimeMode = FabricRuntimeMode.READ,
 ) -> FabricRuntime:
-    """Build a Fabric runtime with strict read readiness by default.
-
-    Governed publication callers may disable the pre-publication Exposure SQL
-    readiness gate so they can restore missing tables. API and other read-side
-    callers retain the fail-closed default.
-    """
+    """Build a fail-closed read runtime or a pre-readiness publisher runtime."""
     lifecycle_catalog = _lifecycle_catalog(config)
     if config.local_onelake_root is not None:
         workspace = {
@@ -536,7 +539,7 @@ def build_runtime(
             lakehouse,
             credential,
             config,
-            require_exposure_readiness=require_exposure_readiness,
+            mode=mode,
         ),
     )
     return FabricRuntime(
@@ -579,7 +582,7 @@ def _build_lakehouse_sql_reader(
     credential: Any,
     config: FabricRuntimeConfig,
     *,
-    require_exposure_readiness: bool = True,
+    mode: FabricRuntimeMode = FabricRuntimeMode.READ,
 ):
     """Build the SQL reader under generic or production Exposure policy.
 
@@ -587,7 +590,9 @@ def _build_lakehouse_sql_reader(
     ``properties.sqlEndpointProperties``. It is provisioned asynchronously,
     so generic callers and explicit Exposure rollback may receive ``None`` and
     use Delta. Enabled production Exposure instead requires every SQL
-    prerequisite and raises a sanitized readiness error during startup.
+    prerequisite and raises a sanitized readiness error during startup. The
+    authoritative publisher omits the reader until its sync has repaired that
+    readiness barrier; all default/API construction remains fail-closed.
     """
     if not config.sql_endpoint_enabled:
         return None
@@ -605,11 +610,9 @@ def _build_lakehouse_sql_reader(
     )
     if config.exposure.enabled and config.exposure.rollback_mode:
         return None
-    if (
-        config.exposure.enabled
-        and not config.exposure.rollback_mode
-        and require_exposure_readiness
-    ):
+    if config.exposure.enabled and not config.exposure.rollback_mode:
+        if mode is FabricRuntimeMode.PUBLISH:
+            return None
         return require_exposure_ready(endpoint, credential)
     return build_sql_reader(endpoint, credential)
 

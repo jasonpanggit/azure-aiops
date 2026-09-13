@@ -533,7 +533,7 @@ def activate_runtime(
     reporter.start("activation")
     try:
         from fabric.config import FabricRuntimeConfig
-        from fabric.runtime import build_runtime
+        from fabric.runtime import FabricRuntimeMode, build_runtime
 
         exact_generation = str(replay_source_run_id)
         source_store: DatasetStore | None = None
@@ -594,7 +594,7 @@ def activate_runtime(
             )
 
         reporter.start("fabric_publication")
-        runtime = build_runtime(config, require_exposure_readiness=False)
+        runtime = build_runtime(config, mode=FabricRuntimeMode.PUBLISH)
         if source_store is not None:
             # Recheck the exact immutable input after runtime construction and
             # immediately before Fabric mapping. Remote DatasetStore publish
