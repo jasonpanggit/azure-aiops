@@ -930,6 +930,11 @@ class OrchestrationService:
             dict.fromkeys(
                 [
                     *canonical_snapshot.uncertainty,
+                    *(
+                        ["Conflicting page evidence was excluded from synthesis."]
+                        if canonical_snapshot.conflicts
+                        else []
+                    ),
                     *canonical_snapshot.insufficiency_reasons,
                 ]
             )
