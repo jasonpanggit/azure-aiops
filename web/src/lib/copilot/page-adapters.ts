@@ -2796,7 +2796,6 @@ const COMPLIANCE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which governance risks or exceptions need review?",
     specialistId: "governance",
-    tool: "risk_context",
     toolArguments: {},
   },
 ];
@@ -2878,7 +2877,6 @@ const DEFENDER_POSTURE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which attack paths reach reachable assets?",
     specialistId: "vulnerability",
-    tool: "cve_attack_path",
     toolArguments: {},
   },
   {
@@ -2991,19 +2989,16 @@ const GOVERNANCE_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Who owns governance decisions in this scope?",
     specialistId: "governance",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Where are policy or ownership gaps?",
     specialistId: "governance",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Which services need governance attention?",
     specialistId: "governance",
-    tool: "impact_context",
     toolArguments: {},
   },
 ];
@@ -3013,19 +3008,16 @@ const IDENTITY_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which principals hold the widest access?",
     specialistId: "identity_access",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Who owns access in this business service?",
     specialistId: "identity_access",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Search for stale or unused access.",
     specialistId: "identity_access",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -3035,19 +3027,16 @@ const FINOPS_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services own the most savings?",
     specialistId: "finops",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "Where is spend attribution missing or uncertain?",
     specialistId: "finops",
-    tool: "risk_context",
     toolArguments: {},
   },
   {
     label: "Search cost opportunities by owner.",
     specialistId: "finops",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -3063,13 +3052,11 @@ const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which services are impacted by resource pressure?",
     specialistId: "resource_health_observability",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
     label: "Search resource utilization anomalies.",
     specialistId: "resource_health_observability",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -3087,13 +3074,11 @@ const SITUATION_DETAIL_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services are affected?",
     specialistId: "incident",
-    tool: "business_service_context",
     toolArguments: {},
   },
   {
     label: "What is the blast radius?",
     specialistId: "incident",
-    tool: "impact_context",
     toolArguments: {},
   },
 ];
@@ -3110,13 +3095,11 @@ const SERVICES_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What is the operational impact across services?",
     specialistId: "resource_health_observability",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
     label: "Find a specific service.",
     specialistId: "resource_health_observability",
-    tool: "search",
     toolArguments: {},
   },
 ];
@@ -3129,19 +3112,19 @@ function serviceDetailStarters(name: string): CoreCopilotStarterQuestion[] {
       label: `Summarize the operational health of ${name}.`,
       specialistId: "resource_health_observability",
       tool: "incidents",
-      toolArguments: { business_service: name },
+      toolArguments: {},
     },
     {
       label: `What depends on ${name}?`,
       specialistId: "resource_health_observability",
       tool: "impact_context",
-      toolArguments: { business_service: name },
+      toolArguments: { subject: name },
     },
     {
       label: `Search related evidence for ${name}.`,
       specialistId: "resource_health_observability",
       tool: "search",
-      toolArguments: { q: name },
+      toolArguments: { query: name },
     },
   ];
 }
@@ -3152,7 +3135,6 @@ const TWIN_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which business services are affected if this changes?",
     specialistId: "network",
-    tool: "impact_context",
     toolArguments: {},
   },
   {
@@ -3164,7 +3146,6 @@ const TWIN_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What depends on this hub or resource?",
     specialistId: "network",
-    tool: "hub_dependents",
     toolArguments: {},
   },
 ];
@@ -4529,8 +4510,7 @@ function kbDetailStarters(input: KbDetailCopilotPageInput): CoreCopilotStarterQu
     {
       label: `Explain ${kbId} and the CVEs it remediates`,
       specialistId: "vulnerability",
-      tool: "cve_detail",
-      toolArguments: { kb_id: kbId },
+      toolArguments: {},
     },
     {
       label: `What should we patch first for ${kbId}?`,
