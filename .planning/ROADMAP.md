@@ -211,6 +211,8 @@ Plans:
 **Goal:** Reduce Fabric publication and request-time load by separating domain projection from atomic publication, retiring legacy generation remapping from production reads, and pushing inventory scope/filter/count/pagination into the Fabric-backed read path.
 **Requirements:** MED-11, MED-12, MED-13
 **Depends on:** Phase 03.1, Phase 7, Phase 9, Phase 13
+**Planning status:** 11/11 plans verified; planning completion does not authorize execution.
+**Execution status:** BLOCKED — `/gsd-execute-phase 03.7` must hard-stop in Plan 01 before any file change until every dependency has all required summaries and passing phase verification evidence. Phase 03.1 remains blocked on the exact live Defender digest-to-workload evidence after successful Fabric publication (03.1-19/20 incomplete); Phase 7 lacks passing phase verification evidence; Phase 9 lacks 09-10/09-11 summary evidence; Phase 13 remains incomplete and lacks final verification consistent with its final plan set. No dependency is waived.
 **Success Criteria** (what must be TRUE):
 
   1. Fabric publication stages and promotes versioned domain products without running unrelated change, predictive, incident, or other domain intelligence pipelines inside the publication transaction.
@@ -218,7 +220,7 @@ Plans:
   3. Inventory list and lookup operations push authorized scope, filters, ordering, counts, and pagination into the Fabric-backed query adapter without a fixed 10,000-row pre-pagination ceiling.
   4. Existing immutable observations, generation replay, active-pointer rollback, ontology consistency, source status, Exposure Gold contracts, and bounded PageSnapshot behavior remain intact.
 
-**Plans:** 10 plans
+**Plans:** 0/11 plans executed (11/11 planned; execution blocked by prerequisites)
 Plans:
 
 - [ ] 03.7-01-PLAN.md — Create Wave 0 publication, probe, query-scale, and benchmark contracts
@@ -231,6 +233,7 @@ Plans:
 - [ ] 03.7-08-PLAN.md — Approve deployed evidence, observe duplicate writes, and record per-alias dispositions
 - [ ] 03.7-09-PLAN.md — Migrate onboarding identity consumers to generation-pinned complete scans
 - [ ] 03.7-10-PLAN.md — Apply alias dispositions and prove retired aliases receive no writes
+- [ ] 03.7-11-PLAN.md — Qualify the immutable deployed baseline in the same environment and generate complete cutover/scale/rollback evidence
 **UI hint:** no
 
 ### Phase 4: Domain Coverage and Operational Twin
