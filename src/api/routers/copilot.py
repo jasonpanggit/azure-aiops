@@ -1109,13 +1109,13 @@ def investigate_canonical(
         # byte/list bound. Resolve every domain identity against the server's
         # semantic index before either planning or retained synthesis.
         canonical_browser_snapshot = (
-            None
-            if browser_snapshot.page_kind == "inventory"
-            else canonicalize_snapshot_v2(
+            canonicalize_snapshot_v2(
                 browser_snapshot,
                 effective_scope=scope,
                 domain_resolver=resolve_domain_entity,
             )
+            if browser_snapshot.page_kind != "inventory"
+            else None
         )
         planning_entities: list[AzureEntityRef | DomainEntityRef] = []
         planning_entity_ids: set[str] = set()
@@ -1192,10 +1192,11 @@ def investigate_canonical(
                 "material_claims": [],
             }
         )
-        if canonical_browser_snapshot is None:
-            canonicalize_snapshot_v2(
+        if browser_snapshot.page_kind == "inventory":
+            canonical_browser_snapshot = canonicalize_snapshot_v2(
                 planning_snapshot,
                 effective_scope=scope,
+                domain_resolver=resolve_domain_entity,
             )
     except (TypeError, ValueError) as exc:
         raise ApiError(

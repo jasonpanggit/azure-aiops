@@ -931,6 +931,8 @@ def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
 
 
 def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() -> None:
+    from operations.page_context import canonicalize_snapshot_v2
+
     entity = DomainEntityRef(
         type="domain",
         namespace="vulnerability",
@@ -986,11 +988,22 @@ def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() ->
         executive_agent=None,
     )
 
+    canonical = canonicalize_snapshot_v2(
+        request.snapshot,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        domain_resolver=lambda item: {
+            "namespace": "vulnerability",
+            "kind": "kb",
+            "source_key": item.source_key,
+            "scope": {"subscription": "sub-a"},
+        },
+    )
     turn = service.execute_turn(
         request,
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        canonical_selection_snapshot=canonical,
     )
 
     assert turn.synthesis.status == "degraded"
@@ -1046,6 +1059,8 @@ def _browser_claim_snapshot(
 def _execute_browser_claim_snapshot(
     snapshot: EvidenceSnapshotV2,
 ) -> Any:
+    from operations.page_context import canonicalize_snapshot_v2
+
     request = InvestigationRequest(
         question="Summarize the reported totals and names.",
         requested_scope={"subscription": ["sub-a"]},
@@ -1063,12 +1078,23 @@ def _execute_browser_claim_snapshot(
         thread_store=InvestigationThreadStore(),
         executive_agent=None,
     )
+    canonical = canonicalize_snapshot_v2(
+        snapshot,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        domain_resolver=lambda item: {
+            "namespace": item.namespace,
+            "kind": item.kind,
+            "source_key": item.source_key,
+            "scope": {"subscription": "sub-a"},
+        },
+    )
     return service.execute_turn(
         request,
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
         selection_snapshot=snapshot,
+        canonical_selection_snapshot=canonical,
     )
 
 
