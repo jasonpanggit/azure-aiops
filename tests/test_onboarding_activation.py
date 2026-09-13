@@ -475,7 +475,13 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         "fabric.config.FabricRuntimeConfig.load",
         staticmethod(lambda _path: config),
     )
-    monkeypatch.setattr("fabric.runtime.build_runtime", lambda _config: runtime)
+    runtime_options: dict[str, object] = {}
+
+    def build_publication_runtime(_config, **kwargs):
+        runtime_options.update(kwargs)
+        return runtime
+
+    monkeypatch.setattr("fabric.runtime.build_runtime", build_publication_runtime)
 
     result = activate_runtime(
         service,
@@ -504,6 +510,7 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert replay_source_run_ids == [
         str(result["combined_snapshot"]["runId"])
     ]
+    assert runtime_options == {"require_exposure_readiness": False}
 
 
 def test_activate_runtime_replays_exact_generation_without_upstream_work(
@@ -567,7 +574,10 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
         "fabric.config.FabricRuntimeConfig.load",
         staticmethod(lambda _path: config),
     )
-    monkeypatch.setattr("fabric.runtime.build_runtime", lambda _config: runtime)
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        lambda _config, **_kwargs: runtime,
+    )
     events: list[dict[str, object]] = []
 
     result = activate_runtime(
@@ -656,7 +666,7 @@ def test_activate_runtime_reverifies_exact_generation_before_sync(
         },
     )()
 
-    def build_runtime_and_tamper(_config):
+    def build_runtime_and_tamper(_config, **_kwargs):
         row = json.loads(dataset_path.read_text())
         row["observed_at"] = "2026-09-10T00:01:00Z"
         dataset_path.write_text(json.dumps(row) + "\n")

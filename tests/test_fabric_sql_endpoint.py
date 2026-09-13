@@ -432,6 +432,15 @@ def test_runtime_requires_readiness_only_for_enabled_nonrollback_exposure(
         )
         is required_reader
     )
+    assert (
+        fabric_runtime._build_lakehouse_sql_reader(
+            lakehouse,
+            object(),
+            enabled_config,
+            require_exposure_readiness=False,
+        )
+        is optional_reader
+    )
 
     rollback_config = _write_fabric_config(
         tmp_path / "rollback.yaml",

@@ -594,7 +594,7 @@ def activate_runtime(
             )
 
         reporter.start("fabric_publication")
-        runtime = build_runtime(config)
+        runtime = build_runtime(config, require_exposure_readiness=False)
         if source_store is not None:
             # Recheck the exact immutable input after runtime construction and
             # immediately before Fabric mapping. Remote DatasetStore publish
