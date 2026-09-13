@@ -33,6 +33,22 @@ output "foundry_project_endpoint" {
   value       = local.foundry_project_endpoint
 }
 
+output "copilot_provider_environment" {
+  description = "Non-secret sourceable Operations Copilot provider and rollout environment. Empty provider values mean the corresponding live gate remains BLOCKED."
+  value = {
+    FOUNDRY_PROJECT_ENDPOINT             = local.foundry_project_endpoint
+    OPERATIONS_MCP_SERVER_URL            = var.enable_apim ? local.foundry_mcp_server_url : ""
+    AZURE_MCP_SERVER_URL                 = var.enable_apim ? local.foundry_azure_mcp_server_url : ""
+    MCP_APIM_AUDIENCE                    = var.enable_apim ? local.apim_audience : ""
+    FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path
+    FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
+    FOUNDRY_AZURE_MCP_CONNECTION_ID      = var.enable_apim ? azapi_resource.foundry_azure_mcp_connection[0].id : ""
+    AIOPS_COPILOT_ROLLOUT_MODE           = var.copilot_rollout_mode
+    AIOPS_COPILOT_CANARY_PERCENTAGE      = tostring(local.copilot_canary_percentage)
+    AIOPS_COPILOT_ROLLBACK_MODE          = local.copilot_rollback_mode
+  }
+}
+
 output "foundry_agent_name" {
   description = "Prompt agent backing the Operations Copilot (FOUNDRY_AGENT_NAME)."
   value       = var.foundry_agent_name

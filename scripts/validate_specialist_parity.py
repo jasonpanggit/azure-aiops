@@ -76,6 +76,13 @@ CONTAINER_MANIFEST_PATH = "/app/src/operations/specialists.v1.json"
 
 OPERATIONS_SERVER_LABEL = "operations-mcp"
 AZURE_SERVER_LABEL = "azure-mcp"
+CONNECTION_LABELS = (OPERATIONS_SERVER_LABEL, AZURE_SERVER_LABEL)
+PROJECT_CONNECTION_ID_PATTERN = re.compile(
+    r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
+    r"microsoft\.cognitiveservices/accounts/[^/]+/projects/[^/]+/"
+    r"connections/[^/]+$",
+    re.IGNORECASE,
+)
 
 # Credential-bearing variables are only ever tested for presence. Their values
 # are never read into the report, logged, or echoed.
@@ -431,6 +438,23 @@ def _check_rollout_controls() -> dict[str, Any]:
     if 'variable "copilot_canary_percentage"' not in variables_source:
         failures.append(_failure("canary_percentage_variable_missing"))
 
+    runtime_source = _read("src/operations/maf_orchestrator.py")
+    route_source = "\n".join(
+        (
+            _read("src/api/routers/copilot.py"),
+            _read("src/api/routers/multi_agent.py"),
+        )
+    )
+    for token in (
+        "AIOPS_COPILOT_ROLLOUT_MODE",
+        "AIOPS_COPILOT_CANARY_PERCENTAGE",
+        "AIOPS_COPILOT_ROLLBACK_MODE",
+    ):
+        if token not in runtime_source:
+            failures.append(_failure("rollout_runtime_input_missing", token=token))
+    if "canonical_orchestration_enabled(stable_key=principal.subject)" not in route_source:
+        failures.append(_failure("rollout_request_boundary_missing"))
+
     # Legacy page-anchored planners must remain selectable for rollback
     # throughout Phase 11; this plan never deletes them.
     if '"deterministic"' not in variables_source:
@@ -454,6 +478,43 @@ def _check_rollout_controls() -> dict[str, Any]:
         failures.append(_failure("runbook_missing_retirement_gate"))
 
     return _check("rollout_controls", failures)
+
+
+def _check_provider_environment() -> dict[str, Any]:
+    """Prove deterministic provider values have one sourceable output."""
+
+    failures: list[dict[str, Any]] = []
+    outputs = _read("infra/terraform/outputs.tf")
+    foundry = _read("infra/terraform/foundry.tf")
+    exporter_path = REPO_ROOT / "scripts" / "export_copilot_provider_env.py"
+    required = (
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "OPERATIONS_MCP_SERVER_URL",
+        "AZURE_MCP_SERVER_URL",
+        "MCP_APIM_AUDIENCE",
+        "FOUNDRY_CANDIDATE_MAPPING",
+        "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
+        "FOUNDRY_AZURE_MCP_CONNECTION_ID",
+        "AIOPS_COPILOT_ROLLOUT_MODE",
+        "AIOPS_COPILOT_CANARY_PERCENTAGE",
+        "AIOPS_COPILOT_ROLLBACK_MODE",
+    )
+    if 'output "copilot_provider_environment"' not in outputs:
+        failures.append(_failure("provider_environment_output_missing"))
+    for token in required:
+        if token not in outputs:
+            failures.append(_failure("provider_environment_value_missing", token=token))
+    if not exporter_path.is_file():
+        failures.append(_failure("provider_environment_exporter_missing"))
+    for connection in (
+        "azapi_resource.foundry_mcp_connection[0].id",
+        "azapi_resource.foundry_azure_mcp_connection[0].id",
+    ):
+        if f"project_connection_id = {connection}" not in foundry:
+            failures.append(
+                _failure("terraform_project_connection_not_immutable")
+            )
+    return _check("provider_environment", failures)
 
 
 def contract_models(manifest) -> list[str]:
@@ -541,6 +602,7 @@ def run_offline() -> dict[str, Any]:
         _check_model_contract(manifest),
         _check_package_contents(),
         _check_rollout_controls(),
+        _check_provider_environment(),
     ]
     failures = [failure for check in checks for failure in check["failures"]]
     models = contract_models(manifest)
@@ -645,18 +707,86 @@ def _agent_allowed_tools(definition: Any) -> dict[str, tuple[str, ...]]:
     return granted
 
 
+def _agent_connection_ids(definition: Any) -> dict[str, str]:
+    """Return each governed MCP label's exact project connection identity."""
+
+    connections = {label: "" for label in CONNECTION_LABELS}
+    for tool in (definition or {}).get("tools", []) or []:
+        if not isinstance(tool, dict) or tool.get("type") != "mcp":
+            continue
+        label = str(tool.get("server_label", ""))
+        if label in connections:
+            connections[label] = str(tool.get("project_connection_id", "")).strip()
+    return connections
+
+
+def compare_connection_bindings(
+    *,
+    specialist_id: str,
+    expected: dict[str, str],
+    actual: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Require every MCP tool definition to use its governed connection ID."""
+
+    failures: list[dict[str, Any]] = []
+    for server in CONNECTION_LABELS:
+        expected_id = expected.get(server, "").strip().rstrip("/").casefold()
+        actual_id = actual.get(server, "").strip().rstrip("/").casefold()
+        if not expected_id or actual_id != expected_id:
+            failures.append(
+                _failure(
+                    "project_connection_mismatch",
+                    specialist=specialist_id,
+                    server=server,
+                )
+            )
+    return failures
+
+
 def _secure_service_urls(env: dict[str, str]) -> list[dict[str, Any]]:
     """Reject credential-bearing requests to non-HTTPS service URLs."""
 
     failures: list[dict[str, Any]] = []
-    for variable, service in (
-        ("FOUNDRY_PROJECT_ENDPOINT", FOUNDRY_SERVICE),
-        ("OPERATIONS_MCP_SERVER_URL", OPERATIONS_SERVER_LABEL),
-        ("AZURE_MCP_SERVER_URL", AZURE_SERVER_LABEL),
-    ):
-        parsed = urllib.parse.urlsplit(env[variable])
-        if parsed.scheme.casefold() != "https" or not parsed.netloc:
+    expected_paths = (
+        ("FOUNDRY_PROJECT_ENDPOINT", FOUNDRY_SERVICE, None),
+        ("OPERATIONS_MCP_SERVER_URL", OPERATIONS_SERVER_LABEL, "/operations-mcp"),
+        ("AZURE_MCP_SERVER_URL", AZURE_SERVER_LABEL, "/azure-mcp"),
+    )
+    for variable, service, expected_path in expected_paths:
+        try:
+            parsed = urllib.parse.urlsplit(env[variable])
+            port = parsed.port
+        except ValueError:
+            parsed = urllib.parse.SplitResult("", "", "", "", "")
+            port = None
+        path_valid = (
+            re.fullmatch(r"/api/projects/[^/]+/?", parsed.path) is not None
+            if expected_path is None
+            else parsed.path.rstrip("/") == expected_path
+        )
+        if (
+            parsed.scheme.casefold() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+            or parsed.query
+            or parsed.fragment
+            or not path_valid
+        ):
             failures.append(_failure("insecure_service_url", service=service))
+    operation_host = urllib.parse.urlsplit(
+        env["OPERATIONS_MCP_SERVER_URL"]
+    ).hostname
+    azure_host = urllib.parse.urlsplit(env["AZURE_MCP_SERVER_URL"]).hostname
+    if (
+        operation_host
+        and azure_host
+        and operation_host.casefold() != azure_host.casefold()
+    ):
+        failures.append(
+            _failure("insecure_service_url", service=AZURE_SERVER_LABEL)
+        )
     return failures
 
 
@@ -692,7 +822,7 @@ def _live_failure(error: Exception, *, service: str) -> dict[str, Any]:
 
 def _candidate_mapping(
     path: str,
-) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+) -> tuple[dict[str, dict[str, str]], dict[str, str], dict[str, str]]:
     """Load exact provider IDs emitted by the candidate rollout."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -723,10 +853,29 @@ def _candidate_mapping(
         raise ValueError("candidate coordinator has no agent name")
     if not isinstance(coordinator_version, str) or not coordinator_version.strip():
         raise ValueError("candidate coordinator has no provider version id")
+    candidate_connections = payload.get("connections")
+    if not isinstance(candidate_connections, dict):
+        raise TypeError("candidate mapping has no connections map")
+    if set(candidate_connections) != set(CONNECTION_LABELS):
+        raise ValueError("candidate mapping must contain the exact connection labels")
+    connections: dict[str, str] = {}
+    for label in CONNECTION_LABELS:
+        connection = candidate_connections[label]
+        if not isinstance(connection, dict):
+            raise TypeError("candidate connection entry is malformed")
+        connection_id = connection.get("project_connection_id")
+        if not isinstance(connection_id, str):
+            raise TypeError("candidate connection id is malformed")
+        normalized = connection_id.strip().rstrip("/")
+        if not PROJECT_CONNECTION_ID_PATTERN.fullmatch(normalized):
+            raise ValueError("candidate mapping has no immutable project connection id")
+        connections[label] = normalized
+    if len({value.casefold() for value in connections.values()}) != len(connections):
+        raise ValueError("candidate project connection ids must be distinct")
     return result, {
         "agent_name": coordinator_name.strip(),
         "provider_version_id": coordinator_version.strip(),
-    }
+    }, connections
 
 
 def _entry_provider_version_id(entry: dict[str, Any]) -> str:
@@ -788,7 +937,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     api_version = env.get("FOUNDRY_API_VERSION", "v1")
 
     try:
-        candidate_agents, candidate_coordinator = _candidate_mapping(
+        candidate_agents, candidate_coordinator, candidate_connections = _candidate_mapping(
             env["FOUNDRY_CANDIDATE_MAPPING"]
         )
     except (OSError, ValueError, TypeError) as error:
@@ -806,6 +955,38 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             "specialists": [],
             "checks": [_check("live_configuration", [failure])],
             "failures": [failure],
+        }
+
+    candidate_failures: list[dict[str, Any]] = []
+    extra_candidate_ids = set(candidate_agents) - set(manifest.specialist_ids)
+    if extra_candidate_ids:
+        candidate_failures.append(
+            _failure(
+                "candidate_specialist_ids_mismatch",
+                specialists=sorted(extra_candidate_ids),
+            )
+        )
+    for specialist in manifest.specialists:
+        candidate = candidate_agents.get(specialist.id)
+        if candidate is not None and candidate["agent_name"] != _deployed_agent_name(
+            specialist, env
+        ):
+            candidate_failures.append(
+                _failure(
+                    "candidate_agent_identity_mismatch",
+                    specialist=specialist.id,
+                    server=FOUNDRY_SERVICE,
+                )
+            )
+    if candidate_failures:
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "candidate_mapping_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_configuration", candidate_failures)],
+            "failures": candidate_failures,
         }
 
     try:
@@ -862,6 +1043,50 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 "checks": [_check("live_catalogs", [failure])],
                 "failures": [failure],
             }
+
+    try:
+        connection_payload = _get_json(
+            f"{endpoint}/connections?api-version={api_version}",
+            {"Authorization": "Bearer " + foundry_token},
+        )
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        failure = _live_failure(error, service=FOUNDRY_SERVICE)
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_auth_or_service_failure",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+    live_connection_ids = {
+        str(entry.get("id", "")).strip().rstrip("/").casefold()
+        for entry in (connection_payload or {}).get("value", []) or []
+        if isinstance(entry, dict) and entry.get("id")
+    }
+    missing_connections = [
+        label
+        for label, connection_id in candidate_connections.items()
+        if connection_id.casefold() not in live_connection_ids
+    ]
+    if missing_connections:
+        failures = [
+            _failure(
+                "governed_connection_not_onboarded",
+                server=label,
+            )
+            for label in missing_connections
+        ]
+        return {
+            "mode": "live",
+            "status": "blocked",
+            "reason": "governed_connections_not_onboarded",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", failures)],
+            "failures": failures,
+        }
 
     failures: list[dict[str, Any]] = []
     observed: list[dict[str, Any]] = []
@@ -978,6 +1203,13 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             )
 
         granted = _agent_allowed_tools(definition)
+        failures.extend(
+            compare_connection_bindings(
+                specialist_id=specialist.id,
+                expected=candidate_connections,
+                actual=_agent_connection_ids(definition),
+            )
+        )
         failures.extend(
             compare_grants(
                 specialist_id=specialist.id,

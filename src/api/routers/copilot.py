@@ -673,7 +673,7 @@ def investigate(
     question = payload.question.strip()
     started = time.monotonic()
 
-    if canonical_orchestration_enabled():
+    if canonical_orchestration_enabled(stable_key=principal.subject):
         return _investigate_via_canonical(
             question,
             started=started,
@@ -981,7 +981,7 @@ def investigate_context(
         ) from exc
     try:
         if (
-            canonical_orchestration_enabled()
+            canonical_orchestration_enabled(stable_key=principal.subject)
             and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
         ):
             ledger = _run_context_via_canonical(
@@ -999,7 +999,7 @@ def investigate_context(
                 principal_subject=principal.subject,
                 principal=principal,
             )
-            if canonical_orchestration_enabled():
+            if canonical_orchestration_enabled(stable_key=principal.subject):
                 ledger.setdefault("warnings", []).append(
                     f"Canonical context adapter unavailable for {snapshot.page_kind}; "
                     "used the explicit legacy rollback path."
@@ -1246,7 +1246,7 @@ def history(session_id: str, context: Context, scope: ReadScope, principal: Curr
                 principal_subject=principal.subject,
                 scope=scope,
             )
-            if canonical_orchestration_enabled()
+            if canonical_orchestration_enabled(stable_key=principal.subject)
             else conversation_store().history(session_id, principal.subject)
         )
     except ThreadStoreUnavailable as exc:

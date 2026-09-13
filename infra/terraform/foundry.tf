@@ -206,7 +206,7 @@ locals {
     server_label          = "operations-mcp"
     server_url            = local.foundry_mcp_server_url
     require_approval      = "never"
-    project_connection_id = local.foundry_mcp_connection_name
+    project_connection_id = azapi_resource.foundry_mcp_connection[0].id
   } : null
 
   # MCP tool-call config for the standalone Azure MCP Server (@azure/mcp),
@@ -217,7 +217,7 @@ locals {
     server_label          = "azure-mcp"
     server_url            = local.foundry_azure_mcp_server_url
     require_approval      = "never"
-    project_connection_id = local.foundry_azure_mcp_connection_name
+    project_connection_id = azapi_resource.foundry_azure_mcp_connection[0].id
   } : null
 
   # Knowledge-search tool-call config: Azure AI Search wired as a first-class
@@ -346,6 +346,11 @@ locals {
   # the synthetic "<release>.<contract version>" stamp projected above.
   # ---------------------------------------------------------------------------
   foundry_promotion_artifact_path = var.foundry_specialist_promotion_artifact
+  foundry_candidate_artifact_path = (
+    local.foundry_promotion_artifact_path == ""
+    ? ""
+    : "${abspath(local.foundry_promotion_artifact_path)}.candidate"
+  )
   foundry_promotion_artifact_present = (
     local.foundry_promotion_artifact_path != "" &&
     fileexists(local.foundry_promotion_artifact_path)
@@ -1045,13 +1050,20 @@ resource "terraform_data" "foundry_agent" {
       # that a LATER plan reads. Nothing written here can activate in this
       # apply.
       FOUNDRY_PROMOTION_RECORD           = local.foundry_promotion_artifact_path
+      FOUNDRY_CANDIDATE_RECORD           = local.foundry_candidate_artifact_path
       FOUNDRY_SPECIALIST_MANIFEST_DIGEST = local.specialist_manifest_digest
       FOUNDRY_SPECIALIST_RELEASE         = var.foundry_specialist_release
       FOUNDRY_MODEL_DEPLOYMENT_NAME      = local.foundry_model_deployment_name
       OPERATIONS_MCP_SERVER_URL          = local.foundry_mcp_server_url == null ? "" : local.foundry_mcp_server_url
       AZURE_MCP_SERVER_URL               = local.foundry_azure_mcp_server_url == null ? "" : local.foundry_azure_mcp_server_url
       MCP_APIM_AUDIENCE                  = local.apim_audience
-      FOUNDRY_ROLLBACK_ROTATION          = var.foundry_specialist_rollback_rotation
+      FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = (
+        var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
+      )
+      FOUNDRY_AZURE_MCP_CONNECTION_ID = (
+        var.enable_apim ? azapi_resource.foundry_azure_mcp_connection[0].id : ""
+      )
+      FOUNDRY_ROLLBACK_ROTATION = var.foundry_specialist_rollback_rotation
     }
   }
 
