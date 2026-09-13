@@ -1421,7 +1421,8 @@
       "page_kind": "network",
       "question": "Are there CVEs on the hosts behind this hub?",
       "expect_specialists": [
-        "network"
+        "network",
+        "vulnerability"
       ],
       "expect_grants": [
         "application_context",
@@ -1440,7 +1441,8 @@
       "page_kind": "network",
       "question": "Who owns this and is there an approval?",
       "expect_specialists": [
-        "network"
+        "network",
+        "governance"
       ],
       "expect_grants": [
         "application_context",
@@ -1459,7 +1461,8 @@
       "page_kind": "vulnerability",
       "question": "How do I remediate this exposure safely with a rollback?",
       "expect_specialists": [
-        "vulnerability"
+        "vulnerability",
+        "remediation"
       ],
       "expect_grants": [
         "advisor_recommendation_list",
@@ -1498,7 +1501,8 @@
       "page_kind": "finops",
       "question": "Is the cost spike explained by a resource-health incident?",
       "expect_specialists": [
-        "finops"
+        "finops",
+        "resource_health_observability"
       ],
       "expect_grants": [
         "advisor_recommendation_list",

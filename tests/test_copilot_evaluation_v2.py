@@ -10,6 +10,7 @@ principal, a resource id, or anything resembling hidden reasoning.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 
@@ -32,6 +33,7 @@ from operations.investigation_thread_store import (
     ThreadRevisionConflict,
 )
 from operations.orchestration_contract import (
+    AzureEntityRef,
     CandidatePlan,
     DomainEntityRef,
     EvidenceSnapshotV2,
@@ -1105,6 +1107,73 @@ def test_conflicting_browser_totals_are_excluded_with_explicit_uncertainty() -> 
     )
 
 
+@pytest.mark.parametrize(
+    "entities",
+    [
+        (
+            AzureEntityRef(
+                type="azure",
+                resource_id=(
+                    "/subscriptions/SUB-A/resourceGroups/Payments/providers/"
+                    "Microsoft.Compute/virtualMachines/VM-1"
+                ),
+            ),
+            AzureEntityRef(
+                type="azure",
+                resource_id=(
+                    "/subscriptions/sub-a/resourcegroups/payments/providers/"
+                    "microsoft.compute/virtualmachines/vm-1"
+                ),
+            ),
+        ),
+        (
+            DomainEntityRef(
+                type="domain",
+                namespace="Vulnerability",
+                kind="Summary",
+                source_key="Estate",
+            ),
+            DomainEntityRef(
+                type="domain",
+                namespace="vulnerability",
+                kind="summary",
+                source_key="estate",
+            ),
+        ),
+    ],
+    ids=("arm-case-alias", "domain-case-alias"),
+)
+def test_canonical_entity_alias_conflicts_are_excluded_with_uncertainty(
+    entities,
+) -> None:
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"alias-total-{index}",
+            source="exposure/summary",
+            source_key="estate",
+            entity=entity,
+            claim_type="estate-total",
+            selected=True,
+            direct=True,
+            quality="high",
+            data={"total_count": total},
+        )
+        for index, (entity, total) in enumerate(zip(entities, (7, 11), strict=True))
+    ]
+
+    turn = _execute_browser_claim_snapshot(_browser_claim_snapshot(rows))
+
+    assert turn.synthesis.claims == []
+    assert not any(
+        citation.citation_id.startswith("retained:")
+        for citation in turn.result.citations
+    )
+    assert (
+        "Conflicting page evidence was excluded from synthesis."
+        in turn.result.uncertainty
+    )
+
+
 def test_incomplete_completeness_required_claim_is_excluded_and_never_high_confidence() -> None:
     rows = [
         SnapshotEvidence(
@@ -1612,6 +1681,28 @@ def test_corpus_expected_specialists_are_manifest_ids():
             assert sid in manifest_ids, f"{case['case_id']} routes to unknown specialist {sid}"
 
 
+def test_reviewed_cross_domain_cases_keep_multi_specialist_gold_sets():
+    payload = json.loads(_CASES_PATH.read_text())
+    by_id = {case["case_id"]: case for case in payload["cases"]}
+
+    assert by_id["cross.net.cve"]["expect_specialists"] == [
+        "network",
+        "vulnerability",
+    ]
+    assert by_id["cross.net.gov"]["expect_specialists"] == [
+        "network",
+        "governance",
+    ]
+    assert by_id["cross.vuln.rem"]["expect_specialists"] == [
+        "vulnerability",
+        "remediation",
+    ]
+    assert by_id["cross.cost.health"]["expect_specialists"] == [
+        "finops",
+        "resource_health_observability",
+    ]
+
+
 # --- thresholds are exact and machine-readable ----------------------------
 
 def test_thresholds_are_versioned_and_exact():
@@ -1929,6 +2020,63 @@ def test_release_case_selection_uses_the_external_versioned_corpus():
     assert [case.case_id for case in selected] == ["scope.cross.principal"]
     with pytest.raises(ValueError, match="unknown case id"):
         evaluate_agents.select_cases(cases, ["legacy-inline-case"])
+
+
+def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "integrated"
+    ]
+    requests: list[tuple[str, dict[str, Any]]] = []
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        requests.append(
+            (
+                request.full_url,
+                json.loads(request.data.decode()),
+            )
+        )
+        return io.BytesIO(b'{"data": {}}')
+
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+
+    for case in cases:
+        evaluate_agents._investigate("https://example.invalid", "token", case)
+
+    assert len(requests) == len(cases)
+    for case, (url, body) in zip(cases, requests, strict=True):
+        assert url == "https://example.invalid/api/v1/copilot/investigations"
+        assert body["question"] == case.question
+        assert body["snapshot"]["version"] == "2"
+        assert body["snapshot"]["page_kind"] == case.page_kind
+        assert body["snapshot"]["page_id"] == f"eval-{case.case_id}"
+        assert body["snapshot"]["selected_entities"] == []
+        assert body["snapshot"]["evidence"] == []
+        assert body["snapshot"]["material_claims"] == []
+
+
+def test_every_integrated_fixture_is_snapshot_schema_gated():
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.disposition == "integrated"
+    ]
+
+    for case in cases:
+        evidence = evaluate_agents.result_to_release_evidence(
+            evaluate_agents.Result(
+                case_id=case.case_id,
+                ok=True,
+                specialists=list(case.expect_specialists),
+                expected_specialists=list(case.expect_specialists),
+            ),
+            case,
+        )
+        assert evidence["snapshot_schema_ok"] is True, case.case_id
 
 
 def test_main_release_run_executes_cases_from_the_external_corpus(

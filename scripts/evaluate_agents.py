@@ -372,12 +372,22 @@ class Result:
 def _page_safety_ok(page_kind: str, specialists: list[str]) -> bool:
     """Return whether every selected specialist is authorized for the page."""
 
+    from operations.maf_orchestrator import reviewed_specialists_for_page
+
     manifest = json.loads(DEFAULT_MANIFEST.read_text())
-    allowed = {
-        str(specialist["id"])
-        for specialist in manifest["specialists"]
-        if page_kind in specialist.get("page_mappings", [])
+    page_specialists = {
+        candidate_page: tuple(
+            str(specialist["id"])
+            for specialist in manifest["specialists"]
+            if candidate_page in specialist.get("page_mappings", [])
+        )
+        for candidate_page in {
+            str(mapped_page)
+            for specialist in manifest["specialists"]
+            for mapped_page in specialist.get("page_mappings", [])
+        }
     }
+    allowed = set(reviewed_specialists_for_page(page_kind, page_specialists))
     return bool(allowed) and set(specialists) <= allowed
 
 
@@ -395,26 +405,26 @@ def _token(resource: str) -> str:
 def _investigate(
     api: str, token: str, case: Case | EvalCase
 ) -> tuple[dict[str, Any], float]:
-    context_page_kinds = {
-        "network",
-        "vulnerability",
-        "patch",
-        "incident",
-        "governance",
-        "resource",
-    }
-    if case.page_kind in context_page_kinds:
+    if getattr(case, "disposition", "integrated") == "integrated":
         provider_state = getattr(case, "provider_state", "normal")
-        freshness_status = provider_state if provider_state != "normal" else "fresh"
+        freshness_status = (
+            provider_state
+            if provider_state in {"stale", "partial", "unavailable"}
+            else "fresh"
+        )
         body = {
+            "question": case.question,
             "snapshot": {
-                "version": "1",
+                "version": "2",
                 "page_kind": case.page_kind,
                 "page_id": f"eval-{case.case_id}",
-                "question": case.question,
-                "scope": {"declared": {}},
-                "selected_resources": [],
                 "filters": {},
+                "query": "",
+                "coverage": {
+                    "visible_count": 0,
+                    "total_count": 0,
+                    "complete": False,
+                },
                 "freshness": [
                     {
                         "source": "release-evaluation",
@@ -422,11 +432,12 @@ def _investigate(
                         "status": freshness_status,
                     }
                 ],
+                "selected_entities": [],
                 "evidence": [],
-                "rechecks": [],
+                "material_claims": [],
             }
         }
-        endpoint = "/api/v1/copilot/investigate-context"
+        endpoint = "/api/v1/copilot/investigations"
     else:
         body = {
             "question": case.question,
@@ -1157,9 +1168,6 @@ _CONTROLLED_CASE_FIELDS = (
     "snapshot_schema_ok",
     "citation_reference_integrity_ok",
 )
-_CONTEXT_SNAPSHOT_PAGES = frozenset(
-    {"network", "vulnerability", "patch", "incident", "governance", "resource"}
-)
 _DETERMINISTIC_RESULT_FIELDS = {
     "scope_isolation": "scope_ok",
     "mutation_denied": "mutation_denied",
@@ -1214,7 +1222,6 @@ def _deterministic_applicable_case_ids(
             case.case_id
             for case in cases
             if case.disposition == "integrated"
-            and case.page_kind in _CONTEXT_SNAPSHOT_PAGES
         ],
         "citation_reference_integrity": [
             case.case_id
@@ -1234,7 +1241,7 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     if tool_correctness is None and completed:
         tool_correctness = 1.0 if grants_ok else 0.0
     snapshot_schema_ok = None
-    if not static_disposition and case.page_kind in _CONTEXT_SNAPSHOT_PAGES:
+    if not static_disposition and case.disposition == "integrated":
         snapshot_schema_ok = (
             result.snapshot_schema_ok
             if result.snapshot_schema_ok is not None

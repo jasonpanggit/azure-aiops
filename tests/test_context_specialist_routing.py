@@ -6,8 +6,8 @@ network specialist and nothing else, and the operator got network findings
 back regardless of what they asked.
 
 Selection is page-anchored *and* question-aware. Question intent may narrow
-the manifest's reviewed page-safe set, but it may never add a globally matched
-specialist that the active page does not authorize.
+the manifest's page owners or use an explicit reviewed cross-domain grant, but
+it may never add an unrelated globally matched specialist.
 """
 
 from __future__ import annotations
@@ -48,8 +48,11 @@ def test_a_change_question_on_the_network_page_stays_page_safe() -> None:
     ]
 
 
-def test_a_governance_question_on_the_network_page_stays_page_safe() -> None:
-    assert _select("network", "Who owns this and is there an approval?") == ["network"]
+def test_a_governance_question_on_the_network_page_uses_the_reviewed_grant() -> None:
+    assert _select("network", "Who owns this and is there an approval?") == [
+        "network",
+        "governance",
+    ]
 
 
 def test_a_topic_free_question_stays_on_the_page_specialist() -> None:
@@ -131,8 +134,51 @@ def test_maf_orchestrator_intersects_question_intent_with_page_contract() -> Non
     )
 
     assert decision.strategy == "question_first"
-    assert decision.selected_ids == ("network",)
+    assert decision.selected_ids == ("network", "governance")
     assert decision.runtime in {"microsoft-agent-framework", "maf-compatible"}
+
+
+def test_reviewed_cross_domain_grants_are_exact_and_unrelated_terms_do_not_broaden() -> None:
+    cases = (
+        (
+            "network",
+            "Are there CVEs on the hosts behind this hub?",
+            ("network", "vulnerability"),
+        ),
+        (
+            "network",
+            "Who owns this and is there an approval?",
+            ("network", "governance"),
+        ),
+        (
+            "vulnerability",
+            "How do I remediate this exposure safely with a rollback?",
+            ("vulnerability", "remediation"),
+        ),
+        (
+            "finops",
+            "Is the cost spike explained by a resource-health incident?",
+            ("finops", "resource_health_observability"),
+        ),
+    )
+    for page_kind, question, expected in cases:
+        decision = select_specialists_for_turn(
+            page_kind=page_kind,
+            question=question,
+            page_specialists=PAGE_SPECIALISTS,
+            catalog=AGENTS,
+            limit=MAX_CONTEXT_SPECIALISTS,
+        )
+        assert decision.selected_ids == expected
+
+    unrelated = select_specialists_for_turn(
+        page_kind="network",
+        question="Show cost, identity, patch, and deployment details.",
+        page_specialists=PAGE_SPECIALISTS,
+        catalog=AGENTS,
+        limit=MAX_CONTEXT_SPECIALISTS,
+    )
+    assert unrelated.selected_ids == ("network",)
 
 
 def test_maf_orchestrator_uses_page_only_when_question_has_no_specialist_intent() -> None:

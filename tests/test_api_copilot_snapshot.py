@@ -153,7 +153,7 @@ def test_context_route_maf_mode_keeps_question_within_page_safe_set(
     tmp_path,
     monkeypatch,
 ):
-    """A Network drawer ownership question must not broaden to Governance."""
+    """A Network ownership question uses only its reviewed Governance grant."""
     body = _body()
     body["snapshot"]["question"] = "Who owns demo-vnet and what approval policy applies?"
 
@@ -183,15 +183,18 @@ def test_context_route_maf_mode_keeps_question_within_page_safe_set(
     data = response.json()["data"]
     assert data["orchestration"]["runtime"] in {"microsoft-agent-framework", "maf-compatible"}
     assert data["orchestration"]["strategy"] == "question_first"
-    assert [agent["id"] for agent in data["selected_agents"]] == ["network"]
-    assert agent.calls == []
+    assert [agent["id"] for agent in data["selected_agents"]] == [
+        "network",
+        "governance",
+    ]
+    assert len(agent.calls) == 1
 
 
-def test_context_route_does_not_delegate_outside_network_page_safe_set(
+def test_context_route_uses_only_reviewed_network_cross_domain_grants(
     tmp_path,
     monkeypatch,
 ):
-    """Cross-domain wording must not add Vulnerability to a Network turn."""
+    """Cross-domain wording adds Vulnerability but no unrelated specialist."""
     body = _body()
     body["snapshot"]["question"] = "Are there CVEs on the hosts behind this hub?"
     body["snapshot"]["selected_resources"] = [{
@@ -211,9 +214,12 @@ def test_context_route_does_not_delegate_outside_network_page_safe_set(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["orchestration"]["strategy"] == "question_first"
-    assert [agent["id"] for agent in data["selected_agents"]] == ["network"]
+    assert [agent["id"] for agent in data["selected_agents"]] == [
+        "network",
+        "vulnerability",
+    ]
     assert {
         call["specialist"]
         for call in data["tool_calls"]
-    } <= {"network"}
+    } <= {"network", "vulnerability"}
     assert data["stop_reason"] == "reassessed"

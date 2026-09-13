@@ -75,6 +75,30 @@ def _normalized_identity_part(value: str) -> str:
     return " ".join(str(value).strip().casefold().split())
 
 
+def canonical_entity_key(
+    entity: EntityRef,
+    *,
+    domain_identity: tuple[str, str, str] | None = None,
+) -> str:
+    """Return the one canonical identity used by evidence grouping."""
+
+    if isinstance(entity, AzureEntityRef):
+        return f"azure:{_canonical_resource_id(entity.resource_id)}"
+    namespace, kind, source_key = domain_identity or (
+        entity.namespace,
+        entity.kind,
+        entity.source_key,
+    )
+    return ":".join(
+        (
+            "domain",
+            _normalized_identity_part(namespace),
+            _normalized_identity_part(kind),
+            _normalized_identity_part(source_key),
+        )
+    )
+
+
 def _digest(prefix: str, *parts: str) -> str:
     encoded = json.dumps(parts, separators=(",", ":"), ensure_ascii=True).encode()
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:32]}"
@@ -126,7 +150,7 @@ def _canonical_entity(
         resource_id = _canonical_resource_id(entity.resource_id)
         if not effective_scope.matches(_canonical_resource_attributes(resource_id)):
             raise ValueError("snapshot entity is outside the effective read scope")
-        return f"azure:{resource_id}", None
+        return canonical_entity_key(entity), None
 
     if domain_resolver is None:
         raise ValueError("domain entity requires a server-side identity resolver")
@@ -147,13 +171,13 @@ def _canonical_entity(
         raise ValueError("snapshot entity is outside the effective read scope")
     normalized_source_key = _normalized_identity_part(canonical_source_key)
     return (
-        ":".join(
-            (
-                "domain",
-                _normalized_identity_part(canonical_namespace),
-                _normalized_identity_part(canonical_kind),
-                normalized_source_key,
-            )
+        canonical_entity_key(
+            entity,
+            domain_identity=(
+                canonical_namespace,
+                canonical_kind,
+                canonical_source_key,
+            ),
         ),
         normalized_source_key,
     )
@@ -338,10 +362,14 @@ def select_browser_evidence_for_retention(
 
     def identity(row: SnapshotEvidence) -> str:
         entity = (
-            row.entity.model_dump(mode="json")
+            canonical_entity_key(row.entity)
             if row.entity is not None
             else {
-                "resource_id": row.resource_id.casefold(),
+                "resource_id": (
+                    _canonical_resource_id(row.resource_id)
+                    if row.resource_id.startswith("/")
+                    else _normalized_identity_part(row.resource_id)
+                ),
                 "page_id": snapshot.page_id,
             }
         )

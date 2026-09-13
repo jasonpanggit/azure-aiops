@@ -36,6 +36,49 @@ ROLLOUT_MODES = frozenset(
         ROLLOUT_DEFAULT,
     }
 )
+_REVIEWED_CROSS_DOMAIN_GRANTS: Mapping[
+    str,
+    tuple[tuple[str, tuple[str, ...]], ...],
+] = {
+    "network": (
+        (
+            "vulnerability",
+            ("cve", "vulnerab", "exploit", "exposure", "attack path"),
+        ),
+        (
+            "governance",
+            ("owner", "owned", "approval", "approver", "governance", "policy"),
+        ),
+    ),
+    "vulnerability": (
+        (
+            "remediation",
+            ("remediate", "remediation", "mitigation", "rollback"),
+        ),
+    ),
+    "incident": (
+        (
+            "change",
+            ("change", "changed", "deployment", "configuration", "drift"),
+        ),
+    ),
+    "remediation": (
+        (
+            "governance",
+            ("owner", "owned", "approval", "approver", "governance", "policy"),
+        ),
+        (
+            "vulnerability",
+            ("cve", "vulnerab", "exploit", "exposure", "attack path"),
+        ),
+    ),
+    "finops": (
+        (
+            "resource_health_observability",
+            ("resource-health", "resource health"),
+        ),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -190,6 +233,28 @@ def _append_unique(target: list[str], value: str, *, limit: int) -> None:
         target.append(value)
 
 
+def reviewed_specialists_for_page(
+    page_kind: str,
+    page_specialists: Mapping[str, Sequence[str]],
+) -> tuple[str, ...]:
+    """Return the page owners plus explicitly reviewed cross-domain grants."""
+
+    reviewed: list[str] = []
+    for specialist_id in page_specialists.get(page_kind, ()):
+        if specialist_id != "executive_summary":
+            _append_unique(reviewed, specialist_id, limit=64)
+    grant_page_kind = (
+        page_kind.removesuffix("_page")
+        if page_kind.endswith("_page")
+        else page_kind
+    )
+    for specialist_id, _ in _REVIEWED_CROSS_DOMAIN_GRANTS.get(
+        grant_page_kind, ()
+    ):
+        _append_unique(reviewed, specialist_id, limit=64)
+    return tuple(reviewed)
+
+
 def select_specialists_for_turn(
     *,
     page_kind: str,
@@ -232,6 +297,32 @@ def select_specialists_for_turn(
     }
     lowered = question.casefold()
     selected: list[str] = []
+
+    grant_page_kind = (
+        page_kind.removesuffix("_page")
+        if page_kind.endswith("_page")
+        else page_kind
+    )
+    matched_cross_domain = [
+        specialist_id
+        for specialist_id, markers in _REVIEWED_CROSS_DOMAIN_GRANTS.get(
+            grant_page_kind, ()
+        )
+        if specialist_id in catalog_by_id
+        and any(marker in lowered for marker in markers)
+    ]
+    if matched_cross_domain:
+        if allowed[0] in catalog_by_id:
+            _append_unique(selected, allowed[0], limit=limit)
+        for specialist_id in matched_cross_domain:
+            _append_unique(selected, specialist_id, limit=limit)
+        return OrchestrationDecision(
+            selected_ids=tuple(selected),
+            strategy="question_first",
+            runtime=_maf_runtime_label(),
+            reason="matched an explicitly reviewed cross-domain intent grant",
+        )
+
     for agent_id in allowed:
         agent = catalog_by_id.get(agent_id)
         keywords = getattr(agent, "keywords", None) or ()
@@ -370,18 +461,14 @@ def build_deterministic_fallback(
             )
         return None
 
-    ordered_ids = list(decision.selected_ids)
-    for specialist_id in page_mapping.get(page_kind, ()):
-        if specialist_id not in ordered_ids:
-            ordered_ids.append(specialist_id)
-
     steps: list[SpecialistStep] = []
-    for sid in ordered_ids:
+    reviewed_ids = set(reviewed_specialists_for_page(page_kind, page_mapping))
+    for sid in decision.selected_ids:
         try:
             spec = manifest.require(sid)
         except ValueError:
             continue
-        if page_kind not in spec.page_mappings:
+        if sid not in reviewed_ids:
             continue
         call = safe_call(spec)
         if call is None:
@@ -392,6 +479,23 @@ def build_deterministic_fallback(
                 tool_calls=[call],
             )
         )
+
+    if not steps:
+        for sid in page_mapping.get(page_kind, ()):
+            try:
+                spec = manifest.require(sid)
+            except ValueError:
+                continue
+            call = safe_call(spec)
+            if call is None:
+                continue
+            steps.append(
+                SpecialistStep(
+                    specialist_id=sid,
+                    tool_calls=[call],
+                )
+            )
+            break
 
     if not steps:
         return None
