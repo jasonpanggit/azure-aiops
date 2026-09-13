@@ -55,6 +55,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -407,7 +408,10 @@ def _token(resource: str) -> str:
     return proc.stdout.strip()
 
 
-def _canonical_evaluation_body(case: Case | EvalCase) -> dict[str, Any]:
+def _canonical_evaluation_body(
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+) -> dict[str, Any]:
     provider_state = getattr(case, "provider_state", "normal")
     freshness_status = (
         provider_state
@@ -417,6 +421,7 @@ def _canonical_evaluation_body(case: Case | EvalCase) -> dict[str, Any]:
     return {
         "contract_version": "1",
         "question": case.question,
+        "requested_scope": requested_scope,
         "snapshot": {
             "version": "2",
             "page_kind": case.page_kind,
@@ -447,10 +452,18 @@ def _send_evaluation_request(
     token: str,
     endpoint: str,
     body: dict[str, Any] | None,
+    requested_scope: dict[str, list[str]],
 ) -> dict[str, Any]:
     payload = json.dumps(body).encode() if body is not None else None
+    query = urllib.parse.urlencode(
+        [
+            (dimension, value)
+            for dimension, values in sorted(requested_scope.items())
+            for value in values
+        ]
+    )
     request = urllib.request.Request(
-        f"{api}{endpoint}",
+        f"{api}{endpoint}?{query}",
         data=payload,
         headers={
             "Authorization": "Bearer " + token,
@@ -466,7 +479,10 @@ def _send_evaluation_request(
 
 
 def _investigate(
-    api: str, token: str, case: Case | EvalCase
+    api: str,
+    token: str,
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     if case.case_id == "scope.cross.principal":
@@ -474,7 +490,8 @@ def _investigate(
             api,
             token,
             "/api/v1/copilot/investigations",
-            _canonical_evaluation_body(case),
+            _canonical_evaluation_body(case, requested_scope),
+            requested_scope,
         )
         primary_data = dict(primary.get("data") or {})
         secondary_token = os.environ.get(
@@ -485,7 +502,7 @@ def _investigate(
                 "AIOPS_EVALUATION_SECONDARY_TOKEN is required for "
                 "cross-principal evaluation"
             )
-        continued = _canonical_evaluation_body(case)
+        continued = _canonical_evaluation_body(case, requested_scope)
         continued["thread_id"] = primary_data.get("thread_id")
         continued["expected_thread_revision"] = primary_data.get(
             "thread_revision"
@@ -497,6 +514,7 @@ def _investigate(
                 secondary_token,
                 "/api/v1/copilot/investigations",
                 continued,
+                requested_scope,
             )
         except urllib.error.HTTPError as exc:
             denied = exc.code == 404
@@ -520,7 +538,7 @@ def _investigate(
         )
 
     if getattr(case, "disposition", "integrated") == "integrated":
-        body = _canonical_evaluation_body(case)
+        body = _canonical_evaluation_body(case, requested_scope)
         endpoint = "/api/v1/copilot/investigations"
     elif case.case_id == "dedicated.investigate":
         body = {"objective": case.question}
@@ -535,7 +553,13 @@ def _investigate(
         }
         endpoint = "/api/v1/copilot/investigate"
     if case.case_id in {"dedicated.investigate", "dedicated.agents"}:
-        response_body = _send_evaluation_request(api, token, endpoint, body)
+        response_body = _send_evaluation_request(
+            api,
+            token,
+            endpoint,
+            body,
+            requested_scope,
+        )
         data = dict(response_body.get("data") or {})
         data["_response_scope"] = response_body.get("scope")
         data["_disposition_ok"] = True
@@ -570,8 +594,15 @@ def _investigate(
             data["mutation_authorized"] = False
         return data, (time.monotonic() - started) * 1000
     payload = json.dumps(body).encode()
+    query = urllib.parse.urlencode(
+        [
+            (dimension, value)
+            for dimension, values in sorted(requested_scope.items())
+            for value in values
+        ]
+    )
     request = urllib.request.Request(
-        f"{api}{endpoint}",
+        f"{api}{endpoint}?{query}",
         data=payload,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -706,7 +737,12 @@ def _canonical_contract_signals(
     }
 
 
-def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
+def _run_case(
+    api: str,
+    resource: str,
+    case: Case | EvalCase,
+    requested_scope: dict[str, list[str]],
+) -> Result:
     """Run one case, retrying transient gateway failures.
 
     The token is acquired per attempt: a full run takes long enough that a
@@ -716,7 +752,12 @@ def _run_case(api: str, resource: str, case: Case | EvalCase) -> Result:
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            data, latency = _investigate(api, _token(resource), case)
+            data, latency = _investigate(
+                api,
+                _token(resource),
+                case,
+                requested_scope,
+            )
             break
         except urllib.error.HTTPError as exc:
             body = exc.read()[:200]
@@ -1980,6 +2021,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default=DEFAULT_API)
     parser.add_argument("--resource", default=DEFAULT_RESOURCE)
+    parser.add_argument(
+        "--subscription",
+        action="append",
+        help=(
+            "authorized subscription scope; repeat for multiple subscriptions "
+            "(required for evaluation runs)"
+        ),
+    )
     parser.add_argument("--out", type=Path, help="write the full run to this JSON file")
     parser.add_argument(
         "--revision",
@@ -2092,6 +2141,14 @@ def main() -> int:
         print(json.dumps({"artifact": str(args.validate_artifact), "status": "invalid", "problems": problems}, indent=2))
         return 1
 
+    if not args.subscription:
+        raise SystemExit(
+            "at least one --subscription is required for evaluation requests"
+        )
+    requested_scope = {
+        "subscription": sorted(set(args.subscription))
+    }
+
     try:
         dataset = json.loads(args.dataset.read_text())
         thresholds = load_thresholds(args.thresholds)
@@ -2146,7 +2203,12 @@ def main() -> int:
                 citation_reference_integrity_ok=True,
             )
         else:
-            result = _run_case(args.api, args.resource, case)
+            result = _run_case(
+                args.api,
+                args.resource,
+                case,
+                requested_scope,
+            )
         results.append(result)
         if result.error:
             print(f"    ERROR {result.error}")
