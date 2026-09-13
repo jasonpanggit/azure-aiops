@@ -1,8 +1,8 @@
 ---
-status: verifying
+status: awaiting_human_verify
 trigger: Phase 11 live Copilot page-audit failures
 created: 2026-09-13T09:37:49+08:00
-updated: 2026-09-13T11:18:23+08:00
+updated: 2026-09-13T12:56:00+08:00
 ---
 
 # Copilot Page Audit Remediation
@@ -31,10 +31,10 @@ artifact storage, so exact live-request attribution remains an explicit external
 ## Current Focus
 
 bug_class: bohrbug
-hypothesis: "All six root-cause fixes are implemented and each individual focused regression has turned green."
-test: "Run final post-commit focused tests, broad Phase 11 backend/web tests, Ruff, strict TypeScript, script/corpus validation, offline parity, trailer/scope review, and clean-worktree check."
-expecting: "Commits ae34e35ae, ed3751d79, and 6c82cf4e0 remain green together; no excluded paths or uncommitted changes remain except this active debug update until its docs commit."
-next_action: "Commit this active debug checkpoint, then run final post-commit validation/review only; do not archive, deploy, contact providers, or mutate external state."
+hypothesis: "Confirmed and fixed: all six final-review blockers are green together, causal revert/reconfirm passes, and broad committed Phase 11 offline validation is clean."
+test: "Final committed validation passed the broad backend selection, all six web files, Ruff, strict TypeScript, evaluator/corpus syntax, and 9/9 offline specialist parity checks."
+expecting: "An independent final validation/review finds no remaining blocking issue; live/provider readiness remains explicitly BLOCKED and no deployment is attempted."
+next_action: "Run independent final validation/review of commits ae34e35ae, ed3751d79, and 6c82cf4e0; if clean, record human confirmation. Do not archive before that confirmation."
 reasoning_checkpoint:
   hypothesis: "The review blockers occur because shared boundaries preserve legacy or presentation-level behavior after the canonical contracts became authoritative: CAS validation is outside the store lock, evaluator dispatch/schema gates cover only legacy kinds, reviewed cross-domain grants were removed from selector policy and corpus data, fallback ignores the selector result, adapter trimming does not update trust metadata, and conflict grouping bypasses canonical entity identity."
   confirming_evidence:
@@ -140,6 +140,9 @@ and_gate: "possibly — source readiness and external provider readiness are ind
 - timestamp: 2026-09-13T12:51:00+08:00
   observation: The six review fixes were committed atomically as `ae34e35ae` (locked stale-CAS rejection), `ed3751d79` (canonical evaluator dispatch, reviewed routing/fallback, canonical conflicts), and `6c82cf4e0` (truthful bounded web retention); each commit contains the required Copilot co-author trailer.
   implication: Source and tests are durably separated by concern. Final post-commit validation and review is now the only remaining action; the session must remain active and unarchived.
+- timestamp: 2026-09-13T12:56:00+08:00
+  observation: Final post-commit validation passes the complete selected backend Phase 11 suite with one pre-existing packaging skip, all six Copilot web files with 169/169 tests, strict TypeScript, full Ruff, evaluator bytecode and corpus JSON validation, and offline specialist parity 9/9. Git scope review lists only the authorized shared source/tests/corpus/active-debug paths and the worktree was clean before this final debug update.
+  implication: All six blocking findings and adjacent offline contracts are green in committed state. The active session remains unarchived for independent final review/human confirmation; live provider/deployment evidence remains BLOCKED and was not contacted or fabricated.
 - timestamp: 2026-09-13T15:20:00+08:00
   observation: The active session and `.planning/STATE.md` confirm this is an explicitly authorized Phase 11 source/config exception while Phase 4 remains the nominal planning phase; the worktree is clean except for the active debug session, and no configured debugger skill overlay was returned.
   implication: Investigation may touch only the requested provider/deployment-readiness source, tests, and documentation; live infrastructure and the listed owned-file exclusions remain out of scope.
@@ -586,6 +589,7 @@ external_blockers:
     - "Read-only live parity result proving both connections exist and every pinned definition has exact connection/grant/model parity."
     - "Immutable deployed revision evidence plus compatibility→shadow→canary observation and one real corpus artifact recording PROMOTE/HOLD."
 commits:
+  - "ff05206e4 docs(debug): record six review remediations"
   - "6c82cf4e0 fix(web): report Copilot evidence truncation"
   - "ed3751d79 fix(copilot): close orchestration review blockers"
   - "ae34e35ae fix(copilot): reject stale thread CAS before mutation"
