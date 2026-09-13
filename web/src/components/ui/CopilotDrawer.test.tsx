@@ -480,6 +480,60 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("1 of 137 visible records")).toBeInTheDocument();
   });
 
+  it("renders canonical synthesis claims without duplicating their tool result cards", async () => {
+    const result = canonicalResult(
+      "thr-12121212121212121212121212121212",
+      "tool:evidence:one",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        tool_results: [{
+          call_id: "network:0",
+          specialist_id: "network",
+          tool: "network_topology",
+          status: "ok",
+          data: { summary: "The payments service depends on hub-vnet." },
+          evidence: [{ evidence_id: "tool:evidence:one" }],
+          warning: "",
+        }],
+        synthesis: {
+          status: "synthesized",
+          reason: "cross_domain",
+          domain_count: 2,
+          claims: [{
+            finding_id: "finding:payments-path",
+            summary: "The payments service depends on hub-vnet.",
+            evidence_refs: ["tool:evidence:one"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+          warning: "",
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Network"
+          snapshot={snapshot}
+          starterQuestions={[{ label: "Summarize dependencies" }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Summarize dependencies/ }));
+
+    expect(await screen.findByText("The payments service depends on hub-vnet.")).toBeInTheDocument();
+    expect(screen.getByText("Evidence: tool:evidence:one")).toBeInTheDocument();
+    expect(screen.getByText("Narrated by Executive synthesis.")).toBeInTheDocument();
+    expect(screen.queryByText("network_topology")).not.toBeInTheDocument();
+  });
+
   it("supports isolated direct renders without making browser continuity authoritative", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
@@ -1011,6 +1065,59 @@ describe("CopilotDrawer", () => {
       thread_id: replacementThread,
       thread_revision: 1,
     });
+  });
+
+  it("clears stale CAS continuity so the next explicit attempt starts a new thread", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    const staleThread = "thr-34343434343434343434343434343434";
+    const replacementThread = "thr-56565656565656565656565656565656";
+    window.sessionStorage.setItem(COPILOT_THREAD_STORAGE_KEY, JSON.stringify({
+      thread_id: staleThread,
+      thread_revision: 3,
+    }));
+    investigateCanonical
+      .mockRejectedValueOnce(new ApiError(
+        409,
+        "conflict",
+        "Investigation thread revision conflict; current revision is 9",
+        { field: "expected_thread_revision", current_revision: 9 },
+      ))
+      .mockResolvedValueOnce(
+        canonicalResult(replacementThread, "server:new-thread"),
+      );
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Inventory"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={canonicalSnapshot("os")}
+          starterQuestions={[{ label: "Review after conflict" }]}
+        />
+      </TestProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("root continuity")).toHaveTextContent(staleThread);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review after conflict/ }));
+
+    expect(await screen.findByText(
+      "This investigation changed in another request. Start a new investigation to continue.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/current revision is 9/i)).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(COPILOT_THREAD_STORAGE_KEY)).toBeNull();
+    expect(screen.getByLabelText("root continuity")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: /Review after conflict/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
+    expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty("thread_id");
+    expect(investigateCanonical.mock.calls[1][0]).not.toHaveProperty(
+      "expected_thread_revision",
+    );
+    expect(await screen.findByText("server:new-thread")).toBeInTheDocument();
   });
 
   it("redacts the transcript and revalidates the retained thread when scope narrows", async () => {

@@ -27,7 +27,7 @@ export interface ThreadContinuity {
 }
 
 /** Server outcomes that deliberately discard the current continuity handle. */
-export type ThreadResetReason = "not_found" | "session_end" | "manual";
+export type ThreadResetReason = "not_found" | "conflict" | "session_end" | "manual";
 
 /** Public operations and state exposed by the root continuity provider. */
 export interface ThreadContinuityContextValue {
