@@ -93,32 +93,65 @@ interface ComplianceFindingReview {
 
 function ComplianceFindingReviewPanel({ review }: { review: ComplianceFindingReview }) {
   return (
-    <section className="card remediation-workflow-selection">
+    <section
+      className="card remediation-workflow-selection compliance-review-card"
+      aria-labelledby="compliance-review-title"
+      aria-describedby="compliance-review-subtitle"
+    >
       <div className="card-header">
-        <div>
-          <h2>Compliance finding review</h2>
-          <p>{review.title}</p>
+        <div className="compliance-review-heading">
+          <span className="eyebrow">Compliance finding review</span>
+          <h2 id="compliance-review-title">{review.title}</h2>
+          <p id="compliance-review-subtitle">
+            Review the finding context and route the recommendation to the network owner.
+          </p>
         </div>
         <StatusBadge label="Manual review only" tone="warning" compact />
       </div>
-      <div className="card-body">
-        <dl className="compliance-fact-list">
-          <dt>Resource</dt>
-          <dd>{review.resource}</dd>
-          <dt>Finding type</dt>
-          <dd>{titleize(review.type)}</dd>
-          <dt>Severity</dt>
-          <dd>{titleize(review.severity)}</dd>
-          <dt>Recommendation</dt>
-          <dd>{review.recommendation}</dd>
+      <div className="card-body compliance-review-body">
+        <dl className="compliance-review-facts">
+          <div className="compliance-review-fact-wide">
+            <dt>Resource</dt>
+            <dd>
+              <code className="compliance-review-resource" title={review.resource}>
+                {shortenId(review.resource, 4)}
+              </code>
+            </dd>
+          </div>
+          <div>
+            <dt>Finding type</dt>
+            <dd>{titleize(review.type)}</dd>
+          </div>
+          <div>
+            <dt>Severity</dt>
+            <dd>{titleize(review.severity)}</dd>
+          </div>
         </dl>
-        <p>
-          No executable network action has been generated for this compliance finding.
-          Route the recommendation through the governed network-owner review process.
-        </p>
-        <div className="remediation-handoff-actions">
-          <Link className="button" href="/network">Open network topology</Link>
+        <div className="compliance-review-guidance">
+          <section
+            className="compliance-review-recommendation"
+            aria-labelledby="compliance-review-recommendation-title"
+          >
+            <span className="eyebrow">Recommended action</span>
+            <h3 id="compliance-review-recommendation-title">Recommendation</h3>
+            <p>{review.recommendation}</p>
+          </section>
+          <section
+            className="compliance-review-next-step"
+            aria-labelledby="compliance-review-next-step-title"
+          >
+            <span className="eyebrow">Next step</span>
+            <h3 id="compliance-review-next-step-title">Governed network-owner review</h3>
+            <p>
+              No executable network action has been generated for this compliance finding.
+              Route the recommendation through the governed network-owner review process.
+            </p>
+          </section>
         </div>
+        <footer className="compliance-review-actions">
+          <p>Review-only handoff. No changes are submitted from this page.</p>
+          <Link className="button button-primary" href="/network">Open network topology</Link>
+        </footer>
       </div>
     </section>
   );
@@ -1208,31 +1241,50 @@ function RemediationContent() {
 
       {(requestedResource || fromCve || fromKb || fromIncident) && (
         <div className="callout remediation-handoff remediation-handoff-context">
-          <div>
-            <strong>{complianceReview ? "From Compliance" : "From Exposure"}</strong>
-            <span className="remediation-handoff-detail">
-              Scoped handoff:
-              {requestedResource ? ` ${requestedResource}` : ""}
-            </span>
-            <span className="remediation-handoff-detail">
-              {fromIncident ? ` Incident ${fromIncident}.` : ""}
-              {fromCve ? ` ${fromCve}.` : ""}
-              {fromKb ? ` ${fromKb}.` : ""}
-              {requestedResource ? ` Target ${requestedResource}.` : ""}
-              {fromGeneration ? ` Evidence generation ${fromGeneration}.` : ""}
-            </span>
-            {requestedReturnFocus && (
+          <div className="remediation-handoff-copy">
+            <div className="remediation-handoff-heading">
+              <strong>{complianceReview ? "From Compliance" : "From Exposure"}</strong>
+              <span>{complianceReview ? "Manual review handoff" : "Governed remediation handoff"}</span>
+            </div>
+            {complianceReview ? (
+              requestedResource && (
+                <code className="remediation-handoff-resource" title={requestedResource}>
+                  {shortenId(requestedResource, 4)}
+                </code>
+              )
+            ) : (
+              <>
+                <span className="remediation-handoff-detail">
+                  Scoped handoff:
+                  {requestedResource ? ` ${requestedResource}` : ""}
+                </span>
+                <span className="remediation-handoff-detail">
+                  {fromIncident ? ` Incident ${fromIncident}.` : ""}
+                  {fromCve ? ` ${fromCve}.` : ""}
+                  {fromKb ? ` ${fromKb}.` : ""}
+                  {requestedResource ? ` Target ${requestedResource}.` : ""}
+                  {fromGeneration ? ` Evidence generation ${fromGeneration}.` : ""}
+                </span>
+              </>
+            )}
+            {!complianceReview && requestedReturnFocus && (
               <span className="remediation-handoff-detail">
                 Return focus: {requestedReturnFocus}.
               </span>
             )}
             <p>
-              {complianceReview
-                ? "Nothing executes from this compliance handoff."
-                : "Nothing executes from Exposure."}
-              {" "}The server revalidates targets,
-              evidence, approval, and operator eligibility immediately before
-              the governed transition.
+              {complianceReview ? (
+                <>
+                  Nothing executes from this compliance handoff. The validated finding
+                  context is ready for governed network-owner review.
+                </>
+              ) : (
+                <>
+                  Nothing executes from Exposure. The server revalidates targets,
+                  evidence, approval, and operator eligibility immediately before
+                  the governed transition.
+                </>
+              )}
             </p>
           </div>
           <div className="remediation-handoff-actions">
