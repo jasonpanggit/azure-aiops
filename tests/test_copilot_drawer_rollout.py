@@ -99,10 +99,20 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
         "shadow_enabled": mode == "shadow",
         "shadow_validated": shadow_validated,
         "shadow_reason": "accepted" if shadow_validated else "",
+        "shadow_comparison": result["rollout"]["shadow_comparison"],
     }
     assert result["policy_status"] == (
         "accepted" if canonical_enabled else "fallback"
     )
+    assert result["fallback_reason"] == (
+        "" if canonical_enabled else "compatibility_rollout"
+    )
+    if mode == "shadow":
+        assert result["rollout"]["shadow_comparison"] is not None
+        assert result["rollout"]["shadow_comparison"]["canonical"]
+        assert result["rollout"]["shadow_comparison"]["compatibility"]
+    else:
+        assert result["rollout"]["shadow_comparison"] is None
     assert len(tool_calls) == len(result["selected_tools"])
     assert tool_calls
     assert executive.calls == 1
@@ -133,6 +143,7 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
         "shadow_enabled": False,
         "shadow_validated": False,
         "shadow_reason": "",
+        "shadow_comparison": None,
     }
 
 
@@ -161,6 +172,7 @@ def test_drawer_default_respects_deterministic_emergency_override(
         "shadow_enabled": False,
         "shadow_validated": False,
         "shadow_reason": "",
+        "shadow_comparison": None,
     }
 
 

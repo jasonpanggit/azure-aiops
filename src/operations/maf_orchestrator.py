@@ -410,6 +410,26 @@ def build_deterministic_fallback(
     request: Any,
     manifest: Any,
 ) -> Any | None:
+    """Build the canonical question-first deterministic fallback."""
+
+    return _build_fallback_candidate(request, manifest, compatibility=False)
+
+
+def build_compatibility_fallback(
+    request: Any,
+    manifest: Any,
+) -> Any | None:
+    """Build the retained page-anchor compatibility fallback."""
+
+    return _build_fallback_candidate(request, manifest, compatibility=True)
+
+
+def _build_fallback_candidate(
+    request: Any,
+    manifest: Any,
+    *,
+    compatibility: bool,
+) -> Any | None:
     """Construct a keyword-selected CandidatePlan that passes the same policy.
 
     Uses ``select_specialists_for_turn`` for keyword matching, constrained to
@@ -438,13 +458,23 @@ def build_deterministic_fallback(
         for spec in manifest.specialists
     ]
 
-    decision = select_specialists_for_turn(
-        page_kind=page_kind,
-        question=request.question,
-        page_specialists=page_mapping,
-        catalog=catalog,
-        limit=4,
+    selected_ids = (
+        tuple(
+            specialist_id
+            for specialist_id in page_mapping.get(page_kind, ())
+            if specialist_id != "executive_summary"
+        )[:4]
+        if compatibility
+        else select_specialists_for_turn(
+            page_kind=page_kind,
+            question=request.question,
+            page_specialists=page_mapping,
+            catalog=catalog,
+            limit=4,
+        ).selected_ids
     )
+    if compatibility and not selected_ids and page_kind == "overview":
+        selected_ids = _OVERVIEW_DOMAIN_SPECIALISTS[:4]
 
     citation_ids = [item.evidence_id for item in request.snapshot.evidence]
     if not citation_ids:
@@ -522,7 +552,7 @@ def build_deterministic_fallback(
 
     steps: list[SpecialistStep] = []
     reviewed_ids = set(reviewed_specialists_for_page(page_kind, page_mapping))
-    for sid in decision.selected_ids:
+    for sid in selected_ids:
         try:
             spec = manifest.require(sid)
         except ValueError:
