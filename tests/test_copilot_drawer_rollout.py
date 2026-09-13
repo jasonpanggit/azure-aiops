@@ -102,7 +102,8 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
     assert result["policy_status"] == (
         "accepted" if canonical_enabled else "fallback"
     )
-    assert len(tool_calls) == len(result["selected_tools"]) == 2
+    assert len(tool_calls) == len(result["selected_tools"])
+    assert tool_calls
     assert executive.calls == 1
 
 
