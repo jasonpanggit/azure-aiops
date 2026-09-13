@@ -155,6 +155,69 @@ def test_incident_route_reports_unavailable_when_no_engine_is_registered(client)
     assert response.json()["error"]["details"]["capability"] == "incidents"
 
 
+def test_unrestricted_incidents_use_all_active_onboarded_subscriptions(
+    tmp_path,
+) -> None:
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    active_subscription_ids = [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ]
+    for index, subscription_id in enumerate(active_subscription_ids, start=1):
+        onboarding.add(
+            connection_id=f"active-{index}",
+            name=f"Active {index}",
+            tenant_id="33333333-3333-3333-3333-333333333333",
+            subscription_id=subscription_id,
+            client_id=f"44444444-4444-4444-4444-{index:012d}",
+            secret_ref=f"keyvault://example/secrets/active-{index}",
+        )
+    onboarding.add(
+        connection_id="disabled",
+        name="Disabled",
+        tenant_id="33333333-3333-3333-3333-333333333333",
+        subscription_id="55555555-5555-5555-5555-555555555555",
+        client_id="66666666-6666-6666-6666-666666666666",
+        secret_ref="keyvault://example/secrets/disabled",
+    )
+    onboarding.disable("disabled")
+    captured_subscription_ids: list[list[str]] = []
+
+    class LiveIncidentProvider:
+        def report(self) -> dict[str, object]:
+            return {
+                "generated_at": "2026-09-13T00:00:00Z",
+                "incidents": [
+                    {
+                        "incident_id": "incident-live-1",
+                        "subscription_id": active_subscription_ids[0],
+                    }
+                ],
+            }
+
+    def hybrid_incidents(subscription_ids: list[str]) -> LiveIncidentProvider:
+        captured_subscription_ids.append(subscription_ids)
+        return LiveIncidentProvider()
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        incident_provider=lambda: None,
+        hybrid_incident_provider=hybrid_incidents,
+    )
+    live_client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = live_client.get("/api/v1/incidents", headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert captured_subscription_ids == [active_subscription_ids]
+    assert response.json()["data"]["incidents"][0]["incident_id"] == "incident-live-1"
+
+
 @pytest.mark.parametrize(
     "path",
     [
