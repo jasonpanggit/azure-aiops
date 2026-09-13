@@ -1146,7 +1146,23 @@ def investigate_canonical(
                     )
                 )
                 if resolved is None:
-                    continue
+                    resolution = resolve_domain_entity(entity)
+                    if (
+                        resolution is None
+                        or not scope.matches(resolution["scope"])
+                    ):
+                        raise ValueError(
+                            "snapshot entity is outside the effective read scope"
+                        )
+                    resolved = resolved_domains.get(
+                        (
+                            entity.namespace.casefold(),
+                            entity.kind.casefold(),
+                            entity.source_key.casefold(),
+                        )
+                    )
+                if resolved is None:
+                    raise ValueError("snapshot domain entity could not be resolved")
                 entity = resolved[1]
             if isinstance(entity, AzureEntityRef):
                 key = f"azure:{entity.resource_id.casefold()}"
