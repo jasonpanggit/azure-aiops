@@ -2087,12 +2087,24 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
     monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
 
     for case in cases:
-        evaluate_agents._investigate("https://example.invalid", "token", case)
+        evaluate_agents._investigate(
+            "https://example.invalid",
+            "token",
+            case,
+            {"subscription": ["sub-a"]},
+        )
 
     assert len(requests) == len(cases)
     for case, (url, body) in zip(cases, requests, strict=True):
-        assert url == "https://example.invalid/api/v1/copilot/investigations"
+        assert url == (
+            "https://example.invalid/api/v1/copilot/investigations"
+            "?subscription=sub-a"
+        )
+        from api.routers.copilot import CanonicalInvestigationPayload
+
+        CanonicalInvestigationPayload.model_validate(body)
         assert body["question"] == case.question
+        assert body["requested_scope"] == {"subscription": ["sub-a"]}
         assert body["snapshot"]["version"] == "2"
         assert body["snapshot"]["page_kind"] == case.page_kind
         assert body["snapshot"]["page_id"] == f"eval-{case.case_id}"
@@ -2156,10 +2168,15 @@ def test_run_case_scores_realistic_canonical_response_and_release_gates(
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case: (canonical_response, 12.5),
+        lambda _api, _token, _case, _scope: (canonical_response, 12.5),
     )
 
-    result = evaluate_agents._run_case("https://example.invalid", "resource", case)
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
     evidence = evaluate_agents.result_to_release_evidence(result, case)
     metrics = evaluate_agents.aggregate_release_metrics([evidence])
     gates = evaluate_agents.evaluate_gates(
@@ -2246,10 +2263,15 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     monkeypatch.setattr(
         evaluate_agents,
         "_investigate",
-        lambda _api, _token, _case: (response, 5.0),
+        lambda _api, _token, _case, _scope: (response, 5.0),
     )
 
-    result = evaluate_agents._run_case("https://example.invalid", "resource", case)
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+    )
 
     assert result.scope_ok is True
     assert result.unknown_id_denied is True
@@ -2264,6 +2286,7 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
         "https://example.invalid",
         "resource",
         case,
+        {"subscription": ["sub-a"]},
     )
     assert unsafe.unknown_id_denied is False
     assert unsafe.manifest_projection_ok is False
@@ -2279,6 +2302,7 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
         "https://example.invalid",
         "resource",
         case,
+        {"subscription": ["sub-a"]},
     )
     assert leaked.scope_ok is False
 
@@ -2287,6 +2311,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
     monkeypatch,
 ):
     import urllib.error
+    import urllib.parse
 
     evaluate_agents = _load_evaluate_agents()
     cases = {
@@ -2310,6 +2335,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
     def urlopen(request, *, timeout):
         assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
         body = json.loads(request.data.decode()) if request.data else None
+        request_path = urllib.parse.urlparse(request.full_url).path
         requests.append(
             (
                 request.full_url,
@@ -2319,7 +2345,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             )
         )
         if (
-            request.full_url.endswith("/api/v1/copilot/investigations")
+            request_path.endswith("/api/v1/copilot/investigations")
             and body
             and body.get("thread_id")
         ):
@@ -2330,14 +2356,14 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
                 {},
                 io.BytesIO(b'{"error":{"code":"not_found"}}'),
             )
-        if request.full_url.endswith("/api/v1/copilot/investigations"):
+        if request_path.endswith("/api/v1/copilot/investigations"):
             return response(
                 {
                     "thread_id": thread_id,
                     "thread_revision": 1,
                 }
             )
-        if request.full_url.endswith("/api/v1/agents/investigations"):
+        if request_path.endswith("/api/v1/agents/investigations"):
             return response(
                 {
                     "selected_agents": [{"id": "incident"}],
@@ -2359,7 +2385,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
                     },
                 }
             )
-        if request.full_url.endswith("/api/v1/agents/catalog"):
+        if request_path.endswith("/api/v1/agents/catalog"):
             manifest = json.loads(_MANIFEST_PATH.read_text())
             return response(
                 {
@@ -2391,6 +2417,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             "https://example.invalid",
             "primary-token",
             case,
+            {"subscription": ["sub-a"]},
         )[0]
         for case_id, case in cases.items()
     }
@@ -2404,25 +2431,32 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
     ]
     assert results["dedicated.agents"]["selected_specialists"] == []
     assert any(
-        url.endswith("/api/v1/copilot/investigate") and method == "POST"
+        urllib.parse.urlparse(url).path.endswith("/api/v1/copilot/investigate")
+        and method == "POST"
         for url, method, _body, _authorization in requests
     )
     assert any(
-        url.endswith("/api/v1/agents/investigations") and method == "POST"
+        urllib.parse.urlparse(url).path.endswith("/api/v1/agents/investigations")
+        and method == "POST"
         for url, method, _body, _authorization in requests
     )
     assert any(
-        url.endswith("/api/v1/agents/catalog") and method == "GET"
+        urllib.parse.urlparse(url).path.endswith("/api/v1/agents/catalog")
+        and method == "GET"
         for url, method, _body, _authorization in requests
     )
     assert sum(
-        url.endswith("/api/v1/copilot/investigations")
+        urllib.parse.urlparse(url).path.endswith(
+            "/api/v1/copilot/investigations"
+        )
         for url, _method, _body, _authorization in requests
     ) == 2
     principal_headers = {
         authorization
         for url, _method, _body, authorization in requests
-        if url.endswith("/api/v1/copilot/investigations")
+        if urllib.parse.urlparse(url).path.endswith(
+            "/api/v1/copilot/investigations"
+        )
     }
     assert len(principal_headers) == 2
     assert all(principal_headers)
@@ -2526,10 +2560,12 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
 
     def urlopen(request, *, timeout):
         import urllib.error
+        import urllib.parse
 
         assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
         body = json.loads(request.data.decode()) if request.data else None
-        if request.full_url.endswith("/api/v1/copilot/investigations"):
+        request_path = urllib.parse.urlparse(request.full_url).path
+        if request_path.endswith("/api/v1/copilot/investigations"):
             if body.get("thread_id"):
                 raise urllib.error.HTTPError(
                     request.full_url,
@@ -2553,7 +2589,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                     cases_by_id[case_id],
                 )[0]
             )
-        if request.full_url.endswith("/api/v1/agents/investigations"):
+        if request_path.endswith("/api/v1/agents/investigations"):
             return response(
                 {
                     "selected_agents": [{"id": "incident"}],
@@ -2575,7 +2611,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                     },
                 }
             )
-        if request.full_url.endswith("/api/v1/agents/catalog"):
+        if request_path.endswith("/api/v1/agents/catalog"):
             return response(
                 {
                     "agents": [
@@ -2608,6 +2644,7 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
                 "https://example.invalid",
                 "resource",
                 case,
+                {"subscription": ["sub-a"]},
             )
         else:
             result = evaluate_agents.Result(
@@ -2708,7 +2745,8 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     )
     seen: list[str] = []
 
-    def run_case(_api, _resource, case):
+    def run_case(_api, _resource, case, requested_scope):
+        assert requested_scope == {"subscription": ["sub-a"]}
         seen.append(case.case_id)
         return evaluate_agents.Result(
             case_id=case.case_id,
@@ -2747,6 +2785,8 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
             str(_THRESHOLDS_PATH),
             "--revision",
             "api--phase11-canary",
+            "--subscription",
+            "sub-a",
             "--provider",
             "foundry=available",
             "--provider",
