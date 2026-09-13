@@ -3951,12 +3951,12 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     expect(dedicated).toEqual(["/agents", "/copilot", "/investigate"]);
   });
 
-  it("redirects /vulnerabilities into Exposure and never hosts a duplicate adapter", () => {
+  it("redirects /vulnerabilities to the exact Patch priorities destination", () => {
     const disposition = COPILOT_ROUTE_DISPOSITIONS["/vulnerabilities"];
-    expect(disposition.kind).toBe("redirect");
-    expect(
-      disposition.kind === "redirect" && disposition.target.startsWith("/exposure"),
-    ).toBe(true);
+    expect(disposition).toEqual({
+      kind: "redirect",
+      target: "/exposure/patch-priorities",
+    });
     // The alias route resolves to an integrated adapter only via the canonical
     // Exposure product, so no second adapter is registered for it.
     expect(Object.prototype.hasOwnProperty.call(CORE_COPILOT_PAGE_ADAPTERS, "/vulnerabilities")).toBe(false);
