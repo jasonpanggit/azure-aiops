@@ -218,6 +218,7 @@ describe("CopilotDrawer", () => {
       }),
       {},
     ));
+    expect(investigateCanonical).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Firewall bypass")).toBeInTheDocument();
     expect(screen.getByText("server:network")).toBeInTheDocument();
   });
