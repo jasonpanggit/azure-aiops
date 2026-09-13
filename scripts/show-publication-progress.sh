@@ -98,7 +98,23 @@ for command in az python3; do
 done
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/publication-progress.XXXXXX")"
-trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+cleanup() {
+  rm -f "$WORK_DIR"/*
+  rmdir "$WORK_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+availability_notice() {
+  local query_name="$1"
+  local marker="$WORK_DIR/${query_name}-query-unavailable"
+  if [ ! -e "$marker" ]; then
+    printf 'Notice: Log Analytics %s progress is temporarily unavailable; continuing without it.\n' \
+      "$query_name" >&2
+    : >"$marker"
+  fi
+}
 
 run_required_az_query() {
   local description="$1"
@@ -159,6 +175,35 @@ path, table_state_path = sys.argv[1:]
 events = []
 diagnostics = []
 
+def activation_progress_event(message):
+    try:
+        decoded = json.loads(message)
+    except json.JSONDecodeError:
+        decoded = None
+    if isinstance(decoded, dict) and decoded.get("event") == "activation_progress":
+        return decoded
+
+    if '"event"' not in message or "activation_progress" not in message:
+        return None
+    decoder = json.JSONDecoder()
+    offset = 0
+    while True:
+        start = message.find("{", offset)
+        if start < 0:
+            return None
+        try:
+            candidate, consumed = decoder.raw_decode(message[start:])
+        except json.JSONDecodeError:
+            offset = start + 1
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("event") == "activation_progress"
+        ):
+            return candidate
+        offset = start + max(consumed, 1)
+
+
 with open(path, encoding="utf-8", errors="replace") as stream:
     for raw_line in stream:
         raw_line = raw_line.strip()
@@ -173,16 +218,11 @@ with open(path, encoding="utf-8", errors="replace") as stream:
             timestamp = match.group(1) if match else ""
             message = match.group(2) if match else raw_line
 
-        marker = message.find('{"elapsed_seconds"')
-        if marker >= 0:
-            try:
-                event, _remainder = json.JSONDecoder().raw_decode(message[marker:])
-            except json.JSONDecodeError:
-                event = None
-            if isinstance(event, dict) and event.get("event") == "activation_progress":
-                event["_timestamp"] = timestamp
-                events.append(event)
-                continue
+        event = activation_progress_event(message)
+        if event is not None:
+            event["_timestamp"] = timestamp
+            events.append(event)
+            continue
 
         lowered = message.casefold()
         if any(
@@ -220,6 +260,8 @@ if events:
         "publication_id",
         "checkpoint_id",
         "checkpoint_state",
+        "checkpoint_rows_written",
+        "checkpoint_bytes_written",
         "current_phase",
         "resumed_tables",
         "skipped_tables",
@@ -330,6 +372,10 @@ if events:
             detail.append(f"{event.get('completed', '?')}/{event.get('total', '?')}")
         if event.get("dataset_count") is not None:
             detail.append(f"datasets={event['dataset_count']}")
+        if event.get("checkpoint_rows_written") is not None:
+            detail.append(f"rows={event['checkpoint_rows_written']}")
+        if event.get("checkpoint_bytes_written") is not None:
+            detail.append(f"bytes={event['checkpoint_bytes_written']}")
         if event.get("failure_count") is not None:
             detail.append(f"failures={event['failure_count']}")
         suffix = f" ({', '.join(detail)})" if detail else ""
@@ -364,24 +410,34 @@ refresh_checkpoint_state() {
   local query_file="$WORK_DIR/checkpoint-query.json"
   [ -n "$workspace_id" ] || return 0
 
-  az monitor log-analytics query \
-    --workspace "$workspace_id" \
-    --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(6h) | where ContainerGroupName_s contains '$execution_name' | where Log_s contains '\"checkpoint_id\"' | top 1 by TimeGenerated desc | project Log_s" \
-    --output json >"$query_file" 2>/dev/null || return 0
+  if ! az monitor log-analytics query \
+      --workspace "$workspace_id" \
+      --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(6h) | where ContainerGroupName_s contains '$execution_name' | where Log_s contains '\"checkpoint_id\"' | top 1 by TimeGenerated desc | project Log_s" \
+      --output json >"$query_file" 2>/dev/null; then
+    availability_notice "checkpoint"
+    return 0
+  fi
 
-  python3 - "$query_file" "$state_file" <<'PY'
+  if ! python3 - "$query_file" "$state_file" <<'PY'
 import json
 import sys
 
 query_path, state_path = sys.argv[1:]
 try:
     rows = json.load(open(query_path))
+    if not rows:
+        raise SystemExit(0)
     event = json.loads(rows[0]["Log_s"])
-except (FileNotFoundError, IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-    raise SystemExit
+except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
 with open(state_path, "w", encoding="utf-8") as stream:
     json.dump(event, stream, sort_keys=True)
 PY
+  then
+    availability_notice "checkpoint"
+    return 0
+  fi
+  rm -f "$WORK_DIR/checkpoint-query-unavailable"
 }
 
 render_checkpoint_state() {
@@ -400,6 +456,8 @@ print("----------------------")
 for field, label in (
     ("checkpoint_id", "checkpoint"),
     ("checkpoint_state", "state"),
+    ("checkpoint_rows_written", "rows persisted"),
+    ("checkpoint_bytes_written", "bytes persisted"),
     ("publication_id", "publication"),
     ("current_phase", "current phase"),
     ("resumed_tables", "resumed tables"),
@@ -420,23 +478,28 @@ refresh_table_state() {
   local query_file="$WORK_DIR/table-query.json"
   [ -n "$workspace_id" ] || return 0
 
-  az monitor log-analytics query \
-    --workspace "$workspace_id" \
-    --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(3h) | where ContainerGroupName_s contains '$execution_name' | where Log_s contains '\"stage\":\"table_publication\"' and Log_s contains '\"completed\":' | top 1 by TimeGenerated desc | project Log_s" \
-    --output json >"$query_file" 2>/dev/null || return 0
+  if ! az monitor log-analytics query \
+      --workspace "$workspace_id" \
+      --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(3h) | where ContainerGroupName_s contains '$execution_name' | where Log_s contains '\"stage\":\"table_publication\"' and Log_s contains '\"completed\":' | top 1 by TimeGenerated desc | project Log_s" \
+      --output json >"$query_file" 2>/dev/null; then
+    availability_notice "table"
+    return 0
+  fi
 
-  python3 - "$query_file" "$state_file" <<'PY'
+  if ! python3 - "$query_file" "$state_file" <<'PY'
 import json
 import sys
 
 query_path, state_path = sys.argv[1:]
 try:
     rows = json.load(open(query_path))
+    if not rows:
+        raise SystemExit(0)
     event = json.loads(rows[0]["Log_s"])
-except (FileNotFoundError, IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-    raise SystemExit
+except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
 if event.get("completed") is None or event.get("total") is None:
-    raise SystemExit
+    raise SystemExit(1)
 try:
     saved = json.load(open(state_path))
 except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -445,6 +508,11 @@ if int(event.get("completed") or 0) >= int(saved.get("completed") or 0):
     with open(state_path, "w", encoding="utf-8") as stream:
         json.dump(event, stream, sort_keys=True)
 PY
+  then
+    availability_notice "table"
+    return 0
+  fi
+  rm -f "$WORK_DIR/table-query-unavailable"
 }
 
 render_metrics() {
@@ -560,13 +628,22 @@ while true; do
     --execution "$EXECUTION_NAME" \
     --output json >"$replica_file" 2>/dev/null || printf '[]\n' >"$replica_file"
 
-  environment_id="$(
+  if ! environment_id="$(
     python3 - "$job_file" <<'PY'
 import json
 import sys
-print((json.load(open(sys.argv[1])).get("properties") or {}).get("environmentId") or "")
+try:
+    job = json.load(open(sys.argv[1]))
+    if not isinstance(job, dict):
+        raise TypeError("job payload is not an object")
+except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    print(f"Error: malformed job JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+print((job.get("properties") or {}).get("environmentId") or "")
 PY
-  )"
+  )"; then
+    exit 1
+  fi
   workspace_id=""
   if [ -n "$environment_id" ]; then
     workspace_id="$(
@@ -580,15 +657,22 @@ PY
   refresh_table_state "$workspace_id" "$EXECUTION_NAME" "$table_state_file"
   refresh_checkpoint_state "$workspace_id" "$EXECUTION_NAME" "$checkpoint_state_file"
 
-  read -r status start_time image cpu memory profile timeout replica container \
-    container_state ready restart_count created_time <<EOF
-$(python3 - "$job_file" "$execution_file" "$replica_file" <<'PY'
+  details_file="$WORK_DIR/execution-details.txt"
+  if ! python3 - "$job_file" "$execution_file" "$replica_file" >"$details_file" <<'PY'
 import json
 import sys
 
-job = json.load(open(sys.argv[1]))
-execution = json.load(open(sys.argv[2]))
-replicas = json.load(open(sys.argv[3]))
+try:
+    job = json.load(open(sys.argv[1]))
+    execution = json.load(open(sys.argv[2]))
+    replicas = json.load(open(sys.argv[3]))
+    if not isinstance(job, dict) or not isinstance(execution, dict):
+        raise TypeError("job and execution payloads must be objects")
+    if not isinstance(replicas, list):
+        raise TypeError("replica payload must be an array")
+except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    print(f"Error: malformed job/execution JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 
 job_properties = job.get("properties") or {}
 execution_properties = execution.get("properties") or {}
@@ -620,8 +704,14 @@ values = [
 ]
 print(" ".join(str(value).replace(" ", "_") for value in values))
 PY
-)
-EOF
+  then
+    exit 1
+  fi
+  if ! read -r status start_time image cpu memory profile timeout replica container \
+      container_state ready restart_count created_time <"$details_file"; then
+    printf 'Error: Azure job/execution JSON produced no monitorable fields.\n' >&2
+    exit 1
+  fi
 
   if [ -t 1 ] && [ -n "${TERM:-}" ]; then
     printf '\033[2J\033[H'
@@ -659,13 +749,22 @@ EOF
   render_logs "$log_file" "$table_state_file"
   render_checkpoint_state "$checkpoint_state_file"
 
-  job_id="$(
+  if ! job_id="$(
     python3 - "$job_file" <<'PY'
 import json
 import sys
-print(json.load(open(sys.argv[1])).get("id") or "")
+try:
+    job = json.load(open(sys.argv[1]))
+    if not isinstance(job, dict):
+        raise TypeError("job payload is not an object")
+except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    print(f"Error: malformed job JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+print(job.get("id") or "")
 PY
-  )"
+  )"; then
+    exit 1
+  fi
   : >"$metrics_file"
   if [ -n "$job_id" ]; then
     az monitor metrics list \

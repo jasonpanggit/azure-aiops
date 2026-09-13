@@ -214,6 +214,8 @@ def test_combined_snapshot_rejects_cross_connection_identity_collision(tmp_path)
             {
                 "dataset_count": 460,
                 "failure_count": 0,
+                "checkpoint_rows_written": 100_000,
+                "checkpoint_bytes_written": 12_345_678,
                 "checkpoint_id": "a" * 64,
                 "checkpoint_state": "persisted",
                 "publication_id": "a" * 64,

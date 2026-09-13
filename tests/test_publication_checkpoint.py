@@ -39,11 +39,12 @@ def _persist(
     root: Path,
     *,
     source_run_id: str = "source-generation-1",
+    source_manifest_digest: str = _SOURCE_DIGEST,
 ) -> tuple[PublicationCheckpointStore, PreparedPublicationCheckpoint]:
     store = PublicationCheckpointStore(OneLakeDocumentStore(root))
     checkpoint = store.persist(
         source_run_id=source_run_id,
-        source_manifest_digest=_SOURCE_DIGEST,
+        source_manifest_digest=source_manifest_digest,
         run_id="publication-run-1",
         started_at="2026-09-13T00:00:00Z",
         source_projected_at="2026-09-12T00:00:00Z",
@@ -83,6 +84,28 @@ def test_prepared_checkpoint_roundtrips_streamed_rows_with_integrity(
     assert len(loaded.checkpoint_id) == 64
     assert len(loaded.datasets["bronze_resources"]) == 2
     assert len(loaded.exposure_gold_observation_rows or []) == 2
+    expected_lines = [
+        {"resource_id": "resource-1", "value": 1},
+        {"resource_id": "resource-2", "value": 2},
+        {"resource_id": "entity-1"},
+        {"resource_id": "observation-1"},
+        {"resource_id": "observation-2"},
+    ]
+    assert loaded.persisted_row_count == len(expected_lines)
+    assert loaded.persisted_utf8_bytes == sum(
+        len(
+            (
+                json.dumps(
+                    row,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        for row in expected_lines
+    )
     paths = [path.as_posix() for path in tmp_path.rglob("*") if path.is_file()]
     assert any(name.endswith("/manifest.json") for name in paths)
     assert any("/artifacts/" in name for name in paths)
@@ -108,6 +131,51 @@ def test_checkpoint_isolated_by_exact_source_and_source_manifest(
             "source-generation-1",
             source_manifest_digest="b" * 64,
         )
+
+
+def test_persist_refuses_to_destroy_resumable_or_mismatched_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store, original = _persist(tmp_path)
+
+    with pytest.raises(
+        PublicationCheckpointError,
+        match="resume or explicitly abandon",
+    ):
+        _persist(tmp_path)
+    with pytest.raises(
+        PublicationCheckpointError,
+        match="refusing to replace durable state",
+    ):
+        _persist(tmp_path, source_manifest_digest="b" * 64)
+
+    assert store.load(
+        original.source_run_id,
+        source_manifest_digest=_SOURCE_DIGEST,
+    ) == original
+
+
+def test_table_plan_mismatch_lists_bounded_deterministic_name_difference(
+    tmp_path: Path,
+) -> None:
+    store, checkpoint = _persist(tmp_path)
+    store.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": None},
+    )
+
+    with pytest.raises(PublicationCheckpointError) as captured:
+        store.prepare_table_plan(
+            checkpoint,
+            table_names=("ontology_entities",),
+            expected_before_versions={"ontology_entities": None},
+        )
+
+    assert (
+        "added=1 [ontology_entities]; removed=1 [bronze_resources]"
+        in str(captured.value)
+    )
 
 
 @pytest.mark.parametrize("target", ["artifact", "manifest"])
@@ -154,6 +222,27 @@ def test_missing_checkpoint_artifact_fails_closed(tmp_path: Path) -> None:
             "source-generation-1",
             source_manifest_digest=_SOURCE_DIGEST,
         )
+
+
+def test_checkpoint_read_error_closes_iterator_before_store_recovery(
+    tmp_path: Path,
+) -> None:
+    store, _checkpoint = _persist(tmp_path)
+    artifact = next(
+        path
+        for path in tmp_path.rglob("*")
+        if path.is_file() and "/artifacts/" in path.as_posix()
+    )
+    artifact.write_text("{not-json}\n", encoding="utf-8")
+
+    with pytest.raises(PublicationCheckpointError, match="invalid JSON"):
+        store.load(
+            "source-generation-1",
+            source_manifest_digest=_SOURCE_DIGEST,
+        )
+
+    store._documents.put("recovery/operator-action.json", {"action": "inspect"})
+    assert store._documents.read("recovery/operator-action.json")["action"] == "inspect"
 
 
 def test_incompatible_checkpoint_contract_fails_closed(tmp_path: Path) -> None:
@@ -216,6 +305,46 @@ def test_finalized_checkpoint_is_never_loaded_for_resume(
         "source-generation-1",
         source_manifest_digest=_SOURCE_DIGEST,
     ) == _FINAL_OUTCOME
+
+
+def test_only_finalized_checkpoint_can_be_superseded(tmp_path: Path) -> None:
+    store, checkpoint = _persist(tmp_path)
+
+    assert store.supersede_finalized(checkpoint.source_run_id) is False
+    assert store.load(
+        checkpoint.source_run_id,
+        source_manifest_digest=_SOURCE_DIGEST,
+    ) == checkpoint
+
+    plan = store.prepare_table_plan(
+        checkpoint,
+        table_names=("bronze_resources",),
+        expected_before_versions={"bronze_resources": None},
+    )
+    intent = store.begin_table_write(
+        checkpoint,
+        plan,
+        table_name="bronze_resources",
+        outcome_digest="b" * 64,
+    )
+    store.record_table_result(
+        checkpoint,
+        plan,
+        table_name="bronze_resources",
+        expected_before_version=None,
+        result=DeltaWriteResult(rows_processed=2, version=0),
+        intent=intent,
+    )
+    store.finalize(checkpoint, plan, outcome=_FINAL_OUTCOME)
+
+    assert store.supersede_finalized(checkpoint.source_run_id) is True
+    assert (
+        store.load(
+            checkpoint.source_run_id,
+            source_manifest_digest=_SOURCE_DIGEST,
+        )
+        is None
+    )
 
 
 def test_delta_write_rejects_stale_publication_version(tmp_path: Path) -> None:

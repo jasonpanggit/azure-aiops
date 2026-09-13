@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,15 +20,47 @@ PUBLICATION_CHECKPOINT_CONTRACT = "fabric-prepared-publication/1.1.0"
 _CHECKPOINT_ROOT = "fabric/publication-checkpoints"
 _TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _ARTIFACT_CHUNK_BYTES = 4 * 1024 * 1024
+_PLAN_DIAGNOSTIC_NAME_LIMIT = 10
 
 
 class PublicationCheckpointError(RuntimeError):
     """Raised when durable publication checkpoint state is unsafe to use."""
 
 
+def _table_plan_difference(
+    stored_names: Iterable[object],
+    requested_names: Iterable[str],
+) -> str:
+    """Describe a bounded, deterministic table-name-only plan difference."""
+
+    stored = {str(name) for name in stored_names}
+    requested = set(requested_names)
+
+    def describe(label: str, names: set[str]) -> str:
+        ordered = sorted(names)
+        visible = ordered[:_PLAN_DIAGNOSTIC_NAME_LIMIT]
+        suffix = (
+            f" (showing {_PLAN_DIAGNOSTIC_NAME_LIMIT} of {len(ordered)})"
+            if len(ordered) > _PLAN_DIAGNOSTIC_NAME_LIMIT
+            else ""
+        )
+        return f"{label}={len(ordered)} [{', '.join(visible)}]{suffix}"
+
+    return "; ".join(
+        (
+            describe("added", requested - stored),
+            describe("removed", stored - requested),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class PreparedPublicationCheckpoint:
-    """Integrity-checked state restored before Fabric table publication."""
+    """Integrity-checked state restored before Fabric table publication.
+
+    ``persisted_utf8_bytes`` counts canonical serialized artifact bytes,
+    including the one newline byte written after every JSON row.
+    """
 
     source_run_id: str
     checkpoint_id: str
@@ -43,6 +76,8 @@ class PreparedPublicationCheckpoint:
     datasets: dict[str, list[dict[str, Any]]]
     exposure_gold_observation_rows: list[dict[str, Any]] | None
     manifest_digest: str
+    persisted_row_count: int
+    persisted_utf8_bytes: int
 
 
 @dataclass(frozen=True)
@@ -117,8 +152,12 @@ class PublicationCheckpointStore:
 
         datasets: dict[str, list[dict[str, Any]]] = {}
         exposure_rows: list[dict[str, Any]] | None = None
+        persisted_row_count = 0
+        persisted_utf8_bytes = 0
         for artifact in manifest["artifacts"]:
-            rows = self._read_artifact(artifact, prefix=prefix)
+            rows, artifact_bytes = self._read_artifact(artifact, prefix=prefix)
+            persisted_row_count += len(rows)
+            persisted_utf8_bytes += artifact_bytes
             if artifact["kind"] == "dataset":
                 table_name = _validated_table_name(
                     str(artifact.get("table_name") or "")
@@ -148,6 +187,18 @@ class PublicationCheckpointStore:
             raise PublicationCheckpointError(
                 "Publication checkpoint Exposure history is incomplete"
             )
+        for field, observed in (
+            ("persisted_row_count", persisted_row_count),
+            ("persisted_utf8_bytes", persisted_utf8_bytes),
+        ):
+            declared = manifest.get(field)
+            if declared is not None and _non_negative_int(
+                declared,
+                field=field,
+            ) != observed:
+                raise PublicationCheckpointError(
+                    f"Publication checkpoint {field} failed integrity validation"
+                )
         return PreparedPublicationCheckpoint(
             source_run_id=source_run_id,
             checkpoint_id=_checkpoint_id(source_run_id),
@@ -172,6 +223,8 @@ class PublicationCheckpointStore:
             datasets=datasets,
             exposure_gold_observation_rows=exposure_rows,
             manifest_digest=str(manifest["manifest_digest"]),
+            persisted_row_count=persisted_row_count,
+            persisted_utf8_bytes=persisted_utf8_bytes,
         )
 
     def persist(
@@ -195,7 +248,36 @@ class PublicationCheckpointStore:
         _required_text(source_run_id, field="source_run_id")
         _required_text(run_id, field="run_id")
         prefix = self._prefix(source_run_id)
-        self.abandon(source_run_id)
+        try:
+            existing_manifest = self._documents.read_or_raise(
+                f"{prefix}/manifest.json"
+            )
+        except FileNotFoundError:
+            existing_manifest = {}
+        if not existing_manifest:
+            # A process may have died after creating artifacts/progress but
+            # before publishing the manifest. Such state is not resumable.
+            self.abandon(source_run_id)
+        else:
+            self._validate_manifest(
+                existing_manifest,
+                source_run_id=source_run_id,
+            )
+            if (
+                existing_manifest.get("source_manifest_digest")
+                != source_manifest_digest
+            ):
+                raise PublicationCheckpointError(
+                    "Publication checkpoint source manifest does not match; "
+                    "refusing to replace durable state for this source run"
+                )
+            progress = self._read_progress(source_run_id)
+            status = str(progress.get("status") or "unknown")
+            raise PublicationCheckpointError(
+                "Publication checkpoint already exists with status "
+                f"{status!r}; resume or explicitly abandon it before persisting "
+                "replacement state"
+            )
         self._documents.ensure_directory(f"{prefix}/artifacts")
         artifacts: list[dict[str, Any]] = []
         for table_name in sorted(datasets):
@@ -219,6 +301,8 @@ class PublicationCheckpointStore:
                     rows=exposure_gold_observation_rows,
                 )
             )
+        persisted_row_count = sum(int(item["row_count"]) for item in artifacts)
+        persisted_utf8_bytes = sum(int(item["utf8_bytes"]) for item in artifacts)
         manifest: dict[str, Any] = {
             "contract_version": PUBLICATION_CHECKPOINT_CONTRACT,
             "source_run_id": source_run_id,
@@ -251,6 +335,9 @@ class PublicationCheckpointStore:
             "has_exposure_gold_observations": (
                 exposure_gold_observation_rows is not None
             ),
+            # Bytes include each canonical JSON row's terminating newline.
+            "persisted_row_count": persisted_row_count,
+            "persisted_utf8_bytes": persisted_utf8_bytes,
             "artifacts": artifacts,
         }
         manifest["manifest_digest"] = _digest_json(manifest)
@@ -290,6 +377,8 @@ class PublicationCheckpointStore:
             datasets=dict(datasets),
             exposure_gold_observation_rows=exposure_gold_observation_rows,
             manifest_digest=str(manifest["manifest_digest"]),
+            persisted_row_count=persisted_row_count,
+            persisted_utf8_bytes=persisted_utf8_bytes,
         )
 
     def prepare_table_plan(
@@ -312,7 +401,8 @@ class PublicationCheckpointStore:
             )
         if set(expected_before_versions) != set(names):
             raise PublicationCheckpointError(
-                "Publication checkpoint table plan versions are incomplete"
+                "Publication checkpoint table plan versions are incomplete: "
+                + _table_plan_difference(expected_before_versions, names)
             )
         normalized_versions = {
             name: _optional_version(expected_before_versions[name]) for name in names
@@ -332,13 +422,15 @@ class PublicationCheckpointStore:
                 )
             current_hash = str(progress.get("plan_hash") or "")
             if current_hash:
+                current_names = tuple(progress.get("table_names") or ())
                 if (
                     current_hash != plan_hash
-                    or tuple(progress.get("table_names") or ()) != names
+                    or current_names != names
                     or int(progress.get("total_tables") or 0) != len(names)
                 ):
                     raise PublicationCheckpointError(
-                        "Publication checkpoint table plan does not match prepared state"
+                        "Publication checkpoint table plan does not match prepared "
+                        f"state: {_table_plan_difference(current_names, names)}"
                     )
                 return progress
             progress.update(
@@ -359,7 +451,8 @@ class PublicationCheckpointStore:
         }
         if stored_versions.keys() != normalized_versions.keys():
             raise PublicationCheckpointError(
-                "Publication checkpoint expected-version set is incomplete"
+                "Publication checkpoint expected-version set is incomplete: "
+                + _table_plan_difference(stored_versions, normalized_versions)
             )
         return PublicationResumePlan(
             plan_hash=plan_hash,
@@ -770,6 +863,39 @@ class PublicationCheckpointStore:
             )
         return _validated_final_outcome(outcome)
 
+    def supersede_finalized(self, source_run_id: str) -> bool:
+        """Discard a terminal checkpoint so a normal sync can publish again.
+
+        Finalized state is no longer needed for crash recovery because its
+        publication result is already durable. Non-finalized state is never
+        removed here: it may contain the only resumable record of partial
+        table writes and must instead be loaded with an exact manifest match.
+        """
+
+        prefix = self._prefix(source_run_id)
+        try:
+            manifest = self._documents.read_or_raise(f"{prefix}/manifest.json")
+        except FileNotFoundError:
+            return False
+        if not manifest:
+            return False
+        self._validate_manifest(manifest, source_run_id=source_run_id)
+        progress = self._read_progress(source_run_id)
+        if progress.get("manifest_digest") != manifest["manifest_digest"]:
+            raise PublicationCheckpointError(
+                "Publication checkpoint progress does not match its manifest"
+            )
+        if progress.get("status") != "finalized":
+            return False
+        outcome = progress.get("final_outcome")
+        if not isinstance(outcome, Mapping):
+            raise PublicationCheckpointError(
+                "Finalized publication checkpoint has no terminal outcome"
+            )
+        _validated_final_outcome(outcome)
+        self.abandon(source_run_id)
+        return True
+
     def has_in_flight(self, source_run_id: str) -> bool:
         """Return whether a checkpoint has an unresolved storage mutation."""
 
@@ -803,9 +929,10 @@ class PublicationCheckpointStore:
         )
         digest = hashlib.sha256()
         row_count = 0
+        utf8_bytes = 0
 
         def chunks() -> Iterable[str]:
-            nonlocal row_count
+            nonlocal row_count, utf8_bytes
             buffered: list[str] = []
             buffered_bytes = 0
             for row in rows:
@@ -823,6 +950,7 @@ class PublicationCheckpointStore:
                     buffered_bytes = 0
                 digest.update(encoded)
                 row_count += 1
+                utf8_bytes += len(encoded)
                 buffered.append(line)
                 buffered_bytes += len(encoded)
             if buffered:
@@ -833,6 +961,7 @@ class PublicationCheckpointStore:
             "kind": kind,
             "name": artifact_name,
             "row_count": row_count,
+            "utf8_bytes": utf8_bytes,
             "sha256": digest.hexdigest(),
         }
         if table_name is not None:
@@ -844,7 +973,7 @@ class PublicationCheckpointStore:
         artifact: Mapping[str, Any],
         *,
         prefix: str,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], int]:
         name = str(artifact.get("name") or "")
         if not name.startswith(f"{prefix}/artifacts/"):
             raise PublicationCheckpointError(
@@ -861,21 +990,24 @@ class PublicationCheckpointStore:
             )
         rows: list[dict[str, Any]] = []
         digest = hashlib.sha256()
+        utf8_bytes = 0
         try:
-            lines = self._documents.iter_text_lines_or_raise(name)
-            for line in lines:
-                digest.update(line.encode("utf-8"))
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise PublicationCheckpointError(
-                        "Publication checkpoint artifact contains invalid JSON"
-                    ) from exc
-                if not isinstance(row, dict):
-                    raise PublicationCheckpointError(
-                        "Publication checkpoint artifact row is not an object"
-                    )
-                rows.append(row)
+            with closing(self._documents.iter_text_lines_or_raise(name)) as lines:
+                for line in lines:
+                    encoded = line.encode("utf-8")
+                    digest.update(encoded)
+                    utf8_bytes += len(encoded)
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise PublicationCheckpointError(
+                            "Publication checkpoint artifact contains invalid JSON"
+                        ) from exc
+                    if not isinstance(row, dict):
+                        raise PublicationCheckpointError(
+                            "Publication checkpoint artifact row is not an object"
+                        )
+                    rows.append(row)
         except (FileNotFoundError, UnicodeError) as exc:
             raise PublicationCheckpointError(
                 "Publication checkpoint artifact is missing or unreadable"
@@ -884,7 +1016,15 @@ class PublicationCheckpointStore:
             raise PublicationCheckpointError(
                 "Publication checkpoint artifact failed integrity validation"
             )
-        return rows
+        declared_bytes = artifact.get("utf8_bytes")
+        if declared_bytes is not None and _non_negative_int(
+            declared_bytes,
+            field="artifact utf8_bytes",
+        ) != utf8_bytes:
+            raise PublicationCheckpointError(
+                "Publication checkpoint artifact byte count failed integrity validation"
+            )
+        return rows, utf8_bytes
 
     def _validate_manifest(
         self,

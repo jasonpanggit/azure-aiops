@@ -367,55 +367,58 @@ class OneLakeDocumentStore:
         """Yield UTF-8 lines from an immutable artifact, failing closed."""
 
         def iterate() -> Iterator[str]:
-            with self._lock:
-                path = self._path(name)
-                if self.is_remote:
-                    file_client = self._client().get_file_client(path)
-                    try:
-                        properties = file_client.get_file_properties()
-                        etag = str(properties.etag)
-                        downloaded = file_client.download_file(
-                            etag=etag,
-                            match_condition=MatchConditions.IfNotModified,
-                        )
-                    except ResourceNotFoundError as exc:
-                        raise FileNotFoundError(
-                            f"Document {name} does not exist"
-                        ) from exc
-                    decoder = getincrementaldecoder("utf-8")("strict")
-                    pending = ""
-                    try:
-                        for chunk in downloaded.chunks():
-                            pending += decoder.decode(chunk)
-                            lines = pending.splitlines(keepends=True)
-                            pending = ""
-                            for line in lines:
-                                if line.endswith(("\n", "\r")):
-                                    yield line
-                                else:
-                                    pending = line
-                        pending += decoder.decode(b"", final=True)
-                    except ResourceModifiedError as exc:
-                        raise DocumentConflictError(
-                            f"Document {name} changed while it was read"
-                        ) from exc
-                    if pending:
-                        yield pending
-                    return
+            # Snapshot the immutable artifact into a disk-backed temporary
+            # file while its consistency locks are held. Iteration happens
+            # only after those locks are released, so a consumer that pauses
+            # or aborts between yields cannot block unrelated store methods.
+            with tempfile.TemporaryFile() as snapshot:
+                with self._lock:
+                    path = self._path(name)
+                    if self.is_remote:
+                        file_client = self._client().get_file_client(path)
+                        try:
+                            properties = file_client.get_file_properties()
+                            etag = str(properties.etag)
+                            downloaded = file_client.download_file(
+                                etag=etag,
+                                match_condition=MatchConditions.IfNotModified,
+                            )
+                            for chunk in downloaded.chunks():
+                                snapshot.write(chunk)
+                        except ResourceNotFoundError as exc:
+                            raise FileNotFoundError(
+                                f"Document {name} does not exist"
+                            ) from exc
+                        except ResourceModifiedError as exc:
+                            raise DocumentConflictError(
+                                f"Document {name} changed while it was read"
+                            ) from exc
+                    else:
+                        local_path = Path(path)
+                        with _interprocess_lock(local_path):
+                            try:
+                                with local_path.open("rb") as handle:
+                                    while chunk := handle.read(1024 * 1024):
+                                        snapshot.write(chunk)
+                            except FileNotFoundError as exc:
+                                raise FileNotFoundError(
+                                    f"Document {name} does not exist"
+                                ) from exc
 
-                local_path = Path(path)
-                with _interprocess_lock(local_path):
-                    try:
-                        with local_path.open(
-                            "r",
-                            encoding="utf-8",
-                            newline="",
-                        ) as handle:
-                            yield from handle
-                    except FileNotFoundError as exc:
-                        raise FileNotFoundError(
-                            f"Document {name} does not exist"
-                        ) from exc
+                snapshot.seek(0)
+                decoder = getincrementaldecoder("utf-8")("strict")
+                pending = ""
+                while chunk := snapshot.read(64 * 1024):
+                    pending += decoder.decode(chunk)
+                    while True:
+                        newline = pending.find("\n")
+                        if newline < 0:
+                            break
+                        yield pending[: newline + 1]
+                        pending = pending[newline + 1 :]
+                pending += decoder.decode(b"", final=True)
+                if pending:
+                    yield pending
 
         return iterate()
 

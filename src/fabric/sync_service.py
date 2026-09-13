@@ -41,7 +41,12 @@ from ontology_discovery.publisher import (
     OntologyGenerationPublisher,
     PublicationSafetyError,
 )
-from storage.delta_writer import DeltaWriteMode, DeltaWriter, DeltaWriteResult
+from storage.delta_writer import (
+    DeltaHistoryTruncatedError,
+    DeltaWriteMode,
+    DeltaWriter,
+    DeltaWriteResult,
+)
 from storage.locking import LeaseLostError
 from storage.onelake_documents import OneLakeDocumentStore
 from storage.onelake_writer import OneLakeWriter
@@ -123,6 +128,8 @@ class FabricStageProgress(TypedDict, total=False):
     relationship_count: int
     failure_count: int
     row_count: int
+    checkpoint_rows_written: int
+    checkpoint_bytes_written: int
     completed: int
     total: int
     remaining_tables: int
@@ -166,6 +173,8 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
         {
             "dataset_count",
             "failure_count",
+            "checkpoint_rows_written",
+            "checkpoint_bytes_written",
             "checkpoint_id",
             "checkpoint_state",
             "publication_id",
@@ -830,30 +839,29 @@ class FabricSyncService:
         source_projected_at = str(
             manifest.get("completedAt") or manifest.get("startedAt") or started_at
         )
-        finalized_outcome = (
-            self.publication_checkpoints.finalized_outcome(
+        if replay:
+            finalized_outcome = self.publication_checkpoints.finalized_outcome(
                 source_run_id,
                 source_manifest_digest=source_manifest_digest,
             )
-            if replay
-            else None
-        )
-        if finalized_outcome is not None:
-            assert_lock_held()
-            return FabricSyncResult(
-                **{
-                    **finalized_outcome,
-                    "replay": True,
-                    "tables": tuple(finalized_outcome["tables"]),
-                }
-            )
-        prepared_checkpoint = (
-            self.publication_checkpoints.load(
-                source_run_id,
-                source_manifest_digest=source_manifest_digest,
-            )
-            if replay
-            else None
+            if finalized_outcome is not None:
+                assert_lock_held()
+                return FabricSyncResult(
+                    **{
+                        **finalized_outcome,
+                        "replay": True,
+                        "tables": tuple(finalized_outcome["tables"]),
+                    }
+                )
+        else:
+            # A normal sync always creates a new publication after a terminal
+            # checkpoint. Only unfinished, exactly matching state is resumed.
+            # Finalized state may be stale because a later partial write can
+            # change the source manifest after its result became durable.
+            self.publication_checkpoints.supersede_finalized(source_run_id)
+        prepared_checkpoint = self.publication_checkpoints.load(
+            source_run_id,
+            source_manifest_digest=source_manifest_digest,
         )
         checkpoint_restored = prepared_checkpoint is not None
         if prepared_checkpoint is not None:
@@ -1384,6 +1392,12 @@ class FabricSyncService:
                     "completed",
                     dataset_count=len(datasets),
                     failure_count=0,
+                    checkpoint_rows_written=(
+                        prepared_checkpoint.persisted_row_count
+                    ),
+                    checkpoint_bytes_written=(
+                        prepared_checkpoint.persisted_utf8_bytes
+                    ),
                     checkpoint_id=prepared_checkpoint.checkpoint_id,
                     checkpoint_state="persisted",
                     publication_id=prepared_checkpoint.checkpoint_id,
@@ -2110,13 +2124,19 @@ class FabricSyncService:
                     )
                 except PublicationCheckpointError:
                     ambiguous_mutation = True
-            rollback_errors = (
-                []
-                if data_committed
-                or lock_error is not None
-                or ambiguous_mutation
-                else self._rollback(written_versions)
-            )
+            rolled_back_tables: set[str] = set()
+            rollback_errors = []
+            if (
+                not data_committed
+                and lock_error is None
+                and not ambiguous_mutation
+            ):
+                rollback_errors = self._rollback_publication(
+                    written_versions,
+                    checkpoint=prepared_checkpoint,
+                    plan=publication_plan,
+                    restored_tables=rolled_back_tables,
+                )
             if (
                 not data_committed
                 and lock_error is None
@@ -2135,8 +2155,13 @@ class FabricSyncService:
                         "; committed graph tables were retained for idempotent retry"
                     )
                 if rollback_errors:
-                    error_message += "; rollback incomplete: " + " | ".join(
-                        rollback_errors
+                    error_message += (
+                        "; rollback incomplete; automatic resume requires "
+                        "operator review: "
+                        + " | ".join(rollback_errors)
+                        + "; repair the failed rollback and resume only after "
+                        "version verification, or explicitly abandon the "
+                        "publication checkpoint before restarting"
                     )
                 if lock_error is None:
                     self._write_state(
@@ -2157,13 +2182,49 @@ class FabricSyncService:
                 raise lock_error from exc
             if rollback_errors:
                 raise RuntimeError(
-                    "Fabric sync failed and rollback was incomplete: "
+                    "Fabric sync failed and rollback was incomplete; automatic "
+                    "resume requires operator review: "
                     + " | ".join(rollback_errors)
+                    + "; repair the failed rollback and resume only after "
+                    "version verification, or explicitly abandon the publication "
+                    "checkpoint before restarting"
                 ) from exc
             raise
 
+    def _rollback_publication(
+        self,
+        written_versions: dict[str, tuple[str, int | None]],
+        *,
+        checkpoint: PreparedPublicationCheckpoint | None,
+        plan: PublicationResumePlan | None,
+        restored_tables: set[str] | None = None,
+    ) -> list[str]:
+        """Rollback changed tables and make retained checkpoint results truthful."""
+
+        restored = restored_tables if restored_tables is not None else set()
+        errors = self._rollback(
+            written_versions,
+            restored_tables=restored,
+        )
+        if restored and checkpoint is not None and plan is not None:
+            try:
+                self.publication_checkpoints.clear_table_results(
+                    checkpoint,
+                    plan,
+                    restored,
+                )
+            except Exception as checkpoint_error:  # noqa: BLE001 - preserve actionable state.
+                errors.append(
+                    "checkpoint rollback reconciliation: "
+                    f"{checkpoint_error}"
+                )
+        return errors
+
     def _rollback(
-        self, written_versions: dict[str, tuple[str, int | None]]
+        self,
+        written_versions: dict[str, tuple[str, int | None]],
+        *,
+        restored_tables: set[str] | None = None,
     ) -> list[str]:
         errors: list[str] = []
         for table_name, (table_uri, before_version) in reversed(
@@ -2178,6 +2239,8 @@ class FabricSyncService:
                     else:
                         layer, logical_name = table_name.split("_", 1)
                         self.onelake.delete_table(layer, logical_name)
+                    if restored_tables is not None:
+                        restored_tables.add(table_name)
                     break
                 except Exception as rollback_error:  # noqa: BLE001 - continue all rollback actions.
                     if attempt == 3:
@@ -2199,11 +2262,19 @@ class FabricSyncService:
             intent = plan.in_flight[table_name]
             table_uri = table_uris[table_name]
             if intent.operation == "write":
-                committed = self.delta.committed_transaction(
-                    table_uri,
-                    transaction_id=intent.intent_id,
-                    transaction_digest=intent.outcome_digest,
-                )
+                try:
+                    committed = self.delta.committed_transaction(
+                        table_uri,
+                        transaction_id=intent.intent_id,
+                        transaction_digest=intent.outcome_digest,
+                    )
+                except DeltaHistoryTruncatedError as history_error:
+                    raise PublicationCheckpointError(
+                        f"In-flight table {table_name} cannot be reconciled "
+                        "because Delta transaction history is truncated; verify "
+                        "the table head and explicitly abandon the checkpoint if "
+                        "the intent cannot be proven"
+                    ) from history_error
                 current = self.delta.version(table_uri)
                 if committed is not None:
                     if current != committed.version:
@@ -2264,11 +2335,19 @@ class FabricSyncService:
         if target == source and current == source:
             restored_version = current
         elif target is None:
-            committed = self.delta.committed_transaction(
-                table_uri,
-                transaction_id=intent.intent_id,
-                transaction_digest=intent.outcome_digest,
-            )
+            try:
+                committed = self.delta.committed_transaction(
+                    table_uri,
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
+                )
+            except DeltaHistoryTruncatedError as history_error:
+                raise PublicationCheckpointError(
+                    f"Patch reset table {intent.table_name} cannot be reconciled "
+                    "because Delta transaction history is truncated; verify the "
+                    "table head and explicitly abandon the checkpoint if the "
+                    "intent cannot be proven"
+                ) from history_error
             if committed is not None:
                 if current != committed.version:
                     raise PublicationCheckpointError(
@@ -2293,11 +2372,19 @@ class FabricSyncService:
                     f"Patch reset table {intent.table_name} has no matching clear"
                 )
         else:
-            committed = self.delta.committed_transaction(
-                table_uri,
-                transaction_id=intent.intent_id,
-                transaction_digest=intent.outcome_digest,
-            )
+            try:
+                committed = self.delta.committed_transaction(
+                    table_uri,
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
+                )
+            except DeltaHistoryTruncatedError as history_error:
+                raise PublicationCheckpointError(
+                    f"Patch reset table {intent.table_name} cannot be reconciled "
+                    "because Delta transaction history is truncated; verify the "
+                    "table head and explicitly abandon the checkpoint if the "
+                    "intent cannot be proven"
+                ) from history_error
             if committed is not None:
                 if current != committed.version:
                     raise PublicationCheckpointError(

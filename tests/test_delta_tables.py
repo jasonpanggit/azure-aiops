@@ -13,6 +13,8 @@ from deltalake.exceptions import DeltaError
 import storage.delta_writer as delta_writer_module
 from fabric.schema_registry import schema_for
 from storage.delta_writer import (
+    DeltaHistoryTruncatedError,
+    DeltaVersionConflictError,
     DeltaWriteMode,
     DeltaWriter,
     DeltaWriteResult,
@@ -87,6 +89,55 @@ def test_delta_writer_overwrite_and_append_are_idempotent_by_run(tmp_path: Path)
     )
 
     assert {row["name"] for row in _rows(table)} == {"first", "second"}
+
+
+def test_append_skip_still_enforces_publication_version_fence(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "table"
+    writer = DeltaWriter()
+    row = {**REQUIRED, "name": "already-present"}
+    writer.write(table, [row], mode=DeltaWriteMode.APPEND)
+
+    with pytest.raises(
+        DeltaVersionConflictError,
+        match="changed after publication planning",
+    ):
+        writer.write(
+            table,
+            [row],
+            mode=DeltaWriteMode.APPEND,
+            expected_version=None,
+        )
+
+
+def test_committed_transaction_reports_saturated_history_as_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SaturatedTable:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def history(self, *, limit):
+            return [
+                {"version": index, "operation": "WRITE"}
+                for index in range(limit)
+            ]
+
+    writer = DeltaWriter()
+    monkeypatch.setattr(writer, "exists", lambda _uri: True)
+    monkeypatch.setattr(delta_writer_module, "DeltaTable", _SaturatedTable)
+
+    with pytest.raises(
+        DeltaHistoryTruncatedError,
+        match="history is truncated",
+    ):
+        writer.committed_transaction(
+            tmp_path / "table",
+            transaction_id="a" * 64,
+            transaction_digest="b" * 64,
+        )
 
 
 def test_delta_writer_reads_exact_historical_version(tmp_path: Path) -> None:
