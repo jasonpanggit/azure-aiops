@@ -540,7 +540,11 @@ def _canonical_body(**overrides):
     return body
 
 
-def test_authenticated_canonical_route_preserves_governed_result(tmp_path):
+def test_authenticated_canonical_route_preserves_governed_result(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     observed_calls: list[tuple[dict[str, list[str]], str | None, str | None]] = []
 
     class InventoryPort:
@@ -835,7 +839,11 @@ def test_canonical_route_rejects_conflicting_inventory_context_before_io(
     assert calls == []
 
 
-def test_canonical_route_validates_hints_and_scope_before_tool_io(tmp_path):
+def test_canonical_route_validates_hints_and_scope_before_tool_io(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[dict[str, list[str]]] = []
 
     class InventoryPort:
