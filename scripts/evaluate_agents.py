@@ -49,6 +49,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -79,6 +80,22 @@ RETRY_BACKOFF_SECONDS = 20
 
 class EvaluationConfigurationError(RuntimeError):
     """A missing local prerequisite that retries cannot repair."""
+
+
+class EvaluationResponseError(RuntimeError):
+    """A deployed evaluator response cannot satisfy the canonical contract."""
+
+
+@dataclass(frozen=True)
+class EvaluationThreadState:
+    """Canonical continuation coordinates retained for one evaluation group."""
+
+    thread_id: str
+    revision: int
+
+
+_CANONICAL_THREAD_ID = re.compile(r"^thr-[a-f0-9]{32}$")
+_CROSS_PRINCIPAL_GROUP = "scope.cross.principal:primary"
 
 
 # Versioned evaluation data (Plan 11-12). The corpus and thresholds are
@@ -478,22 +495,72 @@ def _send_evaluation_request(
         return json.load(response)
 
 
+def _validated_thread_state(
+    data: dict[str, Any],
+    *,
+    group: str,
+    previous: EvaluationThreadState | None,
+) -> EvaluationThreadState:
+    """Validate a canonical response before retaining continuation state."""
+
+    thread_id = data.get("thread_id")
+    if not isinstance(thread_id, str) or not _CANONICAL_THREAD_ID.fullmatch(
+        thread_id
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_id"
+        )
+    revision = data.get("thread_revision")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+    ):
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned an invalid thread_revision"
+        )
+    expected_revision = 1 if previous is None else previous.revision + 1
+    if previous is not None and thread_id != previous.thread_id:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} changed canonical thread_id"
+        )
+    if revision != expected_revision:
+        raise EvaluationResponseError(
+            f"continuity group {group!r} returned thread_revision {revision}; "
+            f"expected {expected_revision}"
+        )
+    return EvaluationThreadState(thread_id=thread_id, revision=revision)
+
+
 def _investigate(
     api: str,
     token: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
 ) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     if case.case_id == "scope.cross.principal":
-        primary = _send_evaluation_request(
-            api,
-            token,
-            "/api/v1/copilot/investigations",
-            _canonical_evaluation_body(case, requested_scope),
-            requested_scope,
-        )
-        primary_data = dict(primary.get("data") or {})
+        states = thread_states if thread_states is not None else {}
+        primary_state = states.get(_CROSS_PRINCIPAL_GROUP)
+        primary_scope: Any = requested_scope
+        if primary_state is None:
+            primary = _send_evaluation_request(
+                api,
+                token,
+                "/api/v1/copilot/investigations",
+                _canonical_evaluation_body(case, requested_scope),
+                requested_scope,
+            )
+            primary_data = dict(primary.get("data") or {})
+            primary_state = _validated_thread_state(
+                primary_data,
+                group=_CROSS_PRINCIPAL_GROUP,
+                previous=None,
+            )
+            states[_CROSS_PRINCIPAL_GROUP] = primary_state
+            primary_scope = primary.get("scope")
         secondary_token = os.environ.get(
             "AIOPS_EVALUATION_SECONDARY_TOKEN", ""
         ).strip()
@@ -503,10 +570,8 @@ def _investigate(
                 "cross-principal evaluation"
             )
         continued = _canonical_evaluation_body(case, requested_scope)
-        continued["thread_id"] = primary_data.get("thread_id")
-        continued["expected_thread_revision"] = primary_data.get(
-            "thread_revision"
-        )
+        continued["thread_id"] = primary_state.thread_id
+        continued["expected_thread_revision"] = primary_state.revision
         denied = False
         try:
             _send_evaluation_request(
@@ -520,9 +585,14 @@ def _investigate(
             denied = exc.code == 404
             if not denied:
                 raise
+        if not denied:
+            raise EvaluationResponseError(
+                "secondary principal was not denied access to the primary "
+                "evaluation thread"
+            )
         return (
             {
-                "_response_scope": primary.get("scope"),
+                "_response_scope": primary_scope,
                 "_cross_principal_denied": denied,
                 "_disposition_ok": True,
                 "status": "denied" if denied else "ok",
@@ -537,8 +607,31 @@ def _investigate(
             (time.monotonic() - started) * 1000,
         )
 
+    continuity_group: str | None = None
+    previous_thread: EvaluationThreadState | None = None
     if getattr(case, "disposition", "integrated") == "integrated":
         body = _canonical_evaluation_body(case, requested_scope)
+        continuity_group = getattr(case, "continuity_group", None)
+        if continuity_group and thread_states is not None:
+            continuity_turn = getattr(case, "continuity_turn", None)
+            previous_thread = thread_states.get(continuity_group)
+            if continuity_turn is None:
+                raise EvaluationConfigurationError(
+                    f"continuity group {continuity_group!r} has no turn index"
+                )
+            if continuity_turn > 1 and previous_thread is None:
+                raise EvaluationResponseError(
+                    f"missing continuity state for group {continuity_group!r} "
+                    f"before turn {continuity_turn}"
+                )
+            if continuity_turn == 1 and previous_thread is not None:
+                raise EvaluationResponseError(
+                    f"continuity group {continuity_group!r} already has state "
+                    "before its first turn"
+                )
+            if previous_thread is not None:
+                body["thread_id"] = previous_thread.thread_id
+                body["expected_thread_revision"] = previous_thread.revision
         endpoint = "/api/v1/copilot/investigations"
     elif case.case_id == "dedicated.investigate":
         body = {"objective": case.question}
@@ -611,6 +704,12 @@ def _investigate(
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         body = json.load(response)
     data = dict(body.get("data") or {})
+    if continuity_group and thread_states is not None:
+        thread_states[continuity_group] = _validated_thread_state(
+            data,
+            group=continuity_group,
+            previous=previous_thread,
+        )
     data["_response_scope"] = body.get("scope")
     data["_disposition_ok"] = True
     return data, (time.monotonic() - started) * 1000
@@ -742,6 +841,8 @@ def _run_case(
     resource: str,
     case: Case | EvalCase,
     requested_scope: dict[str, list[str]],
+    *,
+    thread_states: dict[str, EvaluationThreadState] | None = None,
 ) -> Result:
     """Run one case, retrying transient gateway failures.
 
@@ -752,12 +853,19 @@ def _run_case(
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            data, latency = _investigate(
+            investigate_args = (
                 api,
                 _token(resource),
                 case,
                 requested_scope,
             )
+            if thread_states is None:
+                data, latency = _investigate(*investigate_args)
+            else:
+                data, latency = _investigate(
+                    *investigate_args,
+                    thread_states=thread_states,
+                )
             break
         except urllib.error.HTTPError as exc:
             body = exc.read()[:200]
@@ -769,6 +877,8 @@ def _run_case(
                 continue
             return Result(case.case_id, ok=False, error=last_error)
         except EvaluationConfigurationError as exc:
+            return Result(case.case_id, ok=False, error=str(exc))
+        except EvaluationResponseError as exc:
             return Result(case.case_id, ok=False, error=str(exc))
         except Exception as exc:  # noqa: BLE001 - one bad case must not end the run
             last_error = str(exc)
@@ -1062,6 +1172,7 @@ class EvalCase:
     expect_capabilities: tuple[str, ...] = ()
     safety: dict[str, Any] = field(default_factory=dict)
     continuity_group: str | None = None
+    continuity_turn: int | None = None
     note: str = ""
 
     def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
@@ -1090,7 +1201,13 @@ def load_cases(path: Path | str) -> list[EvalCase]:
             f"unsupported dataset_version {version!r}; expected {DATASET_VERSION!r}"
         )
     cases: list[EvalCase] = []
+    continuity_turns: dict[str, int] = {}
     for raw in payload["cases"]:
+        continuity_group = raw.get("continuity_group")
+        continuity_turn = None
+        if continuity_group:
+            continuity_turn = continuity_turns.get(continuity_group, 0) + 1
+            continuity_turns[continuity_group] = continuity_turn
         cases.append(
             EvalCase(
                 case_id=raw["case_id"],
@@ -1103,7 +1220,8 @@ def load_cases(path: Path | str) -> list[EvalCase]:
                 disposition=raw["disposition"],
                 expect_capabilities=tuple(raw.get("expect_capabilities", ())),
                 safety=dict(raw.get("safety", {})),
-                continuity_group=raw.get("continuity_group"),
+                continuity_group=continuity_group,
+                continuity_turn=continuity_turn,
                 note=raw.get("note", ""),
             )
         )
@@ -2189,6 +2307,7 @@ def main() -> int:
     print(f"Evaluating {len(cases)} cases against {args.api}\n")
 
     results: list[Result] = []
+    thread_states: dict[str, EvaluationThreadState] = {}
     for index, case in enumerate(cases, start=1):
         if index > 1:
             time.sleep(PAUSE_BETWEEN_CASES_SECONDS)
@@ -2208,6 +2327,7 @@ def main() -> int:
                 args.resource,
                 case,
                 requested_scope,
+                thread_states=thread_states,
             )
         results.append(result)
         if result.error:

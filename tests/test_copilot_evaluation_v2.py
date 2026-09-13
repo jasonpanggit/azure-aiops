@@ -2115,6 +2115,223 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         assert body["snapshot"]["material_claims"] == []
 
 
+def test_production_dispatch_propagates_canonical_continuity_state(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.continuity_group == "cont-inv-cve"
+    ]
+    requests: list[tuple[str, dict[str, Any], str]] = []
+    thread_id = "thr-" + "a" * 32
+
+    def urlopen(request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        body = json.loads(request.data.decode())
+        requests.append(
+            (
+                request.full_url,
+                body,
+                request.get_header("Authorization") or "",
+            )
+        )
+        revision = len(requests)
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": revision,
+                        "selected_specialists": list(
+                            cases[revision - 1].expect_specialists
+                        ),
+                        "selected_tools": [],
+                        "tool_results": [],
+                        "citations": [],
+                        "synthesis": {
+                            "status": "deterministic",
+                            "claims": [],
+                        },
+                        "mutation_authorized": False,
+                    },
+                    "scope": {"subscription": ["sub-a"]},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    thread_states = {}
+
+    results = [
+        evaluate_agents._run_case(
+            "https://example.invalid",
+            "resource",
+            case,
+            {"subscription": ["sub-a"]},
+            thread_states=thread_states,
+        )
+        for case in cases
+    ]
+
+    assert len(requests) == 2
+    first_url, first_body, first_authorization = requests[0]
+    second_url, second_body, second_authorization = requests[1]
+    assert first_url == second_url == (
+        "https://example.invalid/api/v1/copilot/investigations"
+        "?subscription=sub-a"
+    )
+    assert first_authorization == second_authorization == "Bearer token"
+    assert "thread_id" not in first_body
+    assert "expected_thread_revision" not in first_body
+    assert second_body["thread_id"] == thread_id
+    assert second_body["expected_thread_revision"] == 1
+    assert first_body["requested_scope"] == second_body["requested_scope"] == {
+        "subscription": ["sub-a"]
+    }
+    assert [result.error for result in results] == ["", ""]
+    assert thread_states["cont-inv-cve"].thread_id == thread_id
+    assert thread_states["cont-inv-cve"].revision == 2
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "thread_revision", "error_fragment"),
+    [
+        (None, 1, "thread_id"),
+        ("not-a-canonical-thread", 1, "thread_id"),
+        ("thr-" + "b" * 32, None, "thread_revision"),
+        ("thr-" + "b" * 32, True, "thread_revision"),
+        ("thr-" + "b" * 32, 2, "expected 1"),
+    ],
+)
+def test_production_dispatch_fails_on_invalid_canonical_thread_state(
+    monkeypatch,
+    thread_id,
+    thread_revision,
+    error_fragment,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn1"
+    )
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": thread_revision,
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert error_fragment in result.error
+
+
+def test_production_dispatch_fails_when_a_later_turn_has_no_group_state(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "cont.inv.turn2"
+    )
+    called = False
+
+    def urlopen(_request, *, timeout):
+        del timeout
+        nonlocal called
+        called = True
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(evaluate_agents, "MAX_ATTEMPTS", 1)
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+        {"subscription": ["sub-a"]},
+        thread_states={},
+    )
+
+    assert result.ok is False
+    assert "missing continuity state" in result.error
+    assert called is False
+
+
+def test_production_dispatch_rejects_a_skipped_thread_revision(
+    monkeypatch,
+):
+    evaluate_agents = _load_evaluate_agents()
+    cases = [
+        case
+        for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.continuity_group == "cont-net-rem"
+    ]
+    thread_id = "thr-" + "c" * 32
+    response_revisions = iter((1, 3))
+
+    def urlopen(_request, *, timeout):
+        assert timeout == evaluate_agents.REQUEST_TIMEOUT_SECONDS
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": {
+                        "thread_id": thread_id,
+                        "thread_revision": next(response_revisions),
+                    }
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
+    thread_states = {}
+
+    first = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[0],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+    second = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        cases[1],
+        {"subscription": ["sub-a"]},
+        thread_states=thread_states,
+    )
+
+    assert first.error == ""
+    assert second.ok is False
+    assert "thread_revision 3; expected 2" in second.error
+    assert thread_states["cont-net-rem"].revision == 1
+
+
 def test_run_case_scores_realistic_canonical_response_and_release_gates(
     monkeypatch,
 ):
@@ -2351,6 +2568,12 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             and body
             and body.get("thread_id")
         ):
+            assert body["thread_id"] == thread_id
+            assert body["expected_thread_revision"] == 1
+            assert (
+                request.get_header("Authorization")
+                == "Bearer secondary-token"
+            )
             raise urllib.error.HTTPError(
                 request.full_url,
                 404,
@@ -2413,6 +2636,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
 
     monkeypatch.setattr(evaluate_agents.urllib.request, "urlopen", urlopen)
     monkeypatch.setenv("AIOPS_EVALUATION_SECONDARY_TOKEN", "secondary-token")
+    thread_states = {}
 
     results = {
         case_id: evaluate_agents._investigate(
@@ -2420,6 +2644,7 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
             "primary-token",
             case,
             {"subscription": ["sub-a"]},
+            thread_states=thread_states,
         )[0]
         for case_id, case in cases.items()
     }
@@ -2427,6 +2652,14 @@ def test_dedicated_cases_use_production_contracts_and_two_principals(
     assert (
         results["scope.cross.principal"]["_cross_principal_denied"]
         is True
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].thread_id
+        == thread_id
+    )
+    assert (
+        thread_states["scope.cross.principal:primary"].revision
+        == 1
     )
     assert results["dedicated.investigate"]["selected_specialists"] == [
         "incident"
@@ -2747,8 +2980,21 @@ def test_main_release_run_executes_cases_from_the_external_corpus(
     )
     seen: list[str] = []
 
-    def run_case(_api, _resource, case, requested_scope):
+    dispatched_thread_states = None
+
+    def run_case(
+        _api,
+        _resource,
+        case,
+        requested_scope,
+        *,
+        thread_states,
+    ):
+        nonlocal dispatched_thread_states
         assert requested_scope == {"subscription": ["sub-a"]}
+        if dispatched_thread_states is None:
+            dispatched_thread_states = thread_states
+        assert thread_states is dispatched_thread_states
         seen.append(case.case_id)
         return evaluate_agents.Result(
             case_id=case.case_id,
