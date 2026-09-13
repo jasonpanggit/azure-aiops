@@ -206,11 +206,36 @@ Plans:
 - [x] 03.6-05-PLAN.md — Frontend RecoveryControls (Cancel/Retry/Supersede) + always-visible facts + reconciliation + lineage
 - [x] 03.6-06-PLAN.md — Playwright E2E setup + smoke/workflow-safety specs + Manual QA backstop sign-off
 
+### Phase 03.7: Fabric Publication Decoupling and Query Scale (INSERTED)
+
+**Goal:** Reduce Fabric publication and request-time load by separating domain projection from atomic publication, retiring legacy generation remapping from production reads, and pushing inventory scope/filter/count/pagination into the Fabric-backed read path.
+**Requirements:** MED-11, MED-12, MED-13
+**Depends on:** Phase 03.1, Phase 7, Phase 9, Phase 13
+**Success Criteria** (what must be TRUE):
+
+  1. Fabric publication stages and promotes versioned domain products without running unrelated change, predictive, incident, or other domain intelligence pipelines inside the publication transaction.
+  2. Production health, semantic, network, and vulnerability providers do not rebuild the full mapped medallion model from every connection generation at request time.
+  3. Inventory list and lookup operations push authorized scope, filters, ordering, counts, and pagination into the Fabric-backed query adapter without a fixed 10,000-row pre-pagination ceiling.
+  4. Existing immutable observations, generation replay, active-pointer rollback, ontology consistency, source status, Exposure Gold contracts, and bounded PageSnapshot behavior remain intact.
+
+**Plans:** 8 plans
+Plans:
+
+- [ ] 03.7-01-PLAN.md — Create Wave 0 publication, probe, query-scale, and benchmark contracts
+- [ ] 03.7-02-PLAN.md — Gate generation-qualified inventory storage and namespaced product-pointer layout
+- [ ] 03.7-03-PLAN.md — Trace one five-table inventory product through atomic promotion to a scoped SQL page
+- [ ] 03.7-04-PLAN.md — Move unrelated domain projection outside product publication while preserving outputs
+- [ ] 03.7-05-PLAN.md — Cut production providers and health probes to published status/read ports
+- [ ] 03.7-06-PLAN.md — Complete scope-first inventory querying and migrate every fixed-ceiling identity scan
+- [ ] 03.7-07-PLAN.md — Add measured shadow, staged cutover, telemetry, and non-destructive rollback
+- [ ] 03.7-08-PLAN.md — Approve deployed evidence, observe duplicate writes, and disposition compatibility aliases
+**UI hint:** no
+
 ### Phase 4: Domain Coverage and Operational Twin
 
 **Goal:** SRE, platform, and security operators can validate the complete workflow across representative domains and replay the evidence and twin context behind decisions.
 **Mode:** mvp
-**Depends on:** Phase 3, Phase 03.1
+**Depends on:** Phase 3, Phase 03.1, Phase 03.7
 **Requirements:** PILOT-01, PILOT-02, PILOT-03
 **Success Criteria** (what must be TRUE):
 
@@ -244,6 +269,7 @@ Plans:
 | 1. Evidence and Situation Foundation | 3/3 | In Progress|  |
 | 2. Investigation, Recommendation, and Approval | 0/TBD | Not started | - |
 | 3. Safe Remediation Execution | 6/6 | In Progress|  |
+| 03.7 Fabric Publication Decoupling and Query Scale | 0/8 | Not started | - |
 | 4. Domain Coverage and Operational Twin | 0/TBD | Not started | - |
 | 5. Controlled Pilot Readiness | 0/TBD | Not started | - |
 | 6. Software and OS Inventory Visibility | 9/9 | Code-complete, UAT pending | - |
