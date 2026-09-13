@@ -144,7 +144,9 @@ raise SystemExit(1 if errors else 0)
       evidence: [{
         source_engine: "test",
         source_table: "page-provenance",
+        timestamp: "2026-09-13T00:00:00Z",
         confidence: "high",
+        freshness: "fresh",
       }],
       coverage: [{
         key: "situations",
