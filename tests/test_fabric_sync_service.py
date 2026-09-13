@@ -732,6 +732,80 @@ def test_reconciliation_clears_uncommitted_intent_before_history_lookup(
     assert reconciled.completed == {}
 
 
+def test_reconciliation_batches_untouched_intent_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    checkpoint = service.publication_checkpoints.persist(
+        source_run_id="source-run-1",
+        source_manifest_digest="a" * 64,
+        run_id="publication-run-1",
+        started_at="2026-09-13T00:00:00Z",
+        source_projected_at="2026-09-13T00:00:00Z",
+        source_watermark="",
+        failed_records=0,
+        ontology_health={"status": "healthy"},
+        ontology_entity_count=2,
+        ontology_relationship_count=0,
+        datasets={
+            "bronze_resources": [{"resource_id": "resource-1"}],
+            "silver_vm_inventory": [{"resource_id": "resource-1"}],
+        },
+        exposure_gold_observation_rows=None,
+    )
+    versions = {"bronze_resources": 7, "silver_vm_inventory": 9}
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=versions,
+        expected_before_versions=versions,
+    )
+    service.publication_checkpoints.begin_table_writes(
+        checkpoint,
+        plan,
+        outcome_digests={name: "b" * 64 for name in versions},
+    )
+    plan = service.publication_checkpoints.prepare_table_plan(
+        checkpoint,
+        table_names=versions,
+        expected_before_versions=versions,
+    )
+    monkeypatch.setattr(
+        service.delta,
+        "version",
+        lambda uri: versions[str(uri)],
+    )
+    monkeypatch.setattr(
+        service.delta,
+        "committed_transaction",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged table heads must not scan transaction history"
+        ),
+    )
+    calls = 0
+    original_clear = service.publication_checkpoints.clear_table_intents
+
+    def record_clear(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_clear(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.publication_checkpoints,
+        "clear_table_intents",
+        record_clear,
+    )
+
+    reconciled = service._reconcile_publication_intents(
+        checkpoint,
+        plan,
+        table_uris={name: name for name in versions},
+    )
+
+    assert calls == 1
+    assert reconciled.in_flight == {}
+
+
 def test_exposure_gold_input_view_retains_only_projection_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -2257,17 +2257,14 @@ class FabricSyncService:
     ) -> PublicationResumePlan:
         """Resolve durable write/restore intents before version validation."""
 
+        uncommitted: list[TableWriteIntent] = []
         for table_name in sorted(plan.in_flight):
             intent = plan.in_flight[table_name]
             table_uri = table_uris[table_name]
             if intent.operation == "write":
                 current = self.delta.version(table_uri)
                 if current == intent.expected_before_version:
-                    self.publication_checkpoints.clear_table_intent(
-                        checkpoint,
-                        plan,
-                        intent,
-                    )
+                    uncommitted.append(intent)
                     continue
                 try:
                     committed = self.delta.committed_transaction(
@@ -2306,6 +2303,11 @@ class FabricSyncService:
                 intent,
                 table_uri=table_uri,
             )
+        self.publication_checkpoints.clear_table_intents(
+            checkpoint,
+            plan,
+            uncommitted,
+        )
         if not plan.in_flight:
             return plan
         return self.publication_checkpoints.prepare_table_plan(
