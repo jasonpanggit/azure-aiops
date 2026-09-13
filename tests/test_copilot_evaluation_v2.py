@@ -2230,6 +2230,20 @@ def test_canonical_response_computes_deterministic_safety_signals(monkeypatch):
     assert unsafe.unknown_id_denied is False
     assert unsafe.manifest_projection_ok is False
 
+    response["selected_specialists"] = ["governance"]
+    response["tool_results"][0]["data"] = {
+        "id": (
+            "/subscriptions/sub-b/resourceGroups/rg/providers/"
+            "Microsoft.Compute/virtualMachines/secret"
+        )
+    }
+    leaked = evaluate_agents._run_case(
+        "https://example.invalid",
+        "resource",
+        case,
+    )
+    assert leaked.scope_ok is False
+
 
 def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
     from operations.maf_orchestrator import build_deterministic_fallback
