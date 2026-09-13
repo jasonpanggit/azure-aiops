@@ -22,7 +22,7 @@ from .auth import Authenticator
 from .errors import ApiError, ErrorCode
 from .providers import ProviderRuntime, ProviderUnavailableError
 from .rbac import Authorizer, Principal
-from .scope import Scope
+from .scope import Scope, subscription_ids_for_scope
 from .telemetry import ApiTelemetry
 
 
@@ -241,6 +241,26 @@ def get_context(request: Request) -> ApiContext:
 
 
 Context = Annotated[ApiContext, Depends(get_context)]
+
+
+def live_subscription_ids(
+    context: ApiContext,
+    scope: Scope,
+    *,
+    default_all: bool = False,
+) -> list[str]:
+    """Map a page's authorized scope to active onboarded Azure connections."""
+    if (
+        not default_all
+        and not scope.values("subscription")
+        and not scope.values("subscription_connection")
+    ):
+        return []
+    return subscription_ids_for_scope(
+        scope,
+        context.onboarding.registry.list(include_disabled=False),
+        default_all=default_all,
+    )
 
 
 def get_principal(request: Request, context: Context) -> Principal:

@@ -7,6 +7,8 @@ validated end to end, without touching real Azure.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -51,9 +53,19 @@ class _FakeMetricsClient:
 
 
 def _connection():
-    from types import SimpleNamespace
-
-    return SimpleNamespace(connection_id="conn-1", subscription_id=PROD_SUB, is_active=True)
+    return SimpleNamespace(
+        connection_id="conn-1",
+        tenant_id="tenant-1",
+        subscription_id=PROD_SUB,
+        credential=SimpleNamespace(
+            credential_id="credential-1",
+            kind="service_principal",
+            tenant_id="tenant-1",
+            client_id="client-1",
+            secret_ref="keyvault://vault/secrets/conn-1/v1",
+        ),
+        is_active=True,
+    )
 
 
 def _client(tmp_path, *, with_provider: bool = True, call_counter: list[int] | None = None) -> TestClient:
@@ -105,6 +117,39 @@ def test_returns_live_utilization_for_scoped_resources(client):
     assert resources[0]["cpu_percent"] == 95.0
     assert resources[0]["status"] == "critical"
     assert body["data"]["unavailable_metrics"] == ["memory_percent", "disk_free_percent"]
+
+
+def test_connection_scoped_page_read_resolves_its_subscription(tmp_path):
+    captured: list[list[str]] = []
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    onboarding.registry.list = (  # type: ignore[method-assign]
+        lambda *, include_disabled=False: [_connection()]
+    )
+
+    def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        captured.append(subscription_ids)
+        return ResourceHealthService(
+            connections=lambda: [_connection()],
+            resource_lister=lambda _conn: [_vm_row("vm-1")],
+            metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=hybrid_resource_health,
+    )
+    scoped_client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = scoped_client.get(
+        "/api/v1/resource-health?subscription_connection=conn-1",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert captured == [[PROD_SUB]]
 
 
 def test_carries_evidence_naming_the_engine(client):
@@ -234,3 +279,65 @@ def test_different_subscription_scopes_do_not_share_a_cache_entry(tmp_path):
     assert (
         len(resource_health_router._resource_health_cache) == 2
     ), "each distinct subscription scope should get its own cache entry"
+
+
+def test_replaced_connection_identity_does_not_reuse_cached_subscription_data(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+    current_connection = [
+        SimpleNamespace(
+            connection_id="conn-a",
+            tenant_id="tenant-a",
+            subscription_id=PROD_SUB,
+            credential=SimpleNamespace(
+                credential_id="credential-a",
+                kind="service_principal",
+                tenant_id="tenant-a",
+                client_id="client-a",
+                secret_ref="keyvault://vault/secrets/conn-a/v1",
+            ),
+            is_active=True,
+        )
+    ]
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    onboarding.registry.list = (  # type: ignore[method-assign]
+        lambda *, include_disabled=False: list(current_connection)
+    )
+
+    def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        calls.append(current_connection[0].connection_id)
+        return ResourceHealthService(
+            connections=lambda: list(current_connection),
+            resource_lister=lambda _conn: [_vm_row("vm-1")],
+            metrics_client_factory=lambda _conn: _FakeMetricsClient(),
+        )
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=hybrid_resource_health,
+    )
+    scoped_client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    first = scoped_client.get("/api/v1/resource-health", headers=_auth())
+    current_connection[0] = SimpleNamespace(
+        connection_id="conn-b",
+        tenant_id="tenant-b",
+        subscription_id=PROD_SUB,
+        credential=SimpleNamespace(
+            credential_id="credential-b",
+            kind="service_principal",
+            tenant_id="tenant-b",
+            client_id="client-b",
+            secret_ref="keyvault://vault/secrets/conn-b/v1",
+        ),
+        is_active=True,
+    )
+    second = scoped_client.get("/api/v1/resource-health", headers=_auth())
+
+    assert first.status_code == second.status_code == 200
+    assert calls == ["conn-a", "conn-b"]
+    assert len(resource_health_router._resource_health_cache) == 2

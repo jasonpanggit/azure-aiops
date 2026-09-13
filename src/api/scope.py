@@ -164,3 +164,42 @@ def scope_attributes(payload: Mapping[str, Any]) -> dict[str, str]:
                 attributes[dimension] = _normalize(payload[key])
                 break
     return attributes
+
+
+def subscription_ids_for_scope(
+    scope: Scope,
+    connections: Iterable[Any],
+    *,
+    default_all: bool = False,
+) -> list[str]:
+    """Resolve live Azure subscription scope through active connection records."""
+    selected_subscriptions = scope.values("subscription")
+    selected_connections = scope.values("subscription_connection")
+    if not default_all and not selected_subscriptions and not selected_connections:
+        return []
+    if selected_subscriptions and not selected_connections:
+        return sorted(selected_subscriptions)
+    matched: dict[str, None] = {}
+    for connection in connections:
+        if not getattr(connection, "is_active", True):
+            continue
+        subscription_id = str(
+            getattr(connection, "subscription_id", "") or ""
+        ).strip()
+        connection_id = str(
+            getattr(connection, "connection_id", "") or ""
+        ).strip()
+        if not subscription_id or (selected_connections and not connection_id):
+            continue
+        if (
+            selected_subscriptions
+            and subscription_id.casefold() not in selected_subscriptions
+        ):
+            continue
+        if (
+            selected_connections
+            and connection_id.casefold() not in selected_connections
+        ):
+            continue
+        matched.setdefault(subscription_id, None)
+    return list(matched)
