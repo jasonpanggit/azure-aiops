@@ -456,6 +456,11 @@ class OrchestrationService:
                 principal_subject,
                 requested_scope,
             )
+            if (
+                request.expected_thread_revision is not None
+                and request.expected_thread_revision != thread.revision
+            ):
+                raise ThreadRevisionConflict(current_revision=thread.revision)
             thread_outcome = "continued"
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
@@ -598,6 +603,7 @@ class OrchestrationService:
                 requested_scope=requested_scope,
                 question=request.question,
                 result=result,
+                reconcile_conflict=request.expected_thread_revision is None,
             ),
             synthesis=synthesis,
         )
@@ -880,6 +886,11 @@ class OrchestrationService:
                 principal_subject,
                 requested_scope,
             )
+            if (
+                request.expected_thread_revision is not None
+                and request.expected_thread_revision != thread.revision
+            ):
+                raise ThreadRevisionConflict(current_revision=thread.revision)
         else:
             thread = self.thread_store.create(principal_subject, requested_scope)
         result = OrchestrationResult(
@@ -898,6 +909,7 @@ class OrchestrationService:
             requested_scope=requested_scope,
             question=request.question,
             result=result,
+            reconcile_conflict=request.expected_thread_revision is None,
         )
 
     def _record_turn(
@@ -908,14 +920,14 @@ class OrchestrationService:
         requested_scope: Scope,
         question: str,
         result: OrchestrationResult,
+        reconcile_conflict: bool = True,
     ) -> OrchestrationResult:
         """Append one turn under optimistic concurrency and report the outcome.
 
-        Two tabs on the same thread are a normal thing for an operator to do,
-        so a superseded revision is reconciled once against the current record
-        rather than failing the turn. The reconciliation is stated in
-        ``uncertainty`` so the caller knows its revision was not the one it
-        read.
+        Legacy callers without an expected revision reconcile one concurrent
+        append for compatibility. CAS-bearing callers fail closed instead:
+        after they have named the revision they observed, silently appending
+        to a newer revision would violate that request contract.
         """
 
         payload = {"question": question, **result.model_dump(mode="json")}
@@ -928,6 +940,8 @@ class OrchestrationService:
                 expected_revision=thread.revision,
             )
         except ThreadRevisionConflict as conflict:
+            if not reconcile_conflict:
+                raise
             reconciliation_warning = (
                 "A concurrent turn superseded this thread revision."
             )
