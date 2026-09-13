@@ -147,7 +147,7 @@ class _ManifestCatalogEntry:
 def build_deterministic_fallback(
     request: Any,
     manifest: Any,
-) -> Any:
+) -> Any | None:
     """Construct a keyword-selected CandidatePlan that passes the same policy.
 
     Uses ``select_specialists_for_turn`` for keyword matching, constrained to
@@ -182,50 +182,94 @@ def build_deterministic_fallback(
         limit=4,
     )
 
-    # Keep only specialists that map to this page and have at least one tool.
-    valid_ids: list[str] = []
-    for sid in decision.selected_ids:
-        try:
-            spec = manifest.require(sid)
-        except ValueError:
-            continue
-        if page_kind in spec.page_mappings and spec.operations_mcp_tools:
-            valid_ids.append(sid)
-
-    # If keyword selection found nothing for this page, use the page default.
-    if not valid_ids:
-        for spec in manifest.specialists:
-            if (
-                spec.id != "executive_summary"
-                and page_kind in spec.page_mappings
-                and spec.operations_mcp_tools
-            ):
-                valid_ids.append(spec.id)
-                break
-
     citation_ids = [item.evidence_id for item in request.snapshot.evidence]
     if not citation_ids:
         citation_ids = [COVERAGE_CITATION_ID]
 
+    from operations.mcp_server import validate_tool_arguments
+
+    def explicit_subject() -> str:
+        entities = [
+            *request.snapshot.selected_entities,
+            *[
+                item.entity
+                for item in request.snapshot.evidence
+                if item.entity is not None and (item.selected or item.direct)
+            ],
+        ]
+        for entity in entities:
+            resource_id = str(getattr(entity, "resource_id", "") or "").strip()
+            if resource_id:
+                return resource_id
+            source_key = str(getattr(entity, "source_key", "") or "").strip()
+            if source_key:
+                return source_key
+        return ""
+
+    def safe_call(spec: Any) -> ToolCallCandidate | None:
+        for tool in spec.operations_mcp_tools:
+            try:
+                arguments, _ = validate_tool_arguments(tool, {})
+            except ValueError:
+                try:
+                    _, missing = validate_tool_arguments(
+                        tool,
+                        {},
+                        require_required=False,
+                    )
+                except ValueError:
+                    continue
+                derived: dict[str, Any] = {}
+                for field in missing:
+                    if field == "subject" and explicit_subject():
+                        derived[field] = explicit_subject()
+                    elif field == "query" and request.snapshot.query:
+                        derived[field] = request.snapshot.query
+                    else:
+                        break
+                else:
+                    try:
+                        arguments, _ = validate_tool_arguments(tool, derived)
+                    except ValueError:
+                        continue
+                    return ToolCallCandidate(
+                        tool=tool,
+                        arguments=arguments,
+                        citation_ids=citation_ids,
+                    )
+                continue
+            return ToolCallCandidate(
+                tool=tool,
+                arguments=arguments,
+                citation_ids=citation_ids,
+            )
+        return None
+
+    ordered_ids = list(decision.selected_ids)
+    for specialist_id in page_mapping.get(page_kind, ()):
+        if specialist_id not in ordered_ids:
+            ordered_ids.append(specialist_id)
+
     steps: list[SpecialistStep] = []
-    for sid in valid_ids:
-        spec = manifest.require(sid)
+    for sid in ordered_ids:
+        try:
+            spec = manifest.require(sid)
+        except ValueError:
+            continue
+        if page_kind not in spec.page_mappings:
+            continue
+        call = safe_call(spec)
+        if call is None:
+            continue
         steps.append(
             SpecialistStep(
                 specialist_id=sid,
-                tool_calls=[
-                    ToolCallCandidate(
-                        tool=spec.operations_mcp_tools[0],
-                        arguments={},
-                        citation_ids=citation_ids,
-                    )
-                ],
+                tool_calls=[call],
             )
         )
 
     if not steps:
-        # Absolute guard — should never be reached for a valid manifest.
-        raise ValueError("no page-compatible specialist with tools found")
+        return None
 
     return CandidatePlan(
         steps=steps,

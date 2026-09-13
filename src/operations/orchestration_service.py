@@ -500,7 +500,7 @@ class OrchestrationService:
             effective_scope,
         )
         wall_seconds = min(
-            candidate.max_wall_seconds,
+            candidate.max_wall_seconds if candidate is not None else 5,
             self.policy.limits.max_wall_seconds,
         )
         if max_wall_seconds is not None:
@@ -526,7 +526,7 @@ class OrchestrationService:
             f"{thread.thread_id}:rev-{thread.revision + 1}:turn-{uuid.uuid4().hex}"
         )
 
-        for step_index, step in enumerate(candidate.steps):
+        for step_index, step in enumerate(candidate.steps if candidate else ()):
             selected_specialists.append(step.specialist_id)
             for call_index, call in enumerate(step.tool_calls):
                 if self.clock() >= deadline:
@@ -588,6 +588,10 @@ class OrchestrationService:
             tool_statuses,
             budget_exhausted=budget_exhausted,
         )
+        if candidate is None:
+            uncertainty.append(
+                "No safe page tool call could be formed from validated snapshot context."
+            )
         status = self._result_status(
             tool_statuses,
             uncertainty,
@@ -1452,7 +1456,7 @@ class OrchestrationService:
         self,
         request: InvestigationRequest,
         effective_scope: Scope,
-    ) -> tuple[CandidatePlan, str, str]:
+    ) -> tuple[CandidatePlan | None, str, str]:
         if self.planner is None:
             return self._validated_fallback(
                 request,
@@ -1506,8 +1510,10 @@ class OrchestrationService:
         request: InvestigationRequest,
         effective_scope: Scope,
         reason: str,
-    ) -> tuple[CandidatePlan, str, str]:
+    ) -> tuple[CandidatePlan | None, str, str]:
         fallback = _fallback_candidate(request)
+        if fallback is None:
+            return None, "fallback", "no_safe_tool_arguments"
         validated = self.policy.validate(
             request=request,
             candidate=fallback,
