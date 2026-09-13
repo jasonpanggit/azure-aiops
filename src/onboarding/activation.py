@@ -39,6 +39,11 @@ _COMPLETION_FIELDS: dict[str, frozenset[str]] = {
     "temporal_projection": frozenset(
         {"entity_count", "relationship_count", "failure_count"}
     ),
+    "temporal_retained_load": frozenset({"row_count", "failure_count"}),
+    "temporal_legacy_normalization": frozenset({"row_count", "failure_count"}),
+    "temporal_observation_combination": frozenset({"row_count", "failure_count"}),
+    "temporal_current_projection": frozenset({"row_count", "failure_count"}),
+    "temporal_immutable_checks": frozenset({"row_count", "failure_count"}),
     "container_projection": frozenset(
         {"entity_count", "relationship_count", "failure_count"}
     ),
@@ -48,14 +53,73 @@ _COMPLETION_FIELDS: dict[str, frozenset[str]] = {
     "ontology_validation": frozenset(
         {"entity_count", "relationship_count", "failure_count"}
     ),
-    "table_publication": frozenset(
-        {"table_name", "row_count", "completed", "total"}
-    ),
+    "table_publication": frozenset(    {
+        "table_name",
+        "row_count",
+        "completed",
+        "total",
+        "remaining_tables",
+        "resumed_tables",
+        "skipped_tables",
+        "checkpoint_id",
+        "checkpoint_state",
+        "publication_id",
+        "current_phase",
+    }),
     "fabric_asset_registration": frozenset(),
     "ontology_publication": frozenset(),
     "gold_staging": frozenset(),
     "shortcut_finalization": frozenset(),
     "pointer_activation": frozenset(),
+    "checkpoint_persistence": frozenset(
+        {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_restore": frozenset(
+        {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "publication_resume": frozenset(
+        {
+            "completed",
+            "total",
+            "remaining_tables",
+            "resumed_tables",
+            "skipped_tables",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_finalization": frozenset(
+        {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_activation_pending": frozenset(
+        {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
     "fabric_publication": frozenset(),
     "activation": frozenset(),
 }
@@ -68,6 +132,9 @@ _COUNT_FIELDS = frozenset(
         "entity_count",
         "relationship_count",
         "failure_count",
+        "remaining_tables",
+        "resumed_tables",
+        "skipped_tables",
     }
 )
 _SAFE_ERROR_CODES = frozenset({"ACTIVATION_FAILED"})
@@ -114,8 +181,8 @@ def build_activation_progress_event(
 
     Completion payloads are fixed per stage. Counts are non-boolean integers
     in the inclusive range 0..2,147,483,647, table names are bounded logical
-    names, and failed events contain only ``error_code``. Elapsed time is in
-    monotonic seconds.
+    names, checkpoint/publication IDs are opaque SHA-256 values, and failed
+    events contain only ``error_code``. Elapsed time is in monotonic seconds.
     """
     if stage not in _COMPLETION_FIELDS:
         raise ValueError("Unknown activation progress stage")
@@ -152,6 +219,30 @@ def build_activation_progress_event(
             table_name
         ):
             raise ValueError("table_name must be a bounded logical table name")
+    for field in ("checkpoint_id", "publication_id"):
+        value = payload.get(field)
+        if value not in (None, "") and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value)
+        ):
+            raise ValueError(f"{field} must be an opaque SHA-256 identifier")
+    if "checkpoint_state" in payload and payload["checkpoint_state"] not in {
+        "",
+        "persisted",
+        "restored",
+        "activation_pending",
+        "finalized",
+    }:
+        raise ValueError("checkpoint_state is invalid")
+    if "current_phase" in payload and payload["current_phase"] not in {
+        "checkpoint_persistence",
+        "checkpoint_restore",
+        "checkpoint_finalization",
+        "table_publication",
+        "gold_staging",
+        "pointer_activation",
+    }:
+        raise ValueError("current_phase is invalid")
     if "error_code" in payload and payload["error_code"] not in _SAFE_ERROR_CODES:
         raise ValueError("error_code is not allowlisted")
     return {
@@ -278,6 +369,13 @@ class ActivationProgressReporter:
             row_count=progress.result.rows_processed,
             completed=progress.completed_tables,
             total=progress.total_tables,
+            remaining_tables=progress.remaining_tables,
+            resumed_tables=progress.resumed_tables,
+            skipped_tables=progress.skipped_tables,
+            checkpoint_id=progress.checkpoint_id,
+            checkpoint_state=progress.checkpoint_state,
+            publication_id=progress.checkpoint_id,
+            current_phase=progress.current_phase,
         )
 
     def fabric_stage_progress(self, progress: Mapping[str, object]) -> None:
@@ -374,9 +472,7 @@ def publish_combined_snapshot(
     """Publish one isolated, deduplicated snapshot from synced connections."""
     if not connection_ids:
         raise ValueError("At least one subscription connection is required")
-    entities: dict[str, dict[str, dict[str, Any]]] = {
-        name: {} for name in ENTITY_TYPES
-    }
+    entities: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in ENTITY_TYPES}
     relationships: dict[str, dict[str, Any]] = {}
     changes: dict[str, dict[str, Any]] = {}
     exposure_rows: dict[str, dict[str, dict[str, Any]]] = {
@@ -396,9 +492,7 @@ def publish_combined_snapshot(
             )
         manifest = _read_manifest(store, generation)
         source_runs.append(str(manifest.get("runId") or connection_id))
-        latest_started_at = max(
-            latest_started_at, str(manifest.get("startedAt") or "")
-        )
+        latest_started_at = max(latest_started_at, str(manifest.get("startedAt") or ""))
         datasets = manifest.get("datasets") or {}
         for dataset_name in datasets:
             if dataset_name.startswith("entities/"):
@@ -480,14 +574,14 @@ def publish_combined_snapshot(
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     run_id = f"activation-{uuid.uuid4()}"
     datasets = {
-        **{f"entities/{entity_type}": rows for entity_type, rows in graph.entities.items()},
+        **{
+            f"entities/{entity_type}": rows
+            for entity_type, rows in graph.entities.items()
+        },
         "relationships/relationships": graph.relationships,
         "changes/resource_changes": graph.changes,
         **{
-            name: [
-                rows[key]
-                for key in sorted(rows)
-            ]
+            name: [rows[key] for key in sorted(rows)]
             for name, rows in exposure_rows.items()
         },
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
@@ -18,6 +19,42 @@ _T = TypeVar("_T")
 _APPEND_INVOCATION_ID = "delta_writer_append_invocation_id"
 _APPEND_ROWS_ADDED = "delta_writer_append_rows_added"
 _APPEND_HISTORY_LIMIT = 32
+_PUBLICATION_INTENT_ID = "fabric_publication_intent_id"
+_PUBLICATION_OUTCOME_DIGEST = "fabric_publication_outcome_digest"
+_PUBLICATION_ROWS_PROCESSED = "fabric_publication_rows_processed"
+_PUBLICATION_HISTORY_LIMIT = 128
+_NO_EXPECTED_VERSION = object()
+
+
+class DeltaVersionConflictError(RuntimeError):
+    """Raised when a fenced publication no longer owns the planned Delta head."""
+
+
+def _publication_commit_metadata(
+    transaction_id: str,
+    transaction_digest: str,
+    *,
+    rows_processed: int,
+) -> dict[str, str]:
+    if bool(transaction_id) != bool(transaction_digest):
+        raise ValueError(
+            "transaction_id and transaction_digest must be supplied together"
+        )
+    if not transaction_id:
+        return {}
+    for field, value in (
+        ("transaction_id", transaction_id),
+        ("transaction_digest", transaction_digest),
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"{field} must be a SHA-256 digest")
+    if rows_processed < 0:
+        raise ValueError("rows_processed must be non-negative")
+    return {
+        _PUBLICATION_INTENT_ID: transaction_id,
+        _PUBLICATION_OUTCOME_DIGEST: transaction_digest,
+        _PUBLICATION_ROWS_PROCESSED: str(rows_processed),
+    }
 
 
 class DeltaWriteMode(StrEnum):
@@ -89,7 +126,18 @@ class DeltaWriter:
         append_replay_columns: Collection[str] = (),
         append_replay_json_fields: Mapping[str, Collection[str]] | None = None,
         append_scan_partition_columns: Collection[str] = (),
+        transaction_id: str = "",
+        transaction_digest: str = "",
+        expected_version: int | None | object = _NO_EXPECTED_VERSION,
     ) -> DeltaWriteResult:
+        """Write rows with optional durable publication transaction evidence."""
+
+        _validate_expected_version(expected_version)
+        commit_metadata = _publication_commit_metadata(
+            transaction_id,
+            transaction_digest,
+            rows_processed=len(rows),
+        )
         write_mode = DeltaWriteMode(mode)
         if write_mode is DeltaWriteMode.APPEND:
             if not rows and schema is None:
@@ -111,6 +159,9 @@ class DeltaWriter:
                     ).items()
                 },
                 scan_partition_columns=tuple(append_scan_partition_columns),
+                transaction_id=transaction_id,
+                transaction_digest=transaction_digest,
+                publication_expected_version=expected_version,
             )
 
         normalized = [dict(row) for row in rows]
@@ -128,6 +179,8 @@ class DeltaWriter:
                 key_columns=key_columns,
                 partition_by=partition_by,
                 schema=schema,
+                commit_metadata=commit_metadata,
+                expected_version=expected_version,
             )
         )
 
@@ -142,6 +195,9 @@ class DeltaWriter:
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
         scan_partition_columns: tuple[str, ...],
+        transaction_id: str,
+        transaction_digest: str,
+        publication_expected_version: int | None | object,
     ) -> DeltaWriteResult:
         batch_size = self.append_batch_size
         if (
@@ -217,7 +273,7 @@ class DeltaWriter:
                 version=version,
             )
 
-        invocation_id = uuid.uuid4().hex
+        invocation_id = transaction_id or uuid.uuid4().hex
         attempt = 0
 
         def append_once() -> DeltaWriteResult:
@@ -239,6 +295,8 @@ class DeltaWriter:
                 replay_columns=replay_columns,
                 replay_json_fields=replay_json_fields,
                 scan_partition_values=scan_partition_values,
+                transaction_digest=transaction_digest,
+                publication_expected_version=publication_expected_version,
             )
 
         result = self._retry(append_once)
@@ -331,6 +389,8 @@ class DeltaWriter:
         replay_columns: frozenset[str],
         replay_json_fields: Mapping[str, frozenset[str]],
         scan_partition_values: Mapping[str, frozenset[str]],
+        transaction_digest: str,
+        publication_expected_version: int | None | object,
     ) -> DeltaWriteResult:
         if recover_committed:
             committed = self._committed_append_result(uri, invocation_id)
@@ -343,6 +403,12 @@ class DeltaWriter:
             if exists
             else None
         )
+        if publication_expected_version is not _NO_EXPECTED_VERSION:
+            current_version = table.version() if table is not None else None
+            if current_version != publication_expected_version:
+                raise DeltaVersionConflictError(
+                    "Delta table changed after publication planning"
+                )
         pending_indices = list(incoming_indices)
         if table is not None:
             if not incoming_indices:
@@ -420,18 +486,26 @@ class DeltaWriter:
             ),
         )
         rows_added = len(pending_indices)
+        custom_metadata = {
+            _APPEND_INVOCATION_ID: invocation_id,
+            _APPEND_ROWS_ADDED: str(rows_added),
+        }
+        custom_metadata.update(
+            _publication_commit_metadata(
+                invocation_id if transaction_digest else "",
+                transaction_digest,
+                rows_processed=len(incoming_indices),
+            )
+        )
         write_deltalake(
-            uri,
+            table if table is not None else uri,
             source,
             mode="append",
             partition_by=list(partition_by) or None,
             schema_mode="merge",
             storage_options=self.storage_options,
             commit_properties=CommitProperties(
-                custom_metadata={
-                    _APPEND_INVOCATION_ID: invocation_id,
-                    _APPEND_ROWS_ADDED: str(rows_added),
-                }
+                custom_metadata=custom_metadata
             ),
         )
         table = DeltaTable(uri, storage_options=self.storage_options)
@@ -677,9 +751,72 @@ class DeltaWriter:
             return None
         return DeltaTable(str(table_uri), storage_options=self.storage_options).version()
 
-    def restore(self, table_uri: str | Path, version: int) -> None:
+    def committed_transaction(
+        self,
+        table_uri: str | Path,
+        *,
+        transaction_id: str,
+        transaction_digest: str,
+    ) -> DeltaWriteResult | None:
+        """Return exact Delta commit evidence for one publication intent."""
+
+        _publication_commit_metadata(
+            transaction_id,
+            transaction_digest,
+            rows_processed=0,
+        )
         self._refresh_storage_options()
-        DeltaTable(str(table_uri), storage_options=self.storage_options).restore(version)
+        if not self.exists(table_uri):
+            return None
+        table = DeltaTable(str(table_uri), storage_options=self.storage_options)
+        for commit in table.history(limit=_PUBLICATION_HISTORY_LIMIT):
+            if commit.get(_PUBLICATION_INTENT_ID) != transaction_id:
+                continue
+            if commit.get(_PUBLICATION_OUTCOME_DIGEST) != transaction_digest:
+                raise RuntimeError(
+                    "Delta publication transaction digest does not match"
+                )
+            version = int(commit["version"])
+            rows_processed = int(
+                commit.get(_PUBLICATION_ROWS_PROCESSED) or 0
+            )
+            if version < 0 or rows_processed < 0:
+                raise RuntimeError("Invalid Delta publication commit metadata")
+            return DeltaWriteResult(
+                rows_processed=rows_processed,
+                version=version,
+            )
+        return None
+
+    def restore(
+        self,
+        table_uri: str | Path,
+        version: int,
+        *,
+        transaction_id: str = "",
+        transaction_digest: str = "",
+        expected_version: int | None | object = _NO_EXPECTED_VERSION,
+    ) -> int:
+        """Restore a version and return the new version with optional evidence."""
+
+        _validate_expected_version(expected_version)
+        self._refresh_storage_options()
+        table = DeltaTable(str(table_uri), storage_options=self.storage_options)
+        self._assert_table_version(table, expected_version)
+        table.restore(
+            version,
+            commit_properties=CommitProperties(
+                custom_metadata=_publication_commit_metadata(
+                    transaction_id,
+                    transaction_digest,
+                    rows_processed=0,
+                )
+            )
+            if transaction_id
+            else None,
+        )
+        table.update_incremental()
+        return table.version()
 
     def _write_once(
         self,
@@ -690,14 +827,22 @@ class DeltaWriter:
         key_columns: tuple[str, ...],
         partition_by: tuple[str, ...],
         schema: pa.Schema | None,
+        commit_metadata: Mapping[str, str],
+        expected_version: int | None | object,
     ) -> DeltaWriteResult:
         if mode is DeltaWriteMode.APPEND:
             raise AssertionError("APPEND must use the bounded append path")
         processed_count = len(rows)
         exists = self.exists(uri)
+        table = (
+            DeltaTable(uri, storage_options=self.storage_options)
+            if exists
+            else None
+        )
+        self._assert_table_version(table, expected_version)
         supports_version_compare = bool(rows) and {"resource_id", "change_version"} <= set(rows[0])
         if mode is DeltaWriteMode.OVERWRITE and exists and supports_version_compare:
-            table = DeltaTable(uri, storage_options=self.storage_options)
+            assert table is not None
             # A synchronous scan prevents Arrow workers from outliving short-lived
             # publication processes during interpreter shutdown.
             current = table.to_pyarrow_dataset().to_table(
@@ -727,7 +872,7 @@ class DeltaWriter:
             predicate = " AND ".join(
                 f"target.{column} = source.{column}" for column in key_columns
             )
-            table = DeltaTable(uri, storage_options=self.storage_options)
+            assert table is not None
             builder = (
                 table.merge(
                     source,
@@ -735,6 +880,11 @@ class DeltaWriter:
                     source_alias="source",
                     target_alias="target",
                     merge_schema=True,
+                    commit_properties=CommitProperties(
+                        custom_metadata=dict(commit_metadata)
+                    )
+                    if commit_metadata
+                    else None,
                 )
                 .when_matched_update_all(
                     predicate="target.change_version <> source.change_version"
@@ -762,15 +912,20 @@ class DeltaWriter:
             )
 
         previous_count = 0
-        if exists:
-            previous_count = DeltaTable(uri, storage_options=self.storage_options).count()
+        if table is not None:
+            previous_count = table.count()
         write_deltalake(
-            uri,
+            table if table is not None else uri,
             source,
             mode="overwrite",
             partition_by=list(partition_by) or None,
             schema_mode="merge",
             storage_options=self.storage_options,
+            commit_properties=CommitProperties(
+                custom_metadata=dict(commit_metadata)
+            )
+            if commit_metadata
+            else None,
         )
         table = DeltaTable(uri, storage_options=self.storage_options)
         return DeltaWriteResult(
@@ -806,12 +961,27 @@ class DeltaWriter:
                 self.sleep(min(2 ** (attempt - 1), 15))
         raise AssertionError("unreachable")
 
+    @staticmethod
+    def _assert_table_version(
+        table: DeltaTable | None,
+        expected_version: int | None | object,
+    ) -> None:
+        if expected_version is _NO_EXPECTED_VERSION:
+            return
+        current_version = table.version() if table is not None else None
+        if current_version != expected_version:
+            raise DeltaVersionConflictError(
+                "Delta table changed after publication planning"
+            )
+
     def _refresh_storage_options(self) -> None:
         if self.storage_options_provider is not None:
             self.storage_options = dict(self.storage_options_provider())
 
 
 def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, DeltaVersionConflictError):
+        return False
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return True
     text = str(exc).lower()
@@ -821,6 +991,13 @@ def _is_transient(exc: Exception) -> bool:
         marker in text
         for marker in ("429", "500", "502", "503", "504", "timeout", "temporarily", "conflict")
     )
+
+
+def _validate_expected_version(value: object) -> None:
+    if value is _NO_EXPECTED_VERSION or value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("expected_version must be a non-negative integer or None")
 
 
 def _row_key(row: Mapping[str, Any], key_columns: tuple[str, ...]) -> tuple[str, ...]:

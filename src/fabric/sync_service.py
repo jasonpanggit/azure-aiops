@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import inspect
 import json
 import logging
@@ -23,8 +24,10 @@ from fabric_pipelines import (
 )
 from fabric_pipelines.topology_pipeline import derive_edges, to_topology_edge_row
 from fabric_pipelines.vulnerability_pipeline import (
+    EXPOSURE_GOLD_GENERATIONS_TABLE,
     EXPOSURE_GOLD_TABLES,
     ExposureGoldFabricPublisher,
+    ExposureGoldStageResult,
     materialize_container_exposure_tables,
     materialize_temporal_exposure_tables,
 )
@@ -59,6 +62,13 @@ from .dataset_mapper import (
     temporal_products_from_legacy,
 )
 from .lakehouse_manager import LakehouseManager
+from .publication_checkpoint import (
+    PreparedPublicationCheckpoint,
+    PublicationCheckpointError,
+    PublicationCheckpointStore,
+    PublicationResumePlan,
+    TableWriteIntent,
+)
 from .schema_registry import schema_for
 from .telemetry import FabricMetrics
 
@@ -82,12 +92,18 @@ class FabricSyncResult:
 
 @dataclass(frozen=True)
 class FabricTableWriteProgress:
-    """Best-effort notification emitted after a Fabric table write succeeds."""
+    """Best-effort bounded notification for table publication progress."""
 
     completed_tables: int
     total_tables: int
     table_name: str
     result: DeltaWriteResult
+    remaining_tables: int = 0
+    resumed_tables: int = 0
+    skipped_tables: int = 0
+    checkpoint_id: str = ""
+    checkpoint_state: str = ""
+    current_phase: str = "table_publication"
 
 
 class FabricStageProgress(TypedDict, total=False):
@@ -95,7 +111,9 @@ class FabricStageProgress(TypedDict, total=False):
 
     ``stage`` and ``status`` are always present. Completion events include
     only the aggregate fields assigned to that stage; every count is a
-    non-boolean integer in the inclusive range 0..2,147,483,647.
+    non-boolean integer in the inclusive range 0..2,147,483,647. Checkpoint
+    events additionally expose only an opaque SHA-256 identity and bounded
+    lifecycle labels, never source identifiers or payloads.
     """
 
     stage: str
@@ -104,6 +122,16 @@ class FabricStageProgress(TypedDict, total=False):
     entity_count: int
     relationship_count: int
     failure_count: int
+    row_count: int
+    completed: int
+    total: int
+    remaining_tables: int
+    resumed_tables: int
+    skipped_tables: int
+    checkpoint_id: str
+    checkpoint_state: str
+    publication_id: str
+    current_phase: str
 
 
 _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
@@ -114,6 +142,11 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
     "temporal_projection": frozenset(
         {"entity_count", "relationship_count", "failure_count"}
     ),
+    "temporal_retained_load": frozenset({"row_count", "failure_count"}),
+    "temporal_legacy_normalization": frozenset({"row_count", "failure_count"}),
+    "temporal_observation_combination": frozenset({"row_count", "failure_count"}),
+    "temporal_current_projection": frozenset({"row_count", "failure_count"}),
+    "temporal_immutable_checks": frozenset({"row_count", "failure_count"}),
     "container_projection": frozenset(
         {"entity_count", "relationship_count", "failure_count"}
     ),
@@ -129,6 +162,55 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
     "gold_staging": frozenset(),
     "shortcut_finalization": frozenset(),
     "pointer_activation": frozenset(),
+    "checkpoint_persistence": frozenset(
+        {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_restore": frozenset(
+        {
+            "dataset_count",
+            "failure_count",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "publication_resume": frozenset(
+        {
+            "completed",
+            "total",
+            "remaining_tables",
+            "resumed_tables",
+            "skipped_tables",
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_finalization": frozenset(
+        {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
+    "checkpoint_activation_pending": frozenset(
+        {
+            "checkpoint_id",
+            "checkpoint_state",
+            "publication_id",
+            "current_phase",
+        }
+    ),
 }
 _MAX_PROGRESS_COUNT = 2_147_483_647
 _EXPOSURE_GOLD_INPUT_TABLES = (
@@ -155,7 +237,7 @@ def _notify_stage_progress(
     callback: Callable[[FabricStageProgress], None] | None,
     stage: str,
     status: str,
-    **payload: int,
+    **payload: int | str,
 ) -> None:
     if callback is None:
         return
@@ -169,12 +251,12 @@ def _notify_stage_progress(
     if expected is None or frozenset(payload) != expected:
         return
     event: FabricStageProgress = {"stage": stage, "status": status}
-    event.update(
-        {
-            field: _bounded_progress_count(value)
-            for field, value in payload.items()
-        }
-    )
+    for field, value in payload.items():
+        event[field] = (
+            _bounded_progress_count(value)
+            if isinstance(value, int) and not isinstance(value, bool)
+            else str(value)
+        )
     try:
         callback(event)
     except Exception:  # noqa: BLE001 - observability must remain best-effort.
@@ -216,16 +298,12 @@ def _partition_patch_publication_items(
         if table_name in by_name
     ]
     barrier_item = (
-        (barrier_table, by_name[barrier_table])
-        if barrier_table in by_name
-        else None
+        (barrier_table, by_name[barrier_table]) if barrier_table in by_name else None
     )
     early_names = {table_name for table_name, _rows in patch_items}
     if barrier_item is not None:
         early_names.add(barrier_table)
-    remaining = [
-        item for item in publish_items if item[0] not in early_names
-    ]
+    remaining = [item for item in publish_items if item[0] not in early_names]
     return patch_items, barrier_item, remaining
 
 
@@ -247,12 +325,14 @@ def _should_publish_table(
     patch_tables: tuple[str, ...],
     barrier_table: str,
 ) -> bool:
-    return bool(rows) or table_name in {
-        "ontology_entities",
-        "ontology_relationships",
-    } or (
-        patch_barrier_present
-        and table_name in {*patch_tables, barrier_table}
+    return (
+        bool(rows)
+        or table_name
+        in {
+            "ontology_entities",
+            "ontology_relationships",
+        }
+        or (patch_barrier_present and table_name in {*patch_tables, barrier_table})
     )
 
 
@@ -348,7 +428,9 @@ class DedicatedOntologyPublisherAdapter:
         try:
             materialization: dict[str, Any] = {}
 
-            def materialize(published: OntologyGenerationCandidate) -> Mapping[str, Any]:
+            def materialize(
+                published: OntologyGenerationCandidate,
+            ) -> Mapping[str, Any]:
                 publication = self._fabric_sync_service.sync(
                     replay_source_run_id=published.source_generation
                 )
@@ -429,40 +511,48 @@ class FabricSyncService:
         "silver_patch_snapshot_findings",
     )
     _PATCH_PUBLICATION_BARRIER = "metadata_patch_snapshot"
-    _MERGE_WRITE_TABLES: frozenset[str] = frozenset({
-        "bronze_resource_changes",
-        "silver_patch_history",
-        "silver_lifecycle_history",
-        "silver_defender_secure_scores",
-        "silver_change_history",
-        "silver_incident_history",
-        "silver_predictive_history",
-        "silver_cost_actuals",
-    })
+    _MERGE_WRITE_TABLES: frozenset[str] = frozenset(
+        {
+            "bronze_resource_changes",
+            "silver_patch_history",
+            "silver_lifecycle_history",
+            "silver_defender_secure_scores",
+            "silver_change_history",
+            "silver_incident_history",
+            "silver_predictive_history",
+            "silver_cost_actuals",
+        }
+    )
     # Full-state (current-snapshot) tables keyed by resource_id: rows must
     # disappear once the underlying resource is gone, which plain MERGE can't
     # express, but a full OVERWRITE rewrites the whole table even when only a
     # handful of rows changed. SNAPSHOT_MERGE upserts changed keys and
     # deletes keys absent from this run, giving OVERWRITE's replace semantics
     # at MERGE's cost for the largest, least-churny tables.
-    _SNAPSHOT_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
-        "bronze_resources",
-        "silver_vm_inventory",
-        "silver_server_inventory",
-    })
-    _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset({
-        "silver_exposure_observations",
-        "silver_container_vulnerability_observations",
-        "silver_workload_observations",
-        "silver_patch_snapshot_findings",
-    })
+    _SNAPSHOT_MERGE_WRITE_TABLES: frozenset[str] = frozenset(
+        {
+            "bronze_resources",
+            "silver_vm_inventory",
+            "silver_server_inventory",
+        }
+    )
+    _WORKLOAD_APPEND_WRITE_TABLES: frozenset[str] = frozenset(
+        {
+            "silver_exposure_observations",
+            "silver_container_vulnerability_observations",
+            "silver_workload_observations",
+            "silver_patch_snapshot_findings",
+        }
+    )
     _APPEND_REPLAY_COLUMNS: Mapping[str, frozenset[str]] = {
-        "silver_container_vulnerability_observations": frozenset({
-            "timestamp",
-            "change_version",
-            "observed_at",
-            "ingested_at",
-        }),
+        "silver_container_vulnerability_observations": frozenset(
+            {
+                "timestamp",
+                "change_version",
+                "observed_at",
+                "ingested_at",
+            }
+        ),
     }
     _APPEND_REPLAY_JSON_FIELDS: Mapping[
         str,
@@ -472,22 +562,28 @@ class FabricSyncService:
             "provenance_json": frozenset({"ingested_at"}),
         },
     }
-    _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset({
-        "silver_container_image_digests",
-        "silver_container_logical_images",
-        "silver_container_registries",
-        "silver_workload_deployments",
-        "metadata_workload_source_checkpoints",
-    })
-    _EXPOSURE_SNAPSHOT_WRITE_TABLES: frozenset[str] = frozenset({
-        "gold_exposure_current",
-        "gold_container_exposure_current",
-        "gold_container_exposure_coverage",
-    })
-    _DERIVED_EXPOSURE_TABLES: frozenset[str] = frozenset({
-        "silver_exposure_observations",
-        *_EXPOSURE_SNAPSHOT_WRITE_TABLES,
-    })
+    _WORKLOAD_MERGE_WRITE_TABLES: frozenset[str] = frozenset(
+        {
+            "silver_container_image_digests",
+            "silver_container_logical_images",
+            "silver_container_registries",
+            "silver_workload_deployments",
+            "metadata_workload_source_checkpoints",
+        }
+    )
+    _EXPOSURE_SNAPSHOT_WRITE_TABLES: frozenset[str] = frozenset(
+        {
+            "gold_exposure_current",
+            "gold_container_exposure_current",
+            "gold_container_exposure_coverage",
+        }
+    )
+    _DERIVED_EXPOSURE_TABLES: frozenset[str] = frozenset(
+        {
+            "silver_exposure_observations",
+            *_EXPOSURE_SNAPSHOT_WRITE_TABLES,
+        }
+    )
 
     def __init__(
         self,
@@ -515,6 +611,7 @@ class FabricSyncService:
         rollback_sleep=time.sleep,
         clock=time.monotonic,
         sql_reader=None,
+        publication_checkpoint_store: PublicationCheckpointStore | None = None,
     ) -> None:
         # ``source_root`` is normally a local disk path (CLI/manual sync), but
         # the API-triggered refresh path (``inventory_orchestration.
@@ -531,7 +628,9 @@ class FabricSyncService:
         self._source_root_is_remote = is_onelake_uri(source_root)
         if self._source_root_is_remote:
             self.source_root = resolve_root(str(source_root))
-            self._source_fs, self._resolved_source_root = resolve_fs(str(self.source_root))
+            self._source_fs, self._resolved_source_root = resolve_fs(
+                str(self.source_root)
+            )
         else:
             self.source_root = Path(source_root).resolve()
             self._source_fs = None
@@ -563,6 +662,12 @@ class FabricSyncService:
         # watermarks) are pushed down to the Lakehouse SQL endpoint instead of
         # materializing whole Delta tables. Writes always go through Delta.
         self.sql_reader = sql_reader
+        self.publication_checkpoints = (
+            publication_checkpoint_store
+            or PublicationCheckpointStore(
+                OneLakeDocumentStore(_publication_checkpoint_root(onelake))
+            )
+        )
 
     def sync(
         self,
@@ -639,7 +744,10 @@ class FabricSyncService:
                         mode=self._write_mode_for_table(table_name),
                         key_columns=("resource_id",),
                         partition_by=(
-                            (*self.partitioning.columns_for(table_name), "ingestion_run_id")
+                            (
+                                *self.partitioning.columns_for(table_name),
+                                "ingestion_run_id",
+                            )
                             if table_name == "silver_patch_snapshot_findings"
                             else self.partitioning.columns_for(table_name)
                         ),
@@ -663,6 +771,10 @@ class FabricSyncService:
                             total_tables=total_tables,
                             table_name=table_name,
                             result=result,
+                            remaining_tables=max(
+                                total_tables - len(table_results),
+                                0,
+                            ),
                         ),
                     )
                 sync_lock.assert_held()
@@ -708,13 +820,46 @@ class FabricSyncService:
         snapshot = self._resolve_snapshot(replay_source_run_id)
         manifest = self._read_manifest(snapshot)
         source_run_id = str(manifest.get("runId") or replay_source_run_id or "unknown")
+        source_manifest_digest = _hash_json(manifest)
+        if replay_source_run_id and source_run_id != replay_source_run_id:
+            raise ValueError(
+                "Exact replay source generation does not match its manifest"
+            )
         replay = bool(replay_source_run_id)
         started_at = _utc_now()
         source_projected_at = str(
-            manifest.get("completedAt")
-            or manifest.get("startedAt")
-            or started_at
+            manifest.get("completedAt") or manifest.get("startedAt") or started_at
         )
+        finalized_outcome = (
+            self.publication_checkpoints.finalized_outcome(
+                source_run_id,
+                source_manifest_digest=source_manifest_digest,
+            )
+            if replay
+            else None
+        )
+        if finalized_outcome is not None:
+            assert_lock_held()
+            return FabricSyncResult(
+                **{
+                    **finalized_outcome,
+                    "replay": True,
+                    "tables": tuple(finalized_outcome["tables"]),
+                }
+            )
+        prepared_checkpoint = (
+            self.publication_checkpoints.load(
+                source_run_id,
+                source_manifest_digest=source_manifest_digest,
+            )
+            if replay
+            else None
+        )
+        checkpoint_restored = prepared_checkpoint is not None
+        if prepared_checkpoint is not None:
+            run_id = prepared_checkpoint.run_id
+            started_at = prepared_checkpoint.started_at
+            source_projected_at = prepared_checkpoint.source_projected_at
         assert_lock_held()
         self.onelake.ensure_standard_structure()
         assert_lock_held()
@@ -732,6 +877,8 @@ class FabricSyncService:
         table_results: dict[str, DeltaWriteResult] = {}
         written_versions: dict[str, tuple[str, int | None]] = {}
         completed_tables = 0
+        resumed_table_count = 0
+        skipped_tables = 0
         failed_records = 0
         ontology_started = self.clock()
         ontology_health: dict[str, Any] = {}
@@ -739,13 +886,18 @@ class FabricSyncService:
         exposure_gold_publisher: ExposureGoldFabricPublisher | None = None
         exposure_gold_stage = None
         data_committed = False
+        publication_plan: PublicationResumePlan | None = None
         try:
             _notify_stage_progress(
                 stage_progress_callback,
                 "dataset_mapping",
                 "started",
             )
-            datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            datasets = (
+                prepared_checkpoint.datasets
+                if prepared_checkpoint is not None
+                else self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            )
             _notify_stage_progress(
                 stage_progress_callback,
                 "dataset_mapping",
@@ -753,29 +905,80 @@ class FabricSyncService:
                 dataset_count=len(datasets),
                 failure_count=0,
             )
-            datasets["metadata_source_status"] = [
-                _with_source_partition_defaults(row)
-                for row in datasets.get("metadata_source_status", [])
-            ]
-            partition_status = self._load_source_partition_status(snapshot, run_id)
-            if partition_status:
-                partition_families = {
-                    row["source_family"] for row in partition_status
-                }
+            if checkpoint_restored:
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "checkpoint_restore",
+                    "started",
+                )
+                exposure_gold_observation_rows = (
+                    prepared_checkpoint.exposure_gold_observation_rows
+                    if prepared_checkpoint is not None
+                    else None
+                )
+                ontology_health = (
+                    prepared_checkpoint.ontology_health
+                    if prepared_checkpoint is not None
+                    else {}
+                )
+                failed_records = (
+                    prepared_checkpoint.failed_records
+                    if prepared_checkpoint is not None
+                    else 0
+                )
+                source_watermark = (
+                    prepared_checkpoint.source_watermark
+                    if prepared_checkpoint is not None
+                    else ""
+                )
+                ontology_entity_count = (
+                    prepared_checkpoint.ontology_entity_count
+                    if prepared_checkpoint is not None
+                    else 0
+                )
+                ontology_relationship_count = (
+                    prepared_checkpoint.ontology_relationship_count
+                    if prepared_checkpoint is not None
+                    else 0
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "checkpoint_restore",
+                    "completed",
+                    dataset_count=len(datasets),
+                    failure_count=0,
+                    checkpoint_id=prepared_checkpoint.checkpoint_id,
+                    checkpoint_state="restored",
+                    publication_id=prepared_checkpoint.checkpoint_id,
+                    current_phase="checkpoint_restore",
+                )
+            else:
                 datasets["metadata_source_status"] = [
-                    row
+                    _with_source_partition_defaults(row)
                     for row in datasets.get("metadata_source_status", [])
-                    if row.get("source_family") not in partition_families
                 ]
-                datasets["metadata_source_status"].extend(partition_status)
+                partition_status = self._load_source_partition_status(snapshot, run_id)
+                if partition_status:
+                    partition_families = {
+                        row["source_family"] for row in partition_status
+                    }
+                    datasets["metadata_source_status"] = [
+                        row
+                        for row in datasets.get("metadata_source_status", [])
+                        if row.get("source_family") not in partition_families
+                    ]
+                    datasets["metadata_source_status"].extend(partition_status)
             _notify_stage_progress(
                 stage_progress_callback,
                 "workload_projection",
                 "started",
             )
-            workload_products = self._load_workload_products(snapshot)
-            datasets.update(workload_products)
-            self._validate_workload_products(datasets)
+            workload_products = (
+                {} if checkpoint_restored else self._load_workload_products(snapshot)
+            )
+            if not checkpoint_restored:
+                datasets.update(workload_products)
+                self._validate_workload_products(datasets)
             _notify_stage_progress(
                 stage_progress_callback,
                 "workload_projection",
@@ -786,7 +989,7 @@ class FabricSyncService:
                 relationship_count=0,
                 failure_count=0,
             )
-            if exposure_pointer_store is not None:
+            if exposure_pointer_store is not None and not checkpoint_restored:
                 observation_uri = self.onelake.table_uri(
                     "silver",
                     "exposure_observations",
@@ -802,17 +1005,73 @@ class FabricSyncService:
                 )
                 _notify_stage_progress(
                     stage_progress_callback,
+                    "temporal_retained_load",
+                    "started",
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_retained_load",
+                    "completed",
+                    row_count=len(existing_observations),
+                    failure_count=0,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
                     "temporal_projection",
                     "started",
                 )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_legacy_normalization",
+                    "started",
+                )
+                legacy_temporal = temporal_products_from_legacy(
+                    datasets,
+                    generation_id=source_run_id,
+                    ingested_at=source_projected_at,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_legacy_normalization",
+                    "completed",
+                    row_count=len(legacy_temporal.observations),
+                    failure_count=0,
+                )
+                for temporal_stage in (
+                    "temporal_observation_combination",
+                    "temporal_current_projection",
+                    "temporal_immutable_checks",
+                ):
+                    _notify_stage_progress(
+                        stage_progress_callback,
+                        temporal_stage,
+                        "started",
+                    )
                 temporal = materialize_temporal_exposure_tables(
-                    temporal_products_from_legacy(
-                        datasets,
-                        generation_id=source_run_id,
-                        ingested_at=source_projected_at,
-                    ),
+                    legacy_temporal,
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_observation_combination",
+                    "completed",
+                    row_count=len(temporal.all_observation_rows),
+                    failure_count=0,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_current_projection",
+                    "completed",
+                    row_count=len(temporal.current_rows),
+                    failure_count=0,
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "temporal_immutable_checks",
+                    "completed",
+                    row_count=len(persisted_observations),
+                    failure_count=0,
                 )
                 del persisted_observations, existing_observations
                 temporal_tables = temporal.write_tables(copy_rows=False)
@@ -863,9 +1122,7 @@ class FabricSyncService:
                     datasets["ontology_relationships"],
                     granular_relationships,
                 )
-                exposure_gold_observation_rows = list(
-                    temporal.all_observation_rows
-                )
+                exposure_gold_observation_rows = list(temporal.all_observation_rows)
                 del (
                     container_tables,
                     granular_entities,
@@ -879,50 +1136,54 @@ class FabricSyncService:
                 "ontology_construction",
                 "started",
             )
-            if self.topology_enabled:
+            if self.topology_enabled and not checkpoint_restored:
                 self._extend_with_topology_tables(
                     datasets,
                     snapshot=snapshot,
                     observed_at=started_at,
                     run_id=run_id,
                 )
-            datasets["silver_patch_policies"] = [
-                {
-                    "tenant_id": "not-applicable",
-                    "subscription_id": "not-applicable",
-                    "resource_id": "policy://"
-                    + _hash_json(
-                        {
-                            "name": str(getattr(policy, "name", "")),
-                            "environment": str(getattr(policy, "environment", "")),
-                        }
-                    )[:24],
-                    "timestamp": started_at,
-                    "change_version": _hash_json(
-                        {
-                            "name": str(getattr(policy, "name", "")),
-                            "environment": str(getattr(policy, "environment", "")),
-                            "max_patch_age_days": int(
-                                getattr(policy, "max_patch_age_days", 0)
-                            ),
-                            "minimum_compliance_score": int(
-                                getattr(policy, "minimum_compliance_score", 0)
-                            ),
-                        }
-                    ),
-                    "ingestion_run_id": run_id,
-                    "name": str(getattr(policy, "name", "")),
-                    "environment": str(getattr(policy, "environment", "")),
-                    "max_patch_age_days": int(
-                        getattr(policy, "max_patch_age_days", 0)
-                    ),
-                    "minimum_compliance_score": int(
-                        getattr(policy, "minimum_compliance_score", 0)
-                    ),
-                }
-                for policy in self.patch_policies
-            ]
-            if self.lifecycle_catalog:
+            datasets["silver_patch_policies"] = (
+                datasets.get("silver_patch_policies", [])
+                if checkpoint_restored
+                else [
+                    {
+                        "tenant_id": "not-applicable",
+                        "subscription_id": "not-applicable",
+                        "resource_id": "policy://"
+                        + _hash_json(
+                            {
+                                "name": str(getattr(policy, "name", "")),
+                                "environment": str(getattr(policy, "environment", "")),
+                            }
+                        )[:24],
+                        "timestamp": started_at,
+                        "change_version": _hash_json(
+                            {
+                                "name": str(getattr(policy, "name", "")),
+                                "environment": str(getattr(policy, "environment", "")),
+                                "max_patch_age_days": int(
+                                    getattr(policy, "max_patch_age_days", 0)
+                                ),
+                                "minimum_compliance_score": int(
+                                    getattr(policy, "minimum_compliance_score", 0)
+                                ),
+                            }
+                        ),
+                        "ingestion_run_id": run_id,
+                        "name": str(getattr(policy, "name", "")),
+                        "environment": str(getattr(policy, "environment", "")),
+                        "max_patch_age_days": int(
+                            getattr(policy, "max_patch_age_days", 0)
+                        ),
+                        "minimum_compliance_score": int(
+                            getattr(policy, "minimum_compliance_score", 0)
+                        ),
+                    }
+                    for policy in self.patch_policies
+                ]
+            )
+            if self.lifecycle_catalog and not checkpoint_restored:
                 catalog_rows, catalog_entities = self._lifecycle_catalog_rows(
                     run_id, source_run_id, started_at
                 )
@@ -932,13 +1193,13 @@ class FabricSyncService:
             decision_relationships: list[dict[str, Any]] = []
             plan_entities: list[dict[str, Any]] = []
             plan_relationships: list[dict[str, Any]] = []
-            if self.remediation_plan_reader is not None:
+            if self.remediation_plan_reader is not None and not checkpoint_restored:
                 plan_entities, plan_relationships = remediation_plan_ontology_rows(
                     self.remediation_plan_reader(datasets["ontology_entities"]),
                     run_id,
                     started_at,
                 )
-            if self.remediation_decision_reader is not None:
+            if self.remediation_decision_reader is not None and not checkpoint_restored:
                 decision_entities, decision_relationships = (
                     remediation_decision_ontology_rows(
                         list(self.remediation_decision_reader()),
@@ -954,32 +1215,45 @@ class FabricSyncService:
                 datasets["ontology_relationships"],
                 [*decision_relationships, *plan_relationships],
             )
-            change_pipeline_result = change_pipeline.run(
-                freshness=started_at,
-                **self._change_pipeline_snapshot(),
-            )
-            datasets["ontology_entities"].extend(change_pipeline_result.entities)
-            datasets["ontology_relationships"].extend(change_pipeline_result.relationships)
-            datasets["assessment_change_findings"] = self._assessment_change_finding_rows(
-                change_pipeline_result.findings, run_id, started_at
-            )
-            predictive_pipeline_result = predictive_pipeline.run(
-                freshness=started_at,
-                **self._predictive_pipeline_snapshot(),
-            )
-            datasets["ontology_entities"].extend(predictive_pipeline_result.entities)
-            datasets["ontology_relationships"].extend(predictive_pipeline_result.relationships)
-            incident_pipeline_result = incident_pipeline.run(
-                freshness=started_at,
-                **self._incident_pipeline_snapshot(),
-            )
-            datasets["ontology_entities"].extend(incident_pipeline_result.entities)
-            datasets["ontology_relationships"].extend(incident_pipeline_result.relationships)
-            datasets = self._synchronize_ontology(
-                datasets,
-                source_run_id,
-                started_at,
-            )
+            if not checkpoint_restored:
+                change_pipeline_result = change_pipeline.run(
+                    freshness=started_at,
+                    **self._change_pipeline_snapshot(),
+                )
+                datasets["ontology_entities"].extend(change_pipeline_result.entities)
+                datasets["ontology_relationships"].extend(
+                    change_pipeline_result.relationships
+                )
+                datasets["assessment_change_findings"] = (
+                    self._assessment_change_finding_rows(
+                        change_pipeline_result.findings,
+                        run_id,
+                        started_at,
+                    )
+                )
+                predictive_pipeline_result = predictive_pipeline.run(
+                    freshness=started_at,
+                    **self._predictive_pipeline_snapshot(),
+                )
+                datasets["ontology_entities"].extend(
+                    predictive_pipeline_result.entities
+                )
+                datasets["ontology_relationships"].extend(
+                    predictive_pipeline_result.relationships
+                )
+                incident_pipeline_result = incident_pipeline.run(
+                    freshness=started_at,
+                    **self._incident_pipeline_snapshot(),
+                )
+                datasets["ontology_entities"].extend(incident_pipeline_result.entities)
+                datasets["ontology_relationships"].extend(
+                    incident_pipeline_result.relationships
+                )
+                datasets = self._synchronize_ontology(
+                    datasets,
+                    source_run_id,
+                    started_at,
+                )
             ontology_entity_count = _bounded_progress_count(
                 len(datasets.get("ontology_entities", ()))
             )
@@ -994,25 +1268,29 @@ class FabricSyncService:
                 relationship_count=ontology_relationship_count,
                 failure_count=0,
             )
-            if self.lifecycle_catalog:
+            if self.lifecycle_catalog and not checkpoint_restored:
                 datasets["silver_lifecycle_history"] = self._lifecycle_history_rows(
                     datasets, run_id, source_run_id, started_at
                 )
             ontology_health = datasets["ontology_health"][0]
-            source_watermark = max(
-                (
-                    str(row.get("timestamp") or "")
-                    for row in datasets.get("bronze_resource_changes", [])
-                    if row.get("timestamp")
-                ),
-                default=str(manifest.get("startedAt") or ""),
+            source_watermark = (
+                prepared_checkpoint.source_watermark
+                if prepared_checkpoint is not None
+                else max(
+                    (
+                        str(row.get("timestamp") or "")
+                        for row in datasets.get("bronze_resource_changes", [])
+                        if row.get("timestamp")
+                    ),
+                    default=str(manifest.get("startedAt") or ""),
+                )
             )
             _notify_stage_progress(
                 stage_progress_callback,
                 "ontology_validation",
                 "started",
             )
-            reports = self._validate(datasets)
+            reports = [] if checkpoint_restored else self._validate(datasets)
             failed_records = sum(report.failed_records for report in reports)
             _notify_stage_progress(
                 stage_progress_callback,
@@ -1022,28 +1300,33 @@ class FabricSyncService:
                 relationship_count=ontology_relationship_count,
                 failure_count=_bounded_progress_count(failed_records),
             )
-            self._write_quality_report(
-                run_id,
-                source_run_id,
-                reports,
-                started_at,
-            )
-            assert_lock_held()
-            source_status_rows = [
-                *datasets.get("metadata_source_status", []),
-                *_table_source_status_rows(
-                    {
-                        name: rows
-                        for name, rows in datasets.items()
-                        if name not in self._DERIVED_EXPOSURE_TABLES
-                    },
+            if not checkpoint_restored:
+                self._write_quality_report(
                     run_id,
+                    source_run_id,
+                    reports,
                     started_at,
-                    requested_scope=requested_scope,
-                ),
-            ]
+                )
+            assert_lock_held()
+            source_status_rows = (
+                list(datasets.get("metadata_source_status", []))
+                if checkpoint_restored
+                else [
+                    *datasets.get("metadata_source_status", []),
+                    *_table_source_status_rows(
+                        {
+                            name: rows
+                            for name, rows in datasets.items()
+                            if name not in self._DERIVED_EXPOSURE_TABLES
+                        },
+                        run_id,
+                        started_at,
+                        requested_scope=requested_scope,
+                    ),
+                ]
+            )
             datasets["metadata_source_status"] = source_status_rows
-            if source_status_rows:
+            if source_status_rows and not checkpoint_restored:
                 assert_lock_held()
                 table_uri = self.onelake.table_uri("metadata", "source_status")
                 before_version = self.delta.version(table_uri)
@@ -1056,7 +1339,10 @@ class FabricSyncService:
                 )
                 table_results["metadata_source_status"] = result
                 if result.version != before_version:
-                    written_versions["metadata_source_status"] = (table_uri, before_version)
+                    written_versions["metadata_source_status"] = (
+                        table_uri,
+                        before_version,
+                    )
                 self.metrics.record_table("metadata_source_status", result)
                 assert_lock_held()
             if failed_records:
@@ -1083,10 +1369,45 @@ class FabricSyncService:
                     duration,
                 )
                 if raise_on_quality_failure:
-                    raise ValueError(f"Fabric data quality validation failed: {failed_records} records")
+                    raise ValueError(
+                        f"Fabric data quality validation failed: {failed_records} records"
+                    )
                 return result
 
+            if prepared_checkpoint is None:
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "checkpoint_persistence",
+                    "started",
+                )
+                prepared_checkpoint = self.publication_checkpoints.persist(
+                    source_run_id=source_run_id,
+                    source_manifest_digest=source_manifest_digest,
+                    run_id=run_id,
+                    started_at=started_at,
+                    source_projected_at=source_projected_at,
+                    source_watermark=source_watermark,
+                    failed_records=failed_records,
+                    ontology_health=ontology_health,
+                    ontology_entity_count=ontology_entity_count,
+                    ontology_relationship_count=ontology_relationship_count,
+                    datasets=datasets,
+                    exposure_gold_observation_rows=(exposure_gold_observation_rows),
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "checkpoint_persistence",
+                    "completed",
+                    dataset_count=len(datasets),
+                    failure_count=0,
+                    checkpoint_id=prepared_checkpoint.checkpoint_id,
+                    checkpoint_state="persisted",
+                    publication_id=prepared_checkpoint.checkpoint_id,
+                    current_phase="checkpoint_persistence",
+                )
+
             _release_transient_publication_memory()
+            write_intents: dict[str, TableWriteIntent] = {}
 
             def write_table(
                 item: tuple[str, list[dict[str, Any]]],
@@ -1104,7 +1425,7 @@ class FabricSyncService:
                 mode = self._write_mode_for_table(table_name)
                 table_uri = self.onelake.table_uri(layer, logical_name)
                 before_version = known_versions.get(table_name)
-                if before_version is None and rows:
+                if table_name not in known_versions and rows:
                     before_version = self.delta.version(table_uri)
                 result = self.delta.write(
                     table_uri,
@@ -1131,15 +1452,18 @@ class FabricSyncService:
                         if table_name == "silver_patch_snapshot_findings"
                         else ()
                     ),
+                    transaction_id=write_intents[table_name].intent_id,
+                    transaction_digest=(
+                        write_intents[table_name].outcome_digest
+                    ),
+                    expected_version=before_version,
                 )
                 assert_lock_held()
                 return table_name, table_uri, before_version, result
 
             # Empty projections do not need a Fabric transaction unless the
             # table already exists and must be cleared for this snapshot.
-            patch_barrier_present = bool(
-                datasets.get(self._PATCH_PUBLICATION_BARRIER)
-            )
+            patch_barrier_present = bool(datasets.get(self._PATCH_PUBLICATION_BARRIER))
             publish_items, known_versions = _prepare_publish_items(
                 datasets,
                 onelake=self.onelake,
@@ -1161,6 +1485,60 @@ class FabricSyncService:
                 else 0
             )
             total_publish_tables = len(publish_items) + gold_table_count
+            gold_table_names = (
+                (*EXPOSURE_GOLD_TABLES, EXPOSURE_GOLD_GENERATIONS_TABLE)
+                if gold_table_count
+                else ()
+            )
+            exposure_table_root: Path | str | None = None
+            if gold_table_names:
+                sample_table_uri = self.onelake.table_uri(
+                    "gold",
+                    "exposure_facts",
+                )
+                exposure_table_root = (
+                    str(sample_table_uri).rsplit("/", 1)[0]
+                    if "://" in str(sample_table_uri)
+                    else Path(str(sample_table_uri)).parent
+                )
+            table_uris = {
+                table_name: self.onelake.table_uri(
+                    table_name.split("_", 1)[0],
+                    table_name.split("_", 1)[1],
+                )
+                for table_name, _rows in publish_items
+            }
+            if exposure_table_root is not None:
+                table_uris.update(
+                    {
+                        table_name: _table_uri_under_root(
+                            exposure_table_root,
+                            table_name,
+                        )
+                        for table_name in gold_table_names
+                    }
+                )
+            observed_before_versions = {
+                table_name: self.delta.version(table_uri)
+                for table_name, table_uri in table_uris.items()
+            }
+            assert prepared_checkpoint is not None
+            publication_plan = self.publication_checkpoints.prepare_table_plan(
+                prepared_checkpoint,
+                table_names=table_uris,
+                expected_before_versions=observed_before_versions,
+            )
+            publication_plan = self._reconcile_publication_intents(
+                prepared_checkpoint,
+                publication_plan,
+                table_uris=table_uris,
+            )
+            known_versions.update(publication_plan.expected_before_versions)
+            validated_completed_names = _validate_checkpoint_table_versions(
+                publication_plan,
+                table_uris=table_uris,
+                version_reader=self.delta.version,
+            )
             _notify_stage_progress(
                 stage_progress_callback,
                 "table_publication",
@@ -1172,12 +1550,33 @@ class FabricSyncService:
                 table_uri: str,
                 before_version: int | None,
                 result: DeltaWriteResult,
+                *,
+                resumed: bool = False,
+                current_phase: str = "table_publication",
             ) -> None:
-                nonlocal completed_tables
+                nonlocal completed_tables, skipped_tables
                 table_results[table_name] = result
                 completed_tables += 1
-                if result.version != before_version:
+                if resumed:
+                    skipped_tables += 1
+                if not resumed and result.version != before_version:
                     written_versions[table_name] = (table_uri, before_version)
+                if not resumed:
+                    assert prepared_checkpoint is not None
+                    assert publication_plan is not None
+                    intent = write_intents.get(table_name)
+                    if intent is None:
+                        raise PublicationCheckpointError(
+                            f"Table {table_name} result has no durable intent"
+                        )
+                    self.publication_checkpoints.record_table_result(
+                        prepared_checkpoint,
+                        publication_plan,
+                        table_name=table_name,
+                        expected_before_version=before_version,
+                        result=result,
+                        intent=intent,
+                    )
                 self.metrics.record_table(table_name, result)
                 _notify_table_progress(
                     progress_callback,
@@ -1186,6 +1585,17 @@ class FabricSyncService:
                         total_tables=total_publish_tables,
                         table_name=table_name,
                         result=result,
+                        remaining_tables=max(
+                            total_publish_tables - completed_tables,
+                            0,
+                        ),
+                        resumed_tables=resumed_table_count,
+                        skipped_tables=skipped_tables,
+                        checkpoint_id=prepared_checkpoint.checkpoint_id,
+                        checkpoint_state=(
+                            "restored" if checkpoint_restored else "persisted"
+                        ),
+                        current_phase=current_phase,
                     ),
                 )
 
@@ -1194,6 +1604,157 @@ class FabricSyncService:
                     publish_items,
                     patch_tables=self._PATCH_PUBLICATION_TABLES,
                     barrier_table=self._PATCH_PUBLICATION_BARRIER,
+                )
+            )
+
+            patch_plan_names = {table_name for table_name, _rows in patch_items}
+            if barrier_item is not None:
+                patch_plan_names.add(barrier_item[0])
+            completed_names = set(validated_completed_names)
+            completed_patch_names = completed_names & patch_plan_names
+            patch_group_resumed = bool(patch_plan_names) and (
+                completed_patch_names == patch_plan_names
+            )
+            if completed_patch_names and not patch_group_resumed:
+                ordered_reset_names = sorted(
+                    completed_patch_names,
+                    key=lambda name: (
+                        name != self._PATCH_PUBLICATION_BARRIER,
+                        name,
+                    ),
+                )
+                for table_name in ordered_reset_names:
+                    completed = publication_plan.completed[table_name]
+                    restore_target = (
+                        completed.resulting_version
+                        if table_name == "silver_patch_snapshot_findings"
+                        else completed.expected_before_version
+                    )
+                    restore_digest = _hash_json(
+                        {
+                            "operation": "patch_reset",
+                            "table_name": table_name,
+                            "restore_target_version": restore_target,
+                            "restore_from_version": completed.resulting_version,
+                        }
+                    )
+                    intent = self.publication_checkpoints.begin_table_restore(
+                        prepared_checkpoint,
+                        publication_plan,
+                        table_name=table_name,
+                        restore_target_version=restore_target,
+                        outcome_digest=restore_digest,
+                    )
+                    self._finish_table_restore_intent(
+                        prepared_checkpoint,
+                        publication_plan,
+                        intent,
+                        table_uri=table_uris[table_name],
+                    )
+                publication_plan = (
+                    self.publication_checkpoints.prepare_table_plan(
+                        prepared_checkpoint,
+                        table_names=publication_plan.table_names,
+                        expected_before_versions={
+                            table_name: self.delta.version(
+                                table_uris[table_name]
+                            )
+                            for table_name in publication_plan.table_names
+                        },
+                    )
+                )
+                known_versions.update(
+                    publication_plan.expected_before_versions
+                )
+                completed_names = set(publication_plan.completed)
+            resumed_table_count = len(completed_names)
+            if checkpoint_restored:
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "publication_resume",
+                    "started",
+                )
+                _notify_stage_progress(
+                    stage_progress_callback,
+                    "publication_resume",
+                    "completed",
+                    completed=resumed_table_count,
+                    total=total_publish_tables,
+                    remaining_tables=max(
+                        total_publish_tables - resumed_table_count,
+                        0,
+                    ),
+                    resumed_tables=resumed_table_count,
+                    skipped_tables=resumed_table_count,
+                    checkpoint_id=prepared_checkpoint.checkpoint_id,
+                    checkpoint_state="restored",
+                    publication_id=prepared_checkpoint.checkpoint_id,
+                    current_phase="table_publication",
+                )
+
+            def restore_completed_result(table_name: str) -> None:
+                completed = publication_plan.completed[table_name]
+                record_table_result(
+                    table_name,
+                    str(table_uris[table_name]),
+                    completed.expected_before_version,
+                    completed.result,
+                    resumed=True,
+                )
+
+            if patch_group_resumed:
+                for table_name, _rows in patch_items:
+                    restore_completed_result(table_name)
+                if barrier_item is not None:
+                    restore_completed_result(barrier_item[0])
+                assert_lock_held()
+                self._register_fabric_assets(patch_plan_names)
+                assert_lock_held()
+                patch_items = []
+                barrier_item = None
+
+            resumable_completed = (
+                completed_names - patch_plan_names - set(gold_table_names)
+            )
+            for table_name in sorted(resumable_completed):
+                restore_completed_result(table_name)
+            publish_items = [
+                item for item in publish_items if item[0] not in resumable_completed
+            ]
+            pending_items = [
+                *patch_items,
+                *([barrier_item] if barrier_item is not None else []),
+                *publish_items,
+            ]
+            write_intents.update(
+                self.publication_checkpoints.begin_table_writes(
+                    prepared_checkpoint,
+                    publication_plan,
+                    outcome_digests={
+                        table_name: _table_write_outcome_digest(
+                            table_name,
+                            rows,
+                            mode=self._write_mode_for_table(table_name),
+                            key_columns=(
+                                ("event_id",)
+                                if table_name == "metadata_audit_events"
+                                else ("resource_id",)
+                            ),
+                            partition_by=(
+                                (
+                                    *self.partitioning.columns_for(table_name),
+                                    "ingestion_run_id",
+                                )
+                                if table_name
+                                == "silver_patch_snapshot_findings"
+                                else self.partitioning.columns_for(table_name)
+                            ),
+                            checkpoint_digest=(
+                                prepared_checkpoint.manifest_digest
+                            ),
+                        )
+                        for table_name, rows in pending_items
+                    },
                 )
             )
 
@@ -1216,9 +1777,7 @@ class FabricSyncService:
                 )
 
             with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
-                futures = [
-                    executor.submit(write_table, item) for item in publish_items
-                ]
+                futures = [executor.submit(write_table, item) for item in publish_items]
                 write_error = None
                 for future in as_completed(futures):
                     try:
@@ -1286,15 +1845,10 @@ class FabricSyncService:
                     )
                     for table_name in _EXPOSURE_GOLD_INPUT_TABLES
                 }
-                sample_table_uri = self.onelake.table_uri(
-                    "gold",
-                    "exposure_facts",
-                )
-                table_root: Path | str = (
-                    str(sample_table_uri).rsplit("/", 1)[0]
-                    if "://" in str(sample_table_uri)
-                    else Path(str(sample_table_uri)).parent
-                )
+                if exposure_table_root is None:
+                    raise PublicationCheckpointError(
+                        "Exposure Gold table plan is missing its table root"
+                    )
                 gold_generation_id = _exposure_gold_generation_id(
                     source_run_id,
                     exposure_gold_datasets,
@@ -1305,7 +1859,7 @@ class FabricSyncService:
                     projected_at=source_projected_at,
                 )
                 exposure_gold_publisher = ExposureGoldFabricPublisher(
-                    table_root=table_root,
+                    table_root=exposure_table_root,
                     delta_writer=self.delta,
                     pointer_store=exposure_pointer_store,
                 )
@@ -1314,12 +1868,93 @@ class FabricSyncService:
                     "gold_staging",
                     "started",
                 )
-                exposure_gold_stage = exposure_gold_publisher.stage(
-                    exposure_gold_datasets,
-                    generation_id=gold_generation_id,
-                    projected_at=source_projected_at,
-                    published_at=started_at,
-                )
+
+                def record_gold_table_result(
+                    table_name: str,
+                    result: DeltaWriteResult,
+                ) -> None:
+                    record_table_result(
+                        table_name,
+                        str(table_uris[table_name]),
+                        publication_plan.expected_before_versions[table_name],
+                        result,
+                        resumed=table_name in publication_plan.completed,
+                        current_phase="gold_staging",
+                    )
+
+                def begin_gold_table_write(
+                    table_name: str,
+                    rows: list[dict[str, Any]],
+                ) -> tuple[str, str]:
+                    outcome_digest = _table_write_outcome_digest(
+                        table_name,
+                        rows,
+                        mode=DeltaWriteMode.MERGE,
+                        key_columns=("resource_id",),
+                        partition_by=(
+                            ("read_model_generation_id",)
+                            if table_name in EXPOSURE_GOLD_TABLES
+                            else ()
+                        ),
+                        checkpoint_digest=(
+                            prepared_checkpoint.manifest_digest
+                        ),
+                    )
+                    intent = self.publication_checkpoints.begin_table_write(
+                        prepared_checkpoint,
+                        publication_plan,
+                        table_name=table_name,
+                        outcome_digest=outcome_digest,
+                    )
+                    write_intents[table_name] = intent
+                    return intent.intent_id, intent.outcome_digest
+
+                if publication_plan.activation_pending is not None:
+                    if (
+                        publication_plan.activation_pending["generation_id"]
+                        != gold_generation_id
+                    ):
+                        raise PublicationCheckpointError(
+                            "Activation-pending Gold generation does not match"
+                        )
+                    for table_name in gold_table_names:
+                        completed = publication_plan.completed.get(table_name)
+                        if completed is None:
+                            raise PublicationCheckpointError(
+                                "Activation-pending checkpoint has incomplete Gold tables"
+                            )
+                        record_table_result(
+                            table_name,
+                            str(table_uris[table_name]),
+                            completed.expected_before_version,
+                            completed.result,
+                            resumed=True,
+                            current_phase="gold_staging",
+                        )
+                    exposure_gold_stage = _exposure_stage_from_checkpoint(
+                        publication_plan.activation_pending,
+                        table_results=table_results,
+                    )
+                else:
+                    exposure_gold_stage = exposure_gold_publisher.stage(
+                        exposure_gold_datasets,
+                        generation_id=gold_generation_id,
+                        projected_at=source_projected_at,
+                        published_at=started_at,
+                        completed_table_results={
+                            table_name: completed.result
+                            for table_name, completed in publication_plan.completed.items()
+                            if table_name in gold_table_names
+                        },
+                        expected_before_versions={
+                            table_name: publication_plan.expected_before_versions[
+                                table_name
+                            ]
+                            for table_name in gold_table_names
+                        },
+                        table_write_intent_callback=begin_gold_table_write,
+                        table_result_callback=record_gold_table_result,
+                    )
                 assert_lock_held()
                 _notify_stage_progress(
                     stage_progress_callback,
@@ -1327,19 +1962,6 @@ class FabricSyncService:
                     "completed",
                 )
                 datasets.update(gold_tables)
-                for table_name, result in exposure_gold_stage.table_writes.items():
-                    table_results[table_name] = result
-                    completed_tables += 1
-                    self.metrics.record_table(table_name, result)
-                    _notify_table_progress(
-                        progress_callback,
-                        FabricTableWriteProgress(
-                            completed_tables=completed_tables,
-                            total_tables=total_publish_tables,
-                            table_name=table_name,
-                            result=result,
-                        ),
-                    )
 
                 _notify_stage_progress(
                     stage_progress_callback,
@@ -1347,9 +1969,7 @@ class FabricSyncService:
                     "started",
                 )
                 assert_lock_held()
-                self._register_fabric_assets(
-                    set(exposure_gold_stage.table_writes)
-                )
+                self._register_fabric_assets(set(exposure_gold_stage.table_writes))
                 assert_lock_held()
                 _notify_stage_progress(
                     stage_progress_callback,
@@ -1381,10 +2001,16 @@ class FabricSyncService:
                 status="completed",
                 timestamp=_utc_now(),
                 replay=replay,
-                rows_processed=sum(value.rows_processed for value in table_results.values()),
+                rows_processed=sum(
+                    value.rows_processed for value in table_results.values()
+                ),
                 rows_added=sum(value.rows_added for value in table_results.values()),
-                rows_changed=sum(value.rows_changed for value in table_results.values()),
-                rows_removed=sum(value.rows_removed for value in table_results.values()),
+                rows_changed=sum(
+                    value.rows_changed for value in table_results.values()
+                ),
+                rows_removed=sum(
+                    value.rows_removed for value in table_results.values()
+                ),
                 watermark=source_watermark,
                 ontology_entity_version=ontology_entity_version,
                 ontology_relationship_version=ontology_relationship_version,
@@ -1404,10 +2030,30 @@ class FabricSyncService:
             assert_lock_held()
             self._write_state(completed)
             assert_lock_held()
-            if (
-                exposure_gold_publisher is not None
-                and exposure_gold_stage is not None
-            ):
+            assert prepared_checkpoint is not None
+            assert publication_plan is not None
+            if exposure_gold_publisher is not None and exposure_gold_stage is not None:
+                if publication_plan.activation_pending is None:
+                    _notify_stage_progress(
+                        stage_progress_callback,
+                        "checkpoint_activation_pending",
+                        "started",
+                    )
+                    self.publication_checkpoints.mark_activation_pending(
+                        prepared_checkpoint,
+                        publication_plan,
+                        _exposure_stage_checkpoint(exposure_gold_stage),
+                    )
+                    assert_lock_held()
+                    _notify_stage_progress(
+                        stage_progress_callback,
+                        "checkpoint_activation_pending",
+                        "completed",
+                        checkpoint_id=prepared_checkpoint.checkpoint_id,
+                        checkpoint_state="activation_pending",
+                        publication_id=prepared_checkpoint.checkpoint_id,
+                        current_phase="pointer_activation",
+                    )
                 _notify_stage_progress(
                     stage_progress_callback,
                     "pointer_activation",
@@ -1416,17 +2062,25 @@ class FabricSyncService:
                 assert_lock_held()
                 exposure_gold_publisher.activate(exposure_gold_stage)
                 assert_lock_held()
+                if (
+                    exposure_gold_publisher.readable_generation_id()
+                    != exposure_gold_stage.generation_id
+                ):
+                    raise PublicationCheckpointError(
+                        "Gold pointer activation was not observable"
+                    )
                 _notify_stage_progress(
                     stage_progress_callback,
                     "pointer_activation",
                     "completed",
                 )
-            self.metrics.record_ontology(
-                ontology_health, self.clock() - ontology_started
+            _notify_stage_progress(
+                stage_progress_callback,
+                "checkpoint_finalization",
+                "started",
             )
             duration = self.clock() - started_clock
-            self.metrics.record_run(duration, 0, "completed")
-            return _result(
+            final_result = _result(
                 run_id,
                 source_run_id,
                 "completed",
@@ -1435,6 +2089,26 @@ class FabricSyncService:
                 0,
                 duration,
             )
+            self.publication_checkpoints.finalize(
+                prepared_checkpoint,
+                publication_plan,
+                outcome=_sync_result_document(final_result),
+            )
+            assert_lock_held()
+            _notify_stage_progress(
+                stage_progress_callback,
+                "checkpoint_finalization",
+                "completed",
+                checkpoint_id=prepared_checkpoint.checkpoint_id,
+                checkpoint_state="finalized",
+                publication_id=prepared_checkpoint.checkpoint_id,
+                current_phase="checkpoint_finalization",
+            )
+            self.metrics.record_ontology(
+                ontology_health, self.clock() - ontology_started
+            )
+            self.metrics.record_run(duration, 0, "completed")
+            return final_result
         except Exception as exc:
             self.metrics.record_ontology(
                 ontology_health, self.clock() - ontology_started, errors=1
@@ -1444,17 +2118,42 @@ class FabricSyncService:
                 assert_lock_held()
             except LeaseLostError as lost:
                 lock_error = lost
+            ambiguous_mutation = False
+            if prepared_checkpoint is not None:
+                try:
+                    ambiguous_mutation = self.publication_checkpoints.has_in_flight(
+                        source_run_id
+                    )
+                except PublicationCheckpointError:
+                    ambiguous_mutation = True
             rollback_errors = (
                 []
-                if data_committed or lock_error is not None
+                if data_committed
+                or lock_error is not None
+                or ambiguous_mutation
                 else self._rollback(written_versions)
             )
-            if not isinstance(exc, ValueError) or "data quality validation failed" not in str(exc).lower():
+            if (
+                not data_committed
+                and lock_error is None
+                and not ambiguous_mutation
+                and not rollback_errors
+                and prepared_checkpoint is not None
+            ):
+                self.publication_checkpoints.abandon(source_run_id)
+            if (
+                not isinstance(exc, ValueError)
+                or "data quality validation failed" not in str(exc).lower()
+            ):
                 error_message = str(exc)
                 if data_committed:
-                    error_message += "; committed graph tables were retained for idempotent retry"
+                    error_message += (
+                        "; committed graph tables were retained for idempotent retry"
+                    )
                 if rollback_errors:
-                    error_message += "; rollback incomplete: " + " | ".join(rollback_errors)
+                    error_message += "; rollback incomplete: " + " | ".join(
+                        rollback_errors
+                    )
                 if lock_error is None:
                     self._write_state(
                         _state_row(
@@ -1467,18 +2166,25 @@ class FabricSyncService:
                             error=error_message[:2048],
                         )
                     )
-                self.metrics.record_run(self.clock() - started_clock, max(failed_records, 1), "failed")
+                self.metrics.record_run(
+                    self.clock() - started_clock, max(failed_records, 1), "failed"
+                )
             if lock_error is not None:
                 raise lock_error from exc
             if rollback_errors:
                 raise RuntimeError(
-                    "Fabric sync failed and rollback was incomplete: " + " | ".join(rollback_errors)
+                    "Fabric sync failed and rollback was incomplete: "
+                    + " | ".join(rollback_errors)
                 ) from exc
             raise
 
-    def _rollback(self, written_versions: dict[str, tuple[str, int | None]]) -> list[str]:
+    def _rollback(
+        self, written_versions: dict[str, tuple[str, int | None]]
+    ) -> list[str]:
         errors: list[str] = []
-        for table_name, (table_uri, before_version) in reversed(written_versions.items()):
+        for table_name, (table_uri, before_version) in reversed(
+            written_versions.items()
+        ):
             if table_name == "silver_patch_snapshot_findings":
                 continue
             for attempt in range(1, 4):
@@ -1496,6 +2202,143 @@ class FabricSyncService:
                         self.rollback_sleep(min(2 ** (attempt - 1), 5))
         return errors
 
+    def _reconcile_publication_intents(
+        self,
+        checkpoint: PreparedPublicationCheckpoint,
+        plan: PublicationResumePlan,
+        *,
+        table_uris: Mapping[str, Path | str],
+    ) -> PublicationResumePlan:
+        """Resolve durable write/restore intents before version validation."""
+
+        for table_name in sorted(plan.in_flight):
+            intent = plan.in_flight[table_name]
+            table_uri = table_uris[table_name]
+            if intent.operation == "write":
+                committed = self.delta.committed_transaction(
+                    table_uri,
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
+                )
+                current = self.delta.version(table_uri)
+                if committed is not None:
+                    if current != committed.version:
+                        raise PublicationCheckpointError(
+                            f"In-flight table {table_name} Delta version drifted"
+                        )
+                    self.publication_checkpoints.record_table_result(
+                        checkpoint,
+                        plan,
+                        table_name=table_name,
+                        expected_before_version=intent.expected_before_version,
+                        result=committed,
+                        intent=intent,
+                    )
+                elif current == intent.expected_before_version:
+                    self.publication_checkpoints.clear_table_intent(
+                        checkpoint,
+                        plan,
+                        intent,
+                    )
+                else:
+                    raise PublicationCheckpointError(
+                        f"In-flight table {table_name} has no matching Delta commit"
+                    )
+                continue
+            self._finish_table_restore_intent(
+                checkpoint,
+                plan,
+                intent,
+                table_uri=table_uri,
+            )
+        if not plan.in_flight:
+            return plan
+        return self.publication_checkpoints.prepare_table_plan(
+            checkpoint,
+            table_names=plan.table_names,
+            expected_before_versions={
+                table_name: self.delta.version(table_uris[table_name])
+                for table_name in plan.table_names
+            },
+        )
+
+    def _finish_table_restore_intent(
+        self,
+        checkpoint: PreparedPublicationCheckpoint,
+        plan: PublicationResumePlan,
+        intent: TableWriteIntent,
+        *,
+        table_uri: Path | str,
+    ) -> None:
+        """Finish or reconcile one durable patch-reset restore intent."""
+
+        if intent.operation != "restore":
+            raise PublicationCheckpointError("Expected a table restore intent")
+        current = self.delta.version(table_uri)
+        target = intent.restore_target_version
+        source = intent.restore_from_version
+        if target == source and current == source:
+            restored_version = current
+        elif target is None:
+            committed = self.delta.committed_transaction(
+                table_uri,
+                transaction_id=intent.intent_id,
+                transaction_digest=intent.outcome_digest,
+            )
+            if committed is not None:
+                if current != committed.version:
+                    raise PublicationCheckpointError(
+                        f"Patch reset table {intent.table_name} Delta version drifted"
+                    )
+                restored_version = committed.version
+            elif current == source:
+                restored_version = self.delta.write(
+                    table_uri,
+                    [],
+                    mode=DeltaWriteMode.OVERWRITE,
+                    schema=schema_for(intent.table_name),
+                    partition_by=self.partitioning.columns_for(
+                        intent.table_name
+                    ),
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
+                    expected_version=source,
+                ).version
+            else:
+                raise PublicationCheckpointError(
+                    f"Patch reset table {intent.table_name} has no matching clear"
+                )
+        else:
+            committed = self.delta.committed_transaction(
+                table_uri,
+                transaction_id=intent.intent_id,
+                transaction_digest=intent.outcome_digest,
+            )
+            if committed is not None:
+                if current != committed.version:
+                    raise PublicationCheckpointError(
+                        f"Patch reset table {intent.table_name} Delta version drifted"
+                    )
+                restored_version = committed.version
+            elif current == source:
+                restored_version = self.delta.restore(
+                    table_uri,
+                    target,
+                    transaction_id=intent.intent_id,
+                    transaction_digest=intent.outcome_digest,
+                    expected_version=source,
+                )
+            else:
+                raise PublicationCheckpointError(
+                    f"Patch reset table {intent.table_name} has no matching restore"
+                )
+        self.publication_checkpoints.complete_table_restore(
+            checkpoint,
+            plan,
+            intent,
+            restored_version=restored_version,
+        )
+
     def status(self) -> list[dict[str, Any]]:
         return self.delta.read(self.onelake.table_uri("metadata", "ingestion_state"))
 
@@ -1503,7 +2346,9 @@ class FabricSyncService:
         from ontology.graph_queries import OntologyQueryService
 
         entities, relationships = self._read_authoritative_ontology()
-        return OntologyQueryService(entities, relationships).answer(question, entity=entity)
+        return OntologyQueryService(entities, relationships).answer(
+            question, entity=entity
+        )
 
     def ontology_health(self) -> dict[str, Any]:
         rows = self.delta.read(self.onelake.table_uri("ontology", "health"))
@@ -1660,9 +2505,9 @@ class FabricSyncService:
             {
                 "target_resource_id": str(edge.get("subject_id") or ""),
                 "cost_center": str(
-                    business_functions[service_functions[str(edge.get("object_id"))]].get(
-                        "name"
-                    )
+                    business_functions[
+                        service_functions[str(edge.get("object_id"))]
+                    ].get("name")
                     or ""
                 ),
                 "period": str(latest.get("timestamp") or ""),
@@ -1775,12 +2620,15 @@ class FabricSyncService:
                     entry.get("default_support_channel") or "mainstream"
                 ),
             }
-            key = "ontology://lifecycle-product/" + _hash_json(
-                {
-                    "product": str(entry.get("product") or "").casefold(),
-                    "version": str(entry.get("version") or "").casefold(),
-                }
-            )[:32]
+            key = (
+                "ontology://lifecycle-product/"
+                + _hash_json(
+                    {
+                        "product": str(entry.get("product") or "").casefold(),
+                        "version": str(entry.get("version") or "").casefold(),
+                    }
+                )[:32]
+            )
             base = {
                 "tenant_id": "not-applicable",
                 "subscription_id": "not-applicable",
@@ -1862,13 +2710,16 @@ class FabricSyncService:
             subscription_id = subscriptions_by_resource.get(
                 resource_key, "not-applicable"
             )
-            history_id = "lifecycle-history://" + _hash_json(
-                {
-                    "resource_key": resource_key,
-                    "observed_at": timestamp,
-                    "ingestion_run_id": run_id,
-                }
-            )[:32]
+            history_id = (
+                "lifecycle-history://"
+                + _hash_json(
+                    {
+                        "resource_key": resource_key,
+                        "observed_at": timestamp,
+                        "ingestion_run_id": run_id,
+                    }
+                )[:32]
+            )
             rows.append(
                 {
                     "tenant_id": "not-applicable",
@@ -1937,9 +2788,7 @@ class FabricSyncService:
             "source_status": [
                 row
                 for row in (
-                    self.delta.read(
-                        self.onelake.table_uri("metadata", "source_status")
-                    )
+                    self.delta.read(self.onelake.table_uri("metadata", "source_status"))
                     if self.delta.version(
                         self.onelake.table_uri("metadata", "source_status")
                     )
@@ -2010,16 +2859,18 @@ class FabricSyncService:
             }
             for row in read("silver", "alerts")
         ]
-        resource_changes = _dedupe_changes([
-            {
-                "change_id": _change_identity(row, namespace="resource_changes"),
-                "change_type": str(row.get("change_type") or "Unknown"),
-                "changed_at": str(row.get("timestamp") or ""),
-                "resource_key": str(row.get("target_resource_id") or "").casefold(),
-                "summary": f"Resource change: {row.get('change_type') or 'Unknown'}",
-            }
-            for row in read("bronze", "resource_changes")
-        ])
+        resource_changes = _dedupe_changes(
+            [
+                {
+                    "change_id": _change_identity(row, namespace="resource_changes"),
+                    "change_type": str(row.get("change_type") or "Unknown"),
+                    "changed_at": str(row.get("timestamp") or ""),
+                    "resource_key": str(row.get("target_resource_id") or "").casefold(),
+                    "summary": f"Resource change: {row.get('change_type') or 'Unknown'}",
+                }
+                for row in read("bronze", "resource_changes")
+            ]
+        )
         return {
             "inventory": read("bronze", "resources"),
             "incidents": incidents,
@@ -2033,9 +2884,7 @@ class FabricSyncService:
                     ),
                     "status": str(row.get("status") or "Unknown"),
                     "severity": str(row.get("severity") or "Unknown"),
-                    "resource_key": str(
-                        row.get("target_resource_id") or ""
-                    ).casefold(),
+                    "resource_key": str(row.get("target_resource_id") or "").casefold(),
                 }
                 for row in read("silver", "incident_history")
             ],
@@ -2106,9 +2955,7 @@ class FabricSyncService:
             resource_changes.append(
                 {
                     "change_id": _change_identity(row, namespace="resource_changes"),
-                    "resource_key": str(
-                        row.get("target_resource_id") or ""
-                    ).casefold(),
+                    "resource_key": str(row.get("target_resource_id") or "").casefold(),
                     "changed_at": str(row.get("timestamp") or ""),
                     "change_type": str(row.get("change_type") or "Unknown"),
                     "category": "Configuration",
@@ -2134,9 +2981,7 @@ class FabricSyncService:
             return [
                 {
                     "deviation_id": str(row.get("deviation_id") or ""),
-                    "resource_key": str(
-                        row.get("target_resource_id") or ""
-                    ).casefold(),
+                    "resource_key": str(row.get("target_resource_id") or "").casefold(),
                     "observed_at": str(
                         row.get("observed_at") or row.get("timestamp") or ""
                     ),
@@ -2148,26 +2993,28 @@ class FabricSyncService:
             ]
 
         def changes(name: str) -> list[dict[str, Any]]:
-            return _dedupe_changes([
-                {
-                    "change_id": _change_identity(
-                        row,
-                        fallback=str(row.get("change_id") or ""),
-                        namespace=name,
-                    ),
-                    "resource_key": str(
-                        row.get("target_resource_id") or ""
-                    ).casefold(),
-                    "changed_at": str(
-                        row.get("changed_at") or row.get("timestamp") or ""
-                    ),
-                    "severity": str(row.get("severity") or "Unknown"),
-                    "changed_by": str(row.get("changed_by") or "Unknown"),
-                    "source": str(row.get("source") or name),
-                    "summary": str(row.get("summary") or "Change observed"),
-                }
-                for row in read("silver", name)
-            ])
+            return _dedupe_changes(
+                [
+                    {
+                        "change_id": _change_identity(
+                            row,
+                            fallback=str(row.get("change_id") or ""),
+                            namespace=name,
+                        ),
+                        "resource_key": str(
+                            row.get("target_resource_id") or ""
+                        ).casefold(),
+                        "changed_at": str(
+                            row.get("changed_at") or row.get("timestamp") or ""
+                        ),
+                        "severity": str(row.get("severity") or "Unknown"),
+                        "changed_by": str(row.get("changed_by") or "Unknown"),
+                        "source": str(row.get("source") or name),
+                        "summary": str(row.get("summary") or "Change observed"),
+                    }
+                    for row in read("silver", name)
+                ]
+            )
 
         def configurations(name: str) -> dict[str, dict[str, Any]]:
             result = {}
@@ -2179,9 +3026,9 @@ class FabricSyncService:
                 except json.JSONDecodeError:
                     configuration = {}
                 if isinstance(configuration, dict):
-                    result[
-                        str(row.get("target_resource_id") or "").casefold()
-                    ] = configuration
+                    result[str(row.get("target_resource_id") or "").casefold()] = (
+                        configuration
+                    )
             return result
 
         incident_snapshot = self.incident_intelligence_snapshot()
@@ -2298,9 +3145,7 @@ class FabricSyncService:
                 ),
                 "observation_id": str(row.get("resource_id") or ""),
                 "patch_debt": int(row.get("patch_debt") or 0),
-                "lifecycle_risk_score": int(
-                    row.get("lifecycle_risk_score") or 0
-                ),
+                "lifecycle_risk_score": int(row.get("lifecycle_risk_score") or 0),
                 "incident_count_30d": int(row.get("incident_count_30d") or 0),
                 "configuration_drift_count": int(
                     row.get("configuration_drift_count") or 0
@@ -2409,7 +3254,9 @@ class FabricSyncService:
                 # deterministic, distinct id per role on its own, never
                 # collapsing every unmapped role onto one shared default.
                 "role_ids": (
-                    parsed(row, "role_ids_json", dict) if row.get("role_ids_json") else {}
+                    parsed(row, "role_ids_json", dict)
+                    if row.get("role_ids_json")
+                    else {}
                 ),
             }
             for row in policy_rows
@@ -2540,12 +3387,18 @@ class FabricSyncService:
             relationship_type: ontology_relationship_table(*relationship_type)
             for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES
         }
-        relationships.update({
-            (row["subject_type"], row["predicate"], row["object_type"]): ontology_relationship_table(
-                row["subject_type"], row["predicate"], row["object_type"]
-            )
-            for row in datasets["ontology_relationships"]
-        })
+        relationships.update(
+            {
+                (
+                    row["subject_type"],
+                    row["predicate"],
+                    row["object_type"],
+                ): ontology_relationship_table(
+                    row["subject_type"], row["predicate"], row["object_type"]
+                )
+                for row in datasets["ontology_relationships"]
+            }
+        )
         self.ontology_publisher.publish(
             ontology_id=self.ontology_id,
             ontology_name=self.ontology_name,
@@ -2559,12 +3412,15 @@ class FabricSyncService:
         return self._validate(datasets)
 
     def _validate(self, datasets: dict[str, list[dict]]) -> list[QualityReport]:
-        entity_ids = {row["resource_id"] for row in datasets.get("ontology_entities", [])}
+        entity_ids = {
+            row["resource_id"] for row in datasets.get("ontology_entities", [])
+        }
         reports = []
         for table_name, rows in datasets.items():
-            if table_name in {"silver_resource_relationships", "ontology_relationships"} or table_name.startswith(
-                "ontology_rel_"
-            ):
+            if table_name in {
+                "silver_resource_relationships",
+                "ontology_relationships",
+            } or table_name.startswith("ontology_rel_"):
                 reports.append(
                     self.validator.validate_relationships(
                         rows,
@@ -2603,7 +3459,9 @@ class FabricSyncService:
             "source_run_id": source_run_id,
             "passed": failed == 0,
             "failed_records": failed,
-            "report_json": json.dumps([report.to_dict() for report in reports], sort_keys=True),
+            "report_json": json.dumps(
+                [report.to_dict() for report in reports], sort_keys=True
+            ),
         }
         self.delta.write(
             self.onelake.table_uri("metadata", "quality_reports"),
@@ -2625,7 +3483,9 @@ class FabricSyncService:
         try:
             resolved.relative_to(self.source_root)
         except ValueError as exc:
-            raise ValueError(f"Source snapshot escapes configured root: {candidate}") from exc
+            raise ValueError(
+                f"Source snapshot escapes configured root: {candidate}"
+            ) from exc
         if not (resolved / "manifest.json").is_file():
             raise ValueError(f"Source snapshot has no manifest: {candidate}")
         return resolved
@@ -2672,7 +3532,10 @@ class FabricSyncService:
     def _register_fabric_assets(self, tables: set[str]) -> None:
         if self.lakehouse_manager is None:
             return
-        expected = set(tables) | {"metadata_ingestion_state", "metadata_quality_reports"}
+        expected = set(tables) | {
+            "metadata_ingestion_state",
+            "metadata_quality_reports",
+        }
         self.lakehouse_manager.ensure_tables_registered(
             self.lakehouse_id,
             expected,
@@ -2802,9 +3665,7 @@ class FabricSyncService:
         deployments = datasets.get("silver_workload_deployments", [])
         if not checkpoints and not observations and not deployments:
             return
-        checkpoint_ids = {
-            str(row.get("checkpoint_key") or "") for row in checkpoints
-        }
+        checkpoint_ids = {str(row.get("checkpoint_key") or "") for row in checkpoints}
         workspace_families: dict[tuple[str, str], set[str]] = {}
         for row in checkpoints:
             connection_id = str(row.get("connection_id") or "")
@@ -2824,11 +3685,17 @@ class FabricSyncService:
             status = str(row.get("status") or "")
             effective = str(row.get("effective_generation") or "")
             if status == "unavailable" and effective:
-                raise ValueError("Unavailable workload checkpoint has an effective generation")
+                raise ValueError(
+                    "Unavailable workload checkpoint has an effective generation"
+                )
             if status in {"complete", "healthy-empty", "stale"} and not effective:
-                raise ValueError("Usable workload checkpoint lacks an effective generation")
+                raise ValueError(
+                    "Usable workload checkpoint lacks an effective generation"
+                )
         required_families = set(WORKLOAD_QUERY_FAMILIES)
-        if any(families != required_families for families in workspace_families.values()):
+        if any(
+            families != required_families for families in workspace_families.values()
+        ):
             raise ValueError("Workload checkpoint family set is incomplete")
         for row in [*observations, *deployments]:
             if str(row.get("checkpoint_key") or "") not in checkpoint_ids:
@@ -2904,7 +3771,9 @@ class FabricSyncService:
             "source_system": str(row.get("source_system") or ""),
             "source_id": str(row.get("source_id") or ""),
             "created_timestamp": str(row.get("created_timestamp") or timestamp),
-            "last_observed_timestamp": str(row.get("last_observed_timestamp") or timestamp),
+            "last_observed_timestamp": str(
+                row.get("last_observed_timestamp") or timestamp
+            ),
             "schema_version": str(row.get("schema_version") or "1.0.0"),
             "attributes_json": str(row.get("attributes_json") or "{}"),
         }
@@ -2933,9 +3802,7 @@ class FabricSyncService:
         object_id = str(row.get("object_id") or "")
         subject = entity_by_id.get(subject_id.casefold(), {})
         obj = entity_by_id.get(object_id.casefold(), {})
-        tenant_id = str(
-            subject.get("tenant_id") or obj.get("tenant_id") or "unknown"
-        )
+        tenant_id = str(subject.get("tenant_id") or obj.get("tenant_id") or "unknown")
         subscription_id = str(
             subject.get("subscription_id")
             or obj.get("subscription_id")
@@ -2956,7 +3823,9 @@ class FabricSyncService:
             "confidence": float(row.get("confidence") or 0.0),
             "source": str(row.get("source") or ""),
             "created_timestamp": str(row.get("created_timestamp") or timestamp),
-            "last_observed_timestamp": str(row.get("last_observed_timestamp") or timestamp),
+            "last_observed_timestamp": str(
+                row.get("last_observed_timestamp") or timestamp
+            ),
             "assertion_state": str(row.get("assertion_state") or "accepted"),
             "schema_version": str(row.get("schema_version") or "1.0.0"),
         }
@@ -2970,7 +3839,9 @@ class FabricSyncService:
             **payload,
         }
 
-    def _load_topology_rows(self, snapshot: Path | str) -> dict[str, list[dict[str, Any]]]:
+    def _load_topology_rows(
+        self, snapshot: Path | str
+    ) -> dict[str, list[dict[str, Any]]]:
         file_by_key = {
             "network_vnets": "VNet.jsonl",
             "network_security_groups": "NetworkSecurityGroup.jsonl",
@@ -3031,25 +3902,33 @@ class FabricSyncService:
 
     def _write_topology_manifest(self, *, run_id: str, observed_at: str) -> None:
         table_uri = self.onelake.table_uri("metadata", "publication_manifest")
-        current_rows = self.delta.read(table_uri) if self.delta.version(table_uri) is not None else []
-        store = PublicationManifestStore.from_list([
-            {
-                "projection_name": str(row.get("projection_name") or ""),
-                "disposition": str(row.get("disposition") or "active"),
-                "compatibility_version": (
-                    str(row.get("compatibility_version"))
-                    if row.get("compatibility_version")
-                    else None
-                ),
-                "retired_reason": (
-                    str(row.get("retired_reason")) if row.get("retired_reason") else None
-                ),
-                "registered_at": str(row.get("registered_at") or ""),
-                "updated_at": str(row.get("updated_at") or ""),
-            }
-            for row in current_rows
-            if str(row.get("projection_name") or "")
-        ])
+        current_rows = (
+            self.delta.read(table_uri)
+            if self.delta.version(table_uri) is not None
+            else []
+        )
+        store = PublicationManifestStore.from_list(
+            [
+                {
+                    "projection_name": str(row.get("projection_name") or ""),
+                    "disposition": str(row.get("disposition") or "active"),
+                    "compatibility_version": (
+                        str(row.get("compatibility_version"))
+                        if row.get("compatibility_version")
+                        else None
+                    ),
+                    "retired_reason": (
+                        str(row.get("retired_reason"))
+                        if row.get("retired_reason")
+                        else None
+                    ),
+                    "registered_at": str(row.get("registered_at") or ""),
+                    "updated_at": str(row.get("updated_at") or ""),
+                }
+                for row in current_rows
+                if str(row.get("projection_name") or "")
+            ]
+        )
         for table_name in ("topology_entities", "topology_edges"):
             entry = store.get(table_name)
             if entry.disposition == "unknown":
@@ -3067,7 +3946,9 @@ class FabricSyncService:
                     else None
                 ),
                 "retired_reason": (
-                    str(entry.get("retired_reason")) if entry.get("retired_reason") else None
+                    str(entry.get("retired_reason"))
+                    if entry.get("retired_reason")
+                    else None
                 ),
                 "registered_at": str(entry.get("registered_at") or observed_at),
                 "updated_at": str(entry.get("updated_at") or observed_at),
@@ -3173,7 +4054,9 @@ def _catalog_metadata(
             {
                 "name": table,
                 "rowCount": len(rows),
-                "deltaVersion": results.get(table).version if table in results else None,
+                "deltaVersion": results.get(table).version
+                if table in results
+                else None,
                 "columns": sorted(rows[0]) if rows else [],
             }
             for table, rows in sorted(datasets.items())
@@ -3188,9 +4071,7 @@ def _observation_rows_at_or_before(
 ) -> list[dict[str, Any]]:
     """Return only history visible to the immutable source generation."""
     return [
-        dict(row)
-        for row in rows
-        if str(row.get("ingested_at") or "") <= projected_at
+        dict(row) for row in rows if str(row.get("ingested_at") or "") <= projected_at
     ]
 
 
@@ -3241,12 +4122,15 @@ def _exposure_gold_generation_id(
         )
         for table_name in input_tables
     }
-    return "exposure-gold-" + _hash_json(
-        {
-            "source_run_id": source_run_id,
-            "projection_inputs": snapshot,
-        }
-    )[:24]
+    return (
+        "exposure-gold-"
+        + _hash_json(
+            {
+                "source_run_id": source_run_id,
+                "projection_inputs": snapshot,
+            }
+        )[:24]
+    )
 
 
 def _stable_exposure_input_row(
@@ -3271,11 +4155,7 @@ def _stable_exposure_input_row(
                 "watermark",
             }
         )
-    return {
-        key: value
-        for key, value in row.items()
-        if key not in volatile
-    }
+    return {key: value for key, value in row.items() if key not in volatile}
 
 
 def _table_source_status_rows(
@@ -3415,20 +4295,14 @@ def _source_partition_status_row(
         "effective_generation": str(row.get("effective_generation") or ""),
         "attempted_at": str(row.get("attempted_at") or ""),
         "last_success_at": str(row.get("last_success_at") or ""),
-        "carried_forward_age_seconds": int(
-            row.get("carried_forward_age_seconds") or 0
-        ),
+        "carried_forward_age_seconds": int(row.get("carried_forward_age_seconds") or 0),
         "represented_count": int(row.get("represented_count") or 0),
         "expected_count": int(row.get("expected_count") or 0),
         "completeness": str(row.get("completeness") or "unavailable"),
         "safe_error_code": str(row.get("safe_error_code") or ""),
         "safe_error_summary": str(row.get("safe_error_summary") or ""),
-        "freshness_threshold_seconds": int(
-            row.get("freshness_threshold_seconds") or 0
-        ),
-        "freshness_source_family": str(
-            row.get("freshness_source_family") or ""
-        ),
+        "freshness_threshold_seconds": int(row.get("freshness_threshold_seconds") or 0),
+        "freshness_source_family": str(row.get("freshness_source_family") or ""),
     }
     return {
         "tenant_id": "system",
@@ -3489,20 +4363,35 @@ def _result(
     )
 
 
+def _sync_result_document(result: FabricSyncResult) -> dict[str, Any]:
+    return {
+        "run_id": result.run_id,
+        "source_run_id": result.source_run_id,
+        "status": result.status,
+        "replay": result.replay,
+        "rows_processed": result.rows_processed,
+        "rows_added": result.rows_added,
+        "rows_changed": result.rows_changed,
+        "rows_removed": result.rows_removed,
+        "failed_records": result.failed_records,
+        "tables": list(result.tables),
+        "duration_seconds": result.duration_seconds,
+    }
+
+
 def _hash_json(value: Any) -> str:
     import hashlib
 
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _extend_unique_ontology_rows(
     target: list[dict[str, Any]],
     additions: list[dict[str, Any]],
 ) -> None:
-    known_ids = {
-        str(row.get("resource_id") or "").strip().casefold()
-        for row in target
-    }
+    known_ids = {str(row.get("resource_id") or "").strip().casefold() for row in target}
     for row in additions:
         resource_id = str(row.get("resource_id") or "").strip().casefold()
         if not resource_id:
@@ -3539,12 +4428,12 @@ def _merge_granular_ontology_entities(
             "entity_type",
             "lifecycle_status",
         ):
-            if str(existing.get(field) or "").casefold() != str(
-                addition.get(field) or ""
-            ).casefold():
+            if (
+                str(existing.get(field) or "").casefold()
+                != str(addition.get(field) or "").casefold()
+            ):
                 raise ValueError(
-                    "Conflicting granular ontology entity "
-                    f"{resource_id}: {field}"
+                    f"Conflicting granular ontology entity {resource_id}: {field}"
                 )
 
         payload = _merge_ontology_json_objects(
@@ -3606,17 +4495,16 @@ def _merge_granular_ontology_relationships(
             "scope",
             "lifecycle_status",
         ):
-            if str(existing.get(field) or "").casefold() != str(
-                addition.get(field) or ""
-            ).casefold():
+            if (
+                str(existing.get(field) or "").casefold()
+                != str(addition.get(field) or "").casefold()
+            ):
                 raise ValueError(
-                    "Conflicting granular ontology relationship "
-                    f"{resource_id}: {field}"
+                    f"Conflicting granular ontology relationship {resource_id}: {field}"
                 )
         if existing.get("confidence") != addition.get("confidence"):
             raise ValueError(
-                "Conflicting granular ontology relationship "
-                f"{resource_id}: confidence"
+                f"Conflicting granular ontology relationship {resource_id}: confidence"
             )
 
         payload = _merge_ontology_json_objects(
@@ -3677,11 +4565,7 @@ def _merge_ontology_json_objects(
                     f"Granular ontology entity {field_name}.{key} must be a list"
                 )
             merged[key] = sorted(
-                {
-                    str(item)
-                    for item in [*current, *value]
-                    if str(item)
-                }
+                {str(item) for item in [*current, *value] if str(item)}
             )
         elif key not in merged:
             merged[key] = value
@@ -3693,9 +4577,7 @@ def _merge_ontology_json_objects(
         ):
             continue
         else:
-            raise ValueError(
-                f"Conflicting granular ontology entity {field_name}.{key}"
-            )
+            raise ValueError(f"Conflicting granular ontology entity {field_name}.{key}")
     return merged
 
 
@@ -3774,3 +4656,149 @@ def _subscription_from_id(value: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _publication_checkpoint_root(onelake: OneLakeWriter) -> Path | str:
+    """Return the lakehouse Files root used for durable publication state."""
+
+    if onelake.local_root is not None:
+        return onelake.local_root / "Files"
+    return (
+        f"abfss://{onelake.workspace_id}@onelake.dfs.fabric.microsoft.com/"
+        f"{onelake.lakehouse_id}/Files"
+    )
+
+
+def _table_uri_under_root(root: Path | str, table_name: str) -> Path | str:
+    """Return a validated table URI below a Gold table root."""
+
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
+        raise ValueError(f"Invalid Delta table name: {table_name}")
+    if isinstance(root, Path):
+        return root / table_name
+    return f"{str(root).rstrip('/')}/{table_name}"
+
+
+def _validate_checkpoint_table_versions(
+    plan: PublicationResumePlan,
+    *,
+    table_uris: Mapping[str, Path | str],
+    version_reader: Callable[[Path | str], int | None],
+) -> frozenset[str]:
+    completed_names = frozenset(plan.completed)
+    if set(table_uris) != set(plan.table_names):
+        raise PublicationCheckpointError(
+            "Publication checkpoint table URI set does not match its plan"
+        )
+    for table_name in plan.table_names:
+        current_version = version_reader(table_uris[table_name])
+        completed = plan.completed.get(table_name)
+        expected_version = (
+            completed.resulting_version
+            if completed is not None
+            else plan.expected_before_versions[table_name]
+        )
+        if current_version != expected_version:
+            state = "Completed" if completed is not None else "Incomplete"
+            raise PublicationCheckpointError(
+                f"{state} table {table_name} Delta version drifted"
+            )
+    return completed_names
+
+
+def _table_write_outcome_digest(
+    table_name: str,
+    rows: list[dict[str, Any]],
+    *,
+    mode: DeltaWriteMode,
+    key_columns: tuple[str, ...],
+    partition_by: tuple[str, ...],
+    checkpoint_digest: str,
+) -> str:
+    """Hash deterministic table input and write semantics without copying rows."""
+
+    digest = hashlib.sha256()
+    header = {
+        "checkpoint_digest": checkpoint_digest,
+        "table_name": table_name,
+        "mode": str(mode),
+        "key_columns": key_columns,
+        "partition_by": partition_by,
+    }
+    digest.update(
+        json.dumps(
+            header,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    for row in rows:
+        digest.update(b"\n")
+        digest.update(
+            json.dumps(
+                row,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+    return digest.hexdigest()
+
+
+def _exposure_stage_checkpoint(
+    stage: ExposureGoldStageResult,
+) -> dict[str, Any]:
+    """Serialize only the deterministic state needed for pointer activation."""
+
+    return {
+        "generation_id": stage.generation_id,
+        "previous_generation_id": stage.previous_generation_id,
+        "published_at": stage.published_at,
+        "retain_until": stage.retain_until,
+        "expected_pointer_revision": stage.expected_pointer_revision,
+        "expected_readable_generation": stage.expected_readable_generation,
+        "merge_counts": dict(stage.merge_counts),
+        "reconciliation": dict(stage.reconciliation),
+        "shadow_reconciliation": (
+            dict(stage.shadow_reconciliation)
+            if stage.shadow_reconciliation is not None
+            else None
+        ),
+    }
+
+
+def _exposure_stage_from_checkpoint(
+    activation: Mapping[str, Any],
+    *,
+    table_results: Mapping[str, DeltaWriteResult],
+) -> ExposureGoldStageResult:
+    """Rebuild a staged Gold activation without restaging any Delta table."""
+
+    writes = {
+        table_name: table_results[table_name]
+        for table_name in (*EXPOSURE_GOLD_TABLES, EXPOSURE_GOLD_GENERATIONS_TABLE)
+    }
+    return ExposureGoldStageResult(
+        generation_id=str(activation["generation_id"]),
+        previous_generation_id=(
+            str(activation["previous_generation_id"])
+            if activation.get("previous_generation_id") is not None
+            else None
+        ),
+        table_writes=writes,
+        merge_counts={
+            str(key): int(value)
+            for key, value in dict(activation["merge_counts"]).items()
+        },
+        reconciliation=dict(activation["reconciliation"]),
+        published_at=str(activation["published_at"]),
+        retain_until=str(activation["retain_until"]),
+        expected_pointer_revision=int(activation["expected_pointer_revision"]),
+        expected_readable_generation=str(
+            activation["expected_readable_generation"]
+        ),
+        shadow_reconciliation=(
+            dict(activation["shadow_reconciliation"])
+            if activation.get("shadow_reconciliation") is not None
+            else None
+        ),
+    )

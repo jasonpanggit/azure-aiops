@@ -166,9 +166,7 @@ def test_combined_snapshot_preserves_distinct_connection_entities(tmp_path):
     } == {"row-hub", "row-spoke"}
     assert {
         row["checkpoint_key"]
-        for row in combined.read_dataset(
-            "exposure/workload_source_checkpoints"
-        )
+        for row in combined.read_dataset("exposure/workload_source_checkpoints")
     } == {"checkpoint-hub", "checkpoint-spoke"}
     assert {
         row["partition_key"]
@@ -203,6 +201,68 @@ def test_combined_snapshot_rejects_cross_connection_identity_collision(tmp_path)
             "temporal_projection",
             {"entity_count": 0, "relationship_count": 0, "failure_count": 0},
         ),
+        ("temporal_retained_load", {"row_count": 11, "failure_count": 0}),
+        ("temporal_legacy_normalization", {"row_count": 12, "failure_count": 0}),
+        (
+            "temporal_observation_combination",
+            {"row_count": 13, "failure_count": 0},
+        ),
+        ("temporal_current_projection", {"row_count": 14, "failure_count": 0}),
+        ("temporal_immutable_checks", {"row_count": 15, "failure_count": 0}),
+        (
+            "checkpoint_persistence",
+            {
+                "dataset_count": 460,
+                "failure_count": 0,
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "persisted",
+                "publication_id": "a" * 64,
+                "current_phase": "checkpoint_persistence",
+            },
+        ),
+        (
+            "checkpoint_restore",
+            {
+                "dataset_count": 460,
+                "failure_count": 0,
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "restored",
+                "publication_id": "a" * 64,
+                "current_phase": "checkpoint_restore",
+            },
+        ),
+        (
+            "publication_resume",
+            {
+                "completed": 453,
+                "total": 460,
+                "remaining_tables": 7,
+                "resumed_tables": 453,
+                "skipped_tables": 453,
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "restored",
+                "publication_id": "a" * 64,
+                "current_phase": "table_publication",
+            },
+        ),
+        (
+            "checkpoint_finalization",
+            {
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "finalized",
+                "publication_id": "a" * 64,
+                "current_phase": "checkpoint_finalization",
+            },
+        ),
+        (
+            "checkpoint_activation_pending",
+            {
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "activation_pending",
+                "publication_id": "a" * 64,
+                "current_phase": "pointer_activation",
+            },
+        ),
         (
             "container_projection",
             {
@@ -221,7 +281,19 @@ def test_combined_snapshot_rejects_cross_connection_identity_collision(tmp_path)
         ),
         (
             "table_publication",
-            {"table_name": "silver_resources", "row_count": 123, "completed": 4, "total": 9},
+            {
+                "table_name": "silver_resources",
+                "row_count": 123,
+                "completed": 4,
+                "total": 9,
+                "remaining_tables": 5,
+                "resumed_tables": 3,
+                "skipped_tables": 3,
+                "checkpoint_id": "a" * 64,
+                "checkpoint_state": "restored",
+                "publication_id": "a" * 64,
+                "current_phase": "table_publication",
+            },
         ),
         ("fabric_asset_registration", {}),
         ("ontology_publication", {}),
@@ -247,13 +319,17 @@ def test_activation_progress_completion_schema_is_exact(stage, payload) -> None:
         "elapsed_seconds": 12.5,
         **payload,
     }
-    assert set(build_activation_progress_event(stage, "started", elapsed_seconds=0)) == {
+    assert set(
+        build_activation_progress_event(stage, "started", elapsed_seconds=0)
+    ) == {
         "event",
         "stage",
         "status",
         "elapsed_seconds",
     }
-    assert set(build_activation_progress_event(stage, "heartbeat", elapsed_seconds=60)) == {
+    assert set(
+        build_activation_progress_event(stage, "heartbeat", elapsed_seconds=60)
+    ) == {
         "event",
         "stage",
         "status",
@@ -357,6 +433,12 @@ def test_reporter_translates_existing_fabric_table_progress() -> None:
             total_tables=11,
             table_name="gold_exposure_facts",
             result=DeltaWriteResult(rows_processed=456),
+            remaining_tables=8,
+            resumed_tables=2,
+            skipped_tables=2,
+            checkpoint_id="a" * 64,
+            checkpoint_state="restored",
+            current_phase="gold_staging",
         )
     )
     reporter.close()
@@ -371,6 +453,13 @@ def test_reporter_translates_existing_fabric_table_progress() -> None:
             "row_count": 456,
             "completed": 3,
             "total": 11,
+            "remaining_tables": 8,
+            "resumed_tables": 2,
+            "skipped_tables": 2,
+            "checkpoint_id": "a" * 64,
+            "checkpoint_state": "restored",
+            "publication_id": "a" * 64,
+            "current_phase": "gold_staging",
         }
     ]
 
@@ -401,8 +490,7 @@ def test_progress_sink_failure_logs_only_fixed_safe_contract(caplog) -> None:
     assert record.error_code == "ACTIVATION_PROGRESS_CALLBACK_FAILED"
     assert record.exc_info is None
     assert stream.getvalue().strip() == (
-        "activation_progress_callback_failed "
-        "ACTIVATION_PROGRESS_CALLBACK_FAILED"
+        "activation_progress_callback_failed ACTIVATION_PROGRESS_CALLBACK_FAILED"
     )
     rendered = caplog.text + stream.getvalue()
     assert secret not in rendered
@@ -503,16 +591,12 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         "dataset_mapping",
     ]
     table_event = next(
-        event
-        for event in events
-        if event["stage"] == "table_publication"
+        event for event in events if event["stage"] == "table_publication"
     )
     assert table_event["row_count"] == 123
     assert table_event["completed"] == table_event["total"] == 1
     assert "hub" not in json.dumps(events)
-    assert replay_source_run_ids == [
-        str(result["combined_snapshot"]["runId"])
-    ]
+    assert replay_source_run_ids == [str(result["combined_snapshot"]["runId"])]
     assert runtime_modes == [FabricRuntimeMode.PUBLISH]
 
 
