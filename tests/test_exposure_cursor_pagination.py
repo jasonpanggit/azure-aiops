@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -163,6 +164,34 @@ def test_cursor_binds_every_authorization_query_and_snapshot_field() -> None:
                 expected_generation_id=changed_generation,
                 now=NOW + timedelta(seconds=1),
             )
+
+
+def test_decimal_cursor_position_is_canonical_and_restored_exactly() -> None:
+    codec = ExposureCursorCodec(_ring())
+    authorization = _authorization()
+    query = _query(page_size=1)
+
+    cursor = codec.issue(
+        authorization,
+        generation_id="generation-17",
+        query=query,
+        position=(Decimal("91.2500"), "exposure-025"),
+        now=NOW,
+    )
+    state = codec.decode(
+        cursor,
+        authorization=authorization,
+        query=query,
+        expected_generation_id="generation-17",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert state.position == (Decimal("91.25"), "exposure-025")
+    payload, _signature = cursor.split(".")
+    decoded = json.loads(
+        base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+    )
+    assert decoded["position"] == ["91.25", "exposure-025"]
 
 
 def test_cursor_tampering_and_unknown_or_expired_key_fail_closed() -> None:

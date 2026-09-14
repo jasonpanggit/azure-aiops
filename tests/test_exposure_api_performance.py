@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +18,9 @@ from api.exposure_query import (
     MAX_EXPOSURE_PAGE_SIZE,
     MAX_EXPOSURE_QUERY_TIMEOUT_SECONDS,
     ExposureAuthorization,
+    ExposureCursorCodec,
     ExposureCursorError,
+    ExposureCursorKeyRing,
     ExposureFilter,
     ExposureKbIdentifierError,
     ExposureProvenanceEvidence,
@@ -24,6 +28,10 @@ from api.exposure_query import (
     ExposureQueryPage,
     ExposureQueryService,
     ExposureRestartConflict,
+)
+from api.exposure_refresh import (
+    ExposurePatchRefreshScope,
+    ExposurePatchRefreshState,
 )
 from api.rbac import Authorizer, Grant, Principal
 from api.scope import Scope
@@ -75,6 +83,21 @@ class ProvenanceReader:
         max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
         self.calls.append((sql, tuple(parameters), max_rows))
+        if "[metadata_patch_snapshot]" in sql:
+            return [
+                {
+                    "subscription_id": "subscription-scale",
+                    "ingestion_run_id": "source-generation-17",
+                    "source_generation": "source-effective-17",
+                    "status": "succeeded",
+                    "completeness": "complete",
+                    "freshness": "current",
+                    "freshness_at": "2026-09-10T02:41:10Z",
+                    "freshness_threshold_seconds": 3600,
+                    "represented_count": 1,
+                    "expected_count": 1,
+                }
+            ]
         return [
             {
                 "active_fact_count": 11,
@@ -111,35 +134,88 @@ def test_provenance_query_is_scope_bounded_and_returns_redacted_counts() -> None
 
     evidence = ExposureQueryService(reader).active_provenance_evidence(
         authorization,
-        generation_id="exposure-gold-fresh",
+        generation_id="silver-patch:source-generation-17",
         expected_connection_id="connection-scale",
     )
 
     assert evidence.to_dict() == {
-        "generation": "exposure-gold-fresh",
+        "generation": "silver-patch:source-generation-17",
         "active_fact_count": 11,
         "expected_connection_fact_count": 11,
         "legacy_connection_fact_count": 0,
         "unexpected_connection_fact_count": 0,
     }
-    sql, parameters, max_rows = reader.calls[0]
+    assert len(reader.calls) == 2
+    barrier_sql, barrier_parameters, barrier_max_rows = reader.calls[0]
+    assert "[metadata_patch_snapshot]" in barrier_sql
+    assert "[subscription_id] IN (?)" in barrier_sql
+    assert barrier_parameters == ("system", "subscription-scale")
+    assert barrier_max_rows == 2
+    sql, parameters, max_rows = reader.calls[1]
+    assert "[silver_patch_snapshot_findings]" in sql
     assert "[tenant_id] = ?" in sql
     assert "[subscription_id] IN (?)" in sql
-    assert "[target_kind] = ?" in sql
-    assert "[source_family] = ?" in sql
-    assert "[active] = ?" in sql
+    assert "[ingestion_run_id] = ?" in sql
+    assert "LOWER([status]) IN ('missing', 'installation_failed')" in sql
     assert "legacy:%" in sql
     assert parameters == (
         "connection-scale",
         "connection-scale",
         "tenant-scale",
-        "exposure-gold-fresh",
-        "server",
-        "aum",
-        True,
         "subscription-scale",
+        "source-generation-17",
     )
     assert max_rows == 1
+
+
+def test_provenance_rejects_unauthorized_connection_before_sql() -> None:
+    reader = ProvenanceReader()
+    authorization = ExposureAuthorization(
+        subject="scale-reader@example.com",
+        tenant_id="tenant-scale",
+        connection_ids=("connection-scale",),
+        connection_subscriptions={
+            "connection-scale": "subscription-scale",
+        },
+        scope={
+            "subscription": ("subscription-scale",),
+            "subscription_connection": ("connection-scale",),
+        },
+    )
+
+    with pytest.raises(PermissionError, match="outside authorization"):
+        ExposureQueryService(reader).active_provenance_evidence(
+            authorization,
+            generation_id="silver-patch:source-generation-17",
+            expected_connection_id="other-connection",
+        )
+
+    assert reader.calls == []
+
+
+def test_provenance_rejects_gold_generation_before_sql() -> None:
+    reader = ProvenanceReader()
+    authorization = ExposureAuthorization(
+        subject="scale-reader@example.com",
+        tenant_id="tenant-scale",
+        connection_ids=("connection-scale",),
+        connection_subscriptions={
+            "connection-scale": "subscription-scale",
+        },
+        scope={
+            "subscription": ("subscription-scale",),
+            "subscription_connection": ("connection-scale",),
+        },
+    )
+
+    with pytest.raises(ValueError, match="Silver patch generation"):
+        ExposureQueryService(reader).active_provenance_evidence(
+            authorization,
+            generation_id="exposure-gold-fresh",
+            expected_connection_id="connection-scale",
+        )
+
+    assert reader.calls == []
 
 
 def test_page_work_is_bounded_independently_of_total_count() -> None:
@@ -192,6 +268,15 @@ class ApiExposureService:
         self.catalog_calls: list[dict[str, Any]] = []
         self.kb_calls: list[dict[str, Any]] = []
         self.provenance_calls: list[dict[str, Any]] = []
+        self.refresh_calls: list[ExposurePatchRefreshScope] = []
+        self.generation = "generation-100k"
+        self.completeness_state = "complete"
+        self.freshness_state = "reported"
+        self.refresh_state = ExposurePatchRefreshState(
+            state="refreshing",
+            refreshing=True,
+            last_success_at="2026-09-06T08:00:00+00:00",
+        )
 
     def authorization_for(
         self,
@@ -204,6 +289,9 @@ class ApiExposureService:
             subject=principal.subject,
             tenant_id="tenant-scale",
             connection_ids=("connection-scale",),
+            connection_subscriptions={
+                "connection-scale": "subscription-scale",
+            },
             scope={
                 "subscription": ("subscription-scale",),
                 "subscription_connection": ("connection-scale",),
@@ -214,6 +302,21 @@ class ApiExposureService:
         if self.error is not None:
             raise self.error
         self.calls.append({"authorization": authorization, **values})
+        next_cursor = "signed-next-cursor"
+        if values["query"].page_size == 1:
+            next_cursor = ExposureCursorCodec(
+                ExposureCursorKeyRing(
+                    active_kid="test-active",
+                    active_key=b"a" * 32,
+                    loaded_at=datetime(2026, 9, 10, tzinfo=UTC),
+                )
+            ).issue(
+                authorization,
+                generation_id="generation-100k",
+                query=values["query"],
+                position=(Decimal("100.00"), "exposure-1"),
+                now=datetime(2026, 9, 10, tzinfo=UTC),
+            )
         return ExposureQueryPage(
             items=(
                 {
@@ -227,20 +330,27 @@ class ApiExposureService:
                 "severity": [{"value": "critical", "count": 75_000}],
                 "target_kind": [{"value": "server", "count": 100_000}],
             },
-            generation="generation-100k",
+            generation=self.generation,
             applied_scope=authorization.canonical_scope(),
             applied_filters=(
                 {"field": "severity", "operator": "eq", "value": "critical"},
             ),
             applied_sort={"field": "priority_score", "direction": "desc"},
             next_position=(100.0, "exposure-1"),
-            next_cursor="signed-next-cursor",
-            completeness={"state": "complete"},
+            next_cursor=next_cursor,
+            completeness={"state": self.completeness_state},
             freshness={
-                "state": "reported",
+                "state": self.freshness_state,
                 "as_of": "2026-09-06T08:00:00+00:00",
             },
         )
+
+    def request_refresh(
+        self,
+        scope: ExposurePatchRefreshScope,
+    ) -> ExposurePatchRefreshState:
+        self.refresh_calls.append(scope)
+        return self.refresh_state
 
     def catalog_item(
         self,
@@ -333,6 +443,7 @@ def exposure_api(tmp_path: Path) -> tuple[TestClient, ApiExposureService]:
         telemetry=ApiTelemetry(),
     )
     context.exposure_query_provider = lambda: service
+    context.exposure_patch_refresh_provider = lambda: service
     client = TestClient(create_app(context), raise_server_exceptions=False)
     client.headers["Authorization"] = f"Bearer {token}"
     return client, service
@@ -404,6 +515,74 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
         ExposureFilter("weakness_id", "eq", "CVE-2026-0001"),
     )
     assert service.calls[0]["generation_id"] == "generation-100k"
+    assert service.refresh_calls == []
+
+
+def test_stale_patch_items_return_lkg_and_trigger_scoped_background_refresh(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+    service.generation = "silver-patch:source-generation-17"
+    service.freshness_state = "stale"
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/items",
+        params={
+            "subscription": "subscription-scale",
+            "target_kind": "server",
+            "source_family": "aum",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data"]["items"][0]["exposure_id"] == "exposure-1"
+    assert body["data"]["freshness"]["refresh"] == {
+        "state": "refreshing",
+        "refreshing": True,
+        "last_success_at": "2026-09-06T08:00:00+00:00",
+        "last_failure_at": "",
+        "failure_code": "",
+    }
+    assert service.refresh_calls == [
+        ExposurePatchRefreshScope(
+            tenant_id="tenant-scale",
+            connection_id="connection-scale",
+            subscription_id="subscription-scale",
+        )
+    ]
+
+
+def test_failed_patch_refresh_preserves_lkg_with_sanitized_warning_metadata(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+    service.generation = "silver-patch:source-generation-17"
+    service.completeness_state = "partial"
+    service.refresh_state = ExposurePatchRefreshState(
+        state="failed",
+        refreshing=False,
+        last_success_at="2026-09-06T08:00:00+00:00",
+        last_failure_at="2026-09-14T05:00:00+00:00",
+        failure_code="refresh_backoff",
+    )
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/items",
+        params={
+            "subscription": "subscription-scale",
+            "target_kind": "server",
+            "source_family": "aum",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data"]["items"][0]["exposure_id"] == "exposure-1"
+    assert body["data"]["freshness"]["refresh"]["failure_code"] == (
+        "refresh_backoff"
+    )
+    assert "connection-scale" not in str(body["data"]["freshness"]["refresh"])
 
 
 def test_external_catalog_uses_authorized_generation_bound_query_service(
@@ -436,7 +615,7 @@ def test_provenance_evidence_endpoint_returns_only_redacted_counts(
         "/api/v1/vulnerabilities/exposure/provenance-evidence",
         params={
             "subscription": "subscription-scale",
-            "generation": "exposure-gold-fresh",
+            "generation": "silver-patch:source-generation-17",
             "connection_id": "connection-scale",
         },
     )
@@ -444,13 +623,16 @@ def test_provenance_evidence_endpoint_returns_only_redacted_counts(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["data"] == {
-        "generation": "exposure-gold-fresh",
+        "generation": "silver-patch:source-generation-17",
         "active_fact_count": 11,
         "expected_connection_fact_count": 11,
         "legacy_connection_fact_count": 0,
         "unexpected_connection_fact_count": 0,
     }
     assert body["scope"] == {}
+    assert body["evidence"][0]["source_table"] == (
+        "silver_patch_snapshot_findings"
+    )
     assert "connection-scale" not in response.text
     assert "subscription-scale" not in response.text
     assert service.provenance_calls[0]["expected_connection_id"] == (

@@ -67,6 +67,7 @@ const TARGET_KIND_OPTIONS = [
   { value: "server", label: "Servers" },
   { value: "container_image", label: "Container images" },
 ];
+const PATCH_REFRESH_POLL_MS = 3_000;
 
 function displayDate(value: string | null | undefined): string {
   if (!value) return "Due date unknown";
@@ -278,6 +279,7 @@ export default function PatchPrioritiesPage() {
   const [copilotOpen, setCopilotOpen] = useState(false);
   const restoredTargetRef = useRef("");
   const page = section.data;
+  const refreshState = page?.freshness.refresh;
   const rows = useMemo(() => page?.items ?? [], [page?.items]);
   const sectionPresentation = {
     ...section,
@@ -389,6 +391,12 @@ export default function PatchPrioritiesPage() {
     restoredTargetRef.current = restoreIdentity;
   }, [detailContext.row, detailContext.scroll, queryState.target, rows]);
 
+  useEffect(() => {
+    if (!refreshState?.refreshing) return;
+    const timer = window.setTimeout(section.retry, PATCH_REFRESH_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [refreshState?.refreshing, section.retry]);
+
   return (
     <div className="page-container exposure-patch-priorities">
       <PageHeader
@@ -419,6 +427,36 @@ export default function PatchPrioritiesPage() {
           </button>
         </div>
       )}
+
+      {refreshState?.refreshing && (
+        <div className="callout callout-info" role="status">
+          Refreshing patch priorities in the background. Showing the last
+          known good snapshot
+          {refreshState.last_success_at
+            ? ` from ${refreshState.last_success_at}`
+            : ""}
+          .
+        </div>
+      )}
+
+      {!refreshState?.refreshing && refreshState?.failure_code && (
+        <div className="callout callout-warning" role="alert">
+          The background patch refresh failed. Showing the last known good
+          snapshot
+          {refreshState.last_success_at
+            ? ` from ${refreshState.last_success_at}`
+            : ""}
+          .
+        </div>
+      )}
+
+      {!refreshState?.refreshing &&
+        !refreshState?.failure_code &&
+        refreshState?.last_success_at && (
+          <div className="callout callout-info" role="status">
+            Patch priorities refreshed {refreshState.last_success_at}.
+          </div>
+        )}
 
       <SourceSectionState
         sourceName="Patch priority evidence"

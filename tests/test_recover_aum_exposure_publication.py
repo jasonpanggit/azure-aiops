@@ -97,7 +97,7 @@ def _facet_payload(
 
 def _provenance_payload(
     *,
-    generation: str = "exposure-gold-fresh",
+    generation: str = "silver-patch:source-generation-17",
     active: int = 11,
     expected: int = 11,
     legacy: int = 0,
@@ -195,7 +195,11 @@ class FakeFacets:
     def read_overview(self, *, target_kind: str, source_family: str) -> dict[str, Any]:
         self.calls.append((target_kind, source_family))
         return _facet_payload(
-            generation="exposure-gold-fresh",
+            generation=(
+                "silver-patch:source-generation-17"
+                if target_kind == "server"
+                else "exposure-gold-fresh"
+            ),
             total_count=11 if target_kind == "server" else 77_857,
         )
 
@@ -263,9 +267,12 @@ def test_recovery_updates_only_governed_fields_starts_once_restores_and_validate
         ("server", "aum"),
         ("container_image", "defender_image"),
     ]
-    assert facets.provenance_calls == [("exposure-gold-fresh", "demo")]
+    assert facets.provenance_calls == [
+        ("silver-patch:source-generation-17", "demo")
+    ]
     assert result["status"] == "succeeded"
-    assert result["generation"] == "exposure-gold-fresh"
+    assert result["generation"] == "silver-patch:source-generation-17"
+    assert result["container_generation"] == "exposure-gold-fresh"
     assert result["facet_counts"] == {"server_aum": 11, "container_defender": 77_857}
     assert result["provenance"]["legacy_connection_facts"] == 0
     assert json.loads((tmp_path / "result.json").read_text()) == result
@@ -583,10 +590,10 @@ def test_preflight_refuses_unsafe_persistent_job_contract(mutation, message: str
         module.validate_preflight(module.normalize_job_config(job), _options(module))
 
 
-def test_facet_validation_requires_nonempty_same_generation_and_available_aum() -> None:
+def test_facet_validation_requires_nonempty_complete_split_generations() -> None:
     module = _load_module()
     server = _facet_payload(
-        generation="exposure-gold-new",
+        generation="silver-patch:source-generation-17",
         total_count=0,
         completeness="unavailable",
     )
@@ -599,18 +606,35 @@ def test_facet_validation_requires_nonempty_same_generation_and_available_aum() 
         module.validate_facet_payloads(server, container, _provenance_payload())
 
     server["data"]["total_count"] = 1
-    with pytest.raises(module.RecoveryError, match="server/AUM completeness is unavailable"):
+    with pytest.raises(
+        module.RecoveryError,
+        match="server/AUM completeness is not complete",
+    ):
         module.validate_facet_payloads(server, container, _provenance_payload())
 
     server["data"]["completeness"]["state"] = "complete"
-    with pytest.raises(module.RecoveryError, match="different generations"):
+    result = module.validate_facet_payloads(
+        server,
+        container,
+        _provenance_payload(),
+    )
+    assert result["generation"] == "silver-patch:source-generation-17"
+    assert result["container_generation"] == "exposure-gold-old"
+
+    server["data"]["generation"] = "exposure-gold-new"
+    with pytest.raises(module.RecoveryError, match="Silver patch generation"):
+        module.validate_facet_payloads(server, container, _provenance_payload())
+
+    server["data"]["generation"] = "silver-patch:source-generation-17"
+    container["data"]["generation"] = "silver-patch:source-generation-17"
+    with pytest.raises(module.RecoveryError, match="Gold generation"):
         module.validate_facet_payloads(server, container, _provenance_payload())
 
 
 def test_demo_provenance_succeeds_and_legacy_provenance_is_rejected() -> None:
     module = _load_module()
     server = _facet_payload(
-        generation="exposure-gold-fresh",
+        generation="silver-patch:source-generation-17",
         total_count=11,
     )
     container = _facet_payload(
@@ -640,6 +664,13 @@ def test_demo_provenance_succeeds_and_legacy_provenance_is_rejected() -> None:
                 legacy=1,
                 unexpected=1,
             ),
+        )
+
+    with pytest.raises(module.RecoveryError, match="different generation"):
+        module.validate_facet_payloads(
+            server,
+            container,
+            _provenance_payload(generation="silver-patch:other-generation"),
         )
 
 
