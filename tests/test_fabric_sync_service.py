@@ -412,7 +412,7 @@ def test_patch_only_sync_writes_patch_tables_and_manifest_last(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _service(tmp_path)
-    manifest_row = {"resource_id": "patch-snapshot://sub-1"}
+    manifest_row = _patch_barrier_row("source-run-1")
     mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
     mapped[service._PATCH_PUBLICATION_BARRIER] = [manifest_row]
     monkeypatch.setattr(
@@ -455,6 +455,82 @@ def test_patch_only_sync_writes_patch_tables_and_manifest_last(
     )
 
 
+def test_patch_only_sync_publishes_due_generation_then_noops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
+    mapped[service._PATCH_PUBLICATION_BARRIER] = [
+        _patch_barrier_row("source-run-1")
+    ]
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: mapped,
+    )
+
+    published = service.sync_patch_tables()
+    skipped = service.sync_patch_tables()
+
+    barrier_rows = service.delta.read(
+        service.onelake.table_uri("metadata", "patch_snapshot")
+    )
+    assert published.status == "completed"
+    assert published.source_run_id == "source-run-1"
+    assert skipped.status == "skipped"
+    assert skipped.source_run_id == "source-run-1"
+    assert skipped.tables == ()
+    assert {row["combined_source_generation"] for row in barrier_rows} == {
+        "source-run-1"
+    }
+    assert {row["completeness"] for row in barrier_rows} == {"complete"}
+
+
+def test_patch_only_sync_lock_conflict_fails_closed(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    with (
+        service.onelake.sync_lock(),
+        pytest.raises(RuntimeError, match="already running"),
+    ):
+        service.sync_patch_tables()
+
+
+def test_incomplete_patch_generation_preserves_prior_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    barrier_uri = service.onelake.table_uri("metadata", "patch_snapshot")
+    prior = _patch_barrier_row("source-run-0")
+    service.delta.write(
+        barrier_uri,
+        [prior],
+        mode=DeltaWriteMode.OVERWRITE,
+        key_columns=("resource_id",),
+        schema=schema_for("metadata_patch_snapshot"),
+    )
+    mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
+    mapped[service._PATCH_PUBLICATION_BARRIER] = [
+        {
+            **_patch_barrier_row("source-run-1"),
+            "status": "partial",
+            "completeness": "partial",
+        }
+    ]
+    monkeypatch.setattr(
+        service.mapper,
+        "load",
+        lambda *_args, **_kwargs: mapped,
+    )
+
+    with pytest.raises(ValueError, match="complete AUM source barrier"):
+        service.sync_patch_tables()
+
+    assert service.delta.read(barrier_uri) == [prior]
+
+
 def test_patch_only_registration_failure_rolls_back_mutable_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -462,7 +538,7 @@ def test_patch_only_registration_failure_rolls_back_mutable_tables(
     service = _service(tmp_path)
     mapped = {table_name: [] for table_name in service._PATCH_PUBLICATION_TABLES}
     mapped[service._PATCH_PUBLICATION_BARRIER] = [
-        {"resource_id": "patch-snapshot://sub-1"}
+        _patch_barrier_row("source-run-1")
     ]
     monkeypatch.setattr(
         service.mapper,
@@ -498,6 +574,28 @@ def test_patch_only_registration_failure_rolls_back_mutable_tables(
     )
     assert any(uri.endswith("/Tables/metadata_patch_snapshot") for uri in restored)
     assert any(uri.endswith("/Tables/bronze_patchassessment") for uri in restored)
+
+
+def _patch_barrier_row(source_generation: str) -> dict[str, Any]:
+    return {
+        "tenant_id": "tenant-1",
+        "subscription_id": "sub-1",
+        "resource_id": "patch-snapshot://sub-1",
+        "timestamp": "2026-09-14T00:00:00Z",
+        "change_version": "patch-change-1",
+        "ingestion_run_id": "patch-publication-1",
+        "connection_id": "connection-1",
+        "combined_source_generation": source_generation,
+        "source_generation": "aum-generation-1",
+        "replaces_legacy_connection_id": "",
+        "status": "succeeded",
+        "completeness": "complete",
+        "freshness": "fresh",
+        "freshness_at": "2026-09-14T00:00:00Z",
+        "freshness_threshold_seconds": 3600,
+        "represented_count": 1,
+        "expected_count": 1,
+    }
 
 
 def test_failed_patch_manifest_restore_preserves_snapshot_findings(
@@ -1832,6 +1930,7 @@ def test_partial_patch_checkpoint_restarts_entire_barrier_group(
     def load_with_patch_barrier(*args, **kwargs):
         datasets = original_load(*args, **kwargs)
         content = {
+            "combined_source_generation": "source-run-1",
             "source_generation": "source-run-1",
             "replaces_legacy_connection_id": "",
             "status": "succeeded",
@@ -1930,6 +2029,7 @@ def test_patch_reset_restore_commit_gap_reconciles_new_version_fence(
     def load_with_patch_barrier(*args, **kwargs):
         datasets = original_load(*args, **kwargs)
         content = {
+            "combined_source_generation": "source-run-1",
             "source_generation": "source-run-1",
             "replaces_legacy_connection_id": "",
             "status": "succeeded",

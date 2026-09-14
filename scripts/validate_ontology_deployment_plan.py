@@ -23,6 +23,7 @@ _COMMON_ADDRESSES = frozenset(
         "azurerm_container_app.web",
         "azurerm_container_app_job.ontology_discovery",
         "azurerm_container_app_job.ontology_publisher",
+        "azurerm_container_app_job.patch_publication[0]",
         "azurerm_container_app_job.ontology_rbac_validation[0]",
         "azurerm_role_assignment.ontology_coordinator_acr_pull",
         "azurerm_role_assignment.ontology_publisher_acr_pull",
@@ -44,6 +45,7 @@ _COMMON_ADDRESSES = frozenset(
         "fabric_workspace_role_assignment.ontology_dispatch_publisher[0]",
         "fabric_workspace_role_assignment.ontology_publication_api[0]",
         "fabric_workspace_role_assignment.ontology_publication_publisher[0]",
+        "fabric_workspace_role_assignment.patch_publisher[0]",
         # Existing Plan 07 validation and guarded publisher-drill boundary.
         "fabric_workspace.ontology_rbac_validation[0]",
         "fabric_lakehouse.ontology_rbac_validation[0]",

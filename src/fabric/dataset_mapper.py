@@ -1736,6 +1736,8 @@ class InventoryDatasetMapper:
         snapshot: str | Path,
         ingestion_run_id: str,
         fs: Any | None = None,
+        *,
+        source_generation_id: str = "",
     ) -> dict[str, list[dict[str, Any]]]:
         """Load one connection's mapped inventory from its dataset snapshot.
 
@@ -1746,6 +1748,8 @@ class InventoryDatasetMapper:
         would silently fall back to the local filesystem and read nothing.
         Callers with a remote ``DatasetStore`` must pass its ``fs`` through;
         only bare local-path callers (e.g. CLI/tests) may omit it.
+        ``source_generation_id`` binds the patch barrier to the immutable
+        combined source generation consumed by a dedicated writer.
         """
         if fs is None:
             from storage.fs import resolve_fs
@@ -1924,6 +1928,9 @@ class InventoryDatasetMapper:
                 ingestion_run_id,
                 ingestion_timestamp,
                 subscription_tenants=subscription_tenants,
+                combined_source_generation=(
+                    source_generation_id or ingestion_run_id
+                ),
             ),
             "silver_defender_findings": [
                 _defender_finding_row(row, ingestion_run_id)
@@ -2312,6 +2319,7 @@ def _patch_snapshot_rows(
     fallback_timestamp: str,
     *,
     subscription_tenants: Mapping[str, str] | None = None,
+    combined_source_generation: str = "",
 ) -> list[dict[str, Any]]:
     required_families = {
         "azure_update_manager_assessment",
@@ -2430,6 +2438,9 @@ def _patch_snapshot_rows(
             default=fallback_timestamp,
         )
         content = {
+            "combined_source_generation": (
+                str(combined_source_generation or run_id)
+            ),
             "source_generation": source_generation,
             "replaces_legacy_connection_id": _replaced_legacy_connection_id(rows),
             "status": (

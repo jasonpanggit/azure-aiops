@@ -18,6 +18,10 @@ uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.
 
 Set `AIOPS_FABRIC_CONFIG` to the operator-managed Fabric configuration before starting AIOps. Do not expose configuration paths or credentials in the tool schema.
 
+The API remains read-only for Fabric publication. See
+[Patch-only Exposure publication](patch-publication.md) for the dedicated,
+scheduled writer, its generation no-op contract, and lease/failure behavior.
+
 ## Smoke tests
 
 1. Verify the latest ARG manifest contains `patch_assessments` and `patch_installations`.

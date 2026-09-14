@@ -358,6 +358,17 @@ variable "exposure_enrichment_max_items" {
   }
 }
 
+variable "patch_publication_schedule" {
+  description = "Five-field UTC cron schedule for the bounded patch-only Fabric publication job."
+  type        = string
+  default     = "*/5 * * * *"
+
+  validation {
+    condition     = length(split(" ", trimspace(var.patch_publication_schedule))) == 5
+    error_message = "patch_publication_schedule must be a five-field cron expression."
+  }
+}
+
 variable "refresh_trigger_secret" {
   description = <<-EOT
     Shared secret checked against the x-aiops-trigger-secret header on

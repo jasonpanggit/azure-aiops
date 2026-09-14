@@ -251,6 +251,7 @@ def test_patch_snapshot_manifest_shares_silver_publication_generation() -> None:
 
     assert len(rows) == 1
     assert rows[0]["ingestion_run_id"] == "silver-publication-17"
+    assert rows[0]["combined_source_generation"] == "silver-publication-17"
     assert rows[0]["source_generation"] == "source-generation-17"
     assert rows[0]["tenant_id"] == "tenant-a"
     assert rows[0]["connection_id"] == "connection-a"
