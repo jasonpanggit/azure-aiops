@@ -1337,16 +1337,18 @@ def test_network_dependency_question_without_hint_binds_selected_vnet(
         assert rollout["comparison"]["divergent_fields"] == []
 
 
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
 @pytest.mark.parametrize(
     "unsafe_variant",
-    ["no_selected_vnet", "ambiguous_vnets", "non_vnet", "free_form"],
+    ["no_selected_vnet", "ambiguous_vnets", "non_vnet", "mismatched_subject"],
 )
 def test_network_no_hint_derivation_does_not_widen_tool_authority(
     tmp_path,
     monkeypatch,
     unsafe_variant,
+    rollout_mode,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     body = _network_hub_canonical_body()
     body.pop("hint")
     if unsafe_variant == "no_selected_vnet":
@@ -1372,7 +1374,7 @@ def test_network_no_hint_derivation_does_not_widen_tool_authority(
             }
         ]
     else:
-        body["question"] = "Tell me something interesting about demo-vnet."
+        body["question"] = "What depends on unselected-vnet?"
 
     tool_calls: list[tuple[str, dict[str, object]]] = []
 
@@ -1382,6 +1384,83 @@ def test_network_no_hint_derivation_does_not_widen_tool_authority(
 
     monkeypatch.setattr(
         "operations.investigation.call_tool",
+        bounded_network_tool,
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        bounded_network_tool,
+    )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["details"]["field"] == "question"
+    assert tool_calls == []
+
+
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+def test_explicit_network_hint_selects_one_vnet_from_multi_hub_context(
+    tmp_path,
+    monkeypatch,
+    rollout_mode,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    body = _network_hub_canonical_body()
+    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    body["snapshot"]["selected_entities"].append(
+        {
+            "type": "azure",
+            "resource_id": (
+                "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+                "Microsoft.Network/virtualNetworks/other-vnet"
+            ),
+        }
+    )
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def bounded_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={
+                "hub_id": vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_count": 0,
+                "dependents": [],
+            },
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    resource_id=vnet_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        bounded_network_tool,
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
         bounded_network_tool,
     )
     context = _context(tmp_path, None)
@@ -1405,9 +1484,10 @@ def test_network_no_hint_derivation_does_not_widen_tool_authority(
     )
 
     assert response.status_code == 200, response.text
+    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
     data = response.json()["data"]
-    assert all(name != "hub_dependents" for name, _arguments in tool_calls)
-    assert "hub_dependents" not in data["selected_tools"]
+    assert data["selected_specialists"] == ["network"]
+    assert data["selected_tools"] == ["hub_dependents"]
     assert data["mutation_authorized"] is False
 
 

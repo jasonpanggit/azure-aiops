@@ -189,44 +189,59 @@ def _validated_or_derived_network_hint(
         raise ValueError(
             "hub_dependents hint requires the network specialist"
         )
-    if (
-        snapshot.page_kind != "network"
-        or snapshot.page_id.casefold() != "network-topology"
-        or len(snapshot.selected_entities) != 1
-    ):
-        if is_hub_hint:
-            raise ValueError(
-                "network hub hint requires exactly one selected Azure VNet"
-            )
-        return None
-    selected = snapshot.selected_entities[0]
-    if (
-        not isinstance(selected, AzureEntityRef)
-        or _AZURE_VNET_ID.fullmatch(selected.resource_id) is None
-    ):
-        if is_hub_hint:
-            raise ValueError(
-                "network hub hint requires exactly one selected Azure VNet"
-            )
-        return None
-    if is_hub_hint:
-        hinted_vnet_id = hint.arguments.get("vnet_id")
-        if (
-            not isinstance(hinted_vnet_id, str)
-            or hinted_vnet_id.casefold() != selected.resource_id.casefold()
-        ):
-            raise ValueError(
-                "network hub hint must match the selected Azure VNet"
-            )
-        return hint
     question = " ".join(payload.question.strip().casefold().split()).rstrip("?.")
     prefix = "what depends on "
-    if not question.startswith(prefix):
+    dependency_subject = (
+        question.removeprefix(prefix).strip()
+        if question.startswith(prefix)
+        else ""
+    )
+    if snapshot.page_kind != "network" or (
+        snapshot.page_id.casefold() != "network-topology"
+    ):
+        if is_hub_hint or dependency_subject:
+            raise ValueError(
+                "network dependency requests require network topology context"
+            )
         return None
-    subject = question.removeprefix(prefix).strip()
+    selected_vnets = [
+        entity
+        for entity in snapshot.selected_entities
+        if isinstance(entity, AzureEntityRef)
+        and _AZURE_VNET_ID.fullmatch(entity.resource_id) is not None
+    ]
+    if is_hub_hint:
+        if len(selected_vnets) != len(snapshot.selected_entities):
+            raise ValueError(
+                "network hub hint requires only selected Azure VNets"
+            )
+        hinted_vnet_id = hint.arguments.get("vnet_id")
+        matching_vnets = [
+            entity
+            for entity in selected_vnets
+            if isinstance(hinted_vnet_id, str)
+            and hinted_vnet_id.casefold() == entity.resource_id.casefold()
+        ]
+        if len(matching_vnets) != 1:
+            raise ValueError(
+                "network hub hint must match exactly one selected Azure VNet"
+            )
+        return hint
+    if not dependency_subject:
+        return None
+    if (
+        len(selected_vnets) != 1
+        or len(snapshot.selected_entities) != 1
+    ):
+        raise ValueError(
+            "network dependency question requires exactly one selected Azure VNet"
+        )
+    selected = selected_vnets[0]
     vnet_name = selected.resource_id.rstrip("/").rsplit("/", 1)[-1].casefold()
-    if subject not in {vnet_name, selected.resource_id.casefold()}:
-        return None
+    if dependency_subject not in {vnet_name, selected.resource_id.casefold()}:
+        raise ValueError(
+            "network dependency question must match the selected Azure VNet"
+        )
     return CanonicalPlanHint(
         specialist_id="network",
         tool="hub_dependents",
@@ -707,17 +722,23 @@ def _execute_retained_compatibility(
     tool_results: list[dict[str, Any]] = []
     citations: list[Citation] = []
     next_revision = thread.revision + 1
+    selected_specialists: list[str] = []
     for call_index, call in enumerate(investigation.calls):
         call_id = (
             f"{thread.thread_id}:rev-{next_revision}:compatibility:"
             f"{call_index}:{call.tool}"
         )
+        specialist_id = (
+            payload.hint.specialist_id
+            if payload.hint is not None and call.tool == payload.hint.tool
+            else ""
+        )
+        if specialist_id and specialist_id not in selected_specialists:
+            selected_specialists.append(specialist_id)
         tool_results.append(
             {
                 "call_id": call_id,
-                # The retained planner selects tools directly; it does not
-                # claim a policy-selected canonical specialist.
-                "specialist_id": "",
+                "specialist_id": specialist_id,
                 "tool": call.tool,
                 "arguments": dict(call.arguments),
                 **call.result.to_dict(),
@@ -809,7 +830,7 @@ def _execute_retained_compatibility(
         status=investigation.fact_status,
         policy_status="fallback",
         fallback_reason="compatibility_rollout",
-        selected_specialists=[],
+        selected_specialists=selected_specialists,
         selected_tools=[call.tool for call in investigation.calls],
         tool_results=tool_results,
         uncertainty=list(investigation.warnings),
@@ -1694,7 +1715,13 @@ def investigate_canonical(
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
             str(exc),
-            details={"field": "hint.arguments.vnet_id"},
+            details={
+                "field": (
+                    "hint.arguments.vnet_id"
+                    if payload.hint is not None
+                    else "question"
+                )
+            },
         ) from exc
     execution_payload = payload.model_copy(update={"hint": plan_hint})
     rollout = copilot_rollout_decision(stable_key=principal.subject)

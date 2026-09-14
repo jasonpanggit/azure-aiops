@@ -304,6 +304,133 @@ async function canvasInkWidthRatio(page: Page) {
 }
 
 test.describe("Phase 12 network topology live-review acceptance", () => {
+  test("keeps hub dependency Copilot requests bound to visible network context", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    const failedRequests: string[] = [];
+    const copilotRequests: Array<Record<string, unknown>> = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("requestfailed", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.hostname === "127.0.0.1"
+        && url.port === "8080"
+        && url.pathname === "/health"
+      ) {
+        return;
+      }
+      failedRequests.push(`${request.method()} ${request.url()}`);
+    });
+    await mockNetworkApis(page);
+    await page.route("**/api/v1/copilot/investigations*", async (route) => {
+      const request = route.request().postDataJSON() as Record<string, unknown>;
+      copilotRequests.push(request);
+      if (copilotRequests.length > 1) {
+        await route.fulfill({
+          status: 422,
+          json: {
+            error: {
+              code: "validation_error",
+              message: "A VNet outside the bound page selection cannot execute.",
+            },
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: envelope({
+          contract_version: "1",
+          status: "ok",
+          policy_status: "accepted",
+          fallback_reason: "",
+          selected_specialists: ["network"],
+          selected_tools: ["hub_dependents"],
+          tool_results: [{
+            call_id: "network:hub-dependents:0",
+            specialist_id: "network",
+            tool: "hub_dependents",
+            status: "ok",
+            data: {
+              hub_vnet_id: HUB.toLowerCase(),
+              dependents: [{ vnet_id: SPOKE.toLowerCase(), name: "app-vnet" }],
+            },
+            evidence: [],
+            warning: "",
+          }],
+          uncertainty: [
+            "Dependency evidence covers the currently visible topology snapshot.",
+          ],
+          coverage: { visible_count: 1, total_count: 1, complete: true },
+          citations: [{
+            citation_id: "network:hub:demo-vnet",
+            source: "network/hub-dependents",
+            status: "ok",
+            observed_at: "2026-09-08T00:00:00Z",
+            resource_id: HUB.toLowerCase(),
+            observation_status: "current",
+          }],
+          synthesis: {
+            status: "deterministic",
+            claims: [{
+              finding_id: "network:hub:demo-vnet",
+              summary: "demo-vnet has one direct dependent: app-vnet.",
+              evidence_refs: ["network:hub:demo-vnet"],
+              confidence: "high",
+              freshness: "fresh",
+              uncertainty: [],
+            }],
+          },
+          thread_id: "thr-00000000000000000000000000000001",
+          thread_revision: 1,
+          mutation_authorized: false,
+        }),
+      });
+    });
+
+    await page.goto("/network");
+    await page.getByRole("button", { name: "Ask Copilot about network paths" }).click();
+    const drawer = page.getByRole("dialog", { name: "Operations Copilot" });
+    await expect(drawer).toBeVisible();
+    await drawer.getByRole("button", { name: "What depends on demo-vnet?" }).click();
+
+    await expect(
+      drawer.getByText("demo-vnet has one direct dependent: app-vnet."),
+    ).toBeVisible();
+    await expect(
+      drawer.getByText("network:hub:demo-vnet", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      drawer.getByText(
+        "Dependency evidence covers the currently visible topology snapshot.",
+      ),
+    ).toBeVisible();
+    await expect.poll(() => copilotRequests.length).toBe(1);
+    expect(copilotRequests[0]).toMatchObject({
+      question: "What depends on demo-vnet?",
+      snapshot: { page_kind: "network", page_id: "network-topology" },
+      hint: {
+        specialist_id: "network",
+        tool: "hub_dependents",
+        arguments: { vnet_id: HUB.toLowerCase() },
+      },
+    });
+
+    await drawer.getByRole("textbox").fill("What depends on unselected-vnet?");
+    await drawer.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => copilotRequests.length).toBe(2);
+    expect(copilotRequests[1]).toMatchObject({
+      question: "What depends on unselected-vnet?",
+      snapshot: { page_kind: "network", page_id: "network-topology" },
+    });
+    expect(copilotRequests[1]).not.toHaveProperty("hint");
+    await expect(
+      drawer.getByText("A VNet outside the bound page selection cannot execute."),
+    ).toBeVisible();
+    expect(pageErrors).toEqual([]);
+    expect(failedRequests).toEqual([]);
+  });
+
   test("keeps the connected graph primary and makes unattached candidates available on demand", async ({
     page,
   }) => {
