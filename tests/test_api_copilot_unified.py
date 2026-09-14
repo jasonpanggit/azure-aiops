@@ -1245,7 +1245,7 @@ def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
     assert "semantic provider is deferred" not in response.text.casefold()
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
 def test_network_dependency_question_without_hint_binds_selected_vnet(
     tmp_path,
     monkeypatch,
@@ -1316,6 +1316,11 @@ def test_network_dependency_question_without_hint_binds_selected_vnet(
         citation["citation_id"].startswith("tool:")
         for citation in data["citations"]
     )
+    if rollout_mode == "shadow":
+        rollout = data["rollout"]
+        assert rollout["shadow_validated"] is True
+        assert rollout["shadow_reason"] == "accepted"
+        assert rollout["comparison"]["divergent_fields"] == []
 
 
 @pytest.mark.parametrize(
@@ -1602,9 +1607,11 @@ def test_deferred_semantic_network_does_not_require_a_page_specific_exception(
     assert "untrusted_browser_summary" not in response.text
 
 
+@pytest.mark.parametrize("include_hint", [False, True])
 def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
     tmp_path,
     monkeypatch,
+    include_hint,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
     body = _network_hub_canonical_body()
@@ -1616,7 +1623,10 @@ def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
     body["snapshot"]["evidence"][1]["resource_id"] = widened_vnet_id
     body["snapshot"]["evidence"][1]["source_key"] = widened_vnet_id
     body["snapshot"]["evidence"][1]["entity"]["resource_id"] = widened_vnet_id
-    body["hint"]["arguments"]["vnet_id"] = widened_vnet_id
+    if include_hint:
+        body["hint"]["arguments"]["vnet_id"] = widened_vnet_id
+    else:
+        body.pop("hint")
     context = _context(tmp_path, None)
     context.provider_runtime = ProviderRuntime(
         {
