@@ -96,6 +96,116 @@
     "scope_identifiers_retained": false,
     "secret_values_retained": false
   },
+  "read_only_diagnosis_2026_09_13": {
+    "status": "blocked",
+    "mutations_performed": false,
+    "historical_defender_zero": {
+      "classification": "stale_pre_fix_evidence",
+      "summary": "The retained zero-count publication predates the ARG assessment projection fix; current read-only source probes show supported canonical-digest Defender assessment rows."
+    },
+    "current_defender_source": {
+      "supported_container_assessment_rows": 23123,
+      "distinct_canonical_digests": 1048,
+      "defender_subassessment_rows": 0,
+      "classification": "available_but_not_consumed_by_current_workload_matcher"
+    },
+    "current_container_insights_source": {
+      "discoverable_workspaces": 6,
+      "aggregate_queries_executed": 18,
+      "kube_pod_inventory_rows": 0,
+      "container_inventory_rows": 0,
+      "container_image_inventory_rows": 0,
+      "aks_cluster_count": 0,
+      "classification": "supported_workload_source_absent"
+    },
+    "code_contract_gaps": [
+      {
+        "code": "container_image_inventory_tag_field_mismatch",
+        "summary": "The repository projects Tag while the live ContainerImageInventory schema exposes ImageTag."
+      },
+      {
+        "code": "defender_assessment_shape_not_consumed",
+        "summary": "Workload matching consumes defender_subassessments, but the live digest-bearing records are assessments with resourceAdditionalData.Digest."
+      },
+      {
+        "code": "defender_event_time_contract_unresolved",
+        "summary": "The live digest-bearing assessment shape has no supported event-time field for the exact 15-minute join; ingestion or publication time must not be substituted."
+      }
+    ],
+    "checkpoint": [
+      "A supported monitored AKS workload emits non-zero Container Insights inventory rows.",
+      "The exact ContainerImageInventory query compiles against ImageTag.",
+      "The workload matcher consumes the supported Defender assessment digest and evidence-time contract.",
+      "At least one exact deployment reaches Fabric and ontology with represented_workload_count greater than zero.",
+      "The qualified 100k Fabric SQL benchmark runs and passes."
+    ]
+  },
+  "publication_notification_2026_09_14": {
+    "publication_status": "succeeded",
+    "publication_pending_hold_released": true,
+    "publication_rerun_performed": false,
+    "new_generation_report_available": false,
+    "new_generation_exact_counts_attested": false,
+    "phase_03_1_closeout_evidence_status": "blocked",
+    "reason": "The newly successful publication has no sanitized execution report or attested workload, traversal, represented-count, qualified-benchmark, canary, and rollback aggregates. These remain independent deferred/downstream evidence gates for Phase 03.1 closeout; no later numbered phase is implied. Historical counts remain non-passing and must not be reinterpreted as the new publication result.",
+    "historical_closeout_context": {
+      "published_table_count": 458,
+      "gold_exposure_fact_count": 77865,
+      "silver_container_vulnerability_observation_count": 152631,
+      "ontology_entity_count": 81720,
+      "ontology_relationship_count": 235537,
+      "silver_workload_deployment_count": null,
+      "exact_container_fact_count": 0,
+      "digest_to_deployment_edge_count": 0,
+      "deployment_to_application_edge_count": 0,
+      "represented_workload_count": 0,
+      "qualified_benchmark_row_count": 0,
+      "qualified_benchmark_status": "fail_or_deferred"
+    },
+    "required_execution_lane_evidence": [
+      "New publication generation and source run identifiers.",
+      "Exact silver_workload_deployments count.",
+      "Exact digest-to-deployment and deployment-to-application edge counts.",
+      "Represented, total, unknown, and excluded workload counts.",
+      "Qualified 100k benchmark row count and pass status.",
+      "Exact round-trip verdict bound to the new generation."
+    ]
+  },
+  "plan_03_1_28_operator_checkpoint_2026_09_14": {
+    "status": "verification_unavailable",
+    "phase4_ready": false,
+    "operator_authorized": false,
+    "operator_evidence_available": false,
+    "generation_id": null,
+    "timestamp": "2026-09-14T18:37:32+08:00",
+    "blocker": "No authorized operator evidence is available in the workspace, and the required new-generation Plan 03.1-27 report is still blocked.",
+    "preflight": {
+      "focused_contract_tests": "pass",
+      "canonical_validator": "blocked",
+      "canonical_validator_exit": 2,
+      "canonical_validator_reason_codes": [
+        "release_binding_missing",
+        "aum_source_not_ready",
+        "defender_exact_digest_missing",
+        "supported_container_insights_missing",
+        "fabric_sql_not_ready",
+        "generation_round_trip_failed",
+        "qualified_100k_benchmark_failed",
+        "exact_supported_defender_digest_to_container_insights_workload_round_trip"
+      ]
+    },
+    "checklist": {
+      "authenticated_overview": "not_verified",
+      "defender_and_container_evidence": "not_verified",
+      "cve_kb_detail": "not_verified",
+      "source_completeness_and_freshness": "not_verified",
+      "exact_workload_traversal": "not_verified",
+      "governed_review_only_container_handoff": "not_verified",
+      "generation_and_aggregate_match": "not_verified",
+      "secret_and_raw_payload_absence": "not_verified"
+    },
+    "approval": "not_granted"
+  },
   "verification": {
     "plan19_focused_tests": "pass",
     "terraform_fmt_validate_test": "pass",

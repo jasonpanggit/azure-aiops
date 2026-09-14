@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -576,6 +576,37 @@ def _defender_image_row(
     }
 
 
+def _defender_assessment_image_row(
+    *,
+    digest: str = DIGEST_A,
+    provider_event_time: str | None = OBSERVED,
+) -> dict[str, Any]:
+    status: dict[str, Any] = {"code": "Unhealthy"}
+    if provider_event_time is not None:
+        status["statusChangeDate"] = provider_event_time
+    return {
+        "id": "defender-assessment-1",
+        "tenantId": "tenant1",
+        "subscriptionId": "sub1",
+        "properties": {
+            "status": status,
+            "resourceDetails": {
+                "ResourceProvider": "acr",
+                "ResourceType": ".containerimage",
+                "Id": IMAGE,
+            },
+            "resourceAdditionalData": {
+                "Digest": digest,
+                "RepositoryDetails": {
+                    "RepositoryName": "api",
+                    "RegistryHost": "acr1.azurecr.io",
+                },
+                "Tags": ["v1"],
+            },
+        },
+    }
+
+
 def _workload_rows(
     *,
     digest: str = DIGEST_A,
@@ -635,6 +666,10 @@ def test_container_insights_queries_are_fixed_minimal_and_bounded() -> None:
         assert "| take 25000" in query
         assert "*" not in query
 
+    image_query = CONTAINER_INSIGHTS_QUERIES["container_image_inventory"]
+    assert "Tag=ImageTag" in image_query
+    assert "Repository, Tag, _SubscriptionId" not in image_query
+
 
 def test_exact_digest_and_observation_time_produce_one_deployment() -> None:
     from intelligence.vulnerability.workload_inventory import (
@@ -677,6 +712,157 @@ def test_exact_digest_and_observation_time_produce_one_deployment() -> None:
     )
     assert moved_tag.deployments[0]["deployment_id"] == deployment["deployment_id"]
     assert moved_tag.deployments[0]["tag"] == "v2"
+
+
+@pytest.mark.parametrize(
+    ("offset_seconds", "expected_match", "expected_reason"),
+    [
+        (899, True, ""),
+        (900, True, ""),
+        (901, False, "stale_digest_observation"),
+    ],
+)
+def test_exact_digest_join_fails_closed_at_fifteen_minute_boundary(
+    offset_seconds: int,
+    expected_match: bool,
+    expected_reason: str,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        match_workload_digest,
+    )
+
+    defender_time = datetime.fromisoformat(OBSERVED)
+    workload_time = defender_time + timedelta(seconds=offset_seconds)
+    result = match_workload_digest(
+        defender_digest=DIGEST_A,
+        observed_digest=DIGEST_A,
+        defender_observed_at=defender_time.isoformat(),
+        workload_observed_at=workload_time.isoformat(),
+    )
+
+    assert result.matched is expected_match
+    assert result.reason == expected_reason
+
+
+def test_assessment_nested_digest_and_provider_event_time_produce_deployment() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_assessment_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert len(result.deployments) == 1
+    assert result.deployments[0]["image_digest"] == DIGEST_A
+    assert result.deployments[0]["defender_observed_at"] == OBSERVED
+    assert result.unknown_reasons == ()
+
+
+def test_missing_defender_provider_event_time_never_uses_completed_at() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[
+            _defender_assessment_image_row(provider_event_time=None)
+        ],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == (
+        "missing_defender_provider_event_time",
+    )
+
+
+def test_malformed_defender_provider_event_time_remains_unknown() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[
+            _defender_assessment_image_row(provider_event_time="not-a-time")
+        ],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == (
+        "malformed_defender_provider_event_time",
+    )
+
+
+def test_missing_workload_provider_event_time_never_uses_completed_at() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    for row in (*pods, *containers, *images):
+        row.pop("TimeGenerated")
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_assessment_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == (
+        "missing_workload_provider_event_time",
+    )
+
+
+def test_duplicate_defender_rows_produce_one_deployment_identity() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[
+            _defender_assessment_image_row(),
+            {**_defender_assessment_image_row(), "id": "defender-assessment-2"},
+        ],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert len(result.deployments) == 1
 
 
 def test_unproved_workload_links_remain_typed_unknown() -> None:
@@ -805,7 +991,18 @@ def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
     } <= FabricSyncService._WORKLOAD_MERGE_WRITE_TABLES
 
 
-def test_ingestion_service_persists_the_exact_workload_slice(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("defender_query_name", "defender_row"),
+    [
+        ("defender_assessments", _defender_assessment_image_row()),
+        ("defender_subassessments", _defender_image_row()),
+    ],
+)
+def test_ingestion_service_persists_the_exact_workload_slice(
+    tmp_path: Path,
+    defender_query_name: str,
+    defender_row: dict[str, Any],
+) -> None:
     from onboarding.config import ConnectorConfig
     from onboarding.ingestion_service import IngestionService
 
@@ -827,8 +1024,8 @@ def test_ingestion_service_persists_the_exact_workload_slice(tmp_path) -> None:
                     ]
                     if spec.name == "inventory_log_analytics_workspaces"
                     else (
-                        [_defender_image_row()]
-                        if spec.name == "defender_subassessments"
+                        [defender_row]
+                        if spec.name == defender_query_name
                         else []
                     )
                 )
