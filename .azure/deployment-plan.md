@@ -2,6 +2,198 @@
 
 Status: Validated
 
+## Draft: Core Azure SRE Agent import live readiness — 2026-09-14
+
+This draft covers only the existing
+`Microsoft.App/agents@2026-01-01` resource at
+`/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo`.
+It does not authorize an import, plan, refresh, apply, deployment, role change,
+or any Azure write. Phase 4's digest-to-workload traversal, qualified 100k
+benchmark, and canary/rollback evidence gates remain unchanged.
+
+### Frozen scope and sanitized read evidence
+
+- Exact Terraform address: `azapi_resource.sre_agent[0]`.
+- Management remains default-disabled and `prevent_destroy = true`.
+- The 2026-01-01 GET confirmed `australiaeast`, combined system/user-assigned
+  identity, system principal `003cb2df-6d1f-4555-ba0b-60766e616f2d`, user
+  principal `5b3b9ec4-16fb-4c0f-96fb-16887062f976`, Review/Low action mode,
+  Automatic/MicrosoftFoundry model, 10,000 monthly units, unrestricted sandbox
+  egress, Stable upgrades, and the four exact managed resources represented by
+  `tests/fixtures/sre_agent_resource.sanitized.json`.
+- The same GET confirmed `mcpServers = null`; incident connection key,
+  Application Insights connection string, and GitHub PAT override were absent.
+  Secrets, tags, endpoints, outbound IPs, power/running/provisioning state, and
+  other output-only fields are excluded from the sanitized fixture.
+- Read-only RBAC listing with `--all --include-inherited` returned zero
+  assignments for the unused system identity and eight in-subscription
+  assignments for the user identity: Reader, Monitoring Reader, Monitoring
+  Contributor, Log Analytics Reader, Container Apps Operator, and Application
+  Insights Component Contributor at subscription, resource-group, workspace,
+  or component scope. No inherited management-group or other-subscription
+  assignment was returned. The selected tenant exposed no other visible
+  subscription, so the read API's visible target-tenant coverage is complete.
+
+`scripts/preflight_sre_agent_import.py` is deliberately offline: it only reads
+the supplied JSON, rejects output-only fields, ReadOnly action mode, unexpected
+identity/settings, incomplete RBAC query coverage, conditional/ambiguous
+assignments, and any scope outside the selected subscription. It never invokes
+Azure CLI or Terraform and never reads or mutates Terraform state.
+
+### Preflight procedure
+
+1. Use only the approved read-only GET below. It drops tags, output-only
+   properties, and every secret-bearing key before the JSON reaches disk:
+
+   ```sh
+   SRE_ID='/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo'
+   az rest --method get \
+     --url "https://management.azure.com${SRE_ID}?api-version=2026-01-01" \
+     --only-show-errors -o json |
+     jq 'del(
+       .tags,
+       .systemData,
+       .properties.agentEndpoint,
+       .properties.outboundIpAddresses,
+       .properties.powerState,
+       .properties.provisioningState,
+       .properties.runningState,
+       .properties.incidentManagementConfiguration.connectionKey,
+       .properties.logConfiguration.applicationInsightsConfiguration.connectionString,
+       .properties.gitHubConfiguration.patTokenOverride
+     ) | {apiVersion:"2026-01-01",resource:.}' \
+     > /tmp/sre-agent.resource.sanitized.json
+   ```
+
+2. Run:
+
+   ```sh
+   python3 scripts/preflight_sre_agent_import.py resource \
+     --resource-json /tmp/sre-agent.resource.sanitized.json \
+     --tfvars-output infra/terraform/sre-agent.import.tfvars.json
+   ```
+
+   The generated file is non-secret and matched by the repository's
+   `infra/terraform/*.tfvars.json` ignore rule. It contains exactly:
+
+   ```json
+   {
+     "enable_sre_agent_management": true,
+     "sre_agent_managed_resources": [
+       "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev",
+       "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-api-sredemo-dev",
+       "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-web-sredemo-dev",
+       "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/microsoft.insights/components/appi-sredemo-dev"
+     ]
+   }
+   ```
+
+3. Build the current selected-tenant RBAC wrapper with read-only list commands:
+
+   ```sh
+   SUB='a87a8e64-a52a-4aa8-a760-5e8919d23cd1'
+   TENANT='ffc83107-fcc0-4d2e-8798-d582da36505e'
+   SMI='003cb2df-6d1f-4555-ba0b-60766e616f2d'
+   UAI='5b3b9ec4-16fb-4c0f-96fb-16887062f976'
+   az account list --all --query "[?tenantId=='${TENANT}'].id" -o json \
+     > /tmp/sre-agent.visible-subscriptions.json
+   az role assignment list --subscription "${SUB}" \
+     --assignee-object-id "${SMI}" --all --include-inherited \
+     --only-show-errors -o json > /tmp/sre-agent.smi-rbac.json
+   az role assignment list --subscription "${SUB}" \
+     --assignee-object-id "${UAI}" --all --include-inherited \
+     --only-show-errors -o json > /tmp/sre-agent.uai-rbac.json
+   jq -n --arg subscriptionId "${SUB}" --arg tenantId "${TENANT}" \
+     --arg smi "${SMI}" --arg uai "${UAI}" \
+     --slurpfile visible /tmp/sre-agent.visible-subscriptions.json \
+     --slurpfile smiRows /tmp/sre-agent.smi-rbac.json \
+     --slurpfile uaiRows /tmp/sre-agent.uai-rbac.json \
+     'def clean: map({
+       scope,roleDefinitionName,roleDefinitionId,principalId,principalType,
+       condition,conditionVersion
+     });
+     {
+       subscriptionId:$subscriptionId,
+       tenantId:$tenantId,
+       includeInherited:true,
+       visibleTenantSubscriptionIds:$visible[0],
+       queriedSubscriptionIds:[$subscriptionId],
+       principals:[
+         {
+           principalId:$smi,
+           queries:[{
+             subscriptionId:$subscriptionId,
+             includeInherited:true,
+             assignments:($smiRows[0]|clean)
+           }]
+         },
+         {
+           principalId:$uai,
+           queries:[{
+             subscriptionId:$subscriptionId,
+             includeInherited:true,
+             assignments:($uaiRows[0]|clean)
+           }]
+         }
+       ]
+     }' > /tmp/sre-agent.rbac.sanitized.json
+   ```
+
+   If `visibleTenantSubscriptionIds` contains any ID not in
+   `queriedSubscriptionIds`, query both principals in that subscription, append
+   one `queries[]` entry with `includeInherited: true` to each principal, and
+   add the subscription ID to `queriedSubscriptionIds`. The preflight fails
+   closed until every principal has exactly one inherited query for every
+   visible target-tenant subscription.
+   Then run:
+
+   ```sh
+   python3 scripts/preflight_sre_agent_import.py rbac \
+     --rbac-json /tmp/sre-agent.rbac.sanitized.json
+   ```
+
+4. Require both commands to return status `resource-ready` / `rbac-ready`.
+   Re-run them against evidence captured immediately before any separately
+   approved import. Abort if the live resource, managed-resource set, identity,
+   settings, RBAC scope, or visible subscription coverage changed.
+
+### Separately approved future import and acceptance gates
+
+The exact future import command is:
+
+```sh
+terraform -chdir=infra/terraform import -input=false \
+  -var-file=sre-agent.import.tfvars.json \
+  'azapi_resource.sre_agent[0]' \
+  '/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo'
+```
+
+The canonical gitignored `infra/terraform/terraform.tfvars` must already carry
+the deployment's required private provider variables. The import requires a
+separate explicit approval and a zero-live-mutation freeze for every other
+operator and pipeline. Immediately afterward, a separately approved
+refresh-enabled plan must report ideally zero drift and, at minimum, exactly
+zero create, update, destroy, and replace actions for the SRE Agent and zero
+action anywhere else. Any non-zero action is an abort; never apply it.
+
+If the binding or subsequent plan is unacceptable, perform no Azure rollback.
+After separate state-change approval, remove only the Terraform state binding
+with:
+
+```sh
+terraform -chdir=infra/terraform state rm \
+  'azapi_resource.sre_agent[0]'
+```
+
+Preserve the live resource unchanged, delete the local non-secret import tfvars
+fragment, and investigate source/evidence offline.
+
+MCP servers, agent/agent-space connectors and connector authentication, APIM
+triggers, incident/remediation dispatch, gateway grants, RBAC creation, and all
+other integration are explicitly blocked and out of scope. PR #75's CI jobs
+failed with zero usable execution evidence; a green CI rerun is a remaining
+acceptance gate and is not claimed here.
+
 ## Final Consolidated Phase 03.1 Recovery — 2026-09-08
 
 - **Source candidate:** refreshed `main` at

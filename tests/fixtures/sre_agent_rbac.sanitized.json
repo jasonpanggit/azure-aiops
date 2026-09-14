@@ -1,0 +1,90 @@
+{
+  "includeInherited": true,
+  "principals": [
+    {
+      "principalId": "003cb2df-6d1f-4555-ba0b-60766e616f2d",
+      "queries": [
+        {
+          "assignments": [],
+          "includeInherited": true,
+          "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+        }
+      ]
+    },
+    {
+      "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+      "queries": [
+        {
+          "assignments": [
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Monitoring Contributor",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Log Analytics Reader",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Reader",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Container Apps Operator",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Monitoring Reader",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Monitoring Contributor",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Log Analytics Reader",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.OperationalInsights/workspaces/law-sredemo-dev"
+            },
+            {
+              "condition": null,
+              "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+              "principalType": "ServicePrincipal",
+              "roleDefinitionName": "Application Insights Component Contributor",
+              "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/microsoft.insights/components/appi-sredemo-dev"
+            }
+          ],
+          "includeInherited": true,
+          "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+        }
+      ]
+    }
+  ],
+  "queriedSubscriptionIds": [
+    "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+  ],
+  "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+  "tenantId": "ffc83107-fcc0-4d2e-8798-d582da36505e",
+  "visibleTenantSubscriptionIds": [
+    "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+  ]
+}
