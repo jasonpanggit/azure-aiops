@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from intelligence.vulnerability.exposure_projection import (
     build_temporal_projection,
     project_exposure_gold,
 )
+from intelligence.vulnerability.observations import current_key_for
 from intelligence.vulnerability.read_port import ExposureReadPort
 from onboarding.network_normalize import NETWORK_ENTITY_TYPES
 from ontology.confidence import compute_confidence
@@ -284,11 +285,22 @@ def temporal_products_from_legacy(
     inputs = temporal_inputs_from_legacy(datasets)
     for row in inputs:
         row["source_generation"] = generation_id
-    return build_temporal_projection(
+    projection = build_temporal_projection(
         inputs,
         generation_id=generation_id,
         ingested_at=ingested_at,
         run_at=ingested_at,
+    )
+    (
+        snapshot_scopes,
+        authoritative_scopes,
+        authoritative_current_keys,
+    ) = _authoritative_aum_snapshot_contract(datasets)
+    return replace(
+        projection,
+        aum_snapshot_scopes=snapshot_scopes,
+        authoritative_aum_scopes=authoritative_scopes,
+        authoritative_aum_current_keys=authoritative_current_keys,
     )
 
 
@@ -1783,6 +1795,13 @@ class InventoryDatasetMapper:
         graph = OntologyGraphSynchronizer(OntologyValidator()).build(
             entity_rows, ontology_relationships
         )
+        patch_snapshot_source_status = [
+            row
+            for row in source_status
+            if str(row.get("partition_key") or "").strip()
+        ]
+        if not any(_connection_id(row).strip() for row in patch_snapshot_source_status):
+            patch_snapshot_source_status = []
 
         datasets = {
             "bronze_resources": [_asset_row(row, ingestion_run_id) for row in all_resources],
@@ -1899,9 +1918,10 @@ class InventoryDatasetMapper:
                 ]
             ],
             "metadata_patch_snapshot": _patch_snapshot_rows(
-                source_status,
+                patch_snapshot_source_status,
                 ingestion_run_id,
                 ingestion_timestamp,
+                subscription_tenants=subscription_tenants,
             ),
             "silver_defender_findings": [
                 _defender_finding_row(row, ingestion_run_id)
@@ -2288,33 +2308,62 @@ def _patch_snapshot_rows(
     source_status: list[dict[str, Any]],
     run_id: str,
     fallback_timestamp: str,
+    *,
+    subscription_tenants: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     required_families = {
         "azure_update_manager_assessment",
         "azure_update_manager_installation",
         "azure_update_manager_missing",
     }
-    by_subscription: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    tenant_by_subscription = {
+        str(subscription_id).strip().casefold(): str(tenant_id).strip().casefold()
+        for subscription_id, tenant_id in (subscription_tenants or {}).items()
+        if str(subscription_id).strip() and str(tenant_id).strip()
+    }
+    by_scope: dict[
+        tuple[str, str, str],
+        dict[str, list[dict[str, Any]]],
+    ] = {}
     for row in source_status:
         family = str(row.get("source_family") or "").casefold()
         if family not in required_families:
             continue
+        connection_id = _required_patch_snapshot_connection(row)
         requested_scope = row.get("requested_scope")
         subscriptions = (
             requested_scope.get("subscription", [])
             if isinstance(requested_scope, dict)
             else []
         )
-        for subscription_id in subscriptions:
-            normalized = str(subscription_id or "").strip().casefold()
-            if normalized:
-                by_subscription.setdefault(normalized, {}).setdefault(
-                    family,
-                    [],
-                ).append(row)
+        normalized_subscriptions = {
+            str(subscription_id or "").strip().casefold()
+            for subscription_id in subscriptions
+            if str(subscription_id or "").strip()
+        }
+        if len(normalized_subscriptions) != 1:
+            raise ValueError(
+                "Patch snapshot source status requires exactly one subscription"
+            )
+        subscription_id = next(iter(normalized_subscriptions))
+        row_tenant = str(
+            row.get("tenant_id") or row.get("tenantId") or ""
+        ).strip().casefold()
+        mapped_tenant = tenant_by_subscription.get(subscription_id, "")
+        if row_tenant and mapped_tenant and row_tenant != mapped_tenant:
+            raise ValueError("Patch snapshot tenant identity is ambiguous")
+        tenant_id = row_tenant or mapped_tenant
+        if not tenant_id:
+            raise ValueError("Patch snapshot tenant identity is required")
+        by_scope.setdefault(
+            (tenant_id, subscription_id, connection_id),
+            {},
+        ).setdefault(family, []).append(row)
 
     snapshots: list[dict[str, Any]] = []
-    for subscription_id, family_rows in sorted(by_subscription.items()):
+    for (tenant_id, subscription_id, connection_id), family_rows in sorted(
+        by_scope.items()
+    ):
         if set(family_rows) != required_families:
             continue
         rows = [
@@ -2409,18 +2458,118 @@ def _patch_snapshot_rows(
         }
         snapshots.append(
             {
-                "tenant_id": "system",
+                "tenant_id": tenant_id,
                 "subscription_id": subscription_id,
-                "resource_id": f"patch-snapshot://{subscription_id}",
+                "resource_id": (
+                    f"patch-snapshot://{tenant_id}/{subscription_id}/{connection_id}"
+                ),
                 "timestamp": timestamp,
                 "change_version": hashlib.sha256(
                     json.dumps(content, sort_keys=True).encode()
                 ).hexdigest(),
                 "ingestion_run_id": run_id,
+                "connection_id": connection_id,
                 **content,
             }
         )
     return snapshots
+
+
+def _required_patch_snapshot_connection(row: Mapping[str, Any]) -> str:
+    values = {
+        str(row.get(field) or "").strip().casefold()
+        for field in (
+            "connection_id",
+            "connectionId",
+            "subscription_connection_id",
+            "subscriptionConnectionId",
+        )
+        if str(row.get(field) or "").strip()
+    }
+    if not values:
+        raise ValueError("Patch snapshot connection identity is required")
+    if len(values) != 1:
+        raise ValueError("Patch snapshot connection identity is ambiguous")
+    return next(iter(values))
+
+
+def _authoritative_aum_snapshot_contract(
+    datasets: Mapping[str, list[dict[str, Any]]],
+) -> tuple[
+    frozenset[tuple[str, str, str]],
+    frozenset[tuple[str, str, str]],
+    frozenset[tuple[str, str, str, str]],
+]:
+    all_scopes: set[tuple[str, str, str]] = set()
+    authoritative_scopes: set[tuple[str, str, str]] = set()
+    generation_by_scope: dict[tuple[str, str, str], str] = {}
+    descriptor_by_scope: dict[tuple[str, str, str], tuple[str, ...]] = {}
+    for row in datasets.get("metadata_patch_snapshot", ()):
+        scope = _patch_snapshot_scope(row)
+        all_scopes.add(scope)
+        descriptor = (
+            str(row.get("ingestion_run_id") or ""),
+            str(row.get("status") or "").casefold(),
+            str(row.get("completeness") or "").casefold(),
+            str(row.get("freshness") or "").casefold(),
+        )
+        previous = descriptor_by_scope.get(scope)
+        if previous is not None and previous != descriptor:
+            raise ValueError("Patch snapshot scope identity is ambiguous")
+        descriptor_by_scope[scope] = descriptor
+        generation_by_scope[scope] = descriptor[0]
+        if (
+            descriptor[1] == "succeeded"
+            and descriptor[2] in {"complete", "healthy-empty"}
+            and descriptor[3] in {"fresh", "current"}
+        ):
+            authoritative_scopes.add(scope)
+
+    if not all_scopes:
+        return frozenset(), frozenset(), frozenset()
+
+    active_keys: set[tuple[str, str, str, str]] = set()
+    for row in datasets.get("silver_patch_snapshot_findings", ()):
+        scope = _patch_snapshot_scope(row)
+        if scope not in authoritative_scopes:
+            continue
+        if str(row.get("ingestion_run_id") or "") != generation_by_scope[scope]:
+            continue
+        status = str(row.get("status") or "").strip().casefold()
+        if status not in {"missing", "installation_failed", "failed"}:
+            continue
+        target_id = str(row.get("target_resource_id") or "").strip()
+        weakness_id = str(row.get("kb_id") or "").strip()
+        if not target_id or not weakness_id:
+            raise ValueError("Authoritative patch snapshot finding identity is incomplete")
+        active_keys.add(
+            (
+                *scope,
+                current_key_for(
+                    tenant_id=scope[0],
+                    target_id=target_id,
+                    target_kind="server",
+                    weakness_kind="kb",
+                    weakness_id=weakness_id,
+                ),
+            )
+        )
+    return (
+        frozenset(all_scopes),
+        frozenset(authoritative_scopes),
+        frozenset(active_keys),
+    )
+
+
+def _patch_snapshot_scope(
+    row: Mapping[str, Any],
+) -> tuple[str, str, str]:
+    tenant_id = str(row.get("tenant_id") or "").strip().casefold()
+    subscription_id = str(row.get("subscription_id") or "").strip().casefold()
+    connection_id = _required_patch_snapshot_connection(row)
+    if not tenant_id or not subscription_id:
+        raise ValueError("Patch snapshot scope identity is incomplete")
+    return tenant_id, subscription_id, connection_id
 
 
 def _defender_finding_row(row: dict[str, Any], run_id: str) -> dict[str, Any]:
