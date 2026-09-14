@@ -7,7 +7,7 @@ from fabric_pipelines.topology_fabric_contracts import (
     TOPOLOGY_ENTITIES_CONTRACT,
 )
 
-SCHEMA_VERSION = "2.6.0"
+SCHEMA_VERSION = "2.7.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -217,6 +217,7 @@ SCHEMAS: dict[str, pa.Schema] = {
     "metadata_patch_snapshot": pa.schema(
         [
             *_BASE,
+            pa.field("connection_id", pa.string(), nullable=False),
             pa.field("source_generation", pa.string(), nullable=False),
             pa.field("status", pa.string(), nullable=False),
             pa.field("completeness", pa.string(), nullable=False),

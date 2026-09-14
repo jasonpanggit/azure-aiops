@@ -1849,6 +1849,7 @@ def test_partial_patch_checkpoint_restarts_entire_barrier_group(
                 "timestamp": "2026-08-17T00:00:00Z",
                 "change_version": sync_module._hash_json(content),
                 "ingestion_run_id": "publication-run",
+                "connection_id": "connection-a",
                 **content,
             }
         ]
@@ -1945,6 +1946,7 @@ def test_patch_reset_restore_commit_gap_reconciles_new_version_fence(
                 "timestamp": "2026-08-17T00:00:00Z",
                 "change_version": sync_module._hash_json(content),
                 "ingestion_run_id": "publication-run",
+                "connection_id": "connection-a",
                 **content,
             }
         ]
