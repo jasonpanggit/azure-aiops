@@ -28,6 +28,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from api.exposure_refresh import ExposurePatchRefreshCoordinator
 from fabric.auth import FabricAuthConfig, build_credential
 from fabric.config import (
     ExposureRolloutRuntimeConfig,
@@ -4607,6 +4608,15 @@ def build_context() -> ApiContext:
         command_home=ontology_roots["command"],
     )
     providers = _build_provider_runtime(onboarding)
+    exposure_patch_refresh = ExposurePatchRefreshCoordinator(
+        start_refresh=lambda scope: onboarding.sync_async(
+            scope.connection_id,
+            mode="scheduled",
+        ),
+        read_status=lambda scope: dict(
+            onboarding.detail(scope.connection_id).get("sync_state") or {}
+        ),
+    )
     # Investigation ledgers are the audit trail for operator decisions, so they
     # are written through to OneLake and survive replica restarts. A local
     # AIOPS_HOME has no document store; the ledger falls back to memory.
@@ -5300,6 +5310,7 @@ def build_context() -> ApiContext:
         exposure_query_provider=lambda: providers.get(
             "exposure_query", optional=True
         ),
+        exposure_patch_refresh_provider=lambda: exposure_patch_refresh,
         exposure_read_port_provider=exposure_read_port,
         exposure_ontology_provider=exposure_ontology,
         exposure_remediation_provider=exposure_remediation,

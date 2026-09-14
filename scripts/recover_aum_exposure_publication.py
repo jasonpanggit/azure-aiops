@@ -365,12 +365,10 @@ def _data(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return data
 
 
-def _contains_unavailable(value: object) -> bool:
+def _completeness_state(value: object) -> str:
     if isinstance(value, Mapping):
-        return any(_contains_unavailable(child) for child in value.values())
-    if isinstance(value, list | tuple):
-        return any(_contains_unavailable(child) for child in value)
-    return str(value or "").strip().casefold() == "unavailable"
+        return str(value.get("state") or "").strip().casefold()
+    return str(value or "").strip().casefold()
 
 
 def validate_facet_payloads(
@@ -378,7 +376,7 @@ def validate_facet_payloads(
     container_payload: Mapping[str, Any],
     provenance_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Require one healthy generation and exact active AUM fact provenance."""
+    """Require healthy split generations and exact active AUM provenance."""
     server = _data(server_payload)
     container = _data(container_payload)
     provenance = _data(provenance_payload)
@@ -386,16 +384,20 @@ def validate_facet_payloads(
     container_count = int(container.get("total_count") or 0)
     if server_count < 1:
         raise RecoveryError("server/AUM facet is empty")
-    if _contains_unavailable(server.get("completeness")):
-        raise RecoveryError("server/AUM completeness is unavailable")
+    if _completeness_state(server.get("completeness")) != "complete":
+        raise RecoveryError("server/AUM completeness is not complete")
     if container_count < 1:
         raise RecoveryError("container/Defender facet is empty")
+    if _completeness_state(container.get("completeness")) != "complete":
+        raise RecoveryError("container/Defender completeness is not complete")
     server_generation = str(server.get("generation") or "")
     container_generation = str(container.get("generation") or "")
-    if not server_generation.startswith("exposure-gold-"):
-        raise RecoveryError("Exposure validation returned an invalid generation")
-    if server_generation != container_generation:
-        raise RecoveryError("Exposure facets resolved different generations")
+    if not server_generation.startswith("silver-patch:"):
+        raise RecoveryError("server/AUM did not resolve a Silver patch generation")
+    if not container_generation.startswith("exposure-gold-"):
+        raise RecoveryError(
+            "container/Defender did not resolve a Gold generation"
+        )
     if str(provenance.get("generation") or "") != server_generation:
         raise RecoveryError("Exposure provenance resolved a different generation")
     active_fact_count = int(provenance.get("active_fact_count") or 0)
@@ -422,6 +424,7 @@ def validate_facet_payloads(
         )
     return {
         "generation": server_generation,
+        "container_generation": container_generation,
         "facet_counts": {
             "server_aum": server_count,
             "container_defender": container_count,

@@ -18,6 +18,8 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
 
 from api.evidence import classify_freshness
@@ -166,6 +168,7 @@ _SORT_FIELDS = {
     "target_id": ("[ordering_target_id]", "ordering_target_id"),
     "weakness_id": ("[weakness_id]", "weakness_id"),
 }
+_NUMERIC_SORT_FIELDS = frozenset({"priority_score", "severity"})
 _COMPARISON_OPERATORS = {
     "eq": "=",
     "gt": ">",
@@ -536,7 +539,10 @@ class ExposureCursorCodec:
     ) -> str:
         _validate_query(query)
         issued_at = int(_aware_utc(now or datetime.now(UTC), "now").timestamp())
-        normalized_position = _validate_position(position)
+        normalized_position = _cursor_payload_position(
+            position,
+            sort_field=query.sort.field,
+        )
         payload = {
             "v": CURSOR_VERSION,
             **_cursor_binding(
@@ -640,7 +646,10 @@ class ExposureCursorCodec:
                 "exposure_cursor_request_mismatch",
                 "Exposure cursor does not match the authorized request binding",
             )
-        position = _validate_position(payload.get("position"))
+        position = _cursor_query_position(
+            payload.get("position"),
+            sort_field=query.sort.field,
+        )
         return ExposureCursorState(
             generation=generation,
             position=position,
@@ -779,76 +788,67 @@ class ExposureQueryService:
             generation_id,
             "read_model_generation_id",
         )
-        if generation.startswith(SILVER_PATCH_GENERATION_PREFIX):
-            raise ValueError("Exposure provenance evidence requires a Gold generation")
-        window = (
-            self._generation_window()
-            if callable(self._generation_window)
-            else self._generation_window
-        )
-        if window is not None:
-            if not isinstance(window, ExposureGenerationWindow):
-                raise TypeError(
-                    "Exposure generation_window must return ExposureGenerationWindow"
-                )
-            generation = window.require_readable(
-                generation,
-                now=datetime.now(UTC),
+        if not generation.startswith(SILVER_PATCH_GENERATION_PREFIX):
+            raise ValueError(
+                "Exposure provenance evidence requires a Silver patch generation"
             )
+        mapped_subscription = authorization.connection_subscriptions.get(
+            expected_connection
+        )
+        if not mapped_subscription:
+            raise PermissionError(
+                "Expected Exposure connection has no authorized subscription"
+            )
+        scoped_authorization = ExposureAuthorization(
+            subject=authorization.subject,
+            tenant_id=authorization.tenant_id,
+            connection_ids=(expected_connection,),
+            connection_subscriptions={
+                expected_connection: mapped_subscription,
+            },
+            scope={
+                "subscription": (mapped_subscription,),
+                "subscription_connection": (expected_connection,),
+            },
+        )
         schema = getattr(
             getattr(self._reader, "endpoint", None),
             "schema",
             "dbo",
         )
-        table = f"{_identifier(schema)}.{_identifier(EXPOSURE_FACTS_TABLE)}"
-        predicates = [
-            "[tenant_id] = ?",
-            "[read_model_generation_id] = ?",
-            "[target_kind] = ?",
-            "[source_family] = ?",
-            "[active] = ?",
-        ]
-        parameters: list[Any] = [
-            authorization.tenant_id,
-            generation,
-            "server",
-            "aum",
-            True,
-        ]
-        subscriptions = tuple(authorization.scope.get("subscription", ()))
-        mapped_subscription = authorization.connection_subscriptions.get(
-            expected_connection
+        snapshot = _silver_patch_snapshot(
+            self._reader,
+            scoped_authorization,
+            schema=schema,
+            now=datetime.now(UTC),
         )
-        if mapped_subscription:
-            subscriptions = (mapped_subscription,)
-        if subscriptions:
-            _append_in_predicate(
-                predicates,
-                parameters,
-                "[subscription_id]",
-                subscriptions,
+        if generation != snapshot.generation:
+            raise ExposureRestartConflict(
+                "exposure_generation_evicted",
+                generation=generation,
             )
-        if authorization.scope_keys:
-            _append_in_predicate(
-                predicates,
-                parameters,
-                "[scope_key]",
-                authorization.scope_keys,
-            )
-        if not subscriptions and not authorization.scope_keys:
-            raise PermissionError(
-                "Exposure provenance evidence requires a bounded effective scope"
-            )
+        table = (
+            f"{_identifier(schema)}.{_identifier(SILVER_PATCH_FINDINGS_TABLE)}"
+        )
+        predicates, parameters = _silver_patch_scope(scoped_authorization)
+        if snapshot.ingestion_run_id is None:
+            predicates.append("1 = 0")
+        else:
+            predicates.append("[ingestion_run_id] = ?")
+            parameters.append(snapshot.ingestion_run_id)
+        predicates.append(
+            "LOWER([status]) IN ('missing', 'installation_failed')"
+        )
         sql = (
             "SELECT "
-            "COUNT_BIG(DISTINCT [fact_id]) AS [active_fact_count], "
+            "COUNT_BIG(DISTINCT [resource_id]) AS [active_fact_count], "
             "COUNT_BIG(DISTINCT CASE WHEN LOWER([connection_id]) = ? "
-            "THEN [fact_id] END) AS [expected_connection_fact_count], "
+            "THEN [resource_id] END) AS [expected_connection_fact_count], "
             "COUNT_BIG(DISTINCT CASE WHEN LOWER([connection_id]) LIKE 'legacy:%' "
-            "THEN [fact_id] END) AS [legacy_connection_fact_count], "
+            "THEN [resource_id] END) AS [legacy_connection_fact_count], "
             "COUNT_BIG(DISTINCT CASE WHEN "
             "LOWER(COALESCE([connection_id], '')) <> ? "
-            "THEN [fact_id] END) AS [unexpected_connection_fact_count] "
+            "THEN [resource_id] END) AS [unexpected_connection_fact_count] "
             f"FROM {table} WHERE {' AND '.join(predicates)}"
         )
         rows = self._reader.query(
@@ -2372,11 +2372,60 @@ def _validate_position(value: Any) -> tuple[Any, str]:
     if (
         not isinstance(value, (tuple, list))
         or len(value) != 2
-        or isinstance(value[0], (dict, list, tuple))
+        or isinstance(value[0], (dict, list, tuple, bool))
+        or value[0] is None
         or not str(value[1] or "")
     ):
         raise _invalid_cursor("Exposure cursor position is invalid")
     return value[0], str(value[1])
+
+
+def _cursor_payload_position(
+    value: Any,
+    *,
+    sort_field: str,
+) -> tuple[Any, str]:
+    sort_value, exposure_id = _validate_position(value)
+    if sort_field in _NUMERIC_SORT_FIELDS:
+        if isinstance(sort_value, Decimal):
+            if not sort_value.is_finite():
+                raise _invalid_cursor("Exposure cursor position is invalid")
+            sort_value = _canonical_decimal(sort_value)
+        elif isinstance(sort_value, float) and not isfinite(sort_value) or not isinstance(sort_value, (int, float)):
+            raise _invalid_cursor("Exposure cursor position is invalid")
+    elif not isinstance(sort_value, str):
+        raise _invalid_cursor("Exposure cursor position is invalid")
+    return sort_value, exposure_id
+
+
+def _canonical_decimal(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
+
+def _cursor_query_position(
+    value: Any,
+    *,
+    sort_field: str,
+) -> tuple[Any, str]:
+    sort_value, exposure_id = _validate_position(value)
+    if sort_field in _NUMERIC_SORT_FIELDS:
+        if isinstance(sort_value, str):
+            try:
+                sort_value = Decimal(sort_value)
+            except InvalidOperation as exc:
+                raise _invalid_cursor(
+                    "Exposure cursor position is invalid"
+                ) from exc
+            if not sort_value.is_finite():
+                raise _invalid_cursor("Exposure cursor position is invalid")
+        elif isinstance(sort_value, float) and not isfinite(sort_value) or not isinstance(sort_value, (int, float, Decimal)):
+            raise _invalid_cursor("Exposure cursor position is invalid")
+    elif not isinstance(sort_value, str):
+        raise _invalid_cursor("Exposure cursor position is invalid")
+    return sort_value, exposure_id
 
 
 def _split_cursor(value: str) -> tuple[str, str]:
