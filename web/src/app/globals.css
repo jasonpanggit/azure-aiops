@@ -3254,6 +3254,35 @@ textarea:focus-visible {
   line-height: 1.55;
 }
 
+.exposure-risk-summary-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 18px;
+  align-items: center;
+}
+
+.exposure-risk-summary-body > div:first-child {
+  min-width: 0;
+}
+
+.exposure-risk-summary-body p {
+  max-width: 70ch;
+  margin: 8px 0 0;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.exposure-summary-radar {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+}
+
+.exposure-summary-radar .cvss-radar-chart {
+  width: min(100%, 220px);
+  height: auto;
+}
+
 .exposure-key-facts {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3458,6 +3487,14 @@ textarea:focus-visible {
   .exposure-definition-grid,
   .exposure-technical-list {
     grid-template-columns: 1fr;
+  }
+
+  .exposure-risk-summary-body {
+    grid-template-columns: 1fr;
+  }
+
+  .exposure-summary-radar {
+    order: -1;
   }
 
   .exposure-detail-summary,
