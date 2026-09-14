@@ -84,6 +84,8 @@ class ProvenanceReader:
     ) -> list[dict[str, Any]]:
         self.calls.append((sql, tuple(parameters), max_rows))
         if "[metadata_patch_snapshot]" in sql:
+            if parameters[0] != "tenant-scale":
+                return []
             return [
                 {
                     "subscription_id": "subscription-scale",
@@ -149,7 +151,8 @@ def test_provenance_query_is_scope_bounded_and_returns_redacted_counts() -> None
     barrier_sql, barrier_parameters, barrier_max_rows = reader.calls[0]
     assert "[metadata_patch_snapshot]" in barrier_sql
     assert "[subscription_id] IN (?)" in barrier_sql
-    assert barrier_parameters == ("system", "subscription-scale")
+    assert "[connection_id]" not in barrier_sql
+    assert barrier_parameters == ("tenant-scale", "subscription-scale")
     assert barrier_max_rows == 2
     sql, parameters, max_rows = reader.calls[1]
     assert "[silver_patch_snapshot_findings]" in sql

@@ -5,6 +5,10 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from intelligence.vulnerability.acquisition import (
+    AcquisitionSuccess,
+    PagingProof,
+)
 from onboarding.config import ConnectorConfig
 from onboarding.discovery_source import AzureResourceGraphSource
 from onboarding.ingestion_service import IngestionService, _merge_changes
@@ -49,10 +53,14 @@ def test_end_to_end_mock_ingestion_tracks_incremental_state(tmp_path: Path) -> N
     payload = json.loads(FIXTURE.read_text())
     source = FakeSource(payload)
     config = ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-1",))
-    clock_values = iter([
-        datetime(2026, 8, 17, 1, tzinfo=UTC),
-        datetime(2026, 8, 17, 2, tzinfo=UTC),
-    ])
+    clock_values = iter(
+        [
+            datetime(2026, 8, 17, 1, tzinfo=UTC),
+            datetime(2026, 8, 17, 1, 0, 5, tzinfo=UTC),
+            datetime(2026, 8, 17, 2, tzinfo=UTC),
+            datetime(2026, 8, 17, 2, 0, 5, tzinfo=UTC),
+        ]
+    )
     service = IngestionService(config, source=source, clock=lambda: next(clock_values))
 
     first = service.run()
@@ -76,6 +84,57 @@ def test_end_to_end_mock_ingestion_tracks_incremental_state(tmp_path: Path) -> N
     vm = json.loads((tmp_path / "current/entities/VirtualMachine.jsonl").read_text())
     assert vm["createdTimestamp"] == "2026-08-17T01:00:00Z"
     assert vm["lastObservedTimestamp"] == "2026-08-17T02:00:00Z"
+
+
+def test_partition_freshness_uses_post_acquisition_time(tmp_path: Path) -> None:
+    started = datetime(2026, 9, 14, 8, 37, 40, tzinfo=UTC)
+    acquisition_completed = started + timedelta(seconds=5)
+
+    class TypedSource:
+        def fetch(self, specs, subscription_ids):
+            return {
+                spec.name: AcquisitionSuccess(
+                    connection_id="demo",
+                    query_name=spec.name,
+                    source_family=spec.source_family or spec.name,
+                    scope=tuple(subscription_ids),
+                    attempted_at=started,
+                    completed_at=acquisition_completed,
+                    paging=PagingProof(1, 1000, 1000, 0, True),
+                    watermark="",
+                    sequence=f"{spec.version}:1:0",
+                    rows=(),
+                )
+                for spec in specs
+            }
+
+    clock_values = iter((started, acquisition_completed))
+    service = IngestionService(
+        ConnectorConfig(
+            output_dir=tmp_path,
+            subscriptions=("sub-1",),
+            tenant_id="tenant-1",
+            connection_context={"connection_id": "demo"},
+            cost_management_enabled=False,
+        ),
+        source=TypedSource(),
+        clock=lambda: next(clock_values),
+    )
+
+    service.run()
+
+    statuses = service.store.read_dataset("situations/source_status")
+    aum = [
+        row
+        for row in statuses
+        if str(row.get("source_family") or "").startswith(
+            "azure_update_manager_"
+        )
+    ]
+    assert aum
+    assert {row["freshness"] for row in aum} == {"fresh"}
+    assert all(row["connection_id"] == "demo" for row in aum)
+    assert all(row["last_success_at"] <= row["ingested_at"] for row in aum)
 
 
 def test_ingestion_publishes_cost_management_actuals(tmp_path: Path) -> None:
@@ -152,10 +211,14 @@ def test_incremental_run_preserves_prior_resource_change_history(tmp_path: Path)
 
     source = DeltaSource(payload)
     config = ConnectorConfig(output_dir=tmp_path, subscriptions=("sub-1",))
-    times = iter([
-        datetime(2026, 8, 17, 1, tzinfo=UTC),
-        datetime(2026, 8, 17, 2, tzinfo=UTC),
-    ])
+    times = iter(
+        [
+            datetime(2026, 8, 17, 1, tzinfo=UTC),
+            datetime(2026, 8, 17, 1, 0, 5, tzinfo=UTC),
+            datetime(2026, 8, 17, 2, tzinfo=UTC),
+            datetime(2026, 8, 17, 2, 0, 5, tzinfo=UTC),
+        ]
+    )
     service = IngestionService(config, source=source, clock=lambda: next(times))
 
     service.run()

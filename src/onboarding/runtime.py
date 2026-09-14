@@ -101,6 +101,7 @@ def build_connection_ingestion(
         mcp=None,
         arg=build_connection_arg_client(scoped, connection, resolver),
         tenant_id=connection.tenant_id,
+        connection_id=connection.connection_id,
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
@@ -148,6 +149,7 @@ def build_connection_inventory_pipeline(
         mcp=None,
         arg=build_connection_arg_client(scoped, connection, resolver),
         tenant_id=connection.tenant_id,
+        connection_id=connection.connection_id,
         max_workers=scoped.max_query_workers,
         management_group_ids=(),
     )
