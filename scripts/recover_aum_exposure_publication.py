@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -21,12 +22,39 @@ from typing import Any, NamedTuple, Protocol
 
 ACTIVE_EXECUTION_STATUSES = frozenset({"pending", "processing", "running", "starting"})
 TERMINAL_EXECUTION_STATUSES = frozenset({"cancelled", "failed", "stopped", "succeeded"})
-ALLOWED_UPDATE_PATHS = frozenset(
+BASELINE_WORKLOAD_PROFILE = "Consumption"
+BASELINE_CPU = 4.0
+BASELINE_MEMORY = "8Gi"
+BASELINE_TIMEOUT = 7_200
+DEDICATED_WORKLOAD_PROFILE = "publication-e8"
+DEDICATED_CPU = 8.0
+DEDICATED_MEMORY = "64Gi"
+DEDICATED_TIMEOUT = 14_400
+SUPPORTED_TARGET_CONFIGURATIONS = frozenset(
     {
-        "configuration.replicaTimeout",
-        "template.containers[0].image",
+        (
+            BASELINE_WORKLOAD_PROFILE,
+            BASELINE_CPU,
+            BASELINE_MEMORY,
+            BASELINE_TIMEOUT,
+        ),
+        (
+            DEDICATED_WORKLOAD_PROFILE,
+            DEDICATED_CPU,
+            DEDICATED_MEMORY,
+            DEDICATED_TIMEOUT,
+        ),
     }
 )
+MUTABLE_UPDATE_PATHS = {
+    "workload_profile": "workloadProfileName",
+    "cpu": "template.containers[0].resources.cpu",
+    "memory": "template.containers[0].resources.memory",
+    "timeout": "configuration.replicaTimeout",
+    "image": "template.containers[0].image",
+}
+WORKLOAD_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,31}$")
+MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*Gi$")
 EXPECTED_COMMAND = (
     "python",
     "-m",
@@ -48,14 +76,21 @@ class RecoveryOptions(NamedTuple):
     """Governed temporary values and expected persistent Job baseline."""
 
     image: str
-    target_timeout: int = 7_200
-    target_memory: str = "8Gi"
+    target_workload_profile: str = BASELINE_WORKLOAD_PROFILE
+    target_cpu: float = BASELINE_CPU
+    target_timeout: int = BASELINE_TIMEOUT
+    target_memory: str = BASELINE_MEMORY
+    expected_base_workload_profile: str = BASELINE_WORKLOAD_PROFILE
     expected_base_timeout: int = 3_600
-    expected_base_memory: str = "8Gi"
-    expected_cpu: float = 4.0
+    expected_base_memory: str = BASELINE_MEMORY
+    expected_cpu: float = BASELINE_CPU
     expected_connection_id: str = "demo"
     poll_seconds: int = 30
     max_wait_seconds: int = 8_100
+    status_retry_attempts: int = 5
+    status_retry_initial_seconds: int = 1
+    status_retry_max_seconds: int = 30
+    stop_wait_seconds: int = 300
 
 
 class AzureJobClient(Protocol):
@@ -63,11 +98,21 @@ class AzureJobClient(Protocol):
 
     def list_executions(self) -> list[dict[str, Any]]: ...
 
-    def update_job(self, *, image: str, timeout: int, memory: str) -> None: ...
+    def update_job(
+        self,
+        *,
+        workload_profile: str,
+        cpu: float,
+        image: str,
+        timeout: int,
+        memory: str,
+    ) -> None: ...
 
     def start_job(self) -> str: ...
 
     def show_execution(self, execution_name: str) -> dict[str, Any]: ...
+
+    def stop_execution(self, execution_name: str) -> None: ...
 
 
 class FacetClient(Protocol):
@@ -76,6 +121,13 @@ class FacetClient(Protocol):
         *,
         target_kind: str,
         source_family: str,
+    ) -> dict[str, Any]: ...
+
+    def read_provenance(
+        self,
+        *,
+        generation: str,
+        expected_connection_id: str,
     ) -> dict[str, Any]: ...
 
 
@@ -107,11 +159,40 @@ def normalize_job_config(job: Mapping[str, Any]) -> dict[str, Any]:
     properties = job.get("properties")
     if not isinstance(properties, Mapping):
         raise RecoveryError("Job response has no properties")
+    configuration = properties.get("configuration")
+    template = properties.get("template")
+    if not isinstance(configuration, Mapping) or not isinstance(template, Mapping):
+        raise RecoveryError("Job response has an invalid configuration or template")
+    containers = template.get("containers")
+    if not isinstance(containers, list):
+        raise RecoveryError("Job response has invalid containers")
     normalized = {
-        "configuration": deepcopy(properties.get("configuration") or {}),
+        "configuration": {
+            "triggerType": configuration.get("triggerType"),
+            "replicaTimeout": configuration.get("replicaTimeout"),
+            "replicaRetryLimit": configuration.get("replicaRetryLimit"),
+            "manualTriggerConfig": deepcopy(
+                configuration.get("manualTriggerConfig") or {}
+            ),
+            "registries": deepcopy(configuration.get("registries") or []),
+        },
         "environmentId": properties.get("environmentId"),
         "identity": deepcopy(job.get("identity") or {}),
-        "template": deepcopy(properties.get("template") or {}),
+        "template": {
+            "containers": [
+                {
+                    "name": container.get("name"),
+                    "image": container.get("image"),
+                    "command": deepcopy(container.get("command") or []),
+                    "args": deepcopy(container.get("args") or []),
+                    "resources": deepcopy(container.get("resources") or {}),
+                    "env": deepcopy(container.get("env") or []),
+                }
+                if isinstance(container, Mapping)
+                else container
+                for container in containers
+            ]
+        },
         "workloadProfileName": properties.get("workloadProfileName"),
     }
     sanitized = _sanitize(normalized)
@@ -179,6 +260,10 @@ def validate_preflight(config: Mapping[str, Any], options: RecoveryOptions) -> N
         raise RecoveryError("publication Job must use fresh activation, not replay")
     if not isinstance(resources, Mapping):
         raise RecoveryError("publication Job resources are invalid")
+    if config.get("workloadProfileName") != options.expected_base_workload_profile:
+        raise RecoveryError(
+            "publication Job workload profile does not match the governed baseline"
+        )
     if float(resources.get("cpu") or 0) != options.expected_cpu:
         raise RecoveryError("publication Job CPU does not match the governed baseline")
     if resources.get("memory") != options.expected_base_memory:
@@ -189,14 +274,71 @@ def validate_preflight(config: Mapping[str, Any], options: RecoveryOptions) -> N
         raise RecoveryError("recovery image must be an explicit immutable tag or digest")
     if container.get("image") == options.image:
         raise RecoveryError("recovery image must differ from the persistent baseline")
-    if options.target_memory != options.expected_base_memory:
-        raise RecoveryError("fresh recovery must preserve the governed memory baseline")
-    if options.target_timeout != 7_200:
-        raise RecoveryError("first fresh recovery requires the governed 7200s timeout")
+    if not WORKLOAD_PROFILE_PATTERN.fullmatch(options.target_workload_profile):
+        raise RecoveryError("target workload profile format is invalid")
+    if not MEMORY_PATTERN.fullmatch(options.target_memory):
+        raise RecoveryError("target memory must use a whole-number Gi format")
+    target_configuration = (
+        options.target_workload_profile,
+        float(options.target_cpu),
+        options.target_memory,
+        options.target_timeout,
+    )
+    if target_configuration not in SUPPORTED_TARGET_CONFIGURATIONS:
+        raise RecoveryError(
+            "target resources must exactly match the reviewed Consumption or "
+            "publication-e8 configuration"
+        )
+    if (
+        options.target_cpu > BASELINE_CPU
+        or options.target_memory != BASELINE_MEMORY
+        or options.target_timeout > BASELINE_TIMEOUT
+    ) and options.target_workload_profile == BASELINE_WORKLOAD_PROFILE:
+        raise RecoveryError(
+            "resources above the Consumption baseline require an explicit "
+            "dedicated workload profile"
+        )
     if options.poll_seconds < 1 or options.max_wait_seconds <= options.target_timeout:
         raise RecoveryError("recovery polling bounds are invalid")
+    if (
+        options.status_retry_attempts < 1
+        or options.status_retry_initial_seconds < 1
+        or options.status_retry_max_seconds < options.status_retry_initial_seconds
+        or options.stop_wait_seconds < options.poll_seconds
+    ):
+        raise RecoveryError("execution polling retry bounds are invalid")
     if "/aiops-api:" not in options.image and "/aiops-api@sha256:" not in options.image:
         raise RecoveryError("recovery image must target the aiops-api repository")
+
+
+def _expected_update_paths(
+    original: Mapping[str, Any],
+    options: RecoveryOptions,
+) -> set[str]:
+    container = _container(original)
+    resources = container.get("resources")
+    configuration = _configuration(original)
+    if not isinstance(resources, Mapping):
+        raise RecoveryError("publication Job resources are invalid")
+    requested = {
+        "workload_profile": options.target_workload_profile,
+        "cpu": options.target_cpu,
+        "memory": options.target_memory,
+        "timeout": options.target_timeout,
+        "image": options.image,
+    }
+    current = {
+        "workload_profile": original.get("workloadProfileName"),
+        "cpu": float(resources.get("cpu") or 0),
+        "memory": resources.get("memory"),
+        "timeout": configuration.get("replicaTimeout"),
+        "image": container.get("image"),
+    }
+    return {
+        MUTABLE_UPDATE_PATHS[name]
+        for name, value in requested.items()
+        if current[name] != value
+    }
 
 
 def _execution_status(execution: Mapping[str, Any]) -> str:
@@ -234,10 +376,12 @@ def _contains_unavailable(value: object) -> bool:
 def validate_facet_payloads(
     server_payload: Mapping[str, Any],
     container_payload: Mapping[str, Any],
+    provenance_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Require non-empty AUM/server and Defender/container facets in one generation."""
+    """Require one healthy generation and exact active AUM fact provenance."""
     server = _data(server_payload)
     container = _data(container_payload)
+    provenance = _data(provenance_payload)
     server_count = int(server.get("total_count") or 0)
     container_count = int(container.get("total_count") or 0)
     if server_count < 1:
@@ -252,13 +396,54 @@ def validate_facet_payloads(
         raise RecoveryError("Exposure validation returned an invalid generation")
     if server_generation != container_generation:
         raise RecoveryError("Exposure facets resolved different generations")
+    if str(provenance.get("generation") or "") != server_generation:
+        raise RecoveryError("Exposure provenance resolved a different generation")
+    active_fact_count = int(provenance.get("active_fact_count") or 0)
+    expected_connection_fact_count = int(
+        provenance.get("expected_connection_fact_count") or 0
+    )
+    legacy_connection_fact_count = int(
+        provenance.get("legacy_connection_fact_count") or 0
+    )
+    unexpected_connection_fact_count = int(
+        provenance.get("unexpected_connection_fact_count") or 0
+    )
+    if active_fact_count < 1:
+        raise RecoveryError("active server/AUM provenance evidence is empty")
+    if legacy_connection_fact_count:
+        raise RecoveryError("active server/AUM facts include legacy connection provenance")
+    if unexpected_connection_fact_count:
+        raise RecoveryError(
+            "active server/AUM facts include unexpected connection provenance"
+        )
+    if expected_connection_fact_count != active_fact_count:
+        raise RecoveryError(
+            "active server/AUM facts do not all belong to the expected connection"
+        )
     return {
         "generation": server_generation,
         "facet_counts": {
             "server_aum": server_count,
             "container_defender": container_count,
         },
+        "provenance": {
+            "active_server_aum_facts": active_fact_count,
+            "expected_connection_facts": expected_connection_fact_count,
+            "legacy_connection_facts": legacy_connection_fact_count,
+            "unexpected_connection_facts": unexpected_connection_fact_count,
+        },
     }
+
+
+def _require_no_non_terminal_executions(azure: AzureJobClient) -> None:
+    non_terminal = [
+        execution
+        for execution in azure.list_executions()
+        if _execution_status(execution).casefold()
+        not in TERMINAL_EXECUTION_STATUSES
+    ]
+    if non_terminal:
+        raise RecoveryError("publication Job has an active or unknown execution")
 
 
 def _restore(
@@ -266,12 +451,15 @@ def _restore(
     original: Mapping[str, Any],
     evidence_dir: Path,
 ) -> None:
+    _require_no_non_terminal_executions(azure)
     container = _container(original)
     resources = container.get("resources")
     configuration = _configuration(original)
     if not isinstance(resources, Mapping):
         raise RecoveryError("snapshot resources are invalid")
     azure.update_job(
+        workload_profile=str(original.get("workloadProfileName") or ""),
+        cpu=float(resources.get("cpu") or 0),
         image=str(container.get("image") or ""),
         timeout=int(configuration.get("replicaTimeout") or 0),
         memory=str(resources.get("memory") or ""),
@@ -280,6 +468,84 @@ def _restore(
     _write_json(evidence_dir / "restored.json", restored)
     if restored != original:
         raise RecoveryError("persistent Job restoration did not match the snapshot")
+
+
+def _show_execution_with_retry(
+    azure: AzureJobClient,
+    execution_name: str,
+    options: RecoveryOptions,
+    *,
+    sleep: Callable[[float], None],
+) -> dict[str, Any]:
+    delay = options.status_retry_initial_seconds
+    for attempt in range(options.status_retry_attempts):
+        try:
+            return azure.show_execution(execution_name)
+        except RecoveryError as exc:
+            if attempt + 1 >= options.status_retry_attempts:
+                raise RecoveryError(
+                    "Azure CLI execution status remained unavailable after "
+                    "bounded retries"
+                ) from exc
+            sleep(delay)
+            delay = min(delay * 2, options.status_retry_max_seconds)
+    raise AssertionError("unreachable")
+
+
+def _wait_for_terminal(
+    azure: AzureJobClient,
+    execution_name: str,
+    options: RecoveryOptions,
+    *,
+    deadline: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    timeout_message: str,
+) -> str:
+    while True:
+        execution = _show_execution_with_retry(
+            azure,
+            execution_name,
+            options,
+            sleep=sleep,
+        )
+        status = _execution_status(execution)
+        if status.casefold() in TERMINAL_EXECUTION_STATUSES:
+            return status
+        if clock() >= deadline:
+            raise RecoveryError(timeout_message)
+        sleep(options.poll_seconds)
+
+
+def _stop_and_confirm_terminal(
+    azure: AzureJobClient,
+    execution_name: str,
+    options: RecoveryOptions,
+    *,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> str:
+    try:
+        azure.stop_execution(execution_name)
+        return _wait_for_terminal(
+            azure,
+            execution_name,
+            options,
+            deadline=clock() + options.stop_wait_seconds,
+            sleep=sleep,
+            clock=clock,
+            timeout_message=(
+                "stopped publication could not be confirmed terminal; "
+                "the Job snapshot was not restored"
+            ),
+        )
+    except RecoveryError as exc:
+        if "not restored" in str(exc):
+            raise
+        raise RecoveryError(
+            "publication could not be stopped and confirmed terminal; "
+            "the Job snapshot was not restored"
+        ) from exc
 
 
 def run_recovery(
@@ -294,21 +560,18 @@ def run_recovery(
     """Execute the guarded mutation, one start, restoration, and facet checks."""
     original = normalize_job_config(azure.show_job())
     validate_preflight(original, options)
-    non_terminal = [
-        execution
-        for execution in azure.list_executions()
-        if _execution_status(execution).casefold()
-        not in TERMINAL_EXECUTION_STATUSES
-    ]
-    if non_terminal:
-        raise RecoveryError("publication Job has an active or unknown execution")
+    _require_no_non_terminal_executions(azure)
     _write_json(evidence_dir / "pre-update.json", original)
 
     mutation_attempted = False
+    start_attempted = False
+    terminal_confirmed = False
     execution_name = ""
     try:
         mutation_attempted = True
         azure.update_job(
+            workload_profile=options.target_workload_profile,
+            cpu=options.target_cpu,
             image=options.image,
             timeout=options.target_timeout,
             memory=options.target_memory,
@@ -316,34 +579,54 @@ def run_recovery(
         updated = normalize_job_config(azure.show_job())
         _write_json(evidence_dir / "post-update.json", updated)
         changed = _changed_paths(original, updated)
-        if changed != ALLOWED_UPDATE_PATHS:
+        if changed != _expected_update_paths(original, options):
             raise RecoveryError("unexpected Job configuration drift after update")
         container = _container(updated)
         resources = container.get("resources")
         configuration = _configuration(updated)
         if not isinstance(resources, Mapping) or (
-            container.get("image") != options.image
+            updated.get("workloadProfileName") != options.target_workload_profile
+            or float(resources.get("cpu") or 0) != options.target_cpu
+            or container.get("image") != options.image
             or resources.get("memory") != options.target_memory
             or configuration.get("replicaTimeout") != options.target_timeout
         ):
             raise RecoveryError("Job update did not apply the governed target values")
 
+        start_attempted = True
         execution_name = azure.start_job()
         if not execution_name:
-            raise RecoveryError("Job start returned no execution identity")
-        deadline = clock() + options.max_wait_seconds
-        while True:
-            status = _execution_status(azure.show_execution(execution_name))
-            normalized_status = status.casefold()
-            if normalized_status in TERMINAL_EXECUTION_STATUSES:
-                if normalized_status != "succeeded":
-                    raise RecoveryError(f"publication reached terminal status {status}")
-                break
-            if clock() >= deadline:
-                raise RecoveryError("publication did not reach a terminal status in time")
-            sleep(options.poll_seconds)
+            raise RecoveryError(
+                "Job start returned no execution identity; the Job snapshot was "
+                "not restored because execution state is unknown"
+            )
+        try:
+            status = _wait_for_terminal(
+                azure,
+                execution_name,
+                options,
+                deadline=clock() + options.max_wait_seconds,
+                sleep=sleep,
+                clock=clock,
+                timeout_message=(
+                    "publication did not reach a terminal status in time"
+                ),
+            )
+            terminal_confirmed = True
+        except BaseException:
+            status = _stop_and_confirm_terminal(
+                azure,
+                execution_name,
+                options,
+                sleep=sleep,
+                clock=clock,
+            )
+            terminal_confirmed = True
+            raise
+        if status.casefold() != "succeeded":
+            raise RecoveryError(f"publication reached terminal status {status}")
     finally:
-        if mutation_attempted:
+        if mutation_attempted and (not start_attempted or terminal_confirmed):
             _restore(azure, original, evidence_dir)
 
     server = facets.read_overview(target_kind="server", source_family="aum")
@@ -351,7 +634,12 @@ def run_recovery(
         target_kind="container_image",
         source_family="defender_image",
     )
-    validation = validate_facet_payloads(server, container)
+    server_generation = str(_data(server).get("generation") or "")
+    provenance = facets.read_provenance(
+        generation=server_generation,
+        expected_connection_id=options.expected_connection_id,
+    )
+    validation = validate_facet_payloads(server, container, provenance)
     result = {
         "status": "succeeded",
         "execution_name": execution_name,
@@ -363,7 +651,7 @@ def run_recovery(
 
 
 class AzCliJobClient:
-    """Invoke only the five Azure CLI operations permitted by this workflow."""
+    """Invoke only the guarded Azure CLI operations permitted by this workflow."""
 
     def __init__(self, *, subscription: str, resource_group: str, job_name: str) -> None:
         self._scope = [
@@ -410,7 +698,15 @@ class AzCliJobClient:
             raise RecoveryError("Azure CLI returned an invalid execution list")
         return [item for item in value if isinstance(item, dict)]
 
-    def update_job(self, *, image: str, timeout: int, memory: str) -> None:
+    def update_job(
+        self,
+        *,
+        workload_profile: str,
+        cpu: float,
+        image: str,
+        timeout: int,
+        memory: str,
+    ) -> None:
         subscription = self._scope[1]
         resource_group = self._scope[3]
         resource_id = (
@@ -427,8 +723,10 @@ class AzCliJobClient:
                 "--api-version",
                 "2024-03-01",
                 "--set",
+                f"properties.workloadProfileName={workload_profile}",
                 f"properties.template.containers[0].image={image}",
                 f"properties.configuration.replicaTimeout={timeout}",
+                f"properties.template.containers[0].resources.cpu={cpu:g}",
                 f"properties.template.containers[0].resources.memory={memory}",
             ]
         )
@@ -458,6 +756,20 @@ class AzCliJobClient:
         if not isinstance(value, dict):
             raise RecoveryError("Azure CLI returned an invalid execution")
         return value
+
+    def stop_execution(self, execution_name: str) -> None:
+        self._json(
+            [
+                "containerapp",
+                "job",
+                "stop",
+                "--name",
+                self._job_name,
+                *self._scope,
+                "--job-execution-name",
+                execution_name,
+            ]
+        )
 
 
 class ExposureApiFacetClient:
@@ -496,6 +808,38 @@ class ExposureApiFacetClient:
             raise RecoveryError("Exposure API returned an invalid response")
         return value
 
+    def read_provenance(
+        self,
+        *,
+        generation: str,
+        expected_connection_id: str,
+    ) -> dict[str, Any]:
+        token = os.environ.get(self._token_env, "").strip()
+        if not token:
+            raise RecoveryError("Exposure API token environment variable is empty")
+        query = urllib.parse.urlencode(
+            {
+                "subscription": self._subscription_scope,
+                "generation": generation,
+                "connection_id": expected_connection_id,
+            }
+        )
+        request = urllib.request.Request(
+            (
+                f"{self._base_url}/api/v1/vulnerabilities/exposure/"
+                f"provenance-evidence?{query}"
+            ),
+            headers={"Authorization": "Bearer " + token},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                value = json.loads(response.read())
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RecoveryError("Exposure API validation failed") from exc
+        if not isinstance(value, dict):
+            raise RecoveryError("Exposure API returned an invalid response")
+        return value
+
 
 def restore_snapshot(azure: AzureJobClient, snapshot: Path, evidence_dir: Path) -> None:
     value = json.loads(snapshot.read_text(encoding="utf-8"))
@@ -510,6 +854,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--resource-group", default="aiops-dev-rg")
     parser.add_argument("--job-name", default="aiops-dev-exposure-publication")
     parser.add_argument("--image", default="")
+    parser.add_argument(
+        "--target-workload-profile",
+        default=BASELINE_WORKLOAD_PROFILE,
+    )
+    parser.add_argument("--target-cpu", type=float, default=BASELINE_CPU)
+    parser.add_argument("--target-memory", default=BASELINE_MEMORY)
+    parser.add_argument("--target-timeout", type=int, default=BASELINE_TIMEOUT)
     parser.add_argument("--api-base-url", default="")
     parser.add_argument("--subscription-scope", default="")
     parser.add_argument("--token-env", default="AIOPS_API_TOKEN")
@@ -540,7 +891,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RecoveryError(
             "image, api-base-url, and subscription-scope are required for recovery"
         )
-    options = RecoveryOptions(image=args.image)
+    options = RecoveryOptions(
+        image=args.image,
+        target_workload_profile=args.target_workload_profile,
+        target_cpu=args.target_cpu,
+        target_memory=args.target_memory,
+        target_timeout=args.target_timeout,
+        max_wait_seconds=args.target_timeout + 900,
+    )
     facets = ExposureApiFacetClient(
         base_url=args.api_base_url,
         subscription_scope=args.subscription_scope,

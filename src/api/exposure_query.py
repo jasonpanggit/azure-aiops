@@ -397,6 +397,29 @@ class ExposureAuthorization:
 
 
 @dataclass(frozen=True, slots=True)
+class ExposureProvenanceEvidence:
+    """Aggregate active-fact provenance without exposing scoped identifiers."""
+
+    generation: str
+    active_fact_count: int
+    expected_connection_fact_count: int
+    legacy_connection_fact_count: int
+    unexpected_connection_fact_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the redacted API evidence payload."""
+        return {
+            "generation": self.generation,
+            "active_fact_count": self.active_fact_count,
+            "expected_connection_fact_count": self.expected_connection_fact_count,
+            "legacy_connection_fact_count": self.legacy_connection_fact_count,
+            "unexpected_connection_fact_count": (
+                self.unexpected_connection_fact_count
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ExposureFilter:
     field: str
     operator: str
@@ -723,6 +746,133 @@ class ExposureQueryService:
                     "Exposure authorization does not match the effective scope"
                 )
         return authorization
+
+    def active_provenance_evidence(
+        self,
+        authorization: ExposureAuthorization,
+        *,
+        generation_id: str,
+        expected_connection_id: str,
+    ) -> ExposureProvenanceEvidence:
+        """Count active server/AUM facts by redacted connection provenance."""
+        if self._reader is None:
+            raise ExposureQueryUnavailableError(
+                "Fabric SQL Exposure reader is unavailable; Delta fallback is disabled"
+            )
+        expected_connection = _required_text(
+            expected_connection_id,
+            "expected_connection_id",
+        ).casefold()
+        if expected_connection not in authorization.connection_ids:
+            raise PermissionError(
+                "Expected Exposure connection is outside authorization"
+            )
+        scoped_connections = authorization.scope.get(
+            "subscription_connection",
+            (),
+        )
+        if scoped_connections and expected_connection not in scoped_connections:
+            raise PermissionError(
+                "Expected Exposure connection is outside the effective scope"
+            )
+        generation = _required_text(
+            generation_id,
+            "read_model_generation_id",
+        )
+        if generation.startswith(SILVER_PATCH_GENERATION_PREFIX):
+            raise ValueError("Exposure provenance evidence requires a Gold generation")
+        window = (
+            self._generation_window()
+            if callable(self._generation_window)
+            else self._generation_window
+        )
+        if window is not None:
+            if not isinstance(window, ExposureGenerationWindow):
+                raise TypeError(
+                    "Exposure generation_window must return ExposureGenerationWindow"
+                )
+            generation = window.require_readable(
+                generation,
+                now=datetime.now(UTC),
+            )
+        schema = getattr(
+            getattr(self._reader, "endpoint", None),
+            "schema",
+            "dbo",
+        )
+        table = f"{_identifier(schema)}.{_identifier(EXPOSURE_FACTS_TABLE)}"
+        predicates = [
+            "[tenant_id] = ?",
+            "[read_model_generation_id] = ?",
+            "[target_kind] = ?",
+            "[source_family] = ?",
+            "[active] = ?",
+        ]
+        parameters: list[Any] = [
+            authorization.tenant_id,
+            generation,
+            "server",
+            "aum",
+            True,
+        ]
+        subscriptions = tuple(authorization.scope.get("subscription", ()))
+        mapped_subscription = authorization.connection_subscriptions.get(
+            expected_connection
+        )
+        if mapped_subscription:
+            subscriptions = (mapped_subscription,)
+        if subscriptions:
+            _append_in_predicate(
+                predicates,
+                parameters,
+                "[subscription_id]",
+                subscriptions,
+            )
+        if authorization.scope_keys:
+            _append_in_predicate(
+                predicates,
+                parameters,
+                "[scope_key]",
+                authorization.scope_keys,
+            )
+        if not subscriptions and not authorization.scope_keys:
+            raise PermissionError(
+                "Exposure provenance evidence requires a bounded effective scope"
+            )
+        sql = (
+            "SELECT "
+            "COUNT_BIG(DISTINCT [fact_id]) AS [active_fact_count], "
+            "COUNT_BIG(DISTINCT CASE WHEN LOWER([connection_id]) = ? "
+            "THEN [fact_id] END) AS [expected_connection_fact_count], "
+            "COUNT_BIG(DISTINCT CASE WHEN LOWER([connection_id]) LIKE 'legacy:%' "
+            "THEN [fact_id] END) AS [legacy_connection_fact_count], "
+            "COUNT_BIG(DISTINCT CASE WHEN "
+            "LOWER(COALESCE([connection_id], '')) <> ? "
+            "THEN [fact_id] END) AS [unexpected_connection_fact_count] "
+            f"FROM {table} WHERE {' AND '.join(predicates)}"
+        )
+        rows = self._reader.query(
+            sql,
+            (expected_connection, expected_connection, *parameters),
+            max_rows=1,
+        )
+        row = rows[0] if rows else {}
+        return ExposureProvenanceEvidence(
+            generation=generation,
+            active_fact_count=max(0, int(row.get("active_fact_count") or 0)),
+            expected_connection_fact_count=max(
+                0,
+                int(row.get("expected_connection_fact_count") or 0),
+            ),
+            legacy_connection_fact_count=max(
+                0,
+                int(row.get("legacy_connection_fact_count") or 0),
+            ),
+            unexpected_connection_fact_count=max(
+                0,
+                int(row.get("unexpected_connection_fact_count") or 0),
+            ),
+        )
 
     def reconcile_shadow_page(
         self,
