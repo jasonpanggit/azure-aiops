@@ -235,6 +235,52 @@ Plans:
 - [ ] 03.7-10-PLAN.md — Apply alias dispositions and prove retired aliases receive no writes
 - [ ] 03.7-11-PLAN.md — Qualify the immutable deployed baseline in the same environment and generate complete cutover/scale/rollback evidence
 - [ ] 03.7-12-PLAN.md — Capture the immutable same-environment deployed pre-change publication baseline
+
+**UI hint:** no
+
+### Phase 03.8: Native Fabric IQ Adoption (INSERTED)
+
+**Goal:** Convert the existing Fabric IQ-ready ontology, Data Agent items, and governed specialist tools into measured native Fabric IQ consumption for topology/blast-radius and policy context, while preserving inventory authority and deterministic fallback.
+**Requirements:** FIQ-01, FIQ-02, FIQ-03, FIQ-04
+**Depends on:** Phase 03.7, Phase 11, Phase 13
+**Success Criteria** (what must be TRUE):
+
+  1. The governed Fabric IQ adapter invokes the native Fabric IQ traversal surface and reports native provenance; the OneLake ontology projection remains an explicit fallback rather than being mislabeled.
+  2. Topology/blast-radius and policy-context tools enforce server-derived scope, bounded results, freshness, citations, timeouts, and `identity_authority=false`.
+  3. Gold/Data Agent grounding uses managed authorization and curated Gold contracts, with no static delegated token committed or exposed to telemetry.
+  4. A default-off → shadow → canary rollout demonstrates measurable native call rate, latency, citation validity, fallback rate, and answer-quality lift against the deterministic baseline, with kill-switch rollback.
+
+**Plans:** 26 plans
+
+Plans:
+
+- [ ] 03.8-01-PLAN.md — Enforce unqualified dependency passes and create the red native tracer
+- [ ] 03.8-15-PLAN.md — Complete split Wave 0 security, MCP, fallback, rollout, and unlabeled evaluation contracts
+- [ ] 03.8-02-PLAN.md — Select exact OBO production ownership and approve the curated Data Agent contract
+- [ ] 03.8-16-PLAN.md — Approve native/Data Agent/network/region readiness and the exact cloud change set
+- [ ] 03.8-03-PLAN.md — Deploy the approved default-off toolbox/connection and capture immutable native-shape proof
+- [ ] 03.8-04-PLAN.md — Approve live payload sufficiency, independent observability, and native provenance schema
+- [ ] 03.8-05-PLAN.md — Trace one inventory-resolved topology seed through true native Fabric IQ
+- [ ] 03.8-07-PLAN.md — Implement managed-identity Data Agent MCP lifecycle and reject legacy token contracts
+- [ ] 03.8-06-PLAN.md — Complete atomic admission and narrow relationship/policy native activation
+- [ ] 03.8-09-PLAN.md — Create rollout guards, real-operation telemetry, kill switch, and alerts
+- [ ] 03.8-08-PLAN.md — Wire orchestration through rollout/telemetry with deterministic fallback and durable display gating
+- [ ] 03.8-10-PLAN.md — Build 88 unlabeled paired cases and the immutable four-arm evaluator
+- [ ] 03.8-17-PLAN.md — Collect signed 20-case expert, 88-case two-reviewer/adjudication, and judge-calibration evidence
+- [ ] 03.8-11-PLAN.md — Pass off-state release gates and deploy/start Shadow 01
+- [ ] 03.8-18-PLAN.md — Wait externally for the real Shadow 01 evidence interval
+- [ ] 03.8-19-PLAN.md — Resume and seal the immutable Shadow 01 final report
+- [ ] 03.8-12-PLAN.md — Approve current regional/capacity cost and signed Canary 1 authorization
+- [ ] 03.8-13-PLAN.md — Deploy/start bounded Canary 1
+- [ ] 03.8-20-PLAN.md — Wait externally for the real Canary 1 evidence interval
+- [ ] 03.8-21-PLAN.md — Resume and seal the immutable Canary 1 final report
+- [ ] 03.8-22-PLAN.md — Sign Canary 1 exit review and separately authorize Canary 2
+- [ ] 03.8-23-PLAN.md — Deploy/start bounded Canary 2
+- [ ] 03.8-24-PLAN.md — Wait externally for the real Canary 2 evidence interval
+- [ ] 03.8-25-PLAN.md — Rerun all 88 paired cases and seal the immutable Canary 2 final report
+- [ ] 03.8-26-PLAN.md — Execute kill/rollback and prove two-window zero provider/display calls
+- [ ] 03.8-14-PLAN.md — Replay final evidence and sign the authoritative HOLD/off decision
+
 **UI hint:** no
 
 ### Phase 4: Domain Coverage and Operational Twin
