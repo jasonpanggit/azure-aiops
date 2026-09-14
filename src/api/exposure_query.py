@@ -1115,8 +1115,6 @@ class ExposureQueryService:
             membership_parameters,
             max_rows=1,
         )
-        if not membership:
-            return None
         parameters.extend((identifier, identifier))
         public_columns = (
             "source",
@@ -1158,10 +1156,14 @@ class ExposureQueryService:
             "WHERE [evidence_rank] = 1 "
             "ORDER BY [source] ASC, [identifier] ASC, [enriched_at] DESC"
         )
-        rows = self._reader.query(
-            sql,
-            tuple(parameters),
-            max_rows=limit,
+        rows = (
+            self._reader.query(
+                sql,
+                tuple(parameters),
+                max_rows=limit,
+            )
+            if membership
+            else []
         )
         if len(rows) > MAX_EXTERNAL_CATALOG_EVIDENCE_ROWS:
             raise ExposureQueryUnavailableError(

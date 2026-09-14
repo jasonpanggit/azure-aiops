@@ -982,15 +982,24 @@ def test_external_catalog_refreshes_live_records_after_authorized_membership() -
     assert result["item"]["sources"]["kev"]["status"] == "succeeded"
 
 
-def test_external_catalog_does_not_refresh_without_authorized_membership() -> None:
+def test_external_catalog_refreshes_public_metadata_without_membership() -> None:
     reader = CatalogReader()
     reader.query = lambda *_args, **_kwargs: []
     refreshed: list[str] = []
 
     result = ExposureQueryService(
         reader,
-        catalog_records_refresher=lambda identifier: refreshed.append(
-            identifier
+        catalog_records_refresher=lambda identifier: (
+            refreshed.append(identifier)
+            or (
+                {
+                    "source": "nvd",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {"description": "Public NVD detail"},
+                },
+            )
         ),
     ).catalog_item(
         _authorization(),
@@ -998,8 +1007,11 @@ def test_external_catalog_does_not_refresh_without_authorized_membership() -> No
         weakness_id="CVE-2026-0001",
     )
 
-    assert result is None
-    assert refreshed == []
+    assert refreshed == ["CVE-2026-0001"]
+    assert result is not None
+    assert result["item"]["sources"]["nvd"]["payload"]["description"] == (
+        "Public NVD detail"
+    )
 
 
 def test_external_catalog_enforces_one_bound_after_merging_sources() -> None:

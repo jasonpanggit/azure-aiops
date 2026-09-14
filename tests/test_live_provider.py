@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from onboarding.query_catalog import QuerySpec
-from semantic.live_operations import live_incident_engine, live_vulnerability_service
+from semantic.live_operations import (
+    collect_live_patch_snapshot,
+    live_incident_engine,
+    live_vulnerability_service,
+)
 from semantic.live_provider import LiveResourceProvider
 
 
@@ -112,7 +116,19 @@ def test_live_vulnerability_service_uses_request_time_patch_rows():
         return "service"
 
     service = live_vulnerability_service(
-        provider, subscription_ids=["sub-1"], build_service=build_service
+        provider,
+        subscription_ids=["sub-1"],
+        software_rows=[
+            {
+                "_ResourceId": (
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.Compute/virtualMachines/vm"
+                ),
+                "SoftwareName": "openssl",
+                "CurrentVersion": "3.0.1",
+            }
+        ],
+        build_service=build_service,
     )
 
     assert service == "service"
@@ -123,7 +139,66 @@ def test_live_vulnerability_service_uses_request_time_patch_rows():
     assert captured["tables"][0]["silver_patch_findings"][0]["kb_id"] == "5001"
     assert captured["tables"][0]["silver_patch_findings"][0]["status"] == "missing"
     assert captured["tables"][0]["silver_patch_findings"][0]["subscription_id"] == "sub-1"
+    assert captured["tables"][0]["silver_patch_findings"][0][
+        "software_observations"
+    ] == ["openssl 3.0.1"]
     assert captured["freshness"]
+
+
+def test_live_vulnerability_service_reuses_durable_snapshot_without_arg() -> None:
+    class NoQueryProvider:
+        def query(self, *_args, **_kwargs):
+            raise AssertionError("ARG must not run for a supplied snapshot")
+
+    captured = {}
+    snapshot = {
+        "schema_version": "1.0.0",
+        "subscription_ids": ["sub-1"],
+        "observed_at": "2026-09-14T00:00:00Z",
+        "findings": [
+            {
+                "finding_id": "finding-1",
+                "target_resource_id": "/subscriptions/sub-1/vm",
+                "kb_id": "5001",
+                "status": "missing",
+                "software_observations": ["openssl 3.0.1"],
+            }
+        ],
+    }
+
+    result = live_vulnerability_service(
+        NoQueryProvider(),
+        subscription_ids=["sub-1"],
+        snapshot=snapshot,
+        build_service=lambda tables, freshness, **_kwargs: captured.update(
+            tables=tables,
+            freshness=freshness,
+        )
+        or "cached-service",
+    )
+
+    assert result == "cached-service"
+    assert captured["freshness"] == "2026-09-14T00:00:00Z"
+    assert captured["tables"][0]["silver_patch_findings"] == snapshot["findings"]
+
+
+def test_collect_live_patch_snapshot_rejects_incomplete_arg_evidence() -> None:
+    class IncompleteProvider:
+        def query(self, *_args, **_kwargs):
+            from semantic.live_provider import LiveObservation
+
+            return LiveObservation(
+                rows=(),
+                observed_at="",
+                status="unavailable",
+                completeness="unavailable",
+            )
+
+    with pytest.raises(RuntimeError, match="assessment evidence is incomplete"):
+        collect_live_patch_snapshot(
+            IncompleteProvider(),
+            subscription_ids=["sub-1"],
+        )
 
 
 def test_live_incident_engine_projects_alerts_without_snapshot():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -105,8 +106,13 @@ def _target_from_patch_row(row: dict[str, Any]) -> str:
 
 
 def _patch_finding(row: dict[str, Any], *, installed: bool) -> dict[str, Any] | None:
+    normalized_row = dict(row)
+    normalized_row.setdefault(
+        "targetResourceId",
+        _target_from_patch_row(row),
+    )
     normalized, _failure = normalize_aum_row(
-        row,
+        normalized_row,
         source_family=(
             "azure_update_manager_installation"
             if installed
@@ -135,8 +141,43 @@ def live_vulnerability_service(
     semantic: Any = None,
     network: Any = None,
     build_service: Any,
+    snapshot: Mapping[str, Any] | None = None,
+    software_rows: Iterable[Mapping[str, Any]] = (),
 ) -> VulnerabilityIntelligenceService | None:
     """Build vulnerability intelligence from request-time Update Manager ARG rows."""
+    live_snapshot = (
+        dict(snapshot)
+        if snapshot is not None
+        else collect_live_patch_snapshot(
+            live_resources,
+            subscription_ids=subscription_ids,
+            software_rows=software_rows,
+        )
+    )
+    findings = live_snapshot.get("findings")
+    observed_at = live_snapshot.get("observed_at")
+    if not isinstance(findings, list) or any(
+        not isinstance(row, Mapping) for row in findings
+    ):
+        raise TypeError("Live patch snapshot findings must be a list of objects")
+    if not isinstance(observed_at, str) or not observed_at:
+        raise ValueError("Live patch snapshot observed_at is required")
+    return build_service(
+        [{"silver_patch_findings": [dict(row) for row in findings]}],
+        observed_at,
+        semantic=semantic,
+        network=network,
+    )
+
+
+def collect_live_patch_snapshot(
+    live_resources: LiveResourceProvider,
+    *,
+    subscription_ids: list[str],
+    software_rows: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Collect bounded ARG patch evidence and correlate optional LAW software."""
+
     projection = (
         "project id, name, type, tenantId, subscriptionId, resourceGroup, "
         "location, tags, properties, observed_at=now()"
@@ -165,6 +206,10 @@ def live_vulnerability_service(
         ),
         subscription_ids=subscription_ids,
     )
+    if assessments.completeness not in {"complete", "healthy-empty"}:
+        raise RuntimeError("Live patch assessment evidence is incomplete")
+    if installations.completeness not in {"complete", "healthy-empty"}:
+        raise RuntimeError("Live patch installation evidence is incomplete")
     findings = [
         item
         for row in assessments.rows
@@ -175,13 +220,31 @@ def live_vulnerability_service(
         for row in installations.rows
         if (item := _patch_finding(row, installed=True)) is not None
     )
+    software_by_resource: dict[str, set[str]] = {}
+    for row in software_rows:
+        resource_id = _first(
+            row.get("_ResourceId"),
+            row.get("resourceId"),
+            row.get("resource_id"),
+        ).casefold()
+        name = _first(row.get("SoftwareName"), row.get("software_name"))
+        version = _first(row.get("CurrentVersion"), row.get("current_version"))
+        if resource_id and name:
+            software_by_resource.setdefault(resource_id, set()).add(
+                " ".join(value for value in (name, version) if value)
+            )
+    for finding in findings:
+        target = _text(finding.get("target_resource_id")).casefold()
+        finding["software_observations"] = sorted(
+            software_by_resource.get(target, ())
+        )
     observed_at = max(assessments.observed_at, installations.observed_at)
-    return build_service(
-        [{"silver_patch_findings": findings}],
-        observed_at,
-        semantic=semantic,
-        network=network,
-    )
+    return {
+        "schema_version": "1.0.0",
+        "subscription_ids": sorted(set(subscription_ids)),
+        "observed_at": observed_at,
+        "findings": findings,
+    }
 
 
 class LiveIncidentEngine:
