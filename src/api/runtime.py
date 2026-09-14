@@ -53,6 +53,10 @@ from intelligence.vulnerability.enrichment_cache import (
     EXPOSURE_ENRICHMENT_DOCUMENT,
     EnrichmentCache,
 )
+from intelligence.vulnerability.enrichment_worker import (
+    EnrichmentTarget,
+    EnrichmentWorker,
+)
 from intelligence.vulnerability.exposure_contracts import EXPOSURE_METADATA_DATASET
 from intelligence.vulnerability.models import CVE, RiskException
 from intelligence.vulnerability.read_port import ExposureReadPort
@@ -1500,6 +1504,31 @@ def _durable_catalog_records(item_id: str) -> tuple[dict[str, Any], ...]:
         completion_clock=time.monotonic,
     )
     return tuple(dict(record) for record in index.get(identifier, ()))
+
+
+def _refresh_durable_catalog_records(
+    item_id: str,
+) -> tuple[dict[str, Any], ...]:
+    """Refresh one CVE from each public feed and return its durable records."""
+
+    identifier = canonical_enrichment_identifier("nvd", item_id)
+    cache = EnrichmentCache(
+        EXPOSURE_ENRICHMENT_DOCUMENT,
+        store=OneLakeDocumentStore(str(aiops_home())),
+        ttl_seconds=_KB_CVE_CACHE_TTL_SECONDS,
+    )
+    worker = EnrichmentWorker(cache, max_items=3)
+    worker.refresh(
+        tuple(
+            EnrichmentTarget(source, identifier)
+            for source in ("nvd", "epss", "kev")
+        )
+    )
+    return tuple(
+        record
+        for source in ("nvd", "epss", "kev")
+        if (record := cache.get_record(source, identifier)) is not None
+    )
 
 
 def _durable_catalog_index() -> dict[str, tuple[dict[str, Any], ...]]:
@@ -4471,6 +4500,7 @@ def _exposure_query_service_from_reader(
                 scope,
             )
         ),
+        catalog_records_refresher=_refresh_durable_catalog_records,
         catalog_records_resolver=_durable_catalog_records,
     )
 

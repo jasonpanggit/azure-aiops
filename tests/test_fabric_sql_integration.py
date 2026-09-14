@@ -925,6 +925,83 @@ def test_external_catalog_merges_exact_durable_records_after_sql_membership() ->
     assert kev["has_last_known_good"] is True
 
 
+def test_external_catalog_refreshes_live_records_after_authorized_membership() -> None:
+    reader = CatalogReader()
+    refreshed: list[str] = []
+    service = ExposureQueryService(
+        reader,
+        catalog_records_resolver=lambda _identifier: pytest.fail(
+            "resolver must not run when a live refresher is configured"
+        ),
+        catalog_records_refresher=lambda identifier: (
+            refreshed.append(identifier)
+            or (
+                {
+                    "source": "nvd",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {
+                        "description": "Fresh NVD detail",
+                        "severity": "Critical",
+                    },
+                    "enriched_at": "2026-09-14T00:00:00Z",
+                },
+                {
+                    "source": "epss",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {"epss_score": 0.99},
+                    "enriched_at": "2026-09-14T00:00:00Z",
+                },
+                {
+                    "source": "kev",
+                    "identifier": identifier,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {},
+                    "enriched_at": "2026-09-14T00:00:00Z",
+                },
+            )
+        ),
+    )
+
+    result = service.catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert refreshed == ["CVE-2026-0001"]
+    assert result is not None
+    assert result["item"]["sources"]["nvd"]["payload"]["description"] == (
+        "Fresh NVD detail"
+    )
+    assert result["item"]["sources"]["epss"]["payload"]["epss_score"] == 0.99
+    assert result["item"]["sources"]["kev"]["status"] == "succeeded"
+
+
+def test_external_catalog_does_not_refresh_without_authorized_membership() -> None:
+    reader = CatalogReader()
+    reader.query = lambda *_args, **_kwargs: []
+    refreshed: list[str] = []
+
+    result = ExposureQueryService(
+        reader,
+        catalog_records_refresher=lambda identifier: refreshed.append(
+            identifier
+        ),
+    ).catalog_item(
+        _authorization(),
+        generation_id="generation-17",
+        weakness_id="CVE-2026-0001",
+    )
+
+    assert result is None
+    assert refreshed == []
+
+
 def test_external_catalog_enforces_one_bound_after_merging_sources() -> None:
     reader = CatalogReader()
     service = ExposureQueryService(

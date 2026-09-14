@@ -660,6 +660,7 @@ class ExposureQueryService:
         generation_window: Any | None = None,
         authorization_resolver: Any | None = None,
         catalog_records_resolver: Any | None = None,
+        catalog_records_refresher: Any | None = None,
         metrics: ExposureMetrics | None = None,
         clock: Any = time.monotonic,
     ) -> None:
@@ -678,6 +679,7 @@ class ExposureQueryService:
         self._generation_window = generation_window
         self._authorization_resolver = authorization_resolver
         self._catalog_records_resolver = catalog_records_resolver
+        self._catalog_records_refresher = catalog_records_refresher
         self._metrics = metrics or ExposureMetrics()
         self._clock = clock
 
@@ -1166,7 +1168,13 @@ class ExposureQueryService:
                 "External vulnerability catalog evidence exceeded its safe bound"
             )
         resolved_rows = list(rows)
-        if callable(self._catalog_records_resolver):
+        if callable(self._catalog_records_refresher):
+            resolved_rows.extend(
+                dict(row)
+                for row in self._catalog_records_refresher(identifier)
+                if isinstance(row, Mapping)
+            )
+        elif callable(self._catalog_records_resolver):
             resolved_rows.extend(
                 dict(row)
                 for row in self._catalog_records_resolver(identifier)
