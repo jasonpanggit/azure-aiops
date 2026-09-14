@@ -120,6 +120,37 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
                 },
             }
 
+        def list_page(self, authorization, *, generation_id, query):
+            assert authorization == "authorized"
+            assert generation_id is None
+            filters = {item.field: item.value for item in query.filters}
+            assert filters["weakness_id"] == "CVE-2026-59873"
+            active_only = filters.get("active") is True
+            items = (
+                {
+                    "weakness_id": "CVE-2026-59873",
+                    "severity": "Critical",
+                    "target_kind": "container_image",
+                    "current_state": "active",
+                    "represented_workload_count": 0,
+                },
+            )
+            return SimpleNamespace(
+                total_count=32,
+                items=items[:1] if active_only else items,
+                next_cursor=None,
+                generation="generation-1",
+                applied_scope={"subscription": ["sub-a"]},
+                applied_filters=tuple(
+                    {"field": item.field, "operator": item.operator, "value": item.value}
+                    for item in query.filters
+                ),
+                applied_sort={"field": "priority_score", "direction": "desc"},
+                facets={},
+                completeness={"state": "complete"},
+                freshness={"state": "fresh", "as_of": "2026-09-14T00:00:00Z"},
+            )
+
     context = SimpleNamespace(
         provider_runtime=None,
         generation_resolver_provider=None,
@@ -142,6 +173,11 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
     assert result.data["item"]["sources"]["nvd"]["payload"]["description"] == (
         "Live NVD detail"
     )
+    assert result.data["cve_id"] == "CVE-2026-59873"
+    assert result.data["scoped_exposure"]["total_count"] == 32
+    assert result.data["scoped_exposure"]["affected_active_count"] == 32
+    assert result.data["source_state"]["external_catalog"]["status"] == "ok"
+    assert result.data["source_state"]["scoped_exposure"]["status"] == "ok"
 
 
 def test_g6_stays_silent_when_agent_lists_are_complete() -> None:

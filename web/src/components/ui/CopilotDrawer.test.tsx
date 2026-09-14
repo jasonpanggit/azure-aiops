@@ -6,8 +6,9 @@ import {
   ThreadContinuityProvider,
   useThreadContinuity,
 } from "@/lib/copilot/thread-context";
+import type { CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
 import { ScopeProvider } from "@/lib/scope-context";
-import { ApiError } from "@/lib/types";
+import { ApiError, type EvidenceItem } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
 
 const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
@@ -153,7 +154,14 @@ describe("CopilotDrawer", () => {
     };
   }
 
-  function canonicalResult(threadId: string, citationId: string) {
+  function canonicalResult(
+    threadId: string,
+    citationId: string,
+  ): {
+    data: CanonicalCopilotResult;
+    evidence: EvidenceItem[];
+    warnings: string[];
+  } {
     return {
       data: {
         contract_version: "1" as const,
@@ -477,7 +485,7 @@ describe("CopilotDrawer", () => {
 
     expect(await screen.findByText(/KB5001 applies to Windows Server 2022/)).toBeInTheDocument();
     expect(screen.getByText("retained:selection:kb-current")).toBeInTheDocument();
-    expect(screen.getByText(/Foundry narration unavailable/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Foundry narration unavailable/)).toHaveLength(2);
     expect(screen.getByText("1 of 137 visible records")).toBeInTheDocument();
   });
 
@@ -1231,6 +1239,136 @@ describe("CopilotDrawer", () => {
     });
     expect(screen.queryByText("server:stale")).not.toBeInTheDocument();
     expect(window.sessionStorage).toHaveLength(0);
+  });
+
+  it("ignores a stale CVE response after the visible route switches", async () => {
+    investigateCanonical.mockClear();
+    window.sessionStorage.clear();
+    let resolveOldRequest:
+      | ((value: ReturnType<typeof canonicalResult>) => void)
+      | undefined;
+    investigateCanonical
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveOldRequest = resolve;
+      }))
+      .mockResolvedValueOnce({
+        ...canonicalResult(
+          "thr-55555555555555555555555555555555",
+          "tool:cve-new:0",
+        ),
+        data: {
+          ...canonicalResult(
+            "thr-55555555555555555555555555555555",
+            "tool:cve-new:0",
+          ).data,
+          synthesis: {
+            status: "degraded",
+            reason: "deterministic_page_evidence",
+            domain_count: 1,
+            warning: "Foundry narration is not configured; deterministic cited CVE evidence was used.",
+            claims: [{
+              finding_id: "cve:new",
+              summary: "CVE-2026-13221 current evidence",
+              evidence_refs: ["tool:cve-new:0"],
+              confidence: "high",
+              freshness: "fresh",
+              uncertainty: [],
+            }],
+          },
+        },
+      });
+    const oldSnapshot = {
+      ...canonicalSnapshot("os"),
+      page_kind: "vulnerability" as const,
+      page_id: "cve:CVE-2026-11111",
+    };
+    const newSnapshot = {
+      ...canonicalSnapshot("software"),
+      page_kind: "vulnerability" as const,
+      page_id: "cve:CVE-2026-13221",
+    };
+    const view = render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="CVE-2026-11111"
+          snapshot={oldSnapshot}
+          starterQuestions={[{
+            label: "Explain CVE-2026-11111",
+            specialistId: "vulnerability",
+            tool: "cve_detail",
+            toolArguments: { cve_id: "CVE-2026-11111" },
+          }]}
+        />
+      </TestProviders>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Explain CVE-2026-11111/ }));
+    view.rerender(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="CVE-2026-13221"
+          snapshot={newSnapshot}
+          starterQuestions={[{
+            label: "Explain CVE-2026-13221",
+            specialistId: "vulnerability",
+            tool: "cve_detail",
+            toolArguments: { cve_id: "CVE-2026-13221" },
+          }]}
+        />
+      </TestProviders>,
+    );
+    resolveOldRequest?.({
+      ...canonicalResult(
+        "thr-44444444444444444444444444444444",
+        "tool:cve-old:0",
+      ),
+      data: {
+        ...canonicalResult(
+          "thr-44444444444444444444444444444444",
+          "tool:cve-old:0",
+        ).data,
+        synthesis: {
+          status: "degraded",
+          reason: "deterministic_page_evidence",
+          domain_count: 1,
+          warning: "Foundry narration timed out; deterministic cited CVE evidence was used.",
+          claims: [{
+            finding_id: "cve:old",
+            summary: "CVE-2026-11111 stale evidence",
+            evidence_refs: ["tool:cve-old:0"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("CVE-2026-11111 stale evidence")).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Explain CVE-2026-13221/ }));
+    expect(await screen.findByText("CVE-2026-13221 current evidence")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Foundry narration is not configured/, {
+        selector: ".copilot-live-status",
+      }),
+    ).toBeInTheDocument();
+    expect(investigateCanonical.mock.calls[1][0]).toMatchObject({
+      question: "Explain CVE-2026-13221",
+      hint: {
+        specialist_id: "vulnerability",
+        tool: "cve_detail",
+        arguments: { cve_id: "CVE-2026-13221" },
+      },
+      snapshot: expect.objectContaining({
+        page_id: "cve:CVE-2026-13221",
+      }),
+    });
   });
 
   it("serializes requests within the same context", async () => {

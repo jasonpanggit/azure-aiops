@@ -1189,7 +1189,11 @@ describe("inventory Copilot page adapter", () => {
         cvss: { version: "3.1", base_score: 9.8, vector: "AV:N", severity: "critical" },
         associated_kbs: ["KB5001", "KB5002"],
         epss_score: 0.7,
+        epss_percentile: 0.94,
         is_known_exploited: true,
+        kev_date_added: "2026-09-01",
+        kev_due_date: "2026-09-22",
+        kev_ransomware_use: "Known",
       },
       findings: {
         rows: [
@@ -1201,6 +1205,10 @@ describe("inventory Copilot page adapter", () => {
             business_service: "Payments",
             application: "Ledger",
             severity: "critical",
+            target_kind: "container_image",
+            current_state: "active",
+            represented_workload_count: 3,
+            total_workload_count: 3,
             missing_kb: "KB5001",
             reachable: true,
           },
@@ -1267,6 +1275,13 @@ describe("inventory Copilot page adapter", () => {
         expect.arrayContaining([
           expect.objectContaining({
             data: expect.objectContaining({
+              epss_percentile: 0.94,
+              kev_due_date: "2026-09-22",
+              kev_ransomware_use: "Known",
+            }),
+          }),
+          expect.objectContaining({
+            data: expect.objectContaining({
               entity: {
                 type: "domain",
                 namespace: "vulnerability",
@@ -1297,6 +1312,31 @@ describe("inventory Copilot page adapter", () => {
       expect(context.starterQuestions.length).toBeGreaterThan(0);
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    it("drops stale CVE data and binds the starter to the visible route CVE", () => {
+      const context = buildCveDetailCopilotContext({
+        ...cveInput,
+        cveId: "cve-2026-13221",
+        cve: {
+          ...cveInput.cve,
+          cve_id: "CVE-2026-0001",
+        },
+        findings: {
+          ...cveInput.findings,
+          rows: cveInput.findings.rows.map((row) => ({
+            ...row,
+            weakness_id: "CVE-2026-0001",
+          })),
+        },
+      });
+
+      expect(context.snapshot.page_id).toBe("cve:CVE-2026-13221");
+      expect(JSON.stringify(context.snapshot.evidence)).not.toContain("CVE-2026-0001");
+      expect(context.starterQuestions[0]).toMatchObject({
+        label: "Explain CVE-2026-13221",
+        toolArguments: { cve_id: "CVE-2026-13221" },
+      });
     });
 
     it("distinguishes an unavailable CVE provider from a healthy empty finding set", () => {

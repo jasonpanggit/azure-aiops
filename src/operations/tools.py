@@ -40,6 +40,7 @@ from intelligence.vulnerability.exposure_contracts import (
 )
 from network.flow import FlowQuery
 from network.service import NetworkScope
+from operations.cve_response import canonical_cve_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -584,6 +585,10 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
                 )
                 if value
             ]
+            if isinstance(args.get("active"), bool):
+                optional_filters.append(
+                    ExposureFilter("active", "eq", args["active"])
+                )
             query_filter = _exposure_query_filter(args.get("query"))
             filters = (
                 *optional_filters,
@@ -711,11 +716,32 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
 
     def run(vulnerability: Any) -> ToolResult:
         rows = vulnerability.exposures(tool_context.scope)
+        weakness_id = canonical_cve_id(args.get("query"))
+        if weakness_id:
+            rows = [
+                row
+                for row in rows
+                if canonical_cve_id(
+                    row.get("weakness_id") or row.get("cve_id")
+                )
+                == weakness_id
+            ]
         if business_service:
             rows = [
                 row
                 for row in rows
                 if str(row.get("business_service") or "").casefold() == business_service
+            ]
+        if isinstance(args.get("active"), bool):
+            expected_active = args["active"]
+            rows = [
+                row
+                for row in rows
+                if (
+                    str(row.get("current_state") or "").strip().casefold()
+                    == "active"
+                )
+                is expected_active
             ]
         if not rows:
             return ToolResult(status=STATUS_EMPTY)
@@ -761,10 +787,30 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
     services, and recommended patch -- the same ontology-derived blast radius
     shown on the CVE detail page, so the Copilot can explain a specific CVE's
     reach instead of only the aggregate exposure list."""
-    cve_id = str(args.get("cve_id") or "").strip()
+    cve_id = canonical_cve_id(args.get("cve_id"))
     if not cve_id:
         return ToolResult(status=STATUS_EMPTY, warning="A CVE id is required")
 
+    exposure_result = _tool_cve_exposure(tool_context, {"query": cve_id})
+    active_result = _tool_cve_exposure(
+        tool_context,
+        {"query": cve_id, "active": True},
+    )
+    exposure_data = (
+        dict(exposure_result.data)
+        if isinstance(exposure_result.data, Mapping)
+        else None
+    )
+    if exposure_data is not None:
+        exposure_data["query_cve_id"] = cve_id
+        if isinstance(active_result.data, Mapping):
+            active_count = active_result.data.get("total_count")
+            if isinstance(active_count, int) and not isinstance(active_count, bool):
+                exposure_data["affected_active_count"] = active_count
+
+    catalog: Mapping[str, Any] | None = None
+    catalog_status = STATUS_EMPTY
+    catalog_warning = ""
     query_provider = getattr(
         tool_context.context,
         "exposure_query_provider",
@@ -795,20 +841,55 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
             AttributeError,
         ) as exc:
             _LOGGER.warning("external_cve_catalog_failed error=%s", exc)
+            catalog_status = STATUS_UNAVAILABLE
+            catalog_warning = "The durable external CVE catalog failed to answer"
         else:
             if catalog is not None:
-                return ToolResult(
-                    status=STATUS_OK,
-                    data=_bound(catalog),
-                    evidence=(
-                        Evidence(
-                            source_engine="api.ExposureQueryService",
-                            source_table="enrichment/exposure-items.json",
-                            resource_id=cve_id.upper(),
-                            confidence=CONFIDENCE_HIGH,
-                        ),
-                    ),
-                )
+                catalog_status = STATUS_OK
+
+    if catalog is not None:
+        payload = {
+            **dict(catalog),
+            "cve_id": cve_id,
+            "external_catalog": dict(catalog),
+            "scoped_exposure": exposure_data,
+            "scoped_exposure_status": exposure_result.status,
+            "source_state": {
+                "query_cve_id": cve_id,
+                "external_catalog": {
+                    "status": catalog_status,
+                    "warning": catalog_warning,
+                },
+                "scoped_exposure": {
+                    "status": exposure_result.status,
+                    "warning": exposure_result.warning,
+                },
+            },
+        }
+        warnings = [
+            warning
+            for warning in (
+                catalog_warning,
+                exposure_result.warning
+                if exposure_result.status in {STATUS_UNAVAILABLE, STATUS_DENIED}
+                else "",
+            )
+            if warning
+        ]
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(payload),
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="enrichment/exposure-items.json",
+                    resource_id=cve_id,
+                    confidence=CONFIDENCE_HIGH,
+                ),
+                *exposure_result.evidence,
+            ),
+            warning="; ".join(warnings),
+        )
 
     def run(vulnerability: Any) -> ToolResult:
         detail = vulnerability.cve_detail(cve_id, tool_context.scope)
@@ -828,7 +909,74 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
             ),
         )
 
-    return _provider_result(tool_context, "vulnerability", run)
+    legacy_result = _provider_result(tool_context, "vulnerability", run)
+    if legacy_result.status == STATUS_OK or exposure_result.status == STATUS_OK:
+        payload = {
+            "contract_version": "1.1.0",
+            "cve_id": cve_id,
+            "external_catalog": None,
+            "scoped_exposure": exposure_data,
+            "scoped_exposure_status": exposure_result.status,
+            "vulnerability_detail": (
+                legacy_result.data
+                if legacy_result.status == STATUS_OK
+                else None
+            ),
+            "source_state": {
+                "query_cve_id": cve_id,
+                "external_catalog": {
+                    "status": catalog_status,
+                    "warning": catalog_warning,
+                },
+                "scoped_exposure": {
+                    "status": exposure_result.status,
+                    "warning": exposure_result.warning,
+                },
+                "vulnerability_projection": {
+                    "status": legacy_result.status,
+                    "warning": legacy_result.warning,
+                },
+            },
+        }
+        warnings = [
+            warning
+            for warning in (
+                catalog_warning or "Durable external CVE metadata is unavailable",
+                exposure_result.warning
+                if exposure_result.status in {STATUS_UNAVAILABLE, STATUS_DENIED}
+                else "",
+                legacy_result.warning
+                if legacy_result.status in {STATUS_UNAVAILABLE, STATUS_DENIED}
+                else "",
+            )
+            if warning
+        ]
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(payload),
+            evidence=(*exposure_result.evidence, *legacy_result.evidence),
+            warning="; ".join(warnings),
+        )
+    warning = "; ".join(
+        dict.fromkeys(
+            warning
+            for warning in (
+                catalog_warning or "Durable external CVE metadata is unavailable",
+                exposure_result.warning,
+                legacy_result.warning,
+            )
+            if warning
+        )
+    )
+    return ToolResult(
+        status=(
+            STATUS_DENIED
+            if STATUS_DENIED in {exposure_result.status, legacy_result.status}
+            else STATUS_UNAVAILABLE
+        ),
+        warning=warning,
+        evidence=(*exposure_result.evidence, *legacy_result.evidence),
+    )
 
 
 def _tool_cve_attack_path(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
@@ -1432,6 +1580,7 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
                 "query": "Optional bounded search text",
                 "sort_by": "Server-owned Exposure sort field",
                 "sort_direction": "Sort direction: asc or desc",
+                "active": "Optional active-state filter",
             },
             handler=_tool_cve_exposure,
         ),

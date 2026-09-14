@@ -540,6 +540,201 @@ def _canonical_body(**overrides):
     return body
 
 
+def _cve_canonical_body(cve_id: str = "CVE-2026-13221"):
+    return {
+        "contract_version": "1",
+        "question": f"Explain {cve_id}",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "vulnerability",
+            "page_id": f"cve:{cve_id}",
+            "filters": {"weakness_id": [cve_id]},
+            "coverage": {
+                "visible_count": 25,
+                "total_count": 32,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "nvd",
+                    "status": "fresh",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                },
+                {
+                    "source": "epss",
+                    "status": "fresh",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                },
+                {
+                    "source": "kev",
+                    "status": "fresh",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                },
+                {
+                    "source": "findings",
+                    "status": "partial",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                },
+            ],
+            "selected_entities": [],
+            "evidence": [],
+            "material_claims": [],
+        },
+        "hint": {
+            "specialist_id": "vulnerability",
+            "tool": "cve_detail",
+            "arguments": {"cve_id": cve_id},
+        },
+    }
+
+
+def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    cve_id = "CVE-2026-13221"
+    findings = [
+        {
+            "weakness_id": cve_id,
+            "severity": "Critical",
+            "target_kind": "container_image",
+            "current_state": "active",
+            "represented_workload_count": 0,
+        }
+        for _ in range(25)
+    ]
+    catalog = {
+        "contract_version": "1.0.0",
+        "catalog_scope": "external_public_metadata",
+        "environment_membership_included": False,
+        "item": {
+            "cve_id": cve_id,
+            "sources": {
+                "nvd": {
+                    "source": "nvd",
+                    "identifier": cve_id,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {
+                        "description": "Perl alternation trie overflow.",
+                        "severity": "CRITICAL",
+                        "cvss": {
+                            "base_score": 9.1,
+                            "vector": (
+                                "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"
+                            ),
+                            "severity": "CRITICAL",
+                        },
+                        "associated_kbs": [],
+                    },
+                },
+                "epss": {
+                    "source": "epss",
+                    "identifier": cve_id,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": {
+                        "epss_score": 0.00432,
+                        "epss_percentile": 0.36545,
+                    },
+                },
+                "kev": {
+                    "source": "kev",
+                    "identifier": cve_id,
+                    "status": "succeeded",
+                    "stale": False,
+                    "payload": None,
+                },
+            },
+        },
+    }
+    tool_data = {
+        **catalog,
+        "cve_id": cve_id,
+        "external_catalog": catalog,
+        "scoped_exposure_status": "ok",
+        "scoped_exposure": {
+            "query_cve_id": cve_id,
+            "total_count": 32,
+            "returned_count": 25,
+            "affected_active_count": 32,
+            "items": findings,
+        },
+    }
+
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda name, arguments, **_kwargs: ToolResult(
+            status="ok",
+            data=tool_data,
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="enrichment/exposure-items.json",
+                    resource_id=cve_id,
+                    confidence="high",
+                ),
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="gold_exposure_facts",
+                    resource_id=cve_id,
+                    confidence="high",
+                ),
+            ),
+        ),
+    )
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_cve_canonical_body(cve_id),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    narration = data["synthesis"]["claims"][0]["summary"]
+    assert "CVE-2026-13221" in narration
+    assert "CVSS 9.1 Critical" in narration
+    assert "0.432%" in narration
+    assert "no listing for CVE-2026-13221" in narration
+    assert "**32** matching findings" in narration
+    assert "**25 records were inspected**" in narration
+    assert "**32 are active**" in narration
+    assert "External CVE metadata is current from" not in narration
+    assert data["synthesis"]["status"] == "degraded"
+    assert "not configured" in data["synthesis"]["warning"]
+    assert all(
+        reference.startswith("tool:")
+        for reference in data["synthesis"]["claims"][0]["evidence_refs"]
+    )
+
+
+def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    body = _cve_canonical_body("CVE-2026-13221")
+    body["question"] = "Explain CVE-2026-99999"
+    body["hint"]["arguments"]["cve_id"] = "CVE-2026-99999"
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
+
+
 def test_authenticated_canonical_route_preserves_governed_result(
     tmp_path,
     monkeypatch,
