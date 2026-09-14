@@ -497,6 +497,40 @@ describe("CVE detail", () => {
     expect(screen.getByText("MSRC KB mapping is unavailable")).toBeInTheDocument();
   });
 
+  it("does not claim an empty KB mapping when durable MSRC status is missing", async () => {
+    const catalog = externalCatalogEnvelope();
+    const nvdPayload = catalog.data.item.sources.nvd.payload;
+    if (nvdPayload) nvdPayload.associated_kbs = [];
+    delete catalog.data.item.sources["msrc:KB600001"];
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+
+    renderPage();
+
+    expect(await screen.findByText("MSRC KB mapping is unavailable")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No KB mappings reported by MSRC KB mapping"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("presents an empty KB mapping only after a fresh successful MSRC result", async () => {
+    const catalog = externalCatalogEnvelope();
+    const nvdPayload = catalog.data.item.sources.nvd.payload;
+    if (nvdPayload) nvdPayload.associated_kbs = [];
+    catalog.data.item.sources["msrc:KB600001"] = {
+      ...catalog.data.item.sources["msrc:KB600001"],
+      identifier: "",
+      payload: {},
+    };
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+
+    renderPage();
+
+    expect(
+      await screen.findByText("No KB mappings reported by MSRC KB mapping"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("MSRC KB mapping is unavailable")).not.toBeInTheDocument();
+  });
+
   it("renders all six sections with conservative completeness and unknown-safe values", async () => {
     renderPage();
 

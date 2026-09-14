@@ -587,7 +587,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     loaded: data?.cve.associated_kbs.length ?? 0,
     empty: Boolean(catalog.data && data?.cve.associated_kbs.length === 0),
     source: msrcSource,
-    requiresSource: Boolean(data?.cve.associated_kbs.length),
+    requiresSource: true,
     inheritCommon: false,
   });
   const allStates = [coreState, attackState, nvdState, epssState, kevState, kbState];
