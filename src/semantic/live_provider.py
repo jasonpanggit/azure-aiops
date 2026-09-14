@@ -107,12 +107,29 @@ class LiveResourceProvider:
         if query.casefold().startswith("show list of"):
             search_term = query[len("show list of") :].strip()
         escaped = search_term.replace("'", "''")
+        normalized = search_term.casefold()
+        if normalized in {
+            "server",
+            "servers",
+            "virtual machine",
+            "virtual machines",
+            "vm",
+            "vms",
+        }:
+            predicate = (
+                "type =~ 'microsoft.compute/virtualmachines' "
+                "or type =~ 'microsoft.hybridcompute/machines'"
+            )
+        else:
+            predicate = (
+                f"name contains '{escaped}' or type contains '{escaped}'"
+            )
         spec = QuerySpec(
             name="live_resource_search",
             table="Resources",
             query=(
                 "Resources "
-                f"| where name contains~ '{escaped}' or type contains~ '{escaped}' "
+                f"| where {predicate} "
                 "| project id, name, type, tenantId, subscriptionId, resourceGroup, "
                 "location, tags, properties"
             ),
