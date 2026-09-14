@@ -25,6 +25,13 @@ from intelligence.vulnerability.enrichment_worker import (
     EnrichmentTarget,
     EnrichmentWorker,
 )
+from intelligence.vulnerability.exposure_prefetch import (
+    DEFAULT_MAX_DISCOVERED_IDENTIFIERS,
+    ExposureGenerationDiscovery,
+    ExposurePrefetchService,
+)
+from storage.delta_writer import DeltaWriter
+from storage.fs import is_onelake_uri
 from storage.onelake_documents import OneLakeDocumentStore
 
 DEFAULT_MAX_ITEMS = 100
@@ -65,6 +72,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Refresh due items already registered in the durable store.",
     )
     parser.add_argument(
+        "--prefetch-generation",
+        action="store_true",
+        help=(
+            "Discover IDs from the active Exposure generation and exact current "
+            "source tables, then hydrate a bounded fair slice."
+        ),
+    )
+    parser.add_argument(
         "--source",
         choices=("msrc", "nvd", "epss", "kev"),
         help="Refresh one source for each supplied --id.",
@@ -90,13 +105,89 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _state_root() -> str:
+    return os.environ.get("AIOPS_HOME", "").strip() or str(Path.home() / ".aiops")
+
+
+def _connection_root(state_root: str) -> str:
+    """Resolve the published-generation pointer root without aliasing cache state."""
+
+    configured = os.environ.get("AIOPS_CONNECTION_HOME", "").strip()
+    if configured:
+        if (
+            is_onelake_uri(state_root)
+            and configured.rstrip("/") == state_root.rstrip("/")
+        ):
+            raise ValueError("AIOPS_CONNECTION_HOME must not alias AIOPS_HOME")
+        return configured
+    if is_onelake_uri(state_root):
+        raise ValueError("AIOPS_CONNECTION_HOME is required for remote prefetch")
+    return str(Path(state_root) / "connections")
+
+
 def _build_worker(*, max_items: int) -> EnrichmentWorker:
-    root = os.environ.get("AIOPS_HOME", "").strip() or str(Path.home() / ".aiops")
+    root = _state_root()
     cache = EnrichmentCache(
         EXPOSURE_ENRICHMENT_DOCUMENT,
         store=OneLakeDocumentStore(root),
     )
     return EnrichmentWorker(cache, max_items=max_items)
+
+
+def _table_root(root: str) -> str | Path:
+    if is_onelake_uri(root):
+        before_files, separator, _after_files = root.partition("/Files")
+        return f"{before_files}/Tables" if separator else f"{root.rstrip('/')}/Tables"
+    path = Path(root)
+    return path.parent / "Tables" if path.name == "Files" else path / "Tables"
+
+
+def _build_table_reader(
+    root: str,
+) -> Callable[[str, Sequence[str]], tuple[dict[str, Any], ...]]:
+    if is_onelake_uri(root):
+        from azure.identity import DefaultAzureCredential
+
+        from fabric.auth import build_delta_storage_options
+
+        credential = DefaultAzureCredential()
+        delta = DeltaWriter(
+            storage_options_provider=lambda: build_delta_storage_options(credential)
+        )
+    else:
+        delta = DeltaWriter()
+    tables = _table_root(root)
+
+    def read(table_name: str, columns: Sequence[str]) -> tuple[dict[str, Any], ...]:
+        uri = (
+            f"{str(tables).rstrip('/')}/{table_name}"
+            if isinstance(tables, str)
+            else tables / table_name
+        )
+        return tuple(delta.read(uri, columns=columns))
+
+    return read
+
+
+def _build_prefetch_service(*, max_items: int) -> ExposurePrefetchService:
+    root = _state_root()
+    cache_store = OneLakeDocumentStore(root)
+    pointer_store = OneLakeDocumentStore(_connection_root(root))
+    worker = EnrichmentWorker(
+        EnrichmentCache(EXPOSURE_ENRICHMENT_DOCUMENT, store=cache_store),
+        max_items=max_items,
+    )
+    discovery = ExposureGenerationDiscovery(
+        pointer_store=pointer_store,
+        table_reader=_build_table_reader(root),
+        max_identifiers=DEFAULT_MAX_DISCOVERED_IDENTIFIERS,
+    )
+    return ExposurePrefetchService(
+        discovery=discovery,
+        worker=worker,
+        checkpoint_store=cache_store,
+        max_items=max_items,
+    )
 
 
 def _targets(args: argparse.Namespace, worker: EnrichmentWorker) -> tuple[EnrichmentTarget, ...]:
@@ -151,6 +242,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     worker_factory: Callable[..., EnrichmentWorker] = _build_worker,
+    prefetch_factory: Callable[..., ExposurePrefetchService] = _build_prefetch_service,
     stdout: TextIO = sys.stdout,
 ) -> int:
     """Run one bounded refresh and emit only scheduler-safe JSON."""
@@ -158,6 +250,12 @@ def main(
     args = _parser().parse_args(argv)
     outcomes: list[dict[str, Any]] = []
     try:
+        if args.prefetch_generation:
+            if args.all_due or args.source or args.identifiers or args.force:
+                raise ValueError("prefetch_generation_has_conflicting_arguments")
+            report = prefetch_factory(max_items=args.max_items).run().to_dict()
+            _write_report(stdout, report)
+            return 0
         worker = worker_factory(max_items=args.max_items)
         targets = _targets(args, worker)
         worker.refresh(

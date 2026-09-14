@@ -123,6 +123,9 @@ _COMPLETION_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "fabric_publication": frozenset(),
+    "metadata_prefetch": frozenset(
+        {"requested_count", "succeeded_count", "failure_count"}
+    ),
     "activation": frozenset(),
 }
 _COUNT_FIELDS = frozenset(
@@ -139,6 +142,8 @@ _COUNT_FIELDS = frozenset(
         "skipped_tables",
         "checkpoint_rows_written",
         "checkpoint_bytes_written",
+        "requested_count",
+        "succeeded_count",
     }
 )
 _SAFE_ERROR_CODES = frozenset({"ACTIVATION_FAILED"})
@@ -641,12 +646,16 @@ def activate_runtime(
     heartbeat_interval: float = 60.0,
     progress_clock: Callable[[], float] = time.monotonic,
     progress_wait: Callable[[threading.Event, float], bool] | None = None,
+    metadata_prefetch: Callable[..., Mapping[str, object]] | None = None,
+    enrichment_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate, discover, publish, and verify a production Fabric snapshot.
 
     Progress callbacks are best-effort and receive exact-schema mappings.
     Heartbeat and elapsed values use monotonic seconds; injectable clock/wait
-    seams support deterministic local tests without changing result fields.
+    seams support deterministic local tests. Metadata prefetch begins only
+    after Fabric publication releases its ingestion lock; its sanitized
+    partial or failed result never rolls back a successful publication.
     """
     reporter = ActivationProgressReporter(
         progress_callback,
@@ -727,14 +736,32 @@ def activate_runtime(
             combined = source_store.verify_combined_activation_generation(
                 exact_generation
             )
+        exposure_pointer_store = OneLakeDocumentStore(service.registry.root)
         publication = runtime.service.sync(
             replay_source_run_id=exact_generation or str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
             stage_progress_callback=reporter.fabric_stage_progress,
-            exposure_pointer_store=OneLakeDocumentStore(service.registry.root),
+            exposure_pointer_store=exposure_pointer_store,
         )
-        semantic = runtime.semantic_engine()
         reporter.complete("fabric_publication")
+
+        reporter.start("metadata_prefetch")
+        prefetch_result = _run_metadata_prefetch(
+            metadata_prefetch,
+            source_root=config.source_data_root,
+            generation_id=exact_generation or str(combined["runId"]),
+            runtime=runtime,
+            pointer_store=exposure_pointer_store,
+            enrichment_root=enrichment_root,
+        )
+        reporter.complete(
+            "metadata_prefetch",
+            requested_count=prefetch_result["requested_count"],
+            succeeded_count=prefetch_result["succeeded_count"],
+            failure_count=prefetch_result["failure_count"],
+        )
+
+        semantic = runtime.semantic_engine()
         result = {
             "status": "activated",
             "connections": sorted(selected),
@@ -747,6 +774,7 @@ def activate_runtime(
                 "status": publication.status,
                 "tables": list(publication.tables),
             },
+            "metadata_prefetch": prefetch_result,
             "ontology_version": semantic.knowledge_version,
             "freshness": semantic.freshness,
         }
@@ -762,6 +790,163 @@ def activate_runtime(
         ) from exc
     finally:
         reporter.close()
+
+
+def _run_metadata_prefetch(
+    prefetch: Callable[..., Mapping[str, object]] | None,
+    *,
+    source_root: str | Path,
+    generation_id: str,
+    runtime: Any,
+    pointer_store: OneLakeDocumentStore,
+    enrichment_root: str | Path | None,
+) -> dict[str, object]:
+    """Invoke the shared prefetch seam and return only bounded safe fields."""
+
+    try:
+        raw = (
+            prefetch(source_root=source_root, generation_id=generation_id)
+            if prefetch is not None
+            else _shared_metadata_prefetch(
+                runtime=runtime,
+                pointer_store=pointer_store,
+                enrichment_store=_prefetch_enrichment_store(
+                    enrichment_root,
+                    pointer_store=pointer_store,
+                ),
+            )
+        )
+        return _sanitize_prefetch_result(raw)
+    except Exception:  # noqa: BLE001 - provider failures cannot roll back publication.
+        _LOGGER.warning(
+            "activation_metadata_prefetch_failed",
+            extra={"error_code": "METADATA_PREFETCH_FAILED"},
+        )
+        return {
+            "status": "failed",
+            "requested_count": 0,
+            "succeeded_count": 0,
+            "failure_count": 1,
+        }
+
+
+def _prefetch_enrichment_store(
+    enrichment_root: str | Path | None,
+    *,
+    pointer_store: OneLakeDocumentStore,
+) -> OneLakeDocumentStore:
+    """Require an explicit cache root that does not alias connection state."""
+
+    if enrichment_root is None or not str(enrichment_root).strip():
+        raise ValueError("AIOPS_HOME is required for activation metadata prefetch")
+    store = OneLakeDocumentStore(enrichment_root)
+    if store.root.rstrip("/") == pointer_store.root.rstrip("/"):
+        raise ValueError("AIOPS_HOME must not alias AIOPS_CONNECTION_HOME")
+    return store
+
+
+def _shared_metadata_prefetch(
+    *,
+    runtime: Any,
+    pointer_store: OneLakeDocumentStore,
+    enrichment_store: OneLakeDocumentStore,
+) -> Mapping[str, object]:
+    """Adapt activation to the separately owned shared prefetch module."""
+
+    from intelligence.vulnerability.enrichment_cache import (
+        EXPOSURE_ENRICHMENT_DOCUMENT,
+        EnrichmentCache,
+    )
+    from intelligence.vulnerability.enrichment_worker import EnrichmentWorker
+    from intelligence.vulnerability.exposure_prefetch import (
+        ExposureGenerationDiscovery,
+        ExposurePrefetchService,
+    )
+
+    def read_table(
+        table_name: str,
+        columns: tuple[str, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        layer, logical_name = table_name.split("_", 1)
+        uri = runtime.service.onelake.table_uri(layer, logical_name)
+        if runtime.service.delta.version(uri) is None:
+            return ()
+        return tuple(runtime.service.delta.read(uri, columns=columns))
+
+    worker = EnrichmentWorker(
+        EnrichmentCache(
+            EXPOSURE_ENRICHMENT_DOCUMENT,
+            store=enrichment_store,
+        ),
+        max_items=100,
+    )
+    return ExposurePrefetchService(
+        discovery=ExposureGenerationDiscovery(
+            pointer_store=pointer_store,
+            table_reader=read_table,
+        ),
+        worker=worker,
+        checkpoint_store=enrichment_store,
+        max_items=100,
+    ).run().to_dict()
+
+
+def _sanitize_prefetch_result(
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """Reduce a prefetch result to fixed-status bounded aggregate counts."""
+
+    if not isinstance(result, Mapping):
+        raise TypeError("Metadata prefetch result must be a mapping")
+
+    def bounded_count(*names: str) -> int:
+        for name in names:
+            value = result.get(name)
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 0 <= value <= _MAX_PROGRESS_COUNT
+            ):
+                return value
+        return 0
+
+    failed = bounded_count("failure_count", "failed_count", "failed")
+    attempted = bounded_count("attempted_count")
+    succeeded = bounded_count("succeeded_count", "refreshed_count", "succeeded")
+    if "succeeded_count" not in result and "refreshed_count" not in result:
+        succeeded = max(0, attempted - failed)
+    requested = max(
+        bounded_count(
+            "requested_count",
+            "selected_count",
+            "target_count",
+            "requested",
+        ),
+        succeeded + failed,
+    )
+    requested = min(requested, _MAX_PROGRESS_COUNT)
+    normalized_status = str(result.get("status") or "").strip().casefold()
+    status = {
+        "complete": "succeeded",
+        "completed": "succeeded",
+        "success": "succeeded",
+        "succeeded": "succeeded",
+        "partial": "partial",
+        "failed": "failed",
+        "unavailable": "unavailable",
+    }.get(normalized_status)
+    if status is None:
+        status = "partial" if failed else "succeeded"
+    if failed and succeeded:
+        status = "partial"
+    elif failed and not succeeded:
+        status = "failed"
+    return {
+        "status": status,
+        "requested_count": requested,
+        "succeeded_count": succeeded,
+        "failure_count": failed,
+    }
 
 
 def _read_manifest(store: DatasetStore, generation: str) -> dict[str, Any]:

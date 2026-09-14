@@ -343,6 +343,17 @@ variable "exposure_enrichment_schedule" {
   }
 }
 
+variable "exposure_prefetch_schedule" {
+  description = "Five-field UTC cron schedule for the durable Exposure metadata prefetch Container Apps Job."
+  type        = string
+  default     = "*/10 * * * *"
+
+  validation {
+    condition     = can(regex("^\\*/([5-9]|1[0-5]) \\* \\* \\* \\*$", trimspace(var.exposure_prefetch_schedule)))
+    error_message = "exposure_prefetch_schedule must run every 5 to 15 minutes (for example, */10 * * * *)."
+  }
+}
+
 variable "exposure_enrichment_max_items" {
   description = "Maximum durable enrichment items attempted by one scheduled job execution."
   type        = number

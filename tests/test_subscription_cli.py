@@ -219,8 +219,12 @@ def test_cli_activate_streams_progress_to_stderr_and_terminal_json_to_stdout(
     capsys,
 ) -> None:
     _patch_service(monkeypatch, object())
+    enrichment_root = tmp_path / "aiops"
+    monkeypatch.setenv("AIOPS_HOME", str(enrichment_root))
+    captured_kwargs: dict[str, object] = {}
 
     def fake_activate_runtime(service, **kwargs):
+        captured_kwargs.update(kwargs)
         kwargs["progress_callback"](
             {
                 "event": "activation_progress",
@@ -249,6 +253,7 @@ def test_cli_activate_streams_progress_to_stderr_and_terminal_json_to_stdout(
         "status": "started",
         "elapsed_seconds": 0.0,
     }
+    assert captured_kwargs["enrichment_root"] == str(enrichment_root)
 
 
 def test_cli_activate_forwards_exact_replay_source_run_id(

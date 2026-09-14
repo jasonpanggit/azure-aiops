@@ -13,6 +13,7 @@ from fabric.sync_service import FabricTableWriteProgress
 from onboarding.activation import (
     ActivationFailure,
     ActivationProgressReporter,
+    _shared_metadata_prefetch,
     activate_runtime,
     build_activation_progress_event,
     publish_combined_snapshot,
@@ -20,6 +21,7 @@ from onboarding.activation import (
 from onboarding.graph_normalize import ENTITY_TYPES, NormalizedGraph
 from storage.datasets import DatasetStore
 from storage.delta_writer import DeltaWriteResult
+from storage.locking import RunLock
 from storage.onelake_documents import OneLakeDocumentStore
 
 
@@ -631,6 +633,12 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         fabric_config="fabric.test.yaml",
         progress_callback=events.append,
         heartbeat_interval=3600,
+        metadata_prefetch=lambda **_kwargs: {
+            "status": "succeeded",
+            "requested_count": 0,
+            "succeeded_count": 0,
+            "failure_count": 0,
+        },
     )
 
     assert result["status"] == "activated"
@@ -641,6 +649,7 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         "combined_snapshot",
         "fabric_publication",
         "dataset_mapping",
+        "metadata_prefetch",
     ]
     table_event = next(
         event for event in events if event["stage"] == "table_publication"
@@ -650,6 +659,176 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
     assert "hub" not in json.dumps(events)
     assert replay_source_run_ids == [str(result["combined_snapshot"]["runId"])]
     assert runtime_modes == [FabricRuntimeMode.PUBLISH]
+
+
+def test_activate_runtime_prefetches_after_lock_release_and_keeps_partial_success(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    roots = {"hub": tmp_path / "hub"}
+    _publish(
+        roots["hub"],
+        "hub",
+        "/subscriptions/hub/resourceGroups/rg/providers/x/a",
+    )
+    service = _Service(roots)
+    service.registry.root = tmp_path / "registry"
+    config = type("Config", (), {"source_data_root": tmp_path / "combined"})()
+    monkeypatch.setattr(
+        "fabric.config.FabricRuntimeConfig.load",
+        staticmethod(lambda _path: config),
+    )
+    ingestion_lock_root = tmp_path / "fabric"
+
+    class FabricService:
+        def sync(self, **_kwargs):
+            with RunLock(
+                ingestion_lock_root,
+                lock_document="ingestion.lock",
+            ):
+                return type(
+                    "Publication",
+                    (),
+                    {
+                        "run_id": "fabric-run",
+                        "source_run_id": "source-run",
+                        "status": "completed",
+                        "tables": ("silver_resources",),
+                    },
+                )()
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "service": FabricService(),
+            "semantic_engine": lambda self: type(
+                "Semantic",
+                (),
+                {"knowledge_version": "v1", "freshness": "current"},
+            )(),
+        },
+    )()
+    monkeypatch.setattr(
+        "fabric.runtime.build_runtime",
+        lambda _config, **_kwargs: runtime,
+    )
+    prefetch_calls: list[dict[str, object]] = []
+
+    def partial_prefetch(**kwargs):
+        with RunLock(
+            ingestion_lock_root,
+            lock_document="ingestion.lock",
+        ):
+            prefetch_calls.append(kwargs)
+        return {
+            "status": "partial",
+            "selected_count": 4,
+            "attempted_count": 4,
+            "failed_count": 1,
+            "provider_error": "credential=must-not-be-exposed",
+        }
+
+    events: list[dict[str, object]] = []
+    result = activate_runtime(
+        service,
+        fabric_config="fabric.test.yaml",
+        metadata_prefetch=partial_prefetch,
+        progress_callback=events.append,
+        heartbeat_interval=3600,
+    )
+
+    assert result["status"] == "activated"
+    assert result["fabric_publication"]["status"] == "completed"
+    assert result["metadata_prefetch"] == {
+        "status": "partial",
+        "requested_count": 4,
+        "succeeded_count": 3,
+        "failure_count": 1,
+    }
+    assert prefetch_calls == [
+        {
+            "source_root": config.source_data_root,
+            "generation_id": result["combined_snapshot"]["runId"],
+        }
+    ]
+    prefetch_event = next(
+        event
+        for event in events
+        if event["stage"] == "metadata_prefetch"
+        and event["status"] == "completed"
+    )
+    assert prefetch_event["requested_count"] == 4
+    assert prefetch_event["succeeded_count"] == 3
+    assert prefetch_event["failure_count"] == 1
+    assert "must-not-be-exposed" not in json.dumps(result) + json.dumps(events)
+
+
+def test_shared_prefetch_writes_enrichment_to_api_visible_root(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from intelligence.vulnerability import enrichment_worker as worker_module
+    from intelligence.vulnerability import exposure_prefetch as prefetch_module
+    from intelligence.vulnerability.enrichment_cache import (
+        EXPOSURE_ENRICHMENT_DOCUMENT,
+    )
+
+    pointer_store = OneLakeDocumentStore(tmp_path / "connections")
+    enrichment_store = OneLakeDocumentStore(tmp_path / "aiops")
+    captured: dict[str, object] = {}
+
+    class FakeWorker:
+        def __init__(self, cache, *, max_items):
+            captured["cache_store"] = cache.store
+            captured["worker_max_items"] = max_items
+
+    class FakeDiscovery:
+        def __init__(self, *, pointer_store, table_reader):
+            captured["pointer_store"] = pointer_store
+            captured["table_reader"] = table_reader
+
+    class FakeReport:
+        def to_dict(self):
+            return {"status": "succeeded", "selected_count": 0}
+
+    class FakePrefetchService:
+        def __init__(self, *, discovery, worker, checkpoint_store, max_items):
+            captured["checkpoint_store"] = checkpoint_store
+            captured["service_max_items"] = max_items
+
+        def run(self):
+            enrichment_store.write(
+                EXPOSURE_ENRICHMENT_DOCUMENT,
+                {"schema_version": "2.0.0", "revision": 1},
+                expected_revision=0,
+            )
+            return FakeReport()
+
+    monkeypatch.setattr(worker_module, "EnrichmentWorker", FakeWorker)
+    monkeypatch.setattr(
+        prefetch_module,
+        "ExposureGenerationDiscovery",
+        FakeDiscovery,
+    )
+    monkeypatch.setattr(
+        prefetch_module,
+        "ExposurePrefetchService",
+        FakePrefetchService,
+    )
+
+    result = _shared_metadata_prefetch(
+        runtime=object(),
+        pointer_store=pointer_store,
+        enrichment_store=enrichment_store,
+    )
+
+    assert result == {"status": "succeeded", "selected_count": 0}
+    assert captured["pointer_store"] is pointer_store
+    assert captured["cache_store"] is enrichment_store
+    assert captured["checkpoint_store"] is enrichment_store
+    assert enrichment_store.read(EXPOSURE_ENRICHMENT_DOCUMENT)["revision"] == 1
+    assert pointer_store.read(EXPOSURE_ENRICHMENT_DOCUMENT) == {}
 
 
 def test_activate_runtime_replays_exact_generation_without_upstream_work(
@@ -725,6 +904,12 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
         replay_source_run_id="exact-generation",
         progress_callback=events.append,
         heartbeat_interval=3600,
+        metadata_prefetch=lambda **_kwargs: {
+            "status": "succeeded",
+            "requested_count": 0,
+            "succeeded_count": 0,
+            "failure_count": 0,
+        },
     )
 
     assert result == {
@@ -739,6 +924,12 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
             "status": "completed",
             "tables": ["silver_resources"],
         },
+        "metadata_prefetch": {
+            "status": "succeeded",
+            "requested_count": 0,
+            "succeeded_count": 0,
+            "failure_count": 0,
+        },
         "ontology_version": "v1",
         "freshness": "current",
     }
@@ -747,7 +938,7 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
     assert isinstance(pointer_store, OneLakeDocumentStore)
     assert pointer_store.root == str(service.registry.root)
     started = [event["stage"] for event in events if event["status"] == "started"]
-    assert started == ["activation", "fabric_publication"]
+    assert started == ["activation", "fabric_publication", "metadata_prefetch"]
     assert not {
         "connection_validation",
         "connection_discovery",

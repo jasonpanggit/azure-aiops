@@ -1544,7 +1544,7 @@ def _durable_catalog_records(item_id: str) -> tuple[dict[str, Any], ...]:
 def _refresh_durable_catalog_records(
     item_id: str,
 ) -> tuple[dict[str, Any], ...]:
-    """Refresh one CVE from each public feed and return its durable records."""
+    """Refresh one CVE for explicit maintenance callers, never API reads."""
 
     identifier = canonical_enrichment_identifier("nvd", item_id)
     cache = EnrichmentCache(
@@ -2916,20 +2916,6 @@ def _network_reachability_resolver(
         }
 
     return resolve
-
-
-def _lookup_live_cve(cve_id: str) -> dict[str, Any] | None:
-    """Fetch a single CVE directly from NVD when it isn't already part of the
-    current snapshot's projection (e.g. a CVE search/drilldown for an id the
-    environment hasn't observed a finding for). Memoized via the same TTL
-    cache as `_resolve_cve_details`; returns None on any failure or unknown id
-    so the caller can fall back to a 404 rather than surfacing a partial CVE.
-    """
-    cve_id = cve_id.strip().upper()
-    if not cve_id.startswith("CVE-"):
-        return None
-    rows = _resolve_cve_details((cve_id,))
-    return rows[0] if rows else None
 
 
 def _load_foundry_agent() -> FoundryPromptAgent | None:
@@ -4571,7 +4557,6 @@ def _exposure_query_service_from_reader(
                 scope,
             )
         ),
-        catalog_records_refresher=_refresh_durable_catalog_records,
         catalog_records_resolver=_durable_catalog_records,
     )
 
@@ -5312,7 +5297,6 @@ def build_context() -> ApiContext:
         governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
         network_policy_store=_network_policy_store(),
-        vulnerability_live_lookup=_lookup_live_cve,
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,
         risk_exception_revoke=revoke_risk_exception,
