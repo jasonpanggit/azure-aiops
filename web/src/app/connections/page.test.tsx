@@ -71,18 +71,21 @@ const {
   updateConnection: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: unknown) => input,
-  connectionsApi: {
-    create,
-    get: getConnection,
-    health,
-    list,
-    mapMetadata,
-    sync,
-    update: updateConnection,
-    validate: vi.fn(),
-  },
+vi.mock("@/lib/services", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/services")>();
+  return {
+    ...actual,
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    connectionsApi: {
+      create,
+      get: getConnection,
+      health,
+      list,
+      mapMetadata,
+      sync,
+      update: updateConnection,
+      validate: vi.fn(),
+    },
   fabricMedallionApi: {
     layers: fabricLayers,
     dataset: fabricDataset,
@@ -107,7 +110,8 @@ vi.mock("@/lib/services", () => ({
     evaluation: ontologyEvaluation,
     evaluations: ontologyEvaluations,
   },
-}));
+  };
+});
 
 import ConnectionsPage from "./page";
 
