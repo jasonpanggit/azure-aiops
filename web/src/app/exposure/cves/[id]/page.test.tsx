@@ -584,6 +584,9 @@ describe("CVE detail", () => {
     expect(
       within(summary).getByRole("img", { name: /CVSS vector radar chart/i }),
     ).toBeInTheDocument();
+    const summaryRow = summary.querySelector(".exposure-risk-summary-body");
+    expect(summaryRow).not.toBeNull();
+    expect(summaryRow?.nextElementSibling).toHaveClass("exposure-key-facts");
     expect(
       within(
         screen.getByRole("region", { name: "CVSS technical disclosure section" }),
