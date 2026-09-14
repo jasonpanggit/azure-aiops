@@ -230,11 +230,12 @@ variable "api_memory" {
     Memory allocated to the API container on the dedicated D4 workload profile.
     4Gi (2 vCPU) was observed
     OOM-killing (exit 137) the API in a crash loop once real (non-empty)
-    inventory data was loaded into the in-memory provider cache; 16Gi (4
-    vCPU) provides headroom for the bounded provider projections.
+    inventory data was loaded into the in-memory provider cache. Projected
+    temporal reads keep cold-start memory bounded so 8Gi provides headroom
+    for the production provider set at 4 vCPU.
   EOT
   type        = string
-  default     = "16Gi"
+  default     = "8Gi"
 }
 
 variable "api_min_replicas" {
