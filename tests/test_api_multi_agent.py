@@ -532,11 +532,12 @@ def test_cve_context_aggregates_visible_findings_and_explains_partial_metadata(
     assert "**93** matching findings" in narration
     assert "**50 records were inspected**" in narration
     assert "inspected records target container image" in narration
-    assert "50 are currently marked active" in narration
+    assert "**50 are active**" in narration
     assert "Critical" in narration
     assert "running workload impact is unknown" in narration
-    assert "CVSS, exploitability assessment, affected product, or patch" in narration
-    assert "Review the remaining 43 findings" in narration
+    assert "CVSS severity and vector are unavailable" in narration
+    assert "EPSS probability and percentile are unavailable" in narration
+    assert "Inspect the remaining 43 scoped findings" in narration
     assert "Map the affected image digests to deployed workloads" in narration
     assert "authenticated Exposure query confirms" not in narration
     assert ledger["warnings"] == [
@@ -604,9 +605,9 @@ def test_cve_context_explains_unavailable_exposure_without_implying_zero_risk(
 
     narration = ledger["synthesis"]["narration"]
     assert "cannot determine whether CVE-2025-49796 affects resources" in narration
-    assert "authenticated Exposure recheck is unavailable" in narration
-    assert "zero represented records does not mean zero exposure" in narration
-    assert "Restore the scoped Exposure query provider and retry" in narration
+    assert "page snapshot is retained only as non-authoritative" in narration
+    assert "no scoped findings" not in narration
+    assert "Restore the scoped Exposure query" in narration
     assert "coverage evidence submitted" not in narration
 
 
@@ -825,10 +826,10 @@ def test_cve_narration_handles_server_targets_and_malformed_counts() -> None:
     assert "affected servers" in narration
     assert "image digests" not in narration
     assert "Activity state is unavailable" in narration
-    assert "current: kev" in narration
-    assert "unavailable: nvd" in narration
-    assert "Restore or refresh nvd metadata" in narration
-    assert "Restore or refresh kev" not in narration
+    assert "current: kev" not in narration
+    assert "NVD metadata is unresolved" in narration
+    assert "page reports unavailable freshness" in narration
+    assert "Restore or refresh" not in narration
 
 
 def test_cve_narration_treats_unknown_activity_sentinels_as_unknown() -> None:

@@ -36,6 +36,7 @@ interface ChatTurn {
   snapshot?: ReturnType<typeof buildCopilotSnapshot> | CopilotEvidenceSnapshotV2;
   policyStatus?: CanonicalCopilotResult["policy_status"];
   fallbackReason?: string;
+  degradationReason?: string;
   uncertainty?: string[];
   coverage?: CanonicalCopilotResult["coverage"];
   citations?: ServerSuppliedCitation[];
@@ -345,6 +346,7 @@ export function CopilotDrawer({
           warnings: uniqueWarnings(envelope.warnings),
           policyStatus: result.policy_status,
           fallbackReason: result.fallback_reason,
+          degradationReason: result.synthesis?.warning?.trim() || undefined,
           uncertainty: result.uncertainty,
           coverage: result.coverage,
           citations: result.citations,
@@ -374,7 +376,7 @@ export function CopilotDrawer({
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(result.policy_status === "fallback"
+      setStage(result.policy_status === "fallback" || result.synthesis?.status === "degraded"
         ? "fallback"
         : result.status === "partial"
           ? "partial"
@@ -428,6 +430,9 @@ export function CopilotDrawer({
   const visibleLoading = loading
     && activeRequestFingerprint.current === contextFingerprint;
   const visibleStage = transcriptFingerprint === contextFingerprint ? stage : "idle";
+  const degradationReason = visibleTurns.length
+    ? visibleTurns[visibleTurns.length - 1].degradationReason
+    : undefined;
 
   return (
     <>
@@ -495,7 +500,10 @@ export function CopilotDrawer({
 
           <div className="copilot-live-status" role="status" aria-live="polite">
             {visibleLoading && "Gathering the visible page evidence and checking governed sources…"}
-            {!visibleLoading && visibleStage === "fallback" && "Deterministic evidence is available; Foundry narration was not produced."}
+            {!visibleLoading && visibleStage === "fallback" && (
+              degradationReason
+              ?? "Deterministic evidence is available; Foundry narration was not produced."
+            )}
             {!visibleLoading && visibleStage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
             {!visibleLoading && visibleStage === "error" && "The request failed. Retry the same bounded page snapshot."}
           </div>

@@ -18,6 +18,10 @@ from pydantic import ValidationError
 
 from api.errors import ApiError
 from api.scope import Scope
+from operations.cve_response import (
+    canonical_cve_id,
+    deterministic_cve_narrative,
+)
 from operations.foundry_agent import (
     FoundryAgentError,
     executive_synthesis_input,
@@ -131,6 +135,17 @@ class PlannerUnavailableError(RuntimeError):
 
 class PlannerTimeoutError(TimeoutError):
     """The configured planner adapter exceeded its bounded response time."""
+
+
+def _caused_by_timeout(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, TimeoutError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _default_executor(
@@ -461,13 +476,26 @@ class OrchestrationService:
         if self.telemetry is None:
             api_telemetry = getattr(context, "telemetry", None)
             self.telemetry = getattr(api_telemetry, "orchestration", None)
+        narrator_state = (
+            "configured" if self.executive_agent is not None else "not_configured"
+        )
         if self.executive_agent is None:
             resolver = getattr(context, "specialist_agent", None)
             if callable(resolver):
                 try:
                     self.executive_agent = resolver("executive_summary")
-                except (ApiError, ConnectionError, FoundryAgentError, TimeoutError):
+                except TimeoutError:
+                    narrator_state = "timeout"
                     self.executive_agent = None
+                except (ApiError, ConnectionError, FoundryAgentError):
+                    narrator_state = "unavailable"
+                    self.executive_agent = None
+                else:
+                    narrator_state = (
+                        "configured"
+                        if self.executive_agent is not None
+                        else "not_configured"
+                    )
 
         requested_scope = self.policy.validate_request(request, effective_scope)
         page_snapshot = selection_snapshot or request.snapshot
@@ -625,6 +653,7 @@ class OrchestrationService:
             current_retained_evidence=current_retained_evidence,
             snapshot=page_snapshot,
             deadline=deadline,
+            narrator_state=narrator_state,
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
@@ -1042,26 +1071,42 @@ class OrchestrationService:
         current_retained_evidence: Sequence[Mapping[str, Any]] = (),
         snapshot: EvidenceSnapshotV2 | None = None,
         deadline: float | None = None,
+        narrator_state: str = "configured",
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
         findings = normalize_cited_findings(tool_results)
         decision = executive_synthesis_decision(question, findings)
-        deterministic_claims = self._deterministic_page_claims(
+        deterministic_claims = self._deterministic_cve_claims(
+            question,
+            snapshot=snapshot,
+            tool_results=tool_results,
+        ) or self._deterministic_page_claims(
             question,
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
         if deterministic_claims and self.executive_agent is None:
+            warning = {
+                "timeout": (
+                    "Foundry narration timed out; deterministic cited CVE evidence "
+                    "was used."
+                ),
+                "unavailable": (
+                    "Foundry narration provider is unavailable; deterministic cited "
+                    "CVE evidence was used."
+                ),
+            }.get(
+                narrator_state,
+                "Foundry narration is not configured; deterministic cited CVE "
+                "evidence was used.",
+            )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason="deterministic_page_evidence",
                 domain_count=max(1, decision.domain_count),
                 claims=deterministic_claims,
-                warning=(
-                    "Foundry narration unavailable; retained current page "
-                    "evidence was used."
-                ),
+                warning=warning,
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
@@ -1104,15 +1149,25 @@ class OrchestrationService:
             self._record_synthesis_metric(synthesis)
             return synthesis
         if self.executive_agent is None:
+            warning = {
+                "timeout": (
+                    "Foundry narration timed out; direct specialist findings and "
+                    "retained current page evidence are shown instead."
+                ),
+                "unavailable": (
+                    "Foundry narration provider is unavailable; direct specialist "
+                    "findings and retained current page evidence are shown instead."
+                ),
+            }.get(
+                narrator_state,
+                "Foundry narration is not configured; direct specialist findings "
+                "and retained current page evidence are shown instead.",
+            )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
-                warning=(
-                    "Executive synthesis was unavailable; direct specialist "
-                    "findings and retained current page evidence are shown "
-                    "instead."
-                ),
+                warning=warning,
                 claims=deterministic_claims,
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
@@ -1169,7 +1224,7 @@ class OrchestrationService:
                 getattr(answer, "text", ""),
                 evidence_refs=evidence_refs,
             )
-        except FoundryAgentError:
+        except FoundryAgentError as exc:
             # A rejected or unreachable narrator must not remove the evidence
             # the specialists already produced, so the turn degrades to their
             # direct findings and says so rather than failing.
@@ -1179,24 +1234,39 @@ class OrchestrationService:
                 domain_count=decision.domain_count,
                 claims=deterministic_claims,
                 warning=(
-                    "Executive synthesis was withheld; direct specialist "
-                    "findings and retained current page evidence are shown "
-                    "instead."
+                    "Foundry narration timed out; deterministic cited evidence is "
+                    "shown instead."
+                    if _caused_by_timeout(exc)
+                    else "Foundry narration provider is unavailable; deterministic "
+                    "cited evidence is shown instead."
                 ),
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
             )
-        except (AttributeError, ConnectionError, TimeoutError, TypeError, ValueError):
+        except TimeoutError:
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
                 claims=deterministic_claims,
                 warning=(
-                    "Executive synthesis was withheld; direct specialist "
-                    "findings and retained current page evidence are shown "
-                    "instead."
+                    "Foundry narration timed out; deterministic cited evidence is "
+                    "shown instead."
+                ),
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+            )
+        except (AttributeError, ConnectionError, TypeError, ValueError):
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                claims=deterministic_claims,
+                warning=(
+                    "Foundry narration provider is unavailable; deterministic cited "
+                    "evidence is shown instead."
                 ),
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
@@ -1222,6 +1292,98 @@ class OrchestrationService:
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)
         return synthesis
+
+    @staticmethod
+    def _deterministic_cve_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        tool_results: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build one exact-CVE claim from governed tool payloads and citations."""
+
+        if (
+            snapshot is None
+            or snapshot.page_kind != "vulnerability"
+            or not snapshot.page_id.casefold().startswith("cve:")
+        ):
+            return []
+        cve_id = canonical_cve_id(snapshot.page_id.split(":", 1)[1])
+        mentioned = {
+            match.upper()
+            for match in re.findall(
+                r"\bCVE-\d{4}-\d{4,}\b",
+                question,
+                flags=re.IGNORECASE,
+            )
+        }
+        if not cve_id or (mentioned and mentioned != {cve_id}):
+            return []
+
+        detail_data: Any = None
+        exposure_data: Any = None
+        exposure_status = ""
+        evidence_refs: list[str] = []
+        for result in tool_results:
+            tool = str(result.get("tool") or "")
+            arguments = result.get("arguments")
+            if not isinstance(arguments, Mapping):
+                continue
+            if tool == "cve_detail":
+                if canonical_cve_id(arguments.get("cve_id")) != cve_id:
+                    continue
+                detail_data = result.get("data")
+            elif tool == "cve_exposure":
+                if canonical_cve_id(arguments.get("query")) != cve_id:
+                    continue
+                exposure_data = result.get("data")
+                exposure_status = str(result.get("status") or "")
+            else:
+                continue
+            call_id = str(result.get("call_id") or "")
+            evidence_refs.extend(
+                str(item.get("evidence_id") or f"tool:{call_id}:{index}")
+                for index, item in enumerate(result.get("evidence") or [])
+                if isinstance(item, Mapping)
+            )
+
+        evidence_refs = list(dict.fromkeys(ref for ref in evidence_refs if ref))
+        if not evidence_refs:
+            return []
+        narrative = deterministic_cve_narrative(
+            cve_id,
+            detail_data=detail_data,
+            exposure_data=exposure_data,
+            exposure_status=exposure_status,
+            snapshot_coverage=snapshot.coverage.model_dump(mode="json"),
+            source_statuses={
+                record.source: record.status
+                for record in snapshot.freshness
+            },
+        )
+        if not narrative:
+            return []
+        return [
+            {
+                "finding_id": (
+                    "cve:"
+                    + hashlib.sha256(
+                        f"{cve_id}:{'|'.join(evidence_refs)}".encode()
+                    ).hexdigest()[:24]
+                ),
+                "summary": narrative,
+                "evidence_refs": evidence_refs,
+                "confidence": (
+                    "high" if snapshot.coverage.complete else "medium"
+                ),
+                "freshness": "fresh",
+                "uncertainty": (
+                    [] if snapshot.coverage.complete else ["visible subset is incomplete"]
+                ),
+                "actionable": False,
+                "next_check": "Review the cited scoped CVE evidence before remediation.",
+            }
+        ]
 
     @staticmethod
     def _deterministic_page_claims(

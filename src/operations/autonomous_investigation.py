@@ -22,6 +22,10 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from api.scope import Scope
+from operations.cve_response import (
+    canonical_cve_id,
+    deterministic_cve_narrative,
+)
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
 from operations.investigation_thread_store import (
     OBSERVATION_HISTORICAL,
@@ -497,7 +501,9 @@ def _deterministic_context_narration(
 ) -> str:
     if snapshot.page_kind != "vulnerability":
         return ""
-    subject = _snapshot_subject(snapshot)
+    subject = canonical_cve_id(_snapshot_subject(snapshot))
+    if not subject:
+        return ""
     scoped_finding = next(
         (
             item
@@ -517,263 +523,43 @@ def _deterministic_context_narration(
             if isinstance(candidate, Mapping):
                 coverage_finding = candidate
                 break
-    scoped = str(scoped_finding.get("summary") or "") if scoped_finding else ""
-    details = scoped_finding.get("details") if scoped_finding else coverage_finding
-    snapshot_total = (
-        _nonnegative_count(details.get("total_count"))
-        if isinstance(details, Mapping)
-        else 0
+    details = (
+        scoped_finding.get("details")
+        if scoped_finding and isinstance(scoped_finding.get("details"), Mapping)
+        else coverage_finding
     )
-    snapshot_visible = (
-        _nonnegative_count(details.get("visible_count"))
-        if isinstance(details, Mapping)
-        else 0
+
+    def exact_call(tool: str, argument: str) -> Mapping[str, Any]:
+        for call in tool_calls:
+            if call.get("tool") != tool:
+                continue
+            arguments = call.get("arguments")
+            if not isinstance(arguments, Mapping) or not arguments:
+                return call
+            call_cve = canonical_cve_id(arguments.get(argument))
+            if call_cve == subject:
+                return call
+        return {}
+
+    detail_call = exact_call("cve_detail", "cve_id")
+    exposure_call = exact_call("cve_exposure", "query")
+    detail_result = detail_call.get("result")
+    if not isinstance(detail_result, Mapping):
+        detail_result = {}
+    exposure_result = exposure_call.get("result")
+    if not isinstance(exposure_result, Mapping):
+        exposure_result = {}
+    return deterministic_cve_narrative(
+        subject,
+        detail_data=detail_result.get("data"),
+        exposure_data=exposure_result.get("data"),
+        exposure_status=str(exposure_call.get("status") or ""),
+        snapshot_coverage=details,
+        source_statuses={
+            record.source: record.status
+            for record in snapshot.freshness
+        },
     )
-    cve_call = next(
-        (call for call in tool_calls if call.get("tool") == "cve_exposure"),
-        None,
-    )
-    if cve_call is None:
-        return ""
-    call_status = str(cve_call.get("status") or "")
-    result = cve_call.get("result")
-    result_data = result.get("data") if isinstance(result, Mapping) else None
-    authoritative_total = (
-        _nonnegative_count(result_data.get("total_count"), None)
-        if isinstance(result_data, Mapping)
-        else None
-    )
-    result_rows = _rows(result_data)
-    returned_count = len(result_rows)
-    container_only = False
-    server_only = False
-    impact = ""
-    if call_status == STATUS_OK:
-        severities = sorted(
-            {
-                str(row.get("severity") or "").strip()
-                for row in result_rows
-                if str(row.get("severity") or "").strip()
-            }
-        )
-        target_kinds = sorted(
-            {
-                str(row.get("target_kind") or "").strip().replace("_", " ")
-                for row in result_rows
-                if str(row.get("target_kind") or "").strip()
-            }
-        )
-        activity_states = [
-            str(row.get("current_state") or "").strip().casefold()
-            for row in result_rows
-        ]
-        activity_known_count = sum(
-            state not in {"", "unknown", "unavailable", "not_available"}
-            for state in activity_states
-        )
-        active_count = sum(
-            1
-            for state in activity_states
-            if state == "active"
-        )
-        workload_counts = [
-            _nonnegative_count(row.get("represented_workload_count"), None)
-            for row in result_rows
-        ]
-        represented_workload_associations = sum(
-            count for count in workload_counts if count is not None
-        )
-        workload_counts_complete = all(
-            count is not None for count in workload_counts
-        )
-        severity_text = ", ".join(severities) or "unknown severity"
-        authoritative = (
-            (
-                f"- The current scope contains **{authoritative_total}** matching "
-                f"findings; **{returned_count} records were inspected**."
-                if authoritative_total is not None
-                else (
-                    "- The current scope has matching findings, "
-                    f"but the total count is unavailable; **{returned_count} "
-                    "records were inspected**."
-                )
-            )
-            + (
-                f"\n- The inspected records target {', '.join(target_kinds)} and "
-                f"are **{severity_text}**."
-                if target_kinds
-                else f"\n- The inspected records are **{severity_text}**."
-            )
-            + (
-                f" **{active_count} are currently marked active**."
-                if activity_known_count == returned_count
-                else (
-                    f" Of {activity_known_count} records with lifecycle state, "
-                    f"{active_count} are active; activity state is unavailable for "
-                    f"{returned_count - activity_known_count} records."
-                    if activity_known_count
-                    else " Activity state is unavailable for the inspected records."
-                )
-            )
-        )
-        container_only = target_kinds == ["container image"]
-        server_only = target_kinds == ["server"]
-        if represented_workload_associations:
-            impact = (
-                f"- The inspected evidence contains {represented_workload_associations} "
-                "workload associations; repeated workloads may be represented more "
-                "than once across findings."
-            )
-        elif not workload_counts_complete:
-            impact = (
-                "- Workload relationship counts are unavailable for one or more "
-                "inspected records, so **running workload impact is unknown**."
-            )
-        elif container_only:
-            impact = (
-                "- These records identify vulnerable image digests, but no "
-                "represented workload relationships are present, so **running "
-                "workload impact is unknown**."
-            )
-        elif server_only:
-            impact = (
-                "- These records identify affected servers. Business-service "
-                "impact and reachability still require separate evidence."
-            )
-        else:
-            impact = (
-                "- The inspected records do not establish complete workload or "
-                "business-service impact."
-            )
-        if authoritative_total is not None and authoritative_total == snapshot_total:
-            snapshot_context = ""
-        else:
-            snapshot_context = (
-                f"The page snapshot reported {snapshot_total} total and "
-                f"{snapshot_visible} visible findings. It differs from the "
-                "authenticated recheck and is treated as stale context."
-            )
-    elif call_status == STATUS_EMPTY:
-        authoritative = (
-            f"The authenticated Exposure query currently reports no scoped "
-            f"findings for {subject}; the submitted page snapshot may be stale."
-        )
-        snapshot_context = (
-            f"The page snapshot reported {snapshot_total} total and "
-            f"{snapshot_visible} visible findings, but it is not used as current truth"
-        )
-    else:
-        if call_status == STATUS_UNAVAILABLE:
-            authoritative = (
-                f"The current evidence cannot determine whether {subject} affects "
-                "resources in this scope because the authenticated Exposure recheck "
-                "is unavailable."
-            )
-            snapshot_context = (
-                f"{scoped}. These records are qualified visible context, not current "
-                "truth because the authenticated recheck is unavailable."
-                if scoped_finding is not None
-                else (
-                    "The page snapshot contains no confirmed finding records; zero "
-                    "represented records does not mean zero exposure."
-                )
-            )
-        else:
-            authoritative = (
-                f"The authenticated Exposure recheck for {subject} is {call_status}; "
-                "the page snapshot is retained only as qualified visible context."
-            )
-            snapshot_context = scoped
-    metadata_records = [
-        record for record in snapshot.freshness if record.source != "findings"
-    ]
-    unavailable_sources = sorted(
-        record.source
-        for record in metadata_records
-        if record.status == "unavailable"
-    )
-    degraded_sources = sorted(
-        record.source
-        for record in metadata_records
-        if record.status in {"partial", "stale"}
-    )
-    fresh_sources = sorted(
-        record.source for record in metadata_records if record.status == "fresh"
-    )
-    if unavailable_sources or degraded_sources:
-        source_facts = []
-        if fresh_sources:
-            source_facts.append(f"current: {', '.join(fresh_sources)}")
-        if degraded_sources:
-            source_facts.append(f"degraded: {', '.join(degraded_sources)}")
-        if unavailable_sources:
-            source_facts.append(f"unavailable: {', '.join(unavailable_sources)}")
-        caveat = (
-            f"Metadata status is {('; '.join(source_facts))}. Fields that depend "
-            "on degraded or unavailable sources remain unknown; do not infer a "
-            "missing **CVSS, exploitability assessment, affected product, or patch**."
-        )
-    elif fresh_sources:
-        caveat = f"External CVE metadata is current from {', '.join(fresh_sources)}."
-    else:
-        caveat = "External CVE metadata availability is unknown or degraded."
-    if call_status == STATUS_OK:
-        remaining = (
-            max(0, authoritative_total - returned_count)
-            if authoritative_total is not None
-            else None
-        )
-        next_steps = [
-            (
-                f"Review the remaining {remaining} findings through the scoped "
-                "results pagination."
-                if remaining is not None and remaining > 0
-                else "Review all scoped findings through the results pagination."
-                if remaining is None
-                else "Review the scoped findings and confirm their current state."
-            ),
-        ]
-        if container_only:
-            next_steps.append(
-                "Map the affected image digests to deployed workloads before assigning impact."
-            )
-        elif server_only:
-            next_steps.append(
-                "Map affected servers to business services and validate reachability."
-            )
-        else:
-            next_steps.append(
-                "Map affected targets to deployed workloads and business services."
-            )
-        sources_to_restore = [*unavailable_sources, *degraded_sources]
-        if sources_to_restore:
-            next_steps.append(
-                f"Restore or refresh {', '.join(sources_to_restore)} metadata "
-                "before deciding exploitability or remediation priority."
-            )
-        snapshot_note = f"\n\n{snapshot_context}" if snapshot_context else ""
-        return (
-            f"**{subject}: what is known**\n\n{authoritative}\n{impact}"
-            f"{snapshot_note}\n\n"
-            f"**What is not known**\n\n{caveat}\n\n"
-            "**Recommended next steps**\n\n"
-            + "\n".join(
-                f"{index}. {step}" for index, step in enumerate(next_steps, 1)
-            )
-        )
-    if call_status == STATUS_UNAVAILABLE:
-        return (
-            f"**{subject}: assessment unavailable**\n\n{authoritative}\n\n"
-            f"{snapshot_context}\n\n"
-            f"**What is not known**\n\n{caveat}\n\n"
-            "**Recommended next steps**\n\n"
-            "1. Restore the scoped Exposure query provider and retry this CVE query.\n"
-            "2. Refresh unavailable vulnerability metadata before judging severity, "
-            "exploitability, affected products, or patch priority.\n"
-            "3. Do not assign workload impact or remediation priority until scoped "
-            "findings are available."
-        )
-    return f"**{subject}**\n\n{authoritative}\n\n{snapshot_context}.\n\n{caveat}"
 
 
 def _agent_run(

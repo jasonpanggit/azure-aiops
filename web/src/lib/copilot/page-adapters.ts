@@ -1781,6 +1781,10 @@ export interface CveFindingObservation {
   reachable?: boolean;
   missing_kb?: string;
   severity?: string;
+  target_kind?: string;
+  current_state?: string;
+  represented_workload_count?: number | null;
+  total_workload_count?: number | null;
   due_at?: string | null;
   overdue?: boolean | null;
 }
@@ -1792,8 +1796,12 @@ export interface CveSummaryFields {
   description?: string;
   severity?: string;
   cvss?: unknown;
-  epss_score?: number;
+  epss_score?: number | null;
+  epss_percentile?: number | null;
   is_known_exploited?: boolean;
+  kev_date_added?: string;
+  kev_due_date?: string;
+  kev_ransomware_use?: string;
   associated_kbs: string[];
 }
 
@@ -4170,8 +4178,13 @@ function exposureCoreInput(input: ExposureCopilotPageInput): CoreCopilotAdapterI
 }
 
 function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapterInput {
-  const cve = input.cve ?? null;
-  const findingRows = input.findings.rows ?? [];
+  const requestedCveId = input.cveId.trim().toUpperCase();
+  const cve = input.cve?.cve_id.trim().toUpperCase() === requestedCveId
+    ? input.cve
+    : null;
+  const findingRows = (input.findings.rows ?? []).filter(
+    (finding) => finding.weakness_id?.trim().toUpperCase() === requestedCveId,
+  );
   const attackGraph = input.attack?.graph ?? null;
   const cveSource = input.sources.find((source) => source.key === "nvd");
   const records: CoreCopilotRecord[] = [
@@ -4187,8 +4200,13 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
         description: cve.description,
         severity: cve.severity,
         cvss: cve.cvss,
-        epss_score: cve.epss_score,
+        epss_score: cve.epss_score ?? undefined,
+        epss_percentile: cve.epss_percentile ?? undefined,
         is_known_exploited: cve.is_known_exploited,
+        kev_date_added: cve.kev_date_added,
+        kev_due_date: cve.kev_due_date,
+        kev_ransomware_use: cve.kev_ransomware_use,
+        associated_kbs: cve.associated_kbs,
       },
     }] : []),
     ...(cve?.associated_kbs ?? []).slice(0, 50).map((kb, index) => ({
@@ -4213,6 +4231,10 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
         application: finding.application,
         environment: finding.environment,
         severity: finding.severity,
+        target_kind: finding.target_kind,
+        current_state: finding.current_state,
+        represented_workload_count: finding.represented_workload_count,
+        total_workload_count: finding.total_workload_count,
         missing_kb: finding.missing_kb,
         reachable: finding.reachable,
         network_exposure: finding.network_exposure,
@@ -4293,7 +4315,7 @@ function cveDetailCoreInput(input: CveDetailCopilotPageInput): CoreCopilotAdapte
 }
 
 function cveDetailStarters(input: CveDetailCopilotPageInput): CoreCopilotStarterQuestion[] {
-  const cveId = input.cve?.cve_id ?? input.cveId;
+  const cveId = input.cveId.trim().toUpperCase();
   return [
     {
       label: `Explain ${cveId}`,
@@ -5977,10 +5999,11 @@ export function buildExposureCopilotContext(
 export function buildCveDetailCopilotContext(
   input: CveDetailCopilotPageInput,
 ): CoreCopilotContext {
+  const cveId = input.cveId.trim().toUpperCase();
   return buildCoreCopilotContext(
-    { pageKind: "vulnerability", pageId: `cve:${input.cveId}` },
-    cveDetailCoreInput(input),
-    cveDetailStarters(input),
+    { pageKind: "vulnerability", pageId: `cve:${cveId}` },
+    cveDetailCoreInput({ ...input, cveId }),
+    cveDetailStarters({ ...input, cveId }),
   );
 }
 
