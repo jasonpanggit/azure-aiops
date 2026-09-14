@@ -1928,7 +1928,7 @@ def _silver_patch_status_scope(
     authorization: ExposureAuthorization,
 ) -> tuple[list[str], list[Any]]:
     predicates = ["[tenant_id] = ?"]
-    parameters: list[Any] = ["system"]
+    parameters: list[Any] = [authorization.tenant_id]
     _append_in_predicate(
         predicates,
         parameters,

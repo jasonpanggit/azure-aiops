@@ -24,7 +24,10 @@ from onboarding.credentials import (
 )
 from onboarding.metadata import BusinessMetadata
 from onboarding.registry import ConnectionRegistry, DuplicateConnectionError
-from onboarding.runtime import build_connection_ingestion
+from onboarding.runtime import (
+    build_connection_ingestion,
+    build_connection_inventory_pipeline,
+)
 from onboarding.service import OnboardingError, SubscriptionOnboardingService
 from onboarding.sync import ConnectionSyncCoordinator
 from onboarding.validation import (
@@ -804,11 +807,16 @@ def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) 
     built = []
 
     class FakeArgClient:
-        pass
+        def query(self, _spec, _scopes):
+            return []
 
     monkeypatch.setattr(
         "onboarding.runtime.build_connection_arg_client",
         lambda config, candidate, resolver=None: built.append((config, candidate)) or FakeArgClient(),
+    )
+    monkeypatch.setattr(
+        "onboarding.runtime.build_connection_logs_client",
+        lambda *_args, **_kwargs: None,
     )
 
     ingestion = build_connection_ingestion(
@@ -822,8 +830,71 @@ def test_connection_ingestion_still_uses_live_arg_client(tmp_path, monkeypatch) 
 
     assert ingestion.source.arg.__class__ is FakeArgClient
     assert ingestion.source.mcp is None
+    assert ingestion.source.connection_id == "prod-core"
     assert ingestion.cost_source is None
     assert built[0][1] is connection
+
+    inventory = build_connection_inventory_pipeline(
+        ConnectorConfig(output_dir=tmp_path, cost_management_enabled=False),
+        connection,
+    )
+    assert inventory.source.connection_id == "prod-core"
+
+    from fabric.dataset_mapper import _patch_snapshot_rows
+    from onboarding.ingestion_service import activate_source_partitions
+    from onboarding.query_contract import QuerySpec
+
+    specs = tuple(
+        QuerySpec(
+            query_name,
+            resource_type,
+            resource_type,
+            False,
+            source_family=source_family,
+        )
+        for query_name, resource_type, source_family in (
+            (
+                "patch_assessments",
+                "PatchAssessmentResources",
+                "azure_update_manager_assessment",
+            ),
+            (
+                "patch_installations",
+                "PatchInstallationResources",
+                "azure_update_manager_installation",
+            ),
+            (
+                "patch_assessment_details",
+                "PatchAssessmentResources",
+                "azure_update_manager_missing",
+            ),
+        )
+    )
+    outcomes = ingestion.source.fetch(specs, [SUBSCRIPTION])
+    projection = activate_source_partitions(
+        outcomes=outcomes,
+        attempted_generation="source-generation-1",
+        completed_at="2026-09-14T09:00:05Z",
+    )
+    statuses = list(projection.statuses)
+    barrier = _patch_snapshot_rows(
+        statuses,
+        "patch-publication-1",
+        "2026-09-14T09:00:05Z",
+        subscription_tenants={SUBSCRIPTION: TENANT},
+        combined_source_generation="combined-generation-1",
+    )
+
+    assert {status["connection_id"] for status in statuses} == {"prod-core"}
+    assert {
+        status["source_family"] for status in statuses
+    } == {
+        "azure_update_manager_assessment",
+        "azure_update_manager_installation",
+        "azure_update_manager_missing",
+    }
+    assert barrier[0]["connection_id"] == "prod-core"
+    assert barrier[0]["tenant_id"] == TENANT
 
 
 class FakePublisher:

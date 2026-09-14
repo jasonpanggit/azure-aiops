@@ -309,7 +309,7 @@ export default function PatchPrioritiesPage() {
     0;
   const first = rows.length === 0 ? 0 : (queryState.page - 1) * queryState.pageSize + 1;
   const last = rows.length === 0 ? 0 : first + rows.length - 1;
-  const targetKind = queryState.filters.target_kind ?? "all";
+  const targetKind = queryState.filters.target_kind ?? "server";
 
   // Read-only contextual Copilot over the already-loaded patch-priority queue.
   // Governed remediation stays behind existing server endpoints (D-03, D-04, D-10).
@@ -350,7 +350,7 @@ export default function PatchPrioritiesPage() {
 
   const updateFilter = useCallback(
     (field: "target_kind", value: string) => {
-      const targetKind = value === "all" ? "server" : value;
+      const targetKind = value;
       commitQuery(
         updateExposureQueryState(queryState, {
           filters: {

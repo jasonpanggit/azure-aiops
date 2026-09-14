@@ -613,6 +613,7 @@ class IngestionService:
             cost_future = executor.submit(self._fetch_cost_actuals, subscriptions, started)
             query_results = query_future.result()
             cost_rows = cost_future.result()
+        completed_at = _iso(self.clock())
         run_id = str(uuid.uuid4())
         source_projection: SourcePartitionProjection | None = None
         if query_results and all(
@@ -622,7 +623,7 @@ class IngestionService:
             source_projection = activate_source_partitions(
                 outcomes=query_results,
                 attempted_generation=run_id,
-                completed_at=_iso(started),
+                completed_at=completed_at,
                 previous_partition_rows=self.store.read_dataset(
                     "exposure/source_partition_rows"
                 ),
@@ -646,7 +647,6 @@ class IngestionService:
             query_results.get("resource_changes", []),
         )
         normalization_payload["cost_actuals"] = cost_rows
-        completed_at = _iso(started)
         previous_workload_checkpoints = self.store.read_dataset(
             "exposure/workload_source_checkpoints"
         )
@@ -722,7 +722,8 @@ class IngestionService:
             query_results,
             {
                 "runId": run_id,
-                "startedAt": completed_at,
+                "startedAt": _iso(started),
+                "completedAt": completed_at,
                 "subscriptions": sorted(subscriptions),
                 "queryVersion": "1.0.0",
                 "status": "completed",

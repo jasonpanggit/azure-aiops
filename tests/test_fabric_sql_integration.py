@@ -76,12 +76,14 @@ class SilverPatchReader(RecordingReader):
     def __init__(
         self,
         *,
+        tenant_id: str = "tenant-authorized",
         status_completeness: str = "complete",
         status_row_count: int = 10,
         findings_available: bool = True,
         finding_count: int = 1,
     ) -> None:
         super().__init__()
+        self.tenant_id = tenant_id
         self.status_generation = "source-generation-17"
         self.status_completeness = status_completeness
         self.status_row_count = status_row_count
@@ -103,13 +105,12 @@ class SilverPatchReader(RecordingReader):
             }
         )
         if "[metadata_patch_snapshot]" in sql:
-            subscriptions = [
-                value
-                for value in ("subscription-a", "subscription-b")
-                if value in parameters
-            ]
+            if parameters[0] != self.tenant_id:
+                return []
+            subscriptions = [str(value) for value in parameters[1:]]
             return [
                 {
+                    "connection_id": "default",
                     "subscription_id": subscription_id,
                     "ingestion_run_id": self.status_generation,
                     "source_generation": "source-effective-17",
@@ -402,7 +403,7 @@ def test_server_aum_query_reads_bounded_silver_without_gold_generation() -> None
     assert "[metadata_patch_snapshot]" in status_call["sql"]
     assert status_call["max_rows"] == 3
     assert status_call["parameters"][:3] == (
-        "system",
+        "tenant-authorized",
         "subscription-a",
         "subscription-b",
     )
@@ -415,6 +416,42 @@ def test_server_aum_query_reads_bounded_silver_without_gold_generation() -> None
         assert "SELECT *" not in call["sql"].upper()
     assert page_call["max_rows"] == 26
     assert result.items[0]["source_state"] == "missing"
+
+
+def test_server_aum_query_uses_production_tenant_for_barrier_and_findings() -> None:
+    tenant_id = "ffc83107-fcc0-4d2e-8798-d582da36505e"
+    subscription_id = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+    reader = SilverPatchReader(tenant_id=tenant_id, finding_count=10)
+    authorization = ExposureAuthorization(
+        subject="operator@example.com",
+        tenant_id=tenant_id,
+        connection_ids=("demo",),
+        connection_subscriptions={"demo": subscription_id},
+        scope={
+            "subscription": (subscription_id,),
+            "subscription_connection": ("demo",),
+        },
+    )
+
+    result = ExposureQueryService(reader).list_page(
+        authorization,
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("target_kind", "eq", "server"),
+                ExposureFilter("source_family", "eq", "aum"),
+            ),
+            page_size=100,
+        ),
+    )
+
+    assert result.generation == "silver-patch:source-generation-17"
+    assert result.total_count == 10
+    assert len(result.items) == 10
+    barrier_call, count_call, page_call = reader.calls
+    assert barrier_call["parameters"] == (tenant_id, subscription_id)
+    assert "[connection_id]" not in barrier_call["sql"]
+    assert count_call["parameters"][:2] == (tenant_id, subscription_id)
+    assert page_call["parameters"][:2] == (tenant_id, subscription_id)
 
 
 def test_kb_detail_proves_silver_membership_and_merges_exact_catalog_records() -> None:

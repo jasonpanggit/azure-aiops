@@ -215,6 +215,8 @@ describe("Patch priorities", () => {
         filters: expect.objectContaining({
           search: "kernel",
           severity: "critical",
+          target_kind: "server",
+          source_family: "aum",
         }),
         sort: { field: "severity", direction: "asc" },
         pageSize: 25,
@@ -251,6 +253,32 @@ describe("Patch priorities", () => {
     expect(
       screen.queryByRole("heading", { name: "Risk exceptions" }),
     ).not.toBeInTheDocument();
+    expect(
+      api.exposureItems.mock.calls.every(
+        ([request]) =>
+          request.filters.target_kind === "server" &&
+          request.filters.source_family === "aum",
+      ),
+    ).toBe(true);
+  });
+
+  it("loads container mode only with the Defender source", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&target_kind=container_image",
+    );
+    render(<PatchPrioritiesPage />);
+    await screen.findByText("KB600001");
+
+    expect(api.exposureItems).toHaveBeenCalledTimes(1);
+    expect(api.exposureItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          target_kind: "container_image",
+          source_family: "defender_image",
+        }),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("commits filter, sort, and opaque-cursor changes to the canonical URL", async () => {
