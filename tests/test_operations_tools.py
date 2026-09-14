@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from api.scope import Scope
 from operations.tools import STATUS_OK, call_tool
 
@@ -79,6 +81,67 @@ def test_g6_discloses_the_bound_and_true_totals_when_agent_lists_truncate() -> N
     assert "30" in result.warning
     assert "40" in result.warning
     assert service.scoped_with.subscription_ids == ("sub-a",)
+
+
+def test_cve_detail_prefers_live_durable_external_catalog() -> None:
+    requested: list[str] = []
+
+    class QueryService:
+        def authorization_for(self, principal, scope):
+            assert principal.subject == "operator@example.com"
+            assert scope.values("subscription") == frozenset({"sub-a"})
+            return "authorized"
+
+        def catalog_item(self, authorization, *, generation_id, weakness_id):
+            assert authorization == "authorized"
+            assert generation_id is None
+            requested.append(weakness_id)
+            return {
+                "contract_version": "1.0.0",
+                "catalog_scope": "external_public_metadata",
+                "environment_membership_included": False,
+                "generation": "generation-1",
+                "item": {
+                    "cve_id": weakness_id,
+                    "sources": {
+                        "nvd": {
+                            "status": "succeeded",
+                            "payload": {"description": "Live NVD detail"},
+                        },
+                        "epss": {
+                            "status": "succeeded",
+                            "payload": {"epss_score": 0.42},
+                        },
+                        "kev": {
+                            "status": "succeeded",
+                            "payload": None,
+                        },
+                    },
+                },
+            }
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        exposure_query_provider=lambda: QueryService(),
+        resolve_provider=lambda _name: pytest.fail(
+            "legacy vulnerability provider must not run"
+        ),
+    )
+
+    result = call_tool(
+        "cve_detail",
+        {"cve_id": "CVE-2026-59873"},
+        context=context,
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+        principal=SimpleNamespace(subject="operator@example.com"),
+    )
+
+    assert result.status == STATUS_OK
+    assert requested == ["CVE-2026-59873"]
+    assert result.data["item"]["sources"]["nvd"]["payload"]["description"] == (
+        "Live NVD detail"
+    )
 
 
 def test_g6_stays_silent_when_agent_lists_are_complete() -> None:

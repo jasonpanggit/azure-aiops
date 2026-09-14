@@ -765,6 +765,51 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
     if not cve_id:
         return ToolResult(status=STATUS_EMPTY, warning="A CVE id is required")
 
+    query_provider = getattr(
+        tool_context.context,
+        "exposure_query_provider",
+        None,
+    )
+    if callable(query_provider) and tool_context.principal is not None:
+        try:
+            query_service = query_provider()
+            authorization = query_service.authorization_for(
+                tool_context.principal,
+                tool_context.scope,
+            )
+            catalog = query_service.catalog_item(
+                authorization,
+                generation_id=None,
+                weakness_id=cve_id,
+            )
+        except PermissionError:
+            return ToolResult(
+                status=STATUS_DENIED,
+                warning="CVE detail is outside the authenticated scope",
+            )
+        except (
+            LookupError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ) as exc:
+            _LOGGER.warning("external_cve_catalog_failed error=%s", exc)
+        else:
+            if catalog is not None:
+                return ToolResult(
+                    status=STATUS_OK,
+                    data=_bound(catalog),
+                    evidence=(
+                        Evidence(
+                            source_engine="api.ExposureQueryService",
+                            source_table="enrichment/exposure-items.json",
+                            resource_id=cve_id.upper(),
+                            confidence=CONFIDENCE_HIGH,
+                        ),
+                    ),
+                )
+
     def run(vulnerability: Any) -> ToolResult:
         detail = vulnerability.cve_detail(cve_id, tool_context.scope)
         if not detail:
