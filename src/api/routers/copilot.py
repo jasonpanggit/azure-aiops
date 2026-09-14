@@ -225,6 +225,68 @@ def _validate_bound_cve_request(
         )
 
 
+def _is_bound_network_hub_request(
+    payload: CanonicalInvestigationPayload,
+    snapshot: EvidenceSnapshotV2,
+) -> bool:
+    """Return whether a Network hub query is bound to a selected Azure VNet."""
+
+    hint = payload.hint
+    if (
+        snapshot.page_kind != "network"
+        or snapshot.page_id.casefold() != "network-topology"
+        or hint is None
+        or hint.specialist_id != "network"
+        or hint.tool != "hub_dependents"
+    ):
+        return False
+    hinted_vnet_id = hint.arguments.get("vnet_id")
+    if not isinstance(hinted_vnet_id, str):
+        return False
+    selected_vnet_ids = {
+        entity.resource_id.casefold()
+        for entity in snapshot.selected_entities
+        if isinstance(entity, AzureEntityRef)
+    }
+    if (
+        not selected_vnet_ids
+        or hinted_vnet_id.casefold() not in selected_vnet_ids
+        or any(
+            isinstance(entity, DomainEntityRef)
+            for entity in snapshot.selected_entities
+        )
+    ):
+        return False
+    return not any(
+        isinstance(item.entity, DomainEntityRef)
+        and (item.selected or item.direct)
+        for item in snapshot.evidence
+    )
+
+
+def _without_unselected_domain_observations(
+    snapshot: EvidenceSnapshotV2,
+) -> EvidenceSnapshotV2:
+    """Drop non-authoritative domain rows when their optional resolver is absent."""
+
+    evidence = [
+        item
+        for item in snapshot.evidence
+        if not isinstance(item.entity, DomainEntityRef)
+    ]
+    evidence_ids = {item.evidence_id for item in evidence}
+    return snapshot.model_copy(
+        update={
+            "evidence": evidence,
+            "material_claims": [
+                claim
+                for claim in snapshot.material_claims
+                if set(claim.evidence_refs) <= evidence_ids
+            ],
+        }
+    )
+
+
 class CanonicalInventorySelector(BaseModel):
     """Bounded server selector derived from untrusted Inventory page context."""
 
@@ -1434,9 +1496,13 @@ def investigate_canonical(
             browser_snapshot.page_kind == "vulnerability"
             and browser_snapshot.page_id.casefold().startswith("cve:")
         )
+        bound_network_hub_snapshot = _is_bound_network_hub_request(
+            payload,
+            browser_snapshot,
+        )
         semantic = context.resolve_provider(
             "semantic",
-            optional=bound_cve_snapshot,
+            optional=bound_cve_snapshot or bound_network_hub_snapshot,
         )
         selection_snapshot = browser_snapshot
         if bound_cve_snapshot and semantic is None:
@@ -1450,6 +1516,14 @@ def investigate_canonical(
                     "evidence": [],
                     "material_claims": [],
                 }
+            )
+        elif bound_network_hub_snapshot and semantic is None:
+            # The selected Azure VNet remains scope-checked below and the
+            # explicit hint remains policy-checked before the independent
+            # network provider executes. Unselected browser domain rows are
+            # observations only, so do not make them a semantic prerequisite.
+            selection_snapshot = _without_unselected_domain_observations(
+                browser_snapshot
             )
         resolved_domains: dict[
             tuple[str, str, str],

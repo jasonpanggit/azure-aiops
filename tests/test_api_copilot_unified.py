@@ -590,6 +590,96 @@ def _cve_canonical_body(cve_id: str = "CVE-2026-13221"):
     }
 
 
+def _network_hub_canonical_body():
+    vnet_id = (
+        "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+        "Microsoft.Network/virtualNetworks/demo-vnet"
+    )
+    return {
+        "contract_version": "1",
+        "question": "What depends on demo-vnet?",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "network",
+            "page_id": "network-topology",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 2,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "network_topology",
+                    "status": "fresh",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                }
+            ],
+            "selected_entities": [
+                {"type": "azure", "resource_id": vnet_id},
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "network:summary",
+                    "source": "network/topology",
+                    "status": "ok",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                    "source_key": "network-summary",
+                    "entity": {
+                        "type": "domain",
+                        "namespace": "network",
+                        "kind": "topology_summary",
+                        "source_key": "network-summary",
+                    },
+                    "claim_type": "topology_summary",
+                    "citations": [],
+                    "selected": False,
+                    "direct": False,
+                    "actionable": False,
+                    "severity": "unknown",
+                    "quality": "high",
+                    "data": {
+                        "untrusted_browser_summary": "must not be retained",
+                        "mutation_authorized": False,
+                    },
+                },
+                {
+                    "evidence_id": "network:demo-vnet",
+                    "source": "network/topology",
+                    "status": "ok",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                    "resource_id": vnet_id,
+                    "source_key": vnet_id,
+                    "entity": {"type": "azure", "resource_id": vnet_id},
+                    "claim_type": "virtual_network",
+                    "citations": [],
+                    "selected": True,
+                    "direct": True,
+                    "actionable": False,
+                    "severity": "unknown",
+                    "quality": "high",
+                    "data": {
+                        "name": "demo-vnet",
+                        "mutation_authorized": False,
+                    },
+                },
+            ],
+            "material_claims": [
+                {
+                    "claim_id": "network-visible-summary",
+                    "evidence_refs": ["network:summary", "network:demo-vnet"],
+                    "requires_complete_coverage": False,
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": "network",
+            "tool": "hub_dependents",
+            "arguments": {"vnet_id": vnet_id},
+        },
+    }
+
+
 def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
     tmp_path,
     monkeypatch,
@@ -948,6 +1038,187 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
         for citation in data["citations"]
     )
     assert "must not be retained" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("rollout_mode", "canary_percentage"),
+    [
+        ("compatibility", "0"),
+        ("shadow", "0"),
+        ("canary", "0"),
+        ("canary", "100"),
+        ("default", "0"),
+    ],
+)
+def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
+    tmp_path,
+    monkeypatch,
+    rollout_mode,
+    canary_percentage,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", canary_percentage)
+    body = _network_hub_canonical_body()
+    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def durable_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={
+                "hub_id": vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_count": 0,
+                "dependents": [],
+            },
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    resource_id=vnet_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        durable_network_tool,
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        durable_network_tool,
+    )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    data = response.json()["data"]
+    assert data["rollout"]["mode"] == rollout_mode
+    assert data["selected_tools"] == ["hub_dependents"]
+    assert data["tool_results"][0]["status"] == "ok"
+    assert data["tool_results"][0]["data"]["hub_name"] == "demo-vnet"
+    assert data["mutation_authorized"] is False
+    assert all(
+        citation["citation_id"].startswith("tool:")
+        for citation in data["citations"]
+    )
+    assert "untrusted_browser_summary" not in response.text
+    assert "semantic provider is deferred" not in response.text.casefold()
+
+
+@pytest.mark.parametrize("unsafe_binding", ["mismatched_hint", "selected_domain"])
+def test_deferred_semantic_network_fallback_requires_a_strict_azure_binding(
+    tmp_path,
+    monkeypatch,
+    unsafe_binding,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    if unsafe_binding == "mismatched_hint":
+        body["hint"]["arguments"]["vnet_id"] = (
+            "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+            "Microsoft.Network/virtualNetworks/other-vnet"
+        )
+    else:
+        body["snapshot"]["selected_entities"].append(
+            {
+                "type": "domain",
+                "namespace": "network",
+                "kind": "virtual_network",
+                "source_key": "demo-vnet",
+            }
+        )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: pytest.fail("unsafe binding reached the tool"),
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["message"] == "The semantic provider is deferred"
+
+
+def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    widened_vnet_id = (
+        "/subscriptions/sub-b/resourceGroups/demo-rg/providers/"
+        "Microsoft.Network/virtualNetworks/demo-vnet"
+    )
+    body["snapshot"]["selected_entities"][0]["resource_id"] = widened_vnet_id
+    body["snapshot"]["evidence"][1]["resource_id"] = widened_vnet_id
+    body["snapshot"]["evidence"][1]["source_key"] = widened_vnet_id
+    body["snapshot"]["evidence"][1]["entity"]["resource_id"] = widened_vnet_id
+    body["hint"]["arguments"]["vnet_id"] = widened_vnet_id
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "out-of-scope network binding reached the tool"
+        ),
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "snapshot"
 
 
 def test_deferred_semantic_cve_fallback_rejects_conflicting_selected_cve(
