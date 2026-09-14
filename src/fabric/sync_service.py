@@ -225,6 +225,8 @@ _MAX_PROGRESS_COUNT = 2_147_483_647
 _EXPOSURE_GOLD_INPUT_TABLES = (
     "gold_exposure_current",
     "silver_exposure_observations",
+    "metadata_patch_snapshot",
+    "silver_patch_snapshot_findings",
     "gold_container_exposure_current",
     "silver_container_vulnerability_observations",
     "metadata_source_status",

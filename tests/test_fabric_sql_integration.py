@@ -220,6 +220,8 @@ def _authorization() -> ExposureAuthorization:
 def _patch_status_rows(*, row_count: int = 1) -> list[dict[str, Any]]:
     return [
         {
+            "tenant_id": "tenant-a",
+            "connection_id": "connection-a",
             "source_family": source_family,
             "requested_scope": {"subscription": ["subscription-a"]},
             "effective_generation": "source-generation-17",
@@ -250,6 +252,8 @@ def test_patch_snapshot_manifest_shares_silver_publication_generation() -> None:
     assert len(rows) == 1
     assert rows[0]["ingestion_run_id"] == "silver-publication-17"
     assert rows[0]["source_generation"] == "source-generation-17"
+    assert rows[0]["tenant_id"] == "tenant-a"
+    assert rows[0]["connection_id"] == "connection-a"
     assert rows[0]["completeness"] == "complete"
     assert rows[0]["freshness"] == "fresh"
     assert rows[0]["freshness_at"] == "2026-09-10T02:41:10Z"
@@ -311,6 +315,48 @@ def test_patch_snapshot_manifest_aggregates_all_partitions_order_independently()
     assert forward[0]["freshness_at"] == "2026-09-10T01:41:10Z"
     assert forward[0]["represented_count"] == 1
     assert forward[0]["expected_count"] == 2
+
+
+def test_patch_snapshot_manifest_rejects_missing_or_ambiguous_scope_identity() -> None:
+    missing_connection = _patch_status_rows()
+    for row in missing_connection:
+        row.pop("connection_id")
+    with pytest.raises(ValueError, match="connection identity is required"):
+        _patch_snapshot_rows(
+            missing_connection,
+            "silver-publication-17",
+            "2026-09-10T02:40:00Z",
+        )
+
+    ambiguous_connection = _patch_status_rows()
+    ambiguous_connection[0]["connectionId"] = "connection-b"
+    with pytest.raises(ValueError, match="connection identity is ambiguous"):
+        _patch_snapshot_rows(
+            ambiguous_connection,
+            "silver-publication-17",
+            "2026-09-10T02:40:00Z",
+        )
+
+    ambiguous_subscription = _patch_status_rows()
+    ambiguous_subscription[0]["requested_scope"] = {
+        "subscription": ["subscription-a", "subscription-b"]
+    }
+    with pytest.raises(ValueError, match="exactly one subscription"):
+        _patch_snapshot_rows(
+            ambiguous_subscription,
+            "silver-publication-17",
+            "2026-09-10T02:40:00Z",
+        )
+
+
+def test_patch_snapshot_manifest_requires_all_three_aum_families() -> None:
+    rows = _patch_snapshot_rows(
+        _patch_status_rows()[:-1],
+        "silver-publication-17",
+        "2026-09-10T02:40:00Z",
+    )
+
+    assert rows == []
 
 
 def test_server_aum_query_reads_bounded_silver_without_gold_generation() -> None:
