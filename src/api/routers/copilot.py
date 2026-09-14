@@ -17,6 +17,7 @@ evidence is strictly better than a 502 for an assistant surface.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 import uuid as _uuid
@@ -42,6 +43,9 @@ from operations.investigation_thread_store import (
     investigation_thread_store,
 )
 from operations.maf_orchestrator import (
+    ENV_COPILOT_ROLLOUT_MODE,
+    ROLLOUT_COMPATIBILITY,
+    CopilotRolloutDecision,
     build_deterministic_fallback,
     canonical_orchestration_enabled,
     copilot_rollout_decision,
@@ -175,7 +179,7 @@ def _validate_bound_cve_request(
     """Reject stale or conflicting CVE identity before any tool can execute."""
 
     if (
-        snapshot.page_kind != "vulnerability"
+        snapshot.page_kind not in {"cve_detail", "vulnerability"}
         or not snapshot.page_id.casefold().startswith("cve:")
     ):
         return
@@ -225,49 +229,10 @@ def _validate_bound_cve_request(
         )
 
 
-def _is_bound_network_hub_request(
-    payload: CanonicalInvestigationPayload,
-    snapshot: EvidenceSnapshotV2,
-) -> bool:
-    """Return whether a Network hub query is bound to a selected Azure VNet."""
-
-    hint = payload.hint
-    if (
-        snapshot.page_kind != "network"
-        or snapshot.page_id.casefold() != "network-topology"
-        or hint is None
-        or hint.specialist_id != "network"
-        or hint.tool != "hub_dependents"
-    ):
-        return False
-    hinted_vnet_id = hint.arguments.get("vnet_id")
-    if not isinstance(hinted_vnet_id, str):
-        return False
-    selected_vnet_ids = {
-        entity.resource_id.casefold()
-        for entity in snapshot.selected_entities
-        if isinstance(entity, AzureEntityRef)
-    }
-    if (
-        not selected_vnet_ids
-        or hinted_vnet_id.casefold() not in selected_vnet_ids
-        or any(
-            isinstance(entity, DomainEntityRef)
-            for entity in snapshot.selected_entities
-        )
-    ):
-        return False
-    return not any(
-        isinstance(item.entity, DomainEntityRef)
-        and (item.selected or item.direct)
-        for item in snapshot.evidence
-    )
-
-
-def _without_unselected_domain_observations(
+def _without_unresolved_domain_evidence(
     snapshot: EvidenceSnapshotV2,
 ) -> EvidenceSnapshotV2:
-    """Drop non-authoritative domain rows when their optional resolver is absent."""
+    """Drop unresolved browser domain identities when semantic is unavailable."""
 
     evidence = [
         item
@@ -277,6 +242,11 @@ def _without_unselected_domain_observations(
     evidence_ids = {item.evidence_id for item in evidence}
     return snapshot.model_copy(
         update={
+            "selected_entities": [
+                entity
+                for entity in snapshot.selected_entities
+                if not isinstance(entity, DomainEntityRef)
+            ],
             "evidence": evidence,
             "material_claims": [
                 claim
@@ -284,6 +254,38 @@ def _without_unselected_domain_observations(
                 if set(claim.evidence_refs) <= evidence_ids
             ],
         }
+    )
+
+
+def _canonical_service_snapshot(
+    snapshot: EvidenceSnapshotV2,
+) -> EvidenceSnapshotV2:
+    """Map adapter detail kinds to the canonical service's domain family."""
+
+    if (
+        snapshot.page_kind == "cve_detail"
+        and snapshot.page_id.casefold().startswith("cve:")
+    ):
+        return snapshot.model_copy(update={"page_kind": "vulnerability"})
+    return snapshot
+
+
+def _canonical_endpoint_rollout_decision(
+    *,
+    stable_key: str,
+) -> CopilotRolloutDecision:
+    """Fail closed when this endpoint's rollout mode is not configured."""
+
+    decision = copilot_rollout_decision(stable_key=stable_key)
+    if os.environ.get(ENV_COPILOT_ROLLOUT_MODE) is not None:
+        return decision
+    if not decision.canonical_enabled:
+        return decision
+    return CopilotRolloutDecision(
+        mode=ROLLOUT_COMPATIBILITY,
+        canonical_enabled=False,
+        shadow_enabled=False,
+        reason="rollout_mode_unspecified",
     )
 
 
@@ -623,10 +625,9 @@ def _canonical_plan_preview(
                 if candidate is not None
                 else []
             ),
-            # Shadow deliberately does not know a canonical execution status:
-            # obtaining one would repeat external tool/model I/O.
-            "status": None,
-            "executed": False,
+            "plan_outcome": (
+                "planned" if candidate is not None else "no_safe_plan"
+            ),
         },
         policy_validated,
     )
@@ -817,33 +818,34 @@ def _shadow_comparison(
     compatibility: OrchestrationResult,
     canonical: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Compare executed compatibility metadata with a no-I/O canonical preview."""
+    """Compare normalized plans without repeating tool or model execution."""
 
-    compatibility_metadata = {
-        "policy_status": "retained_compatibility",
+    compatibility_plan = {
+        "plan_outcome": (
+            "planned"
+            if compatibility.selected_tools
+            else "no_safe_plan"
+        ),
         "fallback_reason": compatibility.fallback_reason,
-        # The retained planner has no canonical specialist-policy concept.
         "selected_specialists": None,
         "selected_tools": list(compatibility.selected_tools),
-        "status": compatibility.status,
-        "executed": True,
     }
+    canonical_plan = dict(canonical)
     matches: dict[str, bool | None] = {
-        "policy_status": (
-            compatibility_metadata["policy_status"]
-            == canonical["policy_status"]
+        "plan_outcome": (
+            compatibility_plan["plan_outcome"]
+            == canonical_plan["plan_outcome"]
         ),
+        # The retained planner has no canonical specialist-policy concept.
         "selected_specialists": None,
         "selected_tools": (
-            compatibility_metadata["selected_tools"]
-            == canonical["selected_tools"]
+            compatibility_plan["selected_tools"]
+            == canonical_plan["selected_tools"]
         ),
-        # A canonical result was intentionally not executed in shadow.
-        "status": None,
     }
     return {
-        "compatibility": compatibility_metadata,
-        "canonical": dict(canonical),
+        "compatibility": compatibility_plan,
+        "canonical": canonical_plan,
         "matches": matches,
         "divergent_fields": [
             field
@@ -1492,39 +1494,16 @@ def investigate_canonical(
     browser_snapshot = request.snapshot
     _validate_bound_cve_request(payload, browser_snapshot)
     try:
-        bound_cve_snapshot = (
-            browser_snapshot.page_kind == "vulnerability"
-            and browser_snapshot.page_id.casefold().startswith("cve:")
-        )
-        bound_network_hub_snapshot = _is_bound_network_hub_request(
-            payload,
-            browser_snapshot,
-        )
         semantic = context.resolve_provider(
             "semantic",
-            optional=bound_cve_snapshot or bound_network_hub_snapshot,
+            optional=True,
         )
-        selection_snapshot = browser_snapshot
-        if bound_cve_snapshot and semantic is None:
-            # The page, prompt, filters, selected CVE, and tool hint were bound
-            # above. Browser domain facts are still non-authoritative, so when
-            # their optional semantic resolver is deferred, discard them and
-            # let the governed cve_detail tool supply durable scoped evidence.
-            selection_snapshot = browser_snapshot.model_copy(
-                update={
-                    "selected_entities": [],
-                    "evidence": [],
-                    "material_claims": [],
-                }
-            )
-        elif bound_network_hub_snapshot and semantic is None:
-            # The selected Azure VNet remains scope-checked below and the
-            # explicit hint remains policy-checked before the independent
-            # network provider executes. Unselected browser domain rows are
-            # observations only, so do not make them a semantic prerequisite.
-            selection_snapshot = _without_unselected_domain_observations(
-                browser_snapshot
-            )
+        semantic_unavailable = semantic is None
+        selection_snapshot = _canonical_service_snapshot(
+            _without_unresolved_domain_evidence(browser_snapshot)
+            if semantic_unavailable
+            else browser_snapshot
+        )
         resolved_domains: dict[
             tuple[str, str, str],
             tuple[dict[str, Any], DomainEntityRef],
@@ -1676,7 +1655,9 @@ def investigate_canonical(
             "snapshot": planning_snapshot
         }
     )
-    rollout = copilot_rollout_decision(stable_key=principal.subject)
+    rollout = _canonical_endpoint_rollout_decision(
+        stable_key=principal.subject
+    )
     if browser_snapshot.page_kind == "inventory":
         try:
             selector = _inventory_selector(browser_snapshot)
@@ -1819,6 +1800,19 @@ def investigate_canonical(
             "Investigation thread not found",
             details={"field": "thread_id"},
         ) from exc
+
+    if semantic_unavailable:
+        semantic_warning = (
+            "Semantic identity resolution is unavailable; unresolved domain "
+            "page evidence was excluded."
+        )
+        result = result.model_copy(
+            update={
+                "uncertainty": list(
+                    dict.fromkeys([*result.uncertainty, semantic_warning])
+                )
+            }
+        )
 
     shadow_validated = False
     shadow_reason = ""

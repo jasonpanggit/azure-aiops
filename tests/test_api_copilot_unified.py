@@ -542,13 +542,21 @@ def _canonical_body(**overrides):
 
 
 def _cve_canonical_body(cve_id: str = "CVE-2026-13221"):
+    """Adapter-derived v2 payload emitted for `/exposure/cves/[id]`.
+
+    `normalizeCopilotSnapshotV2` maps the legacy `cve:*` page id to the
+    route-disposition page kind `cve_detail`; keeping that wire value here
+    prevents API regressions from testing the impossible pre-adapter
+    `vulnerability`/`cve:*` combination.
+    """
+
     return {
         "contract_version": "1",
         "question": f"Explain {cve_id}",
         "requested_scope": {"subscription": ["sub-a"]},
         "snapshot": {
             "version": "2",
-            "page_kind": "vulnerability",
+            "page_kind": "cve_detail",
             "page_id": f"cve:{cve_id}",
             "filters": {"weakness_id": [cve_id]},
             "coverage": {
@@ -588,6 +596,24 @@ def _cve_canonical_body(cve_id: str = "CVE-2026-13221"):
             "arguments": {"cve_id": cve_id},
         },
     }
+
+
+def test_cve_api_fixture_matches_browser_adapter_page_kind_contract():
+    from pathlib import Path
+
+    adapter = (
+        Path(__file__).resolve().parents[1]
+        / "web/src/lib/copilot/page-adapters.ts"
+    ).read_text()
+    assert (
+        '"/exposure/cves/[id]": { kind: "integrated", pageKind: "cve_detail" }'
+        in adapter
+    )
+    assert (
+        'if (snapshot.page_id.startsWith("cve:")) return "cve_detail";'
+        in adapter
+    )
+    assert _cve_canonical_body()["snapshot"]["page_kind"] == "cve_detail"
 
 
 def _network_hub_canonical_body():
@@ -1040,6 +1066,99 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
     assert "must not be retained" not in response.text
 
 
+def test_canonical_page_degrades_when_domain_resolution_is_deferred(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    body = _canonical_body()
+    body.pop("hint")
+    body["question"] = "Summarize the visible governance context."
+    body["snapshot"] = {
+        "version": "2",
+        "page_kind": "governance",
+        "page_id": "governance",
+        "coverage": {
+            "visible_count": 1,
+            "total_count": 1,
+            "complete": True,
+        },
+        "freshness": [
+            {
+                "source": "governance",
+                "status": "fresh",
+                "observed_at": "2026-09-14T00:00:00Z",
+            }
+        ],
+        "selected_entities": [
+            {
+                "type": "domain",
+                "namespace": "governance",
+                "kind": "policy",
+                "source_key": "policy-visible",
+            }
+        ],
+        "evidence": [
+            {
+                "evidence_id": "governance:visible",
+                "source": "governance/page",
+                "status": "ok",
+                "observed_at": "2026-09-14T00:00:00Z",
+                "source_key": "policy-visible",
+                "entity": {
+                    "type": "domain",
+                    "namespace": "governance",
+                    "kind": "policy",
+                    "source_key": "policy-visible",
+                },
+                "claim_type": "policy",
+                "citations": [],
+                "selected": True,
+                "direct": True,
+                "actionable": False,
+                "severity": "unknown",
+                "quality": "high",
+                "data": {"untrusted_browser_policy": "must not be retained"},
+            }
+        ],
+        "material_claims": [
+            {
+                "claim_id": "governance-visible",
+                "evidence_refs": ["governance:visible"],
+                "requires_complete_coverage": False,
+            }
+        ],
+    }
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["mutation_authorized"] is False
+    assert any(
+        "semantic identity resolution is unavailable" in warning.casefold()
+        for warning in data["uncertainty"]
+    )
+    assert "must not be retained" not in response.text
+
+
 @pytest.mark.parametrize(
     ("rollout_mode", "canary_percentage"),
     [
@@ -1126,15 +1245,163 @@ def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
     assert "semantic provider is deferred" not in response.text.casefold()
 
 
-@pytest.mark.parametrize("unsafe_binding", ["mismatched_hint", "selected_domain"])
-def test_deferred_semantic_network_fallback_requires_a_strict_azure_binding(
+def test_shadow_endpoint_accepts_matching_plans_without_duplicate_tool_io(
     tmp_path,
     monkeypatch,
-    unsafe_binding,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
+    body = _network_hub_canonical_body()
+    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def durable_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={"hub_id": vnet_id, "dependent_count": 0, "dependents": []},
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    resource_id=vnet_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("operations.investigation.call_tool", durable_network_tool)
+    monkeypatch.setattr("api.routers.copilot.call_tool", durable_network_tool)
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    rollout = response.json()["data"]["rollout"]
+    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    assert rollout["shadow_validated"] is True
+    assert rollout["shadow_reason"] == "accepted"
+    assert rollout["comparison"]["divergent_fields"] == []
+    assert rollout["comparison"]["matches"]["plan_outcome"] is True
+    assert rollout["comparison"]["matches"]["selected_tools"] is True
+
+
+def test_shadow_endpoint_reports_canonical_policy_fallback_without_duplicate_io(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
+    body = _network_hub_canonical_body()
+    body["hint"]["specialist_id"] = "vulnerability"
+    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def durable_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr("operations.investigation.call_tool", durable_network_tool)
+    monkeypatch.setattr("api.routers.copilot.call_tool", durable_network_tool)
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    rollout = response.json()["data"]["rollout"]
+    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    assert rollout["shadow_validated"] is False
+    assert rollout["shadow_reason"].startswith("candidate_rejected:")
+    assert rollout["comparison"]["canonical"]["policy_status"] == "fallback"
+
+
+def test_absent_rollout_mode_fails_closed_to_compatibility(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
+    monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+    body = _network_hub_canonical_body()
+    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    compatibility_calls: list[tuple[str, dict[str, object]]] = []
+
+    def compatibility_tool(name, arguments, **_kwargs):
+        compatibility_calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr("operations.investigation.call_tool", compatibility_tool)
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "absent rollout mode reached canonical tool execution"
+        ),
+    )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    rollout = response.json()["data"]["rollout"]
+    assert compatibility_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    assert rollout["mode"] == "compatibility"
+    assert rollout["canonical_enabled"] is False
+
+
+@pytest.mark.parametrize("binding_variant", ["mismatched_hint", "selected_domain"])
+def test_deferred_semantic_network_does_not_require_a_page_specific_exception(
+    tmp_path,
+    monkeypatch,
+    binding_variant,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
     body = _network_hub_canonical_body()
-    if unsafe_binding == "mismatched_hint":
+    if binding_variant == "mismatched_hint":
         body["hint"]["arguments"]["vnet_id"] = (
             "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
             "Microsoft.Network/virtualNetworks/other-vnet"
@@ -1148,6 +1415,8 @@ def test_deferred_semantic_network_fallback_requires_a_strict_azure_binding(
                 "source_key": "demo-vnet",
             }
         )
+    expected_vnet_id = body["hint"]["arguments"]["vnet_id"]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
     context = _context(tmp_path, None)
     context.provider_runtime = ProviderRuntime(
         {
@@ -1160,7 +1429,10 @@ def test_deferred_semantic_network_fallback_requires_a_strict_azure_binding(
     )
     monkeypatch.setattr(
         "operations.investigation.call_tool",
-        lambda *_args, **_kwargs: pytest.fail("unsafe binding reached the tool"),
+        lambda name, arguments, **_kwargs: (
+            tool_calls.append((name, dict(arguments)))
+            or ToolResult(status="empty")
+        ),
     )
 
     response = TestClient(
@@ -1172,8 +1444,15 @@ def test_deferred_semantic_network_fallback_requires_a_strict_azure_binding(
         json=body,
     )
 
-    assert response.status_code == 503
-    assert response.json()["error"]["message"] == "The semantic provider is deferred"
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert tool_calls == [("hub_dependents", {"vnet_id": expected_vnet_id})]
+    assert data["mutation_authorized"] is False
+    assert any(
+        "semantic identity resolution is unavailable" in warning.casefold()
+        for warning in data["uncertainty"]
+    )
+    assert "untrusted_browser_summary" not in response.text
 
 
 def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
@@ -1345,7 +1624,11 @@ def test_authenticated_canonical_route_preserves_governed_result(
     assert data["mutation_authorized"] is False
 
 
-def test_canonical_route_uses_snapshot_selectors_for_governed_reads(tmp_path):
+def test_canonical_route_uses_snapshot_selectors_for_governed_reads(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     observed_calls: list[tuple[str | None, str | None]] = []
 
     class InventoryPort:
@@ -1408,7 +1691,9 @@ def test_canonical_route_uses_snapshot_selectors_for_governed_reads(tmp_path):
 
 def test_canonical_route_resolves_selected_software_through_scoped_service(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     observed: list[tuple[str, str, dict[str, list[str]], int]] = []
 
     class InventoryService:
@@ -1491,7 +1776,11 @@ def test_canonical_route_resolves_selected_software_through_scoped_service(
     )
 
 
-def test_canonical_route_bounds_large_selected_paas_evidence(tmp_path):
+def test_canonical_route_bounds_large_selected_paas_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     evidence_count = 300
 
     class InventoryService:
@@ -1558,7 +1847,9 @@ def test_canonical_route_bounds_large_selected_paas_evidence(tmp_path):
 
 def test_canonical_route_rejects_conflicting_inventory_context_before_io(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[object] = []
 
     class InventoryPort:
@@ -1657,7 +1948,11 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
     ]
 
 
-def test_canonical_route_rejects_browser_authority_assertions(tmp_path):
+def test_canonical_route_rejects_browser_authority_assertions(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
     body = _canonical_body()
@@ -1674,7 +1969,9 @@ def test_canonical_route_rejects_browser_authority_assertions(tmp_path):
 
 def test_canonical_route_never_promotes_browser_observations_to_authority(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     class InventoryPort:
         def list_resources(self, scope, *, family, resource_type, limit):
             return {"resources": [], "total": 0}
@@ -2763,6 +3060,7 @@ def test_canonical_history_projects_binding_contention_as_conflict(
 def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     context = _context(tmp_path, None)
     monkeypatch.setattr(
         OrchestrationService,
@@ -2784,6 +3082,7 @@ def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
 def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     monkeypatch.setattr(
         OrchestrationService,
         "execute",
@@ -2806,6 +3105,7 @@ def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
 def test_canonical_endpoint_preserves_used_retained_citations(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     from operations.orchestration_contract import Citation, OrchestrationResult
 
     retained_id = f"retained:thr-{'a' * 32}:rev-1:citation-0"
@@ -3381,8 +3681,10 @@ def test_incident_terms_take_precedence_over_embedded_network_markers(
 
 def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     tmp_path,
+    monkeypatch,
 ):
     """The shared canonical route accepts every manifest-backed page kind."""
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     body = _canonical_body()
     body["snapshot"]["page_kind"] = "network"
     body["snapshot"]["page_id"] = "network"
@@ -3436,6 +3738,7 @@ def test_unhinted_typed_questions_use_governed_page_context(
     question,
     expected_specialists,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[tuple[str, dict[str, object]]] = []
     resource_id = (
         "/subscriptions/sub-a/resourceGroups/rg/providers/"
@@ -3509,6 +3812,7 @@ def test_canonical_endpoint_returns_409_for_stale_revision_before_tool_io(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     calls: list[str] = []
 
     def execute(name, arguments, *, context, scope):

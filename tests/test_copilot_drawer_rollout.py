@@ -209,19 +209,15 @@ def test_shadow_reports_real_canonical_compatibility_divergence(
     result = response.json()["data"]
     comparison = result["rollout"]["comparison"]
     assert result["rollout"]["shadow_reason"].startswith("diverged:")
-    assert comparison["compatibility"]["executed"] is True
-    assert comparison["compatibility"]["policy_status"] == (
-        "retained_compatibility"
-    )
+    assert comparison["compatibility"]["plan_outcome"] == "planned"
     assert comparison["compatibility"]["selected_tools"] == compatibility_calls
     assert comparison["canonical"]["policy_status"] == "accepted"
+    assert comparison["canonical"]["plan_outcome"] == "planned"
     assert comparison["canonical"]["selected_tools"]
-    assert comparison["canonical"]["executed"] is False
-    assert comparison["canonical"]["status"] is None
-    assert comparison["matches"]["policy_status"] is False
-    assert comparison["matches"]["status"] is None
+    assert canonical_calls == []
+    assert comparison["matches"]["plan_outcome"] is True
     assert comparison["matches"]["selected_tools"] is False
-    assert "policy_status" in comparison["divergent_fields"]
+    assert "plan_outcome" not in comparison["divergent_fields"]
     assert "selected_tools" in comparison["divergent_fields"]
     assert canonical_calls == []
 
