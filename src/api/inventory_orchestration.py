@@ -27,7 +27,12 @@ def run_inventory_refresh_all_connections(
     from onboarding.config import ConnectorConfig
     from onboarding.credentials import CredentialResolver, default_secret_provider
     from onboarding.registry import ConnectionRegistry
-    from onboarding.runtime import build_connection_inventory_pipeline
+    from onboarding.runtime import (
+        build_connection_ingestion,
+        build_connection_inventory_pipeline,
+    )
+    from onboarding.service import SubscriptionOnboardingService
+    from onboarding.sync import ConnectionSyncCoordinator
 
     config = ConnectorConfig.load(config_path)
     root = registry_root or str(config.output_dir)
@@ -42,6 +47,23 @@ def run_inventory_refresh_all_connections(
         raise RuntimeError("No active subscription connections are registered")
 
     resolver = CredentialResolver(provider=default_secret_provider())
+    # ``registry`` (this module's ``root``) and the connection dataset
+    # storage root (``config.output_dir``, used by
+    # ``build_connection_inventory_pipeline``/``build_connection_ingestion``)
+    # may legitimately differ, so ``sync_coordinator`` must be rooted at
+    # ``config.output_dir`` -- matching where ingestion actually writes --
+    # while ``registry`` stays pointed at this module's real registry.
+    onboarding_service = SubscriptionOnboardingService(
+        config.output_dir,
+        registry=registry,
+        resolver=resolver,
+        sync_coordinator=ConnectionSyncCoordinator(
+            config.output_dir,
+            ingestion_factory=lambda connection: build_connection_ingestion(
+                config, connection, resolver
+            ),
+        ),
+    )
     connection_output_dirs: dict[str, str] = {}
     connection_results: dict[str, Any] = {}
     max_workers = max(1, min(config.max_query_workers, len(connections)))
@@ -52,6 +74,16 @@ def run_inventory_refresh_all_connections(
         try:
             pipeline = build_connection_inventory_pipeline(config, connection, resolver)
             result = pipeline.refresh()
+            # The narrow inventory pipeline above only acquires OS/software/
+            # PaaS-resource observations (feeds the `inventory_*` contract
+            # tables). It never writes `entities/*.jsonl`, which is what
+            # `InventoryDatasetMapper` (below) reads to build every
+            # bronze_*/silver_* table (bronze_resources, bronze_advisor,
+            # bronze_cost_actuals, etc.). Without this second, full ARG
+            # discovery run, those tables silently end up with 0 rows even
+            # though the sync reports "succeeded". Reuses the same
+            # per-connection ingestion the interactive "Sync" button runs.
+            onboarding_service.sync(connection.connection_id, mode="manual")
         except Exception as exc:  # noqa: BLE001 - isolate one connection's failure
             outcome = {"status": "failed", "error": str(exc)}
             output_dir = ""
@@ -109,6 +141,7 @@ def run_inventory_refresh_all_connections(
         publish_combined_inventory_snapshot,
         republish_combined_snapshot_to_fabric,
     )
+    from onboarding.activation import publish_combined_snapshot
 
     combined_manifest = publish_combined_inventory_snapshot(
         connection_output_dirs,
@@ -117,6 +150,7 @@ def run_inventory_refresh_all_connections(
     )
     inventory_publication: dict[str, Any] | None = None
     fabric_publication: dict[str, Any] | None = None
+    entities_manifest: dict[str, Any] | None = None
     if fabric_config_path:
         # Two distinct table families are produced from the same combined
         # snapshot and both are required for a complete lakehouse:
@@ -130,14 +164,19 @@ def run_inventory_refresh_all_connections(
             source_run_id=str(combined_manifest["runId"]),
         )
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
-        from storage.datasets import DatasetStore
 
-        combined_store = DatasetStore(config.output_dir)
-        combined_generation = combined_store.generation_path(
-            str(combined_manifest["runId"])
+        # The bronze/silver/gold family is built from `entities/*.jsonl`
+        # (written per-connection above by ``onboarding_service.sync``), not
+        # from ``combined_manifest`` (which only carries the narrow
+        # inventory/os/software datasets). Merge a separate,
+        # entities-aware combined snapshot -- mirroring
+        # ``onboarding.activation.activate_runtime`` -- and replay *that*
+        # generation into the Fabric sync instead.
+        entities_manifest = publish_combined_snapshot(
+            onboarding_service,
+            succeeded,
+            config.output_dir,
         )
-        if combined_generation is None:
-            raise RuntimeError("Combined inventory snapshot was not published")
         runtime = build_runtime(
             dataclasses.replace(
                 fabric_config,
@@ -151,9 +190,16 @@ def run_inventory_refresh_all_connections(
                 if connection.connection_id in succeeded and connection.subscription_id
             }
         )
+        from storage.onelake_documents import OneLakeDocumentStore
+
         publication = runtime.service.sync(
-            replay_source_run_id=str(combined_manifest["runId"]),
+            replay_source_run_id=str(entities_manifest["runId"]),
             requested_scope={"subscription": requested_subscriptions},
+            # Gold curation (exposure facts/facets/summaries) is only staged
+            # and activated when a pointer store is supplied. Without it,
+            # this connection-triggered sync path silently skips Gold-layer
+            # publication even though bronze/silver tables complete normally.
+            exposure_pointer_store=OneLakeDocumentStore(root),
         )
         fabric_publication = {
             "runId": publication.run_id,
@@ -166,6 +212,7 @@ def run_inventory_refresh_all_connections(
         "status": "completed" if len(succeeded) == len(connections) else "partial",
         "connections": connection_results,
         "combined_manifest": combined_manifest,
+        "entities_manifest": entities_manifest,
         "inventory_publication": inventory_publication,
         "fabric_publication": fabric_publication,
     }

@@ -225,6 +225,59 @@ def test_refresh_all_connections_preserves_remote_store_uri(
     assert captured_roots == expected_roots
 
 
+class FakeDiscoveryIngestion:
+    """Writes a minimal ``entities/*.jsonl`` discovery generation.
+
+    Mirrors the real per-connection discovery ingestion
+    (``build_connection_ingestion``) closely enough for
+    ``onboarding.activation.publish_combined_snapshot`` to find a valid
+    generation to merge, without any real ARG/network dependency.
+    """
+
+    def __init__(self, root: Path, resource_id: str, connection_id: str) -> None:
+        from storage.datasets import DatasetStore
+
+        self.store = DatasetStore(root)
+        self._resource_id = resource_id
+        self._connection_id = connection_id
+
+    def run(self):
+        return self.store.publish(
+            {
+                "entities/Resource": [
+                    {
+                        "id": self._resource_id,
+                        "resourceId": self._resource_id,
+                        "connection_id": self._connection_id,
+                    }
+                ],
+                "entities/Subscription": [],
+                "entities/ResourceGroup": [],
+                "entities/VirtualMachine": [],
+                "entities/ArcServer": [],
+                "entities/ManagementGroup": [],
+                "entities/PatchAssessment": [],
+                "entities/PatchAssessmentDetail": [],
+                "entities/PatchInstallation": [],
+                "entities/AdvisorRecommendation": [],
+                "entities/CostActual": [],
+                "entities/RoleAssignment": [],
+                "entities/RoleDefinition": [],
+                "entities/ManagedIdentity": [],
+                "entities/DefenderAssessment": [],
+                "relationships/relationships": [],
+                "changes/resource_changes": [],
+            },
+            {},
+            {
+                "runId": f"discovery-{self._connection_id}",
+                "status": "completed",
+                "startedAt": "2026-01-01T00:00:00Z",
+            },
+            ontology={},
+        )
+
+
 def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -250,22 +303,45 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             [{"resource_id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
         ),
     }
+    ingestions: dict[str, FakeDiscoveryIngestion] = {
+        "conn-a": FakeDiscoveryIngestion(
+            tmp_path / "compat" / "connections" / "conn-a",
+            "/subscriptions/aaa/vm1",
+            "conn-a",
+        ),
+        "conn-b": FakeDiscoveryIngestion(
+            tmp_path / "compat" / "connections" / "conn-b",
+            "/subscriptions/bbb/vm2",
+            "conn-b",
+        ),
+    }
     calls: list[Path | str] = []
     replay_calls: list[str] = []
     scope_calls: list[dict[str, list[str]] | None] = []
+    pointer_store_calls: list[Any] = []
 
     def fake_build(config: ConnectorConfig, connection, resolver=None):
         return pipelines[connection.connection_id]
+
+    def fake_build_ingestion(config: ConnectorConfig, connection, resolver=None):
+        return ingestions[connection.connection_id]
 
     class FakeRuntime:
         def __init__(self, source_root: Path) -> None:
             self.source_root = source_root
             self.service = self
 
-        def sync(self, *, replay_source_run_id="", requested_scope=None):
+        def sync(
+            self,
+            *,
+            replay_source_run_id="",
+            requested_scope=None,
+            exposure_pointer_store=None,
+        ):
             calls.append(self.source_root)
             replay_calls.append(replay_source_run_id)
             scope_calls.append(requested_scope)
+            pointer_store_calls.append(exposure_pointer_store)
             return type(
                 "Publication",
                 (),
@@ -283,6 +359,9 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
 
     monkeypatch.setattr(
         "onboarding.runtime.build_connection_inventory_pipeline", fake_build
+    )
+    monkeypatch.setattr(
+        "onboarding.runtime.build_connection_ingestion", fake_build_ingestion
     )
 
     def fake_republish(root, *_args, **_kwargs):
@@ -325,10 +404,13 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
 
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]
     assert calls == [tmp_path / "compat"]
-    assert replay_calls == [result["combined_manifest"]["runId"]]
+    assert replay_calls == [result["entities_manifest"]["runId"]]
     assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
+    assert len(pointer_store_calls) == 1
+    assert pointer_store_calls[0] is not None
+    assert str(pointer_store_calls[0].root) == str(tmp_path)
     store = DatasetStore(tmp_path / "compat")
     expected_generation = Path(
-        store.generation_path(str(result["combined_manifest"]["runId"])) or ""
+        store.generation_path(str(result["entities_manifest"]["runId"])) or ""
     )
     assert (expected_generation / "manifest.json").is_file()
