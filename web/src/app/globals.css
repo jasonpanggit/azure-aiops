@@ -7702,6 +7702,8 @@ body.topology-fullscreen-open {
   display: grid;
   min-width: 0;
   gap: 8px;
+  align-self: start;
+  align-content: start;
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -7712,9 +7714,11 @@ body.topology-fullscreen-open {
 }
 
 .remediation-approval-role-hint {
+  display: block;
   color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 400;
+  line-height: 1.5;
 }
 
 .remediation-approval-form > .button {

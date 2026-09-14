@@ -1663,7 +1663,7 @@ function RemediationContent() {
                             </label>
                             {decision === "approved" && unmetRoleOptions.length > 0 && (
                               <label>
-                                <span>Required role this decision is for</span>
+                                <span>Role for this decision</span>
                                 <select
                                   value={selectedRoleId}
                                   onChange={(event) => setSelectedRoleId(event.target.value)}
@@ -1676,9 +1676,9 @@ function RemediationContent() {
                                   ))}
                                 </select>
                                 {unmetRoleOptions.length > 1 && (
-                                  <p className="remediation-approval-role-hint">
+                                  <span className="remediation-approval-role-hint">
                                     This decision attests exactly one required role. Multiple unmet roles remain -- a separate decision is needed for each.
-                                  </p>
+                                  </span>
                                 )}
                               </label>
                             )}
