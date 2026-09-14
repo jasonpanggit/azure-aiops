@@ -70,6 +70,57 @@ from storage.datasets import DatasetStore as NeutralDatasetStore
 TOKENS = '{"demo-token-0123456789abcdef": {"subject": "d@e.com", "grants": [{"role": "admin"}]}}'
 
 
+def test_live_catalog_refresh_targets_all_cve_feeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], bool]] = []
+    records = {
+        source: {
+            "source": source,
+            "identifier": "CVE-2026-0001",
+            "status": "succeeded",
+        }
+        for source in ("nvd", "epss", "kev")
+    }
+
+    class Cache:
+        def get_record(self, source, identifier):
+            assert identifier == "CVE-2026-0001"
+            return records[source]
+
+    class Worker:
+        def __init__(self, cache, *, max_items):
+            assert max_items == 3
+            self.cache = cache
+
+        def refresh(self, targets, *, force=False):
+            calls.append((tuple(targets), force))
+            return ()
+
+    monkeypatch.setattr(
+        runtime_module,
+        "EnrichmentCache",
+        lambda *_args, **_kwargs: Cache(),
+    )
+    monkeypatch.setattr(runtime_module, "EnrichmentWorker", Worker)
+
+    result = runtime_module._refresh_durable_catalog_records(
+        "cve-2026-0001"
+    )
+
+    assert [(target.source, target.identifier) for target in calls[0][0]] == [
+        ("nvd", "CVE-2026-0001"),
+        ("epss", "CVE-2026-0001"),
+        ("kev", "CVE-2026-0001"),
+    ]
+    assert calls[0][1] is False
+    assert result == (
+        records["nvd"],
+        records["epss"],
+        records["kev"],
+    )
+
+
 def test_fabric_temporal_exposure_reads_observation_projection() -> None:
     reads: list[tuple[str, tuple[str, ...] | None]] = []
 
