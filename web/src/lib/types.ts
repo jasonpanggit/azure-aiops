@@ -632,6 +632,14 @@ export interface ExposureFreshnessThreshold {
   threshold_seconds: number;
 }
 
+export interface ExposureRefreshState {
+  state: "refreshing" | "succeeded" | "failed" | "unavailable";
+  refreshing: boolean;
+  last_success_at?: string;
+  last_failure_at?: string;
+  failure_code?: string;
+}
+
 export interface ExposureFreshness {
   state: string;
   as_of?: string;
@@ -639,6 +647,7 @@ export interface ExposureFreshness {
   source_families?: string[];
   threshold_seconds?: number | null;
   thresholds?: ExposureFreshnessThreshold[];
+  refresh?: ExposureRefreshState;
   [key: string]: unknown;
 }
 

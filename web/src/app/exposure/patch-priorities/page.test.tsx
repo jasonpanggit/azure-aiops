@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/lib/types";
+import { ApiError, type ExposureRefreshState } from "@/lib/types";
 
 const navigation = vi.hoisted(() => ({
   replace: vi.fn(),
@@ -31,20 +31,25 @@ vi.mock("@/lib/scope-context", () => ({
   useScope: () => ({ scope: { subscription: ["sub-1"] } }),
 }));
 
-vi.mock("@/lib/services", () => ({
-  vulnerabilityApi: api,
-  remediationApi: {
-    exposureHandoffs: api.exposureHandoffs,
-  },
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>(
+    "@/lib/services",
+  );
+  return {
+    ...actual,
+    vulnerabilityApi: api,
+    remediationApi: {
+      exposureHandoffs: api.exposureHandoffs,
+    },
+  };
+});
 
 import PatchPrioritiesPage from "./page";
 
 const SERVER_ID =
   "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/server-1";
 
-function exposureEnvelope() {
+function exposureEnvelope(refresh?: ExposureRefreshState) {
   const contract = {
     version: "1.0.0",
     query: {
@@ -84,6 +89,7 @@ function exposureEnvelope() {
       as_of: "2026-09-06T08:00:00Z",
       source_family: "aum",
       threshold_seconds: 3600,
+      ...(refresh ? { refresh } : {}),
     },
     evidence_refs: [
       {
@@ -326,6 +332,74 @@ describe("Patch priorities", () => {
       ),
     );
     expect(screen.getByText("KB600001")).toBeInTheDocument();
+  });
+
+  it("shows LKG rows and polls while a scoped background refresh runs", async () => {
+    vi.useFakeTimers();
+    try {
+      api.exposureItems.mockResolvedValue(
+        exposureEnvelope({
+          state: "refreshing",
+          refreshing: true,
+          last_success_at: "2026-09-06T08:00:00Z",
+        }),
+      );
+
+      render(<PatchPrioritiesPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText("KB600001")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Refreshing patch priorities in the background/),
+      ).toHaveTextContent("2026-09-06T08:00:00Z");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(api.exposureItems).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a failed-refresh warning while preserving LKG rows", async () => {
+    api.exposureItems.mockResolvedValue(
+      exposureEnvelope({
+        state: "failed",
+        refreshing: false,
+        last_success_at: "2026-09-06T08:00:00Z",
+        last_failure_at: "2026-09-14T05:00:00Z",
+        failure_code: "refresh_backoff",
+      }),
+    );
+
+    render(<PatchPrioritiesPage />);
+
+    expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    expect(
+      screen.getByText(/The background patch refresh failed/),
+    ).toHaveTextContent("2026-09-06T08:00:00Z");
+  });
+
+  it("shows the persisted refresh timestamp after completion", async () => {
+    api.exposureItems.mockResolvedValue(
+      exposureEnvelope({
+        state: "succeeded",
+        refreshing: false,
+        last_success_at: "2026-09-14T05:00:00Z",
+      }),
+    );
+
+    render(<PatchPrioritiesPage />);
+
+    expect(
+      await screen.findByText(
+        "Patch priorities refreshed 2026-09-14T05:00:00Z.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("restores focus to the originating target after the canonical result loads", async () => {

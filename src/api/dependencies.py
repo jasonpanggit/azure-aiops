@@ -128,6 +128,10 @@ class ApiContext:
     inventory_provider: Callable[[], Any] | None = None
     inventory_read_port_provider: Callable[[], Any] | None = None
     exposure_query_provider: Callable[[], Any] | None = None
+    # Stale Patch Priorities reads may enqueue one connection-scoped refresh.
+    # The coordinator only schedules background work; request handlers never
+    # run acquisition or publication inline.
+    exposure_patch_refresh_provider: Callable[[], Any] | None = None
     exposure_read_port_provider: Callable[[], Any] | None = None
     exposure_ontology_provider: Callable[[Scope], Any] | None = None
     exposure_remediation_provider: Callable[[], Any] | None = None

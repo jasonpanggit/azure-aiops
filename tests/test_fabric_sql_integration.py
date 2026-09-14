@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Self
 
@@ -696,6 +697,71 @@ def test_server_aum_cursor_requires_the_same_source_generation() -> None:
         )
 
     assert error.value.code == "exposure_generation_evicted"
+
+
+def test_server_aum_decimal_priority_issues_and_decodes_cursor() -> None:
+    class DecimalSilverPatchReader(SilverPatchReader):
+        def query(
+            self,
+            sql: str,
+            parameters: tuple[Any, ...] = (),
+            *,
+            max_rows: int | None = None,
+        ) -> list[dict[str, Any]]:
+            rows = super().query(sql, parameters, max_rows=max_rows)
+            if "[metadata_patch_snapshot]" not in sql and "COUNT_BIG" not in sql:
+                return [
+                    {
+                        **row,
+                        "priority_score": Decimal("100.00"),
+                        "ordering_priority_score": Decimal("100.00"),
+                    }
+                    for row in rows
+                ]
+            return rows
+
+    reader = DecimalSilverPatchReader(finding_count=2)
+    codec = ExposureCursorCodec(
+        ExposureCursorKeyRing(
+            active_kid="test-active",
+            active_key=b"a" * 32,
+            loaded_at=datetime(2026, 9, 10, tzinfo=UTC),
+        )
+    )
+    service = ExposureQueryService(reader, cursor_codec=codec)
+    query = ExposureQuery(
+        filters=(
+            ExposureFilter("target_kind", "eq", "server"),
+            ExposureFilter("source_family", "eq", "aum"),
+        ),
+        page_size=1,
+    )
+
+    first = service.list_page(
+        _authorization(),
+        query=query,
+        now=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    assert first.next_cursor is not None
+    assert codec.decode(
+        first.next_cursor,
+        authorization=_authorization(),
+        query=query,
+        expected_generation_id=first.generation,
+        now=datetime(2026, 9, 10, 0, 1, tzinfo=UTC),
+    ).position == (Decimal(100), "silver-patch:patch-0")
+
+    service.list_page(
+        _authorization(),
+        query=query,
+        cursor=first.next_cursor,
+        now=datetime(2026, 9, 10, 0, 1, tzinfo=UTC),
+    )
+    assert reader.calls[-1]["parameters"][-3:] == (
+        Decimal(100),
+        Decimal(100),
+        "silver-patch:patch-0",
+    )
 
 
 def test_container_query_keeps_gold_generation_path() -> None:
