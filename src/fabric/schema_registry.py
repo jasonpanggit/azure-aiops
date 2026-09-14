@@ -39,6 +39,7 @@ _ASSET = [
 _PATCH_FINDING = [
     *_ENTITY,
     pa.field("target_resource_id", pa.string(), nullable=False),
+    pa.field("connection_id", pa.string(), nullable=False),
     pa.field("kb_id", pa.string(), nullable=False),
     pa.field("update_name", pa.string(), nullable=False),
     pa.field("category", pa.string(), nullable=False),

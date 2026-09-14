@@ -2252,6 +2252,7 @@ def _patch_finding_row(row: dict[str, Any], run_id: str, *, status: str) -> dict
     result.update(
         {
             "target_resource_id": str(row.get("targetResourceId") or "").casefold(),
+            "connection_id": _connection_id(row),
             "kb_id": str(row.get("kbId") or "").strip(),
             "update_name": str(row.get("updateName") or ""),
             "category": ",".join(str(item) for item in classifications),
