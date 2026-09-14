@@ -1545,13 +1545,15 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
     assert rollout["canonical_enabled"] is False
 
 
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
 @pytest.mark.parametrize("binding_variant", ["mismatched_hint", "selected_domain"])
-def test_deferred_semantic_network_does_not_require_a_page_specific_exception(
+def test_explicit_network_hint_must_match_exactly_one_selected_vnet(
     tmp_path,
     monkeypatch,
+    rollout_mode,
     binding_variant,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     body = _network_hub_canonical_body()
     if binding_variant == "mismatched_hint":
         body["hint"]["arguments"]["vnet_id"] = (
@@ -1567,7 +1569,6 @@ def test_deferred_semantic_network_does_not_require_a_page_specific_exception(
                 "source_key": "demo-vnet",
             }
         )
-    expected_vnet_id = body["hint"]["arguments"]["vnet_id"]
     tool_calls: list[tuple[str, dict[str, object]]] = []
     context = _context(tmp_path, None)
     context.provider_runtime = ProviderRuntime(
@@ -1596,24 +1597,22 @@ def test_deferred_semantic_network_does_not_require_a_page_specific_exception(
         json=body,
     )
 
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert tool_calls == [("hub_dependents", {"vnet_id": expected_vnet_id})]
-    assert data["mutation_authorized"] is False
-    assert any(
-        "semantic identity resolution is unavailable" in warning.casefold()
-        for warning in data["uncertainty"]
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == (
+        "hint.arguments.vnet_id"
     )
-    assert "untrusted_browser_summary" not in response.text
+    assert tool_calls == []
 
 
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
 @pytest.mark.parametrize("include_hint", [False, True])
 def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
     tmp_path,
     monkeypatch,
+    rollout_mode,
     include_hint,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     body = _network_hub_canonical_body()
     widened_vnet_id = (
         "/subscriptions/sub-b/resourceGroups/demo-rg/providers/"

@@ -175,25 +175,50 @@ _AZURE_VNET_ID = re.compile(
 )
 
 
-def _derived_network_dependency_hint(
+def _validated_or_derived_network_hint(
     payload: CanonicalInvestigationPayload,
     snapshot: EvidenceSnapshotV2,
 ) -> CanonicalPlanHint | None:
-    """Bind the exact selected-VNet dependency intent without widening scope."""
+    """Validate or derive selected-VNet dependency intent without widening."""
 
+    hint = payload.hint
+    is_hub_hint = (
+        hint is not None
+        and hint.specialist_id == "network"
+        and hint.tool == "hub_dependents"
+    )
+    if hint is not None and not is_hub_hint:
+        return hint
     if (
-        payload.hint is not None
-        or snapshot.page_kind != "network"
+        snapshot.page_kind != "network"
         or snapshot.page_id.casefold() != "network-topology"
         or len(snapshot.selected_entities) != 1
     ):
+        if is_hub_hint:
+            raise ValueError(
+                "network hub hint requires exactly one selected Azure VNet"
+            )
         return None
     selected = snapshot.selected_entities[0]
     if (
         not isinstance(selected, AzureEntityRef)
         or _AZURE_VNET_ID.fullmatch(selected.resource_id) is None
     ):
+        if is_hub_hint:
+            raise ValueError(
+                "network hub hint requires exactly one selected Azure VNet"
+            )
         return None
+    if is_hub_hint:
+        hinted_vnet_id = hint.arguments.get("vnet_id")
+        if (
+            not isinstance(hinted_vnet_id, str)
+            or hinted_vnet_id.casefold() != selected.resource_id.casefold()
+        ):
+            raise ValueError(
+                "network hub hint must match the selected Azure VNet"
+            )
+        return hint
     question = " ".join(payload.question.strip().casefold().split()).rstrip("?.")
     prefix = "what depends on "
     if not question.startswith(prefix):
@@ -1673,10 +1698,17 @@ def investigate_canonical(
             "snapshot": planning_snapshot
         }
     )
-    plan_hint = payload.hint or _derived_network_dependency_hint(
-        payload,
-        browser_snapshot,
-    )
+    try:
+        plan_hint = _validated_or_derived_network_hint(
+            payload,
+            browser_snapshot,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            str(exc),
+            details={"field": "hint.arguments.vnet_id"},
+        ) from exc
     execution_payload = payload.model_copy(update={"hint": plan_hint})
     rollout = copilot_rollout_decision(stable_key=principal.subject)
     if browser_snapshot.page_kind == "inventory":
