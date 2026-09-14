@@ -557,13 +557,14 @@ resource "azurerm_container_app" "api" {
         path      = "/health"
         # The knowledge snapshot is built at startup; probing too early would
         # restart the container mid-load.
-        initial_delay = 20
+        initial_delay = 60
         # /health can trigger a real OneLake read (see _load_snapshot_tables);
         # the default 1s timeout was too tight under real network latency and
         # caused CrashLoopBackOff even on a healthy container. Widen the
         # timeout and tolerate more consecutive failures before restarting.
         timeout                 = 10
-        failure_count_threshold = 6
+        interval_seconds        = 30
+        failure_count_threshold = 30
       }
 
       readiness_probe {
