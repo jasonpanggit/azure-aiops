@@ -29,18 +29,22 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams.current,
 }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: unknown) => input,
-  connectionsApi: { list },
-  fabricMedallionApi: {
-    layers: fabricLayers,
-    dataset: fabricDataset,
-    manifest: fabricManifest,
-    governance: fabricGovernance,
-    ingestionHistory: fabricIngestionHistory,
-    capabilities: fabricCapabilities,
-  },
-}));
+vi.mock("@/lib/services", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/services")>();
+  return {
+    ...actual,
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    connectionsApi: { list },
+    fabricMedallionApi: {
+      layers: fabricLayers,
+      dataset: fabricDataset,
+      manifest: fabricManifest,
+      governance: fabricGovernance,
+      ingestionHistory: fabricIngestionHistory,
+      capabilities: fabricCapabilities,
+    },
+  };
+});
 
 import FabricMedallionPage from "./page";
 
