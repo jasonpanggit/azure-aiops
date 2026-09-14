@@ -2884,6 +2884,74 @@ def test_replayed_generation_excludes_later_observation_history() -> None:
     ]
 
 
+def test_semantic_snapshot_drops_facts_for_retired_entities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    entity = {
+        "resource_id": "resource-active",
+        "entity_type": "VirtualMachine",
+        "name": "active",
+        "timestamp": "2026-09-14T00:00:00Z",
+        "lifecycle_status": "active",
+    }
+    monkeypatch.setattr(
+        service,
+        "_latest_completed_ontology_state",
+        lambda: {"source_run_id": "run-1", "timestamp": entity["timestamp"]},
+    )
+    monkeypatch.setattr(
+        service,
+        "_read_authoritative_ontology",
+        lambda marker: ([entity], []),
+    )
+    monkeypatch.setattr(
+        service,
+        "_global_freshness_watermark",
+        lambda watermark: watermark,
+    )
+    monkeypatch.setattr(
+        service.onelake,
+        "table_uri",
+        lambda layer, name: f"{layer}/{name}",
+    )
+    monkeypatch.setattr(service.delta, "version", lambda _uri: 1)
+    def fake_read(uri: str) -> list[dict[str, Any]]:
+        if "compliance" in str(uri):
+                return [
+                    {
+                        "assessed_resource_id": "resource-retired",
+                        "status": "failed",
+                        "failed_patch_count": 2,
+                    },
+                    {
+                        "assessed_resource_id": "resource-active",
+                        "status": "compliant",
+                        "failed_patch_count": 0,
+                    },
+                ]
+        if "resources" in str(uri):
+                return [
+                    {"resource_id": "resource-retired"},
+                    {"resource_id": "resource-active"},
+                ]
+        return []
+
+    monkeypatch.setattr(service.delta, "read", fake_read)
+
+    snapshot = service.semantic_snapshot()
+
+    assert snapshot["compliance"] == [
+        {
+            "assessed_resource_id": "resource-active",
+            "status": "compliant",
+            "failed_patch_count": 0,
+        }
+    ]
+    assert snapshot["inventory"] == [{"resource_id": "resource-active"}]
+
+
 def test_gold_generation_identity_changes_with_late_observation() -> None:
     datasets = {"silver_exposure_observations": [{"observation_id": "observation-a"}]}
     first = _exposure_gold_generation_id("source-a", datasets)

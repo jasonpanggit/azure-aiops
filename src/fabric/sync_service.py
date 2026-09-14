@@ -2606,11 +2606,24 @@ class FabricSyncService:
         freshness = self._global_freshness_watermark(
             str(latest.get("watermark") or latest.get("timestamp") or entity_watermark)
         )
+        compliance = [
+            row
+            for row in read("silver", "compliance")
+            if str(
+                row.get("assessed_resource_id") or row.get("resource_id") or ""
+            ).casefold()
+            in entity_keys
+        ]
+        inventory = [
+            row
+            for row in read("bronze", "resources")
+            if str(row.get("resource_id") or "").casefold() in entity_keys
+        ]
         return {
             "entities": entities,
             "relationships": relationships,
-            "inventory": read("bronze", "resources"),
-            "compliance": read("silver", "compliance"),
+            "inventory": inventory,
+            "compliance": compliance,
             "security": security,
             "cost": cost,
             "knowledge_version": public_version,
