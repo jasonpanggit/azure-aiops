@@ -2087,6 +2087,13 @@ function RecoveryControls({
   );
 }
 
+function auditTimestamp(value: string | undefined): string {
+  if (!value) return "Unknown time";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
 function ExecutionAudit({
   execution,
   decisions,
@@ -2096,16 +2103,59 @@ function ExecutionAudit({
   decisions?: RemediationApprovalDecision[];
   onCheckReconciliation?: () => void;
 }) {
+  const providerSucceeded = execution.status === "succeeded";
+
   return (
-    <section>
-      <div className="plan-row-badges">
-        <StatusBadge label={titleize(execution.status)} tone={statusTone(execution.status)} />
-        <StatusBadge label={`Attempt ${execution.attempt_count}`} tone="info" />
+    <section className="remediation-execution-audit">
+      <div className="remediation-execution-heading">
+        <span className="eyebrow">Provider verification</span>
+        <div className="plan-row-badges">
+          <StatusBadge label={titleize(execution.status)} tone={statusTone(execution.status)} />
+          <StatusBadge label={`Attempt ${execution.attempt_count}`} tone="info" />
+        </div>
+        <h3>{providerSucceeded ? "Provider execution succeeded" : "Execution status"}</h3>
+        <p>
+          {providerSucceeded
+            ? "The provider completed the requested operation. Evidence reconciliation remains a separate verification gate."
+            : "Provider submission and verification remain distinct from the approved request."}
+        </p>
       </div>
-      <h3>Provider verification</h3>
-      <p>Execution: <code>{execution.execution_id}</code></p>
-      <p>Provider state: {execution.verified_state || "Awaiting verification"}</p>
-      <p>Outcome: {execution.outcome || "Pending"}</p>
+      <dl className="remediation-execution-facts">
+        <div>
+          <dt>Execution</dt>
+          <dd><code>{execution.execution_id}</code></dd>
+        </div>
+        <div>
+          <dt>Provider state</dt>
+          <dd>{execution.verified_state || "Awaiting verification"}</dd>
+        </div>
+        <div>
+          <dt>Outcome</dt>
+          <dd>{titleize(execution.outcome || "Pending")}</dd>
+        </div>
+        {execution.remaining_attempts !== undefined && (
+          <div>
+            <dt>Attempts remaining</dt>
+            <dd>{execution.remaining_attempts}</dd>
+          </div>
+        )}
+        {(execution.submitted_attempt_count !== undefined || execution.attempt_count !== undefined) && (
+          <div>
+            <dt>Submitted attempts</dt>
+            <dd>{execution.submitted_attempt_count ?? execution.attempt_count}</dd>
+          </div>
+        )}
+        {execution.verification_deadline_at && (
+          <div>
+            <dt>Verification deadline</dt>
+            <dd>
+              {execution.verified_state === "verification_deadline_exceeded"
+                ? "Passed"
+                : auditTimestamp(execution.verification_deadline_at)}
+            </dd>
+          </div>
+        )}
+      </dl>
       {execution.status === "failed" && (
         execution.provider_submitted === false ? (
           <p className="callout callout-warning">
@@ -2120,19 +2170,6 @@ function ExecutionAudit({
               : "Submitted; the provider did not return failure detail for this attempt."}
           </p>
         )
-      )}
-      {execution.remaining_attempts !== undefined && (
-        <p>{`Remaining attempts: ${execution.remaining_attempts}`}</p>
-      )}
-      {(execution.submitted_attempt_count !== undefined || execution.attempt_count !== undefined) && (
-        <p>{`Submitted attempts: ${execution.submitted_attempt_count ?? execution.attempt_count}`}</p>
-      )}
-      {execution.verification_deadline_at && (
-        <p>
-          {execution.verified_state === "verification_deadline_exceeded"
-            ? "Verification deadline passed"
-            : `Verification deadline: ${new Date(execution.verification_deadline_at).toLocaleString()}`}
-        </p>
       )}
       {execution.next_verification_at && !["succeeded", "failed", "cancelled"].includes(execution.status) && (
         <p>{`Next automatic check: ${relativeTime(execution.next_verification_at)}`}</p>
@@ -2153,36 +2190,63 @@ function ExecutionAudit({
         </div>
       )}
       <p>Rollback guidance: {execution.rollback_guidance.join("; ") || "No automated rollback is available."}</p>
-      <ol>
+      <section className="remediation-attempt-history" aria-labelledby="remediation-attempt-history-title">
+        <div className="remediation-section-heading">
+          <div>
+            <h3 id="remediation-attempt-history-title">Attempt history</h3>
+            <p>Immutable provider events are collapsed by default to keep verification scannable.</p>
+          </div>
+          <StatusBadge
+            label={`${execution.attempts.length} ${execution.attempts.length === 1 ? "attempt" : "attempts"}`}
+            tone="neutral"
+            compact
+          />
+        </div>
         {execution.attempts.map((attempt) => (
-          <li key={attempt.attempt_number}>
-            <strong>Attempt {attempt.attempt_number}</strong> — {titleize(attempt.status)}
-            <ul>
+          <details className="remediation-attempt-card" key={attempt.attempt_number}>
+            <summary>
+              <strong>Attempt {attempt.attempt_number}</strong>
+              <StatusBadge label={titleize(attempt.status)} tone={statusTone(attempt.status)} compact />
+              <span>
+                {attempt.transitions.length} {attempt.transitions.length === 1 ? "event" : "events"}
+                {attempt.updated_at && ` · Updated ${auditTimestamp(attempt.updated_at)}`}
+              </span>
+            </summary>
+            <ol className="remediation-transition-list">
               {attempt.transitions.map((transition, index) => (
-                <li key={index}>{transition.timestamp || "Unknown time"} · {titleize(transition.status)} · {transition.message || transition.verified_state || transition.actor || "Recorded"}</li>
+                <li key={transition.sequence ?? index}>
+                  <time dateTime={transition.timestamp}>{auditTimestamp(transition.timestamp)}</time>
+                  <strong>{titleize(transition.status)}</strong>
+                  <span>{transition.message || transition.verified_state || transition.actor || "Recorded"}</span>
+                </li>
               ))}
-            </ul>
-          </li>
+            </ol>
+          </details>
         ))}
-      </ol>
+      </section>
       {decisions && decisions.length > 0 && (
-        <>
-          <h3>Decisions</h3>
-          <ul>
+        <section className="remediation-decision-history" aria-labelledby="remediation-decision-history-title">
+          <h3 id="remediation-decision-history-title">Decisions</h3>
+          <ul className="remediation-decision-list">
             {decisions.map((entry, index) => (
               <li key={entry.decision_id || index}>
-                {titleize(entry.decision)} by {entry.approver} on {entry.decided_at ? new Date(entry.decided_at).toLocaleString() : "unknown time"}
-                {entry.self_approved && (
-                  <>
-                    {" "}
+                <div className="remediation-decision-heading">
+                  <StatusBadge label={titleize(entry.decision)} tone={statusTone(entry.decision)} compact />
+                  <time dateTime={entry.decided_at}>{auditTimestamp(entry.decided_at)}</time>
+                </div>
+                <strong>{entry.approver || "Unknown approver"}</strong>
+                {(entry.self_approved || entry.self_approval_policy_id) && (
+                  <div className="plan-row-badges">
+                    {entry.self_approved && (
                     <StatusBadge label="Self-approved (demo exception)" tone="info" />
+                    )}
                     {entry.self_approval_policy_id && <code>{entry.self_approval_policy_id}</code>}
-                  </>
+                  </div>
                 )}
               </li>
             ))}
           </ul>
-        </>
+        </section>
       )}
     </section>
   );
