@@ -48,8 +48,21 @@ def test_live_resource_provider_search_is_scoped_and_request_time():
         "payments", subscription_ids=["sub-1"]
     )
     assert observation.rows
-    assert "contains~ 'payments'" in reader.spec.query
+    assert "contains 'payments'" in reader.spec.query
     assert reader.scope == ["sub-1"]
+
+
+@pytest.mark.parametrize("query", ["show list of VMs", "servers"])
+def test_live_resource_provider_maps_server_search_to_resource_types(query):
+    reader = Reader()
+
+    LiveResourceProvider(reader).search_resources(
+        query, subscription_ids=["sub-1"]
+    )
+
+    assert "type =~ 'microsoft.compute/virtualmachines'" in reader.spec.query
+    assert "type =~ 'microsoft.hybridcompute/machines'" in reader.spec.query
+    assert "contains~" not in reader.spec.query
 
 
 def test_live_resource_provider_executes_bounded_generic_query():
