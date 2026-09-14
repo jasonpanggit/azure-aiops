@@ -4,8 +4,11 @@ Status: Validated
 
 ## Final Consolidated Phase 03.1 Recovery — 2026-09-08
 
-- **Source candidate:** `main` at
-  `8092ab0d25566c1b97cf560951a3e287419a6aa7`
+- **Source candidate:** refreshed `main` at
+  `1df7010038d3d8d27ee8275e681464462983711a`.
+- **Relationship acceptance:** user-approved PR #96 is merged in this source;
+  its 500,000-row relationship bound supersedes the older 250,000-row
+  acceptance limit below without changing the guarded publication sequence.
 - **Included fixes:** MCP runtime dependencies, managed-load-balancer topology
   semantics, lossless Exposure ontology collision merging, deterministic
   Overview test synchronization, and bounded compliance-to-remediation review
@@ -77,29 +80,45 @@ MCP access, and Topology warning-free managed-load-balancer behavior.
 
 After the application release is healthy:
 
-1. Confirm `aiops-dev-exposure-publication` has no active execution.
-2. Snapshot the complete Job template and its prior image tag/digest.
-3. Update only the existing Job template container image to the new immutable
-  `aiops-api` tag and the execution timeout from 3,600 to 7,200 seconds.
-  Preserve 4 CPU / 8 GiB: Azure rejects 4 CPU / 16 GiB for this Consumption
-  Job, and the release image contains the tested payload-byte APPEND bound
-  that addresses the prior 8 GiB preflight OOM.
-4. Machine-diff normalized pre/post templates and require the sole semantic
-  changes to be the image and timeout. Command, arguments, memory,
-   environment, secret references, identity, registry, manual trigger,
-   zero-retry setting, and 4 CPU must remain unchanged. Use
-   `scripts/recover_aum_exposure_publication.py`; it refuses replay arguments,
-   active executions, baseline drift, and partial execution overrides.
-5. Start exactly one execution with no execution overrides.
-6. Require terminal `Succeeded`; capture sanitized evidence on failure and do
-   not retry or repair the pointer manually.
-7. Restore the prior Job template image and 3,600-second timeout after every
-  terminal outcome or interruption; require the full normalized Job
-  configuration to match its pre-run value. Retain `pre-update.json` for
-  the runner's `--restore-snapshot` path if the operator host is lost.
-8. Verify non-empty Gold facts and generation metadata, pointer schema/revision
-   with a non-empty `readable_generation_id`, Exposure overview HTTP 200, exact
-   digest-to-workload traversal, graph bounds below 100,000 entities / 250,000
+1. Outside the runner, create the temporary `publication-e8` workload profile
+   as E8 with minimum replicas 0 and maximum replicas 1. Do not start a Job or
+   mutate the Job template while creating the profile.
+2. Confirm `aiops-dev-exposure-publication` has no active or unknown execution,
+   then snapshot the normalized workload profile, CPU, memory, timeout, image,
+   retry, command/arguments, environment and secret references, identity,
+   registry, and trigger configuration.
+3. For the current recovery only, run
+   `scripts/recover_aum_exposure_publication.py` with the exact immutable image
+   plus `--target-workload-profile publication-e8 --target-cpu 8
+   --target-memory 64Gi --target-timeout 14400`. The runner permits only the
+   reviewed Consumption 4 CPU / 8 GiB / 7,200-second baseline or this explicit
+   dedicated profile combination. Direct image-only Job updates are allowed
+   only through this recovery workflow; `terraform apply` with
+   `deploy_images=false` is prohibited.
+4. Machine-diff normalized pre/post templates and require exactly the requested
+   temporary workload-profile, CPU, memory, timeout, and image deltas. Command,
+   arguments, environment, secret references, identity, registry, manual
+   trigger, and zero-retry setting must remain unchanged. Fresh activation is
+   mandatory; any replay argument is prohibited.
+5. Start exactly one execution with no execution overrides. Keep the Job
+   template unchanged for the entire execution. Retry transient execution-show
+   failures only with the runner's bounded exponential backoff.
+6. Restore nothing until the execution is observed terminal. On operator
+   interruption or timeout, stop that exact execution and confirm a terminal
+   state before any template write. If terminal state cannot be confirmed,
+   leave the snapshot unrestored and escalate; never write a Job template while
+   an execution is active or unknown.
+7. After every confirmed terminal outcome, restore workload profile, CPU,
+   memory, timeout, and image to the snapshot and require the complete normalized
+   configuration to match. `--restore-snapshot` must refuse while any execution
+   is active or unknown.
+8. After restoration, remove the temporary `publication-e8` workload profile.
+   Verify non-empty Gold generation/facet evidence plus active server/AUM
+   provenance: every relevant fact matches authorized connection `demo`, zero
+   active facts use a `legacy:` connection, and no unexpected connection facts
+   remain. Also require pointer schema/revision with a non-empty
+   `readable_generation_id`, Exposure overview HTTP 200, exact
+   digest-to-workload traversal, graph bounds below 100,000 entities / 500,000
    relationships, and no unhealthy serving revision.
 
 Rollback is the prior healthy Container Apps revisions and exact restored Job

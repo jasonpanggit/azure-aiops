@@ -19,6 +19,7 @@ from api.exposure_query import (
     ExposureCursorError,
     ExposureFilter,
     ExposureKbIdentifierError,
+    ExposureProvenanceEvidence,
     ExposureQuery,
     ExposureQueryPage,
     ExposureQueryService,
@@ -61,6 +62,29 @@ class PageReader:
         ]
 
 
+class ProvenanceReader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...], int | None]] = []
+        self.endpoint = SimpleNamespace(schema="dbo")
+
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((sql, tuple(parameters), max_rows))
+        return [
+            {
+                "active_fact_count": 11,
+                "expected_connection_fact_count": 11,
+                "legacy_connection_fact_count": 0,
+                "unexpected_connection_fact_count": 0,
+            }
+        ]
+
+
 def _authorization() -> ExposureAuthorization:
     return ExposureAuthorization(
         subject="scale-reader@example.com",
@@ -68,6 +92,54 @@ def _authorization() -> ExposureAuthorization:
         connection_ids=("connection-scale",),
         scope={"subscription": ("subscription-scale",)},
     )
+
+
+def test_provenance_query_is_scope_bounded_and_returns_redacted_counts() -> None:
+    reader = ProvenanceReader()
+    authorization = ExposureAuthorization(
+        subject="scale-reader@example.com",
+        tenant_id="tenant-scale",
+        connection_ids=("connection-scale",),
+        connection_subscriptions={
+            "connection-scale": "subscription-scale",
+        },
+        scope={
+            "subscription": ("subscription-scale",),
+            "subscription_connection": ("connection-scale",),
+        },
+    )
+
+    evidence = ExposureQueryService(reader).active_provenance_evidence(
+        authorization,
+        generation_id="exposure-gold-fresh",
+        expected_connection_id="connection-scale",
+    )
+
+    assert evidence.to_dict() == {
+        "generation": "exposure-gold-fresh",
+        "active_fact_count": 11,
+        "expected_connection_fact_count": 11,
+        "legacy_connection_fact_count": 0,
+        "unexpected_connection_fact_count": 0,
+    }
+    sql, parameters, max_rows = reader.calls[0]
+    assert "[tenant_id] = ?" in sql
+    assert "[subscription_id] IN (?)" in sql
+    assert "[target_kind] = ?" in sql
+    assert "[source_family] = ?" in sql
+    assert "[active] = ?" in sql
+    assert "legacy:%" in sql
+    assert parameters == (
+        "connection-scale",
+        "connection-scale",
+        "tenant-scale",
+        "exposure-gold-fresh",
+        "server",
+        "aum",
+        True,
+        "subscription-scale",
+    )
+    assert max_rows == 1
 
 
 def test_page_work_is_bounded_independently_of_total_count() -> None:
@@ -119,6 +191,7 @@ class ApiExposureService:
         self.calls: list[dict[str, Any]] = []
         self.catalog_calls: list[dict[str, Any]] = []
         self.kb_calls: list[dict[str, Any]] = []
+        self.provenance_calls: list[dict[str, Any]] = []
 
     def authorization_for(
         self,
@@ -217,6 +290,22 @@ class ApiExposureService:
                 "sources": {},
             },
         }
+
+    def active_provenance_evidence(
+        self,
+        authorization: ExposureAuthorization,
+        **values: Any,
+    ) -> ExposureProvenanceEvidence:
+        self.provenance_calls.append(
+            {"authorization": authorization, **values}
+        )
+        return ExposureProvenanceEvidence(
+            generation=str(values["generation_id"]),
+            active_fact_count=11,
+            expected_connection_fact_count=11,
+            legacy_connection_fact_count=0,
+            unexpected_connection_fact_count=0,
+        )
 
 
 @pytest.fixture
@@ -336,6 +425,37 @@ def test_external_catalog_uses_authorized_generation_bound_query_service(
     data = response.json()["data"]
     assert data["catalog_scope"] == "external_public_metadata"
     assert data["environment_membership_included"] is False
+
+
+def test_provenance_evidence_endpoint_returns_only_redacted_counts(
+    exposure_api: tuple[TestClient, ApiExposureService],
+) -> None:
+    client, service = exposure_api
+
+    response = client.get(
+        "/api/v1/vulnerabilities/exposure/provenance-evidence",
+        params={
+            "subscription": "subscription-scale",
+            "generation": "exposure-gold-fresh",
+            "connection_id": "connection-scale",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data"] == {
+        "generation": "exposure-gold-fresh",
+        "active_fact_count": 11,
+        "expected_connection_fact_count": 11,
+        "legacy_connection_fact_count": 0,
+        "unexpected_connection_fact_count": 0,
+    }
+    assert body["scope"] == {}
+    assert "connection-scale" not in response.text
+    assert "subscription-scale" not in response.text
+    assert service.provenance_calls[0]["expected_connection_id"] == (
+        "connection-scale"
+    )
 
 
 def test_kb_detail_uses_authorized_silver_query_service(
