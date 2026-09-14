@@ -103,3 +103,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** No existing test or verify gate asserted payload-byte boundaries for replay preflight; prior APPEND tests covered row-count bounds, atomicity, retries, and immutable semantics only with small rows.
 - **Recurrence guard:** The 32 MiB safe default in `src/storage/delta_writer.py` and `tests/test_delta_tables.py::{test_delta_writer_append_bounds_replay_preflight_by_payload_bytes,test_delta_writer_append_preflight_payload_byte_boundary}` lock indivisible-row behavior and exact N-1/N/N+1 aggregate-byte boundaries. Production-scale evidence remains deferred to the later authorized controlled immutable build/deploy/retry.
 ---
+
+## cve-copilot-semantic-deferred — Deferred semantic provider blocked durable CVE Copilot answers
+- **Date:** 2026-09-14
+- **Error patterns:** copilot not responding, The semantic provider is deferred, request failed, CVE drawer, cve_detail
+- **Root cause(s):** The canonical CVE route unconditionally resolved the real browser snapshot's selected domain entity through the optional semantic provider before executing the independently bound durable `cve_detail` tool; the existing API fixture omitted the selected domain entity that the web adapter always sends.
+- **Fix:** For strictly bound canonical CVE pages, resolve semantic optionally and discard non-authoritative browser domain facts when it is unavailable, while preserving page/prompt/filter/hint binding and sourcing the answer from governed durable `cve_detail` evidence.
+- **Files changed:** src/api/routers/copilot.py, tests/test_api_copilot_unified.py, web/src/components/ui/CopilotDrawer.test.tsx
+- **Why not caught:** The API integration fixture did not match the web adapter's selected-domain payload, while the web component test mocked transport and could not exercise server-side provider resolution.
+- **Recurrence guard:** `tests/test_api_copilot_unified.py::{test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred,test_deferred_semantic_cve_fallback_rejects_conflicting_selected_cve}` locks durable fallback, browser-fact rejection, and stale-binding refusal; the focused `CopilotDrawer.test.tsx` case locks deterministic degraded rendering.
+---
