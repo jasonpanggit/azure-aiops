@@ -217,6 +217,45 @@ def test_discovery_reads_pointer_and_enforces_explicit_bounds(tmp_path) -> None:
         row_bounded.discover()
 
 
+def test_scheduled_factory_reads_pointer_from_connection_home(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from scripts import refresh_exposure_enrichment as cli
+
+    cache_root = tmp_path / "aiops"
+    connection_root = cache_root / "connections"
+    OneLakeDocumentStore(connection_root).write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
+    monkeypatch.setenv("AIOPS_HOME", str(cache_root))
+    monkeypatch.setenv("AIOPS_CONNECTION_HOME", str(connection_root))
+    monkeypatch.setattr(cli, "_build_table_reader", lambda _root: lambda *_args: ())
+
+    service = cli._build_prefetch_service(max_items=1)
+
+    assert service.discovery.discover().generation_id == "generation-7"
+    assert service.discovery.pointer_store.root == str(connection_root)
+    assert service.checkpoint_store.root == str(cache_root)
+    assert service.discovery.pointer_store.root != service.checkpoint_store.root
+
+
+def test_remote_prefetch_requires_distinct_connection_home(monkeypatch) -> None:
+    from scripts import refresh_exposure_enrichment as cli
+
+    state_root = "abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/aiops"
+    monkeypatch.setenv("AIOPS_HOME", state_root)
+    monkeypatch.delenv("AIOPS_CONNECTION_HOME", raising=False)
+    with pytest.raises(ValueError, match="AIOPS_CONNECTION_HOME is required"):
+        cli._build_prefetch_service(max_items=1)
+
+    monkeypatch.setenv("AIOPS_CONNECTION_HOME", state_root)
+    with pytest.raises(ValueError, match="must not alias"):
+        cli._build_prefetch_service(max_items=1)
+
+
 def test_prefetch_checkpoints_msrc_then_expands_durable_kb_cves(tmp_path) -> None:
     clock = _Clock()
     service, cache, _nvd, events = _service(

@@ -13,6 +13,7 @@ from fabric.sync_service import FabricTableWriteProgress
 from onboarding.activation import (
     ActivationFailure,
     ActivationProgressReporter,
+    _shared_metadata_prefetch,
     activate_runtime,
     build_activation_progress_event,
     publish_combined_snapshot,
@@ -761,6 +762,73 @@ def test_activate_runtime_prefetches_after_lock_release_and_keeps_partial_succes
     assert prefetch_event["succeeded_count"] == 3
     assert prefetch_event["failure_count"] == 1
     assert "must-not-be-exposed" not in json.dumps(result) + json.dumps(events)
+
+
+def test_shared_prefetch_writes_enrichment_to_api_visible_root(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from intelligence.vulnerability import enrichment_worker as worker_module
+    from intelligence.vulnerability import exposure_prefetch as prefetch_module
+    from intelligence.vulnerability.enrichment_cache import (
+        EXPOSURE_ENRICHMENT_DOCUMENT,
+    )
+
+    pointer_store = OneLakeDocumentStore(tmp_path / "connections")
+    enrichment_store = OneLakeDocumentStore(tmp_path / "aiops")
+    captured: dict[str, object] = {}
+
+    class FakeWorker:
+        def __init__(self, cache, *, max_items):
+            captured["cache_store"] = cache.store
+            captured["worker_max_items"] = max_items
+
+    class FakeDiscovery:
+        def __init__(self, *, pointer_store, table_reader):
+            captured["pointer_store"] = pointer_store
+            captured["table_reader"] = table_reader
+
+    class FakeReport:
+        def to_dict(self):
+            return {"status": "succeeded", "selected_count": 0}
+
+    class FakePrefetchService:
+        def __init__(self, *, discovery, worker, checkpoint_store, max_items):
+            captured["checkpoint_store"] = checkpoint_store
+            captured["service_max_items"] = max_items
+
+        def run(self):
+            enrichment_store.write(
+                EXPOSURE_ENRICHMENT_DOCUMENT,
+                {"schema_version": "2.0.0", "revision": 1},
+                expected_revision=0,
+            )
+            return FakeReport()
+
+    monkeypatch.setattr(worker_module, "EnrichmentWorker", FakeWorker)
+    monkeypatch.setattr(
+        prefetch_module,
+        "ExposureGenerationDiscovery",
+        FakeDiscovery,
+    )
+    monkeypatch.setattr(
+        prefetch_module,
+        "ExposurePrefetchService",
+        FakePrefetchService,
+    )
+
+    result = _shared_metadata_prefetch(
+        runtime=object(),
+        pointer_store=pointer_store,
+        enrichment_store=enrichment_store,
+    )
+
+    assert result == {"status": "succeeded", "selected_count": 0}
+    assert captured["pointer_store"] is pointer_store
+    assert captured["cache_store"] is enrichment_store
+    assert captured["checkpoint_store"] is enrichment_store
+    assert enrichment_store.read(EXPOSURE_ENRICHMENT_DOCUMENT)["revision"] == 1
+    assert pointer_store.read(EXPOSURE_ENRICHMENT_DOCUMENT) == {}
 
 
 def test_activate_runtime_replays_exact_generation_without_upstream_work(

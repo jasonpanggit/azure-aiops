@@ -109,6 +109,22 @@ def _state_root() -> str:
     return os.environ.get("AIOPS_HOME", "").strip() or str(Path.home() / ".aiops")
 
 
+def _connection_root(state_root: str) -> str:
+    """Resolve the published-generation pointer root without aliasing cache state."""
+
+    configured = os.environ.get("AIOPS_CONNECTION_HOME", "").strip()
+    if configured:
+        if (
+            is_onelake_uri(state_root)
+            and configured.rstrip("/") == state_root.rstrip("/")
+        ):
+            raise ValueError("AIOPS_CONNECTION_HOME must not alias AIOPS_HOME")
+        return configured
+    if is_onelake_uri(state_root):
+        raise ValueError("AIOPS_CONNECTION_HOME is required for remote prefetch")
+    return str(Path(state_root) / "connections")
+
+
 def _build_worker(*, max_items: int) -> EnrichmentWorker:
     root = _state_root()
     cache = EnrichmentCache(
@@ -155,20 +171,21 @@ def _build_table_reader(
 
 def _build_prefetch_service(*, max_items: int) -> ExposurePrefetchService:
     root = _state_root()
-    store = OneLakeDocumentStore(root)
+    cache_store = OneLakeDocumentStore(root)
+    pointer_store = OneLakeDocumentStore(_connection_root(root))
     worker = EnrichmentWorker(
-        EnrichmentCache(EXPOSURE_ENRICHMENT_DOCUMENT, store=store),
+        EnrichmentCache(EXPOSURE_ENRICHMENT_DOCUMENT, store=cache_store),
         max_items=max_items,
     )
     discovery = ExposureGenerationDiscovery(
-        pointer_store=store,
+        pointer_store=pointer_store,
         table_reader=_build_table_reader(root),
         max_identifiers=DEFAULT_MAX_DISCOVERED_IDENTIFIERS,
     )
     return ExposurePrefetchService(
         discovery=discovery,
         worker=worker,
-        checkpoint_store=store,
+        checkpoint_store=cache_store,
         max_items=max_items,
     )
 

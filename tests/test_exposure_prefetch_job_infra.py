@@ -67,6 +67,8 @@ def test_prefetch_job_reuses_apps_runtime_contract() -> None:
     )
     assert 'name  = "AIOPS_HOME"' in job
     assert "/Files/aiops" in job
+    assert 'name  = "AIOPS_CONNECTION_HOME"' in job
+    assert "/Files/aiops/connections" in job
     assert 'name        = "NVD_API_KEY"' in job
     assert 'secret_name = "nvd-api-key"' in job
     assert '"/app/scripts/refresh_exposure_enrichment.py"' in job
@@ -88,7 +90,6 @@ def test_prefetch_job_adds_no_fabric_table_authorization() -> None:
     for forbidden in (
         "AIOPS_FABRIC_SQL",
         "FABRIC_SQL",
-        "fabric_workspace_role_assignment",
         "fabric_onelake_data_access_security",
         "role_definition",
     ):
@@ -100,6 +101,7 @@ def test_prefetch_job_adds_no_fabric_table_authorization() -> None:
         'resource "fabric_onelake_data_access_security" "exposure_prefetch"'
         not in all_terraform
     )
+    assert "fabric_workspace_role_assignment.apps" in job
 
 
 def test_existing_six_hour_all_due_enrichment_job_is_retained() -> None:

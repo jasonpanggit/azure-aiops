@@ -647,6 +647,7 @@ def activate_runtime(
     progress_clock: Callable[[], float] = time.monotonic,
     progress_wait: Callable[[threading.Event, float], bool] | None = None,
     metadata_prefetch: Callable[..., Mapping[str, object]] | None = None,
+    enrichment_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate, discover, publish, and verify a production Fabric snapshot.
 
@@ -751,6 +752,7 @@ def activate_runtime(
             generation_id=exact_generation or str(combined["runId"]),
             runtime=runtime,
             pointer_store=exposure_pointer_store,
+            enrichment_root=enrichment_root,
         )
         reporter.complete(
             "metadata_prefetch",
@@ -797,6 +799,7 @@ def _run_metadata_prefetch(
     generation_id: str,
     runtime: Any,
     pointer_store: OneLakeDocumentStore,
+    enrichment_root: str | Path | None,
 ) -> dict[str, object]:
     """Invoke the shared prefetch seam and return only bounded safe fields."""
 
@@ -807,6 +810,10 @@ def _run_metadata_prefetch(
             else _shared_metadata_prefetch(
                 runtime=runtime,
                 pointer_store=pointer_store,
+                enrichment_store=_prefetch_enrichment_store(
+                    enrichment_root,
+                    pointer_store=pointer_store,
+                ),
             )
         )
         return _sanitize_prefetch_result(raw)
@@ -823,10 +830,26 @@ def _run_metadata_prefetch(
         }
 
 
+def _prefetch_enrichment_store(
+    enrichment_root: str | Path | None,
+    *,
+    pointer_store: OneLakeDocumentStore,
+) -> OneLakeDocumentStore:
+    """Require an explicit cache root that does not alias connection state."""
+
+    if enrichment_root is None or not str(enrichment_root).strip():
+        raise ValueError("AIOPS_HOME is required for activation metadata prefetch")
+    store = OneLakeDocumentStore(enrichment_root)
+    if store.root.rstrip("/") == pointer_store.root.rstrip("/"):
+        raise ValueError("AIOPS_HOME must not alias AIOPS_CONNECTION_HOME")
+    return store
+
+
 def _shared_metadata_prefetch(
     *,
     runtime: Any,
     pointer_store: OneLakeDocumentStore,
+    enrichment_store: OneLakeDocumentStore,
 ) -> Mapping[str, object]:
     """Adapt activation to the separately owned shared prefetch module."""
 
@@ -853,7 +876,7 @@ def _shared_metadata_prefetch(
     worker = EnrichmentWorker(
         EnrichmentCache(
             EXPOSURE_ENRICHMENT_DOCUMENT,
-            store=pointer_store,
+            store=enrichment_store,
         ),
         max_items=100,
     )
@@ -863,7 +886,7 @@ def _shared_metadata_prefetch(
             table_reader=read_table,
         ),
         worker=worker,
-        checkpoint_store=pointer_store,
+        checkpoint_store=enrichment_store,
         max_items=100,
     ).run().to_dict()
 

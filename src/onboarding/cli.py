@@ -338,6 +338,7 @@ def cli_command(args: argparse.Namespace) -> int:
                 build_onboarding_service(ConnectorConfig.load(args.config)),
                 fabric_config=args.fabric_config,
                 connection_ids=args.connection_id or None,
+                enrichment_root=os.environ.get("AIOPS_HOME", "").strip() or None,
                 progress_callback=lambda event: print(
                     json.dumps(event, separators=(",", ":"), sort_keys=True),
                     file=sys.stderr,
