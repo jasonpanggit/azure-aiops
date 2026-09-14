@@ -11,6 +11,7 @@ from typing import Any
 from opentelemetry import metrics
 
 from intelligence.incident.incident_intelligence import IncidentIntelligence
+from ontology.relationship_builder import DEFAULT_MAX_RELATIONSHIPS
 
 from .semantic_cache import SemanticCache
 from .semantic_indexes import ASSET_TYPES, SemanticIndexes
@@ -27,7 +28,7 @@ from .semantic_validator import SemanticValidator
 
 DEFAULT_SEMANTIC_SOURCE_ROWS = 50_000
 DEFAULT_SEMANTIC_ENTITY_ROWS = 100_000
-DEFAULT_SEMANTIC_RELATIONSHIP_ROWS = 250_000
+DEFAULT_SEMANTIC_RELATIONSHIP_ROWS = DEFAULT_MAX_RELATIONSHIPS
 
 
 class _SemanticTelemetry:
