@@ -95,7 +95,7 @@ ContainerInventory
 CONTAINER_IMAGE_INVENTORY_QUERY = """
 ContainerImageInventory
 | where TimeGenerated > ago(15m)
-| project TimeGenerated, ImageID, Repository, Tag, _SubscriptionId
+| project TimeGenerated, ImageID, Repository, Tag=ImageTag, _SubscriptionId
 | order by TimeGenerated desc
 | take 25000
 """.strip()

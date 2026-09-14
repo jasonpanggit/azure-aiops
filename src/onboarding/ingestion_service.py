@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,6 +27,7 @@ from storage.locking import RunLock
 
 from .azure_clients import AzureCliArgClient, AzureMcpClient
 from .config import ConnectorConfig
+from .defender_normalize import is_container_image_assessment
 from .discovery_source import AzureResourceGraphSource, CostActualsSource
 from .graph_normalize import Normalizer
 from .ingestion_state import StateStore
@@ -518,6 +519,29 @@ def _source_freshness(
     return "fresh" if age_seconds <= threshold_seconds else "stale"
 
 
+def _workload_defender_rows(
+    query_results: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Return only Defender row families supported by workload matching.
+
+    Assessment acquisition includes recommendation rows for many resource
+    types, so reuse the canonical container-image classifier before adding
+    those rows. Subassessments remain accepted for providers that expose the
+    established ``additionalData.imageDigest`` contract.
+    """
+
+    assessments = [
+        dict(row)
+        for row in query_results.get("defender_assessments", ())
+        if is_container_image_assessment(row)
+    ]
+    subassessments = [
+        dict(row)
+        for row in query_results.get("defender_subassessments", ())
+    ]
+    return [*assessments, *subassessments]
+
+
 class IngestionService:
     def __init__(
         self,
@@ -663,7 +687,7 @@ class IngestionService:
         workload = (
             activate_workload_partitions(
                 outcomes=workload_outcomes,
-                defender_rows=query_results.get("defender_subassessments", []),
+                defender_rows=_workload_defender_rows(query_results),
                 attempted_generation=run_id,
                 completed_at=completed_at,
                 previous_observations=self.store.read_dataset(

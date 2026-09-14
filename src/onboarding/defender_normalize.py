@@ -939,16 +939,20 @@ def _image_cve_details(
 
 
 def _image_details(properties: Mapping[str, Any]) -> dict[str, Any]:
-    """Parse the ``resourceAdditionalData`` JSON blob on image assessments."""
-    raw = _first_text(
-        properties.get("resourceAdditionalData"),
-        properties.get("ResourceAdditionalData"),
+    """Parse dynamic or JSON ``resourceAdditionalData`` image evidence."""
+    raw = (
+        properties.get("resourceAdditionalData")
+        if properties.get("resourceAdditionalData") is not None
+        else properties.get("ResourceAdditionalData")
     )
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
+    if isinstance(raw, Mapping):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    else:
         return {}
     if not isinstance(parsed, Mapping):
         return {}
