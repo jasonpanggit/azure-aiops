@@ -44,6 +44,7 @@ def run_patch_publication(
         sources,
         [connection.connection_id for connection in connections],
         connector_config.output_dir,
+        reuse_unchanged=True,
     )
     source_run_id = str(combined_manifest.get("runId") or "")
     if not source_run_id:

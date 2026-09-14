@@ -174,7 +174,7 @@ def test_combined_snapshot_preserves_distinct_connection_entities(tmp_path):
     } == {"partition-hub", "partition-spoke"}
 
 
-def test_combined_activation_reuses_generation_when_sources_are_unchanged(
+def test_combined_activation_creates_new_generation_when_sources_are_unchanged(
     tmp_path,
 ) -> None:
     roots = {"hub": tmp_path / "hub"}
@@ -188,6 +188,35 @@ def test_combined_activation_reuses_generation_when_sources_are_unchanged(
 
     first = publish_combined_snapshot(service, ["hub"], combined_root)
     second = publish_combined_snapshot(service, ["hub"], combined_root)
+
+    assert second["runId"] != first["runId"]
+    assert second["sourceRunIds"] == first["sourceRunIds"]
+
+
+def test_combined_snapshot_can_reuse_unchanged_sources_for_patch_writer(
+    tmp_path,
+) -> None:
+    roots = {"hub": tmp_path / "hub"}
+    _publish(
+        roots["hub"],
+        "hub",
+        "/subscriptions/hub/resourceGroups/rg/providers/x/a",
+    )
+    combined_root = tmp_path / "combined"
+    service = _Service(roots)
+
+    first = publish_combined_snapshot(
+        service,
+        ["hub"],
+        combined_root,
+        reuse_unchanged=True,
+    )
+    second = publish_combined_snapshot(
+        service,
+        ["hub"],
+        combined_root,
+        reuse_unchanged=True,
+    )
 
     assert second == first
     assert str(DatasetStore(combined_root).current_generation()) == str(

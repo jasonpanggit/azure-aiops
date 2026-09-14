@@ -65,10 +65,14 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     monkeypatch.setattr(
         patch_publication,
         "publish_combined_snapshot",
-        lambda service, connection_ids, target: (
+        lambda service, connection_ids, target, *, reuse_unchanged: (
             combined.append((connection_ids, str(target)))
-            or {"runId": "source-generation-secret"}
-        ),
+            if reuse_unchanged
+            else (_ for _ in ()).throw(
+                AssertionError("Patch publication must reuse unchanged sources")
+            )
+        )
+        or {"runId": "source-generation-secret"},
     )
     monkeypatch.setattr(
         patch_publication.FabricRuntimeConfig,
@@ -119,6 +123,58 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     }
     assert "publication-secret" not in str(result)
     assert "source-generation-secret" not in str(result)
+
+
+def test_patch_publication_advances_when_combined_source_changes(
+    monkeypatch,
+) -> None:
+    connection = SimpleNamespace(connection_id="connection-a")
+    generations = iter(("source-generation-1", "source-generation-2"))
+    replayed: list[str] = []
+    monkeypatch.setattr(
+        patch_publication.ConnectorConfig,
+        "load",
+        lambda _path: SimpleNamespace(output_dir="/data"),
+    )
+    monkeypatch.setattr(
+        patch_publication,
+        "ConnectionRegistry",
+        lambda _root: SimpleNamespace(list=lambda **_kwargs: [connection]),
+    )
+    monkeypatch.setattr(
+        patch_publication,
+        "ConnectionSyncCoordinator",
+        lambda _root: SimpleNamespace(
+            connection_output_dir=lambda _connection: "/data/connection-a"
+        ),
+    )
+    monkeypatch.setattr(
+        patch_publication,
+        "publish_combined_snapshot",
+        lambda *_args, **_kwargs: {"runId": next(generations)},
+    )
+    monkeypatch.setattr(
+        patch_publication.FabricRuntimeConfig,
+        "load",
+        lambda _path: _FabricConfig(source_data_root="/old"),
+    )
+    monkeypatch.setattr(
+        patch_publication,
+        "build_runtime",
+        lambda _config, *, mode: SimpleNamespace(
+            service=SimpleNamespace(
+                sync_patch_tables=lambda *, replay_source_run_id: (
+                    replayed.append(replay_source_run_id)
+                    or _result(status="completed")
+                )
+            )
+        ),
+    )
+
+    patch_publication.run_patch_publication("config.yaml", "fabric.yaml")
+    patch_publication.run_patch_publication("config.yaml", "fabric.yaml")
+
+    assert replayed == ["source-generation-1", "source-generation-2"]
 
 
 def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:

@@ -477,8 +477,16 @@ def publish_combined_snapshot(
     service: _CombinedSnapshotSource,
     connection_ids: list[str],
     target_root: str | Path,
+    *,
+    reuse_unchanged: bool = False,
 ) -> dict[str, Any]:
-    """Publish one isolated, deduplicated snapshot from synced connections."""
+    """Publish one isolated, deduplicated snapshot from synced connections.
+
+    Full activation intentionally creates a new combined generation by
+    default so code-only mapper and projection changes are republished.
+    Dedicated readers may opt into source-run reuse when downstream work is
+    independently generation-aware.
+    """
     if not connection_ids:
         raise ValueError("At least one subscription connection is required")
     entities: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in ENTITY_TYPES}
@@ -582,7 +590,7 @@ def publish_combined_snapshot(
     )
     target_store = DatasetStore(target_root)
     current_generation = target_store.current_generation()
-    if current_generation is not None:
+    if reuse_unchanged and current_generation is not None:
         current_manifest = _read_manifest(target_store, current_generation)
         if (
             str(current_manifest.get("status") or "").casefold()
