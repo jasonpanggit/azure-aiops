@@ -56,6 +56,7 @@ def _snapshot(
     status: str = "succeeded",
     freshness: str = "fresh",
     findings: list[dict] | None = None,
+    replaces_legacy_connection_id: str = "",
 ) -> dict[str, list[dict]]:
     snapshot_findings = list(findings or [])
     return {
@@ -73,6 +74,7 @@ def _snapshot(
                 "ingestion_run_id": generation,
                 "connection_id": connection_id,
                 "source_generation": generation,
+                "replaces_legacy_connection_id": replaces_legacy_connection_id,
                 "status": status,
                 "completeness": completeness,
                 "freshness": freshness,
@@ -82,6 +84,21 @@ def _snapshot(
                 "expected_count": len(snapshot_findings),
             }
         ],
+    }
+
+
+def _merge_snapshots(*snapshots: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    return {
+        table_name: [
+            row
+            for snapshot in snapshots
+            for row in snapshot.get(table_name, ())
+        ]
+        for table_name in {
+            table_name
+            for snapshot in snapshots
+            for table_name in snapshot
+        }
     }
 
 
@@ -311,6 +328,163 @@ def test_reconciliation_rejects_active_legacy_against_complete_demo_snapshot() -
 
     with pytest.raises(ValueError, match="authoritative_patch_snapshot"):
         reconcile_exposure_gold(gold_datasets, corrupted)
+
+
+@pytest.mark.parametrize(
+    ("completeness", "status", "freshness"),
+    [
+        ("partial", "partial", "fresh"),
+        ("stale", "partial", "stale"),
+        ("complete", "failed-with-lkg", "fresh"),
+    ],
+)
+def test_authoritative_empty_with_non_authoritative_sibling_preserves_legacy(
+    completeness: str,
+    status: str,
+    freshness: str,
+) -> None:
+    generation = "generation-current"
+    datasets = _merge_snapshots(
+        _snapshot(
+            "connection-a",
+            generation=generation,
+            completeness="healthy-empty",
+        ),
+        _snapshot(
+            "connection-b",
+            generation=generation,
+            completeness=completeness,
+            status=status,
+            freshness=freshness,
+        ),
+    )
+    materialized = materialize_temporal_exposure_tables(
+        temporal_products_from_legacy(
+            datasets,
+            generation_id=generation,
+            ingested_at=PROJECTED_AT,
+        ),
+        existing_rows=_historical_five().all_observation_rows,
+    )
+
+    assert len(materialized.current_rows) == 5
+    assert {
+        row["active_source_families"][0] for row in materialized.current_rows
+    } == {"aum"}
+    projection = project_exposure_gold(
+        _gold_datasets(datasets, materialized),
+        generation_id="gold-current",
+        projected_at=PROJECTED_AT,
+    )
+    assert {
+        row["connection_id"] for row in projection.facts if row["active"]
+    } == {f"legacy:{SUBSCRIPTION}"}
+    reconcile_exposure_gold(_gold_datasets(datasets, materialized), projection)
+
+
+def test_all_known_authoritative_siblings_retire_legacy() -> None:
+    generation = "generation-current"
+    datasets = _merge_snapshots(
+        _snapshot(
+            "connection-a",
+            generation=generation,
+            completeness="healthy-empty",
+        ),
+        _snapshot(
+            "connection-b",
+            generation=generation,
+            completeness="healthy-empty",
+        ),
+    )
+    materialized = materialize_temporal_exposure_tables(
+        temporal_products_from_legacy(
+            datasets,
+            generation_id=generation,
+            ingested_at=PROJECTED_AT,
+        ),
+        existing_rows=_historical_five().all_observation_rows,
+    )
+
+    assert materialized.current_rows == ()
+    projection = project_exposure_gold(
+        _gold_datasets(datasets, materialized),
+        generation_id="gold-current",
+        projected_at=PROJECTED_AT,
+    )
+    assert projection.facts == ()
+    reconcile_exposure_gold(_gold_datasets(datasets, materialized), projection)
+
+
+def test_explicit_replacement_retires_only_mapped_legacy_scope() -> None:
+    generation = "generation-current"
+    historical = materialize_temporal_exposure_tables(
+        temporal_products_from_legacy(
+            {
+                "silver_patch_findings": [
+                    *[
+                        _finding(
+                            f"KB{index}",
+                            f"legacy:{SUBSCRIPTION}",
+                            generation="generation-old",
+                        )
+                        for index in range(1, 6)
+                    ],
+                    _finding(
+                        "KB6",
+                        "legacy:unmapped",
+                        generation="generation-old",
+                    ),
+                ]
+            },
+            generation_id="generation-old",
+            ingested_at="2026-09-13T00:05:00Z",
+        )
+    )
+    datasets = _merge_snapshots(
+        _snapshot(
+            "connection-a",
+            generation=generation,
+            completeness="healthy-empty",
+            replaces_legacy_connection_id=f"legacy:{SUBSCRIPTION}",
+        ),
+        _snapshot(
+            "connection-b",
+            generation=generation,
+            completeness="partial",
+            status="partial",
+        ),
+    )
+    materialized = materialize_temporal_exposure_tables(
+        temporal_products_from_legacy(
+            datasets,
+            generation_id=generation,
+            ingested_at=PROJECTED_AT,
+        ),
+        existing_rows=historical.all_observation_rows,
+    )
+
+    assert len(materialized.current_rows) == 1
+    assert materialized.current_rows[0]["weakness_id"] == "KB6"
+    projection = project_exposure_gold(
+        _gold_datasets(datasets, materialized),
+        generation_id="gold-current",
+        projected_at=PROJECTED_AT,
+    )
+    assert {row["connection_id"] for row in projection.facts} == {
+        "legacy:unmapped"
+    }
+    reconcile_exposure_gold(_gold_datasets(datasets, materialized), projection)
+    mapped = dict(projection.facts[0])
+    mapped["connection_id"] = f"legacy:{SUBSCRIPTION}"
+    mapped["scope_key"] = mapped["scope_key"].replace(
+        "legacy:unmapped",
+        f"legacy:{SUBSCRIPTION}",
+    )
+    with pytest.raises(ValueError, match="authoritative_patch_snapshot"):
+        reconcile_exposure_gold(
+            _gold_datasets(datasets, materialized),
+            replace(projection, facts=(mapped,)),
+        )
 
 
 def test_two_generation_publication_retains_legacy_and_activates_demo(

@@ -11,6 +11,7 @@ from typing import Any
 from intelligence.vulnerability.exposure_projection import (
     ExposureGoldProjection,
     ExposureTemporalProjection,
+    aum_legacy_retirement_coverage,
     build_temporal_projection,
     project_exposure_gold,
 )
@@ -301,6 +302,7 @@ def temporal_products_from_legacy(
         aum_snapshot_scopes=snapshot_scopes,
         authoritative_aum_scopes=authoritative_scopes,
         authoritative_aum_current_keys=authoritative_current_keys,
+        aum_legacy_retirement_coverage=aum_legacy_retirement_coverage(datasets),
     )
 
 
@@ -2429,6 +2431,7 @@ def _patch_snapshot_rows(
         )
         content = {
             "source_generation": source_generation,
+            "replaces_legacy_connection_id": _replaced_legacy_connection_id(rows),
             "status": (
                 "succeeded"
                 if completeness in {"complete", "healthy-empty"}
@@ -2473,6 +2476,28 @@ def _patch_snapshot_rows(
             }
         )
     return snapshots
+
+
+def _replaced_legacy_connection_id(rows: list[dict[str, Any]]) -> str:
+    values = {
+        str(row.get(field) or "").strip().casefold()
+        for row in rows
+        for field in (
+            "replaces_legacy_connection_id",
+            "replacesLegacyConnectionId",
+            "legacy_connection_id",
+            "legacyConnectionId",
+        )
+        if str(row.get(field) or "").strip()
+    }
+    if len(values) > 1:
+        raise ValueError("Legacy AUM replacement identity is ambiguous")
+    if not values:
+        return ""
+    connection_id = next(iter(values))
+    if not connection_id.startswith("legacy:"):
+        raise ValueError("Legacy AUM replacement identity must start with 'legacy:'")
+    return connection_id
 
 
 def _required_patch_snapshot_connection(row: Mapping[str, Any]) -> str:

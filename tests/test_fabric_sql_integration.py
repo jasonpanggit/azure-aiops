@@ -271,6 +271,20 @@ def test_patch_snapshot_manifest_preserves_healthy_empty_generation() -> None:
     assert rows[0]["completeness"] == "healthy-empty"
 
 
+def test_patch_snapshot_manifest_preserves_explicit_legacy_replacement() -> None:
+    source_status = _patch_status_rows(row_count=0)
+    for row in source_status:
+        row["replaces_legacy_connection_id"] = "legacy:subscription-a"
+
+    rows = _patch_snapshot_rows(
+        source_status,
+        "silver-publication-migration",
+        "2026-09-10T02:40:00Z",
+    )
+
+    assert rows[0]["replaces_legacy_connection_id"] == "legacy:subscription-a"
+
+
 def test_failed_patch_installation_remains_actionable() -> None:
     assert (
         _patch_installation_finding_state(
