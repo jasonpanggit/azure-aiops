@@ -17,6 +17,7 @@ evidence is strictly better than a 502 for an assistant surface.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid as _uuid
 from collections.abc import Mapping
@@ -27,6 +28,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
+from operations.cve_response import canonical_cve_id
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
     conversation_store,
@@ -164,6 +166,63 @@ class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
 
     snapshot: EvidenceSnapshotV2
     hint: CanonicalPlanHint | None = None
+
+
+def _validate_bound_cve_request(
+    payload: CanonicalInvestigationPayload,
+    snapshot: EvidenceSnapshotV2,
+) -> None:
+    """Reject stale or conflicting CVE identity before any tool can execute."""
+
+    if (
+        snapshot.page_kind != "vulnerability"
+        or not snapshot.page_id.casefold().startswith("cve:")
+    ):
+        return
+    page_cve = canonical_cve_id(snapshot.page_id.split(":", 1)[1])
+    if not page_cve:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "CVE page context requires a canonical CVE identifier",
+            details={"field": "snapshot.page_id"},
+        )
+    referenced = {
+        value.upper()
+        for value in re.findall(
+            r"\bCVE-\d{4}-\d{4,}\b",
+            payload.question,
+            flags=re.IGNORECASE,
+        )
+    }
+    hint_cve = (
+        canonical_cve_id(payload.hint.arguments.get("cve_id"))
+        if payload.hint is not None
+        and payload.hint.tool in {"cve_detail", "cve_attack_path"}
+        else ""
+    )
+    filtered_cves = {
+        canonical_cve_id(value)
+        for value in snapshot.filters.get("weakness_id", ())
+    }
+    selected_cves = {
+        canonical_cve_id(entity.source_key)
+        for entity in snapshot.selected_entities
+        if isinstance(entity, DomainEntityRef)
+        and entity.namespace.casefold() == "vulnerability"
+        and entity.kind.casefold() == "cve"
+    }
+    conflicting = (
+        (referenced and referenced != {page_cve})
+        or (hint_cve and hint_cve != page_cve)
+        or any(value and value != page_cve for value in filtered_cves)
+        or any(value and value != page_cve for value in selected_cves)
+    )
+    if conflicting:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Requested CVE does not match the visible CVE page context",
+            details={"field": "snapshot.page_id"},
+        )
 
 
 class CanonicalInventorySelector(BaseModel):
@@ -1302,6 +1361,7 @@ def investigate_canonical(
         payload.model_dump(exclude={"hint"})
     )
     browser_snapshot = request.snapshot
+    _validate_bound_cve_request(payload, browser_snapshot)
     try:
         resolved_domains: dict[
             tuple[str, str, str],
