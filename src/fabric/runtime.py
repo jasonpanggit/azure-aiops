@@ -114,7 +114,7 @@ class FabricRuntime:
             max_relationship_rows=(
                 semantic_config.max_relationship_rows
                 if semantic_config
-                else 500_000
+                else 250_000
             ),
             max_serialized_bytes=(
                 semantic_config.max_serialized_bytes

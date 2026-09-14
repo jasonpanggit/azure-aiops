@@ -231,7 +231,7 @@ class SemanticRuntimeConfig:
     max_traversal_depth: int = 32
     max_source_rows: int = 50_000
     max_entity_rows: int = 100_000
-    max_relationship_rows: int = 500_000
+    max_relationship_rows: int = 250_000
     max_serialized_bytes: int = 1_000_000
 
 
@@ -641,7 +641,7 @@ class FabricRuntimeConfig:
                     raw_semantic_payload,
                     "semantic",
                     "max_relationship_rows",
-                    500_000,
+                    250_000,
                 ),
                 max_serialized_bytes=_strict_section_int(
                     raw_semantic_payload,

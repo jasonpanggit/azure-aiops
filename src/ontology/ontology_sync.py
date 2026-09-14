@@ -8,7 +8,6 @@ from typing import Any
 from .entity_builder import PAAS_ENTITY_TYPES, stable_version
 from .ontology_validator import OntologyValidator
 from .pending_relationships import PendingRelationshipStore
-from .relationship_builder import DEFAULT_MAX_RELATIONSHIPS
 
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
 
@@ -43,7 +42,7 @@ class OntologyGraphSynchronizer:
         validator: OntologyValidator,
         *,
         max_entities: int = 100_000,
-        max_relationships: int = DEFAULT_MAX_RELATIONSHIPS,
+        max_relationships: int = 250_000,
         pending_relationships: PendingRelationshipStore | None = None,
     ) -> None:
         for name, value in (

@@ -328,9 +328,9 @@ def test_canonical_mapper_raises_only_the_source_input_bound() -> None:
     assert mapper.entity_builder.max_source_rows == 100_000
     assert mapper.entity_builder.max_entities == 100_000
     assert mapper.relationship_builder.max_entities == 100_000
-    assert mapper.relationship_builder.max_relationships == 500_000
+    assert mapper.relationship_builder.max_relationships == 250_000
     assert mapper.synchronizer.max_entities == 100_000
-    assert mapper.synchronizer.max_relationships == 500_000
+    assert mapper.synchronizer.max_relationships == 250_000
 
 
 def test_granular_mapper_omits_redundant_reverse_exposure_edges() -> None:
