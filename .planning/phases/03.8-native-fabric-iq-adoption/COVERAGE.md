@@ -26,6 +26,6 @@
 | Fabric Data Agent session-header lifecycle and disposal | INTEGRATE | |
 | Fabric Data Agent denied/empty/stale/conflicting/unavailable handling | INTEGRATE | |
 | Foundry IQ knowledge-base/Search wrapper over the ontology | OPT-OUT | Research scopes this as a later grounding option; Phase 03.8 uses the documented ontology MCP/`fabric_iq_preview` path for native traversal. |
-| Azure MCP `learn:true` for traversal or grounding | OPT-OUT | Phase 03.8 explicitly uses Fabric IQ and Data Agent native surfaces and forbids Azure MCP learning calls. |
+| Generic Azure inspection wrapper for traversal or grounding | OPT-OUT | Phase 03.8 uses standard `az` for Azure inspection and official Fabric/Foundry REST or locked first-party SDKs where `az` has no surface. |
 | Provider mutation/publishing tools | OPT-OUT | Phase boundary is read-only adoption; new ingestion, publication, relationship acceptance, and remediation authority are excluded. |
 | Broad all-specialist or page-specific activation | OPT-OUT | Context limits initial use to topology/blast-radius and policy/governance scopes. |

@@ -250,19 +250,19 @@ Plans:
   3. Gold/Data Agent grounding uses managed authorization and curated Gold contracts, with no static delegated token committed or exposed to telemetry.
   4. A default-off → shadow → canary rollout demonstrates measurable native call rate, latency, citation validity, fallback rate, and answer-quality lift against the deterministic baseline, with kill-switch rollback.
 
-**Plans:** 37 plans
+**Plans:** 35 plans
 
 Plans:
 
 - [ ] 03.8-01-PLAN.md — Enforce unqualified dependency passes, create the red native tracer, and own every live-validator verb/schema
-- [ ] 03.8-15-PLAN.md — Complete split Wave 0 security, MCP, fallback, rollout, and unlabeled evaluation contracts
+- [ ] 03.8-15-PLAN.md — Complete split Wave 0 branch, security, MCP, fallback, rollout, and unlabeled evaluation contracts
 - [ ] 03.8-02-PLAN.md — Select exact OBO production ownership and approve the curated Data Agent contract
-- [ ] 03.8-16-PLAN.md — Approve native/Data Agent/network/region readiness
-- [ ] 03.8-03-PLAN.md — Prepare the default-off toolbox/connection and concrete Terraform saved plan
+- [ ] 03.8-16-PLAN.md — Approve pre-provision tenant/region/network/UAI prerequisites
+- [ ] 03.8-03-PLAN.md — Execute only the selected OBO branch and prepare the default-off control-plane saved plan
 - [ ] 03.8-27-PLAN.md — Sign the exact default-off control-plane saved plan
-- [ ] 03.8-28-PLAN.md — Apply only the signed control-plane saved plan and capture immutable native-shape proof
+- [ ] 03.8-28-PLAN.md — Apply the signed control plane, prove post-apply connection readiness, and capture native shape
 - [ ] 03.8-04-PLAN.md — Approve live payload sufficiency, independent observability, and native provenance schema
-- [ ] 03.8-05-PLAN.md — Trace one inventory-resolved topology seed through true native Fabric IQ
+- [ ] 03.8-05-PLAN.md — Trace one inventory-resolved topology seed through the off-gated sanitized-fixture code path
 - [ ] 03.8-07-PLAN.md — Implement managed-identity Data Agent MCP lifecycle and reject legacy token contracts
 - [ ] 03.8-06-PLAN.md — Complete atomic admission and narrow relationship/policy native activation
 - [ ] 03.8-09-PLAN.md — Create rollout guards, real-operation telemetry, kill switch, and alerts
@@ -271,25 +271,23 @@ Plans:
 - [ ] 03.8-30-PLAN.md — Apply rollout/alerts and seal the pre-canary off-state rollback-control rehearsal
 - [ ] 03.8-10-PLAN.md — Build 88 unlabeled paired cases and the immutable four-arm evaluator
 - [ ] 03.8-17-PLAN.md — Collect signed 20-case expert, 88-case two-reviewer/adjudication, and judge-calibration evidence
-- [ ] 03.8-11-PLAN.md — Pass off-state release gates and prepare the exact Shadow 01 saved plan
-- [ ] 03.8-31-PLAN.md — Sign the exact non-displaying Shadow 01 saved plan
-- [ ] 03.8-32-PLAN.md — Apply only the signed Shadow 01 plan and capture start evidence
+- [ ] 03.8-11-PLAN.md — Pass release gates, build/push/digest the API image, and prepare the image-bound Shadow plan
+- [ ] 03.8-31-PLAN.md — Sign the exact image/predecessor/source/config-bound non-displaying Shadow plan
+- [ ] 03.8-32-PLAN.md — Apply the signed image-bound plan, prove health while off, then activate Shadow
 - [ ] 03.8-18-PLAN.md — Wait externally for the real Shadow 01 evidence interval
 - [ ] 03.8-19-PLAN.md — Resume and seal the immutable Shadow 01 final report
-- [ ] 03.8-12-PLAN.md — Approve current regional/capacity cost and revalidate the off-state rollback-control rehearsal
-- [ ] 03.8-33-PLAN.md — Prepare the exact bounded Canary 1 saved plan
-- [ ] 03.8-34-PLAN.md — Sign the distinct exact-plan Canary 1 authorization
+- [ ] 03.8-12-PLAN.md — Approve current cost/rehearsal evidence and prepare the exact Canary 1 saved plan
+- [ ] 03.8-33-PLAN.md — Sign the distinct exact-plan Canary 1 authorization
 - [ ] 03.8-13-PLAN.md — Apply only the signed Canary 1 plan and capture start evidence
 - [ ] 03.8-20-PLAN.md — Wait externally for the real Canary 1 evidence interval
 - [ ] 03.8-21-PLAN.md — Resume and seal the immutable Canary 1 final report
-- [ ] 03.8-22-PLAN.md — Sign the distinct Canary 1 exit review
-- [ ] 03.8-35-PLAN.md — Prepare the exact bounded Canary 2 saved plan
-- [ ] 03.8-36-PLAN.md — Sign the distinct exact-plan Canary 2 authorization
+- [ ] 03.8-22-PLAN.md — Sign the Canary 1 exit review and prepare the exact Canary 2 saved plan
+- [ ] 03.8-34-PLAN.md — Sign the distinct exact-plan Canary 2 authorization
 - [ ] 03.8-23-PLAN.md — Apply only the signed Canary 2 plan and capture start evidence
 - [ ] 03.8-24-PLAN.md — Wait externally for the real Canary 2 evidence interval
 - [ ] 03.8-25-PLAN.md — Rerun all 88 paired cases, seal Canary 2, and prepare the exact rollback saved plan
-- [ ] 03.8-37-PLAN.md — Sign the exact final kill/off rollback saved plan
-- [ ] 03.8-26-PLAN.md — Apply the signed rollback plan and prove two-window zero provider/display calls
+- [ ] 03.8-35-PLAN.md — Sign the exact final kill/off rollback saved plan
+- [ ] 03.8-26-PLAN.md — Apply/start rollback, wait externally for two windows, and resume/seal zero-call proof
 - [ ] 03.8-14-PLAN.md — Replay final evidence and sign the authoritative HOLD/off decision
 
 **UI hint:** no
