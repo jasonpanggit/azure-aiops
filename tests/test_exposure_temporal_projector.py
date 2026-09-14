@@ -386,3 +386,382 @@ def _observation(
         payload=payload or {"severity": "High"},
         title="Fixture exposure",
     )
+
+
+def _assert_current_equal_ignoring_generation(a, b) -> None:
+    import dataclasses
+
+    fields = [
+        f.name
+        for f in dataclasses.fields(a)
+        if f.name not in {"projection_generation_id", "change_version"}
+    ]
+    for name in fields:
+        assert getattr(a, name) == getattr(b, name), name
+
+
+def test_incremental_matches_full_replay_across_missing_installed_reintroduced() -> None:
+    """project_incremental applied batch-by-batch must equal one full replay."""
+    from intelligence.vulnerability.projector import (
+        project_current,
+        project_incremental,
+    )
+
+    batch1 = (
+        _observation(
+            event="missing", event_time="2026-08-01T00:00:00Z", source_sequence=1
+        ),
+        _observation(
+            event="installed",
+            event_time="2026-08-02T00:00:00Z",
+            source_sequence=2,
+            provider_operation_id="install-1",
+        ),
+    )
+    batch2 = (
+        _observation(
+            event="missing",
+            event_time="2026-08-03T00:00:00Z",
+            source_sequence=3,
+            provider_operation_id="assessment-2",
+        ),
+    )
+
+    full_replay = project_current(batch1 + batch2, generation_id="gen-full")
+
+    incremental_first = project_current(batch1, generation_id="gen-1")
+    incremental_second = project_incremental(
+        incremental_first, batch2, generation_id="gen-full"
+    )
+
+    _assert_current_equal_ignoring_generation(full_replay, incremental_second)
+    assert incremental_second.projection_generation_id == "gen-full"
+
+
+def test_incremental_no_new_observations_carries_forward_state() -> None:
+    from intelligence.vulnerability.projector import (
+        project_current,
+        project_incremental,
+    )
+
+    observations = (
+        _observation(event="missing", event_time="2026-08-01T00:00:00Z"),
+    )
+    previous = project_current(observations, generation_id="gen-1")
+
+    carried = project_incremental(previous, (), generation_id="gen-2")
+
+    _assert_current_equal_ignoring_generation(previous, carried)
+    assert carried.projection_generation_id == "gen-2"
+    assert carried.change_version != previous.change_version
+
+
+def test_incremental_multi_cycle_reintroduction_matches_full_replay() -> None:
+    """Two reintroduction cycles split across three incremental batches must
+    match a single full replay, including reintroduction_count accumulation.
+    """
+    from intelligence.vulnerability.projector import (
+        project_current,
+        project_incremental,
+    )
+
+    batch1 = (
+        _observation(event="missing", event_time="2026-08-01T00:00:00Z", source_sequence=1),
+        _observation(
+            event="installed",
+            event_time="2026-08-02T00:00:00Z",
+            source_sequence=2,
+            provider_operation_id="install-1",
+        ),
+    )
+    batch2 = (
+        _observation(
+            event="missing",
+            event_time="2026-08-03T00:00:00Z",
+            source_sequence=3,
+            provider_operation_id="assessment-2",
+        ),
+        _observation(
+            event="installed",
+            event_time="2026-08-04T00:00:00Z",
+            source_sequence=4,
+            provider_operation_id="install-2",
+        ),
+    )
+    batch3 = (
+        _observation(
+            event="missing",
+            event_time="2026-08-05T00:00:00Z",
+            source_sequence=5,
+            provider_operation_id="assessment-3",
+        ),
+    )
+
+    full_replay = project_current(
+        batch1 + batch2 + batch3, generation_id="gen-full"
+    )
+
+    state = project_current(batch1, generation_id="gen-1")
+    state = project_incremental(state, batch2, generation_id="gen-2")
+    state = project_incremental(state, batch3, generation_id="gen-full")
+
+    _assert_current_equal_ignoring_generation(full_replay, state)
+    assert full_replay.reintroduction_count == 2
+
+
+def test_raw_incremental_can_diverge_from_full_replay_when_history_has_unknown_time() -> None:
+    """Documents the known precondition violation of ``project_incremental``.
+
+    Unknown-event-time observations are always replayed last within a full
+    replay (``ExposureObservation.ordering_key`` sorts them after every
+    known-time observation, regardless of arrival order). Because of that,
+    naively folding a later known-time observation on top of state derived
+    from an earlier unknown-time observation is NOT guaranteed to match a
+    full replay of the same observations -- callers must detect this case
+    themselves (see ``materialize_temporal_exposure_tables``) and fall back
+    to a full :func:`project_current` replay instead of calling
+    :func:`project_incremental` directly. This test pins that divergence so
+    a future change to ``ordering_key`` semantics is caught rather than
+    silently assumed safe.
+    """
+    from intelligence.vulnerability.projector import (
+        project_current,
+        project_incremental,
+    )
+
+    batch1 = (
+        _observation(event="missing", event_time=None, source_sequence=1),
+    )
+    batch2 = (
+        _observation(
+            event="installed",
+            event_time="2026-08-05T00:00:00Z",
+            source_sequence=2,
+            provider_operation_id="install-1",
+        ),
+    )
+
+    full_replay = project_current(batch1 + batch2, generation_id="gen-full")
+    naive_incremental = project_incremental(
+        project_current(batch1, generation_id="gen-1"),
+        batch2,
+        generation_id="gen-full",
+    )
+
+    # Full replay always applies the unknown-time "missing" last, so the
+    # exposure remains open/missing even though a known-time "installed"
+    # observation exists.
+    assert full_replay.state == "missing"
+    assert full_replay.active is True
+    # Naive incremental folding applies batch2 forward and gets a different
+    # (incorrect, if used without the pipeline's safety fallback) answer.
+    assert naive_incremental.state == "installed"
+    assert naive_incremental.active is False
+
+
+def test_pipeline_falls_back_to_full_replay_for_keys_with_unknown_event_time() -> None:
+    """materialize_temporal_exposure_tables must not use the unsafe fast path
+    for a key whose history contains any unknown event_time; it must
+    reproduce the same result as a full cold-start replay for that key.
+    """
+    from fabric_pipelines.vulnerability_pipeline import (
+        ExposureTemporalProjection,
+        materialize_temporal_exposure_tables,
+    )
+    from intelligence.vulnerability.projector import project_current
+
+    batch1 = _observation(event="missing", event_time=None, source_sequence=1)
+    batch2 = _observation(
+        event="installed",
+        event_time="2026-08-05T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-1",
+    )
+
+    full_replay = project_current((batch1, batch2), generation_id="gen-full")
+
+    first_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1,), current=(), generation_id="gen-1"
+        ),
+    )
+    existing_rows = list(first_run.observation_rows)
+    existing_current_rows = list(first_run.current_rows)
+
+    second_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1, batch2), current=(), generation_id="gen-full"
+        ),
+        existing_rows=existing_rows,
+        known_observation_rows=existing_rows,
+        existing_current_rows=existing_current_rows,
+    )
+
+    assert len(second_run.current_rows) == 1
+    row = second_run.current_rows[0]
+    assert row["state"] == full_replay.state == "missing"
+    assert row["active"] == full_replay.active is True
+
+
+def test_pipeline_falls_back_to_full_replay_for_late_arriving_known_time_observation() -> None:
+    """A new, known-time observation that sorts *before* an already-known
+    observation (e.g. a backfilled/corrected earlier event_time) must not
+    be blindly folded on top of the prior snapshot; the pipeline must
+    detect this and fall back to a full replay of that key so the result
+    still matches a true full replay of the combined history.
+    """
+    from fabric_pipelines.vulnerability_pipeline import (
+        ExposureTemporalProjection,
+        materialize_temporal_exposure_tables,
+    )
+    from intelligence.vulnerability.projector import project_current
+
+    # Known first, at a *later* event_time.
+    batch1 = _observation(
+        event="installed",
+        event_time="2026-08-05T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-1",
+    )
+    # Backfilled/corrected observation ingested afterwards, but with an
+    # *earlier* event_time -- it sorts before batch1 in a true replay.
+    batch2 = _observation(
+        event="missing",
+        event_time="2026-08-01T00:00:00Z",
+        source_sequence=1,
+        provider_operation_id="assessment-2",
+    )
+
+    full_replay = project_current((batch1, batch2), generation_id="gen-full")
+
+    first_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1,), current=(), generation_id="gen-1"
+        ),
+    )
+    existing_rows = list(first_run.observation_rows)
+    existing_current_rows = list(first_run.current_rows)
+
+    second_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1, batch2), current=(), generation_id="gen-full"
+        ),
+        existing_rows=existing_rows,
+        known_observation_rows=existing_rows,
+        existing_current_rows=existing_current_rows,
+    )
+
+    assert len(second_run.current_rows) == 1
+    row = second_run.current_rows[0]
+    assert row["state"] == full_replay.state
+    assert row["active"] == full_replay.active
+
+
+def test_pipeline_rebuilds_key_missing_from_stale_current_snapshot() -> None:
+    """A key with real observation history that is absent from
+    ``existing_current_rows`` (stale/partial/missing current snapshot, or a
+    recovery scenario) must be rebuilt from its full retained history, not
+    silently dropped from ``current_rows`` -- dropping it would let the
+    downstream SNAPSHOT_MERGE delete a key that legitimately has history.
+    """
+    from fabric_pipelines.vulnerability_pipeline import (
+        ExposureTemporalProjection,
+        materialize_temporal_exposure_tables,
+    )
+    from intelligence.vulnerability.projector import project_current
+
+    batch1 = _observation(event="installed", event_time="2026-08-01T00:00:00Z")
+
+    full_replay = project_current((batch1,), generation_id="gen-full")
+
+    first_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1,), current=(), generation_id="gen-1"
+        ),
+    )
+    existing_rows = list(first_run.observation_rows)
+
+    # Simulate a stale/partial current snapshot: no rows at all for this
+    # key (e.g. the current table was lost, truncated, or not yet backfilled
+    # after a recovery), while no new observations arrive this run either.
+    second_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(), current=(), generation_id="gen-full"
+        ),
+        existing_rows=existing_rows,
+        known_observation_rows=existing_rows,
+        existing_current_rows=[],
+    )
+
+    assert len(second_run.current_rows) == 1
+    row = second_run.current_rows[0]
+    assert row["state"] == full_replay.state == "installed"
+    assert row["active"] == full_replay.active is False
+
+
+def test_project_all_incremental_cold_starts_new_keys_and_folds_existing() -> None:
+    from intelligence.vulnerability.observations import ExposureObservation
+    from intelligence.vulnerability.projector import (
+        project_all,
+        project_all_incremental,
+    )
+
+    existing_key_batch1 = _observation(
+        event="missing", event_time="2026-08-01T00:00:00Z", source_sequence=1
+    )
+    existing_key_batch2 = _observation(
+        event="installed",
+        event_time="2026-08-02T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-1",
+    )
+    new_key_observation = ExposureObservation.create(
+        tenant_id="tenant-a",
+        connection_id="connection-a",
+        source_family="azure_update_manager_missing",
+        target_id=(
+            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Microsoft.Compute/virtualMachines/vm-a"
+        ),
+        target_kind="server",
+        weakness_id="KB-9999999",
+        weakness_kind="kb",
+        event="missing",
+        provider_operation_id="assessment-other",
+        provider_status="succeeded",
+        operation_succeeded=True,
+        event_time="2026-08-01T00:00:00Z",
+        source_sequence=1,
+        source_generation="generation-a",
+        ingested_at="2026-08-01T00:01:00Z",
+        run_at="2026-08-01T00:00:30Z",
+        published_at="",
+        payload={"severity": "Low"},
+        title="Fixture exposure other key",
+    )
+
+    previous_current = {
+        item.current_key: item
+        for item in project_all((existing_key_batch1,), generation_id="gen-0")
+    }
+
+    full_replay = project_all(
+        (existing_key_batch1, existing_key_batch2, new_key_observation),
+        generation_id="gen-full",
+    )
+
+    incremental = project_all_incremental(
+        (existing_key_batch2, new_key_observation),
+        previous_current=previous_current,
+        generation_id="gen-full",
+    )
+
+    full_by_key = {item.current_key: item for item in full_replay}
+    incremental_by_key = {item.current_key: item for item in incremental}
+    assert set(full_by_key) == set(incremental_by_key)
+    for key in full_by_key:
+        _assert_current_equal_ignoring_generation(
+            full_by_key[key], incremental_by_key[key]
+        )
+
+

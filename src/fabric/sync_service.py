@@ -1011,6 +1011,15 @@ class FabricSyncService:
                     persisted_observations,
                     projected_at=source_projected_at,
                 )
+                current_uri = self.onelake.table_uri(
+                    "gold",
+                    "exposure_current",
+                )
+                existing_current_rows = (
+                    self.delta.read(current_uri)
+                    if self.delta.version(current_uri) is not None
+                    else []
+                )
                 _notify_stage_progress(
                     stage_progress_callback,
                     "temporal_retained_load",
@@ -1049,6 +1058,7 @@ class FabricSyncService:
                     legacy_temporal,
                     existing_rows=existing_observations,
                     known_observation_rows=persisted_observations,
+                    existing_current_rows=existing_current_rows,
                     stage_callback=lambda stage, status, row_count: (
                         _notify_stage_progress(
                             stage_progress_callback,
