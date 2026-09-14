@@ -37,6 +37,11 @@ from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
 from operations.tools import STATUS_OK, ToolResult
 
 
+def _enable_canonical_rollout(monkeypatch) -> None:
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+
+
 def _request(*, thread_id: str | None = None) -> InvestigationRequest:
     return InvestigationRequest(
         question="Show inventory resources and data health.",
@@ -1001,6 +1006,7 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
         }
     ]
     tool_calls: list[tuple[str, dict[str, object]]] = []
+    routed_page_kinds: list[str] = []
 
     def durable_cve_tool(name, arguments, **_kwargs):
         tool_calls.append((name, dict(arguments)))
@@ -1034,6 +1040,13 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
         )
 
     monkeypatch.setattr("api.routers.copilot.call_tool", durable_cve_tool)
+    original_execute = OrchestrationService.execute
+
+    def capture_page_kind(self, request, **kwargs):
+        routed_page_kinds.append(request.snapshot.page_kind)
+        return original_execute(self, request, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "execute", capture_page_kind)
     context = _context(tmp_path, None)
     context.provider_runtime = ProviderRuntime(
         {
@@ -1055,6 +1068,7 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
     )
 
     assert response.status_code == 200, response.text
+    assert routed_page_kinds == ["cve_detail"]
     assert tool_calls == [("cve_detail", {"cve_id": cve_id})]
     data = response.json()["data"]
     assert data["tool_results"][0]["status"] == "ok"
@@ -1503,7 +1517,7 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
     monkeypatch,
 ):
     monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
-    monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
     body = _network_hub_canonical_body()
     vnet_id = body["hint"]["arguments"]["vnet_id"]
     compatibility_calls: list[tuple[str, dict[str, object]]] = []
@@ -1544,6 +1558,48 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
     assert compatibility_calls == [("hub_dependents", {"vnet_id": vnet_id})]
     assert rollout["mode"] == "compatibility"
     assert rollout["canonical_enabled"] is False
+
+
+def test_missing_rollout_keeps_legacy_investigate_on_compatibility(
+    tmp_path,
+    monkeypatch,
+):
+    from operations.investigation import Investigation
+
+    monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    legacy_calls: list[str] = []
+    monkeypatch.setattr(
+        "api.routers.copilot.run_investigation",
+        lambda question, **_kwargs: (
+            legacy_calls.append(question)
+            or Investigation(
+                question=question,
+                calls=(),
+                answer=None,
+                fact_status="empty",
+                warnings=(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.execute_from_question",
+        lambda *_args, **_kwargs: pytest.fail(
+            "missing rollout mode reached canonical legacy-route execution"
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigate?subscription=sub-a",
+        headers=HEADERS,
+        json={"question": "Show inventory resources", "session_id": ""},
+    )
+
+    assert response.status_code == 200, response.text
+    assert legacy_calls == ["Show inventory resources"]
 
 
 @pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
@@ -2193,7 +2249,7 @@ def test_investigate_canonical_mode_stamps_contract_version(tmp_path, monkeypatc
     """When canonical orchestration is active, /copilot/investigate stamps
     contract_version on the response so consumers can distinguish the
     canonical result from the legacy wire shape."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -2211,7 +2267,7 @@ def test_investigate_canonical_mode_stamps_contract_version(tmp_path, monkeypatc
 def test_investigate_canonical_preserves_legacy_wire_fields(tmp_path, monkeypatch):
     """Canonical mode must preserve the question, tool_calls, fact_status, and
     warnings fields so existing clients do not break."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -2232,7 +2288,7 @@ def test_investigate_canonical_preserves_legacy_wire_fields(tmp_path, monkeypatc
 def test_investigate_context_canonical_stamps_contract_version(tmp_path, monkeypatch):
     """When canonical orchestration is active, /copilot/investigate-context
     stamps contract_version on the ledger."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -2278,7 +2334,7 @@ def test_investigate_context_maps_canonical_continuity_failures(
     expected_status,
     expected_code,
 ):
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot._run_context_via_canonical",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
@@ -2310,7 +2366,7 @@ def test_investigate_context_maps_canonical_continuity_failures(
 def test_multi_agent_canonical_stamps_contract_version(tmp_path, monkeypatch):
     """When canonical orchestration is active, /agents/investigations stamps
     contract_version on new ledger writes."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -2360,7 +2416,7 @@ def test_old_ledger_read_projected_with_defaults(tmp_path):
 
 def test_multi_agent_old_ledger_readable_via_get(tmp_path, monkeypatch):
     """GET /agents/investigations/{id} projects old ledgers on read."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     from operations.autonomous_investigation import ledger_store
 
     store = ledger_store()
@@ -2409,7 +2465,7 @@ def test_action_on_old_ledger_projects_version_in_canonical_mode(
 ):
     """CR-02: POST /agents/investigations/{id}/actions must project
     record_decision output through project_legacy_ledger in canonical mode."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     from operations.autonomous_investigation import ledger_store as get_store
 
     store = get_store()
@@ -2501,7 +2557,7 @@ def test_investigate_canonical_invokes_service_not_legacy_planner(
 ):
     """V1: In canonical mode /copilot/investigate must route through
     OrchestrationService.execute and must NOT call run_investigation."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
 
     legacy_calls: list[object] = []
     service_calls: list[object] = []
@@ -2604,7 +2660,7 @@ def test_multi_agent_canonical_invokes_service_not_legacy_loop(
 ):
     """V2: In canonical mode POST /agents/investigations must route through
     OrchestrationService.execute and must NOT call run_autonomous_investigation."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
 
     legacy_calls: list[object] = []
     service_calls: list[object] = []
@@ -2975,7 +3031,7 @@ def test_context_canonical_network_preserves_page_evidence_and_results(
     """A valid network snapshot must stay network throughout canonical routing."""
     from operations.orchestration_contract import Citation, OrchestrationResult
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     captured_requests: list[InvestigationRequest] = []
     legacy_calls: list[object] = []
 
@@ -3124,7 +3180,7 @@ def test_investigate_canonical_session_continuity_and_stale_hint(
     tmp_path, monkeypatch
 ):
     """Legacy session IDs map to scoped canonical threads before hint validation."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "operations.orchestration_service.call_tool",
         lambda *_args, **_kwargs: ToolResult(status="empty"),
@@ -3170,7 +3226,7 @@ def test_investigate_canonical_session_continuity_and_stale_hint(
 def test_canonical_investigate_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.execute_from_question",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
@@ -3193,7 +3249,7 @@ def test_canonical_investigate_projects_thread_storage_outage_as_unavailable(
 def test_canonical_history_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.legacy_session_history",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
@@ -3212,7 +3268,7 @@ def test_canonical_history_projects_thread_storage_outage_as_unavailable(
 def test_canonical_history_projects_binding_contention_as_conflict(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.legacy_session_history",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -3333,7 +3389,7 @@ def test_canonical_endpoint_preserves_used_retained_citations(
 def test_multi_agent_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.multi_agent.execute_from_question",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ThreadStoreUnavailable()),
@@ -3408,7 +3464,7 @@ def test_multi_agent_canonical_projection_retains_complete_results(
     """The compatibility ledger must retain canonical evidence and findings."""
     from operations.orchestration_contract import Citation, OrchestrationResult
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     result = OrchestrationResult(
         status="partial",
         policy_status="fallback",
@@ -3556,7 +3612,7 @@ def test_multi_agent_projection_marks_unexecuted_specialist_not_started(
     """A selected specialist with no attempted calls must never report success."""
     from operations.orchestration_contract import OrchestrationResult
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     result = OrchestrationResult(
         status="partial",
         policy_status="fallback",
@@ -3612,7 +3668,7 @@ def test_multi_agent_read_and_action_reauthorize_stored_scope(
     """Ledger reads and decisions must fail closed after scope loss."""
     from operations.autonomous_investigation import ledger_store
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     ledger_id = "mai-scope-bound-001"
     ledger_store().add(
         {
@@ -3667,7 +3723,7 @@ def test_canonical_history_retains_question_and_validated_tool_arguments(
     tmp_path, monkeypatch
 ):
     """History retains only policy-validated arguments from executed calls."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "operations.orchestration_service.call_tool",
         lambda *_args, **_kwargs: ToolResult(status="empty"),
@@ -4106,7 +4162,7 @@ def test_multi_agent_canonical_propagates_requested_timeout(
     """The public timeout remains authoritative in canonical mode."""
     from operations.orchestration_contract import OrchestrationResult
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     captured: list[float] = []
 
     def _execute(*_args, **kwargs):
@@ -4142,7 +4198,7 @@ def test_multi_agent_reconciliation_counts_only_observed_evidence(
     """Coverage citations must not inflate evidence-backed finding counts."""
     from operations.orchestration_contract import Citation, OrchestrationResult
 
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     result = OrchestrationResult(
         status="ok",
         policy_status="accepted",
@@ -4270,7 +4326,7 @@ def test_canonical_multi_agent_route_shares_orchestration_semantics_with_copilot
     through the same canonical service, so an equivalent question yields the
     same governed policy/coverage/citation/thread semantics rather than a
     second, divergent planner."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     shared = _canonical_multi_agent_result()
     monkeypatch.setattr(
         "api.routers.multi_agent.execute_from_question",
@@ -4311,7 +4367,7 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
     """T-11-37: The /agents catalog is manifest-derived and every specialist
     carries an explicit deployment status, so the UI renders configured/
     unavailable from the API instead of a local, drift-prone card list."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -4335,7 +4391,7 @@ def test_canonical_multi_agent_ledger_isolated_from_foreign_principal(
 ):
     """T-11-36: A canonical ledger stays principal-scoped — a second principal
     can neither read it nor record a decision against it."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     from test_api_copilot_investigation import TOKEN
 
     from api.rbac import Grant, Principal
@@ -4384,7 +4440,7 @@ def test_canonical_multi_agent_ledger_action_confers_no_execution_authority(
     """T-11-36: Approving the plan on the dedicated ledger records a governed
     human decision only — it is not a production mutation and grants no
     execution authority."""
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
+    _enable_canonical_rollout(monkeypatch)
     monkeypatch.setattr(
         "api.routers.multi_agent.execute_from_question",
         lambda *_args, **_kwargs: _canonical_multi_agent_result(),

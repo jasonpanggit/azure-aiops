@@ -249,7 +249,7 @@ def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
     assert invalid.reason == "rollout_mode_invalid"
 
 
-def test_missing_rollout_preserves_explicit_legacy_canonical_switch(
+def test_missing_rollout_keeps_explicit_legacy_canonical_switch_compatible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
@@ -262,7 +262,7 @@ def test_missing_rollout_preserves_explicit_legacy_canonical_switch(
     assert decision.reason == "rollout_mode_unspecified"
     assert (
         maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
-        is True
+        is False
     )
 
 

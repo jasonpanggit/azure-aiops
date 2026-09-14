@@ -319,19 +319,6 @@ def _without_unresolved_domain_evidence(
     )
 
 
-def _canonical_service_snapshot(
-    snapshot: EvidenceSnapshotV2,
-) -> EvidenceSnapshotV2:
-    """Map adapter detail kinds to the canonical service's domain family."""
-
-    if (
-        snapshot.page_kind == "cve_detail"
-        and snapshot.page_id.casefold().startswith("cve:")
-    ):
-        return snapshot.model_copy(update={"page_kind": "vulnerability"})
-    return snapshot
-
-
 class CanonicalInventorySelector(BaseModel):
     """Bounded server selector derived from untrusted Inventory page context."""
 
@@ -755,7 +742,7 @@ def _execute_retained_compatibility(
     compatibility_warning = ""
     page_cve = (
         canonical_cve_id(request.snapshot.page_id.split(":", 1)[1])
-        if request.snapshot.page_kind == "vulnerability"
+        if request.snapshot.page_kind == "cve_detail"
         and request.snapshot.page_id.casefold().startswith("cve:")
         else ""
     )
@@ -1542,7 +1529,7 @@ def investigate_canonical(
             optional=True,
         )
         semantic_unavailable = semantic is None
-        selection_snapshot = _canonical_service_snapshot(
+        selection_snapshot = (
             _without_unresolved_domain_evidence(browser_snapshot)
             if semantic_unavailable
             else browser_snapshot

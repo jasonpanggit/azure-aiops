@@ -253,10 +253,7 @@ def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
     legacy_mode = (
         os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
     )
-    return legacy_mode == MODE_CANONICAL and (
-        decision.canonical_enabled
-        or decision.reason == "rollout_mode_unspecified"
-    )
+    return legacy_mode == MODE_CANONICAL and decision.canonical_enabled
 
 
 def _maf_runtime_label() -> str:
