@@ -28,14 +28,20 @@ vi.mock("@/lib/scope-context", () => ({
   useScope: () => ({ scope: authorizedScope }),
 }));
 
-vi.mock("@/lib/services", () => ({
-  kbApi: { detail: api.detail },
-  vulnerabilityApi: {
-    exposureOverview: api.exposureOverview,
-    exposureItems: api.exposureItems,
-  },
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>(
+    "@/lib/services",
+  );
+  return {
+    ...actual,
+    kbApi: { detail: api.detail },
+    vulnerabilityApi: {
+      ...actual.vulnerabilityApi,
+      exposureOverview: api.exposureOverview,
+      exposureItems: api.exposureItems,
+    },
+  };
+});
 
 vi.mock("@/lib/copilot/page-adapters", async () => {
   const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>(
@@ -142,6 +148,10 @@ function kbEnvelope(
         title: "Kernel remote execution",
         severity: "Critical",
         cvss: { base_score: 9.8 as number | null, vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", severity: "Critical" },
+        epss_score: 0.73,
+        epss_percentile: 0.92,
+        is_known_exploited: true,
+        kev_due_date: "2026-08-22",
       }],
       enrichment: {
         status: degraded ? "degraded" : "complete",
@@ -167,6 +177,22 @@ function kbEnvelope(
             has_last_known_good: false,
             safe_error_code: nvdStatus === "failed" ? "provider_unavailable" : "",
             source_at: "2026-09-06T07:35:00Z",
+          },
+          "epss:CVE-2026-0001": {
+            source: "epss",
+            identifier: "CVE-2026-0001",
+            status: "succeeded",
+            stale: false,
+            has_last_known_good: true,
+            source_at: "2026-09-06T07:36:00Z",
+          },
+          "kev:CVE-2026-0001": {
+            source: "kev",
+            identifier: "CVE-2026-0001",
+            status: "succeeded",
+            stale: false,
+            has_last_known_good: true,
+            source_at: "2026-09-06T07:37:00Z",
           },
         },
       },
@@ -240,7 +266,7 @@ describe("KB detail", () => {
   it("renders metadata, MSRC associations, and findings as independent evidence sections", async () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
-    for (const heading of ["KB metadata", "MSRC CVE associations", "Affected findings"]) {
+    for (const heading of ["Update identity and release", "Associated CVEs", "Affected assets"]) {
       expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
     }
     expect(api.detail).toHaveBeenCalledTimes(1);
@@ -261,14 +287,52 @@ describe("KB detail", () => {
     expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText(/1 excluded/).length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText("AUM East connection unavailable").length).toBeGreaterThanOrEqual(3);
-    expect(screen.getByText("Published 2026-08-01")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-01")).toBeInTheDocument();
+    expect(screen.getByText("73.0% EPSS")).toBeInTheDocument();
+    expect(screen.getByText(/KEV listed · due 2026-08-22/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open CVE-2026-0001" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Showing 1–1 of 3 findings · 1 loaded")).toBeInTheDocument();
+  });
+
+  it("keeps the update hierarchy in accessible reading order", async () => {
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    await screen.findByRole("heading", { name: "Update identity and release" });
+    const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
+    const expectedOrder = [
+      "Update identity and release",
+      "Installation and missing posture",
+      "Associated CVEs",
+      "Affected assets",
+      "Governed remediation handoff",
+      "Source freshness",
+    ];
+    const positions = expectedOrder.map((heading) => headings.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it("opens read-only Copilot without duplicating detail or remediation requests", async () => {
+    const user = userEvent.setup();
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Ask Copilot about KB600001",
+      }),
+    );
+
+    expect(api.detail).toHaveBeenCalledTimes(1);
+    expect(navigation.replace).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: /Operations Copilot/i })).toBeInTheDocument();
   });
 
   it("canonicalizes a numeric KB route for detail and findings requests", async () => {
     render(<KbDetailPage params={{ id: "600001" }} />);
 
-    await screen.findByRole("heading", { name: "KB metadata" });
+    await screen.findByRole("heading", { name: "Update identity and release" });
     expect(api.detail).toHaveBeenCalledWith(
       "KB600001",
       expect.anything(),
@@ -299,7 +363,7 @@ describe("KB detail", () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
     expect(await screen.findByText("Unavailable operational context")).toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText("CVSS unavailable")).toBeInTheDocument();
   });
 
   it("does not present unknown Silver freshness as current", async () => {
@@ -351,12 +415,14 @@ describe("KB detail", () => {
     const copilotInput = copilot.inputs.at(-1) as {
       sources: Array<{ key: string; freshness: string }>;
     };
-    expect(copilotInput.sources).toHaveLength(3);
+    expect(copilotInput.sources).toHaveLength(5);
     expect(copilotInput.sources).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "silver_patch_snapshot" }),
         expect.objectContaining({ key: "msrc" }),
         expect.objectContaining({ key: "nvd", freshness: "unavailable" }),
+        expect.objectContaining({ key: "epss" }),
+        expect.objectContaining({ key: "kev" }),
       ]),
     );
   });
@@ -370,7 +436,9 @@ describe("KB detail", () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
     expect(await screen.findByText("Partial operational context")).toBeInTheDocument();
-    expect(screen.getByLabelText("Published value")).toHaveTextContent("—");
+    const releaseDate = screen.getByText("Release date").closest("div");
+    expect(releaseDate).not.toBeNull();
+    expect(within(releaseDate!).getByText("—")).toBeInTheDocument();
     expect(screen.getByText("server-1")).toBeInTheDocument();
   });
 
@@ -433,7 +501,7 @@ describe("KB detail", () => {
     render(<KbDetailPage params={{ id: "KB600001" }} />);
 
     const region = await screen.findByRole("region", {
-      name: "MSRC CVE associations section",
+      name: "Associated CVEs section",
     });
     const retry = await within(region).findByRole("button", {
       name: "Retry MSRC CVE associations",

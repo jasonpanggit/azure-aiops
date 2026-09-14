@@ -1519,22 +1519,25 @@ class ExposureQueryService:
                 "KB detail exceeded its safe CVE association bound"
             )
         cves: list[dict[str, Any]] = []
-        nvd_states: dict[str, dict[str, Any]] = {}
+        cve_source_states: dict[str, dict[str, Any]] = {}
         for cve_id in cve_ids:
-            cve, nvd_state = _kb_cve_detail(
+            cve, source_states_for_cve = _kb_cve_detail(
                 cve_id,
                 tuple(self._catalog_records_resolver(cve_id))
                 if callable(self._catalog_records_resolver)
                 else (),
             )
             cves.append(cve)
-            nvd_states[f"nvd:{cve_id}"] = nvd_state
+            cve_source_states.update(source_states_for_cve)
         source_state = _kb_msrc_source_state(
             identifier,
             msrc_record,
             msrc_payload,
         )
-        source_states = {f"msrc:{identifier}": source_state, **nvd_states}
+        source_states = {
+            f"msrc:{identifier}": source_state,
+            **cve_source_states,
+        }
         complete = all(_kb_source_complete(state) for state in source_states.values())
         available_count = sum(
             1 for state in source_states.values() if state["has_last_known_good"]
@@ -1715,24 +1718,76 @@ def _kb_catalog_source_state(
 def _kb_cve_detail(
     cve_id: str,
     records: Iterable[Mapping[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    record = _latest_catalog_record(records, source="nvd", identifier=cve_id)
-    payload = _record_catalog_payload(record) or {}
-    cvss = payload.get("cvss")
-    severity = str(payload.get("severity") or "Unknown")
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    retained_records = tuple(records)
+    nvd_record = _latest_catalog_record(
+        retained_records,
+        source="nvd",
+        identifier=cve_id,
+    )
+    epss_record = _latest_catalog_record(
+        retained_records,
+        source="epss",
+        identifier=cve_id,
+    )
+    kev_record = _latest_catalog_record(
+        retained_records,
+        source="kev",
+        identifier=cve_id,
+    )
+    nvd_payload = _record_catalog_payload(nvd_record) or {}
+    epss_payload = _record_catalog_payload(epss_record) or {}
+    kev_payload = _record_catalog_payload(kev_record) or {}
+    cvss = nvd_payload.get("cvss")
+    severity = str(nvd_payload.get("severity") or "Unknown")
+    epss_score = _optional_probability(epss_payload.get("epss_score"))
+    epss_percentile = _optional_probability(
+        epss_payload.get("epss_percentile")
+    )
     return (
         {
             "cve_id": cve_id,
-            "title": str(payload.get("title") or cve_id),
+            "title": str(nvd_payload.get("title") or cve_id),
             "severity": severity,
             "cvss": (
                 dict(cvss)
                 if isinstance(cvss, Mapping)
                 else {"base_score": None, "vector": "", "severity": severity}
             ),
+            "epss_score": epss_score,
+            "epss_percentile": epss_percentile,
+            "is_known_exploited": bool(kev_payload) if kev_record else None,
+            "kev_due_date": str(kev_payload.get("kev_due_date") or ""),
         },
-        _kb_catalog_source_state("nvd", cve_id, record, payload or None),
+        {
+            f"nvd:{cve_id}": _kb_catalog_source_state(
+                "nvd",
+                cve_id,
+                nvd_record,
+                nvd_payload or None,
+            ),
+            f"epss:{cve_id}": _kb_catalog_source_state(
+                "epss",
+                cve_id,
+                epss_record,
+                epss_payload or None,
+            ),
+            f"kev:{cve_id}": _kb_catalog_source_state(
+                "kev",
+                cve_id,
+                kev_record,
+                kev_payload if kev_record else None,
+            ),
+        },
     )
+
+
+def _optional_probability(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if isfinite(number) and 0.0 <= number <= 1.0 else None
 
 
 def _kb_source_complete(state: Mapping[str, Any]) -> bool:

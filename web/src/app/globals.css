@@ -3192,6 +3192,193 @@ textarea:focus-visible {
   background: var(--color-surface);
 }
 
+.exposure-detail-page {
+  background: var(--color-surface-subtle);
+}
+
+.exposure-detail-page .breadcrumb {
+  margin-bottom: 8px;
+}
+
+.exposure-detail-page .page-header {
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.exposure-detail-page .page-header h1 {
+  font-size: clamp(26px, 2.5vw, 34px);
+}
+
+.exposure-detail-page .page-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.exposure-detail-page > .evidence-bar {
+  margin-bottom: 18px;
+}
+
+.exposure-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.exposure-detail-content {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+
+.exposure-detail-summary,
+.exposure-detail-section,
+.exposure-detail-content > section {
+  min-width: 0;
+}
+
+.exposure-detail-summary,
+.exposure-detail-section {
+  padding: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+.exposure-detail-summary > p,
+.exposure-detail-section > p {
+  max-width: 76ch;
+  margin: 8px 0 0;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+}
+
+.exposure-key-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.exposure-key-facts .metric-card {
+  min-height: 112px;
+  padding: 14px;
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+.exposure-definition-grid,
+.exposure-technical-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  margin: 0;
+}
+
+.exposure-definition-grid > div,
+.exposure-technical-list > div {
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.exposure-definition-grid dt,
+.exposure-technical-list dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.exposure-definition-grid dd,
+.exposure-technical-list dd {
+  margin: 4px 0 0;
+  color: var(--color-text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.exposure-related-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.exposure-evidence-rail {
+  position: sticky;
+  top: calc(var(--topbar-height) + 18px);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.exposure-evidence-rail-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.exposure-evidence-rail-heading h2,
+.exposure-evidence-rail-heading p {
+  margin: 0;
+}
+
+.exposure-evidence-rail-heading > p:last-child {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.exposure-source-list {
+  display: grid;
+}
+
+.exposure-source-item {
+  display: grid;
+  gap: 6px;
+  padding: 13px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.exposure-source-item-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.exposure-source-item p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.exposure-source-item .button {
+  width: fit-content;
+  min-height: 36px;
+  margin-top: 4px;
+}
+
+@media (max-width: 1040px) {
+  .exposure-detail-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .exposure-evidence-rail {
+    position: static;
+  }
+
+  .exposure-key-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .exposure-long-value {
   overflow-wrap: anywhere;
 }
@@ -3262,6 +3449,23 @@ textarea:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .exposure-detail-page .page-header-actions,
+  .exposure-detail-page .page-header-actions .button {
+    width: 100%;
+  }
+
+  .exposure-key-facts,
+  .exposure-definition-grid,
+  .exposure-technical-list {
+    grid-template-columns: 1fr;
+  }
+
+  .exposure-detail-summary,
+  .exposure-detail-section,
+  .exposure-evidence-rail {
+    padding: 14px;
+  }
+
   .exposure-responsive-table {
     overflow-x: visible;
   }
