@@ -210,7 +210,7 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
     assert "FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path" in outputs
 
 
-def test_unspecified_rollout_preserves_canonical_but_explicit_compatibility_wins(
+def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AIOPS_COPILOT_ROLLOUT_MODE", raising=False)
@@ -218,8 +218,8 @@ def test_unspecified_rollout_preserves_canonical_but_explicit_compatibility_wins
     unspecified = maf_orchestrator.copilot_rollout_decision(
         stable_key="operator-a"
     )
-    assert unspecified.mode == "default"
-    assert unspecified.canonical_enabled is True
+    assert unspecified.mode == "compatibility"
+    assert unspecified.canonical_enabled is False
     assert unspecified.reason == "rollout_mode_unspecified"
     assert (
         maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
@@ -233,6 +233,14 @@ def test_unspecified_rollout_preserves_canonical_but_explicit_compatibility_wins
     assert compatibility.mode == "compatibility"
     assert compatibility.canonical_enabled is False
     assert compatibility.reason == "compatibility_selected"
+
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    explicit_default = maf_orchestrator.copilot_rollout_decision(
+        stable_key="operator-a"
+    )
+    assert explicit_default.mode == "default"
+    assert explicit_default.canonical_enabled is True
+    assert explicit_default.reason == "default_selected"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "enabled")
     invalid = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
@@ -249,8 +257,8 @@ def test_missing_rollout_preserves_explicit_legacy_canonical_switch(
 
     decision = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
-    assert decision.mode == "default"
-    assert decision.canonical_enabled is True
+    assert decision.mode == "compatibility"
+    assert decision.canonical_enabled is False
     assert decision.reason == "rollout_mode_unspecified"
     assert (
         maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")

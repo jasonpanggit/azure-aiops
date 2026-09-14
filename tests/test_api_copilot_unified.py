@@ -1245,6 +1245,153 @@ def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
     assert "semantic provider is deferred" not in response.text.casefold()
 
 
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "default"])
+def test_network_dependency_question_without_hint_binds_selected_vnet(
+    tmp_path,
+    monkeypatch,
+    rollout_mode,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    body = _network_hub_canonical_body()
+    body.pop("hint")
+    vnet_id = body["snapshot"]["selected_entities"][0]["resource_id"]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def durable_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={
+                "hub_id": vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_count": 0,
+                "dependents": [],
+            },
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    resource_id=vnet_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        durable_network_tool,
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        durable_network_tool,
+    )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    assert data["selected_tools"] == ["hub_dependents"]
+    assert data["tool_results"][0]["data"]["hub_name"] == "demo-vnet"
+    assert data["mutation_authorized"] is False
+    assert data["citations"]
+    assert all(
+        citation["citation_id"].startswith("tool:")
+        for citation in data["citations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_variant",
+    ["no_selected_vnet", "ambiguous_vnets", "non_vnet", "free_form"],
+)
+def test_network_no_hint_derivation_does_not_widen_tool_authority(
+    tmp_path,
+    monkeypatch,
+    unsafe_variant,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    body.pop("hint")
+    if unsafe_variant == "no_selected_vnet":
+        body["snapshot"]["selected_entities"] = []
+    elif unsafe_variant == "ambiguous_vnets":
+        body["snapshot"]["selected_entities"].append(
+            {
+                "type": "azure",
+                "resource_id": (
+                    "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+                    "Microsoft.Network/virtualNetworks/other-vnet"
+                ),
+            }
+        )
+    elif unsafe_variant == "non_vnet":
+        body["snapshot"]["selected_entities"] = [
+            {
+                "type": "azure",
+                "resource_id": (
+                    "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+                    "Microsoft.Compute/virtualMachines/demo-vm"
+                ),
+            }
+        ]
+    else:
+        body["question"] = "Tell me something interesting about demo-vnet."
+
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def bounded_network_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        bounded_network_tool,
+    )
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert all(name != "hub_dependents" for name, _arguments in tool_calls)
+    assert "hub_dependents" not in data["selected_tools"]
+    assert data["mutation_authorized"] is False
+
+
 def test_shadow_endpoint_accepts_matching_plans_without_duplicate_tool_io(
     tmp_path,
     monkeypatch,

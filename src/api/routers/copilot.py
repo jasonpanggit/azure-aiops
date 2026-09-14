@@ -17,7 +17,6 @@ evidence is strictly better than a 502 for an assistant surface.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 import uuid as _uuid
@@ -43,9 +42,6 @@ from operations.investigation_thread_store import (
     investigation_thread_store,
 )
 from operations.maf_orchestrator import (
-    ENV_COPILOT_ROLLOUT_MODE,
-    ROLLOUT_COMPATIBILITY,
-    CopilotRolloutDecision,
     build_deterministic_fallback,
     canonical_orchestration_enabled,
     copilot_rollout_decision,
@@ -172,6 +168,47 @@ class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
     hint: CanonicalPlanHint | None = None
 
 
+_AZURE_VNET_ID = re.compile(
+    r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
+    r"microsoft\.network/virtualnetworks/[^/]+/?$",
+    flags=re.IGNORECASE,
+)
+
+
+def _derived_network_dependency_hint(
+    payload: CanonicalInvestigationPayload,
+    snapshot: EvidenceSnapshotV2,
+) -> CanonicalPlanHint | None:
+    """Bind the exact selected-VNet dependency intent without widening scope."""
+
+    if (
+        payload.hint is not None
+        or snapshot.page_kind != "network"
+        or snapshot.page_id.casefold() != "network-topology"
+        or len(snapshot.selected_entities) != 1
+    ):
+        return None
+    selected = snapshot.selected_entities[0]
+    if (
+        not isinstance(selected, AzureEntityRef)
+        or _AZURE_VNET_ID.fullmatch(selected.resource_id) is None
+    ):
+        return None
+    question = " ".join(payload.question.strip().casefold().split()).rstrip("?.")
+    prefix = "what depends on "
+    if not question.startswith(prefix):
+        return None
+    subject = question.removeprefix(prefix).strip()
+    vnet_name = selected.resource_id.rstrip("/").rsplit("/", 1)[-1].casefold()
+    if subject not in {vnet_name, selected.resource_id.casefold()}:
+        return None
+    return CanonicalPlanHint(
+        specialist_id="network",
+        tool="hub_dependents",
+        arguments={"vnet_id": selected.resource_id},
+    )
+
+
 def _validate_bound_cve_request(
     payload: CanonicalInvestigationPayload,
     snapshot: EvidenceSnapshotV2,
@@ -268,25 +305,6 @@ def _canonical_service_snapshot(
     ):
         return snapshot.model_copy(update={"page_kind": "vulnerability"})
     return snapshot
-
-
-def _canonical_endpoint_rollout_decision(
-    *,
-    stable_key: str,
-) -> CopilotRolloutDecision:
-    """Fail closed when this endpoint's rollout mode is not configured."""
-
-    decision = copilot_rollout_decision(stable_key=stable_key)
-    if os.environ.get(ENV_COPILOT_ROLLOUT_MODE) is not None:
-        return decision
-    if not decision.canonical_enabled:
-        return decision
-    return CopilotRolloutDecision(
-        mode=ROLLOUT_COMPATIBILITY,
-        canonical_enabled=False,
-        shadow_enabled=False,
-        reason="rollout_mode_unspecified",
-    )
 
 
 class CanonicalInventorySelector(BaseModel):
@@ -1655,9 +1673,12 @@ def investigate_canonical(
             "snapshot": planning_snapshot
         }
     )
-    rollout = _canonical_endpoint_rollout_decision(
-        stable_key=principal.subject
+    plan_hint = payload.hint or _derived_network_dependency_hint(
+        payload,
+        browser_snapshot,
     )
+    execution_payload = payload.model_copy(update={"hint": plan_hint})
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
     if browser_snapshot.page_kind == "inventory":
         try:
             selector = _inventory_selector(browser_snapshot)
@@ -1668,18 +1689,18 @@ def investigate_canonical(
                 details={"field": "snapshot.evidence"},
             ) from exc
         specialist_id = (
-            payload.hint.specialist_id
-            if payload.hint is not None
+            plan_hint.specialist_id
+            if plan_hint is not None
             else INVENTORY_DATA_HEALTH_ID
         )
         tool = (
-            payload.hint.tool
-            if payload.hint is not None
+            plan_hint.tool
+            if plan_hint is not None
             else "inventory_resources"
         )
         derived_arguments = selector.tool_arguments()
         hint_arguments = (
-            dict(payload.hint.arguments) if payload.hint is not None else {}
+            dict(plan_hint.arguments) if plan_hint is not None else {}
         )
         selector_conflict = any(
             key in hint_arguments and hint_arguments[key] != value
@@ -1713,11 +1734,11 @@ def investigate_canonical(
                 lambda _request: CandidatePlan(
                     steps=[
                         SpecialistStep(
-                            specialist_id=payload.hint.specialist_id,
+                            specialist_id=plan_hint.specialist_id,
                             tool_calls=[
                                 ToolCallCandidate(
-                                    tool=payload.hint.tool,
-                                    arguments=dict(payload.hint.arguments),
+                                    tool=plan_hint.tool,
+                                    arguments=dict(plan_hint.arguments),
                                     citation_ids=[COVERAGE_CITATION_ID],
                                 )
                             ],
@@ -1727,7 +1748,7 @@ def investigate_canonical(
                     max_wall_seconds=5,
                 )
             )
-            if payload.hint is not None
+            if plan_hint is not None
             else (
                 lambda governed_request: build_deterministic_fallback(
                     governed_request,
@@ -1772,7 +1793,7 @@ def investigate_canonical(
             )
         else:
             result = _execute_retained_compatibility(
-                payload=payload,
+                payload=execution_payload,
                 request=request,
                 context=context,
                 scope=scope,

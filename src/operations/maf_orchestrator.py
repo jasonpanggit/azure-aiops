@@ -142,12 +142,10 @@ def maf_mode_enabled() -> bool:
 def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     """Resolve compatibility → shadow → canary → default without widening.
 
-    An unspecified rollout preserves the canonical endpoint's established
-    behavior, while a blank or malformed deployment value selects
-    compatibility. Canary assignment is stable for one principal and cannot
-    fall back to random or process-local state. The retained rollback mode is
-    intentionally fixed to compatibility; an unexpected value also fails
-    closed.
+    An unspecified, blank, or malformed deployment value selects compatibility.
+    Canary assignment is stable for one principal and cannot fall back to
+    random or process-local state. The retained rollback mode is intentionally
+    fixed to compatibility; an unexpected value also fails closed.
     """
 
     if (
@@ -175,8 +173,8 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     raw_mode = os.environ.get(ENV_COPILOT_ROLLOUT_MODE)
     if raw_mode is None:
         return CopilotRolloutDecision(
-            mode=ROLLOUT_DEFAULT,
-            canonical_enabled=True,
+            mode=ROLLOUT_COMPATIBILITY,
+            canonical_enabled=False,
             shadow_enabled=False,
             reason="rollout_mode_unspecified",
         )
@@ -255,7 +253,10 @@ def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
     legacy_mode = (
         os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
     )
-    return legacy_mode == MODE_CANONICAL and decision.canonical_enabled
+    return legacy_mode == MODE_CANONICAL and (
+        decision.canonical_enabled
+        or decision.reason == "rollout_mode_unspecified"
+    )
 
 
 def _maf_runtime_label() -> str:
