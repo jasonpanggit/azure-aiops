@@ -736,6 +736,10 @@ resource "azurerm_container_app_job" "patch_publication" {
         "/app/config.yaml",
         "--fabric-config",
         "/app/fabric.config.yaml",
+        "--connection-home",
+        "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections",
+        "--source-root",
+        "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/patch-publication-source",
       ]
 
       env {
@@ -746,6 +750,16 @@ resource "azurerm_container_app_job" "patch_publication" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_publisher.client_id
+      }
+
+      env {
+        name  = "AIOPS_CONNECTION_HOME"
+        value = "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections"
+      }
+
+      env {
+        name  = "AIOPS_PATCH_SOURCE_ROOT"
+        value = "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/patch-publication-source"
       }
 
       env {

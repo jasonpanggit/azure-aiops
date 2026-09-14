@@ -15,14 +15,20 @@ publisher managed identity and the API image, but executes only:
 ```text
 python -m onboarding.cli patch-publish \
   --config /app/config.yaml \
-  --fabric-config /app/fabric.config.yaml
+  --fabric-config /app/fabric.config.yaml \
+  --connection-home <onelake-files-root>/aiops/connections \
+  --source-root <onelake-files-root>/aiops/patch-publication-source
 ```
 
-The writer reads the latest immutable snapshot for every active subscription
-connection, idempotently reconciles those snapshots into the combined source,
-and calls `FabricSyncService.sync_patch_tables`. It does not run live Azure
-discovery, build ontology, project Gold Exposure tables, or advance the Gold
-pointer.
+The connection home is the API-owned registry root. Connection snapshots are
+therefore read from its existing `connections/<connection-id>` child (for the
+deployed layout this is `aiops/connections/connections/demo`). The distinct
+source root owns only the idempotent combined snapshot consumed by the Patch
+publisher. Production rejects missing, local, or aliased roots before reading
+or writing. Local configurations may retain config-derived roots for tests and
+development. The writer then calls `FabricSyncService.sync_patch_tables`; it
+does not run live Azure discovery, build ontology, project Gold Exposure
+tables, or advance the Gold pointer.
 
 ## Safety and recovery
 

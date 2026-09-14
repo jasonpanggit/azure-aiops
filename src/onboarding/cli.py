@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC
 from pathlib import Path
@@ -78,6 +79,14 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     patch_publish.add_argument(
         "--fabric-config",
         default="fabric.config.yaml",
+    )
+    patch_publish.add_argument(
+        "--connection-home",
+        default=os.environ.get("AIOPS_CONNECTION_HOME", ""),
+    )
+    patch_publish.add_argument(
+        "--source-root",
+        default=os.environ.get("AIOPS_PATCH_SOURCE_ROOT", ""),
     )
 
     ontology = actions.add_parser("ontology", help="Query the Fabric Operational Context Graph")
@@ -268,6 +277,8 @@ def cli_command(args: argparse.Namespace) -> int:
             result = run_patch_publication(
                 args.config,
                 args.fabric_config,
+                connection_home=args.connection_home,
+                source_root=args.source_root,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             reason_code = (
