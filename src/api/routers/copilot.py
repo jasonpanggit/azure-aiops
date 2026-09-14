@@ -28,7 +28,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
-from operations.cve_response import canonical_cve_id
+from operations.cve_response import canonical_cve_id, deterministic_cve_narrative
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation import (
     conversation_store,
@@ -645,6 +645,73 @@ def _execute_retained_compatibility(
             for evidence_index, evidence in enumerate(call.result.evidence)
         )
 
+    compatibility_claims: list[dict[str, Any]] = []
+    compatibility_warning = ""
+    page_cve = (
+        canonical_cve_id(request.snapshot.page_id.split(":", 1)[1])
+        if request.snapshot.page_kind == "vulnerability"
+        and request.snapshot.page_id.casefold().startswith("cve:")
+        else ""
+    )
+    hinted_cve = (
+        canonical_cve_id(payload.hint.arguments.get("cve_id"))
+        if payload.hint is not None and payload.hint.tool == "cve_detail"
+        else ""
+    )
+    if investigation.answer is None and page_cve and hinted_cve == page_cve:
+        exact_call = next(
+            (
+                item
+                for item in tool_results
+                if item["tool"] == "cve_detail"
+                and item["status"] == STATUS_OK
+                and canonical_cve_id(item["arguments"].get("cve_id")) == page_cve
+            ),
+            None,
+        )
+        if exact_call is not None:
+            narrative = deterministic_cve_narrative(
+                page_cve,
+                detail_data=exact_call.get("data"),
+                snapshot_coverage=request.snapshot.coverage.model_dump(
+                    mode="json"
+                ),
+                source_statuses={
+                    item.source: item.status
+                    for item in request.snapshot.freshness
+                },
+            )
+            evidence_refs = [
+                citation.citation_id
+                for citation in citations
+                if citation.citation_id.startswith(
+                    f"tool:{exact_call['call_id']}:"
+                )
+            ]
+            if narrative and evidence_refs:
+                compatibility_claims = [
+                    {
+                        "finding_id": f"compatibility:{page_cve.casefold()}",
+                        "summary": narrative,
+                        "evidence_refs": evidence_refs,
+                        "confidence": (
+                            "high"
+                            if request.snapshot.coverage.complete
+                            else "medium"
+                        ),
+                        "freshness": "fresh",
+                        "uncertainty": (
+                            []
+                            if request.snapshot.coverage.complete
+                            else ["visible subset is incomplete"]
+                        ),
+                    }
+                ]
+                compatibility_warning = (
+                    "Foundry narration is not configured; deterministic cited "
+                    "CVE evidence was used."
+                )
+
     result = OrchestrationResult(
         status=investigation.fact_status,
         policy_status="fallback",
@@ -664,9 +731,9 @@ def _execute_retained_compatibility(
                 else "degraded"
             ),
             "reason": "retained_compatibility",
-            "domain_count": 0,
-            "claims": [],
-            "warning": "",
+            "domain_count": int(bool(compatibility_claims)),
+            "claims": compatibility_claims,
+            "warning": compatibility_warning,
             "compatibility_answer": investigation.answer,
         },
     )

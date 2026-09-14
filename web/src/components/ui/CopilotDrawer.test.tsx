@@ -1471,6 +1471,99 @@ describe("CopilotDrawer", () => {
     );
   });
 
+  it("renders retained-rollout deterministic CVE claims instead of raw-only fallback", async () => {
+    const cveId = "CVE-2026-13221";
+    const result = canonicalResult(
+      "thr-77777777777777777777777777777777",
+      "tool:cve-retained:0",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        policy_status: "fallback",
+        fallback_reason: "compatibility_rollout",
+        selected_specialists: [],
+        selected_tools: ["cve_detail"],
+        tool_results: [{
+          call_id: "cve-retained",
+          specialist_id: "",
+          tool: "cve_detail",
+          status: "ok",
+          data: {
+            cve_id: cveId,
+            scoped_exposure: { total_count: 37, returned_count: 25 },
+          },
+          evidence: [],
+          warning: "",
+        }],
+        synthesis: {
+          status: "degraded",
+          reason: "retained_compatibility",
+          domain_count: 1,
+          warning: "Foundry narration is not configured; deterministic cited CVE evidence was used.",
+          claims: [{
+            finding_id: "compatibility:cve-2026-13221",
+            summary: [
+              `**${cveId}: what is known**`,
+              "",
+              "- NVD reports **CVSS 9.1 Critical** with vector `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H`.",
+              "- EPSS estimates **0.432%** exploitation probability at the 36.545th percentile.",
+              `- The current CISA KEV lookup has **no listing for ${cveId}**.`,
+              "- No KB association is present in the current CVE metadata.",
+              "- The current scope contains **37** matching findings; **25 records were inspected**. **37 are active**.",
+              "",
+              "**What is not known**",
+              "",
+              "- The running workload impact is unknown because the inspected findings contain no represented workload mapping.",
+            ].join("\n"),
+            evidence_refs: ["tool:cve-retained:0"],
+            confidence: "medium",
+            freshness: "fresh",
+            uncertainty: ["visible subset is incomplete"],
+          }],
+        },
+      },
+    });
+    const snapshot = {
+      ...canonicalSnapshot("software"),
+      page_kind: "vulnerability" as const,
+      page_id: `cve:${cveId}`,
+      filters: { weakness_id: [cveId] },
+    };
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel={cveId}
+          snapshot={snapshot}
+          starterQuestions={[{
+            label: `Explain ${cveId}`,
+            specialistId: "vulnerability",
+            tool: "cve_detail",
+            toolArguments: { cve_id: cveId },
+          }]}
+        />
+      </TestProviders>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`Explain ${cveId}`) }));
+
+    expect(await screen.findByText(/CVSS 9.1 Critical/)).toBeInTheDocument();
+    expect(screen.getByText(/0.432%/)).toBeInTheDocument();
+    expect(screen.getByText(/no listing for CVE-2026-13221/)).toBeInTheDocument();
+    expect(screen.getByText(/No KB association/)).toBeInTheDocument();
+    expect(screen.getByText((_, element) =>
+      element?.tagName === "LI"
+      && element.textContent?.includes("37 matching findings") === true,
+    )).toBeInTheDocument();
+    expect(screen.getByText(/running workload impact is unknown/)).toBeInTheDocument();
+    expect(screen.getByText("tool:cve-retained:0")).toBeInTheDocument();
+    expect(screen.queryByText(/Showing governed results directly/)).not.toBeInTheDocument();
+  });
+
   it("serializes requests within the same context", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();

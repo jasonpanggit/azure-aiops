@@ -714,6 +714,131 @@ def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
     )
 
 
+def test_retained_cve_rollout_narrates_exact_tool_evidence_without_foundry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    cve_id = "CVE-2026-13221"
+    findings = [
+        {
+            "weakness_id": cve_id,
+            "severity": "Critical",
+            "target_kind": "container_image",
+            "current_state": "active",
+            "represented_workload_count": 0,
+        }
+        for _ in range(25)
+    ]
+    tool_data = {
+        "cve_id": cve_id,
+        "external_catalog": {
+            "item": {
+                "cve_id": cve_id,
+                "sources": {
+                    "nvd": {
+                        "source": "nvd",
+                        "identifier": cve_id,
+                        "status": "succeeded",
+                        "stale": False,
+                        "payload": {
+                            "description": "Perl alternation trie overflow.",
+                            "severity": "CRITICAL",
+                            "cvss": {
+                                "base_score": 9.1,
+                                "vector": (
+                                    "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/"
+                                    "C:N/I:H/A:H"
+                                ),
+                                "severity": "CRITICAL",
+                            },
+                            "associated_kbs": [],
+                        },
+                    },
+                    "epss": {
+                        "source": "epss",
+                        "identifier": cve_id,
+                        "status": "succeeded",
+                        "stale": False,
+                        "payload": {
+                            "epss_score": 0.00432,
+                            "epss_percentile": 0.36545,
+                        },
+                    },
+                    "kev": {
+                        "source": "kev",
+                        "identifier": cve_id,
+                        "status": "succeeded",
+                        "stale": False,
+                        "payload": None,
+                    },
+                },
+            },
+        },
+        "scoped_exposure_status": "ok",
+        "scoped_exposure": {
+            "query_cve_id": cve_id,
+            "total_count": 37,
+            "returned_count": 25,
+            "affected_active_count": 37,
+            "items": findings,
+        },
+    }
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda name, arguments, **_kwargs: ToolResult(
+            status="ok",
+            data=tool_data,
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="enrichment/exposure-items.json",
+                    resource_id=cve_id,
+                    confidence="high",
+                ),
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="gold_exposure_facts",
+                    resource_id=cve_id,
+                    confidence="high",
+                ),
+            ),
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_cve_canonical_body(cve_id),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["rollout"]["mode"] == "compatibility"
+    assert data["selected_tools"] == ["cve_detail"]
+    assert data["tool_results"][0]["data"] == tool_data
+    assert data["synthesis"]["reason"] == "retained_compatibility"
+    assert data["synthesis"]["compatibility_answer"] is None
+    narration = data["synthesis"]["claims"][0]["summary"]
+    assert "CVSS 9.1 Critical" in narration
+    assert "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H" in narration
+    assert "0.432%" in narration
+    assert "36.545th percentile" in narration
+    assert "no listing for CVE-2026-13221" in narration
+    assert "No KB association" in narration
+    assert "**37** matching findings" in narration
+    assert "**25 records were inspected**" in narration
+    assert "**37 are active**" in narration
+    assert "no represented workload mapping" in narration
+    assert all(
+        ref.startswith("tool:")
+        for ref in data["synthesis"]["claims"][0]["evidence_refs"]
+    )
+
+
 def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
     tmp_path,
     monkeypatch,
