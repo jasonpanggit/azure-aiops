@@ -838,61 +838,70 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                     tone={statusTone(data?.cve.severity)}
                   />
                 </div>
-                <p>
-                  {data?.cve.description ||
-                    "Risk detail is limited until durable NVD metadata is available."}
-                </p>
-                <div className="exposure-key-facts" aria-label="Key vulnerability facts">
-                  <MetricCard
-                    label="CVSS"
-                    value={
-                      typeof data?.cve.cvss?.base_score === "number"
-                        ? data.cve.cvss.base_score.toFixed(1)
-                        : null
-                    }
-                    unit="/10"
-                    detail={data?.cve.cvss?.severity || "Base score unavailable"}
-                    completeness={metricCompleteness(nvdState.status)}
-                  />
-                  <MetricCard
-                    label="EPSS"
-                    value={
-                      typeof data?.cve.epss_score === "number"
-                        ? (data.cve.epss_score * 100).toFixed(1)
-                        : null
-                    }
-                    unit="%"
-                    detail={
-                      typeof data?.cve.epss_percentile === "number"
-                        ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
-                        : "Exploit probability unavailable"
-                    }
-                    completeness={metricCompleteness(epssState.status)}
-                  />
-                  <MetricCard
-                    label="CISA KEV"
-                    value={
-                      data?.cve.is_known_exploited === true
-                        ? "Listed"
-                        : kevState.status === "healthy-empty"
-                          ? "Not listed"
-                          : null
-                    }
-                    detail={
-                      data?.cve.kev_due_date
-                        ? `Due ${data.cve.kev_due_date}`
-                        : "Catalog disposition only"
-                    }
-                    size="text"
-                    completeness={metricCompleteness(kevState.status)}
-                  />
-                  <MetricCard
-                    label="Active exposure"
-                    value={representedTargets ?? null}
-                    unit="targets"
-                    detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
-                    completeness={metricCompleteness(coreState.status)}
-                  />
+                <div className="exposure-risk-summary-body">
+                  <div>
+                    <p>
+                      {data?.cve.description ||
+                        "Risk detail is limited until durable NVD metadata is available."}
+                    </p>
+                    <div className="exposure-key-facts" aria-label="Key vulnerability facts">
+                      <MetricCard
+                        label="CVSS"
+                        value={
+                          typeof data?.cve.cvss?.base_score === "number"
+                            ? data.cve.cvss.base_score.toFixed(1)
+                            : null
+                        }
+                        unit="/10"
+                        detail={data?.cve.cvss?.severity || "Base score unavailable"}
+                        completeness={metricCompleteness(nvdState.status)}
+                      />
+                      <MetricCard
+                        label="EPSS"
+                        value={
+                          typeof data?.cve.epss_score === "number"
+                            ? (data.cve.epss_score * 100).toFixed(1)
+                            : null
+                        }
+                        unit="%"
+                        detail={
+                          typeof data?.cve.epss_percentile === "number"
+                            ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
+                            : "Exploit probability unavailable"
+                        }
+                        completeness={metricCompleteness(epssState.status)}
+                      />
+                      <MetricCard
+                        label="CISA KEV"
+                        value={
+                          data?.cve.is_known_exploited === true
+                            ? "Listed"
+                            : kevState.status === "healthy-empty"
+                              ? "Not listed"
+                              : null
+                        }
+                        detail={
+                          data?.cve.kev_due_date
+                            ? `Due ${data.cve.kev_due_date}`
+                            : "Catalog disposition only"
+                        }
+                        size="text"
+                        completeness={metricCompleteness(kevState.status)}
+                      />
+                      <MetricCard
+                        label="Active exposure"
+                        value={representedTargets ?? null}
+                        unit="targets"
+                        detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
+                        completeness={metricCompleteness(coreState.status)}
+                      />
+                    </div>
+                  </div>
+                  {data?.cve.cvss?.vector && (
+                    <div className="exposure-summary-radar">
+                      <CvssRadarChart vector={data.cve.cvss.vector} radius={68} />
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -1078,27 +1087,24 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
 
               <Section label="CVSS technical disclosure" sourceName="NVD and CVSS" itemLabel="NVD records" state={nvdState}>
                 {data && (
-                  <div className="card cvss-radar-card">
-                    <div className="card-body">
-                      <strong className="large-value">
+                  <dl className="exposure-technical-list">
+                    <div>
+                      <dt>Base score</dt>
+                      <dd>
                         {typeof data.cve.cvss?.base_score === "number"
                           ? `${data.cve.cvss.base_score.toFixed(1)}/10`
                           : "—"}
-                      </strong>
-                      <p className="cve-description">{data.cve.description || "—"}</p>
-                      <dl className="exposure-technical-list">
-                        <div>
-                          <dt>Version</dt>
-                          <dd>{data.cve.cvss?.version || "—"}</dd>
-                        </div>
-                        <div>
-                          <dt>Vector</dt>
-                          <dd className="cvss-vector-string">{data.cve.cvss?.vector || "—"}</dd>
-                        </div>
-                      </dl>
+                      </dd>
                     </div>
-                    {data.cve.cvss?.vector && <CvssRadarChart vector={data.cve.cvss.vector} />}
-                  </div>
+                    <div>
+                      <dt>Version</dt>
+                      <dd>{data.cve.cvss?.version || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Vector</dt>
+                      <dd className="cvss-vector-string">{data.cve.cvss?.vector || "—"}</dd>
+                    </div>
+                  </dl>
                 )}
               </Section>
             </>

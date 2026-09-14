@@ -492,7 +492,9 @@ describe("CVE detail", () => {
     expect(await screen.findByLabelText("EPSS value")).toHaveTextContent("—");
     expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
     const nvd = screen.getByRole("region", { name: "CVSS technical disclosure section" });
-    expect(within(nvd).getByText("—", { selector: ".large-value" })).toBeInTheDocument();
+    const baseScore = within(nvd).getByText("Base score").closest("div");
+    expect(baseScore).not.toBeNull();
+    expect(within(baseScore!).getByText("—")).toBeInTheDocument();
     expect(within(nvd).queryByText("0.0/10")).not.toBeInTheDocument();
     expect(screen.getByText("MSRC KB mapping is unavailable")).toBeInTheDocument();
   });
@@ -571,6 +573,23 @@ describe("CVE detail", () => {
     const positions = expectedOrder.map((heading) => headings.indexOf(heading));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it("uses the CVSS radar as the executive summary visual without duplicating it", async () => {
+    renderPage();
+
+    const summary = await screen.findByRole("region", {
+      name: "Executive risk summary",
+    });
+    expect(
+      within(summary).getByRole("img", { name: /CVSS vector radar chart/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(
+        screen.getByRole("region", { name: "CVSS technical disclosure section" }),
+      ).queryByRole("img"),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /CVSS vector radar chart/i })).toHaveLength(1);
   });
 
   it("keeps scoped core and healthy siblings usable when EPSS is unavailable", async () => {
