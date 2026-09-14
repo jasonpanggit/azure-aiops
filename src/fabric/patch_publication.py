@@ -12,6 +12,7 @@ from onboarding.activation import publish_combined_snapshot
 from onboarding.config import ConnectorConfig
 from onboarding.registry import ConnectionRegistry
 from onboarding.sync import ConnectionSyncCoordinator
+from storage.fs import is_onelake_uri, resolve_root
 
 from .config import FabricRuntimeConfig
 from .runtime import FabricRuntimeMode, build_runtime
@@ -28,13 +29,23 @@ class _PatchSnapshotSources:
 def run_patch_publication(
     connector_config_path: str | Path,
     fabric_config_path: str | Path,
+    *,
+    connection_home: str | Path = "",
+    source_root: str | Path = "",
 ) -> dict[str, Any]:
-    """Merge current connection snapshots and publish one due patch generation."""
+    """Publish Patch data from explicit, isolated production roots."""
     connector_config = ConnectorConfig.load(connector_config_path)
+    fabric_config = FabricRuntimeConfig.load(fabric_config_path)
+    connection_root, combined_root = _publication_roots(
+        connector_config,
+        fabric_config,
+        connection_home=connection_home,
+        source_root=source_root,
+    )
     sources = _PatchSnapshotSources(
-        registry=ConnectionRegistry(str(connector_config.output_dir)),
+        registry=ConnectionRegistry(str(connection_root)),
         sync_coordinator=ConnectionSyncCoordinator(
-            str(connector_config.output_dir)
+            str(connection_root)
         ),
     )
     connections = sources.registry.list(include_disabled=False)
@@ -43,16 +54,13 @@ def run_patch_publication(
     combined_manifest = publish_combined_snapshot(
         sources,
         [connection.connection_id for connection in connections],
-        connector_config.output_dir,
+        combined_root,
         reuse_unchanged=True,
     )
     source_run_id = str(combined_manifest.get("runId") or "")
     if not source_run_id:
         raise RuntimeError("Combined patch source generation is unavailable")
-    fabric_config = replace(
-        FabricRuntimeConfig.load(fabric_config_path),
-        source_data_root=connector_config.output_dir,
-    )
+    fabric_config = replace(fabric_config, source_data_root=combined_root)
     runtime = build_runtime(
         fabric_config,
         mode=FabricRuntimeMode.PUBLISH,
@@ -79,3 +87,47 @@ def run_patch_publication(
         summary["duration_seconds"],
     )
     return summary
+
+
+def _publication_roots(
+    connector_config: ConnectorConfig,
+    fabric_config: FabricRuntimeConfig,
+    *,
+    connection_home: str | Path,
+    source_root: str | Path,
+) -> tuple[Path | str, Path | str]:
+    production = fabric_config.local_onelake_root is None
+    if production and (
+        not str(connection_home).strip() or not str(source_root).strip()
+    ):
+        raise ValueError(
+            "Production patch publication requires explicit connection and source roots"
+        )
+    connection = _normalized_root(
+        connection_home or connector_config.output_dir
+    )
+    source = _normalized_root(source_root or fabric_config.source_data_root)
+    if production and (
+        not is_onelake_uri(str(connection))
+        or not is_onelake_uri(str(source))
+    ):
+        raise ValueError(
+            "Production patch publication roots must be OneLake URIs"
+        )
+    if _root_identity(connection) == _root_identity(source):
+        raise ValueError(
+            "Patch connection and combined source roots must be distinct"
+        )
+    return connection, source
+
+
+def _normalized_root(value: str | Path) -> Path | str:
+    text = str(value).strip()
+    if not text:
+        raise ValueError("Patch publication root is required")
+    return resolve_root(text) if is_onelake_uri(text) else Path(text).resolve()
+
+
+def _root_identity(value: Path | str) -> str:
+    text = str(value).rstrip("/")
+    return text.casefold() if is_onelake_uri(text) else text

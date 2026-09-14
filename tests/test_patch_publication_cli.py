@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,17 @@ from onboarding import cli
 @dataclass(frozen=True)
 class _FabricConfig:
     source_data_root: str
+    local_onelake_root: Path | None = None
+
+
+CONNECTION_HOME = (
+    "abfss://workspace@onelake.dfs.fabric.microsoft.com/"
+    "lakehouse/Files/aiops/connections"
+)
+SOURCE_ROOT = (
+    "abfss://workspace@onelake.dfs.fabric.microsoft.com/"
+    "lakehouse/Files/aiops/patch-publication-source"
+)
 
 
 def _result(*, status: str = "completed") -> FabricSyncResult:
@@ -41,6 +53,8 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     modes: list[FabricRuntimeMode] = []
     replayed: list[str] = []
     combined: list[tuple[list[str], str]] = []
+    runtime_sources: list[str] = []
+    constructed_roots: list[str] = []
     connector_config = SimpleNamespace(output_dir="/data")
     connection = SimpleNamespace(connection_id="connection-a")
     monkeypatch.setattr(
@@ -51,14 +65,20 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     monkeypatch.setattr(
         patch_publication,
         "ConnectionRegistry",
-        lambda _root: SimpleNamespace(list=lambda **_kwargs: [connection]),
+        lambda root: (
+            constructed_roots.append(str(root))
+            or SimpleNamespace(list=lambda **_kwargs: [connection])
+        ),
     )
     monkeypatch.setattr(
         patch_publication,
         "ConnectionSyncCoordinator",
-        lambda _root: SimpleNamespace(
+        lambda root: (
+            constructed_roots.append(str(root))
+            or SimpleNamespace(
             connection_output_dir=lambda _connection: (
-                "/data/connections/connection-a"
+                f"{CONNECTION_HOME}/connections/connection-a"
+            )
             )
         ),
     )
@@ -85,6 +105,7 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
         "build_runtime",
         lambda config, *, mode: (
             modes.append(mode)
+            or runtime_sources.append(str(config.source_data_root))
             or SimpleNamespace(
                 service=SimpleNamespace(
                     sync_patch_tables=lambda **kwargs: (
@@ -97,18 +118,22 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     )
 
     result = patch_publication.run_patch_publication(
-    "/app/config.yaml",
-    "/app/fabric.config.yaml",
+        "/app/config.yaml",
+        "/app/fabric.config.yaml",
+        connection_home=CONNECTION_HOME,
+        source_root=SOURCE_ROOT,
     )
 
     assert loaded_connector == ["/app/config.yaml"]
     assert loaded_fabric == ["/app/fabric.config.yaml"]
     assert modes == [FabricRuntimeMode.PUBLISH]
     assert replayed == ["source-generation-secret"]
+    assert constructed_roots == [CONNECTION_HOME, CONNECTION_HOME]
+    assert runtime_sources == [SOURCE_ROOT]
     assert combined == [
         (
             ["connection-a"],
-            "/data",
+            SOURCE_ROOT,
         )
     ]
     assert result == {
@@ -156,7 +181,10 @@ def test_patch_publication_advances_when_combined_source_changes(
     monkeypatch.setattr(
         patch_publication.FabricRuntimeConfig,
         "load",
-        lambda _path: _FabricConfig(source_data_root="/old"),
+        lambda _path: _FabricConfig(
+            source_data_root="/old",
+            local_onelake_root=Path("/lakehouse"),
+        ),
     )
     monkeypatch.setattr(
         patch_publication,
@@ -178,12 +206,12 @@ def test_patch_publication_advances_when_combined_source_changes(
 
 
 def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:
-    captured: list[str] = []
+    captured: list[object] = []
     monkeypatch.setattr(
         patch_publication,
         "run_patch_publication",
-        lambda config, fabric_config: captured.extend(
-            [str(config), str(fabric_config)]
+        lambda config, fabric_config, **roots: captured.extend(
+            [str(config), str(fabric_config), roots]
         )
         or {
             "status": "skipped",
@@ -196,10 +224,25 @@ def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:
     )
 
     assert cli.main(
-        ["patch-publish", "--fabric-config", "/app/fabric.config.yaml"]
+        [
+            "patch-publish",
+            "--fabric-config",
+            "/app/fabric.config.yaml",
+            "--connection-home",
+            CONNECTION_HOME,
+            "--source-root",
+            SOURCE_ROOT,
+        ]
     ) == 0
 
-    assert captured == ["config.yaml", "/app/fabric.config.yaml"]
+    assert captured == [
+        "config.yaml",
+        "/app/fabric.config.yaml",
+        {
+            "connection_home": CONNECTION_HOME,
+            "source_root": SOURCE_ROOT,
+        },
+    ]
     assert json.loads(capsys.readouterr().out)["status"] == "skipped"
 
 
@@ -210,6 +253,14 @@ def test_patch_publication_fails_closed_without_active_connections(
         patch_publication.ConnectorConfig,
         "load",
         lambda _path: SimpleNamespace(output_dir="/data"),
+    )
+    monkeypatch.setattr(
+        patch_publication.FabricRuntimeConfig,
+        "load",
+        lambda _path: _FabricConfig(
+            source_data_root="/source",
+            local_onelake_root=Path("/lakehouse"),
+        ),
     )
     monkeypatch.setattr(
         patch_publication,
@@ -232,11 +283,36 @@ def test_patch_publication_fails_closed_without_active_connections(
         )
 
 
+def test_production_patch_publication_requires_explicit_distinct_roots(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        patch_publication.ConnectorConfig,
+        "load",
+        lambda _path: SimpleNamespace(output_dir="/data"),
+    )
+    monkeypatch.setattr(
+        patch_publication.FabricRuntimeConfig,
+        "load",
+        lambda _path: _FabricConfig(source_data_root="/old"),
+    )
+
+    with pytest.raises(ValueError, match="requires explicit"):
+        patch_publication.run_patch_publication("config.yaml", "fabric.yaml")
+    with pytest.raises(ValueError, match="must be distinct"):
+        patch_publication.run_patch_publication(
+            "config.yaml",
+            "fabric.yaml",
+            connection_home=CONNECTION_HOME,
+            source_root=CONNECTION_HOME,
+        )
+
+
 def test_patch_publish_cli_sanitizes_lock_conflict(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         patch_publication,
         "run_patch_publication",
-        lambda *_paths: (_ for _ in ()).throw(
+        lambda *_paths, **_roots: (_ for _ in ()).throw(
             RuntimeError("Fabric synchronization is already running")
         ),
     )
