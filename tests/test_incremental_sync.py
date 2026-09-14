@@ -498,6 +498,68 @@ def test_duplicate_display_names_correlate_history_by_canonical_resource_id(
     assert len({row["resource_key"] for row in history}) == 3
 
 
+def test_lifecycle_history_rows_skips_dangling_compliance_targets(
+    tmp_path: Path,
+) -> None:
+    """A stale compliance row for a resource absent from ontology_entities
+    must be dropped, not crash ontology_construction.
+
+    Reproduces the production "compliance fact has dangling target" failure:
+    _lifecycle_history_rows built a SemanticEngine straight from raw
+    datasets (unlike semantic_snapshot(), which filters compliance against
+    active entity_keys), so any compliance row referencing a retired or
+    not-yet-promoted resource took down the whole publication.
+    """
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _source_snapshot(source)
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=lakehouse),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    active_entity = {
+        "tenant_id": "not-applicable",
+        "subscription_id": "sub-1",
+        "resource_id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-prod",
+        "entity_type": "VirtualMachine",
+        "name": "vm-prod",
+        "resource_type": "microsoft.compute/virtualmachines",
+        "location": "eastus",
+        "timestamp": "2026-08-17T00:00:00Z",
+        "change_version": "v1",
+        "ingestion_run_id": "run-1",
+        "payload_json": "{}",
+        "lineage_json": "{}",
+        "semantic_metadata_json": "{}",
+        "lifecycle_status": "active",
+        "valid_from": "2026-08-17T00:00:00Z",
+        "retired_at": "",
+        "ontology_version": "v1",
+    }
+    dangling_compliance = {
+        "assessed_resource_id": "/subscriptions/sub-1/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-retired",
+        "status": "NonCompliant",
+    }
+    matching_compliance = {
+        "assessed_resource_id": active_entity["resource_id"],
+        "status": "Compliant",
+    }
+    datasets = {
+        "ontology_entities": [active_entity],
+        "ontology_relationships": [],
+        "bronze_resources": [],
+        "silver_compliance": [dangling_compliance, matching_compliance],
+    }
+
+    rows = service._lifecycle_history_rows(
+        datasets, "run-1", "source-run-1", "2026-08-17T00:00:00Z"
+    )
+
+    assert isinstance(rows, list)
+
+
 def test_semantic_layer_builds_only_from_governed_fabric_snapshot(tmp_path: Path) -> None:
     source = tmp_path / "source"
     lakehouse = tmp_path / "lakehouse"
