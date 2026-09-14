@@ -680,6 +680,89 @@ resource "azurerm_container_app_job" "exposure_enrichment" {
   ]
 }
 
+resource "fabric_workspace_role_assignment" "patch_publisher" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ops[0].id
+  role         = "Contributor"
+
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_publisher.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "azurerm_container_app_job" "patch_publication" {
+  count = var.enable_fabric ? 1 : 0
+
+  name                         = "${local.base}-patch-publication"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+  replica_timeout_in_seconds   = 1800
+  replica_retry_limit          = 0
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ontology_publisher.id]
+  }
+
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.ontology_publisher.id
+  }
+
+  schedule_trigger_config {
+    cron_expression          = var.patch_publication_schedule
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  template {
+    container {
+      name   = "patch-publication"
+      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      cpu    = var.ontology_discovery_job_cpu
+      memory = var.ontology_discovery_job_memory
+      command = [
+        "python",
+        "-m",
+        "onboarding.cli",
+      ]
+      args = [
+        "patch-publish",
+        "--config",
+        "/app/config.yaml",
+        "--fabric-config",
+        "/app/fabric.config.yaml",
+      ]
+
+      env {
+        name  = "AIOPS_HOME"
+        value = "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops"
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ontology_publisher.client_id
+      }
+
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+    }
+  }
+
+  tags = local.tags
+
+  depends_on = [
+    azurerm_role_assignment.ontology_publisher_acr_pull,
+    fabric_workspace_role_assignment.patch_publisher,
+  ]
+}
+
 # ---------------------------------------------------------------------------
 # Web workbench
 # ---------------------------------------------------------------------------

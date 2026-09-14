@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
@@ -150,6 +150,11 @@ _EXPOSURE_PASSTHROUGH_KEYS = {
     "exposure/workload_source_checkpoints": "checkpoint_key",
     "situations/source_status": "partition_key",
 }
+
+
+class _CombinedSnapshotSource(Protocol):
+    registry: Any
+    sync_coordinator: Any
 
 
 class ActivationFailure(RuntimeError):
@@ -469,11 +474,19 @@ class ActivationProgressReporter:
 
 
 def publish_combined_snapshot(
-    service: SubscriptionOnboardingService,
+    service: _CombinedSnapshotSource,
     connection_ids: list[str],
     target_root: str | Path,
+    *,
+    reuse_unchanged: bool = False,
 ) -> dict[str, Any]:
-    """Publish one isolated, deduplicated snapshot from synced connections."""
+    """Publish one isolated, deduplicated snapshot from synced connections.
+
+    Full activation intentionally creates a new combined generation by
+    default so code-only mapper and projection changes are republished.
+    Dedicated readers may opt into source-run reuse when downstream work is
+    independently generation-aware.
+    """
     if not connection_ids:
         raise ValueError("At least one subscription connection is required")
     entities: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in ENTITY_TYPES}
@@ -575,6 +588,19 @@ def publish_combined_snapshot(
             ),
         ),
     )
+    target_store = DatasetStore(target_root)
+    current_generation = target_store.current_generation()
+    if reuse_unchanged and current_generation is not None:
+        current_manifest = _read_manifest(target_store, current_generation)
+        if (
+            str(current_manifest.get("status") or "").casefold()
+            == "completed"
+            and current_manifest.get("sourceConnectionIds")
+            == sorted(connection_ids)
+            and current_manifest.get("sourceRunIds")
+            == sorted(source_runs)
+        ):
+            return current_manifest
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     run_id = f"activation-{uuid.uuid4()}"
     datasets = {
@@ -589,7 +615,7 @@ def publish_combined_snapshot(
             for name, rows in exposure_rows.items()
         },
     }
-    return DatasetStore(target_root).publish(
+    return target_store.publish(
         datasets,
         {},
         {

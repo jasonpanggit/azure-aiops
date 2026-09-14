@@ -226,6 +226,7 @@ def test_accepted_addresses_are_exact_and_exclude_runtime_job_start_grants() -> 
         "azurerm_container_app.web",
         "azurerm_container_app_job.ontology_discovery",
         "azurerm_container_app_job.ontology_publisher",
+        "azurerm_container_app_job.patch_publication[0]",
         "azurerm_container_app_job.ontology_rbac_validation[0]",
         "fabric_workspace.ontology_command[0]",
         "fabric_lakehouse.ontology_command[0]",
@@ -233,6 +234,7 @@ def test_accepted_addresses_are_exact_and_exclude_runtime_job_start_grants() -> 
         "fabric_lakehouse.ontology_dispatch[0]",
         "fabric_workspace.ontology_publication[0]",
         "fabric_lakehouse.ontology_publication[0]",
+        "fabric_workspace_role_assignment.patch_publisher[0]",
     }
     assert required <= EXPECTED_PRODUCTION_ADDRESSES
     assert EXPECTED_VALIDATION_ADDRESSES == EXPECTED_PRODUCTION_ADDRESSES | {

@@ -726,7 +726,26 @@ class FabricSyncService:
             source_run_id = str(
                 manifest.get("runId") or replay_source_run_id or "unknown"
             )
-            datasets = self.mapper.load(snapshot, run_id, fs=self._source_fs)
+            if source_run_id == "unknown":
+                raise ValueError(
+                    "Patch-only publication requires a source generation"
+                )
+            if self._patch_publication_is_current(source_run_id):
+                return _result(
+                    run_id,
+                    source_run_id,
+                    "skipped",
+                    bool(replay_source_run_id),
+                    {},
+                    0,
+                    self.clock() - started_clock,
+                )
+            datasets = self.mapper.load(
+                snapshot,
+                run_id,
+                fs=self._source_fs,
+                source_generation_id=source_run_id,
+            )
             patch_items = [
                 (table_name, datasets.get(table_name, []))
                 for table_name in self._PATCH_PUBLICATION_TABLES
@@ -735,6 +754,17 @@ class FabricSyncService:
             if not barrier_rows:
                 raise ValueError(
                     "Patch-only publication requires a complete patch snapshot manifest"
+                )
+            if any(
+                str(row.get("combined_source_generation") or "")
+                != source_run_id
+                or str(row.get("status") or "").casefold() != "succeeded"
+                or str(row.get("completeness") or "").casefold()
+                not in {"complete", "healthy-empty"}
+                for row in barrier_rows
+            ):
+                raise ValueError(
+                    "Patch-only publication requires a complete AUM source barrier"
                 )
 
             table_results: dict[str, DeltaWriteResult] = {}
@@ -906,7 +936,12 @@ class FabricSyncService:
             datasets = (
                 prepared_checkpoint.datasets
                 if prepared_checkpoint is not None
-                else self.mapper.load(snapshot, run_id, fs=self._source_fs)
+                else self.mapper.load(
+                    snapshot,
+                    run_id,
+                    fs=self._source_fs,
+                    source_generation_id=source_run_id,
+                )
             )
             _notify_stage_progress(
                 stage_progress_callback,
@@ -3519,6 +3554,19 @@ class FabricSyncService:
         snapshot = self._resolve_snapshot("")
         datasets = self.mapper.load(snapshot, "validation", fs=self._source_fs)
         return self._validate(datasets)
+
+    def _patch_publication_is_current(self, source_run_id: str) -> bool:
+        barrier_uri = self.onelake.table_uri("metadata", "patch_snapshot")
+        if self.delta.version(barrier_uri) is None:
+            return False
+        rows = self.delta.read(barrier_uri)
+        return bool(rows) and all(
+            str(row.get("combined_source_generation") or "") == source_run_id
+            and str(row.get("status") or "").casefold() == "succeeded"
+            and str(row.get("completeness") or "").casefold()
+            in {"complete", "healthy-empty"}
+            for row in rows
+        )
 
     def _validate(self, datasets: dict[str, list[dict]]) -> list[QualityReport]:
         entity_ids = {

@@ -218,6 +218,7 @@ SCHEMAS: dict[str, pa.Schema] = {
         [
             *_BASE,
             pa.field("connection_id", pa.string(), nullable=False),
+            pa.field("combined_source_generation", pa.string(), nullable=False),
             pa.field("source_generation", pa.string(), nullable=False),
             pa.field("replaces_legacy_connection_id", pa.string(), nullable=False),
             pa.field("status", pa.string(), nullable=False),

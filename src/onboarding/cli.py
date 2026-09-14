@@ -67,6 +67,19 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     fabric.add_argument("--config", default="fabric.config.yaml")
     fabric.add_argument("--replay-source-run-id", default="")
 
+    patch_publish = actions.add_parser(
+        "patch-publish",
+        help="Publish one due ARG-backed patch generation to Fabric",
+    )
+    patch_publish.add_argument(
+        "--config",
+        default="config.yaml",
+    )
+    patch_publish.add_argument(
+        "--fabric-config",
+        default="fabric.config.yaml",
+    )
+
     ontology = actions.add_parser("ontology", help="Query the Fabric Operational Context Graph")
     ontology.add_argument("question")
     ontology.add_argument("--entity", default="")
@@ -248,6 +261,30 @@ def cli_command(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
+    if action == "patch-publish":
+        from fabric.patch_publication import run_patch_publication
+
+        try:
+            result = run_patch_publication(
+                args.config,
+                args.fabric_config,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            reason_code = (
+                "writer_lock_unavailable"
+                if "already running" in str(exc).casefold()
+                else "patch_publication_failed"
+            )
+            print(
+                json.dumps(
+                    {"status": "failed", "reason_code": reason_code},
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if action == "ontology":
         from fabric.config import FabricRuntimeConfig
         from fabric.runtime import build_runtime
@@ -325,7 +362,7 @@ def cli_command(args: argparse.Namespace) -> int:
         return subscriptions_command(args)
     print(
         "Usage: aiops azure-graph "
-        "{sync|query|schedule|sample|local|local-spn|fabric|ontology|semantic|operations|activate|subscriptions}"
+        "{sync|query|schedule|sample|local|local-spn|fabric|patch-publish|ontology|semantic|operations|activate|subscriptions}"
     )
     return 2
 
