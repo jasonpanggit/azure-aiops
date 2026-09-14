@@ -17,6 +17,10 @@ class LakehouseManager:
     def base_path(self) -> str:
         return f"/workspaces/{self.workspace_id}/lakehouses"
 
+    @property
+    def items_path(self) -> str:
+        return f"/workspaces/{self.workspace_id}/items"
+
     def resolve(
         self,
         *,
@@ -26,12 +30,15 @@ class LakehouseManager:
         enable_schemas: bool = False,
     ) -> dict[str, Any]:
         if lakehouse_id:
-            return self.client.request("GET", f"{self.base_path}/{lakehouse_id}")
+            return self.client.request("GET", f"{self.items_path}/{lakehouse_id}")
         if not lakehouse_name:
             raise ValueError("Configure fabric.lakehouse_id or fabric.lakehouse_name")
         matches = [
             item
-            for item in self.client.iter_items(self.base_path)
+            for item in self.client.iter_items(
+                self.items_path,
+                params={"type": "Lakehouse"},
+            )
             if str(item.get("displayName") or "").casefold() == lakehouse_name.casefold()
         ]
         if len(matches) > 1:

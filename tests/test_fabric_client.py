@@ -407,10 +407,41 @@ def test_workspace_manager_resolves_configured_name() -> None:
     assert resolved["id"] == "w1"
 
 
+def test_lakehouse_manager_resolves_configured_id_through_items_api() -> None:
+    class Client:
+        def request(self, method, path, **_kwargs):
+            assert (method, path) == ("GET", "/workspaces/w1/items/l1")
+            return {"id": "l1", "displayName": "Inventory", "type": "Lakehouse"}
+
+    lakehouse = LakehouseManager(Client(), "w1").resolve(lakehouse_id="l1")
+
+    assert lakehouse["id"] == "l1"
+
+
+def test_lakehouse_manager_resolves_name_through_typed_items_api() -> None:
+    class Client:
+        def iter_items(self, path, *, params=None):
+            assert path == "/workspaces/w1/items"
+            assert params == {"type": "Lakehouse"}
+            return iter(
+                [
+                    {"id": "l1", "displayName": "Inventory", "type": "Lakehouse"},
+                    {"id": "l2", "displayName": "Other", "type": "Lakehouse"},
+                ]
+            )
+
+    lakehouse = LakehouseManager(Client(), "w1").resolve(
+        lakehouse_name="Inventory"
+    )
+
+    assert lakehouse["id"] == "l1"
+
+
 def test_lakehouse_manager_creates_missing_lakehouse() -> None:
     class Client:
-        def iter_items(self, path):
-            assert path == "/workspaces/w1/lakehouses"
+        def iter_items(self, path, *, params=None):
+            assert path == "/workspaces/w1/items"
+            assert params == {"type": "Lakehouse"}
             return iter([])
 
         def request(self, method, path, json_body=None, **_kwargs):
