@@ -1143,6 +1143,22 @@ def _ttl_cached_value(
         return value
 
 
+def _optional_configuration_data_rows(
+    logs_client: Any,
+    workspace_id: str,
+) -> list[dict[str, Any]]:
+    """Read optional software inventory without disabling patch remediation."""
+    try:
+        return list(logs_client.query_configuration_data(workspace_id))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _LOGGER.warning(
+            "live_patch_configuration_data_unavailable workspace_id=%s",
+            workspace_id,
+            exc_info=True,
+        )
+        return []
+
+
 def _load_snapshot_tables() -> tuple[list[dict[str, list[dict]]], str]:
     """Load the mapped datasets for every registered synced connection.
 
@@ -4849,7 +4865,9 @@ def build_context() -> ApiContext:
                     connection,
                     onboarding.resolver,
                 )
-                rows.extend(reader.query_configuration_data(workspace_id))
+                rows.extend(
+                    _optional_configuration_data_rows(reader, workspace_id)
+                )
             return rows
 
         def durable_live_snapshot() -> Mapping[str, Any]:
