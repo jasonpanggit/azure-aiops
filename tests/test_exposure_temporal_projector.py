@@ -699,6 +699,144 @@ def test_pipeline_rebuilds_key_missing_from_stale_current_snapshot() -> None:
     assert row["active"] == full_replay.active is False
 
 
+def test_pipeline_rebuilds_key_when_present_current_row_predates_known_history() -> None:
+    """A key CAN have an entry in ``existing_current_rows`` yet still be
+    stale: a prior publication run can append observations to the retained
+    (``known``) history and then fail/crash before ever materializing
+    ``gold_exposure_current`` for that key. Those observations are already
+    ``known`` (persisted) but are NOT reflected in the previous current
+    snapshot, and since they will never again appear as "new" this run, a
+    naive incremental fold would silently and permanently omit them. The
+    pipeline must detect this via the snapshot's own ``observation_count``
+    and fall back to a full replay for that key.
+    """
+    from fabric_pipelines.vulnerability_pipeline import (
+        ExposureTemporalProjection,
+        materialize_temporal_exposure_tables,
+    )
+    from intelligence.vulnerability.projector import project_current
+
+    batch1 = _observation(
+        event="missing",
+        event_time="2026-08-01T00:00:00Z",
+        source_sequence=1,
+        provider_operation_id="assessment-1",
+    )
+    batch2 = _observation(
+        event="installed",
+        event_time="2026-08-05T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-1",
+    )
+
+    # The "true" retained/known history already has BOTH observations
+    # persisted (e.g. a prior run appended batch2 to Silver but crashed
+    # before writing gold_exposure_current), but the current snapshot we
+    # will supply below only reflects batch1 -- it is stale relative to
+    # what is already known.
+    full_replay = project_current((batch1, batch2), generation_id="gen-full")
+    stale_current = project_current((batch1,), generation_id="gen-stale")
+
+    first_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(batch1, batch2), current=(), generation_id="gen-1"
+        ),
+    )
+    existing_rows = list(first_run.observation_rows)
+
+    stale_current_row = {**stale_current.to_dict(), "current_key": stale_current.current_key}
+
+    # This run has zero NEW observations (both are already known/persisted),
+    # but the supplied current snapshot is stale relative to that known
+    # history -- the pipeline must not simply restamp and carry it forward.
+    second_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(), current=(), generation_id="gen-full"
+        ),
+        existing_rows=existing_rows,
+        known_observation_rows=existing_rows,
+        existing_current_rows=[stale_current_row],
+    )
+
+    assert len(second_run.current_rows) == 1
+    row = second_run.current_rows[0]
+    assert row["state"] == full_replay.state == "installed"
+    assert row["active"] == full_replay.active is False
+    assert row["observation_count"] == 2
+
+
+def test_pipeline_rebuilds_key_when_current_row_has_same_count_but_wrong_observations() -> None:
+    """``observation_count`` matching is not sufficient on its own: a stale
+    snapshot could coincidentally carry the same count as the true known
+    history while actually reflecting a *different* set of observations
+    (e.g. cross-generation drift/replacement). The pipeline must also verify
+    the snapshot's recorded ``last_observation_id`` against the actual
+    most-recent known observation for the key, and fall back to a full
+    replay on any mismatch -- even when this run has zero new observations.
+    """
+    from fabric_pipelines.vulnerability_pipeline import (
+        ExposureTemporalProjection,
+        materialize_temporal_exposure_tables,
+    )
+    from intelligence.vulnerability.projector import project_current
+
+    obs_a = _observation(
+        event="missing",
+        event_time="2026-08-01T00:00:00Z",
+        source_sequence=1,
+        provider_operation_id="assessment-a",
+    )
+    obs_b = _observation(
+        event="installed",
+        event_time="2026-08-05T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-b",
+    )
+    # A third observation that is NOT part of the true known/retained
+    # history below -- it stands in for a different generation's data that
+    # a stale current snapshot happened to be folded from.
+    obs_c = _observation(
+        event="installed",
+        event_time="2026-08-05T00:00:00Z",
+        source_sequence=2,
+        provider_operation_id="install-c",
+    )
+
+    full_replay = project_current((obs_a, obs_b), generation_id="gen-full")
+    stale_current = project_current((obs_a, obs_c), generation_id="gen-stale")
+    assert stale_current.observation_count == 2
+
+    # Retained/known history for this key is genuinely (A, B) only.
+    first_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(obs_a, obs_b), current=(), generation_id="gen-1"
+        ),
+    )
+    existing_rows = list(first_run.observation_rows)
+
+    stale_current_row = {
+        **stale_current.to_dict(),
+        "current_key": stale_current.current_key,
+    }
+
+    second_run = materialize_temporal_exposure_tables(
+        ExposureTemporalProjection(
+            observations=(), current=(), generation_id="gen-full"
+        ),
+        existing_rows=existing_rows,
+        known_observation_rows=existing_rows,
+        existing_current_rows=[stale_current_row],
+    )
+
+    assert len(second_run.current_rows) == 1
+    row = second_run.current_rows[0]
+    assert row["state"] == full_replay.state == "installed"
+    assert row["active"] == full_replay.active is False
+    assert row["observation_count"] == 2
+    assert row["last_observation_id"] == full_replay.last_observation_id
+    assert row["last_observation_id"] != stale_current.last_observation_id
+
+
 def test_project_all_incremental_cold_starts_new_keys_and_folds_existing() -> None:
     from intelligence.vulnerability.observations import ExposureObservation
     from intelligence.vulnerability.projector import (
