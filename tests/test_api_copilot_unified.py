@@ -1268,6 +1268,7 @@ def test_network_dependency_question_without_hint_binds_selected_vnet(
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     body = _network_hub_canonical_body()
     body.pop("hint")
+    body["requested_scope"] = {}
     vnet_id = body["snapshot"]["selected_entities"][0]["resource_id"]
     tool_calls: list[tuple[str, dict[str, object]]] = []
 
@@ -1314,7 +1315,7 @@ def test_network_dependency_question_without_hint_binds_selected_vnet(
         create_app(context),
         raise_server_exceptions=False,
     ).post(
-        "/api/v1/copilot/investigations?subscription=sub-a",
+        "/api/v1/copilot/investigations",
         headers=HEADERS,
         json=body,
     )
