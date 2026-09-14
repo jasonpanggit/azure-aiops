@@ -10,7 +10,20 @@ import httpx
 
 LOGS_QUERY_SCOPE = "https://api.loganalytics.io/.default"
 CONFIGURATION_DATA_QUERY = """
-ConfigurationData
+union isfuzzy=true
+    ConfigurationData,
+    (datatable(
+        ConfigDataType:string,
+        TimeGenerated:datetime,
+        Computer:string,
+        SourceComputerId:string,
+        _ResourceId:string,
+        _SubscriptionId:string,
+        SoftwareName:string,
+        CurrentVersion:string,
+        Publisher:string,
+        SoftwareType:string
+    )[])
 | where ConfigDataType == "Software"
 | summarize arg_max(TimeGenerated, *) by Computer, SourceComputerId, _ResourceId, SoftwareName
 | project ConfigDataType, TimeGenerated, Computer, SourceComputerId, _ResourceId, _SubscriptionId,

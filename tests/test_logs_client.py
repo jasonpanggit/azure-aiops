@@ -53,6 +53,9 @@ def test_configuration_data_client_uses_logs_query_api_and_fixed_kql() -> None:
     assert requests[0]["method"] == "POST"
     assert requests[0]["url"].endswith("/v1/workspaces/workspace-1/query")
     assert requests[0]["json"] == {"query": CONFIGURATION_DATA_QUERY}
+    assert CONFIGURATION_DATA_QUERY.startswith("union isfuzzy=true")
+    assert "datatable(" in CONFIGURATION_DATA_QUERY
+    assert "ConfigurationData," in CONFIGURATION_DATA_QUERY
     assert requests[0]["headers"]["Authorization"] == "Bearer logs-token"
 
 

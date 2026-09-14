@@ -1151,7 +1151,23 @@ def _optional_configuration_data_rows(
     """Read optional software inventory without disabling patch remediation."""
     try:
         return list(logs_client.query_configuration_data(workspace_id))
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except RuntimeError as exc:
+        if (
+            "Failed to resolve table or column expression named "
+            "'ConfigurationData'"
+        ) in str(exc):
+            _LOGGER.info(
+                "live_patch_configuration_data_absent workspace_id=%s",
+                workspace_id,
+            )
+            return []
+        _LOGGER.warning(
+            "live_patch_configuration_data_unavailable workspace_id=%s",
+            workspace_id,
+            exc_info=True,
+        )
+        return []
+    except (OSError, TypeError, ValueError):
         _LOGGER.warning(
             "live_patch_configuration_data_unavailable workspace_id=%s",
             workspace_id,
