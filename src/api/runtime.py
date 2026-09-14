@@ -138,6 +138,7 @@ from operations.tools import FabricIQToolAdapter
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,
+    collect_live_patch_snapshot,
     live_incident_engine,
     live_vulnerability_service,
 )
@@ -1042,6 +1043,7 @@ _governance_snapshot_cache: dict[
 # interactions recreates that cost on every click. The observed timestamp
 # remains in the response so this bounded staleness is explicit.
 _HYBRID_NETWORK_CACHE_TTL_SECONDS = 300
+_DURABLE_LIVE_PATCH_CACHE_TTL_SECONDS = 300
 _hybrid_network_cache: dict[
     tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]],
     tuple[float, tuple[list[dict], str, int]],
@@ -4761,6 +4763,96 @@ def build_context() -> ApiContext:
             live_connection_cache_key(subscription_ids),
         )
 
+        def live_software_rows() -> list[dict[str, Any]]:
+            workspace_observation = live_resources.query(
+                QuerySpec(
+                    name="live_patch_law_workspaces",
+                    table="Resources",
+                    query=(
+                        "Resources "
+                        "| where type =~ 'microsoft.operationalinsights/workspaces' "
+                        "| project id, subscriptionId, "
+                        "workspaceId=tostring(properties.customerId)"
+                    ),
+                    incremental=False,
+                    source_family="log_analytics_workspace_discovery",
+                ),
+                subscription_ids=subscription_ids,
+            )
+            if workspace_observation.completeness not in {
+                "complete",
+                "healthy-empty",
+            }:
+                raise RuntimeError(
+                    "Live Log Analytics workspace discovery is incomplete"
+                )
+            connections = {
+                str(connection.subscription_id).casefold(): connection
+                for connection in onboarding.registry.list(
+                    include_disabled=False
+                )
+                if str(connection.subscription_id) in subscription_ids
+            }
+            rows: list[dict[str, Any]] = []
+            for workspace in workspace_observation.rows:
+                subscription_id = str(
+                    workspace.get("subscriptionId")
+                    or workspace.get("subscription_id")
+                    or ""
+                ).casefold()
+                workspace_id = str(
+                    workspace.get("workspaceId")
+                    or workspace.get("workspace_id")
+                    or ""
+                ).strip()
+                connection = connections.get(subscription_id)
+                if connection is None or not workspace_id:
+                    continue
+                reader = build_connection_logs_client(
+                    arg_config,
+                    connection,
+                    onboarding.resolver,
+                )
+                rows.extend(reader.query_configuration_data(workspace_id))
+            return rows
+
+        def durable_live_snapshot() -> Mapping[str, Any]:
+            cache = _enrichment_cache("live_patch_priorities")
+            durable_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "schema_version": "1.0.0",
+                        "subscriptions": sorted(subscription_ids),
+                        "connections": cache_key[2],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            found, stale, age = cache.get_entry(durable_key)
+            if (
+                found
+                and isinstance(stale, Mapping)
+                and age < _DURABLE_LIVE_PATCH_CACHE_TTL_SECONDS
+            ):
+                return stale
+            try:
+                snapshot = collect_live_patch_snapshot(
+                    live_resources,
+                    subscription_ids=subscription_ids,
+                    software_rows=live_software_rows(),
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                if found and isinstance(stale, Mapping):
+                    _LOGGER.warning(
+                        "live_patch_refresh_failed_serving_lkg",
+                        exc_info=True,
+                    )
+                    return stale
+                raise
+            cache.set(durable_key, snapshot)
+            return snapshot
+
         def build() -> VulnerabilityIntelligenceService | None:
             graph = providers.get("semantic_graph", optional=True)
             try:
@@ -4772,6 +4864,7 @@ def build_context() -> ApiContext:
                 subscription_ids=subscription_ids,
                 semantic=graph,
                 network=network,
+                snapshot=durable_live_snapshot(),
                 build_service=lambda tables, freshness, **kwargs: _build_vulnerability_service(
                     tables,
                     freshness,

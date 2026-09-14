@@ -1884,6 +1884,21 @@ def test_hybrid_remediation_provider_resolves_one_generation_per_request_window(
         "api.runtime.live_vulnerability_service",
         lambda *args, **kwargs: _FakeVulnerabilityService(),
     )
+    monkeypatch.setattr(
+        "api.runtime._enrichment_cache",
+        lambda _name: SimpleNamespace(
+            get_entry=lambda _key: (
+                True,
+                {
+                    "schema_version": "1.0.0",
+                    "subscription_ids": [DEFAULT_LOCAL_SUBSCRIPTION_ID],
+                    "observed_at": "2026-01-01T00:00:00Z",
+                    "findings": [],
+                },
+                0.0,
+            )
+        ),
+    )
 
     context = build_context()
     assert context.hybrid_remediation_provider is not None
@@ -1954,6 +1969,21 @@ def test_hybrid_remediation_provider_serializes_concurrent_callers_for_same_key(
     monkeypatch.setattr(
         "api.runtime.live_vulnerability_service",
         _fake_live_vulnerability_service,
+    )
+    monkeypatch.setattr(
+        "api.runtime._enrichment_cache",
+        lambda _name: SimpleNamespace(
+            get_entry=lambda _key: (
+                True,
+                {
+                    "schema_version": "1.0.0",
+                    "subscription_ids": [DEFAULT_LOCAL_SUBSCRIPTION_ID],
+                    "observed_at": "2026-01-01T00:00:00Z",
+                    "findings": [],
+                },
+                0.0,
+            )
+        ),
     )
 
     context = build_context()
