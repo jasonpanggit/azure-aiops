@@ -3237,8 +3237,22 @@ def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceServic
 def _fabric_vulnerability_service(
     runtime: FabricRuntime,
 ) -> VulnerabilityIntelligenceService | None:
-    semantic = runtime.semantic_engine()
-    network = _fabric_network_service(runtime)
+    try:
+        semantic = runtime.semantic_engine()
+    except (RuntimeError, TypeError, ValueError):
+        _LOGGER.warning(
+            "fabric_vulnerability_semantic_enrichment_unavailable",
+            exc_info=True,
+        )
+        semantic = None
+    try:
+        network = _fabric_network_service(runtime)
+    except (RuntimeError, TypeError, ValueError):
+        _LOGGER.warning(
+            "fabric_vulnerability_network_enrichment_unavailable",
+            exc_info=True,
+        )
+        network = None
     patch = runtime.service.patch_intelligence_snapshot()
     defender = runtime.service.defender_intelligence_snapshot()
     findings = [
@@ -3282,6 +3296,28 @@ def _fabric_vulnerability_service(
         if use_temporal_projection
         else {}
     )
+    freshness = str(getattr(semantic, "freshness", "") or "")
+    if not freshness:
+        freshness = max(
+            (
+                str(
+                    row.get("timestamp")
+                    or row.get("observed_at")
+                    or row.get("last_assessed_at")
+                    or row.get("last_observed_at")
+                    or row.get("published_at")
+                    or ""
+                )
+                for rows in (
+                    findings,
+                    defender_findings,
+                    defender_assessments,
+                    *temporal_tables.values(),
+                )
+                for row in rows
+            ),
+            default="",
+        )
     return _build_vulnerability_service(
         [
             {
@@ -3295,7 +3331,7 @@ def _fabric_vulnerability_service(
                 },
             }
         ],
-        str(getattr(semantic, "freshness", "") or ""),
+        freshness,
         semantic=semantic,
         network=network,
         use_temporal_projection=use_temporal_projection,
