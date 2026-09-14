@@ -1304,7 +1304,16 @@ export interface KbDetail {
   published_at: string;
   enrichment?: ExposureEnrichmentState;
   cve_ids: string[];
-  cves: { cve_id: string; title: string; severity: string; cvss: { base_score: number | null; vector: string; severity: string } }[];
+  cves: {
+    cve_id: string;
+    title: string;
+    severity: string;
+    cvss: { base_score: number | null; vector: string; severity: string };
+    epss_score: number | null;
+    epss_percentile: number | null;
+    is_known_exploited: boolean | null;
+    kev_due_date: string;
+  }[];
   affected_servers: string[];
   affected_server_count?: number;
   affected_servers_truncated?: boolean;

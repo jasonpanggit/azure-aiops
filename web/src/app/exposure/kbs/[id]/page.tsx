@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { CvssRadarChart } from "@/components/ui/CvssRadarChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -15,6 +14,7 @@ import {
   type PageHeaderCompleteness,
 } from "@/components/ui/PageHeader";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
@@ -83,6 +83,35 @@ function sourceRecord(
   );
 }
 
+function sourceRecords(
+  detail: KbDetail | null,
+  source: string,
+): ExposureEnrichmentSourceState[] {
+  return Object.values(detail?.enrichment?.sources ?? {}).filter(
+    (entry) => entry.source.toLocaleLowerCase("en-US") === source,
+  );
+}
+
+function familyProviderStatus(detail: KbDetail | null, source: string): string {
+  const statuses = sourceRecords(detail, source).map((record) =>
+    record.status.toLocaleLowerCase("en-US"),
+  );
+  return (
+    statuses.find((status) =>
+      ["refreshing", "running", "in_progress"].includes(status),
+    ) ??
+    statuses.find((status) => ["queued", "pending", "scheduled"].includes(status)) ??
+    statuses.find((status) => !["success", "succeeded", "complete"].includes(status)) ??
+    statuses[0] ??
+    ""
+  );
+}
+
+function familyHasLastKnownGood(detail: KbDetail | null, source: string): boolean {
+  const records = sourceRecords(detail, source);
+  return records.length > 0 && records.every((record) => record.has_last_known_good);
+}
+
 function presentSection<T>(
   section: ExposureSectionResult<T>,
   common: ExposureSectionResult<ExposureOverview>,
@@ -120,9 +149,11 @@ function presentSection<T>(
   };
   if (section.loading && !section.data) return { ...presented, metadata, status: "loading" };
   if (source) {
-    const succeeded = ["success", "succeeded", "complete"].includes(
-      source.status.toLocaleLowerCase("en-US"),
-    );
+    const sourceStatus = source.status.toLocaleLowerCase("en-US");
+    const succeeded = ["success", "succeeded", "complete"].includes(sourceStatus);
+    if (["partial", "degraded"].includes(sourceStatus) && source.has_last_known_good) {
+      return { ...presented, metadata, status: "partial" };
+    }
     if (source.stale || (!succeeded && source.has_last_known_good)) {
       return { ...presented, metadata, status: "stale" };
     }
@@ -319,6 +350,42 @@ function qualifyAssociationState(
   return state;
 }
 
+function aggregateEnrichmentFamily(
+  detail: ExposureSectionResult<KbDetail>,
+  common: ExposureSectionResult<ExposureOverview>,
+  source: string,
+): ExposureSectionPresentation {
+  const records = sourceRecords(detail.data, source);
+  if (records.length === 0) {
+    const base = presentSection(detail, common);
+    return {
+      ...base,
+      status: detail.loading ? "loading" : "unavailable",
+      error: detail.loading
+        ? null
+        : new Error(`No durable ${source.toUpperCase()} source status was returned.`),
+      metadata: {
+        ...base.metadata,
+        freshnessSourceFamily: source,
+        safeErrorMessage: `No durable ${source.toUpperCase()} source status was returned.`,
+      },
+    };
+  }
+  const rank = {
+    current: 0,
+    "healthy-empty": 0,
+    stale: 1,
+    partial: 2,
+    loading: 3,
+    unavailable: 4,
+  };
+  return records
+    .map((record) => presentSection(detail, common, { source: record }))
+    .reduce((worst, candidate) =>
+      rank[candidate.status] > rank[worst.status] ? candidate : worst,
+    );
+}
+
 export default function KbDetailPage({ params }: { params: { id: string } }) {
   const decodedKbId = decodeURIComponent(params.id).trim().toLocaleUpperCase("en-US");
   const kbMatch = /^(?:KB)?(\d{4,})$/.exec(decodedKbId);
@@ -385,6 +452,9 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
     }),
     enrichmentStates,
   );
+  const nvdState = aggregateEnrichmentFamily(detail, common, "nvd");
+  const epssState = aggregateEnrichmentFamily(detail, common, "epss");
+  const kevState = aggregateEnrichmentFamily(detail, common, "kev");
   const findingsState = presentSection(findings, common, {
     loaded: rows.length,
     empty: Boolean(findings.data && rows.length === 0),
@@ -392,7 +462,9 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const headerState = aggregateCompleteness([
     metadataState,
     msrcState,
-    ...enrichmentStates,
+    nvdState,
+    epssState,
+    kevState,
     findingsState,
   ]);
   const restartRequired = [common, detail, findings].some(
@@ -411,6 +483,27 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const last = rows.length ? first + rows.length - 1 : 0;
   const cveHref = (cveId: string) =>
     exposureDetailHref("cves", cveId, queryState, detailContext);
+  const cveMetadataState = (cveId: string) => {
+    const records = ["nvd", "epss", "kev"].map((source) =>
+      detail.data?.enrichment?.sources?.[`${source}:${cveId}`],
+    );
+    const statuses = records.map((record) =>
+      record?.status.toLocaleLowerCase("en-US") ?? "unavailable",
+    );
+    if (statuses.some((status) => ["refreshing", "running", "in_progress"].includes(status))) {
+      return { label: "Refreshing", tone: "info" as const };
+    }
+    if (statuses.some((status) => ["queued", "pending", "scheduled"].includes(status))) {
+      return { label: "Queued", tone: "info" as const };
+    }
+    if (records.some((record) => !record || (!record.has_last_known_good && record.status !== "succeeded"))) {
+      return { label: "Unavailable", tone: "critical" as const };
+    }
+    if (records.some((record) => record?.stale || record?.status !== "succeeded")) {
+      return { label: "Last known good", tone: "warning" as const };
+    }
+    return { label: "Fresh", tone: "success" as const };
+  };
 
   // Read-only contextual Copilot over the already-loaded KB evidence. Governed
   // remediation stays behind the existing server workflow (D-03, D-04, D-10).
@@ -490,18 +583,6 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
               onClick={() => setCopilotOpen(true)}
               label={`Ask Copilot about ${data?.kb_id ?? kbId}`}
             />
-            {data && (
-              <Link
-                className="button button-primary"
-                href={`/remediation?kb=${encodeURIComponent(data.kb_id)}&cve=${encodeURIComponent(
-                  data.cve_ids[0] || "",
-                )}&generation=${encodeURIComponent(findingState.generation)}&return_to=${encodeURIComponent(
-                  currentDetailHref,
-                )}`}
-              >
-                Open governed remediation
-              </Link>
-            )}
           </>
         }
         metadata={
@@ -543,165 +624,304 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
         </div>
       )}
 
-      {metadataState.status === "unavailable" && !data && rows.length === 0 ? (
-        <SourceSectionState
-          sourceName="KB metadata"
-          itemLabel="KB metadata"
-          state={metadataState}
-        />
-      ) : (
-        <>
-          <Section label="KB metadata" sourceName="KB metadata" itemLabel="KB metadata" state={metadataState}>
-            <div className="metric-grid">
-              <MetricCard
-                label="Severity"
-                value={data?.severity || null}
-                detail={data?.title || "Security update title unavailable"}
-                size="text"
-                completeness={metricCompleteness(metadataState.status)}
-              />
-              <MetricCard
-                label="Published"
-                value={data?.published_at ? `Published ${data.published_at}` : null}
-                detail="MSRC Security Update Guide"
-                size="text"
-                completeness={metricCompleteness(metadataState.status)}
-              />
-              <MetricCard
-                label="Affected targets"
-                value={findingPage?.contract.counts.represented ?? null}
-                unit="targets"
-                detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from this represented scope`}
-                completeness={metricCompleteness(findingsState.status)}
-              />
-            </div>
-          </Section>
+      <div className="exposure-detail-layout">
+        <main className="exposure-detail-content">
+          {metadataState.status === "unavailable" && !data && rows.length === 0 ? (
+            <SourceSectionState
+              sourceName="KB metadata"
+              itemLabel="KB metadata"
+              state={metadataState}
+            />
+          ) : (
+            <>
+              <section className="exposure-detail-summary" aria-labelledby="update-identity-heading">
+                <div className="card-header">
+                  <div>
+                    <p className="eyebrow">Update record</p>
+                    <h2 id="update-identity-heading">Update identity and release</h2>
+                  </div>
+                  <StatusBadge
+                    label={data?.severity || "Unknown severity"}
+                    tone={statusTone(data?.severity)}
+                  />
+                </div>
+                <dl className="exposure-definition-grid">
+                  <div>
+                    <dt>Update</dt>
+                    <dd>{data?.kb_id || kbId}</dd>
+                  </div>
+                  <div>
+                    <dt>Release date</dt>
+                    <dd>{data?.published_at || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Associated CVEs</dt>
+                    <dd>{data?.cves.length.toLocaleString("en-US") ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Supersedence</dt>
+                    <dd>Not reported by durable MSRC metadata</dd>
+                  </div>
+                </dl>
+              </section>
 
-          <Section
-            label="MSRC CVE associations"
-            sourceName="MSRC CVE associations"
-            itemLabel="CVE associations"
-            state={msrcState}
-          >
-            <div className="table-scroll exposure-responsive-table" role="region" aria-label="MSRC CVE association table" tabIndex={0}>
-              <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
-              <table className="operations-table exposure-table">
-                <caption>CVEs associated with {kbId} by MSRC</caption>
-                <thead><tr><th>CVE</th><th>Severity</th><th>CVSS score</th><th>CVSS vector</th></tr></thead>
-                <tbody>
-                  {detail.data?.cves.map((cve) => (
-                    <tr key={cve.cve_id}>
-                      <td>
-                        <Link className="table-primary-link" href={cveHref(cve.cve_id)}>
-                          {cve.cve_id}
-                        </Link>
-                        <div className="table-secondary">{cve.title}</div>
-                      </td>
-                      <td><StatusBadge label={cve.cvss?.severity || cve.severity} tone={statusTone(cve.cvss?.severity || cve.severity)} compact /></td>
-                      <td>{typeof cve.cvss?.base_score === "number" && Number.isFinite(cve.cvss.base_score) ? `${cve.cvss.base_score.toFixed(1)}/10` : "—"}</td>
-                      <td>{cve.cvss?.vector ? <CvssRadarChart vector={cve.cvss.vector} radius={26} compact /> : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
+              <section className="exposure-detail-section" aria-labelledby="installation-posture-heading">
+                <div className="card-header">
+                  <h2 id="installation-posture-heading">Installation and missing posture</h2>
+                </div>
+                <div className="exposure-key-facts">
+                  <MetricCard
+                    label="Missing targets"
+                    value={findingPage?.contract.counts.represented ?? data?.affected_server_count ?? null}
+                    unit="targets"
+                    detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
+                    completeness={metricCompleteness(findingsState.status)}
+                  />
+                  <MetricCard
+                    label="Loaded asset sample"
+                    value={data?.affected_servers.length ?? null}
+                    unit="assets"
+                    detail={
+                      data?.affected_servers_truncated
+                        ? `${data.affected_server_count?.toLocaleString("en-US") ?? "Unknown"} total; sample is truncated`
+                        : "Complete loaded asset list"
+                    }
+                    completeness={metricCompleteness(metadataState.status)}
+                  />
+                  <MetricCard
+                    label="Business services"
+                    value={data?.affected_business_services.length || null}
+                    unit="services"
+                    detail={data?.affected_business_services.join(", ") || "Service mapping unavailable"}
+                    completeness={metricCompleteness(findingsState.status)}
+                  />
+                </div>
+              </section>
 
-          <Section
-            label="Affected findings"
-            sourceName="Affected findings"
-            itemLabel="findings"
-            state={findingsState}
-          >
-            <TableColumnFilters
-              filters={[
-                {
-                  id: "target_kind",
-                  label: "Target kind",
-                  value: findingState.filters.target_kind ?? "all",
-                  options: TARGET_KIND_OPTIONS,
-                  onChange: (value) =>
+              <Section
+                label="Associated CVEs"
+                sourceName="MSRC CVE associations"
+                itemLabel="CVE associations"
+                state={msrcState}
+              >
+                <div className="table-scroll exposure-responsive-table" role="region" aria-label="Associated CVEs table" tabIndex={0}>
+                  <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
+                  <table className="operations-table exposure-table">
+                    <caption>CVEs associated with {kbId} by durable MSRC metadata</caption>
+                    <thead>
+                      <tr>
+                        <th>CVE</th>
+                        <th>Severity / CVSS</th>
+                        <th>EPSS / KEV</th>
+                        <th>Affected targets</th>
+                        <th>Metadata state</th>
+                        <th>Open</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.data?.cves.map((cve) => {
+                        const metadata = cveMetadataState(cve.cve_id);
+                        return (
+                          <tr key={cve.cve_id}>
+                            <td data-label="CVE">
+                              <strong>{cve.cve_id}</strong>
+                              <div className="table-secondary">{cve.title}</div>
+                            </td>
+                            <td data-label="Severity / CVSS">
+                              <StatusBadge label={cve.cvss?.severity || cve.severity} tone={statusTone(cve.cvss?.severity || cve.severity)} compact />
+                              <div className="table-secondary">
+                                {typeof cve.cvss?.base_score === "number" && Number.isFinite(cve.cvss.base_score)
+                                  ? `${cve.cvss.base_score.toFixed(1)}/10`
+                                  : "CVSS unavailable"}
+                              </div>
+                            </td>
+                            <td data-label="EPSS / KEV">
+                              <strong>
+                                {typeof cve.epss_score === "number"
+                                  ? `${(cve.epss_score * 100).toFixed(1)}% EPSS`
+                                  : "EPSS —"}
+                              </strong>
+                              <div className="table-secondary">
+                                {cve.is_known_exploited === true
+                                  ? `KEV listed${cve.kev_due_date ? ` · due ${cve.kev_due_date}` : ""}`
+                                  : cve.is_known_exploited === false
+                                    ? "Not listed in KEV"
+                                    : "KEV —"}
+                              </div>
+                            </td>
+                            <td data-label="Affected targets">
+                              {findingPage?.contract.counts.represented?.toLocaleString("en-US") ?? "—"}
+                              <div className="table-secondary">KB-scoped represented targets</div>
+                            </td>
+                            <td data-label="Metadata state">
+                              <StatusBadge label={metadata.label} tone={metadata.tone} compact />
+                            </td>
+                            <td data-label="Open">
+                              <Link className="button button-quiet" href={cveHref(cve.cve_id)}>
+                                Open {cve.cve_id}
+                              </Link>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Section>
+
+              <Section
+                label="Affected assets"
+                sourceName="Affected findings"
+                itemLabel="findings"
+                state={findingsState}
+              >
+                <TableColumnFilters
+                  filters={[
+                    {
+                      id: "target_kind",
+                      label: "Target kind",
+                      value: findingState.filters.target_kind ?? "all",
+                      options: TARGET_KIND_OPTIONS,
+                      onChange: (value) =>
+                        setFindingState((current) =>
+                          updateExposureQueryState(current, {
+                            filters: {
+                              ...current.filters,
+                              target_kind: value === "all" ? undefined : value,
+                            },
+                          }),
+                        ),
+                    },
+                  ]}
+                  resultCount={rows.length}
+                  totalCount={findingPage?.total_count ?? 0}
+                  onReset={() =>
                     setFindingState((current) =>
                       updateExposureQueryState(current, {
-                        filters: {
-                          ...current.filters,
-                          target_kind: value === "all" ? undefined : value,
-                        },
+                        filters: { ...current.filters, target_kind: undefined },
                       }),
-                    ),
-                },
-              ]}
-              resultCount={rows.length}
-              totalCount={findingPage?.total_count ?? 0}
-              onReset={() =>
-                setFindingState((current) =>
-                  updateExposureQueryState(current, {
-                    filters: { ...current.filters, target_kind: undefined },
-                  }),
-                )
-              }
-            />
-            {rows.length > 0 && (
-              <div className="table-scroll exposure-responsive-table" role="region" aria-label="Affected KB findings table" tabIndex={0}>
-                <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
-                <table className="operations-table exposure-table">
-                  <caption>Authorized targets missing {kbId}</caption>
-                  <thead><tr><th>Target</th><th>CVE</th><th>Kind</th><th>Service</th><th>Severity</th></tr></thead>
-                  <tbody>
-                    {rows.map((finding) => {
-                      const cveId = finding.cve_id || (
-                        finding.weakness_id.startsWith("CVE-")
-                          ? finding.weakness_id
-                          : ""
+                    )
+                  }
+                />
+                {rows.length > 0 && (
+                  <div className="table-scroll exposure-responsive-table" role="region" aria-label="Affected KB findings table" tabIndex={0}>
+                    <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
+                    <table className="operations-table exposure-table">
+                      <caption>Authorized targets missing {kbId}</caption>
+                      <thead><tr><th>Target</th><th>CVE</th><th>Kind</th><th>Service</th><th>Severity</th></tr></thead>
+                      <tbody>
+                        {rows.map((finding) => {
+                          const cveId = finding.cve_id || (
+                            finding.weakness_id.startsWith("CVE-")
+                              ? finding.weakness_id
+                              : ""
+                          );
+                          return (
+                            <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
+                              <td data-label="Target"><strong>{finding.server_id || finding.target_id}</strong></td>
+                              <td data-label="CVE">{cveId ? <Link className="table-primary-link" href={cveHref(cveId)}>{cveId}</Link> : "—"}</td>
+                              <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
+                              <td data-label="Service">{finding.business_service || "Unmapped service"}</td>
+                              <td data-label="Severity">{finding.severity || data?.severity || "Unknown"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <TablePagination
+                  mode="cursor"
+                  cursor={{
+                    total: findingPage?.total_count ?? 0,
+                    returnedCount: rows.length,
+                    first,
+                    last,
+                    hasMore: Boolean(findingPage?.next_cursor),
+                    hasPrevious: findingState.page > 1,
+                    historyDepth: findingState.cursorHistory.length,
+                    representedCount: findingPage?.contract.counts.represented,
+                  }}
+                  busy={findings.refreshing}
+                  pageSize={findingState.pageSize}
+                  onPageSizeChange={(pageSize) =>
+                    setFindingState((current) =>
+                      updateExposureQueryState(current, { pageSize }),
+                    )
+                  }
+                  onPreviousCursor={() =>
+                    setFindingState((current) => retreatExposureCursor(current))
+                  }
+                  onNextCursor={() => {
+                    if (findingPage?.next_cursor) {
+                      setFindingState((current) =>
+                        advanceExposureCursor(current, findingPage.next_cursor!),
                       );
-                      return (
-                        <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
-                          <td><strong>{finding.server_id || finding.target_id}</strong></td>
-                          <td>{cveId ? <Link className="table-primary-link" href={cveHref(cveId)}>{cveId}</Link> : "—"}</td>
-                          <td>{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
-                          <td>{finding.business_service || "Unmapped service"}</td>
-                          <td>{finding.severity || data?.severity || "Unknown"}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <TablePagination
-              mode="cursor"
-              cursor={{
-                total: findingPage?.total_count ?? 0,
-                returnedCount: rows.length,
-                first,
-                last,
-                hasMore: Boolean(findingPage?.next_cursor),
-                hasPrevious: findingState.page > 1,
-                historyDepth: findingState.cursorHistory.length,
-                representedCount: findingPage?.contract.counts.represented,
-              }}
-              busy={findings.refreshing}
-              pageSize={findingState.pageSize}
-              onPageSizeChange={(pageSize) =>
-                setFindingState((current) =>
-                  updateExposureQueryState(current, { pageSize }),
-                )
-              }
-              onPreviousCursor={() =>
-                setFindingState((current) => retreatExposureCursor(current))
-              }
-              onNextCursor={() => {
-                if (findingPage?.next_cursor) {
-                  setFindingState((current) =>
-                    advanceExposureCursor(current, findingPage.next_cursor!),
-                  );
-                }
-              }}
-              label="findings"
-            />
-          </Section>
-        </>
-      )}
+                    }
+                  }}
+                  label="findings"
+                />
+              </Section>
+
+              <section className="exposure-detail-section" aria-labelledby="governed-handoff-heading">
+                <div className="card-header">
+                  <h2 id="governed-handoff-heading">Governed remediation handoff</h2>
+                </div>
+                <p>
+                  Review the affected assets and CVE evidence before opening the existing
+                  approval-bound remediation workflow. Exposure does not install updates.
+                </p>
+                {data && (
+                  <Link
+                    className="button button-primary"
+                    href={`/remediation?kb=${encodeURIComponent(data.kb_id)}&cve=${encodeURIComponent(
+                      data.cve_ids[0] || "",
+                    )}&generation=${encodeURIComponent(findingState.generation)}&return_to=${encodeURIComponent(
+                      currentDetailHref,
+                    )}`}
+                  >
+                    Review governed remediation
+                  </Link>
+                )}
+              </section>
+            </>
+          )}
+        </main>
+        <SourceFreshnessRail
+          items={[
+            { key: "snapshot", label: "Patch snapshot", state: metadataState },
+            {
+              key: "msrc",
+              label: "MSRC",
+              state: msrcState,
+              providerStatus: sourceRecord(detail.data, "msrc")?.status,
+              hasLastKnownGood: sourceRecord(detail.data, "msrc")?.has_last_known_good,
+            },
+            {
+              key: "nvd",
+              label: "NVD / CVSS",
+              state: nvdState,
+              providerStatus: familyProviderStatus(detail.data, "nvd"),
+              hasLastKnownGood: familyHasLastKnownGood(detail.data, "nvd"),
+            },
+            {
+              key: "epss",
+              label: "EPSS",
+              state: epssState,
+              providerStatus: familyProviderStatus(detail.data, "epss"),
+              hasLastKnownGood: familyHasLastKnownGood(detail.data, "epss"),
+            },
+            {
+              key: "kev",
+              label: "CISA KEV",
+              state: kevState,
+              providerStatus: familyProviderStatus(detail.data, "kev"),
+              hasLastKnownGood: familyHasLastKnownGood(detail.data, "kev"),
+            },
+            { key: "findings", label: "Exposure findings", state: findingsState },
+          ]}
+        />
+      </div>
 
       <CopilotDrawer
         open={copilotOpen}

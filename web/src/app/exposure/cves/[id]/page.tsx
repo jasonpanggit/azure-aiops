@@ -12,6 +12,7 @@ import {
   type RiskExceptionRevokeRequest,
   type RiskExceptionRevokeResult,
 } from "@/components/exposure/RiskExceptionDialog";
+import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -330,9 +331,11 @@ function presentSection<T>(
     };
   }
   if (source) {
-    const succeeded = ["success", "succeeded", "complete"].includes(
-      source.status.toLocaleLowerCase("en-US"),
-    );
+    const sourceStatus = source.status.toLocaleLowerCase("en-US");
+    const succeeded = ["success", "succeeded", "complete"].includes(sourceStatus);
+    if (["partial", "degraded"].includes(sourceStatus) && source.has_last_known_good) {
+      return { ...presentedSection, metadata, status: "partial" };
+    }
     if (source.stale || (!succeeded && source.has_last_known_good)) {
       return { ...presentedSection, metadata, status: "stale" };
     }
@@ -603,6 +606,16 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
   const findingPage = findings.data;
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
+  const representedTargets = findingPage?.contract.counts.represented;
+  const remediationGuidance = containerOnly
+    ? "Review the owning workload and image provenance, then open the governed remediation workflow to plan an image rebuild or replacement. Exposure does not mutate workloads."
+    : data?.cve.is_known_exploited
+      ? `Treat this as an active exploitation priority${
+          data.cve.kev_due_date ? ` with a CISA due date of ${data.cve.kev_due_date}` : ""
+        }. Validate the recommended update against the represented assets before approval.`
+      : typeof data?.cve.epss_score === "number" && data.cve.epss_score >= 0.5
+        ? "Prioritize patch validation because durable EPSS evidence indicates elevated exploit probability. Confirm asset criticality and reachability before approval."
+        : "Validate applicability, reachability, and business impact before scheduling the recommended update through the governed remediation workflow.";
 
   const kbHref = (kbId: string) =>
     exposureDetailHref("kbs", kbId, queryState, detailContext);
@@ -804,201 +817,328 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         </div>
       )}
 
-      {coreState.status === "unavailable" && !data && rows.length === 0 ? (
-        <SourceSectionState
-          sourceName="Scoped CVE findings"
-          itemLabel="findings"
-          state={coreState}
-        />
-      ) : (
-        <>
-          <Section
-            label="Scoped findings"
-            sourceName="Scoped CVE findings"
-            itemLabel="findings"
-            state={coreState}
-          >
-            <div className="metric-grid">
-              <MetricCard
-                label="Affected targets"
-                value={findingPage ? findingPage.contract.counts.represented : null}
-                unit="targets"
-                detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from this represented scope`}
-                completeness={metricCompleteness(coreState.status)}
-              />
-              <MetricCard
-                label="Business services loaded"
-                value={loadedBusinessServices.length || null}
-                unit="services"
-                detail={loadedBusinessServices.join(", ") || "Service mapping unavailable in loaded findings"}
-                completeness={metricCompleteness(coreState.status)}
-              />
-            </div>
-            <TableColumnFilters
-              filters={[
-                {
-                  id: "target_kind",
-                  label: "Target kind",
-                  value: findingState.filters.target_kind ?? "all",
-                  options: TARGET_KIND_OPTIONS,
-                  onChange: (value) =>
+      <div className="exposure-detail-layout">
+        <main className="exposure-detail-content">
+          {coreState.status === "unavailable" && !data && rows.length === 0 ? (
+            <SourceSectionState
+              sourceName="Scoped CVE findings"
+              itemLabel="findings"
+              state={coreState}
+            />
+          ) : (
+            <>
+              <section className="exposure-detail-summary" aria-labelledby="executive-risk-summary">
+                <div className="card-header">
+                  <div>
+                    <p className="eyebrow">Decision summary</p>
+                    <h2 id="executive-risk-summary">Executive risk summary</h2>
+                  </div>
+                  <StatusBadge
+                    label={data?.cve.severity || "Unknown severity"}
+                    tone={statusTone(data?.cve.severity)}
+                  />
+                </div>
+                <p>
+                  {data?.cve.description ||
+                    "Risk detail is limited until durable NVD metadata is available."}
+                </p>
+                <div className="exposure-key-facts" aria-label="Key vulnerability facts">
+                  <MetricCard
+                    label="CVSS"
+                    value={
+                      typeof data?.cve.cvss?.base_score === "number"
+                        ? data.cve.cvss.base_score.toFixed(1)
+                        : null
+                    }
+                    unit="/10"
+                    detail={data?.cve.cvss?.severity || "Base score unavailable"}
+                    completeness={metricCompleteness(nvdState.status)}
+                  />
+                  <MetricCard
+                    label="EPSS"
+                    value={
+                      typeof data?.cve.epss_score === "number"
+                        ? (data.cve.epss_score * 100).toFixed(1)
+                        : null
+                    }
+                    unit="%"
+                    detail={
+                      typeof data?.cve.epss_percentile === "number"
+                        ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
+                        : "Exploit probability unavailable"
+                    }
+                    completeness={metricCompleteness(epssState.status)}
+                  />
+                  <MetricCard
+                    label="CISA KEV"
+                    value={
+                      data?.cve.is_known_exploited === true
+                        ? "Listed"
+                        : kevState.status === "healthy-empty"
+                          ? "Not listed"
+                          : null
+                    }
+                    detail={
+                      data?.cve.kev_due_date
+                        ? `Due ${data.cve.kev_due_date}`
+                        : "Catalog disposition only"
+                    }
+                    size="text"
+                    completeness={metricCompleteness(kevState.status)}
+                  />
+                  <MetricCard
+                    label="Active exposure"
+                    value={representedTargets ?? null}
+                    unit="targets"
+                    detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
+                    completeness={metricCompleteness(coreState.status)}
+                  />
+                </div>
+              </section>
+
+              <section className="exposure-detail-section" aria-labelledby="affected-assets-heading">
+                <div className="card-header">
+                  <h2 id="affected-assets-heading">Affected assets and workload coverage</h2>
+                </div>
+                <dl className="exposure-definition-grid">
+                  <div>
+                    <dt>Represented targets</dt>
+                    <dd>{representedTargets?.toLocaleString("en-US") ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Loaded findings</dt>
+                    <dd>{rows.length.toLocaleString("en-US")}</dd>
+                  </div>
+                  <div>
+                    <dt>Target coverage</dt>
+                    <dd>
+                      {containerOnly
+                        ? "Container images"
+                        : findingState.filters.target_kind === "server"
+                          ? "Servers"
+                          : "Servers and container images"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Workload mapping</dt>
+                    <dd>
+                      {loadedBusinessServices.length > 0
+                        ? `${loadedBusinessServices.length.toLocaleString("en-US")} mapped ${
+                            loadedBusinessServices.length === 1 ? "service" : "services"
+                          }`
+                        : "—"}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section className="exposure-detail-section" aria-labelledby="remediation-guidance-heading">
+                <div className="card-header">
+                  <h2 id="remediation-guidance-heading">Risk-specific remediation guidance</h2>
+                </div>
+                <p>{remediationGuidance}</p>
+                <p className="muted">
+                  Recommended update:{" "}
+                  {data?.recommended_patch ? (
+                    <Link className="table-primary-link" href={kbHref(data.recommended_patch)}>
+                      {data.recommended_patch}
+                    </Link>
+                  ) : (
+                    "No durable update mapping is available"
+                  )}
+                  . Approval and execution remain in the governed remediation workflow.
+                </p>
+              </section>
+
+              {containerOnly ? (
+                <section role="region" aria-label="Attack path section">
+                  <div className="card-header">
+                    <h2>Attack path</h2>
+                  </div>
+                  <StatePanel
+                    title="Not applicable"
+                    message="Attack paths are not applicable to container image targets."
+                    tone="empty"
+                  />
+                </section>
+              ) : (
+                <Section
+                  label="Attack path"
+                  sourceName="Attack path"
+                  itemLabel="supported paths"
+                  state={attackState}
+                >
+                  {attack.data && <AttackPathGraphView graph={attack.data} />}
+                </Section>
+              )}
+
+              <Section
+                label="Findings"
+                sourceName="Scoped CVE findings"
+                itemLabel="findings"
+                state={coreState}
+              >
+                <TableColumnFilters
+                  filters={[
+                    {
+                      id: "target_kind",
+                      label: "Target kind",
+                      value: findingState.filters.target_kind ?? "all",
+                      options: TARGET_KIND_OPTIONS,
+                      onChange: (value) =>
+                        setFindingState((current) =>
+                          updateExposureQueryState(current, {
+                            filters: {
+                              ...current.filters,
+                              target_kind: value === "all" ? undefined : value,
+                            },
+                          }),
+                        ),
+                    },
+                  ]}
+                  resultCount={rows.length}
+                  totalCount={findingPage?.total_count ?? 0}
+                  onReset={() =>
                     setFindingState((current) =>
                       updateExposureQueryState(current, {
-                        filters: {
-                          ...current.filters,
-                          target_kind: value === "all" ? undefined : value,
-                        },
+                        filters: { ...current.filters, target_kind: undefined },
                       }),
-                    ),
-                },
-              ]}
-              resultCount={rows.length}
-              totalCount={findingPage?.total_count ?? 0}
-              onReset={() =>
-                setFindingState((current) =>
-                  updateExposureQueryState(current, {
-                    filters: { ...current.filters, target_kind: undefined },
-                  }),
-                )
-              }
-            />
-            {rows.length > 0 && (
-              <div className="table-scroll exposure-responsive-table" role="region" aria-label="Scoped CVE findings table" tabIndex={0}>
-                <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
-                <table className="operations-table exposure-table">
-                  <caption>Authorized findings for {cveId}</caption>
-                  <thead><tr><th>Target</th><th>Kind</th><th>Service</th><th>Severity</th><th>Patch</th><th>Risk status</th></tr></thead>
-                  <tbody>
-                    {rows.map((finding) => (
-                      <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
-                        <td><strong>{finding.server_id || finding.target_id}</strong></td>
-                        <td>{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
-                        <td>{finding.business_service || "Unmapped service"}</td>
-                        <td>{finding.severity || data?.cve.severity || "Unknown"}</td>
-                        <td>
-                          {finding.missing_kb ? (
-                            <Link className="table-primary-link" href={kbHref(finding.missing_kb)}>
-                              {finding.missing_kb}
-                            </Link>
-                          ) : "—"}
-                        </td>
-                        <td>{finding.risk_accepted ? "Risk accepted" : "Open"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <TablePagination
-              mode="cursor"
-              cursor={{
-                total: findingPage?.total_count ?? 0,
-                returnedCount: rows.length,
-                first,
-                last,
-                hasMore: Boolean(findingPage?.next_cursor),
-                hasPrevious: findingState.page > 1,
-                historyDepth: findingState.cursorHistory.length,
-                representedCount: findingPage?.contract.counts.represented,
-              }}
-              busy={findings.refreshing}
-              pageSize={findingState.pageSize}
-              onPageSizeChange={(pageSize) =>
-                setFindingState((current) =>
-                  updateExposureQueryState(current, { pageSize }),
-                )
-              }
-              onPreviousCursor={() =>
-                setFindingState((current) => retreatExposureCursor(current))
-              }
-              onNextCursor={() => {
-                if (findingPage?.next_cursor) {
-                  setFindingState((current) =>
-                    advanceExposureCursor(current, findingPage.next_cursor!),
-                  );
-                }
-              }}
-              label="findings"
-            />
-          </Section>
+                    )
+                  }
+                />
+                {rows.length > 0 && (
+                  <div className="table-scroll exposure-responsive-table" role="region" aria-label="Scoped CVE findings table" tabIndex={0}>
+                    <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
+                    <table className="operations-table exposure-table">
+                      <caption>Authorized findings for {cveId}</caption>
+                      <thead><tr><th>Target</th><th>Kind</th><th>Service</th><th>Severity</th><th>Patch</th><th>Risk status</th></tr></thead>
+                      <tbody>
+                        {rows.map((finding) => (
+                          <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
+                            <td data-label="Target"><strong>{finding.server_id || finding.target_id}</strong></td>
+                            <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
+                            <td data-label="Service">{finding.business_service || "Unmapped service"}</td>
+                            <td data-label="Severity">{finding.severity || data?.cve.severity || "Unknown"}</td>
+                            <td data-label="Patch">
+                              {finding.missing_kb ? (
+                                <Link className="table-primary-link" href={kbHref(finding.missing_kb)}>
+                                  {finding.missing_kb}
+                                </Link>
+                              ) : "—"}
+                            </td>
+                            <td data-label="Risk status">{finding.risk_accepted ? "Risk accepted" : "Open"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <TablePagination
+                  mode="cursor"
+                  cursor={{
+                    total: findingPage?.total_count ?? 0,
+                    returnedCount: rows.length,
+                    first,
+                    last,
+                    hasMore: Boolean(findingPage?.next_cursor),
+                    hasPrevious: findingState.page > 1,
+                    historyDepth: findingState.cursorHistory.length,
+                    representedCount: findingPage?.contract.counts.represented,
+                  }}
+                  busy={findings.refreshing}
+                  pageSize={findingState.pageSize}
+                  onPageSizeChange={(pageSize) =>
+                    setFindingState((current) =>
+                      updateExposureQueryState(current, { pageSize }),
+                    )
+                  }
+                  onPreviousCursor={() =>
+                    setFindingState((current) => retreatExposureCursor(current))
+                  }
+                  onNextCursor={() => {
+                    if (findingPage?.next_cursor) {
+                      setFindingState((current) =>
+                        advanceExposureCursor(current, findingPage.next_cursor!),
+                      );
+                    }
+                  }}
+                  label="findings"
+                />
+              </Section>
 
-          {containerOnly ? (
-            <section role="region" aria-label="Attack path section">
-              <div className="card-header">
-                <h2>Attack path</h2>
-              </div>
-              <StatePanel
-                title="Not applicable"
-                message="Attack paths are not applicable to container image targets."
-                tone="empty"
-              />
-            </section>
-          ) : (
-            <Section
-              label="Attack path"
-              sourceName="Attack path"
-              itemLabel="supported paths"
-              state={attackState}
-            >
-              {attack.data && <AttackPathGraphView graph={attack.data} />}
-            </Section>
-          )}
-
-          <Section label="NVD and CVSS" sourceName="NVD and CVSS" itemLabel="NVD records" state={nvdState}>
-            {data && (
-              <div className="card cvss-radar-card">
-                <div className="card-body">
-                  <strong className="large-value">
-                    {typeof data.cve.cvss?.base_score === "number"
-                      ? `${data.cve.cvss.base_score.toFixed(1)}/10`
-                      : "—"}
-                  </strong>
-                  <p className="cve-description">{data.cve.description || "—"}</p>
+              <Section label="Related KBs" sourceName="MSRC KB mapping" itemLabel="KB mappings" state={kbState}>
+                <div className="exposure-related-links">
+                  {data?.cve.associated_kbs.map((kbId) => (
+                    <Link className="button button-quiet" href={kbHref(kbId)} key={kbId}>
+                      {kbId}
+                    </Link>
+                  ))}
                 </div>
-                {data.cve.cvss?.vector && <CvssRadarChart vector={data.cve.cvss.vector} />}
-              </div>
-            )}
-          </Section>
+              </Section>
 
-          <Section label="EPSS" sourceName="EPSS" itemLabel="EPSS scores" state={epssState}>
-            <MetricCard
-              label="Exploit probability"
-              value={
-                typeof data?.cve.epss_score === "number"
-                  ? data.cve.epss_score * 100
-                  : null
-              }
-              unit="%"
-              detail={
-                typeof data?.cve.epss_percentile === "number"
-                  ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
-                  : "EPSS percentile unavailable"
-              }
-              completeness={metricCompleteness(epssState.status)}
-            />
-          </Section>
-
-          <Section label="CISA KEV" sourceName="CISA KEV" itemLabel="KEV entries" state={kevState}>
-            {data?.cve.is_known_exploited && (
-              <div className="card-body">
-                <StatusBadge label="Known exploited" tone="critical" />
-                <p>Due {data.cve.kev_due_date || "—"}</p>
-                <p>{data.cve.kev_ransomware_use || "Ransomware use unknown"}</p>
-              </div>
-            )}
-          </Section>
-
-          <Section label="KB mapping" sourceName="MSRC KB mapping" itemLabel="KB mappings" state={kbState}>
-            <div className="card-body">
-              {data?.cve.associated_kbs.map((kbId) => (
-                <p key={kbId}>
-                  <Link className="table-primary-link" href={kbHref(kbId)}>{kbId}</Link>
-                </p>
-              ))}
-            </div>
-          </Section>
-        </>
-      )}
+              <Section label="CVSS technical disclosure" sourceName="NVD and CVSS" itemLabel="NVD records" state={nvdState}>
+                {data && (
+                  <div className="card cvss-radar-card">
+                    <div className="card-body">
+                      <strong className="large-value">
+                        {typeof data.cve.cvss?.base_score === "number"
+                          ? `${data.cve.cvss.base_score.toFixed(1)}/10`
+                          : "—"}
+                      </strong>
+                      <p className="cve-description">{data.cve.description || "—"}</p>
+                      <dl className="exposure-technical-list">
+                        <div>
+                          <dt>Version</dt>
+                          <dd>{data.cve.cvss?.version || "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>Vector</dt>
+                          <dd className="cvss-vector-string">{data.cve.cvss?.vector || "—"}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                    {data.cve.cvss?.vector && <CvssRadarChart vector={data.cve.cvss.vector} />}
+                  </div>
+                )}
+              </Section>
+            </>
+          )}
+        </main>
+        <SourceFreshnessRail
+          items={[
+            { key: "exposure", label: "Exposure findings", state: coreState },
+            { key: "attack", label: "Attack path", state: attackState },
+            {
+              key: "nvd",
+              label: "NVD / CVSS",
+              state: nvdState,
+              providerStatus: nvdSource?.status,
+              hasLastKnownGood: nvdSource?.has_last_known_good,
+            },
+            {
+              key: "epss",
+              label: "EPSS",
+              state: epssState,
+              providerStatus: epssSource?.status,
+              hasLastKnownGood: epssSource?.has_last_known_good,
+            },
+            {
+              key: "kev",
+              label: "CISA KEV",
+              state: kevState,
+              providerStatus: kevSource?.status,
+              hasLastKnownGood: kevSource?.has_last_known_good,
+            },
+            {
+              key: "msrc",
+              label: "MSRC",
+              state: kbState,
+              providerStatus: msrcSource?.status,
+              hasLastKnownGood: msrcSource?.has_last_known_good,
+            },
+          ]}
+        />
+      </div>
 
       {data && (
         <RiskExceptionDialog

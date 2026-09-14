@@ -410,8 +410,8 @@ describe("CVE detail", () => {
       ),
     ).toBeInTheDocument();
     expect(within(attack).queryByText("Attack path is unavailable")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/);
-    expect(screen.getByText("Due 2026-08-22")).toBeInTheDocument();
+    expect(screen.getByLabelText("EPSS value")).toHaveTextContent(/73.0\s*%/);
+    expect(screen.getByLabelText("CISA KEV value")).toHaveTextContent("Listed");
     expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
   });
 
@@ -461,6 +461,8 @@ describe("CVE detail", () => {
     expect(
       screen.getByRole("dialog", { name: "Copilot for CVE-2026-0001" }),
     ).toBeInTheDocument();
+    expect(api.exposureExternalCatalog).toHaveBeenCalledTimes(1);
+    expect(api.acceptRisk).not.toHaveBeenCalled();
   });
 
   it("keeps missing EPSS unknown and aggregates all KB source failures", async () => {
@@ -487,11 +489,9 @@ describe("CVE detail", () => {
 
     renderPage();
 
-    expect(
-      await screen.findByText("No EPSS scores reported by EPSS"),
-    ).toBeInTheDocument();
+    expect(await screen.findByLabelText("EPSS value")).toHaveTextContent("—");
     expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
-    const nvd = screen.getByRole("region", { name: "NVD and CVSS section" });
+    const nvd = screen.getByRole("region", { name: "CVSS technical disclosure section" });
     expect(within(nvd).getByText("—", { selector: ".large-value" })).toBeInTheDocument();
     expect(within(nvd).queryByText("0.0/10")).not.toBeInTheDocument();
     expect(screen.getByText("MSRC KB mapping is unavailable")).toBeInTheDocument();
@@ -500,18 +500,43 @@ describe("CVE detail", () => {
   it("renders all six sections with conservative completeness and unknown-safe values", async () => {
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "Scoped findings" })).toBeInTheDocument();
-    for (const heading of ["Attack path", "NVD and CVSS", "EPSS", "CISA KEV", "KB mapping"]) {
+    expect(await screen.findByRole("heading", { name: "Executive risk summary" })).toBeInTheDocument();
+    for (const heading of [
+      "Affected assets and workload coverage",
+      "Risk-specific remediation guidance",
+      "Attack path",
+      "Findings",
+      "Related KBs",
+      "CVSS technical disclosure",
+      "Source freshness",
+    ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
     }
-    expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(6);
-    expect(screen.getAllByText(/2 excluded/).length).toBeGreaterThanOrEqual(6);
-    expect(screen.getAllByText("Defender West connection unavailable").length).toBeGreaterThanOrEqual(6);
-    expect(screen.getByText("9.8/10")).toBeInTheDocument();
-    expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/);
-    expect(screen.getByLabelText("Business services loaded value")).toHaveTextContent(
-      "1 service",
-    );
+    expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/2 excluded/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByLabelText("CVSS value")).toHaveTextContent(/9.8\s*\/10/);
+    expect(screen.getByLabelText("EPSS value")).toHaveTextContent(/73.0\s*%/);
+    expect(screen.getByText("1 mapped service")).toBeInTheDocument();
+  });
+
+  it("keeps the decision hierarchy in accessible reading order", async () => {
+    renderPage();
+
+    await screen.findByRole("heading", { name: "Executive risk summary" });
+    const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
+    const expectedOrder = [
+      "Executive risk summary",
+      "Affected assets and workload coverage",
+      "Risk-specific remediation guidance",
+      "Attack path",
+      "Findings",
+      "Related KBs",
+      "CVSS technical disclosure",
+      "Source freshness",
+    ];
+    const positions = expectedOrder.map((heading) => headings.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
   });
 
   it("keeps scoped core and healthy siblings usable when EPSS is unavailable", async () => {
@@ -519,10 +544,23 @@ describe("CVE detail", () => {
     renderPage();
 
     expect((await screen.findAllByText("server-1")).length).toBeGreaterThan(0);
-    expect(screen.getByText("EPSS is unavailable")).toBeInTheDocument();
-    expect(screen.getByText("9.8/10")).toBeInTheDocument();
-    expect(screen.getByText("Due 2026-08-22")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "EPSS source status" })).toHaveTextContent("Unavailable");
+    expect(screen.getByLabelText("CVSS value")).toHaveTextContent("9.8");
+    expect(screen.getByLabelText("CISA KEV value")).toHaveTextContent("Listed");
     expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
+  });
+
+  it("renders provider-declared partial metadata as partial rather than stale", async () => {
+    const catalog = externalCatalogEnvelope();
+    catalog.data.item.sources.epss.status = "partial";
+    catalog.data.item.sources.epss.has_last_known_good = true;
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+
+    renderPage();
+
+    const epss = await screen.findByRole("region", { name: "EPSS source status" });
+    expect(epss).toHaveTextContent("Partial");
+    expect(epss).not.toHaveTextContent("Last known good");
   });
 
   it("shows local loading, healthy-empty, partial, and stale states without blanking siblings", async () => {
@@ -534,7 +572,7 @@ describe("CVE detail", () => {
 
     expect(await screen.findByText("Loading Attack path")).toBeInTheDocument();
     expect(screen.getByText("Unavailable operational context")).toBeInTheDocument();
-    expect(screen.getByText("No KEV entries reported by CISA KEV")).toBeInTheDocument();
+    expect(screen.getByLabelText("CISA KEV value")).toHaveTextContent("Not listed");
     expect(screen.getAllByText("server-1").length).toBeGreaterThan(0);
     await act(async () => {
       attackPending.resolve(attackEnvelope());
@@ -616,7 +654,7 @@ describe("CVE detail", () => {
     const user = userEvent.setup();
     renderPage();
 
-    const epss = await screen.findByRole("region", { name: "EPSS section" });
+    const epss = await screen.findByRole("region", { name: "EPSS source status" });
     const retry = within(epss).getByRole("button", { name: "Retry EPSS" });
     retry.focus();
     const recovery = deferred<ReturnType<typeof externalCatalogEnvelope>>();
@@ -628,7 +666,7 @@ describe("CVE detail", () => {
     });
     recovery.resolve(externalCatalogEnvelope());
     await waitFor(() =>
-      expect(screen.getByLabelText("Exploit probability value")).toHaveTextContent(/73\s*%/),
+      expect(screen.getByLabelText("EPSS value")).toHaveTextContent(/73.0\s*%/),
     );
   });
 
@@ -696,7 +734,7 @@ describe("CVE detail", () => {
   it("reports an audited success separately when post-record refresh fails", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByRole("heading", { name: "Scoped findings" });
+    await screen.findByRole("heading", { name: "Findings" });
     api.acceptRisk.mockResolvedValueOnce({
       data: {
         exception_id: "AUD-25",

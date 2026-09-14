@@ -493,6 +493,27 @@ def test_kb_detail_proves_silver_membership_and_merges_exact_catalog_records() -
                     },
                 },
             },
+            {
+                "source": "epss",
+                "identifier": identifier,
+                "status": "succeeded",
+                "stale": False,
+                "payload": {
+                    "epss_score": 0.73,
+                    "epss_percentile": 0.92,
+                },
+            },
+            {
+                "source": "kev",
+                "identifier": identifier,
+                "status": "succeeded",
+                "stale": False,
+                "payload": {
+                    "kev_date_added": "2026-08-01",
+                    "kev_due_date": "2026-08-22",
+                    "kev_ransomware_use": "Known",
+                },
+            },
         )
 
     detail = ExposureQueryService(
@@ -512,11 +533,17 @@ def test_kb_detail_proves_silver_membership_and_merges_exact_catalog_records() -
     assert detail["published_at"] == "2026-08-01"
     assert detail["cve_ids"] == ["CVE-2026-0001"]
     assert detail["cves"][0]["cvss"]["base_score"] == 9.8
+    assert detail["cves"][0]["epss_score"] == pytest.approx(0.73)
+    assert detail["cves"][0]["epss_percentile"] == pytest.approx(0.92)
+    assert detail["cves"][0]["is_known_exploited"] is True
+    assert detail["cves"][0]["kev_due_date"] == "2026-08-22"
     assert detail["affected_servers"] == []
     assert detail["affected_server_count"] == 0
     assert detail["affected_servers_truncated"] is False
     assert detail["enrichment"]["sources"]["msrc:KB6000001"]["status"] == "succeeded"
     assert detail["enrichment"]["sources"]["nvd:CVE-2026-0001"]["status"] == "succeeded"
+    assert detail["enrichment"]["sources"]["epss:CVE-2026-0001"]["status"] == "succeeded"
+    assert detail["enrichment"]["sources"]["kev:CVE-2026-0001"]["status"] == "succeeded"
     assert detail["enrichment"]["complete"] is True
     assert requested == ["KB6000001", "CVE-2026-0001"]
     assert len(reader.calls) == 2
