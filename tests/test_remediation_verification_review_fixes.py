@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -355,7 +356,13 @@ def test_target_evidence_refresher_distinguishes_observed_from_absent_targets(
     )
 
     def _fake_live_vulnerability_service(
-        live_resources, *, subscription_ids, semantic=None, network=None, build_service
+        live_resources,
+        *,
+        subscription_ids,
+        semantic=None,
+        network=None,
+        build_service,
+        snapshot=None,
     ):
         return VulnerabilityIntelligenceService.from_rows(
             findings=[
@@ -378,6 +385,21 @@ def test_target_evidence_refresher_distinguishes_observed_from_absent_targets(
 
     monkeypatch.setattr(
         "api.runtime.live_vulnerability_service", _fake_live_vulnerability_service
+    )
+    monkeypatch.setattr(
+        "api.runtime._enrichment_cache",
+        lambda _name: SimpleNamespace(
+            get_entry=lambda _key: (
+                True,
+                {
+                    "schema_version": "1.0.0",
+                    "subscription_ids": ["sub-1"],
+                    "observed_at": "2026-09-04T12:00:00Z",
+                    "findings": [],
+                },
+                0.0,
+            )
+        ),
     )
 
     context = build_context()
