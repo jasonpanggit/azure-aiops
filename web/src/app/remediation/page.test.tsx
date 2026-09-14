@@ -1173,7 +1173,7 @@ describe("Phase 03.5 CR-05: stable per-role attestation in the approval UI", () 
     fireEvent.change(screen.getByLabelText("Expires"), { target: { value: "2026-12-31" } });
     expect(screen.getByRole("button", { name: "Record decision" })).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText(/Required role this decision is for/), {
+    fireEvent.change(screen.getByLabelText(/^Role for this decision/), {
       target: { value: "security-review:security-response-owner" },
     });
     expect(screen.getByRole("button", { name: "Record decision" })).toBeEnabled();
