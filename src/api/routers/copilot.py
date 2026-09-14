@@ -182,13 +182,13 @@ def _validated_or_derived_network_hint(
     """Validate or derive selected-VNet dependency intent without widening."""
 
     hint = payload.hint
-    is_hub_hint = (
-        hint is not None
-        and hint.specialist_id == "network"
-        and hint.tool == "hub_dependents"
-    )
+    is_hub_hint = hint is not None and hint.tool == "hub_dependents"
     if hint is not None and not is_hub_hint:
         return hint
+    if is_hub_hint and hint.specialist_id != "network":
+        raise ValueError(
+            "hub_dependents hint requires the network specialist"
+        )
     if (
         snapshot.page_kind != "network"
         or snapshot.page_id.casefold() != "network-topology"

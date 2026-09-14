@@ -1460,7 +1460,8 @@ def test_shadow_endpoint_reports_canonical_policy_fallback_without_duplicate_io(
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
     body = _network_hub_canonical_body()
     body["hint"]["specialist_id"] = "vulnerability"
-    vnet_id = body["hint"]["arguments"]["vnet_id"]
+    body["hint"]["tool"] = "network_topology"
+    body["hint"]["arguments"] = {}
     tool_calls: list[tuple[str, dict[str, object]]] = []
 
     def durable_network_tool(name, arguments, **_kwargs):
@@ -1491,7 +1492,7 @@ def test_shadow_endpoint_reports_canonical_policy_fallback_without_duplicate_io(
 
     assert response.status_code == 200, response.text
     rollout = response.json()["data"]["rollout"]
-    assert tool_calls == [("hub_dependents", {"vnet_id": vnet_id})]
+    assert tool_calls == [("network_topology", {})]
     assert rollout["shadow_validated"] is False
     assert rollout["shadow_reason"].startswith("candidate_rejected:")
     assert rollout["comparison"]["canonical"]["policy_status"] == "fallback"
@@ -1546,7 +1547,15 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
 
 
 @pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
-@pytest.mark.parametrize("binding_variant", ["mismatched_hint", "selected_domain"])
+@pytest.mark.parametrize(
+    "binding_variant",
+    [
+        "mismatched_hint",
+        "mismatched_specialist",
+        "mismatched_specialist_and_hint",
+        "selected_domain",
+    ],
+)
 def test_explicit_network_hint_must_match_exactly_one_selected_vnet(
     tmp_path,
     monkeypatch,
@@ -1556,6 +1565,14 @@ def test_explicit_network_hint_must_match_exactly_one_selected_vnet(
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     body = _network_hub_canonical_body()
     if binding_variant == "mismatched_hint":
+        body["hint"]["arguments"]["vnet_id"] = (
+            "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+            "Microsoft.Network/virtualNetworks/other-vnet"
+        )
+    elif binding_variant == "mismatched_specialist":
+        body["hint"]["specialist_id"] = "vulnerability"
+    elif binding_variant == "mismatched_specialist_and_hint":
+        body["hint"]["specialist_id"] = "vulnerability"
         body["hint"]["arguments"]["vnet_id"] = (
             "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
             "Microsoft.Network/virtualNetworks/other-vnet"
