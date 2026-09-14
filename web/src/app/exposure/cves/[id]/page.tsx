@@ -844,64 +844,64 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                       {data?.cve.description ||
                         "Risk detail is limited until durable NVD metadata is available."}
                     </p>
-                    <div className="exposure-key-facts" aria-label="Key vulnerability facts">
-                      <MetricCard
-                        label="CVSS"
-                        value={
-                          typeof data?.cve.cvss?.base_score === "number"
-                            ? data.cve.cvss.base_score.toFixed(1)
-                            : null
-                        }
-                        unit="/10"
-                        detail={data?.cve.cvss?.severity || "Base score unavailable"}
-                        completeness={metricCompleteness(nvdState.status)}
-                      />
-                      <MetricCard
-                        label="EPSS"
-                        value={
-                          typeof data?.cve.epss_score === "number"
-                            ? (data.cve.epss_score * 100).toFixed(1)
-                            : null
-                        }
-                        unit="%"
-                        detail={
-                          typeof data?.cve.epss_percentile === "number"
-                            ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
-                            : "Exploit probability unavailable"
-                        }
-                        completeness={metricCompleteness(epssState.status)}
-                      />
-                      <MetricCard
-                        label="CISA KEV"
-                        value={
-                          data?.cve.is_known_exploited === true
-                            ? "Listed"
-                            : kevState.status === "healthy-empty"
-                              ? "Not listed"
-                              : null
-                        }
-                        detail={
-                          data?.cve.kev_due_date
-                            ? `Due ${data.cve.kev_due_date}`
-                            : "Catalog disposition only"
-                        }
-                        size="text"
-                        completeness={metricCompleteness(kevState.status)}
-                      />
-                      <MetricCard
-                        label="Active exposure"
-                        value={representedTargets ?? null}
-                        unit="targets"
-                        detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
-                        completeness={metricCompleteness(coreState.status)}
-                      />
-                    </div>
                   </div>
                   {data?.cve.cvss?.vector && (
                     <div className="exposure-summary-radar">
                       <CvssRadarChart vector={data.cve.cvss.vector} radius={68} />
                     </div>
                   )}
+                </div>
+                <div className="exposure-key-facts" aria-label="Key vulnerability facts">
+                  <MetricCard
+                    label="CVSS"
+                    value={
+                      typeof data?.cve.cvss?.base_score === "number"
+                        ? data.cve.cvss.base_score.toFixed(1)
+                        : null
+                    }
+                    unit="/10"
+                    detail={data?.cve.cvss?.severity || "Base score unavailable"}
+                    completeness={metricCompleteness(nvdState.status)}
+                  />
+                  <MetricCard
+                    label="EPSS"
+                    value={
+                      typeof data?.cve.epss_score === "number"
+                        ? (data.cve.epss_score * 100).toFixed(1)
+                        : null
+                    }
+                    unit="%"
+                    detail={
+                      typeof data?.cve.epss_percentile === "number"
+                        ? `${(data.cve.epss_percentile * 100).toFixed(0)}th percentile`
+                        : "Exploit probability unavailable"
+                    }
+                    completeness={metricCompleteness(epssState.status)}
+                  />
+                  <MetricCard
+                    label="CISA KEV"
+                    value={
+                      data?.cve.is_known_exploited === true
+                        ? "Listed"
+                        : kevState.status === "healthy-empty"
+                          ? "Not listed"
+                          : null
+                    }
+                    detail={
+                      data?.cve.kev_due_date
+                        ? `Due ${data.cve.kev_due_date}`
+                        : "Catalog disposition only"
+                    }
+                    size="text"
+                    completeness={metricCompleteness(kevState.status)}
+                  />
+                  <MetricCard
+                    label="Active exposure"
+                    value={representedTargets ?? null}
+                    unit="targets"
+                    detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
+                    completeness={metricCompleteness(coreState.status)}
+                  />
                 </div>
               </section>
 
