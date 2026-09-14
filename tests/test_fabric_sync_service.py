@@ -1833,6 +1833,7 @@ def test_partial_patch_checkpoint_restarts_entire_barrier_group(
         datasets = original_load(*args, **kwargs)
         content = {
             "source_generation": "source-run-1",
+            "replaces_legacy_connection_id": "",
             "status": "succeeded",
             "completeness": "healthy-empty",
             "freshness": "fresh",
@@ -1930,6 +1931,7 @@ def test_patch_reset_restore_commit_gap_reconciles_new_version_fence(
         datasets = original_load(*args, **kwargs)
         content = {
             "source_generation": "source-run-1",
+            "replaces_legacy_connection_id": "",
             "status": "succeeded",
             "completeness": "healthy-empty",
             "freshness": "fresh",
