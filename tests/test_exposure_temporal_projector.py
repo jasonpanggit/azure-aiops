@@ -897,9 +897,9 @@ def test_project_all_incremental_cold_starts_new_keys_and_folds_existing() -> No
     full_by_key = {item.current_key: item for item in full_replay}
     incremental_by_key = {item.current_key: item for item in incremental}
     assert set(full_by_key) == set(incremental_by_key)
-    for key in full_by_key:
+    for key, full_current in full_by_key.items():
         _assert_current_equal_ignoring_generation(
-            full_by_key[key], incremental_by_key[key]
+            full_current, incremental_by_key[key]
         )
 
 
