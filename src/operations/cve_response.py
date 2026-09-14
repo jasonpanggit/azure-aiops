@@ -157,26 +157,30 @@ def deterministic_cve_narrative(
     nvd_record = next(iter(sources.get("nvd", ())), {})
     epss_record = next(iter(sources.get("epss", ())), {})
     kev_record = next(iter(sources.get("kev", ())), {})
-    nvd = _mapping(nvd_record.get("payload"))
-    epss = _mapping(epss_record.get("payload"))
+    nvd_current = bool(nvd_record and _source_is_current(nvd_record))
+    epss_current = bool(epss_record and _source_is_current(epss_record))
+    nvd = _mapping(nvd_record.get("payload")) if nvd_current else {}
+    epss = _mapping(epss_record.get("payload")) if epss_current else {}
     kev = _mapping(kev_record.get("payload"))
 
-    cvss = _mapping(nvd.get("cvss")) or _mapping(legacy_cve.get("cvss"))
+    cvss = _mapping(nvd.get("cvss")) or (
+        _mapping(legacy_cve.get("cvss")) if not nvd_record else {}
+    )
     severity = (
         _text(nvd.get("severity"))
         or _text(cvss.get("severity"))
-        or _text(legacy_cve.get("severity"))
+        or (_text(legacy_cve.get("severity")) if not nvd_record else "")
     )
-    description = _text(nvd.get("description")) or _text(
-        legacy_cve.get("description")
+    description = _text(nvd.get("description")) or (
+        _text(legacy_cve.get("description")) if not nvd_record else ""
     )
     base_score = _number(cvss.get("base_score"))
     vector = _text(cvss.get("vector"))
     epss_score = _number(epss.get("epss_score"))
-    if epss_score is None:
+    if epss_score is None and not epss_record:
         epss_score = _number(legacy_cve.get("epss_score"))
     epss_percentile = _number(epss.get("epss_percentile"))
-    if epss_percentile is None:
+    if epss_percentile is None and not epss_record:
         epss_percentile = _number(legacy_cve.get("epss_percentile"))
 
     known: list[str] = []
@@ -255,17 +259,19 @@ def deterministic_cve_narrative(
         for value in _sequence(nvd.get("associated_kbs"))
         if _text(value)
     }
-    associated_kbs.update(
-        _text(value).upper()
-        for value in _sequence(legacy_cve.get("associated_kbs"))
-        if _text(value)
-    )
+    if not nvd_record:
+        associated_kbs.update(
+            _text(value).upper()
+            for value in _sequence(legacy_cve.get("associated_kbs"))
+            if _text(value)
+        )
     for record in sources.get("msrc", ()):
         payload = _mapping(record.get("payload"))
-        kb_id = _text(payload.get("kb_id") or record.get("identifier")).upper()
-        if kb_id:
-            associated_kbs.add(kb_id)
-        if not _source_is_current(record):
+        if _source_is_current(record):
+            kb_id = _text(payload.get("kb_id") or record.get("identifier")).upper()
+            if kb_id:
+                associated_kbs.add(kb_id)
+        else:
             unknowns.append(_source_gap("msrc", record))
     if associated_kbs:
         known.append(
@@ -307,7 +313,13 @@ def deterministic_cve_narrative(
     if active_count is None and known_activity:
         active_count = sum(state == "active" for state in known_activity)
 
-    if scoped_status in {"ok", "partial"} or rows or total_count is not None:
+    scoped_empty = scoped_status == "empty"
+    if scoped_empty:
+        known.append(
+            f"The authenticated scoped Exposure query reports no scoped findings "
+            f"for {cve_id}; the submitted page snapshot may be stale."
+        )
+    elif scoped_status in {"ok", "partial"} or rows or total_count is not None:
         coverage_text = (
             f"The current scope contains **{total_count}** matching findings; "
             f"**{returned_count} records were inspected**."
@@ -383,22 +395,16 @@ def deterministic_cve_narrative(
         coverage = _mapping(snapshot_coverage)
         visible = _count(coverage.get("visible_count"))
         total = _count(coverage.get("total_count"))
-        if scoped_status == "empty":
-            known.append(
-                f"The authenticated scoped Exposure query reports no findings for "
-                f"{cve_id}."
-            )
-        else:
+        unknowns.append(
+            f"The current evidence cannot determine whether {cve_id} affects "
+            "resources in this scope because scoped exposure and affected active "
+            "finding counts are unavailable."
+        )
+        if visible is not None or total is not None:
             unknowns.append(
-                f"The current evidence cannot determine whether {cve_id} affects "
-                "resources in this scope because scoped exposure and affected active "
-                "finding counts are unavailable."
+                "The page snapshot is retained only as non-authoritative visible "
+                f"context ({visible or 0} visible of {total or 0} reported)."
             )
-            if visible is not None or total is not None:
-                unknowns.append(
-                    "The page snapshot is retained only as non-authoritative visible "
-                    f"context ({visible or 0} visible of {total or 0} reported)."
-                )
 
     for source, status in sorted((source_statuses or {}).items()):
         normalized_source = _text(source).casefold()
@@ -415,32 +421,32 @@ def deterministic_cve_narrative(
         )
 
     recommended_patch = _text(legacy.get("recommended_patch"))
-    if kev_listed:
+    if kev_listed and not scoped_empty:
         due = _text(kev.get("kev_due_date"))
         recommendations.append(
             "Prioritize governed remediation for the known-exploited CVE"
             + (f" before the KEV due date {due}" if due else "")
             + "; validate the fix before rollout."
         )
-    if epss_score is not None and epss_score >= 0.5:
+    if epss_score is not None and epss_score >= 0.5 and not scoped_empty:
         recommendations.append(
             f"Treat the {_percent(epss_score)}% EPSS probability as elevated and "
             "prioritize active, reachable, or internet-exposed targets."
         )
-    if base_score is not None and base_score >= 9:
+    if base_score is not None and base_score >= 9 and not scoped_empty:
         recommendations.append(
             f"Treat CVSS {base_score:g} as critical remediation priority; verify "
             "the vendor-fixed package/version, rebuild affected images where "
             "applicable, and validate replacement deployment."
         )
-    if associated_kbs:
+    if associated_kbs and not scoped_empty:
         recommendations.append(
             "Validate the applicable associated update"
             f"{'s' if len(associated_kbs) != 1 else ''} "
             f"({', '.join(sorted(associated_kbs))}) through the governed remediation "
             "workflow."
         )
-    elif recommended_patch:
+    elif recommended_patch and not scoped_empty:
         recommendations.append(
             f"Validate the scoped recommended fix `{recommended_patch}` before "
             "deployment."
@@ -453,12 +459,16 @@ def deterministic_cve_narrative(
         and not kev_listed
         and base_score is not None
         and base_score >= 9
+        and not scoped_empty
     ):
         recommendations.append(
             "Do not treat the current low EPSS score and absent KEV listing as "
             "absence of risk; keep priority aligned to the critical CVSS impact."
         )
-    if any("workload impact is unknown" in item.casefold() for item in unknowns):
+    if (
+        not scoped_empty
+        and any("workload impact is unknown" in item.casefold() for item in unknowns)
+    ):
         if target_kinds == {"container_image"}:
             recommendations.append(
                 "Map the affected image digests to deployed workloads before "
@@ -474,13 +484,18 @@ def deterministic_cve_narrative(
                 "Map affected targets to deployed workloads before assigning "
                 "production impact."
             )
-    if total_count is not None and returned_count < total_count:
+    if not scoped_empty and total_count is not None and returned_count < total_count:
         recommendations.append(
             f"Inspect the remaining {total_count - returned_count} scoped findings "
             "through bounded pagination before declaring environment coverage complete."
         )
     if not recommendations:
-        if scoped_status not in {"ok", "partial", "empty"} and not rows:
+        if scoped_empty:
+            recommendations.append(
+                "No scoped remediation target is established; continue monitoring "
+                "the current CVE metadata and Exposure generation."
+            )
+        elif scoped_status not in {"ok", "partial"} and not rows:
             recommendations.append(
                 "Restore the scoped Exposure query and unavailable external metadata "
                 "before assigning impact or approving remediation."

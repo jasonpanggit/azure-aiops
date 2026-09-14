@@ -94,7 +94,7 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
 
         def catalog_item(self, authorization, *, generation_id, weakness_id):
             assert authorization == "authorized"
-            assert generation_id is None
+            assert generation_id == "generation-1"
             requested.append(weakness_id)
             return {
                 "contract_version": "1.0.0",
@@ -122,7 +122,7 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
 
         def list_page(self, authorization, *, generation_id, query):
             assert authorization == "authorized"
-            assert generation_id is None
+            assert generation_id == "generation-1"
             filters = {item.field: item.value for item in query.filters}
             assert filters["weakness_id"] == "CVE-2026-59873"
             active_only = filters.get("active") is True
@@ -151,6 +151,9 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
                 freshness={"state": "fresh", "as_of": "2026-09-14T00:00:00Z"},
             )
 
+        def readable_generation_id(self):
+            return "generation-1"
+
     context = SimpleNamespace(
         provider_runtime=None,
         generation_resolver_provider=None,
@@ -178,6 +181,122 @@ def test_cve_detail_prefers_live_durable_external_catalog() -> None:
     assert result.data["scoped_exposure"]["affected_active_count"] == 32
     assert result.data["source_state"]["external_catalog"]["status"] == "ok"
     assert result.data["source_state"]["scoped_exposure"]["status"] == "ok"
+
+
+def test_cve_exposure_read_port_filters_exact_cve_and_active_rows() -> None:
+    class ReadPort:
+        def list_exposures(self, scope, *, offset, limit, business_service):
+            assert scope.values("subscription") == frozenset({"sub-a"})
+            assert (offset, limit, business_service) == (0, 25, None)
+            return {
+                "findings": [
+                    {
+                        "exposure_id": "wanted-active",
+                        "weakness_id": "CVE-2026-13221",
+                        "current_state": "active",
+                        "severity": "Critical",
+                    },
+                    {
+                        "exposure_id": "wanted-inactive",
+                        "weakness_id": "CVE-2026-13221",
+                        "current_state": "resolved",
+                        "severity": "Critical",
+                    },
+                    {
+                        "exposure_id": "other-cve",
+                        "weakness_id": "CVE-2026-99999",
+                        "current_state": "active",
+                        "severity": "Critical",
+                    },
+                ],
+                "returned_count": 3,
+                "total_count": 300,
+                "read_model_generation_id": "generation-1",
+                "completeness": {
+                    "state": "complete",
+                    "represented_count": 3,
+                    "total_count": 3,
+                    "excluded_count": 0,
+                },
+                "freshness_state": "fresh",
+                "freshness_as_of": "2026-09-14T00:00:00Z",
+            }
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        exposure_query_provider=None,
+        exposure_read_port_provider=lambda: ReadPort(),
+        resolve_provider=lambda _name: None,
+    )
+    result = call_tool(
+        "cve_exposure",
+        {
+            "query": "CVE-2026-13221",
+            "active": True,
+            "generation": "generation-1",
+        },
+        context=context,
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+    )
+
+    assert result.status == STATUS_OK
+    assert result.data["returned_count"] == result.data["total_count"] == 1
+    assert [row["exposure_id"] for row in result.data["findings"]] == [
+        "wanted-active"
+    ]
+    assert "other-cve" not in str(result.data)
+
+
+def test_cve_detail_rejects_mixed_generation_results() -> None:
+    class QueryService:
+        def authorization_for(self, principal, scope):
+            return "authorized"
+
+        def readable_generation_id(self):
+            return "generation-1"
+
+        def list_page(self, authorization, *, generation_id, query):
+            return SimpleNamespace(
+                total_count=1,
+                items=(
+                    {
+                        "weakness_id": "CVE-2026-13221",
+                        "current_state": "active",
+                    },
+                ),
+                next_cursor=None,
+                generation="generation-2",
+                applied_scope={"subscription": ["sub-a"]},
+                applied_filters=(),
+                applied_sort={"field": "priority_score", "direction": "desc"},
+                facets={},
+                completeness={"state": "complete"},
+                freshness={"state": "fresh"},
+            )
+
+        def catalog_item(self, authorization, *, generation_id, weakness_id):
+            return {
+                "generation": "generation-1",
+                "item": {"cve_id": weakness_id, "sources": {}},
+            }
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        exposure_query_provider=lambda: QueryService(),
+        resolve_provider=lambda _name: None,
+    )
+    result = call_tool(
+        "cve_detail",
+        {"cve_id": "CVE-2026-13221"},
+        context=context,
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+        principal=SimpleNamespace(subject="operator@example.com"),
+    )
+
+    assert result.status == "unavailable"
+    assert "generation changed" in result.warning
 
 
 def test_g6_stays_silent_when_agent_lists_are_complete() -> None:
