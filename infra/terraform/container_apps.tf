@@ -740,6 +740,8 @@ resource "azurerm_container_app_job" "patch_publication" {
         "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections",
         "--source-root",
         "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/patch-publication-source",
+        "--managed-identity-client-id",
+        azurerm_user_assigned_identity.ontology_publisher.client_id,
       ]
 
       env {

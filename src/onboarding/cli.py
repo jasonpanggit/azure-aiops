@@ -88,6 +88,10 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         "--source-root",
         default=os.environ.get("AIOPS_PATCH_SOURCE_ROOT", ""),
     )
+    patch_publish.add_argument(
+        "--managed-identity-client-id",
+        default=os.environ.get("AZURE_CLIENT_ID", ""),
+    )
 
     ontology = actions.add_parser("ontology", help="Query the Fabric Operational Context Graph")
     ontology.add_argument("question")
@@ -279,6 +283,7 @@ def cli_command(args: argparse.Namespace) -> int:
                 args.fabric_config,
                 connection_home=args.connection_home,
                 source_root=args.source_root,
+                managed_identity_client_id=args.managed_identity_client_id,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             reason_code = (

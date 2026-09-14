@@ -17,7 +17,8 @@ python -m onboarding.cli patch-publish \
   --config /app/config.yaml \
   --fabric-config /app/fabric.config.yaml \
   --connection-home <onelake-files-root>/aiops/connections \
-  --source-root <onelake-files-root>/aiops/patch-publication-source
+  --source-root <onelake-files-root>/aiops/patch-publication-source \
+  --managed-identity-client-id <publisher-uami-client-id>
 ```
 
 The connection home is the API-owned registry root. Connection snapshots are
@@ -26,7 +27,11 @@ deployed layout this is `aiops/connections/connections/demo`). The distinct
 source root owns only the idempotent combined snapshot consumed by the Patch
 publisher. Production rejects missing, local, or aliased roots before reading
 or writing. Local configurations may retain config-derived roots for tests and
-development. The writer then calls `FabricSyncService.sync_patch_tables`; it
+development. Production also requires the publisher UAMI client ID and
+overrides only `fabric.auth.managed_identity_client_id` from the baked API
+configuration. It never attaches or selects the API/apps identity. Local
+service-principal configurations remain unchanged. The writer then calls
+`FabricSyncService.sync_patch_tables`; it
 does not run live Azure discovery, build ontology, project Gold Exposure
 tables, or advance the Gold pointer.
 
