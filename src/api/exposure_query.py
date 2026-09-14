@@ -756,6 +756,25 @@ class ExposureQueryService:
                 )
         return authorization
 
+    def readable_generation_id(self) -> str:
+        """Resolve the active readable Exposure generation once for a request."""
+
+        window = (
+            self._generation_window()
+            if callable(self._generation_window)
+            else self._generation_window
+        )
+        if not isinstance(window, ExposureGenerationWindow):
+            raise ExposureQueryUnavailableError(
+                "Exposure readable generation is unavailable"
+            )
+        generation = str(window.active_generation or "").strip()
+        if not generation:
+            raise ExposureQueryUnavailableError(
+                "Exposure readable generation is unavailable"
+            )
+        return generation
+
     def active_provenance_evidence(
         self,
         authorization: ExposureAuthorization,

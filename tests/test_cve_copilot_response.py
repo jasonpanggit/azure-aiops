@@ -222,3 +222,75 @@ def test_mismatched_cve_payload_is_never_narrated() -> None:
     )
 
     assert response == ""
+
+
+def test_stale_last_known_good_payload_is_not_presented_as_current() -> None:
+    cve_id = "CVE-2026-66666"
+    exposure = _exposure(cve_id, represented_workloads=1)
+    detail = _detail(
+        cve_id,
+        {
+            "nvd": _source(
+                "nvd",
+                {
+                    "description": "Stale description",
+                    "severity": "Critical",
+                    "cvss": {
+                        "base_score": 9.9,
+                        "vector": "CVSS:3.1/STALE",
+                        "severity": "Critical",
+                    },
+                    "associated_kbs": ["KBSTALE"],
+                },
+                status="failed",
+                stale=True,
+            ),
+            "epss": _source(
+                "epss",
+                {"epss_score": 0.99, "epss_percentile": 0.999},
+                status="failed",
+                stale=True,
+            ),
+            "msrc:KBSTALE": {
+                **_source(
+                    "msrc",
+                    {"kb_id": "KBSTALE", "title": "Stale update"},
+                    status="failed",
+                    stale=True,
+                ),
+                "identifier": "KBSTALE",
+            },
+        },
+        exposure,
+    )
+
+    response = deterministic_cve_narrative(cve_id, detail_data=detail)
+
+    assert "Stale description" not in response
+    assert "CVSS 9.9" not in response
+    assert "99%" not in response
+    assert "Associated Microsoft security update" not in response
+    assert "KBSTALE" not in response
+    assert "only last-known-good metadata is retained" in response
+    assert "critical remediation priority" not in response
+    assert "EPSS probability as elevated" not in response
+
+
+def test_explicit_empty_scope_suppresses_workload_and_target_actions() -> None:
+    cve_id = "CVE-2026-77777"
+    response = deterministic_cve_narrative(
+        cve_id,
+        exposure_data={
+            "query_cve_id": cve_id,
+            "total_count": 0,
+            "returned_count": 0,
+            "items": [],
+        },
+        exposure_status="empty",
+    )
+
+    assert "no scoped findings for CVE-2026-77777" in response
+    assert "running workload impact" not in response
+    assert "Map affected" not in response
+    assert "affected scoped targets" not in response
+    assert "No scoped remediation target is established" in response

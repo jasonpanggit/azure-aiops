@@ -680,11 +680,46 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
             limit=_MAX_ITEMS,
             business_service=business_service or None,
         )
-        if not page["findings"]:
+        weakness_id = canonical_cve_id(args.get("query"))
+        expected_active = (
+            args.get("active") if isinstance(args.get("active"), bool) else None
+        )
+        rows = [
+            row
+            for row in page["findings"]
+            if (
+                not weakness_id
+                or canonical_cve_id(
+                    row.get("weakness_id") or row.get("cve_id")
+                )
+                == weakness_id
+            )
+            and (
+                expected_active is None
+                or (
+                    str(row.get("current_state") or "").strip().casefold()
+                    == "active"
+                )
+                is expected_active
+            )
+        ]
+        if not rows:
             return ToolResult(status=STATUS_EMPTY)
         generation_id = str(page.get("read_model_generation_id") or "")
+        requested_generation = str(args.get("generation") or "").strip()
+        if requested_generation and generation_id != requested_generation:
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="The Exposure read generation changed during the CVE query",
+            )
+        filtered_page = {
+            **page,
+            "findings": rows,
+            "returned_count": len(rows),
+            "total_count": len(rows),
+        }
         common_page = exposure_page_from_read_port(
-            page,
+            filtered_page,
             scope=tool_context.scope,
             filters=(
                 ExposureFilter(
@@ -698,7 +733,7 @@ def _tool_cve_exposure(tool_context: ToolContext, args: Mapping[str, Any]) -> To
             sort={"field": "exposure_id", "direction": "asc"},
         )
         payload = {
-            **page,
+            **filtered_page,
             "contract": common_page.contract_data(),
         }
         return ToolResult(
@@ -791,10 +826,47 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
     if not cve_id:
         return ToolResult(status=STATUS_EMPTY, warning="A CVE id is required")
 
-    exposure_result = _tool_cve_exposure(tool_context, {"query": cve_id})
+    query_service = None
+    authorization = None
+    generation_id = ""
+    query_provider = getattr(
+        tool_context.context,
+        "exposure_query_provider",
+        None,
+    )
+    if callable(query_provider) and tool_context.principal is not None:
+        try:
+            query_service = query_provider()
+            authorization = query_service.authorization_for(
+                tool_context.principal,
+                tool_context.scope,
+            )
+            generation_id = query_service.readable_generation_id()
+        except PermissionError:
+            return ToolResult(
+                status=STATUS_DENIED,
+                warning="CVE detail is outside the authenticated scope",
+            )
+        except (
+            LookupError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+        ) as exc:
+            _LOGGER.warning("external_cve_generation_failed error=%s", exc)
+            query_service = None
+            authorization = None
+            generation_id = ""
+
+    generation_args = {"generation": generation_id} if generation_id else {}
+    exposure_result = _tool_cve_exposure(
+        tool_context,
+        {"query": cve_id, **generation_args},
+    )
     active_result = _tool_cve_exposure(
         tool_context,
-        {"query": cve_id, "active": True},
+        {"query": cve_id, "active": True, **generation_args},
     )
     exposure_data = (
         dict(exposure_result.data)
@@ -811,21 +883,11 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
     catalog: Mapping[str, Any] | None = None
     catalog_status = STATUS_EMPTY
     catalog_warning = ""
-    query_provider = getattr(
-        tool_context.context,
-        "exposure_query_provider",
-        None,
-    )
-    if callable(query_provider) and tool_context.principal is not None:
+    if query_service is not None and authorization is not None and generation_id:
         try:
-            query_service = query_provider()
-            authorization = query_service.authorization_for(
-                tool_context.principal,
-                tool_context.scope,
-            )
             catalog = query_service.catalog_item(
                 authorization,
-                generation_id=None,
+                generation_id=generation_id,
                 weakness_id=cve_id,
             )
         except PermissionError:
@@ -845,6 +907,27 @@ def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> Tool
             catalog_warning = "The durable external CVE catalog failed to answer"
         else:
             if catalog is not None:
+                observed_generations = {
+                    str(value or "").strip()
+                    for value in (
+                        exposure_data.get("generation")
+                        if exposure_data is not None
+                        else "",
+                        active_result.data.get("generation")
+                        if isinstance(active_result.data, Mapping)
+                        else "",
+                        catalog.get("generation"),
+                    )
+                    if str(value or "").strip()
+                }
+                if observed_generations != {generation_id}:
+                    return ToolResult(
+                        status=STATUS_UNAVAILABLE,
+                        warning=(
+                            "The Exposure generation changed during the CVE detail "
+                            "query"
+                        ),
+                    )
                 catalog_status = STATUS_OK
 
     if catalog is not None:
