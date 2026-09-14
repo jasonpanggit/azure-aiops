@@ -32,6 +32,7 @@ def run_patch_publication(
     *,
     connection_home: str | Path = "",
     source_root: str | Path = "",
+    managed_identity_client_id: str = "",
 ) -> dict[str, Any]:
     """Publish Patch data from explicit, isolated production roots."""
     connector_config = ConnectorConfig.load(connector_config_path)
@@ -41,6 +42,11 @@ def run_patch_publication(
         fabric_config,
         connection_home=connection_home,
         source_root=source_root,
+    )
+    fabric_config = _publisher_config(
+        fabric_config,
+        source_root=combined_root,
+        managed_identity_client_id=managed_identity_client_id,
     )
     sources = _PatchSnapshotSources(
         registry=ConnectionRegistry(str(connection_root)),
@@ -60,7 +66,6 @@ def run_patch_publication(
     source_run_id = str(combined_manifest.get("runId") or "")
     if not source_run_id:
         raise RuntimeError("Combined patch source generation is unavailable")
-    fabric_config = replace(fabric_config, source_data_root=combined_root)
     runtime = build_runtime(
         fabric_config,
         mode=FabricRuntimeMode.PUBLISH,
@@ -87,6 +92,33 @@ def run_patch_publication(
         summary["duration_seconds"],
     )
     return summary
+
+
+def _publisher_config(
+    fabric_config: FabricRuntimeConfig,
+    *,
+    source_root: Path | str,
+    managed_identity_client_id: str,
+) -> FabricRuntimeConfig:
+    if fabric_config.local_onelake_root is not None:
+        return replace(fabric_config, source_data_root=source_root)
+    if fabric_config.auth.mode != "managed_identity":
+        raise ValueError(
+            "Production patch publication requires managed identity authentication"
+        )
+    publisher_client_id = str(managed_identity_client_id).strip()
+    if not publisher_client_id:
+        raise ValueError(
+            "Production patch publication requires a publisher managed identity client ID"
+        )
+    return replace(
+        fabric_config,
+        source_data_root=source_root,
+        auth=replace(
+            fabric_config.auth,
+            managed_identity_client_id=publisher_client_id,
+        ),
+    )
 
 
 def _publication_roots(

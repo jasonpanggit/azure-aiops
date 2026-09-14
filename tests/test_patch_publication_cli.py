@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from fabric import patch_publication
+from fabric.auth import FabricAuthConfig
 from fabric.runtime import FabricRuntimeMode
 from fabric.sync_service import FabricSyncResult
 from onboarding import cli
@@ -17,6 +18,15 @@ from onboarding import cli
 class _FabricConfig:
     source_data_root: str
     local_onelake_root: Path | None = None
+    auth: FabricAuthConfig = field(
+        default_factory=lambda: FabricAuthConfig(
+            mode="managed_identity",
+            tenant_id="tenant-a",
+            client_id="application-a",
+            client_secret_env="FABRIC_SECRET",
+            managed_identity_client_id="apps-client",
+        )
+    )
 
 
 CONNECTION_HOME = (
@@ -54,6 +64,7 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     replayed: list[str] = []
     combined: list[tuple[list[str], str]] = []
     runtime_sources: list[str] = []
+    runtime_auth: list[FabricAuthConfig] = []
     constructed_roots: list[str] = []
     connector_config = SimpleNamespace(output_dir="/data")
     connection = SimpleNamespace(connection_id="connection-a")
@@ -106,6 +117,7 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
         lambda config, *, mode: (
             modes.append(mode)
             or runtime_sources.append(str(config.source_data_root))
+            or runtime_auth.append(config.auth)
             or SimpleNamespace(
                 service=SimpleNamespace(
                     sync_patch_tables=lambda **kwargs: (
@@ -122,6 +134,7 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
         "/app/fabric.config.yaml",
         connection_home=CONNECTION_HOME,
         source_root=SOURCE_ROOT,
+        managed_identity_client_id="publisher-client",
     )
 
     assert loaded_connector == ["/app/config.yaml"]
@@ -130,6 +143,15 @@ def test_patch_publication_uses_writer_runtime_and_sanitizes_result(
     assert replayed == ["source-generation-secret"]
     assert constructed_roots == [CONNECTION_HOME, CONNECTION_HOME]
     assert runtime_sources == [SOURCE_ROOT]
+    assert runtime_auth == [
+        FabricAuthConfig(
+            mode="managed_identity",
+            tenant_id="tenant-a",
+            client_id="application-a",
+            client_secret_env="FABRIC_SECRET",
+            managed_identity_client_id="publisher-client",
+        )
+    ]
     assert combined == [
         (
             ["connection-a"],
@@ -178,23 +200,34 @@ def test_patch_publication_advances_when_combined_source_changes(
         "publish_combined_snapshot",
         lambda *_args, **_kwargs: {"runId": next(generations)},
     )
+    local_auth = FabricAuthConfig(
+        mode="service_principal",
+        tenant_id="tenant-local",
+        client_id="client-local",
+        client_secret_env="LOCAL_SECRET",
+    )
+    runtime_auth: list[FabricAuthConfig] = []
     monkeypatch.setattr(
         patch_publication.FabricRuntimeConfig,
         "load",
         lambda _path: _FabricConfig(
             source_data_root="/old",
             local_onelake_root=Path("/lakehouse"),
+            auth=local_auth,
         ),
     )
     monkeypatch.setattr(
         patch_publication,
         "build_runtime",
-        lambda _config, *, mode: SimpleNamespace(
+        lambda config, *, mode: (
+            runtime_auth.append(config.auth)
+            or SimpleNamespace(
             service=SimpleNamespace(
                 sync_patch_tables=lambda *, replay_source_run_id: (
                     replayed.append(replay_source_run_id)
                     or _result(status="completed")
                 )
+            )
             )
         ),
     )
@@ -203,6 +236,7 @@ def test_patch_publication_advances_when_combined_source_changes(
     patch_publication.run_patch_publication("config.yaml", "fabric.yaml")
 
     assert replayed == ["source-generation-1", "source-generation-2"]
+    assert runtime_auth == [local_auth, local_auth]
 
 
 def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:
@@ -232,6 +266,8 @@ def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:
             CONNECTION_HOME,
             "--source-root",
             SOURCE_ROOT,
+            "--managed-identity-client-id",
+            "publisher-client",
         ]
     ) == 0
 
@@ -241,6 +277,7 @@ def test_patch_publish_cli_emits_sanitized_result(monkeypatch, capsys) -> None:
         {
             "connection_home": CONNECTION_HOME,
             "source_root": SOURCE_ROOT,
+            "managed_identity_client_id": "publisher-client",
         },
     ]
     assert json.loads(capsys.readouterr().out)["status"] == "skipped"
@@ -305,6 +342,13 @@ def test_production_patch_publication_requires_explicit_distinct_roots(
             "fabric.yaml",
             connection_home=CONNECTION_HOME,
             source_root=CONNECTION_HOME,
+        )
+    with pytest.raises(ValueError, match="publisher managed identity client ID"):
+        patch_publication.run_patch_publication(
+            "config.yaml",
+            "fabric.yaml",
+            connection_home=CONNECTION_HOME,
+            source_root=SOURCE_ROOT,
         )
 
 
