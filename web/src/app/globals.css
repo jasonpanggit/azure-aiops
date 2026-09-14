@@ -7119,6 +7119,189 @@ body.topology-fullscreen-open {
   color: var(--color-text-secondary);
 }
 
+.remediation-execution-audit {
+  display: grid;
+  gap: 16px;
+}
+
+.remediation-execution-heading {
+  display: grid;
+  gap: 6px;
+}
+
+.remediation-execution-heading .plan-row-badges {
+  margin-bottom: 2px;
+}
+
+.remediation-execution-heading h3,
+.remediation-execution-heading p {
+  margin: 0;
+}
+
+.remediation-execution-heading p {
+  max-width: 72ch;
+  color: var(--color-text-secondary);
+}
+
+.remediation-execution-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.remediation-execution-facts > div {
+  min-width: 0;
+  padding: 12px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.remediation-execution-facts dt {
+  margin-bottom: 4px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.remediation-execution-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.remediation-attempt-history {
+  display: grid;
+  gap: 10px;
+}
+
+.remediation-attempt-history .remediation-section-heading {
+  margin: 0;
+}
+
+.remediation-attempt-history .remediation-section-heading p {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.remediation-attempt-card {
+  overflow: hidden;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.remediation-attempt-card summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.remediation-attempt-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.remediation-attempt-card summary::after {
+  margin-left: auto;
+  color: var(--color-brand);
+  content: "Show events";
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remediation-attempt-card[open] summary::after {
+  content: "Hide events";
+}
+
+.remediation-attempt-card summary > span:not(.status-badge) {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.remediation-transition-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0 16px 16px 34px;
+}
+
+.remediation-transition-list li {
+  padding-left: 4px;
+}
+
+.remediation-transition-list time,
+.remediation-transition-list strong,
+.remediation-transition-list span {
+  display: block;
+}
+
+.remediation-transition-list time {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.remediation-transition-list span {
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+}
+
+.remediation-decision-history {
+  display: grid;
+  gap: 8px;
+}
+
+.remediation-decision-history h3,
+.remediation-decision-history ul {
+  margin: 0;
+}
+
+.remediation-decision-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.remediation-decision-list > li {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  padding: 12px;
+  background: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.remediation-decision-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.remediation-decision-heading time {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.remediation-decision-list code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
 .remediation-workflow-layout {
   display: grid;
   grid-template-columns: minmax(19rem, 0.72fr) minmax(0, 1.5fr);
@@ -7562,8 +7745,15 @@ body.topology-fullscreen-open {
 
   .remediation-approval-form,
   .remediation-approval-requirement-meta,
+  .remediation-decision-list,
+  .remediation-execution-facts,
   .remediation-snapshot-callout {
     grid-template-columns: 1fr;
+  }
+
+  .remediation-attempt-card summary::after {
+    width: 100%;
+    margin-left: 0;
   }
 }
 

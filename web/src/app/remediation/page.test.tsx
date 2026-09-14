@@ -39,8 +39,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/services", async () => {
   const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
-    buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-    isCanonicalAzureResourceId: actual.isCanonicalAzureResourceId,
+    ...actual,
     operationsApi: { remediationPlans },
     remediationApi: {
       approve,
@@ -728,6 +727,14 @@ describe("Governed remediation workflow", () => {
 
     expect(screen.getAllByText((_, element) => Boolean(element?.textContent?.includes("Provider rejected the update"))).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Attempt 1").length).toBeGreaterThan(0);
+    const attemptLabel = screen.getByText("Attempt 1", {
+      selector: ".remediation-attempt-card summary strong",
+    });
+    const attempt = attemptLabel.closest("details");
+    expect(attempt).not.toHaveAttribute("open");
+    expect(screen.getByText("1 event")).toBeInTheDocument();
+    fireEvent.click(attemptLabel.closest("summary") as HTMLElement);
+    expect(attempt).toHaveAttribute("open");
     expect(screen.getAllByText(/Provider accepted the operation/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Retry approved snapshot" })).toBeEnabled();
   });
@@ -1598,9 +1605,9 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     await screen.findAllByText(/KB600001/);
     fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
 
-    expect(screen.getByText("Remaining attempts: 2")).toBeInTheDocument();
-    expect(screen.getByText("Submitted attempts: 1")).toBeInTheDocument();
-    expect(screen.getByText(/Verification deadline:/)).toBeInTheDocument();
+    expect(within(screen.getByText("Attempts remaining").closest("div") as HTMLElement).getByText("2")).toBeInTheDocument();
+    expect(within(screen.getByText("Submitted attempts").closest("div") as HTMLElement).getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("Verification deadline")).toBeInTheDocument();
     expect(screen.getByText(/Next automatic check:/)).toBeInTheDocument();
   });
 
