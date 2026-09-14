@@ -168,6 +168,87 @@ class CanonicalInvestigationPayload(CanonicalInvestigationRequest):
     hint: CanonicalPlanHint | None = None
 
 
+_AZURE_VNET_ID = re.compile(
+    r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
+    r"microsoft\.network/virtualnetworks/[^/]+/?$",
+    flags=re.IGNORECASE,
+)
+
+
+def _validated_or_derived_network_hint(
+    payload: CanonicalInvestigationPayload,
+    snapshot: EvidenceSnapshotV2,
+) -> CanonicalPlanHint | None:
+    """Validate or derive selected-VNet dependency intent without widening."""
+
+    hint = payload.hint
+    is_hub_hint = hint is not None and hint.tool == "hub_dependents"
+    if hint is not None and not is_hub_hint:
+        return hint
+    if is_hub_hint and hint.specialist_id != "network":
+        raise ValueError(
+            "hub_dependents hint requires the network specialist"
+        )
+    question = " ".join(payload.question.strip().casefold().split()).rstrip("?.")
+    prefix = "what depends on "
+    dependency_subject = (
+        question.removeprefix(prefix).strip()
+        if question.startswith(prefix)
+        else ""
+    )
+    if snapshot.page_kind != "network" or (
+        snapshot.page_id.casefold() != "network-topology"
+    ):
+        if is_hub_hint or dependency_subject:
+            raise ValueError(
+                "network dependency requests require network topology context"
+            )
+        return None
+    selected_vnets = [
+        entity
+        for entity in snapshot.selected_entities
+        if isinstance(entity, AzureEntityRef)
+        and _AZURE_VNET_ID.fullmatch(entity.resource_id) is not None
+    ]
+    if is_hub_hint:
+        if len(selected_vnets) != len(snapshot.selected_entities):
+            raise ValueError(
+                "network hub hint requires only selected Azure VNets"
+            )
+        hinted_vnet_id = hint.arguments.get("vnet_id")
+        matching_vnets = [
+            entity
+            for entity in selected_vnets
+            if isinstance(hinted_vnet_id, str)
+            and hinted_vnet_id.casefold() == entity.resource_id.casefold()
+        ]
+        if len(matching_vnets) != 1:
+            raise ValueError(
+                "network hub hint must match exactly one selected Azure VNet"
+            )
+        return hint
+    if not dependency_subject:
+        return None
+    if (
+        len(selected_vnets) != 1
+        or len(snapshot.selected_entities) != 1
+    ):
+        raise ValueError(
+            "network dependency question requires exactly one selected Azure VNet"
+        )
+    selected = selected_vnets[0]
+    vnet_name = selected.resource_id.rstrip("/").rsplit("/", 1)[-1].casefold()
+    if dependency_subject not in {vnet_name, selected.resource_id.casefold()}:
+        raise ValueError(
+            "network dependency question must match the selected Azure VNet"
+        )
+    return CanonicalPlanHint(
+        specialist_id="network",
+        tool="hub_dependents",
+        arguments={"vnet_id": selected.resource_id},
+    )
+
+
 def _validate_bound_cve_request(
     payload: CanonicalInvestigationPayload,
     snapshot: EvidenceSnapshotV2,
@@ -175,7 +256,7 @@ def _validate_bound_cve_request(
     """Reject stale or conflicting CVE identity before any tool can execute."""
 
     if (
-        snapshot.page_kind != "vulnerability"
+        snapshot.page_kind not in {"cve_detail", "vulnerability"}
         or not snapshot.page_id.casefold().startswith("cve:")
     ):
         return
@@ -223,6 +304,34 @@ def _validate_bound_cve_request(
             "Requested CVE does not match the visible CVE page context",
             details={"field": "snapshot.page_id"},
         )
+
+
+def _without_unresolved_domain_evidence(
+    snapshot: EvidenceSnapshotV2,
+) -> EvidenceSnapshotV2:
+    """Drop unresolved browser domain identities when semantic is unavailable."""
+
+    evidence = [
+        item
+        for item in snapshot.evidence
+        if not isinstance(item.entity, DomainEntityRef)
+    ]
+    evidence_ids = {item.evidence_id for item in evidence}
+    return snapshot.model_copy(
+        update={
+            "selected_entities": [
+                entity
+                for entity in snapshot.selected_entities
+                if not isinstance(entity, DomainEntityRef)
+            ],
+            "evidence": evidence,
+            "material_claims": [
+                claim
+                for claim in snapshot.material_claims
+                if set(claim.evidence_refs) <= evidence_ids
+            ],
+        }
+    )
 
 
 class CanonicalInventorySelector(BaseModel):
@@ -561,10 +670,9 @@ def _canonical_plan_preview(
                 if candidate is not None
                 else []
             ),
-            # Shadow deliberately does not know a canonical execution status:
-            # obtaining one would repeat external tool/model I/O.
-            "status": None,
-            "executed": False,
+            "plan_outcome": (
+                "planned" if candidate is not None else "no_safe_plan"
+            ),
         },
         policy_validated,
     )
@@ -614,17 +722,23 @@ def _execute_retained_compatibility(
     tool_results: list[dict[str, Any]] = []
     citations: list[Citation] = []
     next_revision = thread.revision + 1
+    selected_specialists: list[str] = []
     for call_index, call in enumerate(investigation.calls):
         call_id = (
             f"{thread.thread_id}:rev-{next_revision}:compatibility:"
             f"{call_index}:{call.tool}"
         )
+        specialist_id = (
+            payload.hint.specialist_id
+            if payload.hint is not None and call.tool == payload.hint.tool
+            else ""
+        )
+        if specialist_id and specialist_id not in selected_specialists:
+            selected_specialists.append(specialist_id)
         tool_results.append(
             {
                 "call_id": call_id,
-                # The retained planner selects tools directly; it does not
-                # claim a policy-selected canonical specialist.
-                "specialist_id": "",
+                "specialist_id": specialist_id,
                 "tool": call.tool,
                 "arguments": dict(call.arguments),
                 **call.result.to_dict(),
@@ -649,7 +763,7 @@ def _execute_retained_compatibility(
     compatibility_warning = ""
     page_cve = (
         canonical_cve_id(request.snapshot.page_id.split(":", 1)[1])
-        if request.snapshot.page_kind == "vulnerability"
+        if request.snapshot.page_kind == "cve_detail"
         and request.snapshot.page_id.casefold().startswith("cve:")
         else ""
     )
@@ -716,7 +830,7 @@ def _execute_retained_compatibility(
         status=investigation.fact_status,
         policy_status="fallback",
         fallback_reason="compatibility_rollout",
-        selected_specialists=[],
+        selected_specialists=selected_specialists,
         selected_tools=[call.tool for call in investigation.calls],
         tool_results=tool_results,
         uncertainty=list(investigation.warnings),
@@ -755,33 +869,34 @@ def _shadow_comparison(
     compatibility: OrchestrationResult,
     canonical: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Compare executed compatibility metadata with a no-I/O canonical preview."""
+    """Compare normalized plans without repeating tool or model execution."""
 
-    compatibility_metadata = {
-        "policy_status": "retained_compatibility",
+    compatibility_plan = {
+        "plan_outcome": (
+            "planned"
+            if compatibility.selected_tools
+            else "no_safe_plan"
+        ),
         "fallback_reason": compatibility.fallback_reason,
-        # The retained planner has no canonical specialist-policy concept.
         "selected_specialists": None,
         "selected_tools": list(compatibility.selected_tools),
-        "status": compatibility.status,
-        "executed": True,
     }
+    canonical_plan = dict(canonical)
     matches: dict[str, bool | None] = {
-        "policy_status": (
-            compatibility_metadata["policy_status"]
-            == canonical["policy_status"]
+        "plan_outcome": (
+            compatibility_plan["plan_outcome"]
+            == canonical_plan["plan_outcome"]
         ),
+        # The retained planner has no canonical specialist-policy concept.
         "selected_specialists": None,
         "selected_tools": (
-            compatibility_metadata["selected_tools"]
-            == canonical["selected_tools"]
+            compatibility_plan["selected_tools"]
+            == canonical_plan["selected_tools"]
         ),
-        # A canonical result was intentionally not executed in shadow.
-        "status": None,
     }
     return {
-        "compatibility": compatibility_metadata,
-        "canonical": dict(canonical),
+        "compatibility": compatibility_plan,
+        "canonical": canonical_plan,
         "matches": matches,
         "divergent_fields": [
             field
@@ -1430,27 +1545,16 @@ def investigate_canonical(
     browser_snapshot = request.snapshot
     _validate_bound_cve_request(payload, browser_snapshot)
     try:
-        bound_cve_snapshot = (
-            browser_snapshot.page_kind == "vulnerability"
-            and browser_snapshot.page_id.casefold().startswith("cve:")
-        )
         semantic = context.resolve_provider(
             "semantic",
-            optional=bound_cve_snapshot,
+            optional=True,
         )
-        selection_snapshot = browser_snapshot
-        if bound_cve_snapshot and semantic is None:
-            # The page, prompt, filters, selected CVE, and tool hint were bound
-            # above. Browser domain facts are still non-authoritative, so when
-            # their optional semantic resolver is deferred, discard them and
-            # let the governed cve_detail tool supply durable scoped evidence.
-            selection_snapshot = browser_snapshot.model_copy(
-                update={
-                    "selected_entities": [],
-                    "evidence": [],
-                    "material_claims": [],
-                }
-            )
+        semantic_unavailable = semantic is None
+        selection_snapshot = (
+            _without_unresolved_domain_evidence(browser_snapshot)
+            if semantic_unavailable
+            else browser_snapshot
+        )
         resolved_domains: dict[
             tuple[str, str, str],
             tuple[dict[str, Any], DomainEntityRef],
@@ -1602,6 +1706,24 @@ def investigate_canonical(
             "snapshot": planning_snapshot
         }
     )
+    try:
+        plan_hint = _validated_or_derived_network_hint(
+            payload,
+            browser_snapshot,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            str(exc),
+            details={
+                "field": (
+                    "hint.arguments.vnet_id"
+                    if payload.hint is not None
+                    else "question"
+                )
+            },
+        ) from exc
+    execution_payload = payload.model_copy(update={"hint": plan_hint})
     rollout = copilot_rollout_decision(stable_key=principal.subject)
     if browser_snapshot.page_kind == "inventory":
         try:
@@ -1613,18 +1735,18 @@ def investigate_canonical(
                 details={"field": "snapshot.evidence"},
             ) from exc
         specialist_id = (
-            payload.hint.specialist_id
-            if payload.hint is not None
+            plan_hint.specialist_id
+            if plan_hint is not None
             else INVENTORY_DATA_HEALTH_ID
         )
         tool = (
-            payload.hint.tool
-            if payload.hint is not None
+            plan_hint.tool
+            if plan_hint is not None
             else "inventory_resources"
         )
         derived_arguments = selector.tool_arguments()
         hint_arguments = (
-            dict(payload.hint.arguments) if payload.hint is not None else {}
+            dict(plan_hint.arguments) if plan_hint is not None else {}
         )
         selector_conflict = any(
             key in hint_arguments and hint_arguments[key] != value
@@ -1658,11 +1780,11 @@ def investigate_canonical(
                 lambda _request: CandidatePlan(
                     steps=[
                         SpecialistStep(
-                            specialist_id=payload.hint.specialist_id,
+                            specialist_id=plan_hint.specialist_id,
                             tool_calls=[
                                 ToolCallCandidate(
-                                    tool=payload.hint.tool,
-                                    arguments=dict(payload.hint.arguments),
+                                    tool=plan_hint.tool,
+                                    arguments=dict(plan_hint.arguments),
                                     citation_ids=[COVERAGE_CITATION_ID],
                                 )
                             ],
@@ -1672,7 +1794,7 @@ def investigate_canonical(
                     max_wall_seconds=5,
                 )
             )
-            if payload.hint is not None
+            if plan_hint is not None
             else (
                 lambda governed_request: build_deterministic_fallback(
                     governed_request,
@@ -1717,7 +1839,7 @@ def investigate_canonical(
             )
         else:
             result = _execute_retained_compatibility(
-                payload=payload,
+                payload=execution_payload,
                 request=request,
                 context=context,
                 scope=scope,
@@ -1745,6 +1867,19 @@ def investigate_canonical(
             "Investigation thread not found",
             details={"field": "thread_id"},
         ) from exc
+
+    if semantic_unavailable:
+        semantic_warning = (
+            "Semantic identity resolution is unavailable; unresolved domain "
+            "page evidence was excluded."
+        )
+        result = result.model_copy(
+            update={
+                "uncertainty": list(
+                    dict.fromkeys([*result.uncertainty, semantic_warning])
+                )
+            }
+        )
 
     shadow_validated = False
     shadow_reason = ""

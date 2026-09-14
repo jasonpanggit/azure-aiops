@@ -1304,7 +1304,7 @@ class OrchestrationService:
 
         if (
             snapshot is None
-            or snapshot.page_kind != "vulnerability"
+            or snapshot.page_kind != "cve_detail"
             or not snapshot.page_id.casefold().startswith("cve:")
         ):
             return []

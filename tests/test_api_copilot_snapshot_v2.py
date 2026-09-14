@@ -181,6 +181,7 @@ def test_canonical_endpoint_accepts_remediation_snapshot_v2(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     captured = []
     result = OrchestrationResult(
         status="empty",
