@@ -9,6 +9,7 @@ from test_api_copilot_investigation import HEADERS, _context
 
 from api.app import create_app
 from api.evidence import Evidence
+from api.providers import ProviderRuntime, ProviderSpec
 from api.scope import Scope
 from operations.foundry_agent import FoundryAgentError
 from operations.investigation_thread_store import (
@@ -711,6 +712,159 @@ def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
         reference.startswith("tool:")
         for reference in data["synthesis"]["claims"][0]["evidence_refs"]
     )
+
+
+def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    cve_id = "CVE-2026-8376"
+    body = _cve_canonical_body(cve_id)
+    body["snapshot"]["selected_entities"] = [
+        {
+            "type": "domain",
+            "namespace": "vulnerability",
+            "kind": "cve",
+            "source_key": cve_id,
+        }
+    ]
+    body["snapshot"]["evidence"] = [
+        {
+            "evidence_id": "cve-page:visible",
+            "source": "exposure/cve",
+            "status": "ok",
+            "observed_at": "2026-09-14T00:00:00Z",
+            "source_key": cve_id,
+            "entity": {
+                "type": "domain",
+                "namespace": "vulnerability",
+                "kind": "cve",
+                "source_key": cve_id,
+            },
+            "claim_type": "cve",
+            "citations": [],
+            "selected": True,
+            "direct": True,
+            "actionable": False,
+            "severity": "critical",
+            "quality": "high",
+            "data": {"untrusted_browser_description": "must not be retained"},
+        }
+    ]
+    body["snapshot"]["material_claims"] = [
+        {
+            "claim_id": "visible-cve",
+            "evidence_refs": ["cve-page:visible"],
+            "requires_complete_coverage": False,
+        }
+    ]
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def durable_cve_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={
+                "cve_id": cve_id,
+                "external_catalog": {
+                    "item": {
+                        "cve_id": cve_id,
+                        "sources": {},
+                    }
+                },
+                "scoped_exposure_status": "empty",
+                "scoped_exposure": {
+                    "query_cve_id": cve_id,
+                    "total_count": 0,
+                    "returned_count": 0,
+                    "affected_active_count": 0,
+                    "items": [],
+                },
+            },
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="enrichment/exposure-items.json",
+                    resource_id=cve_id,
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", durable_cve_tool)
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert tool_calls == [("cve_detail", {"cve_id": cve_id})]
+    data = response.json()["data"]
+    assert data["tool_results"][0]["status"] == "ok"
+    assert data["synthesis"]["status"] == "degraded"
+    assert all(
+        citation["citation_id"].startswith("tool:")
+        for citation in data["citations"]
+    )
+    assert "must not be retained" not in response.text
+
+
+def test_deferred_semantic_cve_fallback_rejects_conflicting_selected_cve(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    body = _cve_canonical_body("CVE-2026-8376")
+    body["snapshot"]["selected_entities"] = [
+        {
+            "type": "domain",
+            "namespace": "vulnerability",
+            "kind": "cve",
+            "source_key": "CVE-2026-99999",
+        }
+    ]
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: pytest.fail("conflicting CVE reached the tool"),
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
 
 
 def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(

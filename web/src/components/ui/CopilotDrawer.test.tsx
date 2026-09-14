@@ -1371,6 +1371,106 @@ describe("CopilotDrawer", () => {
     });
   });
 
+  it("renders durable CVE evidence when optional semantic narration is unavailable", async () => {
+    const cveId = "CVE-2026-8376";
+    const cveSnapshot = {
+      version: "2" as const,
+      page_kind: "vulnerability" as const,
+      page_id: `cve:${cveId}`,
+      filters: { weakness_id: [cveId] },
+      coverage: { visible_count: 1, total_count: 1, complete: true },
+      freshness: [{
+        source: "nvd",
+        observed_at: "2026-09-14T00:00:00Z",
+        status: "fresh" as const,
+      }],
+      selected_entities: [{
+        type: "domain" as const,
+        namespace: "vulnerability",
+        kind: "cve",
+        source_key: cveId,
+      }],
+      evidence: [],
+      material_claims: [],
+    };
+    const result = canonicalResult(
+      "thr-66666666666666666666666666666666",
+      "tool:cve-deferred:0",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        selected_specialists: ["vulnerability"],
+        selected_tools: ["cve_detail"],
+        tool_results: [{
+          call_id: "cve-deferred",
+          specialist_id: "vulnerability",
+          tool: "cve_detail",
+          status: "ok",
+          data: { cve_id: cveId },
+          evidence: [],
+          warning: "",
+        }],
+        synthesis: {
+          status: "degraded",
+          reason: "deterministic_page_evidence",
+          domain_count: 1,
+          warning: "Foundry narration is not configured; deterministic cited CVE evidence was used.",
+          claims: [{
+            finding_id: "cve:deferred",
+            summary: `${cveId} durable CVE evidence`,
+            evidence_refs: ["tool:cve-deferred:0"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel={cveId}
+          snapshot={cveSnapshot}
+          starterQuestions={[{
+            label: `Explain ${cveId}`,
+            specialistId: "vulnerability",
+            tool: "cve_detail",
+            toolArguments: { cve_id: cveId },
+          }]}
+        />
+      </TestProviders>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `Explain ${cveId} →` }));
+
+    expect(await screen.findByText(`${cveId} durable CVE evidence`)).toBeInTheDocument();
+    expect(screen.getByText(/Foundry narration is not configured/, {
+      selector: ".copilot-live-status",
+    })).toBeInTheDocument();
+    expect(screen.queryByText(/The request failed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/semantic provider is deferred/i)).not.toBeInTheDocument();
+    expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: `Explain ${cveId}`,
+        hint: {
+          specialist_id: "vulnerability",
+          tool: "cve_detail",
+          arguments: { cve_id: cveId },
+        },
+        snapshot: expect.objectContaining({
+          page_id: `cve:${cveId}`,
+          selected_entities: cveSnapshot.selected_entities,
+        }),
+      }),
+      {},
+    );
+  });
+
   it("serializes requests within the same context", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();

@@ -1363,6 +1363,27 @@ def investigate_canonical(
     browser_snapshot = request.snapshot
     _validate_bound_cve_request(payload, browser_snapshot)
     try:
+        bound_cve_snapshot = (
+            browser_snapshot.page_kind == "vulnerability"
+            and browser_snapshot.page_id.casefold().startswith("cve:")
+        )
+        semantic = context.resolve_provider(
+            "semantic",
+            optional=bound_cve_snapshot,
+        )
+        selection_snapshot = browser_snapshot
+        if bound_cve_snapshot and semantic is None:
+            # The page, prompt, filters, selected CVE, and tool hint were bound
+            # above. Browser domain facts are still non-authoritative, so when
+            # their optional semantic resolver is deferred, discard them and
+            # let the governed cve_detail tool supply durable scoped evidence.
+            selection_snapshot = browser_snapshot.model_copy(
+                update={
+                    "selected_entities": [],
+                    "evidence": [],
+                    "material_claims": [],
+                }
+            )
         resolved_domains: dict[
             tuple[str, str, str],
             tuple[dict[str, Any], DomainEntityRef],
@@ -1379,7 +1400,8 @@ def investigate_canonical(
             cached = resolved_domains.get(key)
             if cached is not None:
                 return cached[0]
-            semantic = context.semantic()
+            if semantic is None:
+                return None
             try:
                 entity_id = semantic.indexes.resolve(entity.source_key)
             except (LookupError, ValueError):
@@ -1407,11 +1429,11 @@ def investigate_canonical(
             return resolution
 
         # The strict Pydantic contract above validates every browser row and
-        # byte/list bound. Resolve every domain identity against the server's
-        # semantic index before either planning or retained synthesis.
+        # byte/list bound. Resolve retained domain identities against the
+        # server's semantic index before either planning or retained synthesis.
         canonical_browser_snapshot = (
             canonicalize_snapshot_v2(
-                browser_snapshot,
+                selection_snapshot,
                 effective_scope=scope,
                 domain_resolver=resolve_domain_entity,
             )
@@ -1421,14 +1443,14 @@ def investigate_canonical(
         planning_entities: list[AzureEntityRef | DomainEntityRef] = []
         planning_entity_ids: set[str] = set()
         for entity in [
-            *browser_snapshot.selected_entities,
+            *selection_snapshot.selected_entities,
             *[
                 (
                     item.entity
                     if isinstance(item.entity, AzureEntityRef)
                     else AzureEntityRef(type="azure", resource_id=item.resource_id)
                 )
-                for item in browser_snapshot.evidence
+                for item in selection_snapshot.evidence
                 if (
                     item.selected or item.direct
                 )
@@ -1478,15 +1500,15 @@ def investigate_canonical(
             planning_entities.append(entity)
             if len(planning_entities) == 50:
                 break
-        planning_snapshot = browser_snapshot.model_copy(
+        planning_snapshot = selection_snapshot.model_copy(
             update={
-                "page_kind": browser_snapshot.page_kind,
-                "coverage": browser_snapshot.coverage.model_copy(
+                "page_kind": selection_snapshot.page_kind,
+                "coverage": selection_snapshot.coverage.model_copy(
                     update={"complete": False}
                 ),
                 "freshness": [
                     item.model_copy(update={"status": "unavailable"})
-                    for item in browser_snapshot.freshness
+                    for item in selection_snapshot.freshness
                 ],
                 "selected_entities": planning_entities,
                 "evidence": [],
@@ -1623,7 +1645,7 @@ def investigate_canonical(
                 context=context,
                 principal_subject=principal.subject,
                 effective_scope=scope,
-                selection_snapshot=browser_snapshot,
+                selection_snapshot=selection_snapshot,
                 canonical_selection_snapshot=canonical_browser_snapshot,
             )
         else:
