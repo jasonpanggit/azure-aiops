@@ -633,6 +633,7 @@ def test_activate_runtime_streams_fabric_stages_through_single_reporter(
         fabric_config="fabric.test.yaml",
         progress_callback=events.append,
         heartbeat_interval=3600,
+        enrichment_root=tmp_path / "aiops",
         metadata_prefetch=lambda **_kwargs: {
             "status": "succeeded",
             "requested_count": 0,
@@ -736,6 +737,7 @@ def test_activate_runtime_prefetches_after_lock_release_and_keeps_partial_succes
         metadata_prefetch=partial_prefetch,
         progress_callback=events.append,
         heartbeat_interval=3600,
+        enrichment_root=tmp_path / "aiops",
     )
 
     assert result["status"] == "activated"
@@ -764,7 +766,7 @@ def test_activate_runtime_prefetches_after_lock_release_and_keeps_partial_succes
     assert "must-not-be-exposed" not in json.dumps(result) + json.dumps(events)
 
 
-def test_shared_prefetch_writes_enrichment_to_api_visible_root(
+def test_shared_prefetch_uses_one_root_for_distinct_pointer_and_cache_documents(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -774,8 +776,12 @@ def test_shared_prefetch_writes_enrichment_to_api_visible_root(
         EXPOSURE_ENRICHMENT_DOCUMENT,
     )
 
-    pointer_store = OneLakeDocumentStore(tmp_path / "connections")
-    enrichment_store = OneLakeDocumentStore(tmp_path / "aiops")
+    store = OneLakeDocumentStore(tmp_path / "aiops")
+    store.write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
     captured: dict[str, object] = {}
 
     class FakeWorker:
@@ -798,7 +804,7 @@ def test_shared_prefetch_writes_enrichment_to_api_visible_root(
             captured["service_max_items"] = max_items
 
         def run(self):
-            enrichment_store.write(
+            store.write(
                 EXPOSURE_ENRICHMENT_DOCUMENT,
                 {"schema_version": "2.0.0", "revision": 1},
                 expected_revision=0,
@@ -819,16 +825,16 @@ def test_shared_prefetch_writes_enrichment_to_api_visible_root(
 
     result = _shared_metadata_prefetch(
         runtime=object(),
-        pointer_store=pointer_store,
-        enrichment_store=enrichment_store,
+        pointer_store=store,
+        enrichment_store=store,
     )
 
     assert result == {"status": "succeeded", "selected_count": 0}
-    assert captured["pointer_store"] is pointer_store
-    assert captured["cache_store"] is enrichment_store
-    assert captured["checkpoint_store"] is enrichment_store
-    assert enrichment_store.read(EXPOSURE_ENRICHMENT_DOCUMENT)["revision"] == 1
-    assert pointer_store.read(EXPOSURE_ENRICHMENT_DOCUMENT) == {}
+    assert captured["pointer_store"] is store
+    assert captured["cache_store"] is store
+    assert captured["checkpoint_store"] is store
+    assert store.read("exposure/gold-generation-pointer.json")["revision"] == 1
+    assert store.read(EXPOSURE_ENRICHMENT_DOCUMENT)["revision"] == 1
 
 
 def test_activate_runtime_replays_exact_generation_without_upstream_work(
@@ -904,6 +910,7 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
         replay_source_run_id="exact-generation",
         progress_callback=events.append,
         heartbeat_interval=3600,
+        enrichment_root=tmp_path / "aiops",
         metadata_prefetch=lambda **_kwargs: {
             "status": "succeeded",
             "requested_count": 0,
@@ -936,7 +943,7 @@ def test_activate_runtime_replays_exact_generation_without_upstream_work(
     assert sync_kwargs["replay_source_run_id"] == "exact-generation"
     pointer_store = sync_kwargs["exposure_pointer_store"]
     assert isinstance(pointer_store, OneLakeDocumentStore)
-    assert pointer_store.root == str(service.registry.root)
+    assert pointer_store.root == str(tmp_path / "aiops")
     started = [event["stage"] for event in events if event["status"] == "started"]
     assert started == ["activation", "fabric_publication", "metadata_prefetch"]
     assert not {
