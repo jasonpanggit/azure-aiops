@@ -680,6 +680,90 @@ resource "azurerm_container_app_job" "exposure_enrichment" {
   ]
 }
 
+# Prefetch active-generation CVE and KB metadata independently of the six-hour
+# refresh of already registered due items. The shared CLI is the only writer
+# and limits persistence to the durable Exposure enrichment document.
+resource "azurerm_container_app_job" "exposure_prefetch" {
+  name                         = "${local.base}-exposure-prefetch"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption"
+  replica_timeout_in_seconds   = 600
+  replica_retry_limit          = 0
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.apps.id]
+  }
+
+  registry {
+    server   = local.registry_server
+    identity = azurerm_user_assigned_identity.apps.id
+  }
+
+  dynamic "secret" {
+    for_each = var.nvd_api_key != "" ? [var.nvd_api_key] : []
+    content {
+      name  = "nvd-api-key"
+      value = secret.value
+    }
+  }
+
+  schedule_trigger_config {
+    cron_expression          = var.exposure_prefetch_schedule
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  template {
+    container {
+      name   = "exposure-prefetch"
+      image  = var.deploy_images ? local.api_image : local.placeholder_image
+      cpu    = var.ontology_discovery_job_cpu
+      memory = var.ontology_discovery_job_memory
+      command = [
+        "python",
+      ]
+      args = [
+        "/app/scripts/refresh_exposure_enrichment.py",
+        "--prefetch-generation",
+        "--max-items",
+        tostring(var.exposure_enrichment_max_items),
+      ]
+
+      env {
+        name  = "AIOPS_HOME"
+        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.apps.client_id
+      }
+
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+
+      dynamic "env" {
+        for_each = var.nvd_api_key != "" ? [1] : []
+        content {
+          name        = "NVD_API_KEY"
+          secret_name = "nvd-api-key"
+        }
+      }
+    }
+  }
+
+  tags = local.tags
+
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+  ]
+}
+
 resource "fabric_workspace_role_assignment" "patch_publisher" {
   count = var.enable_fabric ? 1 : 0
 

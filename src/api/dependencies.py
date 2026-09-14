@@ -93,11 +93,6 @@ class ApiContext:
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.
     network_policy_store: Any | None = None
-    # Best-effort live lookup for a single CVE id directly from NVD, used when
-    # the CVE isn't already tied to a snapshot finding (e.g. a user searching
-    # for a CVE the current environment hasn't observed yet). Returns None on
-    # any failure or unknown id so callers can fall back to a 404.
-    vulnerability_live_lookup: Callable[[str], dict[str, Any] | None] | None = None
     # Risk-acceptance/exception management for vulnerability findings. These
     # are user-submitted mutations (not snapshot projections), so they use
     # direct callables into the module-level store rather than a rebuilt
