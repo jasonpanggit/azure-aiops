@@ -10,6 +10,7 @@ from .confidence import compute_confidence
 from .entity_builder import PAAS_ENTITY_TYPES, scoped_semantic_id, stable_version
 
 ASSET_TYPES = {"Resource", "VirtualMachine", "ArcServer", "KubernetesCluster", *PAAS_ENTITY_TYPES}
+DEFAULT_MAX_RELATIONSHIPS = 500_000
 
 
 def relationship_change_version(row: dict[str, Any]) -> str:
@@ -35,7 +36,7 @@ class RelationshipBuilder:
     """Infers deterministic structural, operational, and tag-derived relationships."""
 
     def __init__(
-        self, *, max_entities: int = 100_000, max_relationships: int = 250_000
+        self, *, max_entities: int = 100_000, max_relationships: int = DEFAULT_MAX_RELATIONSHIPS
     ) -> None:
         for name, value in (
             ("max_entities", max_entities),

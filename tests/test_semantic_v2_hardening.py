@@ -52,7 +52,7 @@ def test_semantic_default_source_bounds_match_each_collection_contract():
 
     assert DEFAULT_SEMANTIC_SOURCE_ROWS == 50_000
     assert DEFAULT_SEMANTIC_ENTITY_ROWS == 100_000
-    assert DEFAULT_SEMANTIC_RELATIONSHIP_ROWS == 250_000
+    assert DEFAULT_SEMANTIC_RELATIONSHIP_ROWS == 500_000
     assert semantic.max_source_rows == DEFAULT_SEMANTIC_SOURCE_ROWS
     assert semantic.max_entity_rows == DEFAULT_SEMANTIC_ENTITY_ROWS
     assert semantic.max_relationship_rows == DEFAULT_SEMANTIC_RELATIONSHIP_ROWS
@@ -241,7 +241,7 @@ def test_deployed_semantic_source_bound_supports_full_ontology_graph():
 
     assert config.semantic.max_source_rows == 50_000
     assert config.semantic.max_entity_rows == 100_000
-    assert config.semantic.max_relationship_rows == 250_000
+    assert config.semantic.max_relationship_rows == 500_000
     assert config.write_workers == 1
 
 
