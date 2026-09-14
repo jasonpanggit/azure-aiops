@@ -2767,11 +2767,32 @@ class FabricSyncService:
         from intelligence.lifecycle import LifecycleIntelligence
         from semantic.semantic_engine import SemanticEngine
 
+        # Mirror SemanticValidator.validate_snapshot()'s entity_ids exactly:
+        # only ACTIVE entities count as valid fact targets. Unlike
+        # semantic_snapshot(), the raw datasets here are read straight from
+        # the pipeline (not filtered against entity_keys), so a compliance
+        # row for a resource that is retired or absent from this run's
+        # ontology_entities is dangling from the validator's perspective and
+        # must be skipped instead of failing SemanticEngine.from_rows and
+        # aborting ontology_construction for the whole publication.
+        entity_keys = {
+            str(row.get("resource_id") or "").casefold()
+            for row in datasets["ontology_entities"]
+            if row.get("lifecycle_status", "active") == "active"
+        }
+        lifecycle_compliance = [
+            row
+            for row in datasets.get("silver_compliance", [])
+            if str(
+                row.get("assessed_resource_id") or row.get("resource_id") or ""
+            ).casefold()
+            in entity_keys
+        ]
         semantic = SemanticEngine.from_rows(
             entities=datasets["ontology_entities"],
             relationships=datasets["ontology_relationships"],
             inventory=datasets.get("bronze_resources", []),
-            compliance=datasets.get("silver_compliance", []),
+            compliance=lifecycle_compliance,
             knowledge_version=source_run_id,
             freshness=timestamp,
             ontology_synchronized_at=timestamp,
