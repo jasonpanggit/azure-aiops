@@ -67,8 +67,7 @@ def test_prefetch_job_reuses_apps_runtime_contract() -> None:
     )
     assert 'name  = "AIOPS_HOME"' in job
     assert "/Files/aiops" in job
-    assert 'name  = "AIOPS_CONNECTION_HOME"' in job
-    assert "/Files/aiops/connections" in job
+    assert "AIOPS_CONNECTION_HOME" not in job
     assert 'name        = "NVD_API_KEY"' in job
     assert 'secret_name = "nvd-api-key"' in job
     assert '"/app/scripts/refresh_exposure_enrichment.py"' in job

@@ -738,11 +738,6 @@ resource "azurerm_container_app_job" "exposure_prefetch" {
       }
 
       env {
-        name  = "AIOPS_CONNECTION_HOME"
-        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections" : "/tmp/aiops/connections"
-      }
-
-      env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.apps.client_id
       }

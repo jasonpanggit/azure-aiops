@@ -736,12 +736,12 @@ def activate_runtime(
             combined = source_store.verify_combined_activation_generation(
                 exact_generation
             )
-        exposure_pointer_store = OneLakeDocumentStore(service.registry.root)
+        exposure_store = _prefetch_store(enrichment_root)
         publication = runtime.service.sync(
             replay_source_run_id=exact_generation or str(combined["runId"]),
             progress_callback=reporter.fabric_table_progress,
             stage_progress_callback=reporter.fabric_stage_progress,
-            exposure_pointer_store=exposure_pointer_store,
+            exposure_pointer_store=exposure_store,
         )
         reporter.complete("fabric_publication")
 
@@ -751,8 +751,8 @@ def activate_runtime(
             source_root=config.source_data_root,
             generation_id=exact_generation or str(combined["runId"]),
             runtime=runtime,
-            pointer_store=exposure_pointer_store,
-            enrichment_root=enrichment_root,
+            pointer_store=exposure_store,
+            enrichment_store=exposure_store,
         )
         reporter.complete(
             "metadata_prefetch",
@@ -799,7 +799,7 @@ def _run_metadata_prefetch(
     generation_id: str,
     runtime: Any,
     pointer_store: OneLakeDocumentStore,
-    enrichment_root: str | Path | None,
+    enrichment_store: OneLakeDocumentStore,
 ) -> dict[str, object]:
     """Invoke the shared prefetch seam and return only bounded safe fields."""
 
@@ -810,10 +810,7 @@ def _run_metadata_prefetch(
             else _shared_metadata_prefetch(
                 runtime=runtime,
                 pointer_store=pointer_store,
-                enrichment_store=_prefetch_enrichment_store(
-                    enrichment_root,
-                    pointer_store=pointer_store,
-                ),
+                enrichment_store=enrichment_store,
             )
         )
         return _sanitize_prefetch_result(raw)
@@ -830,19 +827,14 @@ def _run_metadata_prefetch(
         }
 
 
-def _prefetch_enrichment_store(
+def _prefetch_store(
     enrichment_root: str | Path | None,
-    *,
-    pointer_store: OneLakeDocumentStore,
 ) -> OneLakeDocumentStore:
-    """Require an explicit cache root that does not alias connection state."""
+    """Build the authoritative pointer and enrichment store from AIOPS_HOME."""
 
     if enrichment_root is None or not str(enrichment_root).strip():
         raise ValueError("AIOPS_HOME is required for activation metadata prefetch")
-    store = OneLakeDocumentStore(enrichment_root)
-    if store.root.rstrip("/") == pointer_store.root.rstrip("/"):
-        raise ValueError("AIOPS_HOME must not alias AIOPS_CONNECTION_HOME")
-    return store
+    return OneLakeDocumentStore(enrichment_root)
 
 
 def _shared_metadata_prefetch(
