@@ -953,12 +953,14 @@ class TrafficFlowValidator:
         matches: list[bool | None] = []
         if rule.destination_addresses:
             destination_specs = rule.destination_specs()
-            if (
-                destination.is_internet
-                and self._destination_hostname(destination) is None
-            ):
+            hostname = self._destination_hostname(destination)
+            if destination.is_internet and hostname is None:
                 matches.append(
                     self._generic_internet_address_match(destination_specs)
+                )
+            elif hostname is not None:
+                matches.append(
+                    self._concrete_hostname_address_match(destination_specs)
                 )
             else:
                 matches.append(
@@ -1003,6 +1005,26 @@ class TrafficFlowValidator:
                     or network.is_loopback
                     or network.is_link_local
                 ):
+                    return None
+        return False
+
+    @staticmethod
+    def _concrete_hostname_address_match(
+        specs: tuple[AddressSpec, ...],
+    ) -> bool | None:
+        """Evaluate address selectors for a known hostname without DNS lookup."""
+
+        if any(spec.is_internet for spec in specs):
+            return True
+        if any(spec.service_tag and not spec.is_virtual_network for spec in specs):
+            return False
+        for spec in specs:
+            for cidr in spec.networks:
+                try:
+                    network = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    return None
+                if not network.is_private and not network.is_loopback:
                     return None
         return False
 
