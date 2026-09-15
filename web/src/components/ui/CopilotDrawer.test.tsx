@@ -496,6 +496,79 @@ describe("CopilotDrawer", () => {
     );
   });
 
+  it("renders deterministic highest-risk Compliance claims above raw tool evidence", async () => {
+    const result = canonicalResult(
+      "thr-44444444444444444444444444444444",
+      "retained:compliance:critical",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        status: "partial",
+        policy_status: "fallback",
+        fallback_reason: "candidate_rejected:invalid_arguments",
+        selected_specialists: ["vulnerability", "governance"],
+        selected_tools: ["cve_exposure", "risk_context"],
+        tool_results: [{
+          call_id: "vulnerability:cve_exposure",
+          specialist_id: "vulnerability",
+          tool: "cve_exposure",
+          status: "ok",
+          data: { total_count: 7121 },
+          evidence: [],
+          warning: "",
+        }],
+        uncertainty: [
+          "governance risk_context tool status is unavailable: The semantic provider is deferred",
+        ],
+        coverage: { visible_count: 153, total_count: 153, complete: false },
+        synthesis: {
+          status: "deterministic",
+          reason: "deterministic_page_evidence",
+          domain_count: 1,
+          claims: [{
+            finding_id: "page:critical",
+            summary:
+              "The current compliance page reports severity critical: Firewall rule accepts any source.",
+            evidence_refs: ["retained:compliance:critical"],
+            confidence: "medium",
+            freshness: "unknown",
+            uncertainty: ["visible subset is incomplete"],
+          }],
+          warning: "",
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Compliance"
+          requestedScope={{ subscription: ["sub-a"] }}
+          snapshot={snapshot}
+          starterQuestions={[{
+            label: "What are my highest-risk compliance findings?",
+          }]}
+        />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", {
+      name: /What are my highest-risk compliance findings/i,
+    }));
+
+    expect(await screen.findByText(
+      /The current compliance page reports severity critical/,
+    )).toBeInTheDocument();
+    expect(screen.getByText("retained:compliance:critical")).toBeInTheDocument();
+    expect(screen.getByText(
+      /governance risk_context tool status is unavailable/,
+    )).toBeInTheDocument();
+    expect(screen.queryByText("7,121")).not.toBeInTheDocument();
+  });
+
   it("renders canonical synthesis claims without duplicating their tool result cards", async () => {
     const result = canonicalResult(
       "thr-12121212121212121212121212121212",

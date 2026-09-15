@@ -1678,14 +1678,14 @@ class OrchestrationService:
             )
             for reference in claim.evidence_refs
         }
-        if material_refs and not material_refs <= set(by_original_id):
-            return []
+        retained_material_refs = material_refs.intersection(by_original_id)
         candidates = [
             item
             for item in retained_evidence
             if (
                 not material_refs
-                or str(item.get("original_evidence_id") or "") in material_refs
+                or str(item.get("original_evidence_id") or "")
+                in retained_material_refs
             )
             and (item.get("selected") or item.get("direct"))
         ]
@@ -1696,10 +1696,22 @@ class OrchestrationService:
             "low": 3,
             "unknown": 4,
         }
+
+        def retained_severity(item: Mapping[str, Any]) -> str:
+            severity = str(item.get("severity") or "unknown").casefold()
+            if severity != "unknown":
+                return severity
+            data = item.get("data")
+            if isinstance(data, Mapping):
+                reported = str(data.get("severity") or "").casefold()
+                if reported in severity_priority:
+                    return reported
+            return "unknown"
+
         candidates.sort(
             key=lambda item: (
                 severity_priority.get(
-                    str(item.get("severity") or "unknown").casefold(),
+                    retained_severity(item),
                     4,
                 ),
                 str(item.get("evidence_id") or ""),
