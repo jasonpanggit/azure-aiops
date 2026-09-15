@@ -732,9 +732,11 @@ class TrafficFlowValidator:
             collections, query, source, destination, source_value
         )
         uncertain_reason = ""
+        earlier_allow_uncertain_reason = ""
 
         for collection in collections:
             collection_uncertain_reason = ""
+            collection_action = normalize_token(collection.action)
             for rule in collection.rules:
                 match = self._firewall_rule_matches(
                     rule,
@@ -743,24 +745,31 @@ class TrafficFlowValidator:
                     query,
                     source,
                     destination,
+                    collection_action,
                 )
                 if match is None:
-                    # Rules in one collection share its action, so a later
-                    # definite match in that same collection can safely name
-                    # the decision. Uncertainty still fences every subsequent
-                    # collection, whose action and priority may differ.
                     collection_uncertain_reason = self._firewall_unknown_reason(
                         destination
                     )
                     continue
                 if not match:
                     continue
+                if earlier_allow_uncertain_reason and collection_action == "deny":
+                    return FlowHop(
+                        stage="firewall",
+                        control="azure_firewall",
+                        control_id=collection.resource_id,
+                        decision="unknown",
+                        priority=collection.priority,
+                        reason=earlier_allow_uncertain_reason,
+                        rule_analysis=rule_analysis,
+                    )
                 return FlowHop(
                     stage="firewall",
                     control="azure_firewall",
                     control_id=collection.resource_id,
                     decision=(
-                        "deny" if normalize_token(collection.action) == "deny" else "allow"
+                        "deny" if collection_action == "deny" else "allow"
                     ),
                     rule_id=rule.resource_id,
                     rule_name=rule.name,
@@ -771,6 +780,15 @@ class TrafficFlowValidator:
                     ),
                     rule_analysis=rule_analysis,
                 )
+            if (
+                collection_uncertain_reason
+                and collection_action == "allow"
+                and self._destination_hostname(destination) is not None
+            ):
+                earlier_allow_uncertain_reason = (
+                    earlier_allow_uncertain_reason or collection_uncertain_reason
+                )
+                continue
             if collection_uncertain_reason:
                 uncertain_reason = collection_uncertain_reason
                 break
@@ -897,6 +915,7 @@ class TrafficFlowValidator:
         query: FlowQuery,
         source: FlowEndpoint,
         destination: FlowEndpoint,
+        collection_action: str,
     ) -> bool | None:
         # Protocol and port are always resolvable from the observed rule, so
         # they are checked first: a rule that references an unresolved IP
@@ -911,7 +930,9 @@ class TrafficFlowValidator:
         source_match = self._firewall_source_match(rule, source_value, source)
         if source_match is False:
             return False
-        dest_match = self._firewall_destination_match(rule, dest_value, destination)
+        dest_match = self._firewall_destination_match(
+            rule, dest_value, destination, collection_action
+        )
         if dest_match is False:
             return False
         if source_match is None or dest_match is None:
@@ -949,14 +970,26 @@ class TrafficFlowValidator:
         return self._combine_rule_selectors(matches)
 
     def _firewall_destination_match(
-        self, rule: FirewallRule, dest_value: str, destination: FlowEndpoint
+        self,
+        rule: FirewallRule,
+        dest_value: str,
+        destination: FlowEndpoint,
+        collection_action: str = "allow",
     ) -> bool | None:
         matches: list[bool | None] = []
         if rule.destination_addresses:
             destination_specs = rule.destination_specs()
-            if destination.is_internet:
+            hostname = self._destination_hostname(destination)
+            if destination.is_internet and hostname is None:
                 matches.append(
                     self._generic_internet_address_match(destination_specs)
+                )
+            elif hostname is not None:
+                matches.append(
+                    self._concrete_hostname_address_match(
+                        destination_specs,
+                        unresolved_service_tags_match=collection_action == "deny",
+                    )
                 )
             else:
                 matches.append(
@@ -1001,6 +1034,28 @@ class TrafficFlowValidator:
                     or network.is_loopback
                     or network.is_link_local
                 ):
+                    return None
+        return False
+
+    @staticmethod
+    def _concrete_hostname_address_match(
+        specs: tuple[AddressSpec, ...],
+        *,
+        unresolved_service_tags_match: bool = False,
+    ) -> bool | None:
+        """Evaluate address selectors for a known hostname without DNS lookup."""
+
+        if any(spec.is_internet for spec in specs):
+            return True
+        if any(spec.service_tag and not spec.is_virtual_network for spec in specs):
+            return None if unresolved_service_tags_match else False
+        for spec in specs:
+            for cidr in spec.networks:
+                try:
+                    network = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    return None
+                if not network.is_private and not network.is_loopback:
                     return None
         return False
 
