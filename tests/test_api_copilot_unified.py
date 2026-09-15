@@ -1860,6 +1860,235 @@ def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
     assert len(coordinator.calls) == 3
 
 
+def test_highest_risk_endpoint_retains_ranked_claims_after_conflict_exclusion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if len(self.calls) == 1:
+                payload = {
+                    "steps": [{
+                        "specialist_id": "vulnerability",
+                        "tool_calls": [{
+                            "tool": "cve_exposure",
+                            "arguments": {},
+                            "citation_ids": ["snapshot:coverage"],
+                        }],
+                    }],
+                }
+            elif len(self.calls) == 2:
+                payload = {
+                    "steps": [
+                        {
+                            "specialist_id": "vulnerability",
+                            "tool_calls": [{
+                                "tool": "cve_exposure",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                        {
+                            "specialist_id": "governance",
+                            "tool_calls": [{
+                                "tool": "risk_context",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                    ],
+                }
+            else:
+                raise TimeoutError("narration timed out")
+            return AgentAnswer(
+                text=json.dumps(payload),
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    def evidence_row(
+        index,
+        *,
+        severity,
+        title,
+        source_key=None,
+        detail=None,
+    ):
+        resource_id = (
+            "/subscriptions/sub-a/resourceGroups/compliance-rg/providers/"
+            f"Microsoft.Network/networkSecurityGroups/nsg-{index}"
+        )
+        return {
+            "evidence_id": f"compliance:row:{index}",
+            "source": "compliance/violations",
+            "status": "ok",
+            "observed_at": "",
+            "resource_id": resource_id,
+            "source_key": source_key or f"finding-{index}",
+            "entity": {"type": "azure", "resource_id": resource_id},
+            "claim_type": "policy_violation",
+            "citations": [],
+            "selected": False,
+            "direct": True,
+            "actionable": False,
+            "severity": "unknown",
+            "quality": "unknown",
+            "data": {
+                "type": "compliance_violation",
+                "severity": severity,
+                "title": title,
+                "detail": detail or f"Observed {title}.",
+                "resource": f"nsg-{index}",
+                "owner": "Platform",
+            },
+        }
+
+    rows = [
+        evidence_row(
+            index,
+            severity=(
+                "critical"
+                if index < 11
+                else "high"
+                if index < 22
+                else "medium"
+                if index < 24
+                else "low"
+            ),
+            title=(
+                "Firewall rule accepts any source"
+                if index == 0
+                else "Public PaaS exposure"
+                if index == 11
+                else f"Compliance finding {index}"
+            ),
+        )
+        for index in range(64)
+    ]
+    conflict_resource = (
+        "/subscriptions/sub-a/resourceGroups/compliance-rg/providers/"
+        "Microsoft.Network/networkSecurityGroups/conflicted-nsg"
+    )
+    for suffix, detail in (("a", "Variant A"), ("b", "Variant B")):
+        rows.append({
+            **evidence_row(
+                f"conflict:{suffix}",
+                severity="critical",
+                title="Conflicting browser finding",
+                source_key="conflicted-finding",
+                detail=detail,
+            ),
+            "resource_id": conflict_resource,
+            "entity": {"type": "azure", "resource_id": conflict_resource},
+        })
+    material_claims = [
+        {
+            "claim_id": f"claim:{index}",
+            "evidence_refs": [row["evidence_id"]],
+        }
+        for index, row in enumerate(rows[:-1])
+    ]
+    body = _network_hub_canonical_body()
+    body["question"] = "What are my highest-risk compliance findings?"
+    body["hint"] = None
+    body["snapshot"].update({
+        "page_kind": "compliance",
+        "page_id": "compliance-posture",
+        "coverage": {
+            "visible_count": 153,
+            "total_count": 153,
+            "complete": False,
+        },
+        "freshness": [],
+        "selected_entities": [],
+        "evidence": rows,
+        "material_claims": material_claims,
+    })
+    tool_calls = []
+
+    def governed_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        if name == "risk_context":
+            return ToolResult(
+                status="unavailable",
+                warning="The semantic provider is deferred",
+            )
+        return ToolResult(
+            status="ok",
+            data={"total_count": 7121},
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="gold_exposure_facts",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", governed_tool)
+    coordinator = Coordinator()
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    claims = data["synthesis"]["claims"]
+    assert data["policy_status"] == "fallback"
+    assert data["fallback_reason"] == "candidate_rejected:invalid_arguments"
+    assert data["selected_specialists"] == ["vulnerability", "governance"]
+    assert data["selected_tools"] == ["cve_exposure", "risk_context"]
+    assert data["synthesis"]["status"] == "deterministic"
+    assert data["synthesis"]["reason"] == "deterministic_page_evidence"
+    assert len(claims) == 8
+    assert all("severity critical" in claim["summary"] for claim in claims)
+    assert all(
+        "Conflicting browser finding" not in claim["summary"]
+        for claim in claims
+    )
+    assert all(
+        reference.startswith("retained:")
+        for claim in claims
+        for reference in claim["evidence_refs"]
+    )
+    citation_ids = {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    claim_refs = {
+        reference
+        for claim in claims
+        for reference in claim["evidence_refs"]
+    }
+    assert claim_refs <= citation_ids
+    assert len({
+        citation_id
+        for citation_id in citation_ids
+        if citation_id.startswith("retained:")
+    }) == 64
+    assert (
+        "governance risk_context tool status is unavailable: "
+        "The semantic provider is deferred"
+    ) in data["uncertainty"]
+    assert "Conflicting page evidence was excluded from synthesis." in (
+        data["uncertainty"]
+    )
+    assert len(coordinator.calls) == 2
+
+
 def test_coordinator_failure_preserves_exact_validated_page_hint(
     tmp_path,
     monkeypatch,
