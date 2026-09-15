@@ -128,7 +128,12 @@ from operations.foundry_agent import (
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
 )
-from operations.maf_orchestrator import maf_mode_enabled
+from operations.maf_orchestrator import (
+    ENV_AGENT_ORCHESTRATION_MODE,
+    MODE_CANONICAL,
+    MODE_MAF,
+    maf_mode_enabled,
+)
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchExecutionUnavailable,
@@ -3761,6 +3766,11 @@ def _build_provider_runtime(
             or os.environ.get("FOUNDRY_AGENT_NAME", "").strip()
         )
     )
+    orchestration_mode = os.environ.get(
+        ENV_AGENT_ORCHESTRATION_MODE,
+        "",
+    ).strip().casefold()
+    coordinator_required = orchestration_mode in {MODE_MAF, MODE_CANONICAL}
     bootstrap = _truthy("AIOPS_ALLOW_EMPTY_FABRIC_SNAPSHOT")
     # External intelligence providers must never make the API process
     # unroutable. Their routes fail closed with provider_unavailable and their
@@ -3808,8 +3818,8 @@ def _build_provider_runtime(
     }
     specs["copilot"] = ProviderSpec(
         loader=_load_foundry_agent,
-        configured=foundry_configured,
-        required=False,
+        configured=foundry_configured or coordinator_required,
+        required=coordinator_required,
     )
     for specialist_id in SPECIALIST_IDS:
         specialist_configured = bool(
