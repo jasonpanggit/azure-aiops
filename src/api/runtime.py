@@ -187,6 +187,12 @@ ENV_APPROVED_SEARCH_API_ENDPOINT = "APPROVED_SEARCH_API_ENDPOINT"
 ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 # Opt-in switch for real Azure patch execution. Absent it, patch runs refuse.
 ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
+ENV_SRE_AGENT_ENDPOINT = "AIOPS_SRE_AGENT_ENDPOINT"
+ENV_SRE_AGENT_TRIGGER_URL = "AIOPS_SRE_AGENT_TRIGGER_URL"
+ENV_SRE_AGENT_TRIGGER_SCOPE = "AIOPS_SRE_AGENT_TRIGGER_SCOPE"
+ENV_SRE_AGENT_THREAD_SCOPE = "AIOPS_SRE_AGENT_THREAD_SCOPE"
+ENV_SRE_AGENT_SUBSCRIPTION_ID = "AIOPS_SRE_AGENT_SUBSCRIPTION_ID"
+ENV_SRE_AGENT_TARGET_PREFIX = "AIOPS_SRE_AGENT_TARGET_PREFIX"
 ENV_DEFENDER_CONFIGURATION_EXECUTION = "AIOPS_DEFENDER_CONFIGURATION_EXECUTION"
 ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 # Override for how long a submitted remediation execution may stay
@@ -4004,6 +4010,8 @@ class _ConnectionScopedPatchExecutionAdapter:
 
 
 class _ConnectionScopedDefenderConfigurationAdapter:
+    name = "azure-arm-defender-configuration"
+
     def __init__(self, router: _ConnectionCredentialRouter) -> None:
         self._router = router
 
@@ -4051,12 +4059,122 @@ class _ConnectionScopedExecutionVerifier:
         return ExecutionVerifier(credential=credential).verify(execution_record)
 
 
+class _RoutingExecutionVerifier:
+    """Route persisted provider handles to their matching verifier."""
+
+    def __init__(self, *, arm: Any | None, sre_agent: Any | None) -> None:
+        self._arm = arm
+        self._sre_agent = sre_agent
+
+    def verify(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+        provider = str(execution_record.get("provider") or "").strip()
+        if provider == "sre-agent":
+            if self._sre_agent is None:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent verification is not configured.",
+                    capability="sre_agent_verification",
+                )
+            return self._sre_agent.verify(execution_record)
+        if self._arm is None:
+            raise ExecutionVerificationUnavailable(
+                "Azure ARM verification is not configured.",
+                capability="execution_verification",
+            )
+        return self._arm.verify(execution_record)
+
+
 def _subscription_id_from_resource_id(resource_id: str) -> str:
     parts = [part for part in str(resource_id or "").strip("/").split("/") if part]
     for index, part in enumerate(parts[:-1]):
         if part.casefold() == "subscriptions":
             return parts[index + 1]
     return ""
+
+
+def _sre_agent_settings() -> dict[str, str]:
+    """Load and validate the explicit SRE Agent execution configuration."""
+    from operations.patching.sre_agent_adapter import (
+        SRE_AGENT_THREAD_SCOPE,
+        SRE_AGENT_TRIGGER_SCOPE,
+        validate_sre_agent_endpoint,
+    )
+
+    settings = {
+        "agent_endpoint": os.environ.get(ENV_SRE_AGENT_ENDPOINT, "").strip(),
+        "trigger_url": os.environ.get(ENV_SRE_AGENT_TRIGGER_URL, "").strip(),
+        "trigger_scope": (
+            os.environ.get(ENV_SRE_AGENT_TRIGGER_SCOPE, "").strip()
+            or SRE_AGENT_TRIGGER_SCOPE
+        ),
+        "thread_scope": (
+            os.environ.get(ENV_SRE_AGENT_THREAD_SCOPE, "").strip()
+            or SRE_AGENT_THREAD_SCOPE
+        ),
+        "subscription_id": os.environ.get(
+            ENV_SRE_AGENT_SUBSCRIPTION_ID, ""
+        ).strip(),
+        "target_prefix": os.environ.get(ENV_SRE_AGENT_TARGET_PREFIX, "").strip(),
+        "client_id": os.environ.get("AZURE_CLIENT_ID", "").strip(),
+    }
+    required = {
+        name
+        for name in (
+            "agent_endpoint",
+            "trigger_url",
+            "subscription_id",
+            "target_prefix",
+            "client_id",
+        )
+        if not settings[name]
+    }
+    if required:
+        names = ", ".join(sorted(required))
+        raise RuntimeError(
+            f"AIOPS_PATCH_EXECUTION=sre-agent requires configured values for: {names}"
+        )
+    if not settings["trigger_scope"].endswith("/.default"):
+        raise RuntimeError("The SRE Agent trigger scope must end with '/.default'.")
+    if not settings["thread_scope"].endswith("/.default"):
+        raise RuntimeError("The SRE Agent thread scope must end with '/.default'.")
+    settings["agent_endpoint"] = validate_sre_agent_endpoint(
+        settings["agent_endpoint"]
+    )
+    return settings
+
+
+def _sre_agent_verification_settings() -> dict[str, str] | None:
+    """Load read-only SRE settings independently of the active write mode."""
+    endpoint = os.environ.get(ENV_SRE_AGENT_ENDPOINT, "").strip()
+    if not endpoint:
+        return None
+    from operations.patching.sre_agent_adapter import (
+        SRE_AGENT_THREAD_SCOPE,
+        validate_sre_agent_endpoint,
+    )
+
+    client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    thread_scope = (
+        os.environ.get(ENV_SRE_AGENT_THREAD_SCOPE, "").strip()
+        or SRE_AGENT_THREAD_SCOPE
+    )
+    if not client_id:
+        raise RuntimeError(
+            f"{ENV_SRE_AGENT_ENDPOINT} requires AZURE_CLIENT_ID for thread polling."
+        )
+    if not thread_scope.endswith("/.default"):
+        raise RuntimeError("The SRE Agent thread scope must end with '/.default'.")
+    return {
+        "agent_endpoint": validate_sre_agent_endpoint(endpoint),
+        "thread_scope": thread_scope,
+        "client_id": client_id,
+    }
+
+
+def _sre_agent_managed_identity_credential(client_id: str) -> Any:
+    """Build the API workload's user-assigned managed identity credential."""
+    from azure.identity import ManagedIdentityCredential
+
+    return ManagedIdentityCredential(client_id=client_id)
 
 
 def _patch_execution_adapter(
@@ -4067,11 +4185,25 @@ def _patch_execution_adapter(
 
     Defaults to the refusing adapter: triggering real Azure writes must be an
     explicit deployment decision, never an accident of configuration. Setting
-    ``AIOPS_PATCH_EXECUTION=azure`` opts a deployment in to live ARM calls,
-    and even then a missing or unusable credential falls back to refusing
-    rather than failing at import time.
+    ``AIOPS_PATCH_EXECUTION=azure`` opts a deployment in to live ARM calls.
+    ``AIOPS_PATCH_EXECUTION=sre-agent`` separately opts in to the pre-created
+    SRE HTTP-trigger path and requires its complete fail-closed configuration.
     """
     mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
+    if mode == "sre-agent":
+        from operations.patching.sre_agent_adapter import (
+            SreAgentPatchExecutionAdapter,
+        )
+
+        settings = _sre_agent_settings()
+        return SreAgentPatchExecutionAdapter(
+            _sre_agent_managed_identity_credential(settings["client_id"]),
+            trigger_url=settings["trigger_url"],
+            agent_endpoint=settings["agent_endpoint"],
+            trigger_scope=settings["trigger_scope"],
+            subscription_id=settings["subscription_id"],
+            target_prefix=settings["target_prefix"],
+        )
     if mode not in {"azure", "arm", "azure-arm"}:
         return UnconfiguredPatchExecutionAdapter()
     return _ConnectionScopedPatchExecutionAdapter(
@@ -4098,16 +4230,27 @@ def _execution_verifier(
     onboarding: SubscriptionOnboardingService,
     scope: Scope | None = None,
 ) -> Any | None:
-    """Build a verifier that resolves the execution connection on every poll."""
-    patch_mode = (os.environ.get(ENV_PATCH_EXECUTION) or "").strip().casefold()
-    defender_mode = (
-        os.environ.get(ENV_DEFENDER_CONFIGURATION_EXECUTION) or ""
-    ).strip().casefold()
-    enabled = {"azure", "arm", "azure-arm"}
-    if patch_mode not in enabled and defender_mode not in enabled:
-        return None
-    return _ConnectionScopedExecutionVerifier(
+    """Build lazy ARM routing plus SRE routing when its read config exists."""
+    arm_verifier = _ConnectionScopedExecutionVerifier(
         _ConnectionCredentialRouter(onboarding, scope)
+    )
+    sre_verifier = None
+    sre_settings = _sre_agent_verification_settings()
+    if sre_settings is not None:
+        from intelligence.remediation.sre_agent_verifier import (
+            SreAgentExecutionVerifier,
+        )
+
+        sre_verifier = SreAgentExecutionVerifier(
+            credential=_sre_agent_managed_identity_credential(
+                sre_settings["client_id"]
+            ),
+            agent_endpoint=sre_settings["agent_endpoint"],
+            thread_scope=sre_settings["thread_scope"],
+        )
+    return _RoutingExecutionVerifier(
+        arm=arm_verifier,
+        sre_agent=sre_verifier,
     )
 
 

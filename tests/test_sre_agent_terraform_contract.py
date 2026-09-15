@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -93,3 +94,44 @@ def test_sre_principals_receive_no_premature_gateway_grants() -> None:
     assert "effective_api_gateway_grants_json" not in sre_terraform
     assert "sre_agent_api_gateway_grants" not in sre_terraform
     assert "value = var.entra_grants_json" in container_apps
+
+
+def test_sre_patch_execution_is_default_off_and_trigger_url_is_secret_safe() -> None:
+    container_apps = _read(CONTAINER_APPS_TERRAFORM)
+    variables = _read(REPO_ROOT / "infra" / "terraform" / "variables.tf")
+
+    assert 'variable "enable_sre_agent_patch_execution"' in variables
+    start = variables.index('variable "enable_sre_agent_patch_execution"')
+    assert "default     = false" in variables[start : start + 300]
+    assert 'name                = "sre-agent-http-trigger-url"' in container_apps
+    assert "key_vault_secret_id = secret.value" in container_apps
+    assert 'name        = "AIOPS_SRE_AGENT_TRIGGER_URL"' in container_apps
+    assert 'secret_name = "sre-agent-http-trigger-url"' in container_apps
+    assert "value = var.sre_agent_http_trigger_secret_id" not in container_apps
+    assert "AIOPS_SRE_AGENT_ENDPOINT     = var.sre_agent_endpoint" in container_apps
+    assert "for_each = var.sre_agent_endpoint != \"\"" in container_apps
+
+
+def test_sre_trigger_caller_role_is_agent_scoped_and_flag_guarded() -> None:
+    terraform = _read(SRE_TERRAFORM)
+
+    assert 'resource "azurerm_role_definition" "sre_agent_trigger_invoker"' in terraform
+    assert 'resource "azurerm_role_assignment" "apps_sre_agent_trigger_invoker"' in terraform
+    assert "count = var.enable_sre_agent_patch_execution ? 1 : 0" in terraform
+    assert re.search(r"scope\s+= local\.sre_agent_resource_id", terraform)
+    assert '"Microsoft.App/agents/threads/read"' in terraform
+    assert '"Microsoft.App/agents/threads/write"' in terraform
+    permissions = terraform[
+        terraform.index('resource "azurerm_role_definition" "sre_agent_trigger_invoker"') :
+        terraform.index(
+            'resource "azurerm_role_assignment" "apps_sre_agent_trigger_invoker"'
+        )
+    ]
+    assert re.search(r"^\s*actions\s+= \[\]$", permissions, re.MULTILINE)
+    assert re.search(r"^\s*not_actions\s+= \[\]$", permissions, re.MULTILINE)
+    assert re.search(r"^\s*data_actions\s+= \[$", permissions, re.MULTILINE)
+    assert re.search(r"^\s*not_data_actions\s+= \[\]$", permissions, re.MULTILINE)
+    assert (
+        'assignable_scopes = ["/subscriptions/${local.sre_agent_subscription_id}"]'
+        in terraform
+    )

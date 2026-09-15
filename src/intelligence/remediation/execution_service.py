@@ -35,6 +35,7 @@ from .execution_store import (
     ExecutionClaimConflict,
     _is_patch_evidence_candidate,
     execution_scope_attributes,
+    is_manual_resolution_required,
     is_submission_ambiguous,
     submitted_attempt_count,
 )
@@ -474,6 +475,7 @@ class RemediationExecutionService:
     ) -> dict[str, Any]:
         plan_id = str(plan.get("plan_id") or "")
         action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
+        intended_provider = self._intended_provider(action_id)
         try:
             target, patch_ids = self._resolve_target(plan, decision)
         except RemediationExecutionError as exc:
@@ -495,6 +497,7 @@ class RemediationExecutionService:
                 expected_status={"running", "retrying"},
                 status="failed",
                 actor=requested_by,
+                provider=intended_provider,
                 message=str(exc),
                 failure_details=str(exc),
                 outcome="failed",
@@ -565,6 +568,7 @@ class RemediationExecutionService:
                     expected_status={"running", "retrying"},
                     status="failed",
                     actor=requested_by,
+                    provider=intended_provider,
                     message=message,
                     failure_details=message,
                     outcome="failed",
@@ -579,6 +583,7 @@ class RemediationExecutionService:
                 "execution_id": execution_id,
                 "plan_id": plan_id,
                 "status": "failed",
+                "provider": intended_provider,
                 "message": message,
             }
 
@@ -601,6 +606,7 @@ class RemediationExecutionService:
                 expected_status={"running", "retrying"},
                 status=terminal_status,
                 actor=requested_by,
+                provider=run.provider,
                 provider_job_id=run.provider_job_id,
                 message=message,
                 # A successful submission unambiguously reached the
@@ -619,10 +625,25 @@ class RemediationExecutionService:
             "execution_id": execution_id,
             "plan_id": plan_id,
             "status": terminal_status,
+            "provider": run.provider,
             "provider_job_id": run.provider_job_id,
             "message": message,
             "run_id": getattr(run, "run_id", ""),
         }
+
+    def _intended_provider(self, action_id: str) -> str:
+        """Return the provider selected before any submission is attempted."""
+        if action_id in DEFENDER_CONFIGURATION_ACTION_IDS:
+            return str(
+                getattr(
+                    self._defender_configuration,
+                    "name",
+                    "defender-configuration",
+                )
+            )
+        if self._patching is None:
+            return "unconfigured"
+        return self._patching.adapter_name
 
     def retry(self, execution_id: str) -> dict[str, Any]:
         """Retry a failed/retrying execution: bounded, idempotent, revalidated.
@@ -685,6 +706,28 @@ class RemediationExecutionService:
                 f"Remediation plan {plan_id!r} was not found",
                 reason="plan_not_found",
                 details={"plan_id": plan_id},
+            )
+        persisted_provider = str(record.get("provider") or "")
+        intended_provider = self._intended_provider(
+            str(plan.get("action_id") or plan.get("opportunity_type") or "")
+        )
+        if not persisted_provider and submitted_attempt_count(record) > 0:
+            raise RemediationExecutionError(
+                "The submitted execution has no durable provider lineage; create "
+                "a superseding execution instead of guessing a retry provider.",
+                reason="execution_provider_unknown",
+                details={"execution_id": execution_id},
+            )
+        if persisted_provider and persisted_provider != intended_provider:
+            raise RemediationExecutionError(
+                "The configured execution provider changed; create a superseding "
+                "execution instead of retrying through a different provider.",
+                reason="execution_provider_changed",
+                details={
+                    "execution_id": execution_id,
+                    "persisted_provider": persisted_provider,
+                    "configured_provider": intended_provider,
+                },
             )
 
         # Revalidate the plan's *current* approval/target state -- it may
@@ -1393,12 +1436,11 @@ class RemediationExecutionService:
     def reconcile_ambiguous_submission(self, execution_id: str) -> dict[str, Any]:
         """Resolve a submission-ambiguous failed execution using target evidence.
 
-        Retry/supersede refuse forever on ``failure_class ==
-        "submission_ambiguous"`` unless this reconciles it: either refreshed
-        target evidence proves every selected KB installed (promoted to
-        "succeeded"), or the reconciliation deadline passes with no such
-        proof (reclassified to the ordinary, bounded-retryable
-        "submission_unconfirmed").
+        Direct ARM ambiguity becomes ordinary ``submission_unconfirmed`` after
+        its deadline, preserving the existing bounded retry behavior. SRE
+        Agent HTTP triggers have no documented idempotency guarantee, so their
+        ambiguity stays non-retryable after the deadline; it becomes eligible
+        only for explicit supersession/manual resolution.
         """
         if self._store is None:
             raise RemediationExecutionError(
@@ -1448,6 +1490,36 @@ class RemediationExecutionService:
         # through exactly like an unavailable refresher, into the bounded
         # retry/timeout path below.
         if self._is_verification_deadline_exceeded(record):
+            if str(record.get("provider") or "") == "sre-agent":
+                return self._transition_or_current(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status="failed",
+                    status="failed",
+                    actor="execution-verifier",
+                    failure_class="submission_ambiguous",
+                    verified_state="sre_agent_manual_resolution_required",
+                    evidence_reconciliation={
+                        "status": "unreconciled_manual_resolution",
+                        "kbs_cleared": [],
+                        "kbs_remaining": sorted(selected),
+                        "assessed_at": "",
+                    },
+                    next_verification_at="",
+                    message=_append_note(
+                        record.get("message"),
+                        "The SRE Agent trigger outcome remains ambiguous after the "
+                        "reconciliation deadline. Retry is prohibited; recover the "
+                        "thread handle or explicitly supersede after confirming "
+                        "target state.",
+                    ),
+                    failure_details=(
+                        "The SRE Agent trigger outcome remains ambiguous after the "
+                        "reconciliation deadline. Retry is prohibited; recover the "
+                        "thread handle or explicitly supersede after confirming "
+                        "target state."
+                    ),
+                )
             return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
@@ -1739,16 +1811,19 @@ def _supersede_eligibility(record: dict[str, Any]) -> str:
     .supersede` (the write-side guard) and :meth:`execution_view` (the
     read-side projection) so the two can never disagree (CONTEXT.md's
     Supersession decision): refused for anything still active, anything
-    already superseded, or a submission-ambiguous latest attempt (it may
-    still be running against the provider). Returns ``""`` when eligible,
-    else the specific ineligibility reason.
+    already superseded, or a submission-ambiguous latest attempt that may
+    still be running against the provider. An SRE ambiguity that exhausted
+    its reconciliation deadline is the narrow exception: retry remains
+    prohibited, but explicit supersession becomes the required manual
+    recovery path. Returns ``""`` when eligible, else the specific
+    ineligibility reason.
     """
     status = str(record.get("status") or "")
     if status not in {"failed", "cancelled"}:
         return "execution_active"
     if record.get("superseded_by"):
         return "already_superseded"
-    if is_submission_ambiguous(record):
+    if is_submission_ambiguous(record) and not is_manual_resolution_required(record):
         return "submission_ambiguous"
     return ""
 

@@ -211,6 +211,13 @@ def _clean_env(monkeypatch, tmp_path):
         "AIOPS_ENTRA_TENANT_ID",
         "AIOPS_DEFENDER_CONFIGURATION_EXECUTION",
         "AIOPS_PATCH_EXECUTION",
+        "AIOPS_SRE_AGENT_ENDPOINT",
+        "AIOPS_SRE_AGENT_SUBSCRIPTION_ID",
+        "AIOPS_SRE_AGENT_TARGET_PREFIX",
+        "AIOPS_SRE_AGENT_THREAD_SCOPE",
+        "AIOPS_SRE_AGENT_TRIGGER_SCOPE",
+        "AIOPS_SRE_AGENT_TRIGGER_URL",
+        "AZURE_CLIENT_ID",
         "AZURE_TENANT_ID",
         "AZURE_SP_CLIENT_ID",
         "AZURE_SP_CLIENT_SECRET",
@@ -2294,3 +2301,165 @@ def test_live_planner_keeps_unmappable_defender_recommendation_manual_review() -
 
     assert plan["defender_mapping"]["status"] == "manual_review"
     assert plan["action_id"] == "defender-manual-review"
+
+
+def test_patch_execution_defaults_to_refusing_adapter() -> None:
+    adapter = _patch_execution_adapter(SimpleNamespace())
+
+    assert adapter.name == "unconfigured"
+    assert _execution_verifier(SimpleNamespace()) is not None
+
+
+def test_sre_agent_patch_execution_requires_complete_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIOPS_PATCH_EXECUTION", "sre-agent")
+
+    with pytest.raises(RuntimeError, match="requires configured values"):
+        _patch_execution_adapter(SimpleNamespace())
+
+
+def test_sre_agent_mode_uses_workload_identity_and_routes_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = {
+        "AIOPS_PATCH_EXECUTION": "sre-agent",
+        "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_URL": (
+            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+        ),
+        "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
+            "00000000-0000-0000-0000-000000000001"
+        ),
+        "AIOPS_SRE_AGENT_TARGET_PREFIX": (
+            "/subscriptions/00000000-0000-0000-0000-000000000001/"
+            "resourceGroups/rg-prod"
+        ),
+        "AZURE_CLIENT_ID": "api-uai-client-id",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+
+    credentials: list[str] = []
+    credential = object()
+    monkeypatch.setattr(
+        runtime_module,
+        "_sre_agent_managed_identity_credential",
+        lambda client_id: credentials.append(client_id) or credential,
+    )
+
+    observed: dict[str, object] = {}
+
+    class Verifier:
+        def __init__(self, **kwargs: object) -> None:
+            observed.update(kwargs)
+
+        def verify(self, record: dict[str, object]) -> dict[str, object]:
+            return {"provider": record["provider"]}
+
+    monkeypatch.setattr(
+        "intelligence.remediation.sre_agent_verifier.SreAgentExecutionVerifier",
+        Verifier,
+    )
+
+    adapter = _patch_execution_adapter(SimpleNamespace())
+    verifier = _execution_verifier(SimpleNamespace())
+
+    assert adapter.name == "sre-agent"
+    assert credentials == ["api-uai-client-id", "api-uai-client-id"]
+    assert observed["credential"] is credential
+    assert observed["agent_endpoint"] == "https://sre.example"
+    assert verifier.verify({"provider": "sre-agent"}) == {"provider": "sre-agent"}
+
+
+def test_sre_agent_mode_does_not_resolve_operator_subscription_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "AIOPS_PATCH_EXECUTION": "sre-agent",
+        "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_URL": (
+            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+        ),
+        "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
+            "00000000-0000-0000-0000-000000000001"
+        ),
+        "AIOPS_SRE_AGENT_TARGET_PREFIX": (
+            "/subscriptions/00000000-0000-0000-0000-000000000001/"
+            "resourceGroups/rg-prod"
+        ),
+        "AZURE_CLIENT_ID": "api-uai-client-id",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    onboarding = SimpleNamespace(
+        registry=SimpleNamespace(
+            list=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("operator connection credentials must not be read")
+            )
+        )
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_sre_agent_managed_identity_credential",
+        lambda _client_id: object(),
+    )
+
+    assert _patch_execution_adapter(onboarding).name == "sre-agent"
+
+
+@pytest.mark.parametrize("write_mode", ["azure", "sre-agent"])
+def test_verifier_routes_persisted_arm_and_sre_jobs_independent_of_write_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    write_mode: str,
+) -> None:
+    for name, value in {
+        "AIOPS_PATCH_EXECUTION": write_mode,
+        "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_URL": (
+            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+        ),
+        "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
+            "00000000-0000-0000-0000-000000000001"
+        ),
+        "AIOPS_SRE_AGENT_TARGET_PREFIX": (
+            "/subscriptions/00000000-0000-0000-0000-000000000001/"
+            "resourceGroups/rg-prod"
+        ),
+        "AZURE_CLIENT_ID": "api-uai-client-id",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    class ArmVerifier:
+        def __init__(self, _router: object) -> None:
+            pass
+
+        def verify(self, _record: dict[str, object]) -> dict[str, str]:
+            return {"route": "arm"}
+
+    class SreVerifier:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def verify(self, _record: dict[str, object]) -> dict[str, str]:
+            return {"route": "sre"}
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_ConnectionScopedExecutionVerifier",
+        ArmVerifier,
+    )
+    monkeypatch.setattr(
+        "intelligence.remediation.sre_agent_verifier.SreAgentExecutionVerifier",
+        SreVerifier,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_sre_agent_managed_identity_credential",
+        lambda _client_id: object(),
+    )
+
+    verifier = _execution_verifier(SimpleNamespace())
+
+    assert verifier.verify({"provider": "azure-arm"}) == {"route": "arm"}
+    assert verifier.verify({"provider": "sre-agent"}) == {"route": "sre"}

@@ -154,6 +154,15 @@ resource "azurerm_container_app" "api" {
     key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-previous"
   }
 
+  dynamic "secret" {
+    for_each = var.enable_sre_agent_patch_execution ? [var.sre_agent_http_trigger_secret_id] : []
+    content {
+      name                = "sre-agent-http-trigger-url"
+      identity            = azurerm_user_assigned_identity.apps.id
+      key_vault_secret_id = secret.value
+    }
+  }
+
   ingress {
     external_enabled = var.api_external_ingress
     target_port      = 8080
@@ -258,12 +267,43 @@ resource "azurerm_container_app" "api" {
         value = "0"
       }
 
-      # Live patch execution is opt-in at the deployment boundary. The
-      # execution service still requires approval and revalidates the target
-      # and patch allowlist before issuing an ARM installPatches call.
+      # Direct ARM patch execution remains the deployed default. The SRE Agent
+      # alternative is independently opt-in and still uses the existing
+      # approval, immutable snapshot, target, and patch allowlist gates.
       env {
         name  = "AIOPS_PATCH_EXECUTION"
-        value = "azure"
+        value = var.enable_sre_agent_patch_execution ? "sre-agent" : "azure"
+      }
+
+      dynamic "env" {
+        for_each = var.enable_sre_agent_patch_execution ? [1] : []
+        content {
+          name        = "AIOPS_SRE_AGENT_TRIGGER_URL"
+          secret_name = "sre-agent-http-trigger-url"
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_sre_agent_patch_execution ? {
+          AIOPS_SRE_AGENT_SUBSCRIPTION_ID = local.sre_agent_subscription_id
+          AIOPS_SRE_AGENT_TARGET_PREFIX   = var.sre_agent_patch_target_prefix
+          AIOPS_SRE_AGENT_TRIGGER_SCOPE   = var.sre_agent_trigger_scope
+        } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.sre_agent_endpoint != "" ? {
+          AIOPS_SRE_AGENT_ENDPOINT     = var.sre_agent_endpoint
+          AIOPS_SRE_AGENT_THREAD_SCOPE = var.sre_agent_thread_scope
+        } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       # Direct Defender writes remain a separate opt-in capability backed by

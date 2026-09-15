@@ -159,6 +159,16 @@ Terraform keeps this capability off by default. Set
 `enable_defender_configuration_execution = true` only after reviewing the
 generated subscription-scoped custom role assignment.
 
+### Azure SRE Agent patch execution
+
+The existing approved `/plans/{plan_id}/execute` path may alternatively route
+VM/Arc `install_patches` runs through one pre-created Azure SRE Agent HTTP
+trigger. This mode is explicit and default-off; it does not add a second API
+or UI action. See [Azure SRE Agent Patch Execution](SRE_AGENT_PATCH_EXECUTION.md)
+for the exact payload, Autonomous trigger prompt, managed-identity scopes,
+agent-scoped RBAC, Key Vault reference, verification, and reconciliation
+contract.
+
 ### Operator workflow
 
 The remediation center uses one scoped workflow read model:

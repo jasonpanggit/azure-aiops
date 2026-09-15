@@ -264,6 +264,77 @@ def test_repeated_submitted_failures_exhaust_the_budget() -> None:
     assert excinfo.value.reason == "max_attempts_exceeded"
 
 
+def test_retry_refuses_to_switch_the_persisted_execution_provider() -> None:
+    plan = _full_plan(plan_id="RMP-ACCOUNTING-PROVIDER")
+    first_adapter = _AlwaysRaisingAdapter(
+        PatchExecutionUnavailable(
+            "Provider rejected",
+            provider_submitted=True,
+            failure_class="provider_rejected",
+        )
+    )
+    service, store, _ = _service(
+        plan=plan,
+        present=True,
+        adapter=first_adapter,
+    )
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+    assert store.get(execution_id)["provider"] == "always-raising"
+    assert store.get(execution_id)["attempts"][0]["provider"] == "always-raising"
+
+    replacement = _AlwaysRaisingAdapter(
+        PatchExecutionUnavailable(
+            "Replacement rejected",
+            provider_submitted=True,
+            failure_class="provider_rejected",
+        )
+    )
+    replacement.name = "replacement-provider"
+    service._patching._adapter = replacement
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.retry(execution_id)
+
+    assert excinfo.value.reason == "execution_provider_changed"
+    assert replacement.submissions == []
+
+    superseding = service.supersede(
+        execution_id,
+        requested_by="operator@example.com",
+        reason="Move the replacement attempt to the configured provider",
+    )
+    assert superseding["execution_id"] != execution_id
+    assert superseding["provider"] == "replacement-provider"
+    assert len(replacement.submissions) == 1
+
+
+def test_retry_refuses_submitted_legacy_record_without_provider_lineage() -> None:
+    plan = _full_plan(plan_id="RMP-ACCOUNTING-NO-PROVIDER")
+    adapter = _AlwaysRaisingAdapter(
+        PatchExecutionUnavailable(
+            "Provider rejected",
+            provider_submitted=True,
+            failure_class="provider_rejected",
+        )
+    )
+    service, store, _ = _service(plan=plan, present=True, adapter=adapter)
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+    record = store.get(execution_id)
+    store.update(
+        execution_id,
+        provider="",
+        actor="legacy-migration-test",
+    )
+    assert submitted_attempt_count(record) == 1
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.retry(execution_id)
+
+    assert excinfo.value.reason == "execution_provider_unknown"
+
+
 # ---------------------------------------------------------------------------
 # Task 2b: a submission-ambiguous last attempt blocks ordinary retry (CR-01)
 # ---------------------------------------------------------------------------

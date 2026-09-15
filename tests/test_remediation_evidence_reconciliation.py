@@ -14,9 +14,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from intelligence.remediation.execution_service import (
     VERIFICATION_DEADLINE_SECONDS,
+    RemediationExecutionError,
     RemediationExecutionService,
 )
 from intelligence.remediation.execution_store import RemediationExecutionStore
@@ -67,7 +70,8 @@ class _AmbiguousAdapter:
     failure produces -- provider_submitted True, failure_class
     submission_ambiguous."""
 
-    name = "ambiguous"
+    def __init__(self, name: str = "ambiguous") -> None:
+        self.name = name
 
     def submit(self, run, target) -> PatchExecutionResult:
         raise PatchExecutionUnavailable(
@@ -183,12 +187,15 @@ def _ambiguous_service(
     refresher=None,
     deadline_seconds: float = VERIFICATION_DEADLINE_SECONDS,
     patch_ids=("1111111", "2222222"),
+    adapter=None,
 ) -> tuple[RemediationExecutionService, RemediationExecutionStore, str]:
     plan = _plan(plan_id="RMP-EVIDENCE-AMBIGUOUS")
     store = RemediationExecutionStore()
     repository = _approved_repository(plan, patch_ids=patch_ids)
     patching_service = PatchingService(
-        _FakeVulnerabilityService(), adapter=_AmbiguousAdapter(), require_human_approval=False
+        _FakeVulnerabilityService(),
+        adapter=adapter or _AmbiguousAdapter(),
+        require_human_approval=False,
     )
     service = RemediationExecutionService(
         plan_repository=repository,
@@ -425,6 +432,42 @@ def test_reconcile_ambiguous_submission_reclassified_after_deadline_with_no_proo
     assert result["retryable"] is True
     assert result["supersede_ineligibility_reason"] == ""
     assert result["failure_details"]
+
+
+def test_sre_ambiguity_remains_non_retryable_after_deadline_without_proof():
+    service, store, execution_id = _ambiguous_service(
+        refresher=None,
+        deadline_seconds=60.0,
+        adapter=_AmbiguousAdapter(name="sre-agent"),
+    )
+    initial = store.get(execution_id)
+    assert initial["provider"] == "sre-agent"
+    assert initial["attempts"][0]["provider"] == "sre-agent"
+    service._now = lambda: NOW + timedelta(seconds=120)
+
+    result = service.reconcile_ambiguous_submission(execution_id)
+
+    assert result["status"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert result["verified_state"] == "sre_agent_manual_resolution_required"
+    assert result["evidence_reconciliation"]["status"] == (
+        "unreconciled_manual_resolution"
+    )
+    assert result["retryable"] is False
+    assert result["supersede_ineligibility_reason"] == ""
+    assert store.list_due_for_verification(now=NOW + timedelta(seconds=180)) == []
+
+    with pytest.raises(RemediationExecutionError) as excinfo:
+        service.retry(execution_id)
+    assert getattr(excinfo.value, "reason", "") == "submission_ambiguous"
+
+    superseding = service.supersede(
+        execution_id,
+        requested_by="operator@example.com",
+        reason="Operator confirmed no recoverable thread handle",
+    )
+    assert superseding["execution_id"] != execution_id
+    assert store.get(execution_id)["superseded_by"] == superseding["execution_id"]
 
 
 def test_reconcile_ambiguous_submission_skips_refresher_for_defender_configuration():
