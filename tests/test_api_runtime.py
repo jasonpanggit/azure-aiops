@@ -583,6 +583,67 @@ def test_exposure_query_failure_blocks_process_readiness(
     assert health["readiness"] == "degraded"
 
 
+@pytest.mark.parametrize(
+    ("mode", "required"),
+    [
+        ("maf", True),
+        ("canonical", True),
+        ("deterministic", False),
+        ("", False),
+    ],
+)
+def test_explicit_coordinator_modes_own_process_readiness(
+    monkeypatch,
+    mode,
+    required,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    if mode:
+        monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", mode)
+    else:
+        monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://example.services.ai.azure.com/api/projects/project",
+    )
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+    monkeypatch.delenv("FOUNDRY_AGENT_VERSION", raising=False)
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: False)
+    monkeypatch.setattr(runtime_module, "_load_foundry_agent", lambda: None)
+
+    providers = runtime_module._build_provider_runtime(object())
+    health = providers.refresh(force=True)
+
+    assert providers.specs["copilot"].required is required
+    assert health["providers"]["copilot"]["loaded"] is False
+    assert health["readiness"] == ("degraded" if required else "ready")
+
+
+def test_maf_mode_missing_coordinator_configuration_blocks_readiness(
+    monkeypatch,
+) -> None:
+    import api.runtime as runtime_module
+
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "maf")
+    monkeypatch.delenv("FOUNDRY_PROJECT_ENDPOINT", raising=False)
+    monkeypatch.delenv("FOUNDRY_AGENT_NAME", raising=False)
+    monkeypatch.delenv("FOUNDRY_NETWORK_AGENT_NAME", raising=False)
+    monkeypatch.setattr(runtime_module, "_fabric_is_configured", lambda: False)
+    monkeypatch.setattr(runtime_module, "_load_foundry_agent", lambda: None)
+
+    providers = runtime_module._build_provider_runtime(object())
+    health = providers.refresh(force=True)
+
+    assert providers.specs["copilot"].configured is True
+    assert providers.specs["copilot"].required is True
+    assert health["providers"]["copilot"]["state"] == "unavailable"
+    assert health["readiness"] == "degraded"
+
+
 def test_exposure_query_provider_defers_readable_generation_to_gold_queries(
     monkeypatch,
 ) -> None:
