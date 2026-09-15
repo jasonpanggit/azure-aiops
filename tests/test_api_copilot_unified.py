@@ -14,13 +14,18 @@ from api.app import create_app
 from api.evidence import Evidence
 from api.providers import ProviderRuntime, ProviderSpec
 from api.scope import Scope
-from operations.foundry_agent import AgentAnswer, FoundryAgentError
+from operations.foundry_agent import (
+    AgentAnswer,
+    FoundryAgentError,
+    FoundryCoordinatorPlanner,
+)
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
 )
+from operations.maf_orchestrator import build_deterministic_fallback
 from operations.orchestration_contract import (
     CandidatePlan,
     EvidenceSnapshotV2,
@@ -36,7 +41,10 @@ from operations.orchestration_service import (
     OrchestrationService,
     PlannerUnavailableError,
 )
-from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
+from operations.specialist_manifest import (
+    INVENTORY_DATA_HEALTH_ID,
+    load_specialist_manifest,
+)
 from operations.tools import STATUS_OK, ToolResult
 
 
@@ -474,12 +482,11 @@ def test_repeated_tool_calls_retain_distinct_citations():
 
 
 def test_wall_clock_budget_stops_before_tool_io():
-    ticks = iter([0.0, 6.0])
     calls: list[str] = []
     service = OrchestrationService(
         planner=lambda request: _candidate(),
         executor=lambda name, arguments, *, context, scope: calls.append(name),
-        clock=lambda: next(ticks),
+        clock=lambda: 0.0,
     )
 
     result = service.execute(
@@ -487,11 +494,125 @@ def test_wall_clock_budget_stops_before_tool_io():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        max_wall_seconds=0,
     )
 
     assert calls == []
     assert result.status == "partial"
     assert "orchestration wall-clock budget exhausted" in result.uncertainty
+
+
+def test_highest_risk_fallback_preserves_tool_budget_after_coordinator_correction():
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+        def advance(self, seconds):
+            self.now += seconds
+
+    class Coordinator:
+        def __init__(self, clock):
+            self.clock = clock
+            self.calls = 0
+
+        def answer(self, **_kwargs):
+            self.calls += 1
+            self.clock.advance(2.0)
+            if self.calls == 1:
+                payload = {
+                    "steps": [{
+                        "specialist_id": "vulnerability",
+                        "tool_calls": [{
+                            "tool": "cve_exposure",
+                            "arguments": {},
+                            "citation_ids": ["snapshot:coverage"],
+                        }],
+                    }],
+                }
+            else:
+                payload = {
+                    "steps": [
+                        {
+                            "specialist_id": "vulnerability",
+                            "tool_calls": [{
+                                "tool": "cve_exposure",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                        {
+                            "specialist_id": "governance",
+                            "tool_calls": [{
+                                "tool": "business_service_context",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                    ],
+                }
+            return AgentAnswer(
+                text=json.dumps(payload),
+                agent_name="operations-copilot",
+                agent_version="5",
+            )
+
+    clock = Clock()
+    coordinator = Coordinator(clock)
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=153,
+                total_count=153,
+                complete=False,
+            ),
+        ),
+    )
+    calls = []
+
+    def execute(name, arguments, *, context, scope):
+        calls.append(name)
+        clock.advance(1.1 if name == "cve_exposure" else 0.1)
+        return ToolResult(
+            status=STATUS_OK,
+            data={"tool": name},
+            evidence=(
+                Evidence(
+                    source_engine=f"test.{name}",
+                    source_table="governed_evidence",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    manifest = load_specialist_manifest()
+    result = OrchestrationService(
+        planner=FoundryCoordinatorPlanner(coordinator),
+        fallback_planner=lambda governed_request: build_deterministic_fallback(
+            governed_request,
+            manifest,
+        ),
+        executor=execute,
+        clock=clock,
+    ).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert result.policy_status == "fallback"
+    assert result.fallback_reason == "candidate_rejected:invalid_arguments"
+    assert calls == ["cve_exposure", "business_service_context"]
+    assert result.selected_specialists == ["vulnerability", "governance"]
+    assert result.selected_tools == ["cve_exposure", "business_service_context"]
+    assert "orchestration wall-clock budget exhausted" not in result.uncertainty
+    assert clock.now == pytest.approx(5.2)
 
 
 def test_widened_request_scope_causes_zero_calls():
