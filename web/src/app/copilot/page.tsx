@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { CopilotCitations } from "@/components/ui/CopilotCitations";
 import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -192,18 +193,11 @@ function CopilotContent() {
                     </ul>
                   </div>
                 ) : null}
-                {!turn.error && turn.citations?.length ? (
-                  <div className="copilot-citations" aria-label="Copilot citations">
-                    <StatusBadge label="Citations" tone="info" compact />
-                    <ul>
-                      {turn.citations.map((citation) => (
-                        <li key={citation.citation_id}>
-                          {citation.source}
-                          {citation.status ? <span className="muted"> — {citation.status}</span> : null}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                {!turn.error ? (
+                  <CopilotCitations
+                    citations={turn.citations ?? []}
+                    ariaLabel="Copilot citations"
+                  />
                 ) : null}
                 {!turn.error && (
                   <EvidenceBar

@@ -5556,14 +5556,12 @@ body.topology-fullscreen-open {
   margin: 12px 0;
 }
 
-.copilot-uncertainty > strong,
-.copilot-citations > strong {
+.copilot-uncertainty > strong {
   display: block;
   margin-bottom: 6px;
 }
 
-.copilot-uncertainty ul,
-.copilot-citations ul {
+.copilot-uncertainty ul {
   display: grid;
   gap: 6px;
   margin: 0;
@@ -5575,20 +5573,64 @@ body.topology-fullscreen-open {
   overflow-wrap: anywhere;
 }
 
+.copilot-citations-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.copilot-citations-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.copilot-citations-toggle svg {
+  flex: 0 0 auto;
+}
+
+.copilot-citations-panel {
+  max-height: min(40vh, 360px);
+  margin-top: 4px;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.copilot-citations-panel ul {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.copilot-citations-panel li {
+  min-width: 0;
+}
+
 .copilot-citation {
   min-width: 0;
 }
 
-.copilot-citation summary {
+.copilot-citation-header {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  cursor: pointer;
 }
 
-.copilot-citation summary > span:first-child {
+.copilot-citation-header > span:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -5596,9 +5638,33 @@ body.topology-fullscreen-open {
 .copilot-citation code {
   display: block;
   max-width: 100%;
-  margin-top: 6px;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.copilot-citation-metadata {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.copilot-citation-metadata > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.copilot-citation-metadata dt {
+  font-weight: 600;
+}
+
+.copilot-citation-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 
