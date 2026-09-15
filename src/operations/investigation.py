@@ -32,6 +32,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -315,6 +316,7 @@ def run_investigation(
     principal: Any | None = None,
     hint_tool: str | None = None,
     hint_args: dict[str, Any] | None = None,
+    planned_calls: Sequence[tuple[str, dict[str, Any]]] | None = None,
     page_kind: str | None = None,
 ) -> Investigation:
     """Plan, execute, and narrate one Copilot turn.
@@ -326,7 +328,13 @@ def run_investigation(
     ``page_kind`` (e.g., "vulnerability_page") routes to a specialist agent
     instead of the generic Copilot agent.
     """
-    plan = [(hint_tool, hint_args or {})] if hint_tool else _plan(question)
+    plan = (
+        [(hint_tool, hint_args or {})]
+        if hint_tool
+        else list(planned_calls)
+        if planned_calls is not None
+        else _plan(question)
+    )
     calls: list[ToolCallRecord] = []
     for name, args in plan:
         result = call_tool(

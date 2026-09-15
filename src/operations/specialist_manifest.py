@@ -50,7 +50,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "8d41328b03f13c195a7023770058a6f1f5afc2b9eb69afca64f8047c21844f88"
+_LOCKED_POLICY_DIGEST = "88e21ca30326fdf60bf35332d5f019c9f61f4c7247beeec275289cfa33a22613"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",
@@ -160,6 +160,10 @@ class SpecialistDefinition(ManifestModel):
     knowledge_policy: KnowledgePolicy
     page_mappings: tuple[PageMapping, ...] = Field(min_length=1, max_length=8)
     primary_page_mappings: tuple[PageMapping, ...] = Field(default=(), max_length=8)
+    page_tool_grants: dict[PageMapping, tuple[str, ...]] = Field(
+        default_factory=dict,
+        max_length=8,
+    )
     output_contract: OutputContract
     ui_metadata: UIMetadata
     foundry: FoundryMetadata
@@ -182,7 +186,22 @@ class SpecialistDefinition(ManifestModel):
             raise ValueError("specialist contracts may contain only read-only tools")
         if not set(self.primary_page_mappings) <= set(self.page_mappings):
             raise ValueError("primary page mappings must also be page mappings")
+        if not set(self.page_tool_grants) <= set(self.page_mappings):
+            raise ValueError("page tool grants must also be page mappings")
+        for tools in self.page_tool_grants.values():
+            if not tools or len(tools) != len(set(tools)):
+                raise ValueError("page tool grants must be non-empty and unique")
+            if not set(tools) <= set(self.operations_mcp_tools):
+                raise ValueError("page tool grants must be Operations MCP grants")
         return self
+
+    def operations_tools_for_page(
+        self,
+        page: PageMapping,
+    ) -> tuple[str, ...]:
+        """Return the reviewed tool subset for one mapped page."""
+
+        return self.page_tool_grants.get(page, self.operations_mcp_tools)
 
 
 class NonInteractiveToolConsumer(ManifestModel):

@@ -415,7 +415,12 @@ def test_empty_network_snapshot_skips_fabric_iq_enrichment_io(monkeypatch):
         ),
         (
             lambda payload: payload["specialists"][0].update(
-                {"operations_mcp_tools": ["missing_read_tool"]}
+                {
+                    "operations_mcp_tools": ["missing_read_tool"],
+                    "page_tool_grants": {
+                        "compliance": ["missing_read_tool"]
+                    },
+                }
             ),
             "missing Operations MCP tools",
         ),
@@ -513,7 +518,7 @@ def test_empty_network_snapshot_skips_fabric_iq_enrichment_io(monkeypatch):
             lambda payload: payload["specialists"][0]["page_mappings"].__setitem__(
                 1, "overview"
             ),
-            "locked specialist contract",
+            "page tool grants must also be page mappings",
         ),
         (
             lambda payload: payload["specialists"][0]["knowledge_policy"][

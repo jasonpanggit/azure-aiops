@@ -809,13 +809,15 @@ def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
             ),
         ),
     )
+    body = _cve_canonical_body(cve_id)
+    body["snapshot"]["freshness"] = []
     response = TestClient(
         create_app(_context(tmp_path, None)),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
         headers=HEADERS,
-        json=_cve_canonical_body(cve_id),
+        json=body,
     )
 
     assert response.status_code == 200, response.text
@@ -929,13 +931,15 @@ def test_retained_cve_rollout_narrates_exact_tool_evidence_without_foundry(
         ),
     )
 
+    request_body = _cve_canonical_body(cve_id)
+    request_body["snapshot"]["freshness"] = []
     response = TestClient(
         create_app(_context(tmp_path, None)),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
         headers=HEADERS,
-        json=_cve_canonical_body(cve_id),
+        json=request_body,
     )
 
     assert response.status_code == 200, response.text
@@ -956,10 +960,283 @@ def test_retained_cve_rollout_narrates_exact_tool_evidence_without_foundry(
     assert "**25 records were inspected**" in narration
     assert "**37 are active**" in narration
     assert "no represented workload mapping" in narration
+    assert data["synthesis"]["claims"][0]["freshness"] == "unknown"
+    assert "CVE source freshness is unknown." in (
+        data["synthesis"]["claims"][0]["uncertainty"]
+    )
     assert all(
         ref.startswith("tool:")
         for ref in data["synthesis"]["claims"][0]["evidence_refs"]
     )
+
+
+def test_retained_network_rollout_narrates_cited_firewall_facts_without_foundry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    body["question"] = "Show inspection bypass paths."
+    body["hint"] = {
+        "specialist_id": "network",
+        "tool": "firewall_nsg_gaps",
+        "arguments": {},
+    }
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    tool_data = {
+        "gaps": [
+            {
+                "gap_id": "gap-firewall-bypass",
+                "severity": "critical",
+                "title": "Spoke bypasses hub firewall",
+                "resource_name": "payments-spoke",
+            }
+        ],
+        "rule_findings": [
+            {
+                "finding_id": "finding-open-nsg",
+                "severity": "high",
+                "title": "NSG permits unrestricted inbound traffic",
+                "resource_name": "payments-nsg",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda name, arguments, **_kwargs: ToolResult(
+            status="ok",
+            data=tool_data,
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    confidence="medium",
+                ),
+            ),
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["network"]
+    assert data["selected_tools"] == ["firewall_nsg_gaps"]
+    assert data["synthesis"]["status"] == "degraded"
+    assert data["synthesis"]["compatibility_answer"] is None
+    claim = data["synthesis"]["claims"][0]
+    assert "1 inspection gap" in claim["summary"]
+    assert "1 firewall/NSG rule finding" in claim["summary"]
+    assert "Spoke bypasses hub firewall" in claim["summary"]
+    assert "NSG permits unrestricted inbound traffic" in claim["summary"]
+    assert all(ref.startswith("tool:") for ref in claim["evidence_refs"])
+    assert "deterministic cited network evidence" in (
+        data["synthesis"]["warning"].casefold()
+    )
+
+
+def test_retained_compliance_freeform_uses_only_page_granted_network_tool(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    body["question"] = "Can UAT reach PROD through the firewall?"
+    body["hint"] = None
+    body["snapshot"]["page_kind"] = "compliance"
+    body["snapshot"]["page_id"] = "compliance-posture"
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    calls: list[str] = []
+
+    def network_tool(name, arguments, **_kwargs):
+        calls.append(name)
+        return ToolResult(
+            status="empty",
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    confidence="medium",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("operations.investigation.call_tool", network_tool)
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["firewall_nsg_gaps"]
+    assert response.json()["data"]["selected_tools"] == ["firewall_nsg_gaps"]
+
+
+def test_deterministic_network_claim_does_not_invent_missing_freshness():
+    from operations.orchestration_service import deterministic_network_claims
+
+    claims = deterministic_network_claims(
+        snapshot=EvidenceSnapshotV2(
+            page_kind="network",
+            page_id="network-topology",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+        tool_results=[{
+            "call_id": "network:0",
+            "specialist_id": "network",
+            "tool": "firewall_nsg_gaps",
+            "status": "ok",
+            "data": {"gaps": [], "rule_findings": []},
+            "evidence": [{"source": "network"}],
+        }],
+    )
+
+    assert claims[0]["freshness"] == "unknown"
+
+
+def test_retained_mixed_firewall_turn_keeps_other_cited_specialist_claims(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    body["question"] = "Which firewall exceptions need review?"
+    body["hint"] = None
+    body["snapshot"]["page_kind"] = "compliance"
+    body["snapshot"]["page_id"] = "compliance-posture"
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+
+    def cited_tool(name, arguments, **_kwargs):
+        data = (
+            {
+                "gaps": [{
+                    "gap_id": "gap-1",
+                    "severity": "critical",
+                    "title": "Spoke bypasses hub firewall",
+                }],
+                "rule_findings": [],
+            }
+            if name == "firewall_nsg_gaps"
+            else {"business_service": "Payments"}
+        )
+        return ToolResult(
+            status="ok",
+            data=data,
+            evidence=(
+                Evidence(
+                    source_engine=f"test.{name}",
+                    source_table="governed_evidence",
+                    confidence="medium",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("operations.investigation.call_tool", cited_tool)
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["network", "governance"]
+    assert data["selected_tools"] == [
+        "firewall_nsg_gaps",
+        "business_service_context",
+    ]
+    summaries = [
+        claim["summary"] for claim in data["synthesis"]["claims"]
+    ]
+    assert any("Spoke bypasses hub firewall" in summary for summary in summaries)
+    assert any("governance specialist" in summary for summary in summaries)
+    governance_claim = next(
+        claim
+        for claim in data["synthesis"]["claims"]
+        if "governance specialist" in claim["summary"]
+    )
+    assert governance_claim["freshness"] == "unknown"
+    assert governance_claim["uncertainty"] == [
+        "The cited specialist result does not report independent freshness."
+    ]
+
+
+def test_retained_duplicate_tool_names_preserve_positional_specialist_attribution(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _canonical_body()
+    body["question"] = "What changed during this incident?"
+    body["hint"] = None
+    body["snapshot"]["page_kind"] = "incident"
+    body["snapshot"]["page_id"] = "incident"
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["freshness"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: ToolResult(status="empty"),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["incident", "change"]
+    assert data["selected_tools"] == ["incidents", "incidents"]
 
 
 def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
@@ -1550,7 +1827,7 @@ def test_shadow_endpoint_accepts_matching_plans_without_duplicate_tool_io(
     assert rollout["comparison"]["matches"]["selected_tools"] is True
 
 
-def test_shadow_endpoint_reports_canonical_policy_fallback_without_duplicate_io(
+def test_shadow_endpoint_rejects_mismatched_hint_without_tool_io(
     tmp_path,
     monkeypatch,
 ):
@@ -1587,12 +1864,9 @@ def test_shadow_endpoint_reports_canonical_policy_fallback_without_duplicate_io(
         json=body,
     )
 
-    assert response.status_code == 200, response.text
-    rollout = response.json()["data"]["rollout"]
-    assert tool_calls == [("network_topology", {})]
-    assert rollout["shadow_validated"] is False
-    assert rollout["shadow_reason"].startswith("candidate_rejected:")
-    assert rollout["comparison"]["canonical"]["policy_status"] == "fallback"
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert tool_calls == []
 
 
 def test_absent_rollout_mode_fails_closed_to_compatibility(
@@ -2309,6 +2583,12 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
     context = _context(tmp_path, None)
     context.inventory_read_port_provider = lambda: InventoryPort()
     client = TestClient(create_app(context), raise_server_exceptions=False)
+    monkeypatch.setattr(
+        "api.routers.copilot.OrchestrationService",
+        lambda **_kwargs: pytest.fail(
+            "rejected explicit hint reached thread/synthesis service"
+        ),
+    )
 
     invalid_hint = _canonical_body(
         hint={
@@ -2322,13 +2602,9 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
         json=invalid_hint,
         headers=HEADERS,
     )
-    assert response.status_code == 200
-    assert response.json()["data"]["policy_status"] == "fallback"
-    assert response.json()["data"]["fallback_reason"].startswith("candidate_rejected:")
-    assert response.json()["data"]["selected_specialists"] == [
-        INVENTORY_DATA_HEALTH_ID
-    ]
-    assert calls == [{"subscription": ["sub-a"]}]
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
 
     conflicting_hint = _canonical_body(
         hint={
@@ -2342,15 +2618,9 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
         json=conflicting_hint,
         headers=HEADERS,
     )
-    assert response.status_code == 200
-    assert response.json()["data"]["policy_status"] == "fallback"
-    assert response.json()["data"]["fallback_reason"].startswith(
-        "candidate_rejected:"
-    )
-    assert calls == [
-        {"subscription": ["sub-a"]},
-        {"subscription": ["sub-a"]},
-    ]
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
 
     widened = _canonical_body(
         requested_scope={"subscription": ["sub-a", "sub-b"]}
@@ -2361,10 +2631,7 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
         headers=HEADERS,
     )
     assert response.status_code == 400
-    assert calls == [
-        {"subscription": ["sub-a"]},
-        {"subscription": ["sub-a"]},
-    ]
+    assert calls == []
 
 
 def test_canonical_route_rejects_browser_authority_assertions(
@@ -4108,6 +4375,12 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     body["snapshot"]["page_kind"] = "network"
     body["snapshot"]["page_id"] = "network"
     body["snapshot"]["evidence"] = []
+    body["question"] = "Show network topology."
+    body["hint"] = {
+        "specialist_id": "network",
+        "tool": "network_topology",
+        "arguments": {},
+    }
     client = TestClient(create_app(_context(tmp_path, None)))
 
     response = client.post(

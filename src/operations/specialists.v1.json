@@ -21,7 +21,8 @@
       "operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "resourcehealth_availability-status_get", "monitor_activitylog_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
-      "page_mappings": ["network", "twin"],
+      "page_mappings": ["network", "compliance", "twin"],
+      "page_tool_grants": {"compliance": ["firewall_nsg_gaps"]},
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,
@@ -42,7 +43,8 @@
       "operations_mcp_tools": ["cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "risk_context", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list", "advisor_recommendation_summary"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
-      "page_mappings": ["vulnerability", "exposure", "cve_detail", "defender_posture"],
+      "page_mappings": ["vulnerability", "compliance", "exposure", "cve_detail", "defender_posture"],
+      "page_tool_grants": {"compliance": ["cve_exposure"]},
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,

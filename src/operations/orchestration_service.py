@@ -415,6 +415,161 @@ def executive_synthesis_decision(
     return SynthesisDecision(False, "single_domain", domain_count)
 
 
+def snapshot_claim_freshness(snapshot: EvidenceSnapshotV2) -> str:
+    """Conservatively classify claim freshness from supplied source states."""
+
+    statuses = {item.status for item in snapshot.freshness}
+    if not statuses:
+        return "unknown"
+    if statuses == {"fresh"}:
+        return "fresh"
+    if "unavailable" in statuses:
+        return "unavailable"
+    if "stale" in statuses:
+        return "stale"
+    return "partial"
+
+
+def deterministic_network_claims(
+    *,
+    snapshot: EvidenceSnapshotV2 | None,
+    tool_results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Summarize cited firewall findings without optional model narration."""
+
+    if snapshot is None or snapshot.page_kind not in {"network", "compliance"}:
+        return []
+    network_claim: dict[str, Any] | None = None
+    for result in tool_results:
+        if (
+            result.get("tool") != "firewall_nsg_gaps"
+            or result.get("status") != STATUS_OK
+            or not isinstance(result.get("data"), Mapping)
+        ):
+            continue
+        data = result["data"]
+        gaps = [
+            row for row in data.get("gaps", [])
+            if isinstance(row, Mapping)
+        ]
+        findings = [
+            row for row in data.get("rule_findings", [])
+            if isinstance(row, Mapping)
+        ]
+        call_id = str(result.get("call_id") or "")
+        evidence_refs = [
+            f"tool:{call_id}:{index}"
+            for index, item in enumerate(result.get("evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        if not evidence_refs:
+            continue
+        rows = sorted(
+            [*gaps, *findings],
+            key=lambda row: (
+                {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(
+                    str(row.get("severity") or "").casefold(),
+                    4,
+                ),
+                str(row.get("title") or ""),
+            ),
+        )
+        highlights = []
+        for row in rows[:3]:
+            title = str(
+                row.get("title")
+                or row.get("detail")
+                or row.get("gap_id")
+                or row.get("finding_id")
+                or "Unnamed network finding"
+            ).strip()
+            severity = str(row.get("severity") or "unknown").strip().casefold()
+            resource = str(
+                row.get("resource_name")
+                or row.get("resource_id")
+                or ""
+            ).strip()
+            highlights.append(
+                f"{title} ({severity}{f', {resource}' if resource else ''})"
+            )
+        gap_label = "inspection gap" if len(gaps) == 1 else "inspection gaps"
+        finding_label = (
+            "firewall/NSG rule finding"
+            if len(findings) == 1
+            else "firewall/NSG rule findings"
+        )
+        summary = (
+            f"Network evidence reports {len(gaps)} {gap_label} and "
+            f"{len(findings)} {finding_label}."
+        )
+        if highlights:
+            summary += f" Highest-priority findings: {'; '.join(highlights)}."
+        uncertainty = (
+            []
+            if snapshot.coverage.complete
+            else ["Visible page coverage is incomplete."]
+        )
+        network_claim = {
+                "finding_id": (
+                    "network:"
+                    + hashlib.sha256(
+                        f"{call_id}:{'|'.join(evidence_refs)}".encode()
+                    ).hexdigest()[:24]
+                ),
+                "summary": summary[:1000],
+                "evidence_refs": evidence_refs,
+                "confidence": (
+                    "high" if snapshot.coverage.complete else "medium"
+                ),
+                "freshness": snapshot_claim_freshness(snapshot),
+                "uncertainty": uncertainty,
+                "actionable": False,
+                "next_check": (
+                    "Review the cited scoped network findings before changing "
+                    "firewall, route, or NSG policy."
+                ),
+            }
+        break
+    if network_claim is None:
+        return []
+
+    claims = [network_claim]
+    covered_refs = set(network_claim["evidence_refs"])
+    for finding in normalize_cited_findings(tool_results):
+        evidence_refs = [
+            str(reference)
+            for reference in finding.get("evidence_refs") or []
+        ]
+        if not evidence_refs or covered_refs.intersection(evidence_refs):
+            continue
+        specialist = str(finding.get("specialist_id") or "specialist").replace(
+            "_",
+            " ",
+        )
+        claims.append(
+            {
+                "finding_id": f"direct:{finding['finding_id']}",
+                "summary": (
+                    f"The {specialist} specialist returned cited "
+                    f"{finding.get('status') or 'unknown'!s} evidence for "
+                    f"this investigation."
+                ),
+                "evidence_refs": evidence_refs,
+                "confidence": "medium",
+                "freshness": "unknown",
+                "uncertainty": [
+                    "The cited specialist result does not report independent freshness."
+                ],
+                "actionable": False,
+                "next_check": (
+                    "Review the cited specialist evidence before making an "
+                    "operational decision."
+                ),
+            }
+        )
+    return claims
+
+
 class OrchestrationService:
     """Execute a fully validated plan and persist only authorized result state."""
 
@@ -1077,29 +1232,37 @@ class OrchestrationService:
 
         findings = normalize_cited_findings(tool_results)
         decision = executive_synthesis_decision(question, findings)
-        deterministic_claims = self._deterministic_cve_claims(
+        cve_claims = self._deterministic_cve_claims(
             question,
             snapshot=snapshot,
             tool_results=tool_results,
-        ) or self._deterministic_page_claims(
+        )
+        network_claims = deterministic_network_claims(
+            snapshot=snapshot,
+            tool_results=tool_results,
+        )
+        deterministic_claims = cve_claims or network_claims or self._deterministic_page_claims(
             question,
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
         if deterministic_claims and self.executive_agent is None:
+            evidence_kind = (
+                "CVE" if cve_claims else "network" if network_claims else "page"
+            )
             warning = {
                 "timeout": (
-                    "Foundry narration timed out; deterministic cited CVE evidence "
-                    "was used."
+                    f"Foundry narration timed out; deterministic cited "
+                    f"{evidence_kind} evidence was used."
                 ),
                 "unavailable": (
-                    "Foundry narration provider is unavailable; deterministic cited "
-                    "CVE evidence was used."
+                    f"Foundry narration provider is unavailable; deterministic "
+                    f"cited {evidence_kind} evidence was used."
                 ),
             }.get(
                 narrator_state,
-                "Foundry narration is not configured; deterministic cited CVE "
-                "evidence was used.",
+                f"Foundry narration is not configured; deterministic cited "
+                f"{evidence_kind} evidence was used.",
             )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
@@ -1363,6 +1526,12 @@ class OrchestrationService:
         )
         if not narrative:
             return []
+        freshness = snapshot_claim_freshness(snapshot)
+        uncertainty = (
+            [] if snapshot.coverage.complete else ["visible subset is incomplete"]
+        )
+        if freshness != "fresh":
+            uncertainty.append(f"CVE source freshness is {freshness}.")
         return [
             {
                 "finding_id": (
@@ -1376,10 +1545,8 @@ class OrchestrationService:
                 "confidence": (
                     "high" if snapshot.coverage.complete else "medium"
                 ),
-                "freshness": "fresh",
-                "uncertainty": (
-                    [] if snapshot.coverage.complete else ["visible subset is incomplete"]
-                ),
+                "freshness": freshness,
+                "uncertainty": uncertainty,
                 "actionable": False,
                 "next_check": "Review the cited scoped CVE evidence before remediation.",
             }
@@ -2074,7 +2241,9 @@ __all__ = [
     "PlannerTimeoutError",
     "PlannerUnavailableError",
     "SynthesisDecision",
+    "deterministic_network_claims",
     "execute_from_question",
     "executive_synthesis_decision",
     "legacy_session_history",
+    "snapshot_claim_freshness",
 ]

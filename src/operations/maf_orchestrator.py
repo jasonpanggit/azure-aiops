@@ -484,7 +484,7 @@ def build_deterministic_fallback(
         return ""
 
     def safe_call(spec: Any) -> ToolCallCandidate | None:
-        for tool in spec.operations_mcp_tools:
+        for tool in spec.operations_tools_for_page(page_kind):
             try:
                 arguments, _ = validate_tool_arguments(tool, {})
             except ValueError:

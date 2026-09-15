@@ -66,8 +66,10 @@ from operations.orchestration_contract import (
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
 from operations.orchestration_service import (
     OrchestrationService,
+    deterministic_network_claims,
     execute_from_question,
     legacy_session_history,
+    snapshot_claim_freshness,
 )
 from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
 from operations.specialist_manifest import (
@@ -705,6 +707,18 @@ def _execute_retained_compatibility(
         )
     else:
         thread = store.create(principal.subject, requested_scope)
+    planned_calls: list[tuple[str, dict[str, Any]]] | None = None
+    planned_specialists: list[str] = []
+    if payload.hint is None:
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        planned_calls = []
+        for step in candidate.steps if candidate is not None else ():
+            for call in step.tool_calls:
+                planned_calls.append((call.tool, dict(call.arguments)))
+                planned_specialists.append(step.specialist_id)
     investigation = run_investigation(
         request.question,
         context=context,
@@ -716,6 +730,7 @@ def _execute_retained_compatibility(
             if payload.hint is not None
             else None
         ),
+        planned_calls=planned_calls,
         page_kind=f"{request.snapshot.page_kind}_page",
     )
 
@@ -731,6 +746,8 @@ def _execute_retained_compatibility(
         specialist_id = (
             payload.hint.specialist_id
             if payload.hint is not None and call.tool == payload.hint.tool
+            else planned_specialists[call_index]
+            if call_index < len(planned_specialists)
             else ""
         )
         if specialist_id and specialist_id not in selected_specialists:
@@ -803,6 +820,16 @@ def _execute_retained_compatibility(
                 )
             ]
             if narrative and evidence_refs:
+                freshness = snapshot_claim_freshness(request.snapshot)
+                uncertainty = (
+                    []
+                    if request.snapshot.coverage.complete
+                    else ["visible subset is incomplete"]
+                )
+                if freshness != "fresh":
+                    uncertainty.append(
+                        f"CVE source freshness is {freshness}."
+                    )
                 compatibility_claims = [
                     {
                         "finding_id": f"compatibility:{page_cve.casefold()}",
@@ -813,18 +840,24 @@ def _execute_retained_compatibility(
                             if request.snapshot.coverage.complete
                             else "medium"
                         ),
-                        "freshness": "fresh",
-                        "uncertainty": (
-                            []
-                            if request.snapshot.coverage.complete
-                            else ["visible subset is incomplete"]
-                        ),
+                        "freshness": freshness,
+                        "uncertainty": uncertainty,
                     }
                 ]
                 compatibility_warning = (
                     "Foundry narration is not configured; deterministic cited "
                     "CVE evidence was used."
                 )
+    if investigation.answer is None and not compatibility_claims:
+        compatibility_claims = deterministic_network_claims(
+            snapshot=request.snapshot,
+            tool_results=tool_results,
+        )
+        if compatibility_claims:
+            compatibility_warning = (
+                "Foundry narration is not configured; deterministic cited "
+                "network evidence was used."
+            )
 
     result = OrchestrationResult(
         status=investigation.fact_status,
@@ -1825,6 +1858,12 @@ def investigate_canonical(
                 )
 
     try:
+        if plan_hint is not None:
+            OrchestrationPolicy().validate(
+                request=request,
+                candidate=planner(request),
+                effective_scope=scope,
+            )
         if rollout.canonical_enabled:
             result = OrchestrationService(
                 planner=planner,

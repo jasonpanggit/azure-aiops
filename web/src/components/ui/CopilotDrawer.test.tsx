@@ -1564,6 +1564,75 @@ describe("CopilotDrawer", () => {
     expect(screen.queryByText(/Showing governed results directly/)).not.toBeInTheDocument();
   });
 
+  it("renders retained Network findings as a readable cited answer instead of a raw tool card", async () => {
+    const result = canonicalResult(
+      "thr-88888888888888888888888888888888",
+      "tool:network-retained:0",
+    );
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        policy_status: "fallback",
+        fallback_reason: "compatibility_rollout",
+        selected_specialists: ["network"],
+        selected_tools: ["firewall_nsg_gaps"],
+        tool_results: [{
+          call_id: "network-retained",
+          specialist_id: "network",
+          tool: "firewall_nsg_gaps",
+          status: "ok",
+          data: {
+            gaps: [{ title: "Spoke bypasses hub firewall" }],
+            rule_findings: [{ title: "NSG permits unrestricted inbound traffic" }],
+          },
+          evidence: [],
+          warning: "",
+        }],
+        synthesis: {
+          status: "degraded",
+          reason: "retained_compatibility",
+          domain_count: 1,
+          warning: "Foundry narration is not configured; deterministic cited network evidence was used.",
+          claims: [{
+            finding_id: "network:inspection",
+            summary: "Network evidence reports 1 inspection gap and 1 firewall/NSG rule finding. Highest-priority findings: Spoke bypasses hub firewall (critical, payments-spoke); NSG permits unrestricted inbound traffic (high, payments-nsg).",
+            evidence_refs: ["tool:network-retained:0"],
+            confidence: "high",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+        },
+      },
+    });
+
+    render(
+      <TestProviders>
+        <CopilotDrawer
+          open
+          onClose={vi.fn()}
+          contextLabel="Network paths"
+          snapshot={snapshot}
+          starterQuestions={[{
+            label: "Show inspection bypass paths.",
+            specialistId: "network",
+            tool: "firewall_nsg_gaps",
+            toolArguments: {},
+          }]}
+        />
+      </TestProviders>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Show inspection bypass paths/ }));
+
+    expect(await screen.findByText(/1 inspection gap/)).toBeInTheDocument();
+    expect(screen.getByText(/Spoke bypasses hub firewall/)).toBeInTheDocument();
+    expect(screen.getByText(/NSG permits unrestricted inbound traffic/)).toBeInTheDocument();
+    expect(screen.getByText("tool:network-retained:0")).toBeInTheDocument();
+    expect(screen.queryByText(/Showing governed results directly/)).not.toBeInTheDocument();
+    expect(screen.queryByText("firewall_nsg_gaps")).not.toBeInTheDocument();
+  });
+
   it("serializes requests within the same context", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
