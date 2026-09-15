@@ -1219,6 +1219,23 @@ class FoundryCoordinatorPlanner:
         self.required_hint = dict(required_hint or {})
         self.manifest = load_specialist_manifest()
 
+    def _required_specialists(
+        self,
+        request: InvestigationRequest,
+    ) -> tuple[str, ...]:
+        normalized = " ".join(
+            request.question.casefold().replace("-", " ").split()
+        )
+        if (
+            not self.required_hint
+            and
+            request.snapshot.page_kind == "compliance"
+            and "highest risk" in normalized
+            and "compliance" in normalized
+        ):
+            return ("vulnerability", "governance")
+        return ()
+
     def __call__(self, request: InvestigationRequest) -> CandidatePlan:
         page_kind = request.snapshot.page_kind
         page_mapping = self.manifest.page_mapping_projection()
@@ -1231,6 +1248,7 @@ class FoundryCoordinatorPlanner:
             allowed_specialists[specialist_id] = list(
                 specialist.operations_tools_for_page(page_kind)
             )
+        required_specialists = self._required_specialists(request)
         context = {
             "contract": {
                 "steps": [{
@@ -1261,6 +1279,7 @@ class FoundryCoordinatorPlanner:
                 *[item.evidence_id for item in request.snapshot.evidence],
             ],
             "required_hint": self.required_hint or None,
+            "required_specialists": list(required_specialists),
             "coverage": request.snapshot.coverage.model_dump(mode="json"),
             "selected_entities": [
                 item.model_dump(mode="json")
@@ -1275,19 +1294,46 @@ class FoundryCoordinatorPlanner:
             "that specialist, tool, and arguments.\n\n"
             f"OPERATOR QUESTION:\n{request.question}"
         )
-        answer = self.agent.answer(
-            question=planning_question,
-            context=context,
-            max_output_tokens=2_000,
-        )
-        try:
-            plan = CandidatePlan.model_validate(
-                _json_object_from_answer(getattr(answer, "text", ""))
+        def request_plan(question: str) -> CandidatePlan:
+            answer = self.agent.answer(
+                question=question,
+                context=context,
+                max_output_tokens=2_000,
             )
-        except (TypeError, ValueError, ValidationError) as exc:
-            raise FoundryAgentError(
-                "Operations Copilot coordinator returned an invalid candidate plan"
-            ) from exc
+            try:
+                return CandidatePlan.model_validate(
+                    _json_object_from_answer(getattr(answer, "text", ""))
+                )
+            except (TypeError, ValueError, ValidationError) as exc:
+                raise FoundryAgentError(
+                    "Operations Copilot coordinator returned an invalid candidate plan"
+                ) from exc
+
+        plan = request_plan(planning_question)
+        selected = {step.specialist_id for step in plan.steps}
+        missing = [
+            specialist_id
+            for specialist_id in required_specialists
+            if specialist_id not in selected
+        ]
+        if missing:
+            correction = (
+                f"{planning_question}\n\nYour previous candidate was incomplete; "
+                f"missing required specialists: {', '.join(missing)}. Return "
+                "one corrected complete candidate."
+            )
+            plan = request_plan(correction)
+            selected = {step.specialist_id for step in plan.steps}
+            missing = [
+                specialist_id
+                for specialist_id in required_specialists
+                if specialist_id not in selected
+            ]
+            if missing:
+                raise FoundryAgentError(
+                    "Operations Copilot coordinator plan is missing required "
+                    f"specialists: {', '.join(missing)}"
+                )
         if self.required_hint:
             calls = [
                 (step.specialist_id, call.tool, dict(call.arguments))
