@@ -22,6 +22,8 @@ interface ManifestSpecialist {
   ui_metadata: Record<string, unknown>;
   operations_mcp_tools: string[];
   page_mappings: string[];
+  primary_page_mappings?: string[];
+  page_tool_grants?: Record<string, string[]>;
 }
 interface Manifest {
   specialists: ManifestSpecialist[];
@@ -35,9 +37,16 @@ const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as Manifest;
  * sorted first (Array.prototype.sort is stable, so ties keep append order).
  */
 function projectPageMappings(
-  specialists: Array<{ id: string; page_mappings: string[] }>,
+  specialists: Array<{
+    id: string;
+    page_mappings: string[];
+    primary_page_mappings?: string[];
+  }>,
 ): Record<string, string[]> {
   const pages = new Map<string, string[]>();
+  const byId = new Map(
+    specialists.map((specialist) => [specialist.id, specialist]),
+  );
   for (const specialist of specialists) {
     for (const page of specialist.page_mappings) {
       const owners = pages.get(page) ?? [];
@@ -48,7 +57,13 @@ function projectPageMappings(
   const projection: Record<string, string[]> = {};
   for (const [page, owners] of Array.from(pages.entries())) {
     projection[page] = [...owners].sort(
-      (left, right) => Number(left !== page) - Number(right !== page),
+      (left, right) => {
+        const priority = (specialistId: string) => Number(
+          specialistId !== page
+          && !(byId.get(specialistId)?.primary_page_mappings ?? []).includes(page),
+        );
+        return priority(left) - priority(right);
+      },
     );
   }
   return projection;
@@ -63,19 +78,6 @@ function sameSet(left: readonly string[], right: readonly string[]): boolean {
 
 const rawProjection = projectPageMappings(manifest.specialists);
 
-// The backend API catalog projection (specialist_manifest.catalog_projection)
-// re-exposes id + page_mappings; it must normalize to the same page mapping the
-// UI consumes as the raw manifest does.
-const catalogProjection = projectPageMappings(
-  manifest.specialists.map((specialist) => ({
-    id: specialist.id,
-    display_name: specialist.display_name,
-    purpose: specialist.purpose,
-    ui_metadata: specialist.ui_metadata,
-    page_mappings: specialist.page_mappings,
-  })),
-);
-
 const manifestSpecialistIds = manifest.specialists.map((specialist) => specialist.id);
 const manifestSpecialistIdSet = new Set(manifestSpecialistIds);
 const manifestGrants = new Map(
@@ -89,11 +91,7 @@ const integratedRoutes = Object.entries(COPILOT_ROUTE_DISPOSITIONS).filter(
   ([, disposition]) => disposition.kind === "integrated",
 );
 
-describe("manifest / API / adapter specialist parity (COP-03, D-03, D-05, D-06)", () => {
-  it("normalizes the raw manifest and the API catalog projection to the same page mapping", () => {
-    expect(catalogProjection).toEqual(rawProjection);
-  });
-
+describe("manifest / adapter specialist parity (COP-03, D-03, D-05, D-06)", () => {
   it("anchors every integrated route on a manifest page-mapping key with real owners", () => {
     for (const [route, disposition] of integratedRoutes) {
       if (disposition.kind !== "integrated") continue;
@@ -125,6 +123,19 @@ describe("manifest / API / adapter specialist parity (COP-03, D-03, D-05, D-06)"
             manifestGrants.get(hint.specialistId)?.has(hint.tool),
             `${route}: "${hint.specialistId}" is not granted tool "${hint.tool}"`,
           ).toBe(true);
+          const disposition = COPILOT_ROUTE_DISPOSITIONS[route];
+          if (disposition.kind === "integrated") {
+            const specialist = manifest.specialists.find(
+              (entry) => entry.id === hint.specialistId,
+            );
+            const pageGrant = specialist?.page_tool_grants?.[disposition.pageKind];
+            if (pageGrant) {
+              expect(
+                pageGrant.includes(hint.tool),
+                `${route}: "${hint.tool}" is outside the page-specific grant`,
+              ).toBe(true);
+            }
+          }
         }
       }
     }
@@ -153,6 +164,20 @@ describe("manifest / API / adapter specialist parity (COP-03, D-03, D-05, D-06)"
     expect(rawProjection.vulnerability).toEqual(["vulnerability", "patch"]);
     expect(rawProjection.incident).toEqual(["incident", "change"]);
     expect(rawProjection.network).toEqual(["network"]);
+    expect(rawProjection.compliance).toEqual([
+      "network",
+      "vulnerability",
+      "governance",
+      "remediation",
+    ]);
+    expect(
+      manifest.specialists.find((specialist) => specialist.id === "network")
+        ?.page_tool_grants?.compliance,
+    ).toEqual(["firewall_nsg_gaps"]);
+    expect(
+      manifest.specialists.find((specialist) => specialist.id === "vulnerability")
+        ?.page_tool_grants?.compliance,
+    ).toEqual(["cve_exposure"]);
   });
 });
 

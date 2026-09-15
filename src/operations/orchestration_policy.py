@@ -121,6 +121,9 @@ class OrchestrationPolicy:
                 raise PolicyViolation("page_not_granted", request.snapshot.page_kind)
             if not specialist.read_only:
                 raise PolicyViolation("mutation_forbidden")
+            page_tools = specialist.operations_tools_for_page(
+                request.snapshot.page_kind
+            )
             for dependency in step.depends_on:
                 if dependency not in step_ids:
                     raise PolicyViolation("unknown_dependency", dependency)
@@ -129,6 +132,8 @@ class OrchestrationPolicy:
                     raise PolicyViolation("unknown_tool", call.tool)
                 if call.tool not in specialist.operations_mcp_tools:
                     raise PolicyViolation("tool_not_granted", call.tool)
+                if call.tool not in page_tools:
+                    raise PolicyViolation("page_tool_not_granted", call.tool)
                 try:
                     validate_tool_arguments(call.tool, call.arguments)
                 except ValueError as exc:

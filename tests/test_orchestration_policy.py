@@ -263,6 +263,176 @@ def test_keyword_fallback_page_constrains_specialist_selection():
     assert not any(step.specialist_id == "network" for step in candidate.steps)
 
 
+@pytest.mark.parametrize(
+    ("specialist_id", "tool", "question"),
+    [
+        (
+            "network",
+            "firewall_nsg_gaps",
+            "Which PROD workloads bypass the firewall?",
+        ),
+        (
+            "vulnerability",
+            "cve_exposure",
+            "Which CVEs affect our critical services?",
+        ),
+    ],
+)
+def test_compliance_page_authorizes_its_advertised_specialist_tools(
+    specialist_id,
+    tool,
+    question,
+):
+    request = InvestigationRequest(
+        question=question,
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+        ),
+    )
+    candidate = CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id=specialist_id,
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool=tool,
+                        arguments={},
+                        citation_ids=[COVERAGE_CITATION_ID],
+                    )
+                ],
+            )
+        ],
+        estimated_tokens=0,
+        max_wall_seconds=5,
+    )
+
+    validated = OrchestrationPolicy().validate(
+        request=request,
+        candidate=candidate,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert validated == candidate
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_specialists", "expected_tools"),
+    [
+        (
+            "What are my highest-risk compliance findings?",
+            ["vulnerability", "governance"],
+            ["cve_exposure", "business_service_context"],
+        ),
+        (
+            "Which CVEs affect our critical services?",
+            ["vulnerability"],
+            ["cve_exposure"],
+        ),
+        (
+            "Which PROD workloads bypass the firewall?",
+            ["network"],
+            ["firewall_nsg_gaps"],
+        ),
+    ],
+)
+def test_compliance_questions_select_only_page_authorized_specialists(
+    question,
+    expected_specialists,
+    expected_tools,
+):
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = InvestigationRequest(
+        question=question,
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+        ),
+    )
+
+    candidate = build_deterministic_fallback(request, manifest)
+    validated = OrchestrationPolicy(manifest=manifest).validate(
+        request=request,
+        candidate=candidate,
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert [step.specialist_id for step in validated.steps] == expected_specialists
+    assert [
+        call.tool
+        for step in validated.steps
+        for call in step.tool_calls
+    ] == expected_tools
+
+
+@pytest.mark.parametrize(
+    ("specialist_id", "tool", "reason"),
+    [
+        ("network", "cve_exposure", "tool_not_granted"),
+        ("network", "network_topology", "page_tool_not_granted"),
+        (
+            "vulnerability",
+            "defender_secure_score",
+            "page_tool_not_granted",
+        ),
+    ],
+)
+def test_compliance_policy_rejects_mismatched_or_nonadvertised_tools(
+    specialist_id,
+    tool,
+    reason,
+):
+    request = InvestigationRequest(
+        question="Which PROD workloads bypass the firewall?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+        ),
+    )
+    mismatched = CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id=specialist_id,
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool=tool,
+                        arguments={},
+                        citation_ids=[COVERAGE_CITATION_ID],
+                    )
+                ],
+            )
+        ],
+        estimated_tokens=0,
+        max_wall_seconds=5,
+    )
+    with pytest.raises(PolicyViolation, match=reason):
+        OrchestrationPolicy().validate(
+            request=request,
+            candidate=mismatched,
+            effective_scope=Scope({"subscription": ["sub-a"]}),
+        )
+
+
 def test_keyword_fallback_citations_reference_submitted_evidence():
     """Fallback candidate citations are drawn from the request's evidence,
     never from fabricated or empty references."""
