@@ -268,4 +268,42 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     await waitFor(() => expect(window.localStorage.getItem("aiops.architecture-exceptions.v1")).toContain("Temporary migration exception"));
     expect(screen.getByText("Accepted risk")).toBeInTheDocument();
   });
+
+  it("deduplicates repeated topology resources before rendering violations", async () => {
+    const duplicateResource = {
+      id: "sql-duplicate",
+      name: "payroll-sql",
+      entity_type: "microsoft.sql/servers",
+      subscription_id: "sub-1",
+      resource_group: "rg-payroll",
+      location: "eastus",
+      connection_id: "prod",
+      environment: "prod",
+      business_service: "Payroll",
+      application: "Payroll API",
+      owner: "",
+      tags: {},
+      details: { publicNetworkAccess: "Enabled" },
+    };
+    topology.mockResolvedValue(envelope({
+      topology: {
+        hubs: [],
+        spokes: [],
+        isolated: [],
+        links: [],
+        shared_services: [],
+        unresolved_peer_vnet_ids: [],
+        connection_ids: ["prod"],
+        counts: {},
+        resources: [duplicateResource, { ...duplicateResource }],
+        relationships: [],
+      },
+      summary: { connection_count: 1 },
+    }));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByText("Public PaaS exposure")).toHaveLength(1));
+    expect(screen.getAllByText("Missing logging evidence")).toHaveLength(1);
+  });
 });
