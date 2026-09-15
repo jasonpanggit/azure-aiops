@@ -2041,8 +2041,28 @@ describe("inventory Copilot page adapter", () => {
       expect(canonical.generation_id).toMatch(/^generation:[a-f0-9]{64}$/);
       // Patch specialist hints, never mutating.
       expect(context.starterQuestions.every((starter) =>
-        ["vulnerability", "remediation"].includes(starter.specialistId)
+        starter.specialistId === "patch"
         && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.starterQuestions).toEqual([
+        {
+          label: "Explain KB5001 and the CVEs it remediates",
+          specialistId: "patch",
+          tool: "kb_detail",
+          toolArguments: { kb_id: "KB5001" },
+        },
+        {
+          label: "Which product and publication date apply to KB5001?",
+          specialistId: "patch",
+          tool: "kb_detail",
+          toolArguments: { kb_id: "KB5001" },
+        },
+        {
+          label: "What should we patch first for KB5001?",
+          specialistId: "patch",
+          tool: "patch_priorities",
+          toolArguments: {},
+        },
+      ]);
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
@@ -2167,8 +2187,28 @@ describe("inventory Copilot page adapter", () => {
         reordered.snapshot.evidence.map((row) => row.evidence_id),
       );
       expect(context.starterQuestions.every((starter) =>
-        ["vulnerability", "remediation"].includes(starter.specialistId)
+        starter.specialistId === "patch"
         && !/write|update|delete|execute|remediate|approve|run/i.test(starter.tool ?? ""))).toBe(true);
+      expect(context.starterQuestions).toEqual([
+        {
+          label: "What is the top KB and why is it ranked first?",
+          specialistId: "patch",
+          tool: "patch_priorities",
+          toolArguments: {},
+        },
+        {
+          label: "Which product and publication date apply to the top KB?",
+          specialistId: "patch",
+          tool: "patch_priorities",
+          toolArguments: {},
+        },
+        {
+          label: "What action is recommended for the top KB?",
+          specialistId: "patch",
+          tool: "patch_priorities",
+          toolArguments: {},
+        },
+      ]);
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });

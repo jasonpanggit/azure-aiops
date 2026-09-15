@@ -50,7 +50,7 @@ _MUTATION_MARKERS = (
     "write",
 )
 _READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "88e21ca30326fdf60bf35332d5f019c9f61f4c7247beeec275289cfa33a22613"
+_LOCKED_POLICY_DIGEST = "b9f909bcdd0a056b323abfd7ae62eb91ffeb1bb59d9db708ce790dc8a70bc274"
 _READ_ONLY_AZURE_MCP_TOOLS = frozenset(
     {
         "advisor_recommendation_list",

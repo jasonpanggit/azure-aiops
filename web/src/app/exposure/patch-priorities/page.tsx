@@ -319,6 +319,7 @@ export default function PatchPrioritiesPage() {
       exposure_id: row.exposure_id,
       target_id: row.target_id,
       weakness_id: row.weakness_id,
+      missing_kb: row.weakness_kind === "kb" ? row.weakness_id : undefined,
       server_id: row.target_id,
       severity: row.severity,
       priority_score: row.priority_score,
