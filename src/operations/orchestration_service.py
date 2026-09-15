@@ -2050,16 +2050,16 @@ class OrchestrationService:
                     vulnerability_values.append(value)
                     evidence_refs.append(evidence_id)
             elif claim_type == "situation":
+                evidence_refs.append(evidence_id)
                 if str(data.get("priority") or "").casefold() == "p1":
                     p1_situations += 1
-                    evidence_refs.append(evidence_id)
             elif claim_type == "subscription_connection":
+                evidence_refs.append(evidence_id)
                 if (
                     str(data.get("health_status") or "").casefold() == "stale"
                     or str(data.get("sync_status") or "").casefold() == "failed"
                 ):
                     unhealthy_connections += 1
-                    evidence_refs.append(evidence_id)
 
         def single_summary_value(
             values: Sequence[int],
