@@ -175,6 +175,85 @@ def test_build_sql_reader_builds_from_mapping():
     assert reader.endpoint.schema == "dbo"
 
 
+def test_exposure_reader_uses_configured_endpoint_when_item_metadata_is_missing(
+    monkeypatch,
+):
+    config = SimpleNamespace(
+        sql_endpoint_enabled=True,
+        sql_endpoint=SimpleNamespace(
+            server="configured.datawarehouse.fabric.microsoft.com",
+            database="configured-database",
+            schema="dbo",
+        ),
+        table_schema="",
+        exposure=SimpleNamespace(enabled=True, rollback_mode=False),
+    )
+    captured = {}
+
+    def fake_require(endpoint, credential):
+        captured["endpoint"] = endpoint
+        captured["credential"] = credential
+        return "reader"
+
+    monkeypatch.setattr(fabric_runtime, "require_exposure_ready", fake_require)
+
+    assert (
+        fabric_runtime._build_lakehouse_sql_reader(
+            {"properties": {}},
+            "credential",
+            config,
+        )
+        == "reader"
+    )
+    assert captured == {
+        "endpoint": {
+            "server": "configured.datawarehouse.fabric.microsoft.com",
+            "database": "configured-database",
+            "schema": "dbo",
+        },
+        "credential": "credential",
+    }
+
+
+def test_exposure_reader_prefers_live_item_endpoint_metadata(monkeypatch):
+    config = SimpleNamespace(
+        sql_endpoint_enabled=True,
+        sql_endpoint=SimpleNamespace(
+            server="configured.datawarehouse.fabric.microsoft.com",
+            database="configured-database",
+            schema="dbo",
+        ),
+        table_schema="",
+        exposure=SimpleNamespace(enabled=True, rollback_mode=False),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        fabric_runtime,
+        "require_exposure_ready",
+        lambda endpoint, credential: captured.update(endpoint=endpoint) or "reader",
+    )
+
+    fabric_runtime._build_lakehouse_sql_reader(
+        {
+            "displayName": "lakehouse",
+            "properties": {
+                "sqlEndpointProperties": {
+                    "connectionString": "live.datawarehouse.fabric.microsoft.com",
+                    "id": "live-database",
+                }
+            },
+        },
+        None,
+        config,
+    )
+
+    assert captured["endpoint"] == {
+        "server": "live.datawarehouse.fabric.microsoft.com",
+        "database": "live-database",
+        "schema": "dbo",
+    }
+
+
 class _Credential:
     def __init__(self, *, available: bool = True):
         self.available = available

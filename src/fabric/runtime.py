@@ -599,11 +599,21 @@ def _build_lakehouse_sql_reader(
     properties = (lakehouse.get("properties") or {}).get("sqlEndpointProperties") or {}
     server = str(properties.get("connectionString") or "").strip()
     database = str(properties.get("id") or lakehouse.get("displayName") or "").strip()
+    if not server or not database:
+        # Fabric item responses can transiently omit SQL endpoint metadata even
+        # after the endpoint has been provisioned. The deploy config carries
+        # the same authoritative endpoint identity, so use it as a bootstrap
+        # fallback while retaining the readiness checks below.
+        server = config.sql_endpoint.server
+        database = config.sql_endpoint.database
+        schema = config.sql_endpoint.schema
+    else:
+        schema = config.table_schema or config.sql_endpoint.schema or "dbo"
     endpoint = (
         {
             "server": server,
             "database": database,
-            "schema": config.table_schema or "dbo",
+            "schema": schema or "dbo",
         }
         if server and database
         else None
