@@ -1552,6 +1552,8 @@ export interface CoreCopilotRecord {
   kind: string;
   source: string;
   data: Record<string, unknown>;
+  /** Treat rendered evidence as non-authoritative when it has no Azure identity. */
+  evidenceIdentity?: "domain" | "observation";
   resourceId?: string;
   resourceType?: string;
   name?: string;
@@ -3239,11 +3241,18 @@ function coreRecordSourceKey(record: CoreCopilotRecord): string {
   ]))}`;
 }
 
-function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
+function coreRecordEntity(record: CoreCopilotRecord): CopilotEvidenceIdentity {
   if (isCanonicalAzureResourceId(record.resourceId)) {
     return {
       type: "azure",
       resource_id: canonicalResourceId(record.resourceId),
+    };
+  }
+  if (record.evidenceIdentity === "observation") {
+    return {
+      type: "observation",
+      source: boundedString("observation source", record.source, 1, 128),
+      source_key: coreRecordSourceKey(record),
     };
   }
   return {
@@ -3471,6 +3480,7 @@ function buildCoreCopilotContext(
   const selectedRecords = input.records.filter((record) => record.selected);
   const selectedEntities = selectedRecords
     .map(coreRecordEntity)
+    .filter((entity): entity is CopilotEntityRef => entity.type !== "observation")
     .filter((entity, index, entities) =>
       entities.findIndex((candidate) =>
         entityOrderingKey(candidate) === entityOrderingKey(entity)) === index)
@@ -5046,7 +5056,7 @@ function governanceCoreInput(input: GovernanceCopilotPageInput): CoreCopilotAdap
         export_kind: kind,
       },
     })),
-  ];
+  ].map((record) => ({ ...record, evidenceIdentity: "observation" }));
   // Settings, access reviews, and audit exports degrade independently; an
   // unavailable review/export source never blanks the settings evidence.
   const sourceStatuses: CoreCopilotSourceStatus[] = [
