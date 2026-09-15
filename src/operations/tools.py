@@ -32,7 +32,7 @@ from typing import Any
 from api.errors import ApiError
 from api.evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence
 from api.exposure_query import ExposureFilter, ExposureQuery, ExposureSort
-from api.scope import Scope, scope_attributes
+from api.scope import Scope, scope_attributes, subscription_ids_for_scope
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
 from intelligence.vulnerability.exposure_contracts import (
     ExposureApiPage,
@@ -167,12 +167,15 @@ class ToolContext:
     through it exactly as REST routes do, so a provider outage is reported
     identically in both surfaces. ``scope`` is the caller's *effective* scope,
     already narrowed by RBAC — tools must never accept a wider one.
+    ``resolved_network_subscription_ids`` carries the active connection
+    intersection into the Network service's own defense-in-depth scope.
     """
 
     context: Any
     scope: Scope
     principal: Any | None = None
     generation_selection: Any | None = None
+    resolved_network_subscription_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -260,14 +263,46 @@ def _resolve_vnet_id(service: Any, subject: str) -> str:
     return subject
 
 
-def _network_scope(scope: Scope) -> NetworkScope:
+def _network_scope(
+    scope: Scope,
+    *,
+    default_subscription_ids: tuple[str, ...] = (),
+) -> NetworkScope:
+    subscription_ids = tuple(scope.dimensions.get("subscription", ()))
     return NetworkScope(
         connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-        subscription_ids=tuple(scope.dimensions.get("subscription", ())),
+        subscription_ids=subscription_ids or default_subscription_ids,
         environments=tuple(scope.dimensions.get("environment", ())),
         business_services=tuple(scope.dimensions.get("business_service", ())),
         applications=tuple(scope.dimensions.get("application", ())),
         owners=tuple(scope.dimensions.get("owner", ())),
+    )
+
+
+def _network_hybrid_subscription_ids(tool_context: ToolContext) -> list[str]:
+    """Resolve the REST-equivalent live scope for a Network tool."""
+    scope = tool_context.scope
+    selected_subscriptions = scope.values("subscription")
+    selected_connections = scope.values("subscription_connection")
+    connections = ()
+    if selected_connections or not selected_subscriptions:
+        onboarding = getattr(tool_context.context, "onboarding", None)
+        registry = getattr(onboarding, "registry", None)
+        list_connections = getattr(registry, "list", None)
+        if not callable(list_connections):
+            return []
+        connections = list_connections(include_disabled=False)
+    return subscription_ids_for_scope(
+        scope,
+        connections,
+        default_all=True,
+    )
+
+
+def _tool_network_scope(tool_context: ToolContext) -> NetworkScope:
+    return _network_scope(
+        tool_context.scope,
+        default_subscription_ids=tool_context.resolved_network_subscription_ids,
     )
 
 
@@ -282,14 +317,36 @@ def _provider_result(
     tool-calling loop or, worse, being swallowed into an empty result.
     """
     subscription_ids = list(tool_context.scope.values("subscription"))
-    hybrid_provider = None
     hybrid_names = {"incidents": "hybrid_incident_provider"}
-    if subscription_ids:
-        hybrid_provider = getattr(
-            tool_context.context,
-            hybrid_names.get(name, f"hybrid_{name}_provider"),
-            None,
-        )
+    hybrid_provider = getattr(
+        tool_context.context,
+        hybrid_names.get(name, f"hybrid_{name}_provider"),
+        None,
+    )
+    if name == "network" and callable(hybrid_provider):
+        try:
+            subscription_ids = _network_hybrid_subscription_ids(tool_context)
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            _LOGGER.warning(
+                "tool_hybrid_scope_resolution_failed provider=%s error=%s",
+                name,
+                exc,
+            )
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning="Network subscription connections are unavailable",
+            )
+        if not subscription_ids:
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                warning=(
+                    "Network data is unavailable because no active subscription "
+                    "connection matches the authorized scope"
+                ),
+            )
+        tool_context.resolved_network_subscription_ids = tuple(subscription_ids)
+    elif not subscription_ids:
+        hybrid_provider = None
     if callable(hybrid_provider):
         try:
             return loader(hybrid_provider(subscription_ids))
@@ -421,7 +478,7 @@ def _tool_impact_context(tool_context: ToolContext, args: Mapping[str, Any]) -> 
 
 def _tool_topology(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     def run(network: Any) -> ToolResult:
-        service = network.scoped(_network_scope(tool_context.scope))
+        service = network.scoped(_tool_network_scope(tool_context))
         analysis = service.analyze()
         return ToolResult(
             status=STATUS_OK,
@@ -445,7 +502,7 @@ def _tool_hub_dependents(tool_context: ToolContext, args: Mapping[str, Any]) -> 
         return ToolResult(status=STATUS_EMPTY, warning="A hub VNet id is required")
 
     def run(network: Any) -> ToolResult:
-        service = network.scoped(_network_scope(tool_context.scope))
+        service = network.scoped(_tool_network_scope(tool_context))
         resolved_vnet_id = _resolve_vnet_id(service, vnet_id)
         result = service.hub_dependents(resolved_vnet_id)
         if not result.get("hub_name") and not result.get("dependent_count"):
@@ -474,7 +531,7 @@ def _tool_traffic_flow(tool_context: ToolContext, args: Mapping[str, Any]) -> To
         return ToolResult(status=STATUS_EMPTY, warning="A source and destination are required")
 
     def run(network: Any) -> ToolResult:
-        service = network.scoped(_network_scope(tool_context.scope))
+        service = network.scoped(_tool_network_scope(tool_context))
         result = service.validate_flow(
             FlowQuery(
                 source=source,
@@ -504,7 +561,7 @@ def _tool_traffic_flow(tool_context: ToolContext, args: Mapping[str, Any]) -> To
 
 def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     def run(network: Any) -> ToolResult:
-        service = network.scoped(_network_scope(tool_context.scope))
+        service = network.scoped(_tool_network_scope(tool_context))
         analysis = service.analyze()
         gaps = [gap.to_dict() for gap in analysis.gaps]
         findings = [finding.to_dict() for finding in analysis.rule_findings]
