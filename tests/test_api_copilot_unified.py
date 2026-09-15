@@ -922,6 +922,143 @@ def test_highest_risk_compliance_degradation_prefers_page_facts_over_network():
     )
 
 
+def test_remediation_safest_step_is_deterministic_and_preserves_current_blockers():
+    snapshot = EvidenceSnapshotV2(
+        page_kind="remediation",
+        page_id="remediation",
+        coverage=SnapshotCoverage(
+            visible_count=2,
+            total_count=2,
+            complete=True,
+        ),
+    )
+    retained = [{
+        "evidence_id": "retained:remediation-plan",
+        "original_evidence_id": "remediation:plan",
+        "source": "page_snapshot:remediation:remediation/plan",
+        "status": STATUS_OK,
+        "selected": True,
+        "direct": True,
+        "quality": "high",
+        "claim_type": "remediation_plan",
+        "data": {
+            "title": "Patch vm1",
+            "recommended_step": "verify",
+            "approval_current": False,
+            "approval_status": "expired",
+            "workflow_blockers": ["approve:stale_approval"],
+        },
+    }]
+
+    class Coordinator:
+        calls = 0
+
+        def answer(self, **_kwargs):
+            self.calls += 1
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "blockerless-answer",
+                        "evidence_refs": ["retained:remediation-plan"],
+                        "confidence": "high",
+                        "uncertainty": [],
+                        "freshness": "fresh",
+                        "actionable": False,
+                        "next_check": "Proceed with verification.",
+                        "summary": "The safest next step is verify.",
+                    }]
+                }),
+                agent_name="operations-copilot",
+                agent_version="5",
+            )
+
+    coordinator = Coordinator()
+    synthesis = OrchestrationService(
+        executive_agent=coordinator,
+        always_synthesize=True,
+    )._synthesize(
+        "What is the safest next governed step?",
+        [],
+        retained_evidence=[],
+        current_retained_evidence=retained,
+        snapshot=snapshot,
+    )
+
+    assert synthesis.status == "deterministic"
+    assert synthesis.reason == "deterministic_remediation_workflow"
+    assert coordinator.calls == 0
+    assert synthesis.claims[0]["actionable"] is False
+    assert "verify" in synthesis.claims[0]["summary"].casefold()
+    assert "stale approval" in synthesis.claims[0]["summary"].casefold()
+    assert "expired" in synthesis.claims[0]["summary"].casefold()
+    assert "does not approve or execute" in synthesis.claims[0]["summary"].casefold()
+    assert synthesis.claims[0]["evidence_refs"] == [
+        "retained:remediation-plan"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("recommended_step", "approval_current", "approval_status", "blockers"),
+    [
+        ("approve", False, "none", []),
+        ("run", True, "current", []),
+        (
+            "manual_review",
+            False,
+            "none",
+            ["review:disposition_not_executable"],
+        ),
+    ],
+)
+def test_remediation_safest_step_preserves_manual_governance_boundaries(
+    recommended_step,
+    approval_current,
+    approval_status,
+    blockers,
+):
+    snapshot = EvidenceSnapshotV2(
+        page_kind="remediation",
+        page_id="remediation",
+        coverage=SnapshotCoverage(
+            visible_count=1,
+            total_count=1,
+            complete=True,
+        ),
+    )
+    claims = OrchestrationService._deterministic_remediation_claims(
+        "What is the safest next governed step?",
+        snapshot=snapshot,
+        retained_evidence=[{
+            "evidence_id": "retained:remediation-plan",
+            "source": "page_snapshot:remediation:remediation/plan",
+            "status": STATUS_OK,
+            "selected": True,
+            "direct": True,
+            "quality": "high",
+            "claim_type": "remediation_plan",
+            "data": {
+                "title": "Governed plan",
+                "recommended_step": recommended_step,
+                "approval_current": approval_current,
+                "approval_status": approval_status,
+                "workflow_blockers": blockers,
+            },
+        }],
+    )
+
+    assert len(claims) == 1
+    summary = claims[0]["summary"].casefold()
+    assert recommended_step.replace("_", " ") in summary
+    assert claims[0]["actionable"] is False
+    assert "does not approve or execute" in summary
+    if blockers:
+        assert blockers[0].split(":", 1)[1].replace("_", " ") in summary
+    if approval_current:
+        assert "not current" not in summary
+    else:
+        assert "not current" in summary
+
+
 def test_widened_request_scope_causes_zero_calls():
     calls: list[str] = []
     request = _request().model_copy(

@@ -1280,6 +1280,11 @@ class OrchestrationService:
             snapshot=snapshot,
             tool_results=tool_results,
         )
+        remediation_claims = self._deterministic_remediation_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         page_claims = self._deterministic_page_claims(
             question,
             snapshot=snapshot,
@@ -1295,7 +1300,7 @@ class OrchestrationService:
         deterministic_claims = (
             [*page_claims, *network_claims][:8]
             if highest_risk_compliance and page_claims
-            else cve_claims or network_claims or page_claims
+            else cve_claims or network_claims or remediation_claims or page_claims
         )
         for claim in deterministic_claims:
             evidence_refs = [
@@ -1328,6 +1333,18 @@ class OrchestrationService:
                 reason="deterministic_page_evidence",
                 domain_count=max(1, decision.domain_count),
                 claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if remediation_claims:
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_remediation_workflow",
+                domain_count=1,
+                claims=remediation_claims,
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
@@ -1821,6 +1838,140 @@ class OrchestrationService:
             if len(claims) >= 8:
                 break
         return claims
+
+    @staticmethod
+    def _deterministic_remediation_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Answer safest-step questions from the current governed workflow."""
+
+        lowered = question.casefold()
+        if (
+            snapshot is None
+            or snapshot.page_kind != "remediation"
+            or not all(marker in lowered for marker in ("safest", "next", "step"))
+        ):
+            return []
+
+        plan_evidence = next(
+            (
+                item
+                for item in retained_evidence
+                if item.get("claim_type") == "remediation_plan"
+                and (item.get("selected") or item.get("direct"))
+                and isinstance(item.get("data"), Mapping)
+            ),
+            None,
+        )
+        if plan_evidence is None:
+            return []
+        data = plan_evidence["data"]
+        recommended_step = str(data.get("recommended_step") or "").strip()
+        evidence_id = str(plan_evidence.get("evidence_id") or "").strip()
+        if not recommended_step or not evidence_id:
+            return []
+
+        step_label = recommended_step.replace("_", " ")
+        title = str(data.get("title") or snapshot.page_id).strip()
+        summary = (
+            f"The current workflow's safest next governed step is "
+            f"**{step_label}** for **{title}**."
+        )
+        approval_current = data.get("approval_current") is True
+        approval_status = str(data.get("approval_status") or "").strip()
+        if not approval_current:
+            summary += (
+                f" Current approval is {approval_status or 'not current'} "
+                "and is not current."
+            )
+
+        raw_blockers = data.get("workflow_blockers")
+        blockers = (
+            [
+                str(blocker).strip()
+                for blocker in raw_blockers
+                if str(blocker).strip()
+            ]
+            if isinstance(raw_blockers, list)
+            else []
+        )
+        if blockers:
+            rendered_blockers = []
+            for blocker in blockers:
+                step, separator, code = blocker.partition(":")
+                if not separator:
+                    code, step = blocker, ""
+                label = code.replace("_", " ")
+                rendered_blockers.append(
+                    f"{label} at {step.replace('_', ' ')}"
+                    if step
+                    else label
+                )
+            summary += (
+                " Current workflow blockers: "
+                + ", ".join(rendered_blockers)
+                + "."
+            )
+        summary += (
+            " This advisory answer does not approve or execute remediation; "
+            "review, approval, and any mutation remain in the governed "
+            "operator workflow."
+        )
+
+        next_checks = {
+            "manual_review": (
+                "Have an authorized human review the cited plan and blockers."
+            ),
+            "review": "Review the cited plan impact and blockers.",
+            "approve": (
+                "Have an authorized approver review the exact snapshot and "
+                "record the required decision."
+            ),
+            "run": (
+                "Have an authorized operator revalidate and manually confirm "
+                "the approved snapshot before any run."
+            ),
+            "verify": (
+                "Review the provider verification and reconciliation state; "
+                "do not rerun or change the plan from Copilot."
+            ),
+        }
+        uncertainty = (
+            []
+            if snapshot.coverage.complete
+            else ["Visible remediation-plan coverage is incomplete."]
+        )
+        return [{
+            "finding_id": (
+                "remediation:"
+                + hashlib.sha256(evidence_id.encode()).hexdigest()[:24]
+            ),
+            "summary": summary[:1000],
+            "evidence_refs": [evidence_id],
+            "confidence": (
+                "high"
+                if (
+                    plan_evidence.get("quality") == "high"
+                    and plan_evidence.get("status") == STATUS_OK
+                    and snapshot.coverage.complete
+                )
+                else "medium"
+            ),
+            "freshness": (
+                "fresh"
+                if plan_evidence.get("status") == STATUS_OK
+                else "partial"
+            ),
+            "uncertainty": uncertainty,
+            "actionable": False,
+            "next_check": next_checks.get(
+                recommended_step,
+                "Review the cited workflow state with an authorized operator.",
+            ),
+        }]
 
     # -- telemetry --------------------------------------------------------
 

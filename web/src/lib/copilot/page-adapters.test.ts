@@ -1545,6 +1545,12 @@ describe("inventory Copilot page adapter", () => {
         },
       ],
       execution: null,
+      blockers: [
+        {
+          code: "stale_approval",
+          step: "approve",
+        },
+      ],
       evidence: [
         {
           source_engine: "ARG",
@@ -1596,6 +1602,7 @@ describe("inventory Copilot page adapter", () => {
               approval_status: "none",
               has_executable_preview: true,
               recommended_step: "approve",
+              workflow_blockers: ["approve:stale_approval"],
             }),
           }),
         ]),
@@ -1736,6 +1743,16 @@ describe("inventory Copilot page adapter", () => {
       expect(planRow(context)).toBeUndefined();
       expect(context.snapshot.evidence.every((row) =>
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    });
+
+    it("rejects workflow blocker overflow instead of omitting a safety fact", () => {
+      expect(() => buildRemediationCopilotContext({
+        ...remediationInput,
+        blockers: Array.from({ length: 17 }, (_, index) => ({
+          code: `blocker_${index}`,
+          step: "review",
+        })),
+      })).toThrow("remediation workflow blockers exceeds limit of 16");
     });
   });
 
