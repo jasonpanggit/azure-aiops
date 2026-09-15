@@ -1942,6 +1942,12 @@ export interface RemediationCopilotExecutionFields {
   remaining_attempts?: number;
 }
 
+/** Current server-projected workflow blocker identity (read-only). */
+export interface RemediationCopilotBlockerFields {
+  code: string;
+  step: string;
+}
+
 /** Source availability/freshness carried independently of row order. */
 export interface RemediationCopilotSourceFreshness {
   source: string;
@@ -1975,6 +1981,7 @@ export interface RemediationCopilotPageInput {
   eligibility: RemediationCopilotEligibility | null;
   requirements: RemediationCopilotRequirementFields[];
   execution: RemediationCopilotExecutionFields | null;
+  blockers: RemediationCopilotBlockerFields[];
   evidence: EvidenceItem[];
   historicalEvidence?: RemediationCopilotHistoricalEvidence[];
   coverage: RemediationCopilotCoverageInput;
@@ -5820,6 +5827,10 @@ function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdap
 function remediationCoreInput(input: RemediationCopilotPageInput): CoreCopilotAdapterInput {
   const plan = input.selectedPlan;
   const eligibility = input.eligibility;
+  assertBound("remediation workflow blockers", input.blockers.length, 16);
+  const workflowBlockers = input.blockers.map(
+    (blocker) => `${blocker.step}:${blocker.code}`,
+  );
   const records: CoreCopilotRecord[] = [];
   if (plan) {
     records.push({
@@ -5851,6 +5862,7 @@ function remediationCoreInput(input: RemediationCopilotPageInput): CoreCopilotAd
         approval_status: eligibility?.approval_status ?? "none",
         has_executable_preview: eligibility?.has_executable_preview ?? false,
         recommended_step: eligibility?.recommended_step ?? "",
+        workflow_blockers: workflowBlockers,
       },
     });
   }

@@ -1099,6 +1099,10 @@ function RemediationContent() {
               remaining_attempts: workflow.execution.remaining_attempts,
             }
           : null,
+        blockers: (workflow?.blockers ?? []).map((blocker) => ({
+          code: blocker.code,
+          step: blocker.step,
+        })),
         evidence: plans.data?.evidence ?? [],
         historicalEvidence: [],
         coverage: {
