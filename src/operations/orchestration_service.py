@@ -732,13 +732,14 @@ class OrchestrationService:
             request,
             effective_scope,
         )
+        execution_started = self.clock()
         wall_seconds = min(
             candidate.max_wall_seconds if candidate is not None else 5,
             self.policy.limits.max_wall_seconds,
         )
         if max_wall_seconds is not None:
             wall_seconds = min(wall_seconds, max(0.0, max_wall_seconds))
-        deadline = started + wall_seconds
+        deadline = execution_started + wall_seconds
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
