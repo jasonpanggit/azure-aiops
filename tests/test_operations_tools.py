@@ -347,6 +347,39 @@ def test_network_tool_without_hybrid_provider_does_not_read_registry() -> None:
     assert result.status == STATUS_OK
 
 
+def test_network_registry_failure_returns_unavailable_without_io() -> None:
+    hybrid_calls: list[list[str]] = []
+    managed_calls: list[str] = []
+
+    def fail_if_listed(*, include_disabled: bool = False):
+        assert include_disabled is False
+        raise OSError("registry unavailable")
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        onboarding=SimpleNamespace(registry=SimpleNamespace(list=fail_if_listed)),
+        hybrid_network_provider=lambda subscription_ids: hybrid_calls.append(
+            subscription_ids
+        ),
+        resolve_provider=lambda name: managed_calls.append(name),
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {
+            "vnet_id": "/subscriptions/sub-a/resourcegroups/rg/providers/network/vnets/vnet"
+        },
+        context=context,
+        scope=Scope.unrestricted(),
+    )
+
+    assert result.status == "unavailable"
+    assert result.warning == "Network subscription connections are unavailable"
+    assert hybrid_calls == []
+    assert managed_calls == []
+
+
 def test_g6_discloses_the_bound_and_true_totals_when_agent_lists_truncate() -> None:
     service, result = _run(gaps=30, findings=40)
 

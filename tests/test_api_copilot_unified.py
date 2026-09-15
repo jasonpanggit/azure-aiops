@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from test_api_copilot_investigation import HEADERS, _context
+from test_connection_lineage_integration import make_connection
 
 from api.app import create_app
 from api.evidence import Evidence
@@ -1639,6 +1641,113 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
     assert compatibility_calls == [("hub_dependents", {"vnet_id": vnet_id})]
     assert rollout["mode"] == "compatibility"
     assert rollout["canonical_enabled"] is False
+
+
+def test_unrestricted_no_hint_network_hub_uses_live_provider(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    body.pop("hint")
+    old_vnet_id = body["snapshot"]["selected_entities"][0]["resource_id"]
+    vnet_id = old_vnet_id.replace("/sub-a/", "/sub-1/")
+    body["requested_scope"] = {}
+    body["snapshot"]["selected_entities"][0]["resource_id"] = vnet_id
+    selected_evidence = body["snapshot"]["evidence"][1]
+    selected_evidence["resource_id"] = vnet_id
+    selected_evidence["source_key"] = vnet_id
+    selected_evidence["entity"]["resource_id"] = vnet_id
+    requested_subscriptions: list[list[str]] = []
+
+    class HubService:
+        snapshot = SimpleNamespace(
+            observed_at="2026-09-15T00:00:00Z",
+            vnets=(
+                SimpleNamespace(
+                    resource_id=vnet_id.casefold(),
+                    name="demo-vnet",
+                ),
+            ),
+        )
+
+        def __init__(self):
+            self.scoped_with = None
+
+        def scoped(self, scope):
+            self.scoped_with = scope
+            return self
+
+        def hub_dependents(self, resolved_vnet_id):
+            assert resolved_vnet_id == vnet_id.casefold()
+            return {
+                "hub_vnet_id": resolved_vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_vnets": [],
+                "shared_services": [
+                    {"type": "azure_firewall", "name": "demo-firewall"},
+                    {"type": "azure_bastion", "name": "demo-bastion"},
+                    {
+                        "type": "private_dns_zone",
+                        "name": "privatelink.blob.core.windows.net",
+                    },
+                    {
+                        "type": "private_dns_zone",
+                        "name": "privatelink.vaultcore.azure.net",
+                    },
+                ],
+                "dependent_count": 0,
+            }
+
+    service = HubService()
+    context = _context(tmp_path, None)
+    context.onboarding.registry.add(make_connection())
+    context.hybrid_network_provider = lambda subscription_ids: (
+        requested_subscriptions.append(subscription_ids) or service
+    )
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+            "network": ProviderSpec(
+                lambda: pytest.fail("deferred managed network provider loaded"),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["network"]
+    assert data["selected_tools"] == ["hub_dependents"]
+    assert data["tool_results"][0]["status"] == "ok"
+    assert data["tool_results"][0]["data"]["dependent_count"] == 0
+    assert [
+        item["type"] for item in data["tool_results"][0]["data"]["shared_services"]
+    ] == [
+        "azure_firewall",
+        "azure_bastion",
+        "private_dns_zone",
+        "private_dns_zone",
+    ]
+    assert data["tool_results"][0]["evidence"][0]["resource_id"] == vnet_id
+    assert data["mutation_authorized"] is False
+    assert requested_subscriptions == [["sub-1"]]
+    assert service.scoped_with.connection_ids == ()
+    assert service.scoped_with.subscription_ids == ("sub-1",)
 
 
 def test_missing_rollout_keeps_legacy_investigate_on_compatibility(
