@@ -446,7 +446,11 @@ class NetworkSnapshotLoader:
             ),
             destination_ports=_strings(_get(row, payload, "destinationPorts", "destination_ports")),
             destination_fqdns=_strings(_get(row, payload, "destinationFqdns", "destination_fqdns")),
+            fqdn_tags=_strings(_get(row, payload, "fqdnTags", "fqdn_tags")),
             source_ip_groups=_strings(_get(row, payload, "sourceIpGroups", "source_ip_groups")),
+            destination_ip_groups=_strings(
+                _get(row, payload, "destinationIpGroups", "destination_ip_groups")
+            ),
         )
 
     def _firewall_collection(
@@ -459,6 +463,7 @@ class NetworkSnapshotLoader:
             **common,
             policy_id=_get(row, payload, "policyId", "policy_id", default=""),
             firewall_id=_get(row, payload, "firewallId", "firewall_id", default=""),
+            group_priority=_int(_get(row, payload, "groupPriority", "group_priority", default=0)),
             priority=_int(_get(row, payload, "priority", default=0)),
             action=_get(row, payload, "action", default="Allow"),
             collection_type=_get(

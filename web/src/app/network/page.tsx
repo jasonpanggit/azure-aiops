@@ -878,6 +878,44 @@ function FlowResultView({ result }: { result: FlowResult }) {
                 <p>{presentFlowReason(hop.reason)}</p>
                 {hop.priority !== null && <small>Priority {hop.priority}</small>}
               </div>
+              {(hop.rule_analysis?.length ?? 0) > 0 && (
+                <div className="firewall-rule-analysis">
+                  <div>
+                    <strong>What the firewall rules allow or deny</strong>
+                    <p>
+                      Internet is a broad destination. These observed rules are relevant to
+                      the selected source, protocol, and port; rules marked as destination-specific
+                      need a public FQDN or IP before one can decide the path.
+                    </p>
+                  </div>
+                  <ul>
+                    {hop.rule_analysis?.map((rule) => (
+                      <li key={`${rule.collection_name}-${rule.rule_name}`}>
+                        <div>
+                          <strong>{`${titleize(rule.action)} — ${rule.rule_name}`}</strong>
+                          <span>
+                            {`${titleize(rule.rule_type)} · ${rule.collection_name} · ${
+                              rule.group_priority > 0
+                                ? `group priority ${rule.group_priority} · `
+                                : ""
+                            }collection priority ${rule.collection_priority}`}
+                          </span>
+                        </div>
+                        <p>
+                          {`Destinations: ${rule.destinations.join(", ")} · Protocols: ${
+                            rule.protocols.join(", ") || "Any"
+                          } · Ports: ${rule.destination_ports.join(", ") || "Any"}`}
+                        </p>
+                        <small>
+                          {rule.applicability === "covers_internet"
+                            ? "This rule covers the generic Internet destination."
+                            : "A specific public FQDN or IP is required to determine whether this rule applies."}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ))}
           {result.hops.length === 0 && (

@@ -388,6 +388,7 @@ def _classic_firewall_rule_collections(
                     **_child_base(base, "FirewallRuleCollection", collection_id, collection_name),
                     "policyId": "",
                     "firewallId": firewall_id,
+                    "groupPriority": 0,
                     "priority": int(collection_props.get("priority") or 0),
                     "action": collection_action,
                     "collectionType": rule_type + "Collection",
@@ -401,8 +402,9 @@ def _classic_firewall_rule_collections(
                 # destination addresses. Both land in destination_fqdns /
                 # destination_addresses respectively so downstream gap
                 # analysis can read either without knowing the rule type.
-                destination_fqdns = _strings(rule.get("targetFqdns")) or _strings(rule.get("fqdnTags"))
-                destination_fqdns = destination_fqdns or _strings(rule.get("destinationFqdns"))
+                destination_fqdns = _strings(rule.get("targetFqdns")) or _strings(
+                    rule.get("destinationFqdns")
+                )
                 rules.append(
                     {
                         **_child_base(
@@ -414,9 +416,12 @@ def _classic_firewall_rule_collections(
                         "protocols": _rule_protocols(rule),
                         "sourceAddresses": _strings(rule.get("sourceAddresses")),
                         "destinationAddresses": _strings(rule.get("destinationAddresses")),
-                        "destinationPorts": _strings(rule.get("destinationPorts")),
+                        "destinationPorts": _strings(rule.get("destinationPorts"))
+                        or _rule_ports(rule),
                         "destinationFqdns": destination_fqdns,
+                        "fqdnTags": _strings(rule.get("fqdnTags")),
                         "sourceIpGroups": _strings(rule.get("sourceIpGroups")),
+                        "destinationIpGroups": _strings(rule.get("destinationIpGroups")),
                         "properties": rule,
                     }
                 )
@@ -460,6 +465,7 @@ def normalize_firewall_policy(
             {
                 **_child_base(base, "FirewallRuleCollection", collection_id, collection_name),
                 "policyId": policy_id,
+                "groupPriority": int(props.get("priority") or 0),
                 "priority": int(collection.get("priority") or 0),
                 "action": collection_action,
                 "collectionType": _text(collection.get("ruleCollectionType")) or "FirewallPolicyFilterRuleCollection",
@@ -479,9 +485,12 @@ def normalize_firewall_policy(
                     "protocols": _rule_protocols(rule),
                     "sourceAddresses": _strings(rule.get("sourceAddresses")),
                     "destinationAddresses": _strings(rule.get("destinationAddresses")),
-                    "destinationPorts": _strings(rule.get("destinationPorts")),
+                    "destinationPorts": _strings(rule.get("destinationPorts"))
+                    or _rule_ports(rule),
                     "destinationFqdns": _strings(rule.get("destinationFqdns")),
+                    "fqdnTags": _strings(rule.get("fqdnTags")),
                     "sourceIpGroups": _strings(rule.get("sourceIpGroups")),
+                    "destinationIpGroups": _strings(rule.get("destinationIpGroups")),
                     "properties": rule,
                 }
             )
@@ -502,6 +511,19 @@ def _rule_protocols(rule: dict) -> list[str]:
     if not values and isinstance(protocols, str):
         values = _strings(protocols)
     return values
+
+
+def _rule_ports(rule: dict) -> list[str]:
+    """Extracts ports embedded in application-rule protocol objects."""
+    protocols = rule.get("protocols")
+    if not isinstance(protocols, list):
+        return []
+    return [
+        port
+        for item in protocols
+        if isinstance(item, dict)
+        if (port := _text(item.get("port")))
+    ]
 
 
 def private_endpoint_dns_zone_ids(row: dict) -> list[str]:

@@ -2790,6 +2790,51 @@ textarea:focus-visible {
   color: var(--color-text-muted);
 }
 
+.firewall-rule-analysis {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.firewall-rule-analysis > div p,
+.firewall-rule-analysis li p {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+}
+
+.firewall-rule-analysis ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.firewall-rule-analysis li {
+  padding: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.firewall-rule-analysis li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.firewall-rule-analysis li span,
+.firewall-rule-analysis li small {
+  color: var(--color-text-muted);
+}
+
+.firewall-rule-analysis li small {
+  display: block;
+  margin-top: 4px;
+}
+
 .flow-qualification-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1125,7 +1125,9 @@ def _rule_summary(rule: FirewallRule) -> dict[str, Any]:
         "destination_addresses": list(rule.destination_addresses),
         "destination_ports": list(rule.destination_ports),
         "destination_fqdns": list(rule.destination_fqdns),
+        "fqdn_tags": list(rule.fqdn_tags),
         "source_ip_groups": list(rule.source_ip_groups),
+        "destination_ip_groups": list(rule.destination_ip_groups),
     }
 
 

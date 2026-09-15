@@ -545,7 +545,9 @@ class FirewallRule(NetworkResource):
     destination_addresses: tuple[str, ...] = ()
     destination_ports: tuple[str, ...] = ()
     destination_fqdns: tuple[str, ...] = ()
+    fqdn_tags: tuple[str, ...] = ()
     source_ip_groups: tuple[str, ...] = ()
+    destination_ip_groups: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -556,7 +558,9 @@ class FirewallRule(NetworkResource):
             "destination_addresses",
             "destination_ports",
             "destination_fqdns",
+            "fqdn_tags",
             "source_ip_groups",
+            "destination_ip_groups",
         ):
             object.__setattr__(self, name, _tuple(getattr(self, name)))
 
@@ -584,7 +588,9 @@ class FirewallRule(NetworkResource):
             "destination_addresses": list(self.destination_addresses),
             "destination_ports": list(self.destination_ports),
             "destination_fqdns": list(self.destination_fqdns),
+            "fqdn_tags": list(self.fqdn_tags),
             "source_ip_groups": list(self.source_ip_groups),
+            "destination_ip_groups": list(self.destination_ip_groups),
         }
 
 
@@ -593,6 +599,7 @@ class FirewallRuleCollection(NetworkResource):
     entity_type: str = "FirewallRuleCollection"
     policy_id: str = ""
     firewall_id: str = ""
+    group_priority: int = 0
     priority: int = 0
     action: str = "Allow"
     collection_type: str = "NetworkRuleCollection"
@@ -609,6 +616,7 @@ class FirewallRuleCollection(NetworkResource):
             **super().to_dict(),
             "policy_id": self.policy_id,
             "firewall_id": self.firewall_id,
+            "group_priority": self.group_priority,
             "priority": self.priority,
             "action": self.action,
             "collection_type": self.collection_type,
