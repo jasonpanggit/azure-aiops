@@ -513,6 +513,66 @@ class TestFirewallRuleEvaluation:
         )
         assert firewall_hop.decision == "unknown"
 
+    def test_unmatched_hostname_is_denied_after_unresolved_allow_selectors(
+        self,
+    ) -> None:
+        """Unresolved allow selectors do not prove that an unrelated hostname
+        may match; without a matching allow rule Azure Firewall denies."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/live-network-rules",
+            name="network-rules",
+            priority=100,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/live-network-rules/rules/arc",
+                    name="Arc",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=[
+                        "AzureActiveDirectory",
+                        "AzureTrafficManager",
+                        "AzureResourceManager",
+                        "AzureArcInfrastructure",
+                        "Storage",
+                        "AzureFrontDoor.Frontend",
+                        "AzureMonitor",
+                    ],
+                    destination_ports=["*"],
+                ),
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/live-network-rules/rules/google",
+                    name="Google",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["www.google.com"],
+                    destination_ports=["*"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="www.apple.com",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        assert result.verdict == VERDICT_DENIED
+        assert result.unknowns == ()
+        firewall_hop = next(
+            hop for hop in result.hops if hop.control == "azure_firewall"
+        )
+        assert firewall_hop.decision == "deny"
+        assert firewall_hop.rule_name == ""
+        assert "no firewall rule matched" in firewall_hop.reason
+
     def test_a_manually_entered_public_fqdn_that_does_not_match_falls_through(
         self,
     ) -> None:
