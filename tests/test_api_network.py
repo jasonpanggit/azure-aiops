@@ -688,8 +688,28 @@ class TestTrafficFlow:
         assert data["source"]["subnet_id"] == UAT_SUBNET.casefold()
         assert data["destination"]["is_internet"] is True
         assert data["destination"]["resolved"] is True
+        assert data["verdict"] == "allowed"
         assert data["unknowns"] == []
         assert any(hop["stage"] == "source_egress" for hop in data["hops"])
+
+    def test_selected_subnet_to_public_fqdn_returns_external_egress_path(self, client):
+        response = client.get(
+            "/api/v1/network/traffic-flow",
+            params={
+                "source": UAT_SUBNET,
+                "destination": "www.google.com",
+                "port": 443,
+            },
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["destination"]["name"] == "www.google.com"
+        assert data["destination"]["is_internet"] is True
+        assert data["destination"]["resolved"] is True
+        assert data["verdict"] == "allowed"
+        assert data["unknowns"] == []
 
 
 class TestGaps:

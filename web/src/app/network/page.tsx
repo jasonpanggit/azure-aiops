@@ -13,7 +13,11 @@ import type { TopologyDetailLevel } from "@/components/network/TopologyWorkspace
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
-import { presentVerdict } from "@/lib/flow-verdict";
+import {
+  presentFlowReason,
+  presentPathResolution,
+  presentVerdict,
+} from "@/lib/flow-verdict";
 import { buildNetworkCopilotContext } from "@/lib/copilot/page-adapters";
 import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
@@ -812,6 +816,7 @@ function TrafficFlowWorkspace({
 
 function FlowResultView({ result }: { result: FlowResult }) {
   const presentation = useMemo(() => presentVerdict(result.verdict), [result.verdict]);
+  const resolution = useMemo(() => presentPathResolution(result), [result]);
   const tone = result.verdict === "allowed" ? "success" : result.verdict === "denied" ? "critical" : "warning";
   const bypass = result.missing_enforcement_points.length > 0;
 
@@ -824,10 +829,13 @@ function FlowResultView({ result }: { result: FlowResult }) {
           <p>{result.path_summary}</p>
         </div>
         <div className="flow-verdict-facts">
-          <StatusBadge label={bypass ? "Inspection gap detected" : "Enforcement observed"} tone={bypass ? "critical" : "success"} />
           <StatusBadge
-            label={result.unknowns.length ? `${result.unknowns.length} unknowns` : "Path fully resolved"}
-            tone={result.unknowns.length ? "warning" : "success"}
+            label={bypass ? "Skips firewall inspection" : "Inspected by observed controls"}
+            tone={bypass ? "critical" : "success"}
+          />
+          <StatusBadge
+            label={resolution.label}
+            tone={resolution.tone}
           />
         </div>
       </div>
@@ -867,7 +875,7 @@ function FlowResultView({ result }: { result: FlowResult }) {
               </div>
               <div className="control-reason">
                 <span>Why</span>
-                <p>{hop.reason}</p>
+                <p>{presentFlowReason(hop.reason)}</p>
                 {hop.priority !== null && <small>Priority {hop.priority}</small>}
               </div>
             </div>
@@ -882,20 +890,22 @@ function FlowResultView({ result }: { result: FlowResult }) {
         </div>
       </section>
 
-      {(result.missing_enforcement_points.length > 0 || result.unknowns.length > 0) && (
+      {(bypass || resolution.tone === "warning") && (
         <div className="flow-qualification-grid">
-          <div className="callout callout-critical">
-            <strong>Inspection gaps</strong>
-            <span>
-              {result.missing_enforcement_points.length
-                ? result.missing_enforcement_points.join(", ")
-                : "No missing enforcement points reported."}
-            </span>
-          </div>
-          <div className="callout callout-warning">
-            <strong>Known unknowns</strong>
-            <span>{result.unknowns.length ? result.unknowns.join(", ") : "No unresolved path elements."}</span>
-          </div>
+          {bypass && (
+            <div className="callout callout-critical">
+              <strong>Controls this path skips</strong>
+              <span>
+                {`This traffic is not inspected by: ${result.missing_enforcement_points.join(", ")}.`}
+              </span>
+            </div>
+          )}
+          {resolution.tone === "warning" && (
+            <div className="callout callout-warning">
+              <strong>What could not be determined</strong>
+              <span>{resolution.detail}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -903,13 +913,21 @@ function FlowResultView({ result }: { result: FlowResult }) {
 }
 
 function EndpointCard({ label, endpoint }: { label: string; endpoint: FlowResult["source"] }) {
+  const location = endpoint.is_internet
+    ? "External network endpoint"
+    : endpoint.ip_address || endpoint.subnet_id || endpoint.vnet_id || "Endpoint unresolved";
+
   return (
-    <article className="endpoint-card">
+    <article className="endpoint-card" aria-label={`${label} endpoint`}>
       <span>{label}</span>
       <strong>{endpoint.name || endpoint.raw}</strong>
-      <p>{endpoint.ip_address || endpoint.subnet_id || endpoint.vnet_id || "Endpoint unresolved"}</p>
+      <p>{location}</p>
       <div>
-        <StatusBadge label={endpoint.environment || "Environment unknown"} tone="info" compact />
+        <StatusBadge
+          label={endpoint.is_internet ? "External" : endpoint.environment || "Environment unknown"}
+          tone="info"
+          compact
+        />
         <StatusBadge label={endpoint.resolved ? "Resolved" : "Unresolved"} tone={endpoint.resolved ? "success" : "warning"} compact />
       </div>
     </article>

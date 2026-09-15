@@ -6,9 +6,16 @@ which spokes bypass the firewall.
 
 from __future__ import annotations
 
-from network_scenario import PROD_SUBNET, UAT_SUBNET, network_rows
+from dataclasses import replace
 
-from network import FlowQuery, build_service
+from network_scenario import PROD_SUBNET, UAT_NSG, UAT_SUBNET, network_rows
+
+from network import (
+    FlowQuery,
+    NetworkIntelligenceService,
+    NetworkSecurityRule,
+    build_service,
+)
 from network.flow import VERDICT_ALLOWED, VERDICT_DENIED, VERDICT_INDETERMINATE
 
 
@@ -92,6 +99,50 @@ class TestUncertainty:
         result = _flow("does-not-exist", "also-missing", 443)
         assert not result.is_allowed
 
+    def test_indeterminate_result_explains_unknown_control_decisions(self) -> None:
+        service = _service()
+        unresolved_rule = NetworkSecurityRule(
+            resource_id=f"{UAT_NSG}/securityrules/unresolved-storage",
+            name="unresolved-storage",
+            nsg_id=UAT_NSG,
+            priority=50,
+            direction="Outbound",
+            access="Allow",
+            protocol="Tcp",
+            source_address="*",
+            destination_address="Storage",
+            destination_port="443",
+        )
+        nsgs = tuple(
+            replace(nsg, rules=(unresolved_rule, *nsg.rules))
+            if nsg.resource_id == UAT_NSG
+            else nsg
+            for nsg in service.snapshot.nsgs
+        )
+        result = NetworkIntelligenceService(
+            replace(service.snapshot, nsgs=nsgs)
+        ).validate_flow(
+            FlowQuery(source=UAT_SUBNET, destination="Internet", port=443)
+        )
+
+        unknown_hops = [hop for hop in result.hops if hop.decision == "unknown"]
+        assert len(unknown_hops) == 1
+        assert result.verdict == VERDICT_INDETERMINATE
+        assert result.unknowns == (unknown_hops[0].reason,)
+
+    def test_indeterminate_result_explains_when_no_path_was_observed(self) -> None:
+        service = build_service([])
+        result = service.validate_flow(
+            FlowQuery(source="Internet", destination="Internet", port=443)
+        )
+
+        assert result.verdict == VERDICT_INDETERMINATE
+        assert result.source_endpoint.resolved
+        assert result.destination_endpoint.resolved
+        assert result.unknowns == (
+            "no ordered enforcement path could be established from the observed controls",
+        )
+
 
 class TestEndpointResolution:
     def test_subnet_id_resolves(self) -> None:
@@ -110,9 +161,19 @@ class TestEndpointResolution:
         assert result.source_endpoint.subnet_id == UAT_SUBNET.casefold()
         assert result.destination_endpoint.is_internet
         assert result.destination_endpoint.resolved
+        assert result.verdict == VERDICT_ALLOWED
         assert not result.unknowns
         assert any(hop.stage == "source_egress" for hop in result.hops)
         assert "could not be resolved" not in result.path_summary
+
+    def test_selected_subnet_to_public_fqdn_resolves_as_external(self) -> None:
+        result = _flow(UAT_SUBNET, "www.google.com", 443)
+
+        assert result.destination_endpoint.name == "www.google.com"
+        assert result.destination_endpoint.is_internet
+        assert result.destination_endpoint.resolved
+        assert result.verdict == VERDICT_ALLOWED
+        assert not result.unknowns
 
     def test_manual_internet_source_remains_a_resolved_endpoint(self) -> None:
         result = _flow("Internet", PROD_SUBNET, 443)
