@@ -347,6 +347,143 @@ def test_operations_copilot_cannot_change_required_page_hint() -> None:
         )(_network_request())
 
 
+def test_operations_copilot_retries_missing_highest_risk_compliance_domain() -> None:
+    vulnerability_only = json.dumps({
+        "steps": [{
+            "specialist_id": "vulnerability",
+            "tool_calls": [{
+                "tool": "cve_exposure",
+                "arguments": {},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    complete = json.dumps({
+        "steps": [
+            {
+                "specialist_id": "vulnerability",
+                "tool_calls": [{
+                    "tool": "cve_exposure",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                }],
+            },
+            {
+                "specialist_id": "governance",
+                "tool_calls": [{
+                    "tool": "business_service_context",
+                    "arguments": {
+                        "name": "highest-risk compliance findings"
+                    },
+                    "citation_ids": ["snapshot:coverage"],
+                }],
+            },
+        ],
+    })
+    coordinator = _Coordinator([vulnerability_only, complete])
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    plan = FoundryCoordinatorPlanner(coordinator)(request)
+
+    assert [step.specialist_id for step in plan.steps] == [
+        "vulnerability",
+        "governance",
+    ]
+    assert len(coordinator.calls) == 2
+    assert coordinator.calls[0]["context"]["required_specialists"] == [
+        "vulnerability",
+        "governance",
+    ]
+    assert "missing required specialists: governance" in (
+        coordinator.calls[1]["question"]
+    )
+
+
+def test_operations_copilot_rejects_persistently_incomplete_compliance_plan() -> None:
+    vulnerability_only = json.dumps({
+        "steps": [{
+            "specialist_id": "vulnerability",
+            "tool_calls": [{
+                "tool": "cve_exposure",
+                "arguments": {},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    coordinator = _Coordinator([vulnerability_only, vulnerability_only])
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        FoundryAgentError,
+        match="missing required specialists: governance",
+    ):
+        FoundryCoordinatorPlanner(coordinator)(request)
+
+
+def test_operations_copilot_preserves_exact_highest_risk_page_hint() -> None:
+    vulnerability_only = json.dumps({
+        "steps": [{
+            "specialist_id": "vulnerability",
+            "tool_calls": [{
+                "tool": "cve_exposure",
+                "arguments": {},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    coordinator = _Coordinator([vulnerability_only])
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    plan = FoundryCoordinatorPlanner(
+        coordinator,
+        required_hint={
+            "specialist_id": "vulnerability",
+            "tool": "cve_exposure",
+            "arguments": {},
+        },
+    )(request)
+
+    assert [step.specialist_id for step in plan.steps] == ["vulnerability"]
+    assert coordinator.calls[0]["context"]["required_specialists"] == []
+    assert len(coordinator.calls) == 1
+
+
 def test_large_executive_context_is_transmitted_as_bounded_valid_json() -> None:
     agent = FoundryPromptAgent(
         project_endpoint="https://example",

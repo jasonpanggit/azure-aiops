@@ -1189,6 +1189,249 @@ def test_operations_copilot_coordinates_plan_and_final_network_answer(
     )
 
 
+def test_operations_copilot_corrects_highest_risk_compliance_coverage(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if len(self.calls) == 1:
+                payload = {
+                    "steps": [{
+                        "specialist_id": "vulnerability",
+                        "tool_calls": [{
+                            "tool": "cve_exposure",
+                            "arguments": {},
+                            "citation_ids": ["snapshot:coverage"],
+                        }],
+                    }],
+                }
+            elif len(self.calls) == 2:
+                payload = {
+                    "steps": [
+                        {
+                            "specialist_id": "vulnerability",
+                            "tool_calls": [{
+                                "tool": "cve_exposure",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                        {
+                            "specialist_id": "governance",
+                            "tool_calls": [{
+                                "tool": "business_service_context",
+                                "arguments": {
+                                    "name": "highest-risk compliance findings"
+                                },
+                                "citation_ids": ["snapshot:coverage"],
+                            }],
+                        },
+                    ],
+                }
+            else:
+                refs = [
+                    reference
+                    for finding in context["findings"]
+                    for reference in finding["evidence_refs"]
+                ]
+                payload = {
+                    "findings": [{
+                        "finding_id": "compliance-risk",
+                        "evidence_refs": refs,
+                        "confidence": "high",
+                        "uncertainty": [],
+                        "freshness": "fresh",
+                        "actionable": False,
+                        "next_check": "Review the cited risk and ownership evidence.",
+                        "summary": "Critical CVE exposure requires governance review.",
+                    }]
+                }
+            return AgentAnswer(
+                text=json.dumps(payload),
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    coordinator = Coordinator()
+    body = _network_hub_canonical_body()
+    body["question"] = "What are my highest-risk compliance findings?"
+    body["hint"] = None
+    body["snapshot"]["page_kind"] = "compliance"
+    body["snapshot"]["page_id"] = "compliance-posture"
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    tool_calls = []
+
+    def governed_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={"tool": name},
+            evidence=(
+                Evidence(
+                    source_engine=f"test.{name}",
+                    source_table="governed_evidence",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", governed_tool)
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["policy_status"] == "accepted"
+    assert data["selected_specialists"] == ["vulnerability", "governance"]
+    assert data["selected_tools"] == [
+        "cve_exposure",
+        "business_service_context",
+    ]
+    assert tool_calls == [
+        ("cve_exposure", {}),
+        (
+            "business_service_context",
+            {"name": "highest-risk compliance findings"},
+        ),
+    ]
+    assert data["synthesis"]["status"] == "synthesized"
+    assert data["synthesis"]["coordinator"]["planned"] is True
+    assert len(coordinator.calls) == 3
+
+
+def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if "Select the smallest" in question:
+                payload = {
+                    "steps": [{
+                        "specialist_id": "vulnerability",
+                        "tool_calls": [{
+                            "tool": "cve_exposure",
+                            "arguments": {},
+                            "citation_ids": ["snapshot:coverage"],
+                        }],
+                    }],
+                }
+            else:
+                refs = [
+                    reference
+                    for finding in context["findings"]
+                    for reference in finding["evidence_refs"]
+                ]
+                payload = {
+                    "findings": [{
+                        "finding_id": "fallback-compliance-risk",
+                        "evidence_refs": refs,
+                        "confidence": "medium",
+                        "uncertainty": [
+                            "Coordinator planning required deterministic fallback."
+                        ],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Review the cited governed evidence.",
+                        "summary": "Governed fallback evidence covers both risk domains.",
+                    }]
+                }
+            return AgentAnswer(
+                text=json.dumps(payload),
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    coordinator = Coordinator()
+    body = _network_hub_canonical_body()
+    body["question"] = "What are my highest-risk compliance findings?"
+    body["hint"] = None
+    body["snapshot"]["page_kind"] = "compliance"
+    body["snapshot"]["page_id"] = "compliance-posture"
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    tool_calls = []
+
+    def governed_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={"tool": name},
+            evidence=(
+                Evidence(
+                    source_engine=f"test.{name}",
+                    source_table="governed_evidence",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", governed_tool)
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["policy_status"] == "fallback"
+    assert data["fallback_reason"] == "planner_unavailable"
+    assert data["selected_specialists"] == ["vulnerability", "governance"]
+    assert data["selected_tools"] == [
+        "cve_exposure",
+        "business_service_context",
+    ]
+    assert [name for name, _arguments in tool_calls] == [
+        "cve_exposure",
+        "business_service_context",
+    ]
+    assert data["synthesis"]["status"] == "synthesized"
+    assert data["synthesis"]["coordinator"]["planned"] is False
+    assert len(coordinator.calls) == 3
+
+
 def test_coordinator_failure_preserves_exact_validated_page_hint(
     tmp_path,
     monkeypatch,

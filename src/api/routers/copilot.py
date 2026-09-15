@@ -1932,7 +1932,12 @@ def investigate_canonical(
                 fallback_planner=(
                     (lambda _request: required_candidate)
                     if required_candidate is not None
-                    else None
+                    else (
+                        lambda governed_request: build_deterministic_fallback(
+                            governed_request,
+                            load_specialist_manifest(),
+                        )
+                    )
                 ),
                 executor=executor,
                 executive_agent=coordinator_synthesis,
