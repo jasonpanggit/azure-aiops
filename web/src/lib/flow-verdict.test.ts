@@ -91,7 +91,7 @@ describe("presentPathResolution", () => {
         }),
       ),
     ).toEqual({
-      label: "1 reported unknown",
+      label: "1 item could not be determined",
       detail: "A higher-priority rule could not be evaluated",
       tone: "warning",
     });

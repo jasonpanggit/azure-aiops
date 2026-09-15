@@ -829,7 +829,10 @@ function FlowResultView({ result }: { result: FlowResult }) {
           <p>{result.path_summary}</p>
         </div>
         <div className="flow-verdict-facts">
-          <StatusBadge label={bypass ? "Inspection gap detected" : "Enforcement observed"} tone={bypass ? "critical" : "success"} />
+          <StatusBadge
+            label={bypass ? "Skips firewall inspection" : "Inspected by observed controls"}
+            tone={bypass ? "critical" : "success"}
+          />
           <StatusBadge
             label={resolution.label}
             tone={resolution.tone}
@@ -887,22 +890,22 @@ function FlowResultView({ result }: { result: FlowResult }) {
         </div>
       </section>
 
-      {(result.missing_enforcement_points.length > 0 ||
-        result.unknowns.length > 0 ||
-        result.verdict === "indeterminate") && (
+      {(bypass || resolution.tone === "warning") && (
         <div className="flow-qualification-grid">
-          <div className="callout callout-critical">
-            <strong>Inspection gaps</strong>
-            <span>
-              {result.missing_enforcement_points.length
-                ? result.missing_enforcement_points.join(", ")
-                : "No missing enforcement points reported."}
-            </span>
-          </div>
-          <div className="callout callout-warning">
-            <strong>Known unknowns</strong>
-            <span>{resolution.detail}</span>
-          </div>
+          {bypass && (
+            <div className="callout callout-critical">
+              <strong>Controls this path skips</strong>
+              <span>
+                {`This traffic is not inspected by: ${result.missing_enforcement_points.join(", ")}.`}
+              </span>
+            </div>
+          )}
+          {resolution.tone === "warning" && (
+            <div className="callout callout-warning">
+              <strong>What could not be determined</strong>
+              <span>{resolution.detail}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
