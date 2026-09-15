@@ -325,6 +325,15 @@ function attachVulnerabilityContext(violations: Violation[], exposures: Vulnerab
   }));
 }
 
+function dedupeViolations(violations: Violation[]): Violation[] {
+  const seen = new Set<string>();
+  return violations.filter((violation) => {
+    if (seen.has(violation.id)) return false;
+    seen.add(violation.id);
+    return true;
+  });
+}
+
 /** Build the remediation deep link for a violation.
  *
  * The remediation page filters by `resource_key`/`resource` only -- it has no
@@ -407,7 +416,7 @@ export default function CompliancePage() {
       ...fromTopology(topology.data?.data.topology ?? null, policy),
       ...fromPeerings(topology.data?.data.topology ?? null, policy),
     ];
-    return attachVulnerabilityContext(rows, exposures.data?.data ?? []);
+    return attachVulnerabilityContext(dedupeViolations(rows), exposures.data?.data ?? []);
   }, [gaps.data, findings.data, topology.data, exposures.data, policy]);
   const selected = violations.find((violation) => violation.id === selectedId) ?? violations[0] ?? null;
   const acceptedIds = new Set(exceptions.filter(isExceptionActive).map((item) => item.violationId));
