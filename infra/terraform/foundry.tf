@@ -89,6 +89,8 @@ locals {
     traffic_flow                  = { server = "operations-mcp", purpose = "Given a specific source and destination, decide whether the configured NSG/firewall rules permit that flow, and name the deciding rules. This evaluates rule CONFIGURATION, not flow logs -- it answers what is permitted, never what was observed. A verdict of 'indeterminate' means an endpoint or higher-priority rule could not be resolved; it must not be read as 'allowed'." }
     firewall_nsg_gaps             = { server = "operations-mcp", purpose = "Flag firewall/NSG rules that deviate from design policy or Azure best practice." }
     cve_exposure                  = { server = "operations-mcp", purpose = "List CVE exposure for a resource, asset, or scope." }
+    patch_priorities              = { server = "operations-mcp", purpose = "Read the server-ranked patch queue with top-KB product, publication date, ranking factors, completeness, freshness, and governed action." }
+    kb_detail                     = { server = "operations-mcp", purpose = "Read exact server KB update-catalog metadata and bounded affected-scope evidence for one KB identifier." }
     cve_detail                    = { server = "operations-mcp", purpose = "Get full detail (severity, exploitability) for a specific CVE." }
     cve_attack_path               = { server = "operations-mcp", purpose = "Trace a possible attack path a CVE enables through the environment." }
     defender_alerts               = { server = "operations-mcp", purpose = "Read governed Defender alert evidence for the current scope; returns active alerts only and changes nothing." }

@@ -263,6 +263,38 @@ def test_keyword_fallback_page_constrains_specialist_selection():
     assert not any(step.specialist_id == "network" for step in candidate.steps)
 
 
+def test_kb_detail_fallback_uses_exact_server_catalog_tool():
+    from operations.investigation import _plan
+    from operations.maf_orchestrator import build_deterministic_fallback
+
+    manifest = load_specialist_manifest()
+    request = InvestigationRequest(
+        question="Which product and publication date apply to KB5123099?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="kb_detail",
+            page_id="kb:KB5123099",
+            coverage=SnapshotCoverage(
+                visible_count=1,
+                total_count=1,
+                complete=True,
+            ),
+        ),
+    )
+
+    candidate = build_deterministic_fallback(request, manifest)
+
+    assert candidate is not None
+    assert candidate.steps[0].specialist_id == "patch"
+    assert candidate.steps[0].tool_calls[0].tool == "kb_detail"
+    assert candidate.steps[0].tool_calls[0].arguments == {
+        "kb_id": "KB5123099"
+    }
+    assert _plan("Explain KB5123099") == [
+        ("kb_detail", {"kb_id": "KB5123099"})
+    ]
+
+
 @pytest.mark.parametrize(
     ("specialist_id", "tool", "question"),
     [

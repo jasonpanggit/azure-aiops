@@ -214,6 +214,13 @@ def _tool_args(
         if match:
             return {"query": match.group(0).upper()}
         return {"business_service": subject} if subject else {}
+    if tool == "kb_detail":
+        match = re.search(
+            r"\bKB\d{4,}\b",
+            f"{objective} {contextual_subject}",
+            flags=re.IGNORECASE,
+        )
+        return {"kb_id": match.group(0).upper()} if match else {}
     if tool in {"cve_detail", "cve_attack_path"}:
         match = re.search(r"\bCVE-\d{4}-\d{4,}\b", objective, flags=re.IGNORECASE)
         return {"cve_id": match.group(0).upper()} if match else {}

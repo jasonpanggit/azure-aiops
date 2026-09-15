@@ -1190,6 +1190,141 @@ def _cve_canonical_body(cve_id: str = "CVE-2026-13221"):
     }
 
 
+def _patch_priorities_canonical_body():
+    return {
+        "contract_version": "1",
+        "question": (
+            "What is the top-ranked KB, why is it ranked first, which product "
+            "does it affect, what is its release date, and what action is recommended?"
+        ),
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "patch_priorities",
+            "page_id": "patch-priorities",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 1,
+                "complete": True,
+            },
+            "freshness": [
+                {
+                    "source": "patch_priorities",
+                    "observed_at": "2026-09-15T14:37:44Z",
+                    "status": "stale",
+                }
+            ],
+            "evidence": [],
+        },
+    }
+
+
+def test_patch_priorities_use_server_kb_catalog_not_generic_exposure(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    calls: list[str] = []
+
+    def execute(name, arguments, **_kwargs):
+        calls.append(name)
+        if name == "patch_priorities":
+            return ToolResult(
+                status=STATUS_OK,
+                data={
+                    "total_count": 7,
+                    "returned_count": 7,
+                    "ranking_basis": (
+                        "Descending server priority_score; score combines "
+                        "expected risk reduction and associated CVE count."
+                    ),
+                    "top_priority": {
+                        "rank": 1,
+                        "kb_id": "KB5123099",
+                        "priority_score": 17651.2,
+                        "expected_risk_reduction": 16391.2,
+                        "cve_count": 126,
+                        "affected_server_count": 1,
+                        "affected_application_count": 1,
+                        "affected_business_service_count": 1,
+                        "product": "Windows Server 2016",
+                        "published_at": "2026-09-08",
+                        "recommended_action": (
+                            "Patch through the approved change process; "
+                            "this platform executes no remediation."
+                        ),
+                        "kb_enrichment": {
+                            "status": "complete",
+                            "complete": True,
+                            "stale": False,
+                            "expected_count": 379,
+                            "available_count": 379,
+                        },
+                    },
+                    "items": [],
+                },
+                evidence=(
+                    Evidence(
+                        source_engine="intelligence.VulnerabilityIntelligenceService",
+                        source_table="vulnerability_projection",
+                        timestamp="2026-09-15T17:26:31Z",
+                        confidence="high",
+                    ),
+                    Evidence(
+                        source_engine="fabric_sql",
+                        source_table="silver_patch_snapshot_findings",
+                        timestamp="2026-09-15T14:37:44Z",
+                        confidence="high",
+                    ),
+                ),
+                warning="KB counts are qualified by stale Silver patch freshness.",
+            )
+        return ToolResult(
+            status=STATUS_OK,
+            data={
+                "items": [
+                    {
+                        "target_kind": "container_image",
+                        "weakness_id": "CVE-2026-13221",
+                    }
+                ]
+            },
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="gold_exposure_facts",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", execute)
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_patch_priorities_canonical_body(),
+    )
+
+    assert response.status_code == 200
+    result = response.json()["data"]
+    claims = "\n".join(
+        claim["summary"] for claim in result["synthesis"]["claims"]
+    )
+    assert calls == ["patch_priorities"]
+    assert result["selected_specialists"] == ["patch"]
+    assert result["selected_tools"] == ["patch_priorities"]
+    assert "cve_exposure" not in result["selected_tools"]
+    assert "KB5123099" in claims
+    assert "Windows Server 2016" in claims
+    assert "2026-09-08" in claims
+    assert "17651.2" in claims
+    assert "approved change process" in claims
+    assert result["mutation_authorized"] is False
+
+
 def test_cve_api_fixture_matches_browser_adapter_page_kind_contract():
     from pathlib import Path
 

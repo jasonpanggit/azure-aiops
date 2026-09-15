@@ -114,7 +114,12 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
             for marker in FORBIDDEN_TOOL_MARKERS
         )
 
-    assert {"cve_exposure", "remediation_plans"} <= set(expected_grants["patch"])
+    assert {
+        "patch_priorities",
+        "kb_detail",
+        "cve_exposure",
+        "remediation_plans",
+    } <= set(expected_grants["patch"])
     assert {"incidents", "search"} <= set(expected_grants["change"])
     assert "risk_context" in expected_grants["governance"]
     assert reviewed_tools_for_specialist("unknown") == ()
@@ -122,6 +127,7 @@ def test_operations_mcp_and_registry_grants_are_exact_and_read_only():
     assert schemas["risk_context"]["required"] == ["subject"]
     assert schemas["search"]["required"] == ["query"]
     assert schemas["remediation_business_decision"]["required"] == ["name"]
+    assert schemas["kb_detail"]["required"] == ["kb_id"]
     assert "business_service" in schemas["defender_remediation_cases"]["properties"]
 
 

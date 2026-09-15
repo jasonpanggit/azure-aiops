@@ -62,7 +62,7 @@
       "purpose": "Investigate scoped patch priorities, KB exposure, remediation context, validation, and rollback expectations.",
       "intent_examples": ["patch", "kb", "update", "sla", "rollback", "maintenance"],
       "dependencies": [],
-      "operations_mcp_tools": ["cve_exposure", "cve_detail", "remediation_plans", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "operations_mcp_tools": ["patch_priorities", "kb_detail", "cve_exposure", "cve_detail", "remediation_plans", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "compute_vm_get", "appservice_webapp_get", "functionapp_get", "arm_execute_query"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
       "page_mappings": ["patch", "vulnerability", "kb_detail", "patch_priorities"],

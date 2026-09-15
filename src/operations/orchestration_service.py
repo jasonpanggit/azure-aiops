@@ -1276,6 +1276,10 @@ class OrchestrationService:
             snapshot=snapshot,
             tool_results=tool_results,
         )
+        patch_claims = self._deterministic_patch_claims(
+            snapshot=snapshot,
+            tool_results=tool_results,
+        )
         network_claims = deterministic_network_claims(
             snapshot=snapshot,
             tool_results=tool_results,
@@ -1300,7 +1304,13 @@ class OrchestrationService:
         deterministic_claims = (
             [*page_claims, *network_claims][:8]
             if highest_risk_compliance and page_claims
-            else cve_claims or network_claims or remediation_claims or page_claims
+            else (
+                cve_claims
+                or patch_claims
+                or network_claims
+                or remediation_claims
+                or page_claims
+            )
         )
         for claim in deterministic_claims:
             evidence_refs = [
@@ -1315,6 +1325,8 @@ class OrchestrationService:
                     "specialist_id": (
                         "network"
                         if network_claims
+                        else "patch"
+                        if patch_claims
                         else "vulnerability"
                         if cve_claims
                         else "page_evidence"
@@ -1336,6 +1348,16 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if patch_claims:
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_patch_catalog",
+                domain_count=1,
+                claims=patch_claims,
+                used_retained_evidence=[],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -1669,6 +1691,116 @@ class OrchestrationService:
                 "next_check": "Review the cited scoped CVE evidence before remediation.",
             }
         ]
+
+    @staticmethod
+    def _deterministic_patch_claims(
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        tool_results: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build exact patch/KB claims from dedicated server-corpus tools."""
+
+        if snapshot is None or snapshot.page_kind not in {
+            "patch",
+            "patch_priorities",
+            "kb_detail",
+        }:
+            return []
+        for result in tool_results:
+            tool = str(result.get("tool") or "")
+            if tool not in {"patch_priorities", "kb_detail"}:
+                continue
+            if result.get("status") != STATUS_OK:
+                continue
+            data = result.get("data")
+            if not isinstance(data, Mapping):
+                continue
+            call_id = str(result.get("call_id") or "")
+            evidence_refs = [
+                str(item.get("evidence_id") or f"tool:{call_id}:{index}")
+                for index, item in enumerate(result.get("evidence") or [])
+                if isinstance(item, Mapping)
+            ]
+            if not evidence_refs:
+                continue
+            warning = str(result.get("warning") or "").strip()
+            freshness = snapshot_claim_freshness(snapshot)
+            uncertainty = []
+            if not snapshot.coverage.complete:
+                uncertainty.append("Visible patch coverage is incomplete.")
+            if freshness != "fresh":
+                uncertainty.append(f"Patch source freshness is {freshness}.")
+            if warning:
+                uncertainty.append(warning)
+
+            if tool == "patch_priorities":
+                top = data.get("top_priority")
+                if not isinstance(top, Mapping):
+                    continue
+                kb_id = str(top.get("kb_id") or "").strip()
+                product = str(top.get("product") or "").strip()
+                published_at = str(top.get("published_at") or "").strip()
+                action = str(top.get("recommended_action") or "").strip()
+                if not all((kb_id, product, published_at, action)):
+                    uncertainty.append(
+                        "Top-KB catalog metadata is incomplete; missing facts were not inferred."
+                    )
+                ranking_basis = str(data.get("ranking_basis") or "").strip()
+                summary = (
+                    f"The server patch corpus ranks **{kb_id or 'an unknown KB'}** "
+                    f"first with priority score **{top.get('priority_score', 'unknown')}** "
+                    f"and expected risk reduction "
+                    f"**{top.get('expected_risk_reduction', 'unknown')}**. "
+                    f"Ranking basis: {ranking_basis or 'server-defined priority order'}. "
+                    f"It covers **{top.get('cve_count', 0)} CVEs**, "
+                    f"**{top.get('affected_server_count', 0)} servers**, "
+                    f"**{top.get('affected_application_count', 0)} applications**, "
+                    f"and **{top.get('affected_business_service_count', 0)} business services**. "
+                    f"Affected product: **{product or 'unknown'}**. "
+                    f"Publication date: **{published_at or 'unknown'}**. "
+                    f"Recommended action: {action or 'unavailable'}"
+                )
+            else:
+                kb_id = str(data.get("kb_id") or "").strip()
+                product = str(
+                    data.get("product") or data.get("title") or ""
+                ).strip()
+                published_at = str(data.get("published_at") or "").strip()
+                summary = (
+                    f"The server KB catalog reports **{kb_id or 'an unknown KB'}** "
+                    f"for **{product or 'an unknown product'}**, published "
+                    f"**{published_at or 'on an unknown date'}**, with severity "
+                    f"**{data.get('severity', 'Unknown')}** and "
+                    f"**{data.get('cve_count', 0)} associated CVEs**. "
+                    f"Current affected-server count: "
+                    f"**{data.get('affected_server_count', 0)}**."
+                )
+
+            return [
+                {
+                    "finding_id": (
+                        "patch:"
+                        + hashlib.sha256(
+                            f"{tool}:{'|'.join(evidence_refs)}".encode()
+                        ).hexdigest()[:24]
+                    ),
+                    "summary": summary[:1000],
+                    "evidence_refs": list(dict.fromkeys(evidence_refs)),
+                    "confidence": (
+                        "high"
+                        if snapshot.coverage.complete and not uncertainty
+                        else "medium"
+                    ),
+                    "freshness": freshness,
+                    "uncertainty": list(dict.fromkeys(uncertainty)),
+                    "actionable": False,
+                    "next_check": (
+                        "Refresh and review the cited server KB/patch corpus "
+                        "before approving or executing remediation."
+                    ),
+                }
+            ]
+        return []
 
     @staticmethod
     def _deterministic_page_claims(

@@ -31,7 +31,13 @@ from typing import Any
 
 from api.errors import ApiError
 from api.evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence
-from api.exposure_query import ExposureFilter, ExposureQuery, ExposureSort
+from api.exposure_query import (
+    ExposureFilter,
+    ExposureKbIdentifierError,
+    ExposureQuery,
+    ExposureQueryUnavailableError,
+    ExposureSort,
+)
 from api.scope import Scope, scope_attributes, subscription_ids_for_scope
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
 from intelligence.vulnerability.exposure_contracts import (
@@ -888,6 +894,242 @@ def _source_attribution(
     ]
 
 
+def _canonical_kb_id(value: object) -> str:
+    match = re.fullmatch(
+        r"(?:KB)?(\d{4,30})",
+        str(value or "").strip(),
+        re.IGNORECASE,
+    )
+    return f"KB{match.group(1)}" if match else ""
+
+
+def _project_kb_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
+    enrichment = detail.get("enrichment")
+    enrichment = enrichment if isinstance(enrichment, Mapping) else {}
+    snapshot = detail.get("snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    cve_ids = [
+        str(value)
+        for value in detail.get("cve_ids") or []
+        if str(value).strip()
+    ]
+    affected_servers = [
+        str(value)
+        for value in detail.get("affected_servers") or []
+        if str(value).strip()
+    ]
+    return {
+        "kb_id": str(detail.get("kb_id") or ""),
+        "product": str(detail.get("title") or ""),
+        "title": str(detail.get("title") or ""),
+        "severity": str(detail.get("severity") or "Unknown"),
+        "published_at": str(detail.get("published_at") or ""),
+        "cve_ids": cve_ids[:_MAX_ITEMS],
+        "cve_count": len(cve_ids),
+        "affected_servers": affected_servers[:_MAX_ITEMS],
+        "affected_server_count": int(
+            detail.get("affected_server_count") or len(affected_servers)
+        ),
+        "affected_servers_truncated": bool(
+            detail.get("affected_servers_truncated")
+            or len(affected_servers) > _MAX_ITEMS
+        ),
+        "affected_business_services": [
+            str(value)
+            for value in detail.get("affected_business_services") or []
+            if str(value).strip()
+        ][:_MAX_ITEMS],
+        "snapshot": {
+            "completeness": str(snapshot.get("completeness") or "unknown"),
+            "freshness": str(snapshot.get("freshness") or "unknown"),
+            "as_of": str(snapshot.get("as_of") or ""),
+        },
+        "enrichment": {
+            "status": str(enrichment.get("status") or "unknown"),
+            "complete": bool(enrichment.get("complete")),
+            "stale": bool(enrichment.get("stale")),
+            "expected_count": int(enrichment.get("expected_count") or 0),
+            "available_count": int(enrichment.get("available_count") or 0),
+        },
+    }
+
+
+def _server_kb_detail(
+    tool_context: ToolContext,
+    kb_id: str,
+) -> tuple[str, dict[str, Any] | None, tuple[Evidence, ...], str]:
+    provider = getattr(tool_context.context, "exposure_query_provider", None)
+    if not callable(provider):
+        return (
+            STATUS_UNAVAILABLE,
+            None,
+            (),
+            "The authoritative KB catalog is unavailable",
+        )
+    if tool_context.principal is None:
+        return (
+            STATUS_DENIED,
+            None,
+            (),
+            "KB catalog access requires an authenticated principal",
+        )
+    try:
+        service = provider()
+        if service is None:
+            return (
+                STATUS_UNAVAILABLE,
+                None,
+                (),
+                "The authoritative KB catalog is unavailable",
+            )
+        authorization = service.authorization_for(
+            tool_context.principal,
+            tool_context.scope,
+        )
+        detail = service.kb_item(authorization, kb_id=kb_id)
+    except PermissionError:
+        return STATUS_DENIED, None, (), "KB catalog access is not authorized"
+    except ExposureKbIdentifierError as exc:
+        return STATUS_EMPTY, None, (), str(exc)
+    except ExposureQueryUnavailableError as exc:
+        return STATUS_UNAVAILABLE, None, (), str(exc)
+    except (
+        AttributeError,
+        LookupError,
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _LOGGER.warning("kb_catalog_provider_failed error=%s", exc)
+        return (
+            STATUS_UNAVAILABLE,
+            None,
+            (),
+            "The authoritative KB catalog failed to answer",
+        )
+    if detail is None:
+        return STATUS_EMPTY, None, (), f"{kb_id} was not found in the KB catalog"
+    projected = _project_kb_detail(detail)
+    snapshot = projected["snapshot"]
+    warnings = []
+    if snapshot["freshness"] not in {"fresh", "current"}:
+        warnings.append(
+            f"KB snapshot freshness is {snapshot['freshness']}"
+        )
+    if not projected["enrichment"]["complete"]:
+        warnings.append("KB enrichment is incomplete")
+    return (
+        STATUS_OK,
+        projected,
+        (
+            Evidence(
+                source_engine="fabric_sql",
+                source_table="silver_patch_snapshot_findings",
+                timestamp=snapshot["as_of"],
+                confidence=CONFIDENCE_HIGH,
+                freshness=snapshot["freshness"],
+            ),
+        ),
+        "; ".join(warnings),
+    )
+
+
+def _tool_kb_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    """Return one exact KB from the same durable catalog as the REST detail route."""
+
+    kb_id = _canonical_kb_id(args.get("kb_id"))
+    if not kb_id:
+        return ToolResult(
+            status=STATUS_EMPTY,
+            warning="KB detail requires a canonical KB identifier",
+        )
+    status, detail, evidence, warning = _server_kb_detail(
+        tool_context,
+        kb_id,
+    )
+    return ToolResult(
+        status=status,
+        data=detail,
+        evidence=evidence,
+        warning=warning,
+    )
+
+
+def _tool_patch_priorities(
+    tool_context: ToolContext,
+    args: Mapping[str, Any],
+) -> ToolResult:
+    """Return the server-ranked patch queue with exact top-KB catalog metadata."""
+
+    def run(vulnerability: Any) -> ToolResult:
+        rows = vulnerability.patch_priorities(tool_context.scope)
+        if not rows:
+            return ToolResult(status=STATUS_EMPTY)
+        ranked = [
+            {
+                "rank": index,
+                **dict(row),
+                "cve_count": len(row.get("cve_ids") or ()),
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
+        top = dict(ranked[0])
+        top_kb_id = _canonical_kb_id(top.get("kb_id"))
+        detail_status = STATUS_EMPTY
+        detail = None
+        detail_evidence: tuple[Evidence, ...] = ()
+        detail_warning = ""
+        if top_kb_id:
+            (
+                detail_status,
+                detail,
+                detail_evidence,
+                detail_warning,
+            ) = _server_kb_detail(tool_context, top_kb_id)
+        top.update(
+            {
+                "kb_id": top_kb_id or str(top.get("kb_id") or ""),
+                "product": str((detail or {}).get("product") or ""),
+                "published_at": str((detail or {}).get("published_at") or ""),
+                "kb_detail_status": detail_status,
+                "kb_enrichment": dict((detail or {}).get("enrichment") or {}),
+                "kb_snapshot": dict((detail or {}).get("snapshot") or {}),
+            }
+        )
+        payload = {
+            "total_count": len(ranked),
+            "returned_count": min(len(ranked), _MAX_ITEMS),
+            "ranking_basis": (
+                "Descending server priority_score; score combines expected "
+                "risk reduction and 10 points per associated CVE."
+            ),
+            "top_priority": top,
+            "items": ranked[:_MAX_ITEMS],
+        }
+        bound_warning = _bound_disclosure(payload)
+        warning = "; ".join(
+            value for value in (detail_warning, bound_warning) if value
+        )
+        return ToolResult(
+            status=STATUS_OK,
+            data=_bound(payload),
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.VulnerabilityIntelligenceService",
+                    source_table="vulnerability_projection",
+                    timestamp=str(getattr(vulnerability, "freshness", "") or ""),
+                    confidence=CONFIDENCE_HIGH,
+                ),
+                *detail_evidence,
+            ),
+            warning=warning,
+        )
+
+    return _provider_result(tool_context, "vulnerability", run)
+
+
 def _tool_cve_detail(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     """Full CVE detail: CVSS/EPSS/KEV, affected servers/applications/business
     services, and recommended patch -- the same ontology-derived blast radius
@@ -1737,6 +1979,24 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
                 "active": "Optional active-state filter",
             },
             handler=_tool_cve_exposure,
+        ),
+        ToolSpec(
+            name="patch_priorities",
+            description=(
+                "Server-ranked patch priorities with top-KB product, "
+                "publication date, ranking factors, and governed action."
+            ),
+            parameters={},
+            handler=_tool_patch_priorities,
+        ),
+        ToolSpec(
+            name="kb_detail",
+            description=(
+                "Exact KB update-catalog metadata, CVE associations, "
+                "affected-server counts, completeness, and freshness."
+            ),
+            parameters={"kb_id": "KB identifier, e.g. KB5123099"},
+            handler=_tool_kb_detail,
         ),
         ToolSpec(
             name="cve_detail",

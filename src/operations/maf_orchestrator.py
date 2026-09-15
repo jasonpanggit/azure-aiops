@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -487,6 +488,9 @@ def build_deterministic_fallback(
         tools = list(spec.operations_tools_for_page(page_kind))
         lowered_question = request.question.casefold()
         preferred_arguments: dict[str, dict[str, Any]] = {}
+        if page_kind == "kb_detail" and "kb_detail" in tools:
+            tools.remove("kb_detail")
+            tools.insert(0, "kb_detail")
         if (
             "firewall_nsg_gaps" in tools
             and any(
@@ -526,6 +530,18 @@ def build_deterministic_fallback(
                         derived[field] = subject or request.question
                     elif field == "query":
                         derived[field] = request.snapshot.query or request.question
+                    elif field == "kb_id":
+                        match = re.search(
+                            r"\bKB\d{4,}\b",
+                            (
+                                f"{request.snapshot.page_id} "
+                                f"{request.question}"
+                            ),
+                            flags=re.IGNORECASE,
+                        )
+                        if not match:
+                            break
+                        derived[field] = match.group(0).upper()
                     else:
                         break
                 else:

@@ -2946,21 +2946,21 @@ const DEFENDER_POSTURE_STARTERS: CoreCopilotStarterQuestion[] = [
 
 const PATCH_PRIORITIES_STARTERS: CoreCopilotStarterQuestion[] = [
   {
-    label: "Which patches reduce the most risk first?",
-    specialistId: "vulnerability",
-    tool: "cve_exposure",
+    label: "What is the top KB and why is it ranked first?",
+    specialistId: "patch",
+    tool: "patch_priorities",
     toolArguments: {},
   },
   {
-    label: "Which overdue patches breach SLA?",
-    specialistId: "vulnerability",
-    tool: "cve_exposure",
+    label: "Which product and publication date apply to the top KB?",
+    specialistId: "patch",
+    tool: "patch_priorities",
     toolArguments: {},
   },
   {
-    label: "What is the safest governed remediation path?",
-    specialistId: "remediation",
-    tool: "remediation_opportunities",
+    label: "What action is recommended for the top KB?",
+    specialistId: "patch",
+    tool: "patch_priorities",
     toolArguments: {},
   },
 ];
@@ -4585,13 +4585,20 @@ function kbDetailStarters(input: KbDetailCopilotPageInput): CoreCopilotStarterQu
   return [
     {
       label: `Explain ${kbId} and the CVEs it remediates`,
-      specialistId: "vulnerability",
-      toolArguments: {},
+      specialistId: "patch",
+      tool: "kb_detail",
+      toolArguments: { kb_id: kbId },
+    },
+    {
+      label: `Which product and publication date apply to ${kbId}?`,
+      specialistId: "patch",
+      tool: "kb_detail",
+      toolArguments: { kb_id: kbId },
     },
     {
       label: `What should we patch first for ${kbId}?`,
-      specialistId: "remediation",
-      tool: "remediation_opportunities",
+      specialistId: "patch",
+      tool: "patch_priorities",
       toolArguments: {},
     },
   ];

@@ -70,6 +70,7 @@ class ToolArguments(BaseModel):
     protocol: str | None = Field(default=None, min_length=1, max_length=16)
     business_service: str | None = Field(default=None, min_length=1, max_length=512)
     cve_id: str | None = Field(default=None, min_length=1, max_length=64)
+    kb_id: str | None = Field(default=None, min_length=1, max_length=64)
     incident_id: str | None = Field(default=None, min_length=1, max_length=256)
     resource_type: str | None = Field(default=None, min_length=1, max_length=256)
     family: str | None = Field(default=None, min_length=1, max_length=64)
@@ -95,6 +96,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
     "fabric_iq_topology": ("subject",),
     "fabric_iq_policy_context": ("subject",),
     "cve_detail": ("cve_id",),
+    "kb_detail": ("kb_id",),
     "cve_attack_path": ("cve_id",),
     "remediation_business_decision": ("name",),
     "search": ("query",),

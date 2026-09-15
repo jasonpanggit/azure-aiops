@@ -143,9 +143,14 @@ def _plan(question: str) -> list[tuple[str, dict[str, Any]]]:
         import re
 
         cve_ids = re.findall(r"\bCVE-\d{4}-\d{4,7}\b", question, flags=re.IGNORECASE)
+        kb_ids = re.findall(r"\bKB\d{4,}\b", question, flags=re.IGNORECASE)
         if cve_ids:
             add("cve_detail", {"cve_id": cve_ids[0]})
             add("cve_attack_path", {"cve_id": cve_ids[0]})
+        elif kb_ids:
+            add("kb_detail", {"kb_id": kb_ids[0].upper()})
+        elif "kb" in lowered or "patch" in lowered:
+            add("patch_priorities", {})
         else:
             add("cve_exposure", {"business_service": subject} if subject else {})
             if subject:

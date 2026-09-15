@@ -5,7 +5,7 @@ from operations.mcp_server import (
     tool_definitions,
 )
 from operations.specialist_manifest import INVENTORY_DATA_HEALTH_ID
-from operations.tools import STATUS_EMPTY, STATUS_OK
+from operations.tools import STATUS_EMPTY, STATUS_OK, call_tool
 
 
 def test_catalog_has_bounded_json_schemas():
@@ -145,6 +145,135 @@ class _ContextWithVulnerability:
         if name == "vulnerability":
             return self._provider
         return None
+
+
+class _PatchPriorityProvider:
+    freshness = "2026-09-15T17:26:31Z"
+
+    def patch_priorities(self, scope):
+        assert scope.to_dict() == {"subscription": ["sub-a"]}
+        return [
+            {
+                "priority_id": "5123099",
+                "priority_type": "kb",
+                "kb_id": "5123099",
+                "cve_ids": [f"CVE-2026-{index:05d}" for index in range(126)],
+                "affected_server_count": 1,
+                "affected_application_count": 1,
+                "affected_business_service_count": 1,
+                "expected_risk_reduction": 16391.2,
+                "priority_score": 17651.2,
+                "recommended_action": (
+                    "Patch through the approved change process; "
+                    "this platform executes no remediation."
+                ),
+            }
+        ]
+
+
+class _KbQueryProvider:
+    def authorization_for(self, principal, scope):
+        assert principal.subject == "operator"
+        assert scope.to_dict() == {"subscription": ["sub-a"]}
+        return object()
+
+    def kb_item(self, authorization, *, kb_id):
+        assert authorization is not None
+        assert kb_id == "KB5123099"
+        return {
+            "kb_id": kb_id,
+            "title": "Windows Server 2016",
+            "severity": "Important",
+            "published_at": "2026-09-08",
+            "cve_ids": [f"CVE-2026-{index:05d}" for index in range(126)],
+            "affected_servers": ["/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"],
+            "affected_server_count": 1,
+            "affected_business_services": ["Payments"],
+            "snapshot": {
+                "completeness": "complete",
+                "freshness": "stale",
+                "as_of": "2026-09-15T14:37:44Z",
+            },
+            "enrichment": {
+                "status": "complete",
+                "complete": True,
+                "stale": False,
+                "expected_count": 379,
+                "available_count": 379,
+            },
+        }
+
+
+class _PatchContext:
+    provider_runtime = None
+
+    def resolve_provider(self, name):
+        if name == "vulnerability":
+            return _PatchPriorityProvider()
+        return None
+
+    def exposure_query_provider(self):
+        return _KbQueryProvider()
+
+
+def test_patch_priority_and_kb_tools_use_server_catalog_not_exposure_images():
+    from api.scope import Scope
+
+    context = _PatchContext()
+    principal = type("P", (), {"subject": "operator"})()
+    scope = Scope({"subscription": ["sub-a"]})
+    priorities = call_tool(
+        "patch_priorities",
+        {},
+        context=context,
+        scope=scope,
+        principal=principal,
+    )
+    detail = call_tool(
+        "kb_detail",
+        {"kb_id": "5123099"},
+        context=context,
+        scope=scope,
+        principal=principal,
+    )
+
+    assert priorities.status == STATUS_OK
+    assert priorities.data["top_priority"] == {
+        **priorities.data["items"][0],
+        "kb_id": "KB5123099",
+        "product": "Windows Server 2016",
+        "published_at": "2026-09-08",
+        "kb_detail_status": STATUS_OK,
+        "kb_enrichment": {
+            "status": "complete",
+            "complete": True,
+            "stale": False,
+            "expected_count": 379,
+            "available_count": 379,
+        },
+        "kb_snapshot": {
+            "completeness": "complete",
+            "freshness": "stale",
+            "as_of": "2026-09-15T14:37:44Z",
+        },
+    }
+    assert priorities.data["top_priority"]["cve_count"] == 126
+    assert priorities.data["top_priority"]["recommended_action"].startswith(
+        "Patch through the approved change process"
+    )
+    assert "container_image" not in str(priorities.data)
+    assert [item.source_table for item in priorities.evidence] == [
+        "vulnerability_projection",
+        "silver_patch_snapshot_findings",
+    ]
+    assert "KB snapshot freshness is stale" in priorities.warning
+
+    assert detail.status == STATUS_OK
+    assert detail.data["kb_id"] == "KB5123099"
+    assert detail.data["product"] == "Windows Server 2016"
+    assert detail.data["published_at"] == "2026-09-08"
+    assert detail.data["cve_count"] == 126
+    assert len(detail.data["cve_ids"]) == 25
 
 
 def _call(server, name, arguments, scope):
