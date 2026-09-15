@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import {
+  CopilotCitations,
+  type CopilotCitation,
+} from "@/components/ui/CopilotCitations";
 import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
@@ -15,7 +19,6 @@ import { buildCopilotSnapshot } from "@/lib/services";
 import {
   investigateCanonical,
   normalizeCopilotSnapshotV2,
-  type CanonicalCopilotCitation,
   type CanonicalCopilotResult,
   type CopilotEvidenceSnapshotV2,
 } from "@/lib/copilot/page-adapters";
@@ -40,12 +43,8 @@ interface ChatTurn {
   coordinator?: NonNullable<CanonicalCopilotResult["synthesis"]>["coordinator"];
   uncertainty?: string[];
   coverage?: CanonicalCopilotResult["coverage"];
-  citations?: ServerSuppliedCitation[];
+  citations?: CopilotCitation[];
 }
-
-type ServerSuppliedCitation = CanonicalCopilotCitation & {
-  observation_status?: unknown;
-};
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
   ok: "success",
@@ -121,36 +120,6 @@ function stableJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function serverEvidenceState(observationStatus: unknown): {
-  label: string;
-  tone: "success" | "warning" | "info";
-} | null {
-  if (typeof observationStatus !== "string") return null;
-  switch (observationStatus.trim().toLowerCase()) {
-    case "historical":
-    case "historical_scope_restricted":
-      return { label: "Historical evidence", tone: "warning" };
-    case "revalidated":
-    case "rechecked":
-      return { label: "Revalidated evidence", tone: "success" };
-    case "current":
-      return { label: "Current evidence", tone: "info" };
-    default:
-      return null;
-  }
-}
-
-function ServerEvidenceStateBadge({
-  observationStatus,
-}: {
-  observationStatus: unknown;
-}) {
-  const state = serverEvidenceState(observationStatus);
-  return state
-    ? <StatusBadge label={state.label} tone={state.tone} compact />
-    : null;
 }
 
 export function CopilotDrawer({
@@ -634,31 +603,10 @@ export function CopilotDrawer({
                     ) : (
                       !turn.narration && <p>No matching context was found in this scope.</p>
                     )}
-                    {turn.citations?.length ? (
-                      <div className="copilot-citations" aria-label="Investigation citations">
-                        <strong>Citations</strong>
-                        <ul>
-                          {turn.citations.map((citation) => (
-                            <li key={citation.citation_id}>
-                              <details className="copilot-citation">
-                                <summary>
-                                  <span>{citation.source}</span>
-                                  <StatusBadge
-                                    label={citation.status}
-                                    tone={TOOL_STATUS_TONE[citation.status] ?? "neutral"}
-                                    compact
-                                  />
-                                </summary>
-                                <code>{citation.citation_id}</code>
-                                <ServerEvidenceStateBadge
-                                  observationStatus={citation.observation_status}
-                                />
-                              </details>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+                    <CopilotCitations
+                      citations={turn.citations ?? []}
+                      ariaLabel="Investigation citations"
+                    />
                   </>
                 )}
                 {!turn.error && (

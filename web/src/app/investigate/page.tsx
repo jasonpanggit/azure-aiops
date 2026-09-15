@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
+import { CopilotCitations } from "@/components/ui/CopilotCitations";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { RiskGauge } from "@/components/ui/RiskGauge";
@@ -574,19 +575,11 @@ function InvestigationWorkspaceContent() {
                 </ul>
               </div>
             ) : null}
-            {state.copilotView?.citations.length ? (
-              <div className="copilot-citations" aria-label="Investigation citations">
-                <StatusBadge label="Citations" tone="info" compact />
-                <ul>
-                  {state.copilotView.citations.map((citation) => (
-                    <li key={citation.citation_id}>
-                      {citation.source}
-                      {citation.status ? <span className="muted"> — {citation.status}</span> : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
+            <CopilotCitations
+              key={`${state.copilotView?.threadId ?? "no-thread"}:${state.copilotView?.threadRevision ?? 0}`}
+              citations={state.copilotView?.citations ?? []}
+              ariaLabel="Investigation citations"
+            />
             {mode === "engineer" && state.copilotView?.toolCalls.length ? <StructuredData value={state.copilotView.toolCalls} /> : null}
           </div>
         </section>

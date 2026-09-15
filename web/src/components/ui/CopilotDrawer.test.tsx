@@ -230,7 +230,11 @@ describe("CopilotDrawer", () => {
     ));
     expect(investigateCanonical).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Firewall bypass")).toBeInTheDocument();
-    expect(screen.getByText("server:network")).toBeInTheDocument();
+    const citations = screen.getByRole("button", { name: "Citations (1)" });
+    expect(citations).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(citations);
+    expect(citations).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("server:network")).toBeVisible();
   });
 
   it("normalizes integrated legacy snapshots and submits retained revision CAS", async () => {
