@@ -734,6 +734,7 @@ class TrafficFlowValidator:
         uncertain_reason = ""
 
         for collection in collections:
+            collection_uncertain_reason = ""
             for rule in collection.rules:
                 match = self._firewall_rule_matches(
                     rule,
@@ -744,15 +745,14 @@ class TrafficFlowValidator:
                     destination,
                 )
                 if match is None:
-                    # This rule is evaluated before any rule not yet examined
-                    # (collections/rules are walked in Azure's priority
-                    # order), and we cannot tell whether it would already
-                    # have matched. Nothing evaluated after it can be trusted
-                    # as a decision, so stop here rather than let a later,
-                    # fully-resolvable rule silently overwrite a genuinely
-                    # unknown outcome.
-                    uncertain_reason = self._firewall_unknown_reason(destination)
-                    break
+                    # Rules in one collection share its action, so a later
+                    # definite match in that same collection can safely name
+                    # the decision. Uncertainty still fences every subsequent
+                    # collection, whose action and priority may differ.
+                    collection_uncertain_reason = self._firewall_unknown_reason(
+                        destination
+                    )
+                    continue
                 if not match:
                     continue
                 return FlowHop(
@@ -771,7 +771,8 @@ class TrafficFlowValidator:
                     ),
                     rule_analysis=rule_analysis,
                 )
-            if uncertain_reason:
+            if collection_uncertain_reason:
+                uncertain_reason = collection_uncertain_reason
                 break
 
         if not collections:
@@ -953,10 +954,7 @@ class TrafficFlowValidator:
         matches: list[bool | None] = []
         if rule.destination_addresses:
             destination_specs = rule.destination_specs()
-            if (
-                destination.is_internet
-                and self._destination_hostname(destination) is None
-            ):
+            if destination.is_internet:
                 matches.append(
                     self._generic_internet_address_match(destination_specs)
                 )

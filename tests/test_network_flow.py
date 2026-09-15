@@ -397,6 +397,122 @@ class TestFirewallRuleEvaluation:
         assert firewall_hops[0].decision == "allow"
         assert firewall_hops[0].rule_name == "allow-contoso"
 
+    def test_a_concrete_fqdn_skips_unmatched_service_tags_before_matching_fqdn(
+        self,
+    ) -> None:
+        """A known hostname must not be blocked by earlier service-tag
+        destinations in the same collection when a later FQDN selector
+        exactly covers it."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/live-network-rules",
+            name="network-rules",
+            priority=100,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/live-network-rules/rules/arc",
+                    name="Arc",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=[
+                        "AzureActiveDirectory",
+                        "AzureTrafficManager",
+                        "AzureResourceManager",
+                        "AzureArcInfrastructure",
+                        "Storage",
+                        "AzureFrontDoor.Frontend",
+                        "AzureMonitor",
+                    ],
+                    destination_ports=["*"],
+                ),
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/live-network-rules/rules/google",
+                    name="Google",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["www.google.com"],
+                    destination_ports=["*"],
+                ),
+            ),
+        )
+        base_service = build_service(network_rows())
+        service = NetworkIntelligenceService(
+            replace(base_service.snapshot, firewall_collections=(collection,))
+        )
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="www.google.com",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        assert result.verdict == VERDICT_ALLOWED
+        firewall_hop = next(hop for hop in result.hops if hop.control == "azure_firewall")
+        assert firewall_hop.decision == "allow"
+        assert firewall_hop.rule_name == "Google"
+
+    def test_a_concrete_fqdn_does_not_skip_an_uncertain_prior_collection(
+        self,
+    ) -> None:
+        uncertain_deny = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/unresolved-service-tag",
+            name="unresolved-service-tag",
+            priority=100,
+            action="Deny",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/unresolved-service-tag/rules/azure",
+                    name="AzureService",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["AzureCloud"],
+                    destination_ports=["*"],
+                ),
+            ),
+        )
+        later_allow = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/google",
+            name="google",
+            priority=200,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/google/rules/google",
+                    name="Google",
+                    rule_type="NetworkRule",
+                    protocols=["Any"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["www.google.com"],
+                    destination_ports=["*"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(uncertain_deny, later_allow)
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="www.google.com",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        assert result.verdict == VERDICT_INDETERMINATE
+        firewall_hop = next(
+            hop for hop in result.hops if hop.control == "azure_firewall"
+        )
+        assert firewall_hop.decision == "unknown"
+
     def test_a_manually_entered_public_fqdn_that_does_not_match_falls_through(
         self,
     ) -> None:
