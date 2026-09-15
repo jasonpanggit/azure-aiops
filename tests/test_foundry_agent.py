@@ -13,6 +13,7 @@ from operations.foundry_agent import (
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
     specialist_catalog,
+    validate_executive_synthesis,
 )
 from operations.orchestration_contract import (
     EvidenceSnapshotV2,
@@ -131,6 +132,47 @@ def test_operations_copilot_synthesis_requires_citation_closed_json() -> None:
 
     assert "network-1" in answer.text
     assert "Return ONLY JSON" in coordinator.calls[0]["question"]
+
+
+def test_operations_copilot_normalizes_safe_synthesis_type_drift() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "findings": [{
+                "finding_id": "network-1",
+                "evidence_refs": "tool:network:0",
+                "confidence": "HIGH",
+                "uncertainty": "Coverage is partial.",
+                "freshness": "FRESH",
+                "actionable": "yes",
+                "next_check": "Review the cited route.",
+                "summary": "The subnet bypasses inspection.",
+                "ignored_extra_field": "not authority",
+            }]
+        })
+    ])
+
+    answer = FoundryCoordinatorSynthesisAgent(coordinator).answer(
+        question="Show inspection bypass paths.",
+        context={"findings": [{"evidence_refs": ["tool:network:0"]}]},
+    )
+    payload = json.loads(answer.text)
+
+    assert payload == {
+        "findings": [{
+            "finding_id": "network-1",
+            "evidence_refs": ["tool:network:0"],
+            "confidence": "high",
+            "uncertainty": ["Coverage is partial."],
+            "freshness": "fresh",
+            "actionable": False,
+            "next_check": "Review the cited route.",
+            "summary": "The subnet bypasses inspection.",
+        }]
+    }
+    assert validate_executive_synthesis(
+        answer.text,
+        evidence_refs={"tool:network:0"},
+    )
 
 
 def test_operations_copilot_cannot_change_required_page_hint() -> None:
