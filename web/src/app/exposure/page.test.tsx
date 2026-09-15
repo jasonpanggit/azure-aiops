@@ -14,11 +14,14 @@ const api = vi.hoisted(() => ({
   riskExceptions: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  copilotEvidenceRows: () => [],
-  vulnerabilityApi: api,
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    copilotEvidenceRows: () => [],
+    vulnerabilityApi: api,
+  };
+});
 
 import ExposurePage from "./page";
 

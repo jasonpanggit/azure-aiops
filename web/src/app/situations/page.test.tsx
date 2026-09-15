@@ -5,11 +5,14 @@ import { useScope } from "@/lib/scope-context";
 
 const { list } = vi.hoisted(() => ({ list: vi.fn() }));
 
-vi.mock("@/lib/services", () => ({
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  copilotEvidenceRows: () => [],
-  situationsApi: { list },
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    copilotEvidenceRows: () => [],
+    situationsApi: { list },
+  };
+});
 
 import SituationsPage from "./page";
 
