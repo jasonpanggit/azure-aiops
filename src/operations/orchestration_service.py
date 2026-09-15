@@ -25,6 +25,7 @@ from operations.cve_response import (
 from operations.foundry_agent import (
     FoundryAgentError,
     executive_synthesis_input,
+    is_highest_risk_compliance_question,
     normalize_cited_findings,
     validate_executive_synthesis,
 )
@@ -819,7 +820,7 @@ class OrchestrationService:
 
         uncertainty = self._uncertainty(
             request,
-            tool_statuses,
+            tool_results,
             budget_exhausted=budget_exhausted,
         )
         if candidate is None:
@@ -1078,6 +1079,7 @@ class OrchestrationService:
                     "selected": item.selected,
                     "direct": item.direct,
                     "quality": item.quality,
+                    "severity": item.severity,
                     "data": data,
                 }
             )
@@ -1143,6 +1145,7 @@ class OrchestrationService:
                     "selected": item.selected,
                     "direct": item.direct,
                     "quality": item.quality,
+                    "severity": item.severity,
                     "data": data,
                 }
             )
@@ -1277,10 +1280,22 @@ class OrchestrationService:
             snapshot=snapshot,
             tool_results=tool_results,
         )
-        deterministic_claims = cve_claims or network_claims or self._deterministic_page_claims(
+        page_claims = self._deterministic_page_claims(
             question,
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
+        )
+        highest_risk_compliance = (
+            snapshot is not None
+            and is_highest_risk_compliance_question(
+                snapshot.page_kind,
+                question,
+            )
+        )
+        deterministic_claims = (
+            [*page_claims, *network_claims][:8]
+            if highest_risk_compliance and page_claims
+            else cve_claims or network_claims or page_claims
         )
         for claim in deterministic_claims:
             evidence_refs = [
@@ -1307,6 +1322,18 @@ class OrchestrationService:
                     ),
                 }
             )
+        if highest_risk_compliance and page_claims:
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_page_evidence",
+                domain_count=max(1, decision.domain_count),
+                claims=deterministic_claims,
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if self.always_synthesize and (findings or deterministic_claims):
             decision = SynthesisDecision(
                 admitted=True,
@@ -1662,6 +1689,22 @@ class OrchestrationService:
             )
             and (item.get("selected") or item.get("direct"))
         ]
+        severity_priority = {
+            "critical": 0,
+            "high": 1,
+            "medium": 2,
+            "low": 3,
+            "unknown": 4,
+        }
+        candidates.sort(
+            key=lambda item: (
+                severity_priority.get(
+                    str(item.get("severity") or "unknown").casefold(),
+                    4,
+                ),
+                str(item.get("evidence_id") or ""),
+            )
+        )
         question_terms = {
             term
             for term in re.findall(r"[a-z0-9][a-z0-9_.-]+", question.casefold())
@@ -1684,6 +1727,12 @@ class OrchestrationService:
             "title",
             "name",
             "severity",
+            "detail",
+            "resource",
+            "owner",
+            "type",
+            "affected_traffic",
+            "vulnerability_exposure",
             "application",
             "business_service",
         )
@@ -2079,7 +2128,7 @@ class OrchestrationService:
     @staticmethod
     def _uncertainty(
         request: InvestigationRequest,
-        tool_statuses: list[str],
+        tool_results: Sequence[Mapping[str, Any]],
         *,
         budget_exhausted: bool,
     ) -> list[str]:
@@ -2091,9 +2140,20 @@ class OrchestrationService:
         for item in request.snapshot.freshness:
             if item.status != "fresh":
                 uncertainty.append(f"{item.source} freshness is {item.status}")
-        for status in tool_statuses:
+        for result in tool_results:
+            status = str(result.get("status") or "")
             if status in {STATUS_UNAVAILABLE, STATUS_DENIED}:
-                uncertainty.append(f"inventory tool status is {status}")
+                specialist = str(
+                    result.get("specialist_id") or "unknown specialist"
+                ).replace("_", " ")
+                tool = str(result.get("tool") or "unknown tool")
+                warning = " ".join(
+                    str(result.get("warning") or "").split()
+                )[:240]
+                message = f"{specialist} {tool} tool status is {status}"
+                if warning:
+                    message += f": {warning}"
+                uncertainty.append(message)
         return list(dict.fromkeys(uncertainty))
 
     @staticmethod

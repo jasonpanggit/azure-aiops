@@ -1206,6 +1206,20 @@ def _normalize_coordinator_findings(text: str) -> str:
     return json.dumps({"findings": findings}, ensure_ascii=False)
 
 
+def is_highest_risk_compliance_question(
+    page_kind: str,
+    question: str,
+) -> bool:
+    """Return whether a turn requires retained Compliance risk coverage."""
+
+    normalized = " ".join(question.casefold().replace("-", " ").split())
+    return (
+        page_kind == "compliance"
+        and "highest risk" in normalized
+        and "compliance" in normalized
+    )
+
+
 class FoundryCoordinatorPlanner:
     """Ask Operations Copilot for an untrusted typed delegation candidate."""
 
@@ -1223,15 +1237,12 @@ class FoundryCoordinatorPlanner:
         self,
         request: InvestigationRequest,
     ) -> tuple[str, ...]:
-        normalized = " ".join(
-            request.question.casefold().replace("-", " ").split()
-        )
         if (
             not self.required_hint
-            and
-            request.snapshot.page_kind == "compliance"
-            and "highest risk" in normalized
-            and "compliance" in normalized
+            and is_highest_risk_compliance_question(
+                request.snapshot.page_kind,
+                request.question,
+            )
         ):
             return ("vulnerability", "governance")
         return ()

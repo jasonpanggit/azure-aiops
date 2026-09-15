@@ -41,6 +41,7 @@ from operations.orchestration_service import (
     OrchestrationService,
     PlannerUnavailableError,
 )
+from operations.page_context import canonicalize_snapshot_v2
 from operations.specialist_manifest import (
     INVENTORY_DATA_HEALTH_ID,
     load_specialist_manifest,
@@ -613,6 +614,312 @@ def test_highest_risk_fallback_preserves_tool_budget_after_coordinator_correctio
     assert result.selected_tools == ["cve_exposure", "business_service_context"]
     assert "orchestration wall-clock budget exhausted" not in result.uncertainty
     assert clock.now == pytest.approx(5.2)
+
+
+def test_highest_risk_compliance_rejects_synthesis_that_ignores_page_findings():
+    resource_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Network/networkSecurityGroups/prod-nsg"
+    )
+    page_snapshot = EvidenceSnapshotV2(
+        page_kind="compliance",
+        page_id="compliance-posture",
+        coverage=SnapshotCoverage(
+            visible_count=153,
+            total_count=153,
+            complete=False,
+        ),
+        evidence=[
+            SnapshotEvidence(
+                evidence_id="compliance:high",
+                source="compliance/violations",
+                status=STATUS_OK,
+                resource_id=resource_id,
+                source_key="high-public-paas",
+                entity={"type": "azure", "resource_id": resource_id},
+                claim_type="policy_violation",
+                direct=True,
+                severity="high",
+                data={
+                    "type": "public_endpoint",
+                    "severity": "high",
+                    "title": "Public PaaS exposure",
+                    "detail": "The service is reachable over its public endpoint.",
+                    "resource": "payments-db",
+                    "owner": "Payments",
+                },
+            ),
+            SnapshotEvidence(
+                evidence_id="compliance:critical",
+                source="compliance/violations",
+                status=STATUS_OK,
+                resource_id=resource_id,
+                source_key="critical-any-source",
+                entity={"type": "azure", "resource_id": resource_id},
+                claim_type="policy_violation",
+                direct=True,
+                severity="critical",
+                data={
+                    "type": "overly_permissive_nsg",
+                    "severity": "critical",
+                    "title": "Firewall rule accepts any source",
+                    "detail": "AllowAny permits inbound traffic from any source.",
+                    "resource": "prod-nsg",
+                    "owner": "Unassigned",
+                },
+            ),
+        ],
+        material_claims=[
+            {
+                "claim_id": "claim:critical",
+                "evidence_refs": ["compliance:critical"],
+            },
+            {
+                "claim_id": "claim:high",
+                "evidence_refs": ["compliance:high"],
+            },
+        ],
+    )
+    planning_snapshot = page_snapshot.model_copy(
+        update={"evidence": [], "material_claims": []}
+    )
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=planning_snapshot,
+    )
+    scope = Scope({"subscription": ["sub-a"]})
+    invalid_candidate = CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id="vulnerability",
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="cve_exposure",
+                        arguments={},
+                        citation_ids=["snapshot:coverage"],
+                    )
+                ],
+            ),
+            SpecialistStep(
+                specialist_id="governance",
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="risk_context",
+                        arguments={},
+                        citation_ids=["snapshot:coverage"],
+                    )
+                ],
+            ),
+        ],
+    )
+    fallback = CandidatePlan(
+        steps=[
+            SpecialistStep(
+                specialist_id="vulnerability",
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="cve_exposure",
+                        arguments={},
+                        citation_ids=["snapshot:coverage"],
+                    )
+                ],
+            ),
+            SpecialistStep(
+                specialist_id="governance",
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="risk_context",
+                        arguments={"subject": resource_id},
+                        citation_ids=["snapshot:coverage"],
+                    )
+                ],
+            ),
+        ],
+    )
+
+    def execute(name, arguments, *, context, scope):
+        if name == "risk_context":
+            return ToolResult(
+                status="unavailable",
+                warning="The semantic provider is deferred",
+            )
+        return ToolResult(
+            status=STATUS_OK,
+            data={"total_count": 7121},
+            evidence=(
+                Evidence(
+                    source_engine="api.ExposureQueryService",
+                    source_table="gold_exposure_facts",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    class Coordinator:
+        calls = 0
+
+        def answer(self, *, context, **_kwargs):
+            self.calls += 1
+            vulnerability = next(
+                item
+                for item in context["findings"]
+                if item["specialist_id"] == "vulnerability"
+            )
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "false-only-finding",
+                        "evidence_refs": vulnerability["evidence_refs"],
+                        "confidence": "medium",
+                        "uncertainty": [],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Review the vulnerability evidence.",
+                        "summary": (
+                            "Observed vulnerability exposure is the only supplied "
+                            "compliance finding."
+                        ),
+                    }]
+                }),
+                agent_name="operations-copilot",
+                agent_version="5",
+            )
+
+    coordinator = Coordinator()
+    result = OrchestrationService(
+        planner=lambda _request: invalid_candidate,
+        fallback_planner=lambda _request: fallback,
+        executor=execute,
+        executive_agent=coordinator,
+        always_synthesize=True,
+    ).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=scope,
+        selection_snapshot=page_snapshot,
+        canonical_selection_snapshot=canonicalize_snapshot_v2(
+            page_snapshot,
+            effective_scope=scope,
+        ),
+    )
+
+    summaries = [claim["summary"] for claim in result.synthesis["claims"]]
+    assert result.policy_status == "fallback"
+    assert result.selected_specialists == ["vulnerability", "governance"]
+    assert result.selected_tools == ["cve_exposure", "risk_context"]
+    assert result.synthesis["status"] == "deterministic"
+    assert result.synthesis["reason"] == "deterministic_page_evidence"
+    assert coordinator.calls == 0
+    assert all("only supplied" not in summary for summary in summaries)
+    assert any("Firewall rule accepts any source" in summary for summary in summaries)
+    assert any("Public PaaS exposure" in summary for summary in summaries)
+    assert "Firewall rule accepts any source" in summaries[0]
+    assert any("governance risk_context tool status is unavailable" in warning for warning in result.uncertainty)
+    assert any(
+        "semantic provider is deferred" in warning.casefold()
+        for warning in result.uncertainty
+    )
+    retained_refs = {
+        reference
+        for claim in result.synthesis["claims"]
+        for reference in claim["evidence_refs"]
+        if reference.startswith("retained:")
+    }
+    assert len(retained_refs) == 2
+
+
+def test_highest_risk_compliance_degradation_prefers_page_facts_over_network():
+    snapshot = EvidenceSnapshotV2(
+        page_kind="compliance",
+        page_id="compliance-posture",
+        coverage=SnapshotCoverage(
+            visible_count=2,
+            total_count=2,
+            complete=False,
+        ),
+    )
+    retained = [{
+        "evidence_id": "retained:critical",
+        "original_evidence_id": "compliance:critical",
+        "source": "page_snapshot:compliance:compliance/violations",
+        "status": STATUS_OK,
+        "observation_status": "current",
+        "selected": False,
+        "direct": True,
+        "quality": "high",
+        "severity": "critical",
+        "data": {
+            "severity": "critical",
+            "title": "Firewall rule accepts any source",
+            "detail": "AllowAny permits traffic from any source.",
+        },
+    }]
+    tool_results = [{
+        "call_id": "network:0",
+        "specialist_id": "network",
+        "tool": "firewall_nsg_gaps",
+        "arguments": {"category": "firewall_bypass"},
+        "status": STATUS_OK,
+        "data": {
+            "gaps": [{
+                "category": "firewall_bypass",
+                "severity": "high",
+                "title": "Spoke bypasses hub firewall",
+            }],
+            "rule_findings": [],
+        },
+        "evidence": [{"source": "network"}],
+    }]
+
+    class Coordinator:
+        calls = 0
+
+        def answer(self, *, context, **_kwargs):
+            self.calls += 1
+            network = next(
+                item
+                for item in context["findings"]
+                if item["specialist_id"] == "network"
+            )
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "network-only",
+                        "evidence_refs": network["evidence_refs"],
+                        "confidence": "medium",
+                        "uncertainty": [],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Review the network evidence.",
+                        "summary": "The network finding is the only supplied finding.",
+                    }]
+                }),
+                agent_name="operations-copilot",
+                agent_version="5",
+            )
+
+    coordinator = Coordinator()
+    synthesis = OrchestrationService(
+        executive_agent=coordinator,
+        always_synthesize=True,
+    )._synthesize(
+        "What are my highest-risk compliance findings?",
+        tool_results,
+        retained_evidence=[],
+        current_retained_evidence=retained,
+        snapshot=snapshot,
+    )
+
+    assert synthesis.status == "deterministic"
+    assert coordinator.calls == 0
+    assert "Firewall rule accepts any source" in synthesis.claims[0]["summary"]
+    assert synthesis.claims[0]["evidence_refs"] == ["retained:critical"]
+    assert all(
+        "only supplied" not in claim["summary"]
+        for claim in synthesis.claims
+    )
 
 
 def test_widened_request_scope_causes_zero_calls():
