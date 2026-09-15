@@ -14,6 +14,7 @@ A tool that says "allowed" when it does not know is worse than one that says
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -195,6 +196,14 @@ class EndpointResolver:
             if subnet.name.casefold() == token:
                 return self._from_subnet(raw, subnet)
 
+        if self._is_public_fqdn(raw):
+            return FlowEndpoint(
+                raw=raw,
+                name=raw,
+                is_internet=True,
+                resolved=True,
+            )
+
         return FlowEndpoint(raw=raw, name=raw, resolved=False)
 
     def _from_subnet(self, raw: str, subnet: Subnet, *, ip_address: str = "") -> FlowEndpoint:
@@ -252,6 +261,19 @@ class EndpointResolver:
             return ipaddress.ip_address(value).is_global
         except ValueError:
             return False
+
+    @staticmethod
+    def _is_public_fqdn(value: str) -> bool:
+        candidate = value.rstrip(".")
+        if len(candidate) > 253:
+            return False
+        labels = candidate.split(".")
+        if len(labels) < 2:
+            return False
+        label_pattern = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+        if not all(label_pattern.fullmatch(label) for label in labels):
+            return False
+        return bool(re.fullmatch(r"(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{2,59})", labels[-1]))
 
 
 class TrafficFlowValidator:
@@ -332,6 +354,12 @@ class TrafficFlowValidator:
         elif destination.subnet_id and not destination.is_internet:
             missing.append(f"no NSG applied to destination subnet {destination.subnet_id}")
 
+        unknowns.extend(hop.reason for hop in hops if hop.decision == "unknown")
+        if not hops:
+            unknowns.append(
+                "no ordered enforcement path could be established from the observed controls"
+            )
+
         verdict = self._verdict(hops, unknowns)
         return FlowResult(
             query=query,
@@ -366,7 +394,14 @@ class TrafficFlowValidator:
         uncertain_rule: NetworkSecurityRule | None = None
 
         for rule in nsg.ordered_rules(direction=direction):
-            match = self._rule_matches(rule, source_value, dest_value, query)
+            match = self._rule_matches(
+                rule,
+                source_value,
+                dest_value,
+                query,
+                source,
+                destination,
+            )
             if match is None:
                 # Azure stops at the first matching rule by priority. If a
                 # higher-priority rule *might* match, no lower-priority rule
@@ -424,6 +459,8 @@ class TrafficFlowValidator:
         source_value: str,
         dest_value: str,
         query: FlowQuery,
+        source: FlowEndpoint,
+        destination: FlowEndpoint,
     ) -> bool | None:
         """``None`` means undecidable (unresolved service tag)."""
         if not rule.protocol_spec.matches(query.protocol):
@@ -433,15 +470,25 @@ class TrafficFlowValidator:
 
         source_spec, dest_spec = rule.source_spec, rule.destination_spec
 
-        source_match = self._address_match(source_spec, source_value)
-        dest_match = self._address_match(dest_spec, dest_value)
+        source_match = self._address_match(source_spec, source_value, source)
+        dest_match = self._address_match(dest_spec, dest_value, destination)
         if source_match is None or dest_match is None:
             return None
         return source_match and dest_match
 
-    def _address_match(self, spec: AddressSpec, value: str) -> bool | None:
+    def _address_match(
+        self,
+        spec: AddressSpec,
+        value: str,
+        endpoint: FlowEndpoint | None = None,
+    ) -> bool | None:
         if spec.is_any:
             return True
+        if endpoint is not None and endpoint.is_internet:
+            if spec.service_tag in INTERNET_TAGS:
+                return True
+            if spec.is_virtual_network or spec.networks:
+                return False
         if not value:
             return None
         if spec.service_tag:
@@ -637,7 +684,14 @@ class TrafficFlowValidator:
 
         for collection in collections:
             for rule in collection.rules:
-                match = self._firewall_rule_matches(rule, source_value, dest_value, query)
+                match = self._firewall_rule_matches(
+                    rule,
+                    source_value,
+                    dest_value,
+                    query,
+                    source,
+                    destination,
+                )
                 if match is None:
                     uncertain = True
                     continue
@@ -672,7 +726,13 @@ class TrafficFlowValidator:
         )
 
     def _firewall_rule_matches(
-        self, rule: Any, source_value: str, dest_value: str, query: FlowQuery
+        self,
+        rule: Any,
+        source_value: str,
+        dest_value: str,
+        query: FlowQuery,
+        source: FlowEndpoint,
+        destination: FlowEndpoint,
     ) -> bool | None:
         if rule.source_ip_groups or rule.destination_fqdns:
             return None
@@ -684,18 +744,27 @@ class TrafficFlowValidator:
         if not any(spec.contains(query.port) for spec in port_specs):
             return False
 
-        source_match = self._any_address_match(rule.source_specs(), source_value)
-        dest_match = self._any_address_match(rule.destination_specs(), dest_value)
+        source_match = self._any_address_match(rule.source_specs(), source_value, source)
+        dest_match = self._any_address_match(
+            rule.destination_specs(),
+            dest_value,
+            destination,
+        )
         if source_match is None or dest_match is None:
             return None
         return source_match and dest_match
 
-    def _any_address_match(self, specs: tuple[AddressSpec, ...], value: str) -> bool | None:
+    def _any_address_match(
+        self,
+        specs: tuple[AddressSpec, ...],
+        value: str,
+        endpoint: FlowEndpoint,
+    ) -> bool | None:
         if not specs:
             return True
         uncertain = False
         for spec in specs:
-            result = self._address_match(spec, value)
+            result = self._address_match(spec, value, endpoint)
             if result:
                 return True
             if result is None:
