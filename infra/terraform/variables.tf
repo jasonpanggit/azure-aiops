@@ -256,6 +256,68 @@ variable "enable_defender_configuration_execution" {
   default     = false
 }
 
+variable "enable_sre_agent_patch_execution" {
+  description = "Opt in to approval-gated patch dispatch through one pre-created Azure SRE Agent HTTP trigger. The trigger and its patch permissions are deployment prerequisites and are not created here."
+  type        = bool
+  default     = false
+}
+
+variable "sre_agent_http_trigger_secret_id" {
+  description = "Existing Key Vault secret URI containing the Azure SRE Agent HTTP trigger URL. The URL value must never be supplied directly to Terraform."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.sre_agent_http_trigger_secret_id == "" ||
+      can(regex("^https://[^/]+/secrets/[^/]+(?:/[^/]+)?$", var.sre_agent_http_trigger_secret_id))
+    )
+    error_message = "sre_agent_http_trigger_secret_id must be empty or an HTTPS Key Vault secret URI."
+  }
+}
+
+variable "sre_agent_endpoint" {
+  description = "Expected non-secret Azure SRE Agent data-plane endpoint used to pin the secret trigger URL host and poll persisted threads."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.sre_agent_endpoint == "" ||
+      can(regex("^https://[^/:]+/?$", var.sre_agent_endpoint))
+    )
+    error_message = "sre_agent_endpoint must be empty or an HTTPS DNS endpoint without userinfo, an explicit port, query parameters, or fragments."
+  }
+}
+
+variable "sre_agent_patch_target_prefix" {
+  description = "Exact ARM resource prefix within the configured SRE Agent subscription that the adapter may target."
+  type        = string
+  default     = ""
+}
+
+variable "sre_agent_trigger_scope" {
+  description = "Managed-identity token scope for invoking the SRE Agent HTTP trigger."
+  type        = string
+  default     = "59f0a04a-b322-4310-adc9-39ac41e9631e/.default"
+
+  validation {
+    condition     = endswith(var.sre_agent_trigger_scope, "/.default")
+    error_message = "sre_agent_trigger_scope must be an Azure Identity .default scope."
+  }
+}
+
+variable "sre_agent_thread_scope" {
+  description = "Managed-identity token scope for polling the SRE Agent data-plane thread endpoint."
+  type        = string
+  default     = "https://azuresre.dev/.default"
+
+  validation {
+    condition     = endswith(var.sre_agent_thread_scope, "/.default")
+    error_message = "sre_agent_thread_scope must be an Azure Identity .default scope."
+  }
+}
+
 variable "web_cpu" {
   description = "vCPU allocated to the web container."
   type        = number

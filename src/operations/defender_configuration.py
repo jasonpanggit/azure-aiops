@@ -120,6 +120,8 @@ class DefenderConfigurationAdapter(Protocol):
 class UnconfiguredDefenderConfigurationAdapter:
     """Safe default that refuses Defender configuration writes."""
 
+    name = "unconfigured"
+
     def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
         raise DefenderConfigurationUnavailable(
             "No Defender configuration execution adapter is configured.",
@@ -139,6 +141,8 @@ class UnconfiguredDefenderConfigurationAdapter:
 
 class AzureArmDefenderConfigurationAdapter:
     """Inspect and update explicit Microsoft.Security pricing resources."""
+
+    name = "azure-arm-defender-configuration"
 
     def __init__(
         self,

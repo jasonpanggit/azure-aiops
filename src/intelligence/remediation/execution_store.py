@@ -73,7 +73,7 @@ class ExecutionLockContended(RuntimeError):
 class RemediationExecutionStore:
     """Revisioned execution records with cross-process claim serialization."""
 
-    _SCHEMA_VERSION = "2.2.0"
+    _SCHEMA_VERSION = "2.3.0"
 
     def __init__(
         self,
@@ -146,6 +146,7 @@ class RemediationExecutionStore:
                 "approved_by": approved_by,
                 "created_at": timestamp,
                 "updated_at": timestamp,
+                "provider": "",
                 "provider_job_id": "",
                 "message": "",
                 "attempt_count": 1,
@@ -267,6 +268,7 @@ class RemediationExecutionStore:
                 "approved_by": approved_by,
                 "created_at": timestamp,
                 "updated_at": timestamp,
+                "provider": "",
                 "provider_job_id": "",
                 "message": "",
                 "attempt_count": 1,
@@ -382,6 +384,7 @@ class RemediationExecutionStore:
             record["attempt_count"] = number
             record["ineligibility_reason"] = ""
             record["outcome"] = ""
+            record["provider"] = ""
             record["provider_job_id"] = ""
             record["verified_state"] = ""
             record["failure_details"] = ""
@@ -501,6 +504,7 @@ class RemediationExecutionStore:
             record["outcome"] = outcome
         current = _current_attempt(record)
         for name in (
+            "provider",
             "provider_job_id",
             "verified_state",
             "failure_details",
@@ -743,6 +747,16 @@ def is_submission_ambiguous(record: dict[str, Any]) -> bool:
     return str(attempts[-1].get("failure_class") or "") == "submission_ambiguous"
 
 
+def is_manual_resolution_required(record: dict[str, Any]) -> bool:
+    """Whether an SRE ambiguity exhausted automation and permits supersession."""
+    return (
+        str(record.get("provider") or "") == "sre-agent"
+        and is_submission_ambiguous(record)
+        and str(record.get("verified_state") or "")
+        == "sre_agent_manual_resolution_required"
+    )
+
+
 _RECONCILED_TERMINAL_STATUSES = frozenset(
     {"reconciled_clean", "reconciled_incomplete", "unreconciled"}
 )
@@ -792,7 +806,9 @@ def _needs_verification_pass(record: dict[str, Any], *, now: datetime) -> bool:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed <= now
     if status == EXECUTION_STATUS_FAILED:
-        return is_submission_ambiguous(record)
+        return is_submission_ambiguous(record) and not is_manual_resolution_required(
+            record
+        )
     if status == EXECUTION_STATUS_SUCCEEDED:
         if not _is_patch_evidence_candidate(record):
             return False
@@ -829,6 +845,7 @@ def _new_attempt(
         "action_version": str(snapshot.get("action_version") or ""),
         "snapshot_hash": str(snapshot.get("snapshot_hash") or ""),
         "status": status,
+        "provider": "",
         "provider_job_id": "",
         "verified_state": "",
         "failure_details": "",
@@ -917,6 +934,7 @@ def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record.setdefault("ineligibility_reason", "")
     record.setdefault("verified_state", "")
     record.setdefault("failure_details", "")
+    record.setdefault("provider", "")
     record.setdefault("provider_job_id", "")
     record.setdefault("message", "")
     record.setdefault("rollback_guidance", [])
@@ -931,6 +949,7 @@ def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record.setdefault("evidence_reconciliation", _empty_evidence_reconciliation())
     attempts = record["attempts"]
     for attempt in attempts:
+        attempt.setdefault("provider", record["provider"])
         attempt["provider_submitted"] = _legacy_provider_submitted(attempt)
         attempt.setdefault("failure_class", "")
     record.setdefault(
@@ -973,6 +992,7 @@ __all__ = [
     "RemediationExecutionStore",
     "_is_patch_evidence_candidate",
     "execution_scope_attributes",
+    "is_manual_resolution_required",
     "is_submission_ambiguous",
     "submitted_attempt_count",
 ]

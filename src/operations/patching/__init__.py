@@ -20,6 +20,7 @@ from .models import (
     PatchTarget,
 )
 from .service import PatchingService
+from .sre_agent_adapter import SreAgentPatchExecutionAdapter
 from .store import InMemoryPatchRunStore, PatchRunStore
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "PatchRunStore",
     "PatchTarget",
     "PatchingService",
+    "SreAgentPatchExecutionAdapter",
     "UnconfiguredPatchExecutionAdapter",
 ]

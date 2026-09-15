@@ -315,6 +315,8 @@ def test_execute_leaves_status_running_not_succeeded_until_verified():
 
     execution = store.get(result["execution_id"])
     assert execution["status"] == "running"
+    assert execution["provider"] == "recording-with-operation-url"
+    assert execution["attempts"][0]["provider"] == "recording-with-operation-url"
 
 
 def test_poll_verification_updates_status_to_succeeded_on_terminal_outcome():
