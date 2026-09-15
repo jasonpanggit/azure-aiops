@@ -484,9 +484,28 @@ def build_deterministic_fallback(
         return ""
 
     def safe_call(spec: Any) -> ToolCallCandidate | None:
-        for tool in spec.operations_tools_for_page(page_kind):
+        tools = list(spec.operations_tools_for_page(page_kind))
+        lowered_question = request.question.casefold()
+        preferred_arguments: dict[str, dict[str, Any]] = {}
+        if (
+            "firewall_nsg_gaps" in tools
+            and any(
+                marker in lowered_question
+                for marker in ("bypass", "inspection", "firewall gap", "nsg gap")
+            )
+        ):
+            tools.remove("firewall_nsg_gaps")
+            tools.insert(0, "firewall_nsg_gaps")
+            if "bypass" in lowered_question or "inspection" in lowered_question:
+                preferred_arguments["firewall_nsg_gaps"] = {
+                    "category": "firewall_bypass"
+                }
+        for tool in tools:
             try:
-                arguments, _ = validate_tool_arguments(tool, {})
+                arguments, _ = validate_tool_arguments(
+                    tool,
+                    preferred_arguments.get(tool, {}),
+                )
             except ValueError:
                 try:
                     _, missing = validate_tool_arguments(

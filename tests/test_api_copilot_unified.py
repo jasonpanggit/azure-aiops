@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from api.app import create_app
 from api.evidence import Evidence
 from api.providers import ProviderRuntime, ProviderSpec
 from api.scope import Scope
-from operations.foundry_agent import FoundryAgentError
+from operations.foundry_agent import AgentAnswer, FoundryAgentError
 from operations.investigation_thread_store import (
     InvestigationThreadStore,
     ThreadNotFound,
@@ -233,6 +234,25 @@ def test_planner_failure_uses_validated_deterministic_fallback(planner, reason):
     assert result.fallback_reason == reason
     assert calls == ["inventory_resources"]
     assert result.citations
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [FoundryAgentError("offline"), TimeoutError(), ConnectionError()],
+)
+def test_shadow_plan_preview_degrades_coordinator_outage(failure):
+    from api.routers.copilot import _canonical_plan_preview
+
+    preview, validated = _canonical_plan_preview(
+        planner=lambda _request: (_ for _ in ()).throw(failure),
+        request=_request(),
+        scope=Scope({"subscription": ["sub-a"]}),
+    )
+
+    assert validated is False
+    assert preview["policy_status"] == "fallback"
+    assert preview["fallback_reason"] == "planner_unavailable"
+    assert preview["selected_tools"] == ["inventory_resources"]
 
 
 def test_rejected_candidate_executes_only_the_validated_fallback():
@@ -980,7 +1000,7 @@ def test_retained_network_rollout_narrates_cited_firewall_facts_without_foundry(
     body["hint"] = {
         "specialist_id": "network",
         "tool": "firewall_nsg_gaps",
-        "arguments": {},
+        "arguments": {"category": "firewall_bypass"},
     }
     body["snapshot"]["selected_entities"] = []
     body["snapshot"]["evidence"] = []
@@ -994,19 +1014,16 @@ def test_retained_network_rollout_narrates_cited_firewall_facts_without_foundry(
         "gaps": [
             {
                 "gap_id": "gap-firewall-bypass",
+                "category": "firewall_bypass",
                 "severity": "critical",
                 "title": "Spoke bypasses hub firewall",
                 "resource_name": "payments-spoke",
+                "detail": "The subnet has no default route through the hub firewall.",
+                "recommendation": "Associate the approved firewall route table.",
             }
         ],
-        "rule_findings": [
-            {
-                "finding_id": "finding-open-nsg",
-                "severity": "high",
-                "title": "NSG permits unrestricted inbound traffic",
-                "resource_name": "payments-nsg",
-            }
-        ],
+        "rule_findings": [],
+        "filter": {"category": "firewall_bypass"},
     }
     monkeypatch.setattr(
         "operations.investigation.call_tool",
@@ -1039,14 +1056,191 @@ def test_retained_network_rollout_narrates_cited_firewall_facts_without_foundry(
     assert data["synthesis"]["status"] == "degraded"
     assert data["synthesis"]["compatibility_answer"] is None
     claim = data["synthesis"]["claims"][0]
-    assert "1 inspection gap" in claim["summary"]
-    assert "1 firewall/NSG rule finding" in claim["summary"]
+    assert "1 inspection-bypass path" in claim["summary"]
     assert "Spoke bypasses hub firewall" in claim["summary"]
-    assert "NSG permits unrestricted inbound traffic" in claim["summary"]
+    assert "payments-spoke" in claim["summary"]
+    assert "Associate the approved firewall route table" in claim["summary"]
     assert all(ref.startswith("tool:") for ref in claim["evidence_refs"])
     assert "deterministic cited network evidence" in (
         data["synthesis"]["warning"].casefold()
     )
+
+
+def test_operations_copilot_coordinates_plan_and_final_network_answer(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if "Select the smallest" in question:
+                text = json.dumps({
+                    "steps": [{
+                        "specialist_id": "network",
+                        "tool_calls": [{
+                            "tool": "firewall_nsg_gaps",
+                            "arguments": {"category": "firewall_bypass"},
+                            "citation_ids": ["snapshot:coverage"],
+                            "mutation": False,
+                        }],
+                        "depends_on": [],
+                    }],
+                    "estimated_tokens": 0,
+                    "max_wall_seconds": 30,
+                    "mutation_intent": False,
+                })
+            else:
+                evidence_ref = context["findings"][0]["evidence_refs"][0]
+                text = json.dumps({
+                    "findings": [{
+                        "finding_id": "coordinator-network-answer",
+                        "evidence_refs": [evidence_ref],
+                        "confidence": "high",
+                        "uncertainty": [],
+                        "freshness": "fresh",
+                        "actionable": False,
+                        "next_check": "Review the cited subnet route.",
+                        "summary": (
+                            "The payments subnet bypasses inspection because "
+                            "it has no default route through the hub firewall."
+                        ),
+                    }]
+                })
+            return AgentAnswer(
+                text=text,
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    coordinator = Coordinator()
+    body = _network_hub_canonical_body()
+    body["question"] = "Show inspection bypass paths."
+    body["hint"] = {
+        "specialist_id": "network",
+        "tool": "firewall_nsg_gaps",
+        "arguments": {"category": "firewall_bypass"},
+    }
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="ok",
+            data={
+                "gaps": [{
+                    "category": "firewall_bypass",
+                    "resource_name": "payments",
+                }],
+                "rule_findings": [],
+            },
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    confidence="medium",
+                ),
+            ),
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["policy_status"] == "accepted"
+    assert data["selected_specialists"] == ["network"]
+    assert data["selected_tools"] == ["firewall_nsg_gaps"]
+    assert data["synthesis"]["status"] == "synthesized"
+    assert data["synthesis"]["reason"] == "operations_copilot_coordinator"
+    assert data["synthesis"]["coordinator"] == {
+        "name": "operations-copilot",
+        "version": "5",
+        "planned": True,
+        "delegation_mode": "governed_local_tools",
+    }
+    assert "payments subnet bypasses inspection" in (
+        data["synthesis"]["claims"][0]["summary"]
+    )
+    assert len(coordinator.calls) == 2
+    assert any(
+        "payments" in finding["summary"]
+        for finding in coordinator.calls[1]["context"]["findings"]
+    )
+
+
+def test_coordinator_failure_preserves_exact_validated_page_hint(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class FailingCoordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def answer(self, **_kwargs):
+            raise FoundryAgentError("coordinator unavailable")
+
+    body = _network_hub_canonical_body()
+    body["question"] = "Show inspection bypass paths."
+    body["hint"] = {
+        "specialist_id": "network",
+        "tool": "firewall_nsg_gaps",
+        "arguments": {"category": "firewall_bypass"},
+    }
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    calls = []
+
+    def exact_tool(name, arguments, **_kwargs):
+        calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", exact_tool)
+
+    response = TestClient(
+        create_app(_context(tmp_path, FailingCoordinator())),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["policy_status"] == "fallback"
+    assert data["fallback_reason"] == "planner_unavailable"
+    assert calls == [
+        ("firewall_nsg_gaps", {"category": "firewall_bypass"})
+    ]
 
 
 def test_retained_compliance_freeform_uses_only_page_granted_network_tool(
@@ -2243,6 +2437,38 @@ def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(
     body = _cve_canonical_body("CVE-2026-13221")
     body["question"] = "Explain CVE-2026-99999"
     body["hint"]["arguments"]["cve_id"] = "CVE-2026-99999"
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
+
+
+@pytest.mark.parametrize("query", ["CVE-2026-99999", "", "critical"])
+def test_canonical_cve_rejects_unbound_exposure_hint_before_tool_io(
+    tmp_path,
+    monkeypatch,
+    query,
+):
+    body = _cve_canonical_body("CVE-2026-13221")
+    body["hint"] = {
+        "specialist_id": "vulnerability",
+        "tool": "cve_exposure",
+        "arguments": {"query": query} if query else {},
+    }
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unbound CVE exposure hint reached tool I/O"
+        ),
+    )
 
     response = TestClient(
         create_app(_context(tmp_path, None)),

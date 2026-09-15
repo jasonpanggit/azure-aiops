@@ -78,6 +78,7 @@ class ToolArguments(BaseModel):
     target_kind: str | None = Field(default=None, min_length=1, max_length=64)
     severity: str | None = Field(default=None, min_length=1, max_length=64)
     source_family: str | None = Field(default=None, min_length=1, max_length=64)
+    category: str | None = Field(default=None, min_length=1, max_length=128)
     sort_by: str | None = Field(default=None, min_length=1, max_length=64)
     sort_direction: str | None = Field(default=None, min_length=1, max_length=8)
     entity_id: str | None = Field(default=None, min_length=1, max_length=512)
@@ -104,6 +105,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
 # Optional (non-required) arguments per tool, kept separate from _REQUIRED so
 # a tool can accept a field without forcing the caller to supply it.
 _OPTIONAL: dict[str, tuple[str, ...]] = {
+    "firewall_nsg_gaps": ("category",),
     "cve_exposure": (
         "business_service",
         "generation",

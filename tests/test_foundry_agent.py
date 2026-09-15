@@ -7,11 +7,155 @@ from operations.foundry_agent import (
     SPECIALIST_IDS,
     AgentAnswer,
     FoundryAgentError,
+    FoundryCoordinatorPlanner,
+    FoundryCoordinatorSynthesisAgent,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
     specialist_catalog,
 )
+from operations.orchestration_contract import (
+    EvidenceSnapshotV2,
+    InvestigationRequest,
+    SnapshotCoverage,
+)
+
+
+class _Coordinator:
+    agent_name = "operations-copilot"
+    agent_version = "5"
+
+    def __init__(self, answers: list[str]) -> None:
+        self.answers = answers
+        self.calls: list[dict] = []
+
+    def answer(self, **kwargs) -> AgentAnswer:
+        self.calls.append(kwargs)
+        return AgentAnswer(
+            text=self.answers.pop(0),
+            agent_name=self.agent_name,
+            agent_version=self.agent_version,
+        )
+
+
+def _network_request() -> InvestigationRequest:
+    return InvestigationRequest(
+        question="Show inspection bypass paths.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="network",
+            page_id="network-topology",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+
+def test_operations_copilot_returns_typed_untrusted_coordinator_plan() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "network",
+                "tool_calls": [{
+                    "tool": "firewall_nsg_gaps",
+                    "arguments": {"category": "firewall_bypass"},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(
+        coordinator,
+        required_hint={
+            "specialist_id": "network",
+            "tool": "firewall_nsg_gaps",
+            "arguments": {"category": "firewall_bypass"},
+        },
+    )(_network_request())
+
+    assert plan.steps[0].specialist_id == "network"
+    assert plan.steps[0].tool_calls[0].tool == "firewall_nsg_gaps"
+    assert coordinator.calls[0]["context"]["required_hint"]["arguments"] == {
+        "category": "firewall_bypass"
+    }
+    grants = coordinator.calls[0]["context"][
+        "allowed_policy_domains_and_local_tools"
+    ]
+    assert set(grants) == {"network", "vulnerability", "governance"}
+    assert grants["network"] == [
+        "network_topology",
+        "hub_dependents",
+        "traffic_flow",
+        "firewall_nsg_gaps",
+        "business_service_context",
+        "application_context",
+        "impact_context",
+        "fabric_iq_relationships",
+        "fabric_iq_topology",
+        "fabric_iq_policy_context",
+    ]
+    assert "specialist IDs do not claim" in (
+        coordinator.calls[0]["context"]["execution_model"]
+    )
+
+
+def test_operations_copilot_synthesis_requires_citation_closed_json() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "findings": [{
+                "finding_id": "network-1",
+                "evidence_refs": ["tool:network:0"],
+                "confidence": "high",
+                "uncertainty": [],
+                "freshness": "fresh",
+                "actionable": False,
+                "next_check": "Review the cited route.",
+                "summary": "The subnet bypasses inspection.",
+            }]
+        })
+    ])
+
+    answer = FoundryCoordinatorSynthesisAgent(coordinator).answer(
+        question="Show inspection bypass paths.",
+        context={"findings": [{"evidence_refs": ["tool:network:0"]}]},
+    )
+
+    assert "network-1" in answer.text
+    assert "Return ONLY JSON" in coordinator.calls[0]["question"]
+
+
+def test_operations_copilot_cannot_change_required_page_hint() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "network",
+                "tool_calls": [{
+                    "tool": "network_topology",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                }],
+            }],
+        })
+    ])
+
+    with pytest.raises(FoundryAgentError, match="changed the required page hint"):
+        FoundryCoordinatorPlanner(
+            coordinator,
+            required_hint={
+                "specialist_id": "network",
+                "tool": "firewall_nsg_gaps",
+                "arguments": {"category": "firewall_bypass"},
+            },
+        )(_network_request())
 
 
 def test_large_executive_context_is_transmitted_as_bounded_valid_json() -> None:

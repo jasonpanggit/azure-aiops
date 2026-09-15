@@ -22,6 +22,15 @@ class _Item:
 
 
 @dataclass(frozen=True)
+class _CategorizedItem:
+    item_id: int
+    category: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"item_id": self.item_id, "category": self.category}
+
+
+@dataclass(frozen=True)
 class _AffectedFinding:
     item_id: int
     affected_resource_ids: tuple[str, ...]
@@ -150,6 +159,33 @@ def _run(*, gaps: int, findings: int):
         scope=Scope.from_mapping({"subscription": ["sub-a"]}),
     )
     return service, result
+
+
+def test_firewall_tool_can_select_only_inspection_bypass_findings() -> None:
+    service = _NetworkService(gaps=0, findings=0)
+    service._analysis = SimpleNamespace(
+        gaps=(
+            _CategorizedItem(1, "firewall_bypass"),
+            _CategorizedItem(2, "missing_private_endpoint"),
+        ),
+        rule_findings=(
+            _CategorizedItem(3, "sensitive_port_exposure"),
+        ),
+    )
+
+    result = call_tool(
+        "firewall_nsg_gaps",
+        {"category": "firewall_bypass"},
+        context=_Context(service),
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+    )
+
+    assert result.status == STATUS_OK
+    assert result.data == {
+        "gaps": [{"item_id": 1, "category": "firewall_bypass"}],
+        "rule_findings": [],
+        "filter": {"category": "firewall_bypass"},
+    }
 
 
 def test_unrestricted_network_tool_uses_active_onboarded_subscriptions() -> None:

@@ -560,14 +560,28 @@ def _tool_traffic_flow(tool_context: ToolContext, args: Mapping[str, Any]) -> To
 
 
 def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    category = str(args.get("category") or "").strip().casefold()
+
     def run(network: Any) -> ToolResult:
         service = network.scoped(_tool_network_scope(tool_context))
         analysis = service.analyze()
-        gaps = [gap.to_dict() for gap in analysis.gaps]
-        findings = [finding.to_dict() for finding in analysis.rule_findings]
+        gaps = [
+            gap.to_dict()
+            for gap in analysis.gaps
+            if not category or gap.category.casefold() == category
+        ]
+        findings = [
+            finding.to_dict()
+            for finding in analysis.rule_findings
+            if not category or finding.category.casefold() == category
+        ]
         if not gaps and not findings:
             return ToolResult(status=STATUS_EMPTY)
-        payload = {"gaps": gaps, "rule_findings": findings}
+        payload = {
+            "gaps": gaps,
+            "rule_findings": findings,
+            "filter": {"category": category} if category else {},
+        }
         return ToolResult(
             status=STATUS_OK,
             data=_bound(payload),

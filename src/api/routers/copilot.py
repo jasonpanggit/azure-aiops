@@ -29,7 +29,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.cve_response import canonical_cve_id, deterministic_cve_narrative
-from operations.foundry_agent import FoundryAgentError
+from operations.foundry_agent import (
+    FoundryAgentError,
+    FoundryCoordinatorPlanner,
+    FoundryCoordinatorSynthesisAgent,
+)
 from operations.investigation import (
     conversation_store,
     run_investigation,
@@ -277,12 +281,19 @@ def _validate_bound_cve_request(
             flags=re.IGNORECASE,
         )
     }
-    hint_cve = (
-        canonical_cve_id(payload.hint.arguments.get("cve_id"))
-        if payload.hint is not None
-        and payload.hint.tool in {"cve_detail", "cve_attack_path"}
-        else ""
-    )
+    hint_cve = ""
+    hint_requires_exact_cve = False
+    if payload.hint is not None:
+        if payload.hint.tool in {"cve_detail", "cve_attack_path"}:
+            hint_requires_exact_cve = True
+            hint_cve = canonical_cve_id(
+                payload.hint.arguments.get("cve_id")
+            )
+        elif payload.hint.tool == "cve_exposure":
+            hint_requires_exact_cve = True
+            hint_cve = canonical_cve_id(
+                payload.hint.arguments.get("query")
+            )
     filtered_cves = {
         canonical_cve_id(value)
         for value in snapshot.filters.get("weakness_id", ())
@@ -296,6 +307,7 @@ def _validate_bound_cve_request(
     }
     conflicting = (
         (referenced and referenced != {page_cve})
+        or (hint_requires_exact_cve and not hint_cve)
         or (hint_cve and hint_cve != page_cve)
         or any(value and value != page_cve for value in filtered_cves)
         or any(value and value != page_cve for value in selected_cves)
@@ -638,6 +650,20 @@ def _canonical_plan_preview(
     except (TypeError, ValueError):
         policy_validated = False
         fallback_reason = "planner_parse_error"
+        candidate = build_deterministic_fallback(
+            request,
+            load_specialist_manifest(),
+        )
+        if candidate is not None:
+            candidate = policy.validate(
+                request=request,
+                candidate=candidate,
+                effective_scope=scope,
+            )
+        policy_status = "fallback"
+    except (ConnectionError, FoundryAgentError, TimeoutError):
+        policy_validated = False
+        fallback_reason = "planner_unavailable"
         candidate = build_deterministic_fallback(
             request,
             load_specialist_manifest(),
@@ -1758,6 +1784,7 @@ def investigate_canonical(
         ) from exc
     execution_payload = payload.model_copy(update={"hint": plan_hint})
     rollout = copilot_rollout_decision(stable_key=principal.subject)
+    hint_candidate: CandidatePlan | None = None
     if browser_snapshot.page_kind == "inventory":
         try:
             selector = _inventory_selector(browser_snapshot)
@@ -1835,6 +1862,7 @@ def investigate_canonical(
                 )
             )
         )
+        hint_candidate = planner(request) if plan_hint is not None else None
 
         def executor(
             name: str,
@@ -1857,17 +1885,58 @@ def investigate_canonical(
                     warning="Tool unavailable in canonical page mode",
                 )
 
+    if (
+        hint_candidate is None
+        and (plan_hint is not None or browser_snapshot.page_kind == "inventory")
+    ):
+        hint_candidate = planner(request)
+    coordinator = context.foundry_agent()
+    coordinator_version = str(
+        getattr(coordinator, "agent_version", "") or ""
+    ).strip()
+    coordinator_enabled = (
+        coordinator is not None
+        and str(getattr(coordinator, "agent_name", "")).strip()
+        == "operations-copilot"
+        and bool(coordinator_version)
+        and coordinator_version not in {"1", "2", "3", "4"}
+    )
+    coordinator_synthesis = None
+    required_candidate = hint_candidate
+    if coordinator_enabled:
+        required_hint = None
+        if required_candidate is not None:
+            required_step = required_candidate.steps[0]
+            required_call = required_step.tool_calls[0]
+            required_hint = {
+                "specialist_id": required_step.specialist_id,
+                "tool": required_call.tool,
+                "arguments": dict(required_call.arguments),
+            }
+        planner = FoundryCoordinatorPlanner(
+            coordinator,
+            required_hint=required_hint,
+        )
+        coordinator_synthesis = FoundryCoordinatorSynthesisAgent(coordinator)
+
     try:
-        if plan_hint is not None:
+        if plan_hint is not None and hint_candidate is not None:
             OrchestrationPolicy().validate(
                 request=request,
-                candidate=planner(request),
+                candidate=hint_candidate,
                 effective_scope=scope,
             )
-        if rollout.canonical_enabled:
+        if rollout.canonical_enabled or coordinator_enabled:
             result = OrchestrationService(
                 planner=planner,
+                fallback_planner=(
+                    (lambda _request: required_candidate)
+                    if required_candidate is not None
+                    else None
+                ),
                 executor=executor,
+                executive_agent=coordinator_synthesis,
+                always_synthesize=coordinator_synthesis is not None,
             ).execute(
                 request,
                 context=context,
@@ -1917,6 +1986,26 @@ def investigate_canonical(
                 "uncertainty": list(
                     dict.fromkeys([*result.uncertainty, semantic_warning])
                 )
+            }
+        )
+
+    if coordinator_enabled:
+        result = result.model_copy(
+            update={
+                "synthesis": {
+                    **(result.synthesis or {}),
+                    "coordinator": {
+                        "name": str(
+                            getattr(coordinator, "agent_name", "")
+                            or "operations-copilot"
+                        ),
+                        "version": str(
+                            coordinator_version
+                        ),
+                        "planned": result.policy_status == "accepted",
+                        "delegation_mode": "governed_local_tools",
+                    },
+                }
             }
         )
 

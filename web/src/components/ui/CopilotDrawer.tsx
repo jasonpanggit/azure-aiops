@@ -37,6 +37,7 @@ interface ChatTurn {
   policyStatus?: CanonicalCopilotResult["policy_status"];
   fallbackReason?: string;
   degradationReason?: string;
+  coordinator?: NonNullable<CanonicalCopilotResult["synthesis"]>["coordinator"];
   uncertainty?: string[];
   coverage?: CanonicalCopilotResult["coverage"];
   citations?: ServerSuppliedCitation[];
@@ -320,6 +321,7 @@ export function CopilotDrawer({
       );
       if (!requestIsCurrent()) return;
       const result = envelope.data;
+      const synthesisWarning = result.synthesis?.warning?.trim() || undefined;
       if (!threadContinuity.acceptServerState(
         {
           threadId: result.thread_id,
@@ -346,25 +348,27 @@ export function CopilotDrawer({
           warnings: uniqueWarnings(envelope.warnings),
           policyStatus: result.policy_status,
           fallbackReason: result.fallback_reason,
-          degradationReason: result.synthesis?.warning?.trim() || undefined,
-          uncertainty: result.uncertainty,
+          degradationReason: synthesisWarning,
+          coordinator: result.synthesis?.coordinator,
+          uncertainty: uniqueWarnings(result.uncertainty).filter(
+            (warning) => warning !== synthesisWarning,
+          ),
           coverage: result.coverage,
           citations: result.citations,
           narration: result.synthesis?.claims?.length
             ? {
                 text: result.synthesis.claims
-                  .map(
-                    (claim) =>
-                      `${claim.summary}\n\nEvidence: ${claim.evidence_refs.join(", ")}`,
-                  )
+                  .map((claim) => claim.summary)
                   .join("\n\n"),
                 agent_name:
                   result.synthesis.status === "synthesized"
-                    ? "Executive synthesis"
+                    ? result.synthesis.coordinator?.name || "Operations Copilot"
                     : "Deterministic page evidence",
                 model:
                   result.synthesis.status === "synthesized"
-                    ? "Foundry"
+                    ? result.synthesis.coordinator?.version
+                      ? `Foundry · v${result.synthesis.coordinator.version}`
+                      : "Foundry"
                     : "Deterministic",
                 grounded: true,
               }
@@ -376,7 +380,11 @@ export function CopilotDrawer({
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(result.policy_status === "fallback" || result.synthesis?.status === "degraded"
+      setStage(result.synthesis?.status === "degraded"
+        || (
+          result.policy_status === "fallback"
+          && result.synthesis?.status !== "synthesized"
+        )
         ? "fallback"
         : result.status === "partial"
           ? "partial"
@@ -430,9 +438,6 @@ export function CopilotDrawer({
   const visibleLoading = loading
     && activeRequestFingerprint.current === contextFingerprint;
   const visibleStage = transcriptFingerprint === contextFingerprint ? stage : "idle";
-  const degradationReason = visibleTurns.length
-    ? visibleTurns[visibleTurns.length - 1].degradationReason
-    : undefined;
 
   return (
     <>
@@ -501,8 +506,7 @@ export function CopilotDrawer({
           <div className="copilot-live-status" role="status" aria-live="polite">
             {visibleLoading && "Gathering the visible page evidence and checking governed sources…"}
             {!visibleLoading && visibleStage === "fallback" && (
-              degradationReason
-              ?? "Deterministic evidence is available; Foundry narration was not produced."
+              "Deterministic evidence is shown. Optional narration is unavailable."
             )}
             {!visibleLoading && visibleStage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
             {!visibleLoading && visibleStage === "error" && "The request failed. Retry the same bounded page snapshot."}
@@ -524,7 +528,14 @@ export function CopilotDrawer({
                 <div className="copilot-answer-label">
                   <span className="copilot-mark">AI</span>
                   <strong>Copilot</strong>
-                  {turn.narration && <StatusBadge label={turn.narration.model || turn.narration.agent_name} tone="success" compact />}
+                  {turn.narration && (
+                    <span
+                      className="copilot-coordinator-version"
+                      title={turn.narration.model || turn.narration.agent_name}
+                    >
+                      <StatusBadge label={turn.narration.model || turn.narration.agent_name} tone="success" compact />
+                    </span>
+                  )}
                 </div>
                 {turn.error ? (
                   <p>{turn.error}</p>
@@ -534,6 +545,35 @@ export function CopilotDrawer({
                       <>
                         {turn.synthesisMode === "foundry" && <p className="copilot-synthesis-mode">Narrated by {turn.narration.agent_name}.</p>}
                         <MarkdownLite text={turn.narration.text} />
+                        {turn.synthesisMode === "deterministic" && turn.degradationReason && (
+                          <details className="copilot-degradation-details">
+                            <summary>About this response</summary>
+                            {turn.coordinator && (
+                              <p>
+                                Coordinator: {turn.coordinator.name}
+                                {turn.coordinator.version
+                                  ? ` · v${turn.coordinator.version}`
+                                  : ""}
+                              </p>
+                            )}
+                            <p>{turn.degradationReason}</p>
+                            {turn.policyStatus === "fallback" && (
+                              <p>
+                                Planning fallback: {turn.fallbackReason || "unspecified reason"}.
+                              </p>
+                            )}
+                          </details>
+                        )}
+                        {turn.synthesisMode === "foundry"
+                          && turn.policyStatus === "fallback" && (
+                            <details className="copilot-degradation-details">
+                              <summary>Planning fallback</summary>
+                              <p>
+                                Operations Copilot narrated a deterministic fallback
+                                plan ({turn.fallbackReason || "unspecified reason"}).
+                              </p>
+                            </details>
+                          )}
                       </>
                     )}
                     {!turn.narration && turn.toolCalls?.some((call) => call.status === "ok") && (
@@ -545,8 +585,15 @@ export function CopilotDrawer({
                     )}
                     {turn.coverage && (
                       <div className="copilot-coverage" aria-label="Investigation coverage">
-                        <strong>{turn.coverage.visible_count} of {turn.coverage.total_count} visible records</strong>
-                        <span>{turn.coverage.complete ? "Complete visible coverage" : "Partial visible coverage"}</span>
+                        <span className="copilot-coverage-count">
+                          <strong>{turn.coverage.visible_count} of {turn.coverage.total_count}</strong>
+                          <span> visible records</span>
+                        </span>
+                        <StatusBadge
+                          label={turn.coverage.complete ? "Complete coverage" : "Partial coverage"}
+                          tone={turn.coverage.complete ? "success" : "warning"}
+                          compact
+                        />
                       </div>
                     )}
                     {turn.uncertainty?.length ? (
@@ -593,11 +640,20 @@ export function CopilotDrawer({
                         <ul>
                           {turn.citations.map((citation) => (
                             <li key={citation.citation_id}>
-                              <code>{citation.citation_id}</code>
-                              <span>{citation.source}</span>
-                              <ServerEvidenceStateBadge
-                                observationStatus={citation.observation_status}
-                              />
+                              <details className="copilot-citation">
+                                <summary>
+                                  <span>{citation.source}</span>
+                                  <StatusBadge
+                                    label={citation.status}
+                                    tone={TOOL_STATUS_TONE[citation.status] ?? "neutral"}
+                                    compact
+                                  />
+                                </summary>
+                                <code>{citation.citation_id}</code>
+                                <ServerEvidenceStateBadge
+                                  observationStatus={citation.observation_status}
+                                />
+                              </details>
                             </li>
                           ))}
                         </ul>

@@ -35,6 +35,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
+from operations.maf_orchestrator import reviewed_specialists_for_page
+from operations.orchestration_contract import (
+    COVERAGE_CITATION_ID,
+    CandidatePlan,
+    InvestigationRequest,
+)
 from operations.specialist_manifest import load_specialist_manifest
 
 _LOGGER = logging.getLogger(__name__)
@@ -1046,6 +1054,158 @@ def _serialize_bounded_context(context: Any) -> str:
         else:
             break
     return json.dumps(bounded, default=str, ensure_ascii=False)
+
+
+def _json_object_from_answer(text: str) -> dict[str, Any]:
+    """Parse one strict JSON object from a coordinator response."""
+
+    candidate = str(text or "").strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            candidate = "\n".join(lines[1:-1]).strip()
+            if candidate.casefold().startswith("json\n"):
+                candidate = candidate[5:].strip()
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise FoundryAgentError(
+            "Operations Copilot coordinator returned invalid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise FoundryAgentError(
+            "Operations Copilot coordinator must return one JSON object"
+        )
+    return payload
+
+
+class FoundryCoordinatorPlanner:
+    """Ask Operations Copilot for an untrusted typed delegation candidate."""
+
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        required_hint: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.agent = agent
+        self.required_hint = dict(required_hint or {})
+        self.manifest = load_specialist_manifest()
+
+    def __call__(self, request: InvestigationRequest) -> CandidatePlan:
+        page_kind = request.snapshot.page_kind
+        page_mapping = self.manifest.page_mapping_projection()
+        allowed_specialists = {}
+        for specialist_id in reviewed_specialists_for_page(
+            page_kind,
+            page_mapping,
+        ):
+            specialist = self.manifest.require(specialist_id)
+            allowed_specialists[specialist_id] = list(
+                specialist.operations_tools_for_page(page_kind)
+            )
+        context = {
+            "contract": {
+                "steps": [{
+                    "specialist_id": "allowed specialist id",
+                    "tool_calls": [{
+                        "tool": "allowed tool",
+                        "arguments": {},
+                        "citation_ids": ["allowed citation id"],
+                        "mutation": False,
+                    }],
+                    "depends_on": [],
+                }],
+                "estimated_tokens": 0,
+                "max_wall_seconds": 30,
+                "mutation_intent": False,
+            },
+            "page_kind": page_kind,
+            "page_id": request.snapshot.page_id,
+            "allowed_policy_domains_and_local_tools": allowed_specialists,
+            "execution_model": (
+                "Operations Copilot proposes policy-domain/tool calls. "
+                "Deterministic server policy authorizes them and the API "
+                "executes governed local tools; specialist IDs do not claim "
+                "that separate Foundry specialist agents ran."
+            ),
+            "allowed_citation_ids": [
+                COVERAGE_CITATION_ID,
+                *[item.evidence_id for item in request.snapshot.evidence],
+            ],
+            "required_hint": self.required_hint or None,
+            "coverage": request.snapshot.coverage.model_dump(mode="json"),
+            "selected_entities": [
+                item.model_dump(mode="json")
+                for item in request.snapshot.selected_entities
+            ],
+        }
+        planning_question = (
+            "Return ONLY one JSON object matching contract. Select the smallest "
+            "read-only specialist/tool plan that answers the operator question. "
+            "Use only allowed specialist/tool pairs and allowed citation IDs. "
+            "Never add mutation. If required_hint is present, include exactly "
+            "that specialist, tool, and arguments.\n\n"
+            f"OPERATOR QUESTION:\n{request.question}"
+        )
+        answer = self.agent.answer(
+            question=planning_question,
+            context=context,
+            max_output_tokens=2_000,
+        )
+        try:
+            plan = CandidatePlan.model_validate(
+                _json_object_from_answer(getattr(answer, "text", ""))
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise FoundryAgentError(
+                "Operations Copilot coordinator returned an invalid candidate plan"
+            ) from exc
+        if self.required_hint:
+            calls = [
+                (step.specialist_id, call.tool, dict(call.arguments))
+                for step in plan.steps
+                for call in step.tool_calls
+            ]
+            expected = (
+                str(self.required_hint.get("specialist_id") or ""),
+                str(self.required_hint.get("tool") or ""),
+                dict(self.required_hint.get("arguments") or {}),
+            )
+            if calls != [expected]:
+                raise FoundryAgentError(
+                    "Operations Copilot coordinator changed the required page hint"
+                )
+        return plan
+
+
+class FoundryCoordinatorSynthesisAgent:
+    """Use Operations Copilot for citation-closed final answer synthesis."""
+
+    def __init__(self, agent: Any) -> None:
+        self.agent = agent
+
+    def answer(
+        self,
+        *,
+        question: str,
+        context: Any,
+        timeout_seconds: float | None = None,
+    ) -> AgentAnswer:
+        synthesis_question = (
+            "Return ONLY JSON with shape {\"findings\":[...]}. Each finding must "
+            "contain exactly finding_id, evidence_refs, confidence, uncertainty, "
+            "freshness, actionable, next_check, summary. Answer the operator "
+            "question directly, consolidate duplicate findings, and cite only "
+            "evidence_refs present in context. Do not propose mutation.\n\n"
+            f"OPERATOR QUESTION:\n{question}"
+        )
+        return self.agent.answer(
+            question=synthesis_question,
+            context=context,
+            max_output_tokens=3_000,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def _build_prompt(
