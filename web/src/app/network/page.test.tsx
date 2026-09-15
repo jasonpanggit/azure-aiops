@@ -539,6 +539,39 @@ describe("Network path endpoint selectors", () => {
     expect(screen.getByText(/observed controls were insufficient/i)).toBeInTheDocument();
   });
 
+  it("names skipped controls in plain language and hides empty qualification panels", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(
+      flowEnvelope(subnetA, "Internet", {
+        missing_enforcement_points: ["hub Azure Firewall"],
+      }),
+    );
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "Internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    expect(await screen.findByText("Controls this path skips")).toBeInTheDocument();
+    expect(
+      screen.getByText("This traffic is not inspected by: hub Azure Firewall."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Skips firewall inspection")).toBeInTheDocument();
+    // A fully resolved path must not render a panel announcing unknowns.
+    expect(screen.queryByText("What could not be determined")).not.toBeInTheDocument();
+    expect(screen.queryByText("Known unknowns")).not.toBeInTheDocument();
+  });
+
   it("reloads scoped options, clears selected resources, preserves active manual text, and resets results", async () => {
     const user = userEvent.setup();
     const narrowSubnet =

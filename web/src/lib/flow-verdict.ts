@@ -51,7 +51,7 @@ export function presentPathResolution(
   if (result.unknowns.length > 0) {
     const count = result.unknowns.length;
     return {
-      label: `${count} reported unknown${count === 1 ? "" : "s"}`,
+      label: `${count} item${count === 1 ? "" : "s"} could not be determined`,
       detail: result.unknowns.join(", "),
       tone: "warning",
     };
@@ -92,7 +92,7 @@ export function presentPathResolution(
 
   return {
     label: "Path fully resolved",
-    detail: "No unresolved path elements were reported.",
+    detail: "Every endpoint and control on this path was resolved.",
     tone: "success",
   };
 }
