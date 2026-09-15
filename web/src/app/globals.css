@@ -4560,6 +4560,20 @@ body.topology-fullscreen-open {
   justify-self: end;
 }
 
+.compliance-violations-panel {
+  min-width: 0;
+}
+
+.compliance-row-group {
+  min-width: 0;
+}
+
+.compliance-detail-inline {
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-brand-subtle);
+  padding: 16px 20px;
+}
+
 .page-header-actions-group {
   display: flex;
   align-items: center;
