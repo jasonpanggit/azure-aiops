@@ -1116,6 +1116,8 @@ def _normalize_coordinator_findings(text: str) -> str:
         for key in ("confidence", "freshness"):
             if isinstance(normalized.get(key), str):
                 normalized[key] = normalized[key].strip().casefold()
+        if normalized.get("freshness") == "current":
+            normalized["freshness"] = "unknown"
         findings.append(normalized)
     return json.dumps({"findings": findings}, ensure_ascii=False)
 

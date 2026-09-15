@@ -175,6 +175,35 @@ def test_operations_copilot_normalizes_safe_synthesis_type_drift() -> None:
     )
 
 
+def test_operations_copilot_maps_current_freshness_alias_to_unknown() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "findings": [{
+                "finding_id": "network-hub",
+                "evidence_refs": ["tool:hub:0"],
+                "confidence": "high",
+                "uncertainty": [],
+                "freshness": "current",
+                "actionable": False,
+                "next_check": "Review the cited hub dependencies.",
+                "summary": "The hub has two dependent spokes.",
+            }]
+        })
+    ])
+
+    answer = FoundryCoordinatorSynthesisAgent(coordinator).answer(
+        question="What depends on this hub?",
+        context={"findings": [{"evidence_refs": ["tool:hub:0"]}]},
+    )
+    payload = json.loads(answer.text)
+
+    assert payload["findings"][0]["freshness"] == "unknown"
+    assert validate_executive_synthesis(
+        answer.text,
+        evidence_refs={"tool:hub:0"},
+    )
+
+
 def test_operations_copilot_cannot_change_required_page_hint() -> None:
     coordinator = _Coordinator([
         json.dumps({
