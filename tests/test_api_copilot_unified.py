@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from test_api_copilot_investigation import HEADERS, _context
+from test_connection_lineage_integration import make_connection
 
 from api.app import create_app
 from api.evidence import Evidence
@@ -1638,6 +1640,86 @@ def test_absent_rollout_mode_fails_closed_to_compatibility(
     assert compatibility_calls == [("hub_dependents", {"vnet_id": vnet_id})]
     assert rollout["mode"] == "compatibility"
     assert rollout["canonical_enabled"] is False
+
+
+def test_compatibility_network_hub_uses_live_provider_without_explicit_scope(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    body = _network_hub_canonical_body()
+    old_vnet_id = body["hint"]["arguments"]["vnet_id"]
+    vnet_id = old_vnet_id.replace("/sub-a/", "/sub-1/")
+    body["requested_scope"] = {}
+    body["snapshot"]["selected_entities"][0]["resource_id"] = vnet_id
+    selected_evidence = body["snapshot"]["evidence"][1]
+    selected_evidence["resource_id"] = vnet_id
+    selected_evidence["source_key"] = vnet_id
+    selected_evidence["entity"]["resource_id"] = vnet_id
+    body["hint"]["arguments"]["vnet_id"] = vnet_id
+    requested_subscriptions: list[list[str]] = []
+
+    class HubService:
+        snapshot = SimpleNamespace(
+            observed_at="2026-09-15T00:00:00Z",
+            vnets=(
+                SimpleNamespace(
+                    resource_id=vnet_id.casefold(),
+                    name="demo-vnet",
+                ),
+            ),
+        )
+
+        def scoped(self, _scope):
+            return self
+
+        def hub_dependents(self, resolved_vnet_id):
+            assert resolved_vnet_id == vnet_id.casefold()
+            return {
+                "hub_vnet_id": resolved_vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_vnets": [],
+                "shared_services": [],
+                "dependent_count": 0,
+            }
+
+    context = _context(tmp_path, None)
+    context.onboarding.registry.add(make_connection())
+    context.hybrid_network_provider = lambda subscription_ids: (
+        requested_subscriptions.append(subscription_ids) or HubService()
+    )
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+            "network": ProviderSpec(
+                lambda: pytest.fail("deferred managed network provider loaded"),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["network"]
+    assert data["selected_tools"] == ["hub_dependents"]
+    assert data["tool_results"][0]["status"] == "ok"
+    assert data["tool_results"][0]["data"]["dependent_count"] == 0
+    assert data["mutation_authorized"] is False
+    assert requested_subscriptions == [["sub-1"]]
 
 
 def test_missing_rollout_keeps_legacy_investigate_on_compatibility(

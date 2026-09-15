@@ -60,6 +60,67 @@ class _Context:
         return self.service if name == "network" else None
 
 
+def test_hub_dependents_uses_active_live_subscriptions_for_unrestricted_scope() -> None:
+    vnet_id = (
+        "/subscriptions/sub-a/resourceGroups/demo-rg/providers/"
+        "Microsoft.Network/virtualNetworks/demo-vnet"
+    )
+    requested_subscriptions: list[list[str]] = []
+
+    class HubService:
+        snapshot = SimpleNamespace(
+            observed_at="2026-09-15T00:00:00Z",
+            vnets=(SimpleNamespace(resource_id=vnet_id.casefold(), name="demo-vnet"),),
+        )
+
+        def scoped(self, scope):
+            assert scope.subscription_ids == ()
+            return self
+
+        def hub_dependents(self, resolved_vnet_id):
+            assert resolved_vnet_id == vnet_id.casefold()
+            return {
+                "hub_vnet_id": resolved_vnet_id,
+                "hub_name": "demo-vnet",
+                "dependent_count": 1,
+                "dependent_vnets": [{"name": "app-vnet"}],
+            }
+
+    service = HubService()
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        onboarding=SimpleNamespace(
+            registry=SimpleNamespace(
+                list=lambda **_kwargs: [
+                    SimpleNamespace(
+                        subscription_id="sub-a",
+                        connection_id="conn-a",
+                        is_active=True,
+                    )
+                ]
+            )
+        ),
+        hybrid_network_provider=lambda subscription_ids: (
+            requested_subscriptions.append(subscription_ids) or service
+        ),
+        resolve_provider=lambda name: pytest.fail(
+            f"deferred managed provider resolved for {name}"
+        ),
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {"vnet_id": vnet_id},
+        context=context,
+        scope=Scope.unrestricted(),
+    )
+
+    assert result.status == STATUS_OK
+    assert result.data["dependent_count"] == 1
+    assert requested_subscriptions == [["sub-a"]]
+
+
 def _run(*, gaps: int, findings: int):
     service = _NetworkService(gaps=gaps, findings=findings)
     result = call_tool(

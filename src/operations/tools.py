@@ -32,7 +32,7 @@ from typing import Any
 from api.errors import ApiError
 from api.evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence
 from api.exposure_query import ExposureFilter, ExposureQuery, ExposureSort
-from api.scope import Scope, scope_attributes
+from api.scope import Scope, scope_attributes, subscription_ids_for_scope
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
 from intelligence.vulnerability.exposure_contracts import (
     ExposureApiPage,
@@ -282,6 +282,18 @@ def _provider_result(
     tool-calling loop or, worse, being swallowed into an empty result.
     """
     subscription_ids = list(tool_context.scope.values("subscription"))
+    if name == "network" and not subscription_ids:
+        registry = getattr(
+            getattr(tool_context.context, "onboarding", None),
+            "registry",
+            None,
+        )
+        if registry is not None and callable(getattr(registry, "list", None)):
+            subscription_ids = subscription_ids_for_scope(
+                tool_context.scope,
+                registry.list(include_disabled=False),
+                default_all=True,
+            )
     hybrid_provider = None
     hybrid_names = {"incidents": "hybrid_incident_provider"}
     if subscription_ids:
