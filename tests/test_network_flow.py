@@ -75,6 +75,20 @@ class TestFirewallBypass:
         result = _flow("10.2.0.10", "10.1.0.10", 1433)
         assert any("crosses VNet" in item for item in result.missing_enforcement_points)
 
+    def test_manual_internet_destination_with_a_default_route_traverses_the_firewall(
+        self,
+    ) -> None:
+        """A 0.0.0.0/0 UDR to the firewall must apply to a manually entered
+        "Internet" destination the same way it applies to a concrete public
+        IP -- otherwise the routing hop reports "allow" while the panel
+        claims the firewall was bypassed, contradicting itself."""
+        result = _flow(PROD_SUBNET, "internet", 443)
+
+        route_hop = next(hop for hop in result.hops if hop.control == "route_table")
+        assert route_hop.rule_name == "default-to-fw"
+        assert any(hop.control == "azure_firewall" for hop in result.hops)
+        assert not any("firewall" in item for item in result.missing_enforcement_points)
+
 
 class TestDefaultRuleSemantics:
     def test_intra_estate_egress_uses_allowvnetoutbound(self) -> None:
