@@ -11,6 +11,7 @@ from operations.foundry_agent import (
     FoundryCoordinatorSynthesisAgent,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
+    normalize_cited_findings,
     select_foundry_agent_class,
     specialist_catalog,
     validate_executive_synthesis,
@@ -202,6 +203,123 @@ def test_operations_copilot_maps_current_freshness_alias_to_unknown() -> None:
         answer.text,
         evidence_refs={"tool:hub:0"},
     )
+
+
+def test_hub_dependents_projects_bounded_facts_for_coordinator() -> None:
+    services = [
+        {"service_kind": "azure_firewall", "name": "demo-firewall"},
+        {"service_kind": "azure_bastion", "name": "demo-bastion"},
+        {
+            "service_kind": "private_dns_zone",
+            "name": "privatelink.documents.azure.com",
+        },
+        {
+            "service_kind": "private_dns_zone",
+            "name": "privatelink.postgres.database.azure.com",
+        },
+        *[
+            {
+                "service_kind": "unbounded",
+                "name": f"must-not-pass-{index}",
+            }
+            for index in range(20)
+        ],
+    ]
+    findings = normalize_cited_findings([{
+        "call_id": "hub:0",
+        "specialist_id": "network",
+        "tool": "hub_dependents",
+        "status": "ok",
+        "data": {
+            "hub_vnet_id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/demo-vnet",
+            "hub_name": "demo-vnet",
+            "dependent_vnets": [],
+            "dependent_count": 0,
+            "shared_services": services,
+            "raw_nested_payload": {"secret": "must-not-pass"},
+        },
+        "evidence": [{"evidence_id": "tool:hub:0"}],
+    }])
+
+    assert findings[0]["summary"] == (
+        "Hub demo-vnet has 0 dependent VNets. Shared services (24 total; "
+        "showing 8): azure_firewall demo-firewall; azure_bastion demo-bastion; "
+        "private_dns_zone privatelink.documents.azure.com; private_dns_zone "
+        "privatelink.postgres.database.azure.com; unbounded must-not-pass-0; "
+        "unbounded must-not-pass-1; unbounded must-not-pass-2; unbounded "
+        "must-not-pass-3."
+    )
+    assert findings[0]["evidence_refs"] == ["tool:hub:0"]
+    assert "must-not-pass-4" not in findings[0]["summary"]
+    assert "secret" not in findings[0]["summary"]
+    assert len(findings[0]["summary"]) < 1_000
+
+
+def test_hub_dependents_drops_unresolved_ids_and_nested_labels() -> None:
+    findings = normalize_cited_findings([{
+        "call_id": "hub:unresolved",
+        "specialist_id": "network",
+        "tool": "hub_dependents",
+        "status": "ok",
+        "data": {
+            "hub_vnet_id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+            "Microsoft.Network/virtualNetworks/demo-vnet",
+            "hub_name": {"nested": "must-not-pass"},
+            "dependent_vnets": [{
+                "name": "",
+                "vnet_id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                "Microsoft.Network/virtualNetworks/spoke-a",
+            }],
+            "dependent_count": 1,
+            "shared_services": [{
+                "service_kind": {"nested": "must-not-pass"},
+                "name": ["must-not-pass"],
+            }],
+        },
+        "evidence": [{"evidence_id": "tool:hub:unresolved"}],
+    }])
+
+    assert findings[0]["summary"] == (
+        "Hub the requested hub has 1 dependent VNets."
+    )
+    assert "/subscriptions/" not in findings[0]["summary"]
+    assert "must-not-pass" not in findings[0]["summary"]
+
+
+def test_hub_dependents_caps_utf8_bytes_and_skips_invalid_early_rows() -> None:
+    invalid = [{"name": {"nested": "drop"}} for _ in range(8)]
+    invalid_services = [
+        {"service_kind": {"nested": "drop"}, "name": ["drop"]}
+        for _ in range(8)
+    ]
+    findings = normalize_cited_findings([{
+        "call_id": "hub:mixed",
+        "specialist_id": "network",
+        "tool": "hub_dependents",
+        "status": "ok",
+        "data": {
+            "hub_name": "中" * 200,
+            "dependent_vnets": [
+                *invalid,
+                {"name": "valid-spoke"},
+            ],
+            "dependent_count": 9,
+            "shared_services": [
+                *invalid_services,
+                {
+                    "service_kind": "private_dns_zone",
+                    "name": "valid.zone.example",
+                },
+            ],
+        },
+        "evidence": [{"evidence_id": "tool:hub:mixed"}],
+    }])
+
+    summary = findings[0]["summary"]
+    assert "valid-spoke" in summary
+    assert "private_dns_zone valid.zone.example" in summary
+    assert len(summary.encode("utf-8")) <= 2_000
 
 
 def test_operations_copilot_cannot_change_required_page_hint() -> None:
