@@ -3610,7 +3610,7 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     ],
   };
 
-  it("binds principal, owner, access-review, and SPN identities as scope-safe domain identities", () => {
+  it("binds principal, owner, access-review, and SPN evidence as scope-safe observations", () => {
     const context = buildIdentityCopilotContext(identityInput);
     const reordered = buildIdentityCopilotContext({
       ...identityInput,
@@ -3621,22 +3621,21 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       page_kind: "governance",
       page_id: "identity",
     });
-    // Every principal is a non-ARM domain identity: the principal id is never
-    // leaked into a scope-validated Azure resource field (T-11-29 redaction).
+    // Every principal is a non-authoritative observation: the principal id is
+    // never leaked into a scope-validated Azure resource field or tool authority.
     const principalRows = rowByClaim(context, "identity_principal");
     expect(principalRows.length).toBe(2);
     expect(principalRows.every((row) => row.resource_id === undefined)).toBe(true);
     expect(principalRows.every((row) =>
-      (row.data.entity as { type: string }).type === "domain")).toBe(true);
+      (row.data.entity as { type: string }).type === "observation")).toBe(true);
     const selected = principalRows.find(
       (row) => (row.data.entity as { source_key: string }).source_key
         === "11111111-1111-1111-1111-111111111111",
     );
     expect(selected?.data).toMatchObject({
       entity: {
-        type: "domain",
-        namespace: "identity",
-        kind: "identity_principal",
+        type: "observation",
+        source: "identity/principals",
         source_key: "11111111-1111-1111-1111-111111111111",
       },
       principal_type: "User",
@@ -3649,6 +3648,15 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     expect(rowByClaim(context, "subscription_owner").length).toBe(1);
     expect(rowByClaim(context, "stale_access").length).toBe(1);
     expect(rowByClaim(context, "spn_credential").length).toBe(1);
+    expect([
+      "identity_principal",
+      "subscription_owner",
+      "stale_access",
+      "spn_credential",
+    ].every((claim) =>
+      rowByClaim(context, claim).every((row) =>
+        (row.data.entity as { type: string }).type === "observation"))).toBe(true);
+    expect(normalizeCopilotSnapshotV2(context.snapshot).selected_entities).toEqual([]);
     expect(context.coverage.principals).toMatchObject({
       visible_count: 2,
       total_count: 42,
@@ -3666,6 +3674,12 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
       )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+    expectCanonicalEndpointAccepts([{
+      name: "Identity without semantic resolution",
+      requested_scope: context.requestedScope,
+      snapshot: normalizeCopilotSnapshotV2(context.snapshot),
+      semantic_available: false,
+    }]);
   });
 
   it("distinguishes an unavailable identity provider from a healthy-empty scope", () => {

@@ -5170,7 +5170,7 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
         issues_count: credential.issues_count,
       },
     })),
-  ];
+  ].map((record) => ({ ...record, evidenceIdentity: "observation" }));
   return {
     scope: input.scope,
     filters: input.filters ?? { view: ["identity"] },
