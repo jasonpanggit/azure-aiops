@@ -2542,17 +2542,25 @@ textarea:focus-visible {
   margin-top: 17px;
 }
 
-.flow-query-form label {
+.flow-query-form label,
+.flow-endpoint-field {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 5px;
 }
 
-.flow-query-form label > span {
+.flow-query-form label > span,
+.flow-endpoint-field > label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary);
+}
+
+.flow-endpoint-field label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .flow-arrow {

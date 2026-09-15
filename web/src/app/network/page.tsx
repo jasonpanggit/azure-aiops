@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -19,7 +19,19 @@ import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { networkApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
-import type { FlowResult, NetworkGap, NetworkPolicyRule, NetworkSeverity, NetworkSummary, RuleFinding } from "@/lib/types";
+import type {
+  FlowResult,
+  NetworkGap,
+  NetworkPolicyRule,
+  NetworkSeverity,
+  NetworkSummary,
+  NetworkTopology,
+  RuleFinding,
+} from "@/lib/types";
+import {
+  buildNetworkEndpointOptions,
+  MANUAL_ENDPOINT_VALUE,
+} from "./endpoint-options";
 
 type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
 const NETWORK_PAGE_SIZE = 20;
@@ -311,7 +323,21 @@ export default function NetworkPage() {
         ))}
       </div>
 
-      {tab === "flow" && <TrafficFlowWorkspace />}
+      {tab === "flow" && (
+        <TrafficFlowWorkspace
+          scopeKey={scopeKey}
+          topology={topology.data?.data.topology ?? null}
+          optionsLoading={topology.loading}
+          optionsError={topology.error}
+          optionsTruncated={
+            (topology.data?.data.topology.coverage?.nodes?.truncated ??
+              false) ||
+            (topology.data?.data.topology.coverage?.relationships?.truncated ??
+              false)
+          }
+          onRetryOptions={topology.refetch}
+        />
+      )}
       {tab === "topology" && (
         topology.error && !topology.data ? (
           <StatePanel
@@ -423,33 +449,178 @@ export default function NetworkPage() {
   );
 }
 
-function TrafficFlowWorkspace() {
+interface TrafficFlowWorkspaceProps {
+  scopeKey: string;
+  topology: NetworkTopology | null;
+  optionsLoading: boolean;
+  optionsError: Error | null;
+  optionsTruncated: boolean;
+  onRetryOptions: () => void;
+}
+
+interface EndpointSelectionState {
+  choice: string;
+  manualValue: string;
+}
+
+function TrafficFlowWorkspace({
+  scopeKey,
+  topology,
+  optionsLoading,
+  optionsError,
+  optionsTruncated,
+  onRetryOptions,
+}: TrafficFlowWorkspaceProps) {
   const { scope } = useScope();
-  const [source, setSource] = useState("");
-  const [destination, setDestination] = useState("");
+  const options = useMemo(
+    () => buildNetworkEndpointOptions(topology),
+    [topology],
+  );
+  const [source, setSource] = useState<EndpointSelectionState>({
+    choice: "",
+    manualValue: "",
+  });
+  const [destination, setDestination] = useState<EndpointSelectionState>({
+    choice: "",
+    manualValue: "",
+  });
   const [port, setPort] = useState("443");
   const [protocol, setProtocol] = useState("TCP");
   const [result, setResult] = useState<FlowResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const requestVersion = useRef(0);
+  const sourceValue =
+    source.choice === MANUAL_ENDPOINT_VALUE
+      ? source.manualValue
+      : source.choice;
+  const destinationValue =
+    destination.choice === MANUAL_ENDPOINT_VALUE
+      ? destination.manualValue
+      : destination.choice;
+  const analyzeDisabled =
+    !sourceValue.trim() || !destinationValue.trim() || loading;
+
+  const invalidateAnalysis = useCallback(() => {
+    requestVersion.current += 1;
+    setLoading(false);
+    setResult(null);
+    setError("");
+  }, []);
+
+  useEffect(() => {
+    invalidateAnalysis();
+    setSource((current) =>
+      current.choice === MANUAL_ENDPOINT_VALUE
+        ? current
+        : { choice: "", manualValue: "" },
+    );
+    setDestination((current) =>
+      current.choice === MANUAL_ENDPOINT_VALUE
+        ? current
+        : { choice: "", manualValue: "" },
+    );
+  }, [invalidateAnalysis, scopeKey]);
+
+  useEffect(() => {
+    if (optionsLoading || optionsError || !topology) return;
+    const validValues = new Set(options.map((option) => option.value));
+    const sourceInvalid =
+      source.choice !== "" &&
+      source.choice !== MANUAL_ENDPOINT_VALUE &&
+      !validValues.has(source.choice);
+    const destinationInvalid =
+      destination.choice !== "" &&
+      destination.choice !== MANUAL_ENDPOINT_VALUE &&
+      !validValues.has(destination.choice);
+    if (!sourceInvalid && !destinationInvalid) return;
+    if (sourceInvalid) {
+      setSource({ choice: "", manualValue: "" });
+    }
+    if (destinationInvalid) {
+      setDestination({ choice: "", manualValue: "" });
+    }
+    setResult(null);
+    setError("");
+  }, [
+    destination.choice,
+    options,
+    optionsError,
+    optionsLoading,
+    source.choice,
+    topology,
+  ]);
+
+  function updateSelection(
+    setter: React.Dispatch<React.SetStateAction<EndpointSelectionState>>,
+    choice: string,
+  ) {
+    setter((current) => ({
+      choice,
+      manualValue:
+        choice === MANUAL_ENDPOINT_VALUE &&
+        current.choice === MANUAL_ENDPOINT_VALUE
+          ? current.manualValue
+          : "",
+    }));
+    invalidateAnalysis();
+  }
 
   function analyze() {
-    if (!source.trim() || !destination.trim()) return;
+    const resolvedSource = sourceValue.trim();
+    const resolvedDestination = destinationValue.trim();
+    if (!resolvedSource || !resolvedDestination) return;
+    const version = requestVersion.current + 1;
+    requestVersion.current = version;
     setLoading(true);
     setError("");
     setResult(null);
     networkApi
       .trafficFlow({
-        source: source.trim(),
-        destination: destination.trim(),
+        source: resolvedSource,
+        destination: resolvedDestination,
         port: port ? Number(port) : undefined,
         protocol,
         scope,
       })
-      .then((envelope) => setResult(envelope.data))
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Path analysis failed"))
-      .finally(() => setLoading(false));
+      .then((envelope) => {
+        if (requestVersion.current === version) setResult(envelope.data);
+      })
+      .catch((reason: unknown) => {
+        if (requestVersion.current === version) {
+          setError(
+            reason instanceof Error ? reason.message : "Path analysis failed",
+          );
+        }
+      })
+      .finally(() => {
+        if (requestVersion.current === version) setLoading(false);
+      });
   }
+
+  function endpointOptions(statusLabel: string) {
+    return (
+      <>
+        <option value="" disabled>
+          {statusLabel}
+        </option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+        <option value={MANUAL_ENDPOINT_VALUE}>Enter manually</option>
+      </>
+    );
+  }
+
+  const optionStatusLabel = optionsLoading
+    ? "Loading scoped resources…"
+    : optionsError
+      ? "Resource options unavailable"
+      : options.length === 0
+        ? "No endpoint resources found"
+        : "Select a resource";
 
   return (
     <section className="network-workspace">
@@ -462,27 +633,73 @@ function TrafficFlowWorkspace() {
           <span className="flow-example">Example: UAT app → PROD database · TCP 1433</span>
         </div>
         <div className="flow-query-form">
-          <label>
-            <span>Source</span>
-            <input
+          <div className="flow-endpoint-field">
+            <label htmlFor="flow-source">Source</label>
+            <select
+              id="flow-source"
               className="form-control"
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-              placeholder="UAT resource, IP, subnet, or VNet"
-            />
-          </label>
+              aria-label="Source endpoint"
+              value={source.choice}
+              onChange={(event) =>
+                updateSelection(setSource, event.target.value)
+              }
+            >
+              {endpointOptions(optionStatusLabel)}
+            </select>
+            {source.choice === MANUAL_ENDPOINT_VALUE && (
+              <label>
+                <span>Manual source endpoint</span>
+                <input
+                  className="form-control"
+                  aria-label="Manual source endpoint"
+                  value={source.manualValue}
+                  onChange={(event) => {
+                    setSource((current) => ({
+                      ...current,
+                      manualValue: event.target.value,
+                    }));
+                    invalidateAnalysis();
+                  }}
+                  placeholder="ARM ID, name, IP, subnet, VNet, environment, or Internet"
+                />
+              </label>
+            )}
+          </div>
           <span className="flow-arrow" aria-hidden="true">
             →
           </span>
-          <label>
-            <span>Destination</span>
-            <input
+          <div className="flow-endpoint-field">
+            <label htmlFor="flow-destination">Destination</label>
+            <select
+              id="flow-destination"
               className="form-control"
-              value={destination}
-              onChange={(event) => setDestination(event.target.value)}
-              placeholder="PROD resource, IP, subnet, or VNet"
-            />
-          </label>
+              aria-label="Destination endpoint"
+              value={destination.choice}
+              onChange={(event) =>
+                updateSelection(setDestination, event.target.value)
+              }
+            >
+              {endpointOptions(optionStatusLabel)}
+            </select>
+            {destination.choice === MANUAL_ENDPOINT_VALUE && (
+              <label>
+                <span>Manual destination endpoint</span>
+                <input
+                  className="form-control"
+                  aria-label="Manual destination endpoint"
+                  value={destination.manualValue}
+                  onChange={(event) => {
+                    setDestination((current) => ({
+                      ...current,
+                      manualValue: event.target.value,
+                    }));
+                    invalidateAnalysis();
+                  }}
+                  placeholder="ARM ID, name, IP, subnet, VNet, environment, or Internet"
+                />
+              </label>
+            )}
+          </div>
           <label className="flow-port">
             <span>Port</span>
             <input
@@ -491,23 +708,70 @@ function TrafficFlowWorkspace() {
               min="1"
               max="65535"
               value={port}
-              onChange={(event) => setPort(event.target.value)}
+              onChange={(event) => {
+                setPort(event.target.value);
+                invalidateAnalysis();
+              }}
             />
           </label>
           <label className="flow-protocol">
             <span>Protocol</span>
-            <select className="form-control" value={protocol} onChange={(event) => setProtocol(event.target.value)}>
+            <select
+              className="form-control"
+              value={protocol}
+              onChange={(event) => {
+                setProtocol(event.target.value);
+                invalidateAnalysis();
+              }}
+            >
               <option>TCP</option>
               <option>UDP</option>
               <option>Any</option>
             </select>
           </label>
-          <button type="button" className="button button-primary" disabled={!source.trim() || !destination.trim() || loading} onClick={analyze}>
+          <button type="button" className="button button-primary" disabled={analyzeDisabled} onClick={analyze}>
             {loading ? "Analyzing…" : "Analyze path"}
           </button>
         </div>
       </div>
 
+      {optionsError && (
+        <StatePanel
+          title="Endpoint options are unavailable"
+          message={`${optionsError.message}. No unscoped resource list was substituted; manual endpoints remain available.`}
+          tone="error"
+          action={
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={onRetryOptions}
+            >
+              Retry endpoint options
+            </button>
+          }
+        />
+      )}
+      {!optionsError && optionsLoading && (
+        <StatePanel
+          title="Loading scoped endpoint options"
+          message="Loading only resources visible in the effective Network scope."
+          tone="loading"
+        />
+      )}
+      {!optionsError && !optionsLoading && options.length === 0 && (
+        <StatePanel
+          title="No selectable network endpoints"
+          message="The current scope contains no observed subnets, network interfaces, or NIC-attached workloads. Enter an endpoint manually to continue."
+          tone="empty"
+        />
+      )}
+      {!optionsError && !optionsLoading && optionsTruncated && (
+        <StatePanel
+          title="Endpoint options are partial"
+          message="The scoped summary topology reached its node limit. Narrow the scope or enter an endpoint manually."
+          tone="partial"
+        />
+      )}
       {error && (
         <StatePanel
           title="Path analysis is unavailable"

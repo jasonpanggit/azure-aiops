@@ -104,6 +104,27 @@ class TestEndpointResolution:
         assert result.destination_endpoint.is_internet
         assert result.destination_endpoint.resolved
 
+    def test_selected_subnet_to_manual_internet_traces_egress(self) -> None:
+        result = _flow(UAT_SUBNET, "internet", 443)
+
+        assert result.source_endpoint.subnet_id == UAT_SUBNET.casefold()
+        assert result.destination_endpoint.is_internet
+        assert result.destination_endpoint.resolved
+        assert not result.unknowns
+        assert any(hop.stage == "source_egress" for hop in result.hops)
+        assert "could not be resolved" not in result.path_summary
+
+    def test_manual_internet_source_remains_a_resolved_endpoint(self) -> None:
+        result = _flow("Internet", PROD_SUBNET, 443)
+
+        assert result.source_endpoint.is_internet
+        assert result.source_endpoint.resolved
+        assert result.destination_endpoint.subnet_id == PROD_SUBNET.casefold()
+        assert not any(
+            "source 'Internet' could not be resolved" in item
+            for item in result.unknowns
+        )
+
     def test_private_ip_resolves_to_its_subnet(self) -> None:
         result = _flow("10.1.0.10", "8.8.8.8", 443)
         assert result.source_endpoint.subnet_id == PROD_SUBNET.casefold()
