@@ -18,8 +18,17 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .addressing import INTERNET_TAGS, AddressSpec, PortSpec, ProtocolSpec
+from .addressing import (
+    ANY_TOKENS,
+    INTERNET_TAGS,
+    AddressSpec,
+    PortSpec,
+    ProtocolSpec,
+    normalize_token,
+)
 from .models import (
+    FirewallRule,
+    FirewallRuleCollection,
     NetworkSecurityRule,
     NetworkSnapshot,
     Route,
@@ -80,6 +89,7 @@ class FlowHop:
     rule_name: str = ""
     priority: int | None = None
     reason: str = ""
+    rule_analysis: tuple[FirewallRuleAnalysis, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +101,37 @@ class FlowHop:
             "rule_name": self.rule_name,
             "priority": self.priority,
             "reason": self.reason,
+            "rule_analysis": [item.to_dict() for item in self.rule_analysis],
+        }
+
+
+@dataclass(frozen=True)
+class FirewallRuleAnalysis:
+    """One observed firewall rule relevant to a broad destination query."""
+
+    collection_name: str
+    group_priority: int
+    collection_priority: int
+    rule_name: str
+    rule_type: str
+    action: str
+    protocols: tuple[str, ...]
+    destination_ports: tuple[str, ...]
+    destinations: tuple[str, ...]
+    applicability: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "collection_name": self.collection_name,
+            "group_priority": self.group_priority,
+            "collection_priority": self.collection_priority,
+            "rule_name": self.rule_name,
+            "rule_type": self.rule_type,
+            "action": self.action,
+            "protocols": list(self.protocols),
+            "destination_ports": list(self.destination_ports),
+            "destinations": list(self.destinations),
+            "applicability": self.applicability,
         }
 
 
@@ -685,11 +726,15 @@ class TrafficFlowValidator:
         source_value = source.ip_address or self._prefix_for(source)
         dest_value = destination.ip_address or self._prefix_for(destination)
         collections = sorted(
-            self.snapshot.firewall_collections, key=lambda item: (item.priority, item.name)
+            self.snapshot.firewall_collections, key=self._firewall_collection_sort_key
         )
-        uncertain = False
+        rule_analysis = self._firewall_rule_analysis(
+            collections, query, source, destination, source_value
+        )
+        uncertain_reason = ""
 
         for collection in collections:
+            collection_uncertain_reason = ""
             for rule in collection.rules:
                 match = self._firewall_rule_matches(
                     rule,
@@ -700,7 +745,13 @@ class TrafficFlowValidator:
                     destination,
                 )
                 if match is None:
-                    uncertain = True
+                    # Rules in one collection share its action, so a later
+                    # definite match in that same collection can safely name
+                    # the decision. Uncertainty still fences every subsequent
+                    # collection, whose action and priority may differ.
+                    collection_uncertain_reason = self._firewall_unknown_reason(
+                        destination
+                    )
                     continue
                 if not match:
                     continue
@@ -708,7 +759,9 @@ class TrafficFlowValidator:
                     stage="firewall",
                     control="azure_firewall",
                     control_id=collection.resource_id,
-                    decision="allow" if rule.is_allow else "deny",
+                    decision=(
+                        "deny" if normalize_token(collection.action) == "deny" else "allow"
+                    ),
                     rule_id=rule.resource_id,
                     rule_name=rule.name,
                     priority=collection.priority,
@@ -716,7 +769,11 @@ class TrafficFlowValidator:
                         f"collection '{collection.name}' (priority {collection.priority}) "
                         f"rule '{rule.name}' {collection.action.lower()}s the flow"
                     ),
+                    rule_analysis=rule_analysis,
                 )
+            if collection_uncertain_reason:
+                uncertain_reason = collection_uncertain_reason
+                break
 
         if not collections:
             return None
@@ -724,42 +781,272 @@ class TrafficFlowValidator:
             stage="firewall",
             control="azure_firewall",
             control_id=collections[0].policy_id or collections[0].resource_id,
-            decision="unknown" if uncertain else "deny",
-            reason=(
-                "firewall rules reference IP groups or FQDNs that cannot be evaluated"
-                if uncertain
-                else "no firewall rule matched; Azure Firewall denies by default"
-            ),
+            decision="unknown" if uncertain_reason else "deny",
+            reason=uncertain_reason or "no firewall rule matched; Azure Firewall denies by default",
+            rule_analysis=rule_analysis,
         )
+
+    @staticmethod
+    def _firewall_collection_sort_key(
+        collection: FirewallRuleCollection,
+    ) -> tuple[int, int, int, str]:
+        """Orders terminating Azure Firewall rules by type, then priority."""
+        collection_type = normalize_token(collection.collection_type)
+        rule_types = {normalize_token(rule.rule_type) for rule in collection.rules}
+        if (
+            "nat" in collection_type
+            and "network" not in collection_type
+            or any("nat" in rule_type and "network" not in rule_type for rule_type in rule_types)
+        ):
+            type_order = 0
+        elif "network" in collection_type or any(
+            "network" in rule_type for rule_type in rule_types
+        ):
+            type_order = 1
+        elif "application" in collection_type or any(
+            "application" in rule_type for rule_type in rule_types
+        ):
+            type_order = 2
+        else:
+            type_order = 3
+        return (
+            type_order,
+            collection.group_priority,
+            collection.priority,
+            collection.name.casefold(),
+        )
+
+    def _firewall_unknown_reason(self, destination: FlowEndpoint) -> str:
+        if destination.is_internet and self._destination_hostname(destination) is None:
+            return (
+                "Internet is a destination category, not a specific host. "
+                "Enter a public FQDN or IP to determine which observed firewall rule applies."
+            )
+        return (
+            "an earlier firewall rule references an IP group, FQDN tag, "
+            "or destination that cannot be evaluated"
+        )
+
+    def _firewall_rule_analysis(
+        self,
+        collections: list[FirewallRuleCollection],
+        query: FlowQuery,
+        source: FlowEndpoint,
+        destination: FlowEndpoint,
+        source_value: str,
+    ) -> tuple[FirewallRuleAnalysis, ...]:
+        """Summarizes rules relevant to a generic Internet query.
+
+        Generic ``Internet`` cannot be compared with a destination-specific
+        FQDN, IP range, service tag, or IP group. Instead of hiding those
+        observed rules behind one ``unknown`` string, return the bounded set
+        whose protocol, port, and source could apply.
+        """
+        if not destination.is_internet or self._destination_hostname(destination) is not None:
+            return ()
+
+        analysis: list[FirewallRuleAnalysis] = []
+        for collection in collections:
+            for rule in collection.rules:
+                if not self._firewall_protocol_matches(rule, query):
+                    continue
+                port_specs = rule.port_specs() or (PortSpec.parse("*"),)
+                if not any(spec.contains(query.port) for spec in port_specs):
+                    continue
+                source_match = self._firewall_source_match(rule, source_value, source)
+                if source_match is False:
+                    continue
+                destination_match = self._firewall_destination_match(rule, "", destination)
+                analysis.append(
+                    FirewallRuleAnalysis(
+                        collection_name=collection.name,
+                        group_priority=collection.group_priority,
+                        collection_priority=collection.priority,
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        action=collection.action,
+                        protocols=rule.protocols,
+                        destination_ports=rule.destination_ports,
+                        destinations=self._firewall_rule_destinations(rule),
+                        applicability=(
+                            "covers_internet"
+                            if destination_match is True and source_match is True
+                            else "specific_destination_required"
+                        ),
+                    )
+                )
+                if len(analysis) == 20:
+                    return tuple(analysis)
+        return tuple(analysis)
+
+    @staticmethod
+    def _firewall_rule_destinations(rule: FirewallRule) -> tuple[str, ...]:
+        values = [
+            *rule.destination_addresses,
+            *(f"FQDN: {value}" for value in rule.destination_fqdns),
+            *(f"FQDN tag: {value}" for value in rule.fqdn_tags),
+            *(f"IP group: {value}" for value in rule.destination_ip_groups),
+        ]
+        return tuple(values or ["Any destination"])
 
     def _firewall_rule_matches(
         self,
-        rule: Any,
+        rule: FirewallRule,
         source_value: str,
         dest_value: str,
         query: FlowQuery,
         source: FlowEndpoint,
         destination: FlowEndpoint,
     ) -> bool | None:
-        if rule.source_ip_groups or rule.destination_fqdns:
-            return None
-        if rule.protocols:
-            protocol_specs = [ProtocolSpec.parse(value) for value in rule.protocols]
-            if not any(spec.matches(query.protocol) for spec in protocol_specs):
-                return False
+        # Protocol and port are always resolvable from the observed rule, so
+        # they are checked first: a rule that references an unresolved IP
+        # group or FQDN but plainly does not apply to this protocol/port must
+        # not poison the result with a false "uncertain".
+        if not self._firewall_protocol_matches(rule, query):
+            return False
         port_specs = rule.port_specs() or (PortSpec.parse("*"),)
         if not any(spec.contains(query.port) for spec in port_specs):
             return False
 
-        source_match = self._any_address_match(rule.source_specs(), source_value, source)
-        dest_match = self._any_address_match(
-            rule.destination_specs(),
-            dest_value,
-            destination,
-        )
+        source_match = self._firewall_source_match(rule, source_value, source)
+        if source_match is False:
+            return False
+        dest_match = self._firewall_destination_match(rule, dest_value, destination)
+        if dest_match is False:
+            return False
         if source_match is None or dest_match is None:
             return None
-        return source_match and dest_match
+        return True
+
+    #: Application-rule protocols are always carried over TCP; a query with
+    #: protocol "Tcp" (the API default) must still be able to match an
+    #: Application Rule Collection expressed as ``Http``/``Https``/``Mssql``.
+    _APPLICATION_LAYER_PROTOCOLS = frozenset({"http", "https", "mssql"})
+
+    def _firewall_protocol_matches(self, rule: FirewallRule, query: FlowQuery) -> bool:
+        if not rule.protocols:
+            return True
+        protocol_specs = [ProtocolSpec.parse(value) for value in rule.protocols]
+        if any(spec.matches(query.protocol) for spec in protocol_specs):
+            return True
+        query_protocol = normalize_token(query.protocol)
+        if query_protocol in ("tcp", *ANY_TOKENS):
+            return any(
+                spec.protocol in self._APPLICATION_LAYER_PROTOCOLS for spec in protocol_specs
+            )
+        return False
+
+    def _firewall_source_match(
+        self, rule: FirewallRule, source_value: str, source: FlowEndpoint
+    ) -> bool | None:
+        matches: list[bool | None] = []
+        if rule.source_addresses:
+            matches.append(self._any_address_match(rule.source_specs(), source_value, source))
+        if rule.source_ip_groups:
+            # No IP group membership was ingested, so we cannot resolve which
+            # addresses this rule covers.
+            matches.append(None)
+        return self._combine_rule_selectors(matches)
+
+    def _firewall_destination_match(
+        self, rule: FirewallRule, dest_value: str, destination: FlowEndpoint
+    ) -> bool | None:
+        matches: list[bool | None] = []
+        if rule.destination_addresses:
+            destination_specs = rule.destination_specs()
+            if destination.is_internet:
+                matches.append(
+                    self._generic_internet_address_match(destination_specs)
+                )
+            else:
+                matches.append(
+                    self._any_address_match(
+                        destination_specs, dest_value, destination
+                    )
+                )
+        if rule.destination_fqdns:
+            matches.append(self._fqdn_match(rule.destination_fqdns, destination))
+        if rule.fqdn_tags or rule.destination_ip_groups:
+            matches.append(None)
+        return self._combine_rule_selectors(matches)
+
+    @staticmethod
+    def _combine_rule_selectors(matches: list[bool | None]) -> bool | None:
+        if not matches:
+            return True
+        if any(match is True for match in matches):
+            return True
+        if any(match is None for match in matches):
+            return None
+        return False
+
+    @staticmethod
+    def _generic_internet_address_match(
+        specs: tuple[AddressSpec, ...],
+    ) -> bool | None:
+        """Evaluate address selectors without inventing a concrete Internet IP."""
+
+        if any(spec.is_internet for spec in specs):
+            return True
+        for spec in specs:
+            if spec.service_tag and not spec.is_virtual_network:
+                return None
+            for cidr in spec.networks:
+                try:
+                    network = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    return None
+                if not (
+                    network.is_private
+                    or network.is_loopback
+                    or network.is_link_local
+                ):
+                    return None
+        return False
+
+    def _fqdn_match(
+        self, patterns: tuple[str, ...], destination: FlowEndpoint
+    ) -> bool | None:
+        if any(str(pattern).strip() == "*" for pattern in patterns):
+            return True
+        hostname = self._destination_hostname(destination)
+        if hostname is None:
+            # A generic "Internet" (or otherwise unresolved) destination
+            # names no specific host, so an FQDN-scoped rule can neither be
+            # confirmed nor ruled out -- and it must never be reported as a
+            # false match for a hostname we were never given.
+            return None
+        for pattern in patterns:
+            if self._fqdn_pattern_matches(pattern, hostname):
+                return True
+        return False
+
+    @staticmethod
+    def _destination_hostname(destination: FlowEndpoint) -> str | None:
+        """The literal hostname the caller entered, or ``None`` if generic.
+
+        Only a manually entered public FQDN carries a specific hostname to
+        compare against a rule's FQDN filter; the generic ``Internet`` tag
+        (or any other unresolved destination) does not name one.
+        """
+        if not destination.is_internet:
+            return None
+        candidate = (destination.name or destination.raw).strip()
+        if not candidate or candidate.casefold() in INTERNET_TAGS:
+            return None
+        return candidate.rstrip(".").casefold()
+
+    @staticmethod
+    def _fqdn_pattern_matches(pattern: str, hostname: str) -> bool:
+        normalized = str(pattern or "").strip().rstrip(".").casefold()
+        if not normalized:
+            return False
+        if normalized == hostname:
+            return True
+        if normalized.startswith("*."):
+            suffix = normalized[2:]
+            return bool(suffix) and hostname.endswith(f".{suffix}")
+        return False
 
     def _any_address_match(
         self,

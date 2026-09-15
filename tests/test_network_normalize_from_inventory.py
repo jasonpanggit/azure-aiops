@@ -325,3 +325,45 @@ def test_resource_with_empty_properties_bag_is_empty_safe_on_both_paths():
     adapter_subnet = next(iter(adapter_graph.entities["Subnet"]))
 
     assert adapter_subnet == subnet
+
+
+def test_firewall_application_rule_preserves_fqdn_tags_and_protocol_ports():
+    firewall = {
+        "id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/azureFirewalls/fw",
+        "name": "fw",
+        "type": "microsoft.network/azurefirewalls",
+        "tenantId": "tenant-a",
+        "subscriptionId": "sub-a",
+        "resourceGroup": "rg",
+        "location": "australiaeast",
+        "tags": {},
+        "properties": {
+            "applicationRuleCollections": [
+                {
+                    "name": "allow-updates",
+                    "properties": {
+                        "priority": 100,
+                        "action": {"type": "Allow"},
+                        "rules": [
+                            {
+                                "name": "windows-update",
+                                "sourceAddresses": ["10.0.1.0/24"],
+                                "fqdnTags": ["WindowsUpdate"],
+                                "protocols": [
+                                    {"protocolType": "Https", "port": 443},
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+    }
+
+    graph = _normalize({"network_firewalls": [firewall]})
+
+    rule = next(iter(graph.entities["FirewallRule"]))
+    assert rule["destinationFqdns"] == []
+    assert rule["fqdnTags"] == ["WindowsUpdate"]
+    assert rule["protocols"] == ["Https"]
+    assert rule["destinationPorts"] == ["443"]
