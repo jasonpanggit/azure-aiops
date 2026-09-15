@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from api.errors import ApiError, ErrorCode
 from api.scope import Scope
 from operations.tools import STATUS_OK, call_tool
 
@@ -60,6 +61,86 @@ class _Context:
         return self.service if name == "network" else None
 
 
+class _HubNetworkService:
+    def __init__(self, vnet_id: str) -> None:
+        self.snapshot = SimpleNamespace(
+            observed_at="2026-09-15T00:00:00Z",
+            vnets=(SimpleNamespace(resource_id=vnet_id, name="demo-vnet"),),
+        )
+        self.scoped_with = None
+        self._vnet_id = vnet_id
+
+    def scoped(self, scope):
+        self.scoped_with = scope
+        return self
+
+    def hub_dependents(self, vnet_id: str) -> dict[str, Any]:
+        assert vnet_id == self._vnet_id
+        return {
+            "hub_id": self._vnet_id,
+            "hub_name": "demo-vnet",
+            "dependent_count": 0,
+            "dependents": [],
+            "shared_services": [
+                {"type": "azure_firewall", "name": "demo-firewall"},
+                {"type": "azure_bastion", "name": "demo-bastion"},
+                {
+                    "type": "private_dns_zone",
+                    "name": "privatelink.blob.core.windows.net",
+                },
+                {
+                    "type": "private_dns_zone",
+                    "name": "privatelink.vaultcore.azure.net",
+                },
+            ],
+        }
+
+
+def _connection(
+    connection_id: str,
+    subscription_id: str,
+    *,
+    active: bool = True,
+):
+    return SimpleNamespace(
+        connection_id=connection_id,
+        subscription_id=subscription_id,
+        is_active=active,
+    )
+
+
+def _hybrid_context(
+    connections,
+    hybrid_network_provider,
+    *,
+    managed_calls: list[str] | None = None,
+):
+    managed_calls = managed_calls if managed_calls is not None else []
+
+    def resolve_provider(name: str):
+        managed_calls.append(name)
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "The network provider is deferred",
+        )
+
+    return SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        onboarding=SimpleNamespace(
+            registry=SimpleNamespace(
+                list=lambda *, include_disabled=False: [
+                    connection
+                    for connection in connections
+                    if include_disabled or connection.is_active
+                ]
+            )
+        ),
+        hybrid_network_provider=hybrid_network_provider,
+        resolve_provider=resolve_provider,
+    )
+
+
 def _run(*, gaps: int, findings: int):
     service = _NetworkService(gaps=gaps, findings=findings)
     result = call_tool(
@@ -69,6 +150,234 @@ def _run(*, gaps: int, findings: int):
         scope=Scope.from_mapping({"subscription": ["sub-a"]}),
     )
     return service, result
+
+
+def test_unrestricted_network_tool_uses_active_onboarded_subscriptions() -> None:
+    subscription_id = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+    vnet_id = (
+        f"/subscriptions/{subscription_id}/resourcegroups/demo-rg/providers/"
+        "microsoft.network/virtualnetworks/demo-vnet"
+    )
+    service = _HubNetworkService(vnet_id)
+    hybrid_calls: list[list[str]] = []
+    managed_calls: list[str] = []
+    context = _hybrid_context(
+        [
+            _connection("demo", subscription_id),
+            _connection(
+                "disabled",
+                "b1111111-1111-1111-1111-111111111111",
+                active=False,
+            ),
+        ],
+        lambda subscription_ids: hybrid_calls.append(subscription_ids) or service,
+        managed_calls=managed_calls,
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {"vnet_id": vnet_id},
+        context=context,
+        scope=Scope.unrestricted(),
+    )
+
+    assert result.status == STATUS_OK
+    assert hybrid_calls == [[subscription_id]]
+    assert managed_calls == []
+    assert result.data["hub_id"] == vnet_id
+    assert result.data["dependent_count"] == 0
+    assert [item["type"] for item in result.data["shared_services"]] == [
+        "azure_firewall",
+        "azure_bastion",
+        "private_dns_zone",
+        "private_dns_zone",
+    ]
+    assert result.evidence[0].resource_id == vnet_id
+    assert service.scoped_with.subscription_ids == (subscription_id,)
+
+
+def test_network_tool_explicit_subscription_scope_remains_exact() -> None:
+    requested_subscription = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+    vnet_id = (
+        f"/subscriptions/{requested_subscription}/resourcegroups/demo-rg/providers/"
+        "microsoft.network/virtualnetworks/demo-vnet"
+    )
+    hybrid_calls: list[list[str]] = []
+    context = _hybrid_context(
+        [_connection("other", "b1111111-1111-1111-1111-111111111111")],
+        lambda subscription_ids: (
+            hybrid_calls.append(subscription_ids) or _HubNetworkService(vnet_id)
+        ),
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {"vnet_id": vnet_id},
+        context=context,
+        scope=Scope.from_mapping({"subscription": [requested_subscription]}),
+    )
+
+    assert result.status == STATUS_OK
+    assert hybrid_calls == [[requested_subscription]]
+
+
+def test_network_tool_explicit_connection_scope_filters_exact_subscription() -> None:
+    selected_subscription = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+    other_subscription = "b1111111-1111-1111-1111-111111111111"
+    vnet_id = (
+        f"/subscriptions/{selected_subscription}/resourcegroups/demo-rg/providers/"
+        "microsoft.network/virtualnetworks/demo-vnet"
+    )
+    service = _HubNetworkService(vnet_id)
+    hybrid_calls: list[list[str]] = []
+    context = _hybrid_context(
+        [
+            _connection("demo", selected_subscription),
+            _connection("other", other_subscription),
+        ],
+        lambda subscription_ids: hybrid_calls.append(subscription_ids) or service,
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {"vnet_id": vnet_id},
+        context=context,
+        scope=Scope.from_mapping({"subscription_connection": ["demo"]}),
+    )
+
+    assert result.status == STATUS_OK
+    assert hybrid_calls == [[selected_subscription]]
+    assert other_subscription not in str(hybrid_calls)
+    assert service.scoped_with.connection_ids == ("demo",)
+    assert service.scoped_with.subscription_ids == (selected_subscription,)
+
+
+@pytest.mark.parametrize(
+    ("scope", "connections"),
+    [
+        (
+            Scope.unrestricted(),
+            [
+                _connection(
+                    "disabled",
+                    "b1111111-1111-1111-1111-111111111111",
+                    active=False,
+                )
+            ],
+        ),
+        (
+            Scope.from_mapping({"subscription_connection": ["missing"]}),
+            [
+                _connection(
+                    "other",
+                    "b1111111-1111-1111-1111-111111111111",
+                )
+            ],
+        ),
+        (
+            Scope.from_mapping(
+                {
+                    "subscription": ["a87a8e64-a52a-4aa8-a760-5e8919d23cd1"],
+                    "subscription_connection": ["other"],
+                }
+            ),
+            [
+                _connection(
+                    "other",
+                    "b1111111-1111-1111-1111-111111111111",
+                )
+            ],
+        ),
+        (Scope.unrestricted(), []),
+    ],
+    ids=[
+        "disabled-only",
+        "connection-out-of-scope",
+        "disjoint-subscription-and-connection",
+        "no-connections",
+    ],
+)
+def test_network_tool_does_not_widen_when_no_active_connection_matches(
+    scope: Scope,
+    connections,
+) -> None:
+    hybrid_calls: list[list[str]] = []
+    managed_calls: list[str] = []
+    context = _hybrid_context(
+        connections,
+        lambda subscription_ids: hybrid_calls.append(subscription_ids),
+        managed_calls=managed_calls,
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {"vnet_id": "/subscriptions/a/resourcegroups/rg/providers/network/vnets/vnet"},
+        context=context,
+        scope=scope,
+    )
+
+    assert result.status == "unavailable"
+    assert "no active subscription connection matches" in result.warning.casefold()
+    assert hybrid_calls == []
+    assert managed_calls == []
+
+
+def test_network_tool_without_hybrid_provider_does_not_read_registry() -> None:
+    service = _NetworkService(gaps=1, findings=0)
+
+    def fail_if_listed(*, include_disabled: bool = False):
+        del include_disabled
+        raise AssertionError("registry must not be read without a hybrid provider")
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        onboarding=SimpleNamespace(registry=SimpleNamespace(list=fail_if_listed)),
+        hybrid_network_provider=None,
+        resolve_provider=lambda name: service if name == "network" else None,
+    )
+
+    result = call_tool(
+        "firewall_nsg_gaps",
+        {},
+        context=context,
+        scope=Scope.unrestricted(),
+    )
+
+    assert result.status == STATUS_OK
+
+
+def test_network_registry_failure_returns_unavailable_without_io() -> None:
+    hybrid_calls: list[list[str]] = []
+    managed_calls: list[str] = []
+
+    def fail_if_listed(*, include_disabled: bool = False):
+        assert include_disabled is False
+        raise OSError("registry unavailable")
+
+    context = SimpleNamespace(
+        provider_runtime=None,
+        generation_resolver_provider=None,
+        onboarding=SimpleNamespace(registry=SimpleNamespace(list=fail_if_listed)),
+        hybrid_network_provider=lambda subscription_ids: hybrid_calls.append(
+            subscription_ids
+        ),
+        resolve_provider=lambda name: managed_calls.append(name),
+    )
+
+    result = call_tool(
+        "hub_dependents",
+        {
+            "vnet_id": "/subscriptions/sub-a/resourcegroups/rg/providers/network/vnets/vnet"
+        },
+        context=context,
+        scope=Scope.unrestricted(),
+    )
+
+    assert result.status == "unavailable"
+    assert result.warning == "Network subscription connections are unavailable"
+    assert hybrid_calls == []
+    assert managed_calls == []
 
 
 def test_g6_discloses_the_bound_and_true_totals_when_agent_lists_truncate() -> None:
