@@ -57,6 +57,7 @@ from operations.orchestration_contract import (
     Citation,
     DomainEntityRef,
     EvidenceSnapshotV2,
+    ObservationRef,
     OrchestrationResult,
     SnapshotCoverage,
     SnapshotEvidence,
@@ -100,6 +101,20 @@ router = APIRouter(prefix="/api/v1", tags=["copilot"])
 
 SOURCE_ENGINE = "semantic.SemanticEngine"
 NARRATION_ENGINE = "operations.FoundryPromptAgent"
+_OVERVIEW_OBSERVATION_SHAPES = {
+    ("operations", "network_summary", "network/summary"),
+    ("operations", "situation", "situations/visible"),
+    (
+        "operations",
+        "vulnerability_summary",
+        "vulnerability/summary",
+    ),
+    (
+        "connections",
+        "subscription_connection",
+        "connections/visible",
+    ),
+}
 
 # Per-turn wall-clock budget for the whole investigation (planning + every
 # tool call + narration). A question that cannot be answered inside this
@@ -320,11 +335,138 @@ def _validate_bound_cve_request(
         )
 
 
+def _bounded_overview_observation(
+    item: SnapshotEvidence,
+) -> SnapshotEvidence | None:
+    """Sanitize one allowlisted Overview aggregate as a page observation."""
+
+    entity = item.entity
+    if (
+        not isinstance(entity, DomainEntityRef)
+        or entity.source_key.casefold() != item.source_key.casefold()
+        or item.claim_type.casefold() != entity.kind.casefold()
+        or item.selected
+        or not item.direct
+        or item.actionable
+        or item.data.get("mutation_authorized") is not False
+        or str(item.data.get("claim_type") or "").casefold()
+        != item.claim_type.casefold()
+        or str(item.data.get("source_key") or "").casefold()
+        != item.source_key.casefold()
+    ):
+        return None
+    claim_type = item.claim_type.casefold()
+    rank_data: dict[str, Any]
+    if claim_type == "network_summary":
+        count = item.data.get("gap_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        rank_data = {"gap_count": count}
+    elif claim_type == "vulnerability_summary":
+        count = item.data.get("internet_exposed_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        rank_data = {"internet_exposed_count": count}
+    elif claim_type == "situation":
+        priority = str(item.data.get("priority") or "").strip().upper()
+        if priority not in {"P1", "P2", "P3"}:
+            return None
+        rank_data = {"priority": priority}
+    else:
+        health_status = str(
+            item.data.get("health_status") or ""
+        ).strip().casefold()
+        sync_status = str(
+            item.data.get("sync_status") or ""
+        ).strip().casefold()
+        if (
+            health_status
+            not in {
+                "healthy",
+                "unhealthy",
+                "warning",
+                "failed",
+                "stale",
+                "onboarding_blocked",
+                "disabled",
+                "unknown",
+            }
+            or not sync_status
+            or len(sync_status) > 32
+        ):
+            return None
+        rank_data = {
+            "health_status": health_status,
+            "sync_status": sync_status,
+        }
+    observation = ObservationRef(
+        type="observation",
+        source=item.source,
+        source_key=item.source_key,
+    )
+    return item.model_copy(
+        update={
+            "entity": observation,
+            "data": {
+                **rank_data,
+                "entity": observation.model_dump(mode="json"),
+                "source_key": item.source_key,
+                "claim_type": claim_type,
+                "selected": False,
+                "actionable": False,
+                "mutation_authorized": False,
+            },
+        }
+    )
+
+
+def _with_bounded_overview_observations(
+    snapshot: EvidenceSnapshotV2,
+) -> EvidenceSnapshotV2:
+    """Normalize bounded Overview pseudo-entities before canonicalization."""
+
+    if (
+        snapshot.page_kind != "overview"
+        or snapshot.page_id != "operations-overview"
+    ):
+        return snapshot
+    evidence: list[SnapshotEvidence] = []
+    for item in snapshot.evidence:
+        entity = item.entity
+        is_overview_shape = (
+            isinstance(entity, DomainEntityRef)
+            and (
+                entity.namespace.casefold(),
+                entity.kind.casefold(),
+                item.source.casefold(),
+            )
+            in _OVERVIEW_OBSERVATION_SHAPES
+        )
+        if not is_overview_shape:
+            evidence.append(item)
+            continue
+        converted = _bounded_overview_observation(item)
+        if converted is not None:
+            evidence.append(converted)
+    evidence_ids = {item.evidence_id for item in evidence}
+    return snapshot.model_copy(
+        update={
+            "evidence": evidence,
+            "material_claims": [
+                claim
+                for claim in snapshot.material_claims
+                if set(claim.evidence_refs) <= evidence_ids
+            ],
+        }
+    )
+
+
 def _without_unresolved_domain_evidence(
     snapshot: EvidenceSnapshotV2,
 ) -> EvidenceSnapshotV2:
     """Drop unresolved browser domain identities when semantic is unavailable."""
 
+    snapshot = _with_bounded_overview_observations(snapshot)
     evidence = [
         item
         for item in snapshot.evidence
@@ -1612,7 +1754,7 @@ def investigate_canonical(
         selection_snapshot = (
             _without_unresolved_domain_evidence(browser_snapshot)
             if semantic_unavailable
-            else browser_snapshot
+            else _with_bounded_overview_observations(browser_snapshot)
         )
         resolved_domains: dict[
             tuple[str, str, str],
