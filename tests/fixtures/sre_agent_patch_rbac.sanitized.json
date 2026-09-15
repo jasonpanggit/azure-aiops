@@ -1,0 +1,113 @@
+{
+  "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+  "tenantId": "ffc83107-fcc0-4d2e-8798-d582da36505e",
+  "visibleTenantSubscriptionIds": [
+    "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+  ],
+  "assignmentCaptures": [
+    {
+      "principalId": "2c367602-bb4f-4868-8dbb-7f4ca117a719",
+      "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+      "includeInherited": true,
+      "rawRowCount": 2,
+      "rawSha256": "9eeb6d595115f9b9fb900bd4d840a6f1a672993a16091e03a4aac466cdcb173a",
+      "rawAssignments": [
+        {
+          "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo",
+          "roleDefinitionId": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000001",
+          "principalId": "2c367602-bb4f-4868-8dbb-7f4ca117a719",
+          "principalType": "ServicePrincipal",
+          "condition": null
+        },
+        {
+          "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo",
+          "roleDefinitionId": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000003",
+          "principalId": "2c367602-bb4f-4868-8dbb-7f4ca117a719",
+          "principalType": "ServicePrincipal",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+      "subscriptionId": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+      "includeInherited": true,
+      "rawRowCount": 1,
+      "rawSha256": "e28ebe3637885134fdab0473735c6f7140c4edb48c89eea2c95568e0640c8659",
+      "rawAssignments": [
+        {
+          "scope": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev",
+          "roleDefinitionId": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000002",
+          "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976",
+          "principalType": "ServicePrincipal",
+          "condition": null
+        }
+      ]
+    }
+  ],
+  "roleDefinitionCaptures": [
+    {
+      "rawSha256": "3ac18c4e8c66b443afa3139055cdd57a04f18a2649c79eec068e0c9a98882c86",
+      "raw": {
+        "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000001",
+        "roleName": "aiops-dev-sre-agent-trigger-invoker",
+        "assignableScopes": [
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+        ],
+        "permissions": [
+          {
+            "actions": [],
+            "notActions": [],
+            "dataActions": [
+              "Microsoft.App/agents/threads/write"
+            ],
+            "notDataActions": []
+          }
+        ]
+      }
+    },
+    {
+      "rawSha256": "38cd768998de1bd54b19ce6f2647b96547293deb51d034213022b35f39dfc8fb",
+      "raw": {
+        "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000002",
+        "roleName": "aiops-dev-sre-agent-patch-executor",
+        "assignableScopes": [
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+        ],
+        "permissions": [
+          {
+            "actions": [
+              "Microsoft.Compute/virtualMachines/read",
+              "Microsoft.Compute/virtualMachines/installPatches/action",
+              "Microsoft.HybridCompute/machines/read",
+              "Microsoft.HybridCompute/machines/installPatches/action"
+            ],
+            "notActions": [],
+            "dataActions": [],
+            "notDataActions": []
+          }
+        ]
+      }
+    },
+    {
+      "rawSha256": "b6ca7c3a35d14572bac023e965694a77822f67cd3e92e300bf8059befd98a0c6",
+      "raw": {
+        "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000003",
+        "roleName": "aiops-dev-sre-agent-thread-reader",
+        "assignableScopes": [
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
+        ],
+        "permissions": [
+          {
+            "actions": [],
+            "notActions": [],
+            "dataActions": [
+              "Microsoft.App/agents/threads/read"
+            ],
+            "notDataActions": []
+          }
+        ]
+      }
+    }
+  ]
+}

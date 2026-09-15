@@ -257,7 +257,19 @@ variable "enable_defender_configuration_execution" {
 }
 
 variable "enable_sre_agent_patch_execution" {
-  description = "Opt in to approval-gated patch dispatch through one pre-created Azure SRE Agent HTTP trigger. The trigger and its patch permissions are deployment prerequisites and are not created here."
+  description = "Opt in to approval-gated patch dispatch through one separately approved Azure SRE Agent HTTP trigger. The trigger is never created or updated by Terraform."
+  type        = bool
+  default     = false
+}
+
+variable "enable_sre_agent_patch_rbac" {
+  description = "Bootstrap the three reviewed SRE patch execution roles before the separately approved dispatch enablement plan."
+  type        = bool
+  default     = false
+}
+
+variable "retain_sre_agent_thread_verification" {
+  description = "Retain only agent-scoped thread read authorization while previously submitted SRE executions finish reconciliation after dispatch is disabled."
   type        = bool
   default     = false
 }
@@ -270,21 +282,60 @@ variable "sre_agent_http_trigger_secret_id" {
   validation {
     condition = (
       var.sre_agent_http_trigger_secret_id == "" ||
-      can(regex("^https://[^/]+/secrets/[^/]+(?:/[^/]+)?$", var.sre_agent_http_trigger_secret_id))
+      can(regex("^https://[a-z0-9-]+\\.vault\\.azure\\.net/secrets/sre-agent-http-trigger-url/[A-Za-z0-9]+$", var.sre_agent_http_trigger_secret_id))
     )
-    error_message = "sre_agent_http_trigger_secret_id must be empty or an HTTPS Key Vault secret URI."
+    error_message = "sre_agent_http_trigger_secret_id must be empty or a versioned Azure Key Vault URI for the exact sre-agent-http-trigger-url secret."
+  }
+}
+
+variable "sre_agent_trigger_origin" {
+  description = "Expected non-secret HTTPS origin copied from the reviewed SRE Agent trigger URL. It is validated independently from the agent data-plane endpoint."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.sre_agent_trigger_origin == "" ||
+      (
+        can(regex("^https://[^/:]+$", var.sre_agent_trigger_origin)) &&
+        lower(var.sre_agent_trigger_origin) != "https://localhost" &&
+        !can(regex("^https://[0-9]+(?:\\.[0-9]+){3}$", var.sre_agent_trigger_origin))
+      )
+    )
+    error_message = "sre_agent_trigger_origin must be empty or an HTTPS DNS origin without credentials, a port, path, query, or fragment."
+  }
+}
+
+variable "sre_agent_trigger_id" {
+  description = "Exact non-secret HTTP trigger ID reviewed with the canonical definition and copied from the trigger URL."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.sre_agent_trigger_id == "" ||
+      (
+        length(var.sre_agent_trigger_id) <= 256 &&
+        can(regex("^[A-Za-z0-9._~-]+$", var.sre_agent_trigger_id))
+      )
+    )
+    error_message = "sre_agent_trigger_id must be empty or an exact URL-safe trigger identifier of at most 256 characters."
   }
 }
 
 variable "sre_agent_endpoint" {
-  description = "Expected non-secret Azure SRE Agent data-plane endpoint used to pin the secret trigger URL host and poll persisted threads."
+  description = "Expected non-secret Azure SRE Agent data-plane endpoint used only to poll persisted threads."
   type        = string
   default     = ""
 
   validation {
     condition = (
       var.sre_agent_endpoint == "" ||
-      can(regex("^https://[^/:]+/?$", var.sre_agent_endpoint))
+      (
+        can(regex("^https://[^/:]+/?$", var.sre_agent_endpoint)) &&
+        !can(regex("^https://localhost/?$", lower(var.sre_agent_endpoint))) &&
+        !can(regex("^https://[0-9]+(?:\\.[0-9]+){3}/?$", var.sre_agent_endpoint))
+      )
     )
     error_message = "sre_agent_endpoint must be empty or an HTTPS DNS endpoint without userinfo, an explicit port, query parameters, or fragments."
   }

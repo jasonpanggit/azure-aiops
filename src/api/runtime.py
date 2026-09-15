@@ -189,6 +189,8 @@ ENV_APPROVED_SEARCH_API_KEY = "APPROVED_SEARCH_API_KEY"
 ENV_PATCH_EXECUTION = "AIOPS_PATCH_EXECUTION"
 ENV_SRE_AGENT_ENDPOINT = "AIOPS_SRE_AGENT_ENDPOINT"
 ENV_SRE_AGENT_TRIGGER_URL = "AIOPS_SRE_AGENT_TRIGGER_URL"
+ENV_SRE_AGENT_TRIGGER_ID = "AIOPS_SRE_AGENT_TRIGGER_ID"
+ENV_SRE_AGENT_TRIGGER_ORIGIN = "AIOPS_SRE_AGENT_TRIGGER_ORIGIN"
 ENV_SRE_AGENT_TRIGGER_SCOPE = "AIOPS_SRE_AGENT_TRIGGER_SCOPE"
 ENV_SRE_AGENT_THREAD_SCOPE = "AIOPS_SRE_AGENT_THREAD_SCOPE"
 ENV_SRE_AGENT_SUBSCRIPTION_ID = "AIOPS_SRE_AGENT_SUBSCRIPTION_ID"
@@ -4102,6 +4104,10 @@ def _sre_agent_settings() -> dict[str, str]:
     settings = {
         "agent_endpoint": os.environ.get(ENV_SRE_AGENT_ENDPOINT, "").strip(),
         "trigger_url": os.environ.get(ENV_SRE_AGENT_TRIGGER_URL, "").strip(),
+        "trigger_id": os.environ.get(ENV_SRE_AGENT_TRIGGER_ID, ""),
+        "trigger_origin": os.environ.get(
+            ENV_SRE_AGENT_TRIGGER_ORIGIN, ""
+        ).strip(),
         "trigger_scope": (
             os.environ.get(ENV_SRE_AGENT_TRIGGER_SCOPE, "").strip()
             or SRE_AGENT_TRIGGER_SCOPE
@@ -4121,6 +4127,8 @@ def _sre_agent_settings() -> dict[str, str]:
         for name in (
             "agent_endpoint",
             "trigger_url",
+            "trigger_id",
+            "trigger_origin",
             "subscription_id",
             "target_prefix",
             "client_id",
@@ -4199,6 +4207,8 @@ def _patch_execution_adapter(
         return SreAgentPatchExecutionAdapter(
             _sre_agent_managed_identity_credential(settings["client_id"]),
             trigger_url=settings["trigger_url"],
+            trigger_id=settings["trigger_id"],
+            trigger_origin=settings["trigger_origin"],
             agent_endpoint=settings["agent_endpoint"],
             trigger_scope=settings["trigger_scope"],
             subscription_id=settings["subscription_id"],

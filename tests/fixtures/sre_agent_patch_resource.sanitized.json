@@ -1,0 +1,27 @@
+{
+  "apiVersion": "2026-01-01",
+  "resource": {
+    "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo",
+    "name": "sre-agent-sredemo",
+    "type": "Microsoft.App/agents",
+    "properties": {
+      "provisioningState": "Succeeded",
+      "runningState": "Running",
+      "powerState": "Running",
+      "agentEndpoint": "https://sre-agent-sredemo--8b71343d.ba56c019.australiaeast.azuresre.ai",
+      "actionConfiguration": {
+        "accessLevel": "Low",
+        "identity": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sre-agent-sredemo-amncvvib6atbg",
+        "mode": "Review"
+      },
+      "knowledgeGraphConfiguration": {
+        "managedResources": [
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-api-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-web-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/microsoft.insights/components/appi-sredemo-dev"
+        ]
+      }
+    }
+  }
+}
