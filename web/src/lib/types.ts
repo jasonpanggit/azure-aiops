@@ -2374,6 +2374,20 @@ export interface FlowHop {
   rule_name: string;
   priority: number | null;
   reason: string;
+  rule_analysis?: FirewallRuleAnalysis[];
+}
+
+export interface FirewallRuleAnalysis {
+  collection_name: string;
+  group_priority: number;
+  collection_priority: number;
+  rule_name: string;
+  rule_type: string;
+  action: string;
+  protocols: string[];
+  destination_ports: string[];
+  destinations: string[];
+  applicability: "covers_internet" | "specific_destination_required";
 }
 
 export interface FlowResult {

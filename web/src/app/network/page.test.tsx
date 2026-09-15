@@ -539,6 +539,72 @@ describe("Network path endpoint selectors", () => {
     expect(screen.getByText(/observed controls were insufficient/i)).toBeInTheDocument();
   });
 
+  it("explains relevant firewall rules when Internet is too broad for one decision", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(
+      flowEnvelope(subnetA, "Internet", {
+        verdict: "indeterminate",
+        unknowns: [
+          "Internet is a destination category, not a specific host. Enter a public FQDN or IP to determine which observed firewall rule applies.",
+        ],
+        hops: [
+          {
+            stage: "firewall",
+            control: "azure_firewall",
+            control_id: "/firewalls/hub",
+            decision: "unknown",
+            rule_id: "",
+            rule_name: "",
+            priority: null,
+            reason:
+              "Internet is a destination category, not a specific host. Enter a public FQDN or IP to determine which observed firewall rule applies.",
+            rule_analysis: [
+              {
+                collection_name: "application-rules",
+                group_priority: 200,
+                collection_priority: 100,
+                rule_name: "allow-google",
+                rule_type: "ApplicationRule",
+                action: "Allow",
+                protocols: ["Https"],
+                destination_ports: ["443"],
+                destinations: ["FQDN: www.google.com"],
+                applicability: "specific_destination_required",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "Internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    expect(
+      await screen.findByText("What the firewall rules allow or deny"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Allow — allow-google")).toBeInTheDocument();
+    expect(
+      screen.getByText(/group priority 200 · collection priority 100/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Destinations: FQDN: www.google.com/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/specific public FQDN or IP is required/i),
+    ).toBeInTheDocument();
+  });
+
   it("names skipped controls in plain language and hides empty qualification panels", async () => {
     const user = userEvent.setup();
     mocks.trafficFlow.mockResolvedValue(

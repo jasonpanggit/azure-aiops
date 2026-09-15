@@ -17,6 +17,7 @@ from network import (
     build_service,
 )
 from network.flow import VERDICT_ALLOWED, VERDICT_DENIED, VERDICT_INDETERMINATE
+from network.models import FirewallRule, FirewallRuleCollection
 
 
 def _service():
@@ -204,6 +205,383 @@ class TestEndpointResolution:
         result = _flow("10.1.0.10", "8.8.8.8", 443)
         assert result.source_endpoint.subnet_id == PROD_SUBNET.casefold()
         assert result.source_endpoint.environment == "prod"
+
+
+class TestFirewallRuleEvaluation:
+    """The firewall hop must reason from observed rules, not stop at the
+    first rule referencing an IP group or FQDN.
+
+    These fixtures add extra rule collections on top of the base scenario's
+    firewall so each case can isolate one aspect of Azure's evaluation
+    semantics: priority order, protocol/port pre-filtering, and FQDN
+    matching for a manually entered public hostname vs. the generic
+    ``Internet`` tag.
+    """
+
+    @staticmethod
+    def _service_with_collections(*collections: FirewallRuleCollection):
+        service = build_service(network_rows())
+        return NetworkIntelligenceService(
+            replace(
+                service.snapshot,
+                firewall_collections=(*service.snapshot.firewall_collections, *collections),
+            )
+        )
+
+    def test_a_rule_referencing_an_fqdn_for_a_different_port_does_not_cause_unknown(
+        self,
+    ) -> None:
+        """A collection with an FQDN-only rule that plainly does not apply
+        to this port must not poison the result; the definite deny below it
+        must still be reported."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/fqdn-other-port",
+            name="fqdn-other-port",
+            priority=90,
+            action="Allow",
+            collection_type="ApplicationRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/fqdn-other-port/rules/allow-updates",
+                    name="allow-updates",
+                    rule_type="ApplicationRule",
+                    action="Allow",
+                    protocols=["Https"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["*.contoso.com"],
+                    destination_ports=["80"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="internet", port=22, protocol="Tcp")
+        )
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops
+        assert firewall_hops[0].decision == "deny"
+        assert "no firewall rule matched" in firewall_hops[0].reason
+
+    def test_a_definite_higher_priority_result_is_not_erased_by_a_later_unresolved_rule(
+        self,
+    ) -> None:
+        """A collection evaluated first that definitely allows the flow must
+        win even though a later, lower-priority collection references an
+        unresolved IP group."""
+        allow_first = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/allow-first",
+            name="allow-first",
+            priority=10,
+            action="Allow",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/allow-first/rules/allow-mgmt",
+                    name="allow-mgmt",
+                    rule_type="NetworkRule",
+                    action="Allow",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["*"],
+                    destination_ports=["9443"],
+                ),
+            ),
+        )
+        unresolved_later = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/unresolved-later",
+            name="unresolved-later",
+            priority=900,
+            action="Deny",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/unresolved-later/rules/deny-group",
+                    name="deny-group",
+                    rule_type="NetworkRule",
+                    action="Deny",
+                    protocols=["Tcp"],
+                    source_ip_groups=["ipg-untrusted"],
+                    destination_addresses=["*"],
+                    destination_ports=["9443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(allow_first, unresolved_later)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="internet", port=9443, protocol="Tcp")
+        )
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops
+        assert firewall_hops[0].decision == "allow"
+        assert firewall_hops[0].rule_name == "allow-mgmt"
+
+    def test_an_unresolved_higher_priority_rule_keeps_the_verdict_indeterminate(
+        self,
+    ) -> None:
+        """The mirror image: when the *earlier* (higher-priority) rule is the
+        one that cannot be resolved, a later definite match must not erase
+        the genuine uncertainty -- Azure would have evaluated the earlier
+        rule first, and we cannot tell whether it already decided the flow."""
+        unresolved_first = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/unresolved-first",
+            name="unresolved-first",
+            priority=10,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/unresolved-first/rules/allow-fqdn",
+                    name="allow-fqdn",
+                    rule_type="NetworkRule",
+                    action="Allow",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["*.contoso.com"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        definite_later = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/definite-later",
+            name="definite-later",
+            priority=900,
+            action="Allow",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/definite-later/rules/allow-any",
+                    name="allow-any",
+                    rule_type="NetworkRule",
+                    action="Allow",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["*"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(unresolved_first, definite_later)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="internet", port=443, protocol="Tcp")
+        )
+        assert result.verdict == VERDICT_INDETERMINATE
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops and firewall_hops[0].decision == "unknown"
+
+    def test_a_manually_entered_public_fqdn_matches_an_application_rule(self) -> None:
+        """A caller who types a real hostname gets a definite answer from
+        the FQDN-scoped rule that covers it."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/app-contoso",
+            name="app-contoso",
+            priority=20,
+            action="Allow",
+            collection_type="ApplicationRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/app-contoso/rules/allow-contoso",
+                    name="allow-contoso",
+                    rule_type="ApplicationRule",
+                    action="Allow",
+                    protocols=["Https"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["*.contoso.com"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="app.contoso.com", port=443, protocol="Tcp")
+        )
+        assert result.verdict == VERDICT_ALLOWED
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops
+        assert firewall_hops[0].decision == "allow"
+        assert firewall_hops[0].rule_name == "allow-contoso"
+
+    def test_a_manually_entered_public_fqdn_that_does_not_match_falls_through(
+        self,
+    ) -> None:
+        """A hostname outside the rule's FQDN list is a definite non-match
+        for that rule, not an unknown -- evaluation must continue and reach
+        the default deny."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/app-contoso-2",
+            name="app-contoso-2",
+            priority=20,
+            action="Allow",
+            collection_type="ApplicationRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/app-contoso-2/rules/allow-contoso",
+                    name="allow-contoso",
+                    rule_type="ApplicationRule",
+                    action="Allow",
+                    protocols=["Https"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["*.contoso.com"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="example.com", port=443, protocol="Tcp")
+        )
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops
+        assert firewall_hops[0].decision == "deny"
+        assert "no firewall rule matched" in firewall_hops[0].reason
+
+    def test_generic_internet_never_falsely_matches_an_fqdn_only_rule(self) -> None:
+        """Generic ``Internet`` names no specific host, so an FQDN rule that
+        would otherwise apply must report indeterminate, never a false
+        allow."""
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/app-contoso-3",
+            name="app-contoso-3",
+            priority=20,
+            action="Allow",
+            collection_type="ApplicationRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/app-contoso-3/rules/allow-contoso",
+                    name="allow-contoso",
+                    rule_type="ApplicationRule",
+                    action="Allow",
+                    protocols=["Https"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["*.contoso.com"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="internet", port=443, protocol="Tcp")
+        )
+        assert result.verdict == VERDICT_INDETERMINATE
+        firewall_hops = [hop for hop in result.hops if hop.control == "azure_firewall"]
+        assert firewall_hops and firewall_hops[0].decision == "unknown"
+        assert not any(hop.decision == "allow" for hop in firewall_hops)
+        assert firewall_hops[0].rule_analysis
+        observed = next(
+            item
+            for item in firewall_hops[0].rule_analysis
+            if item.rule_name == "allow-contoso"
+        )
+        assert observed.rule_name == "allow-contoso"
+        assert observed.group_priority == 0
+        assert observed.destinations == ("FQDN: *.contoso.com",)
+        assert observed.applicability == "specific_destination_required"
+        assert "specific host" in firewall_hops[0].reason
+
+    def test_network_rules_are_processed_before_application_rules(self) -> None:
+        application_allow = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/application-first-by-number",
+            name="application-first-by-number",
+            priority=10,
+            action="Allow",
+            collection_type="ApplicationRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/application-first-by-number/rules/allow-app",
+                    name="allow-app",
+                    rule_type="ApplicationRule",
+                    action="Allow",
+                    protocols=["Https"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_fqdns=["app.contoso.com"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        network_deny = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/network-later-by-number",
+            name="network-later-by-number",
+            priority=900,
+            action="Deny",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/network-later-by-number/rules/deny-network",
+                    name="deny-network",
+                    rule_type="NetworkRule",
+                    action="Deny",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["*"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(application_allow, network_deny)
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="app.contoso.com",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        firewall = next(hop for hop in result.hops if hop.control == "azure_firewall")
+        assert firewall.decision == "deny"
+        assert firewall.rule_name == "deny-network"
+
+    def test_rule_collection_group_priority_orders_collections_within_a_type(self) -> None:
+        lower_priority_group = FirewallRuleCollection(
+            resource_id="/fwp/rulecollectiongroups/200/rulecollections/allow",
+            name="allow-later-group",
+            group_priority=200,
+            priority=100,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollectiongroups/200/rulecollections/allow/rules/allow",
+                    name="allow-later-group",
+                    rule_type="NetworkRule",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["*"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        higher_priority_group = FirewallRuleCollection(
+            resource_id="/fwp/rulecollectiongroups/100/rulecollections/deny",
+            name="deny-earlier-group",
+            group_priority=100,
+            priority=900,
+            action="Deny",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollectiongroups/100/rulecollections/deny/rules/deny",
+                    name="deny-earlier-group",
+                    rule_type="NetworkRule",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["*"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        base_service = build_service(network_rows())
+        service = NetworkIntelligenceService(
+            replace(
+                base_service.snapshot,
+                firewall_collections=(lower_priority_group, higher_priority_group),
+            )
+        )
+
+        result = service.validate_flow(
+            FlowQuery(source=PROD_SUBNET, destination="internet", port=443, protocol="Tcp")
+        )
+
+        firewall = next(hop for hop in result.hops if hop.control == "azure_firewall")
+        assert firewall.decision == "deny"
+        assert firewall.rule_name == "deny-earlier-group"
 
 
 class TestSerialization:
