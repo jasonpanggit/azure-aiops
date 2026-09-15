@@ -46,6 +46,7 @@ function expectCanonicalEndpointAccepts(
     name: string;
     requested_scope: Record<string, string[]>;
     snapshot: ReturnType<typeof normalizeCopilotSnapshotV2>;
+    semantic_available: boolean;
   }>,
 ) {
   const validator = `
@@ -120,12 +121,18 @@ def execute(_self, request, **kwargs):
     )
 
 with tempfile.TemporaryDirectory() as directory:
-    client = TestClient(
-        create_app(_context(Path(directory), None, engine=engine)),
-        raise_server_exceptions=False,
-    )
     with patch("api.routers.copilot.OrchestrationService.execute", execute):
         for item in requests:
+            client = TestClient(
+                create_app(
+                    _context(
+                        Path(directory),
+                        None,
+                        engine=engine if item["semantic_available"] else None,
+                    )
+                ),
+                raise_server_exceptions=False,
+            )
             response = client.post(
                 "/api/v1/copilot/investigations?subscription=sub-a",
                 headers=HEADERS,
@@ -303,39 +310,58 @@ describe("shared page adapter canonical endpoint compatibility", () => {
     const contexts = [
       {
         name: "Overview",
+        semanticAvailable: true,
         context: buildOverviewCopilotContext(
           representativeInput("overview", "executive_summary"),
         ),
       },
       {
         name: "Governance",
-        context: buildGovernanceCopilotContext(
-          representativeInput("governance", "governance_role"),
-        ),
+        semanticAvailable: false,
+        context: buildGovernanceCopilotContext({
+          scope: { subscription: ["sub-a"] },
+          roles: [
+            { role_id: "operator", name: "Operator", permissions: ["read"] },
+          ],
+          rolesTotalCount: 1,
+          policies: [{ section: "retention_policy", setting_count: 2 }],
+          accessReviewAudiences: ["security"],
+          auditExportKinds: ["identity"],
+          settingsAvailable: true,
+          audiencesAvailable: true,
+          kindsAvailable: true,
+          freshness: "fresh",
+          observedAt: "2026-09-13T00:00:00Z",
+          evidence: [],
+        }),
       },
       {
         name: "Identity",
+        semanticAvailable: true,
         context: buildIdentityCopilotContext(
           representativeInput("identity", "identity_principal"),
         ),
       },
       {
         name: "FinOps",
+        semanticAvailable: true,
         context: buildFinOpsCopilotContext(
           representativeInput("finops", "cost_attribution"),
         ),
       },
       {
         name: "Remediation",
+        semanticAvailable: true,
         context: buildRemediationCopilotContext(
           representativeInput("remediation", "remediation_plan", resourceId),
         ),
       },
     ];
-    const requests = contexts.map(({ name, context }) => ({
+    const requests = contexts.map(({ name, context, semanticAvailable }) => ({
       name,
       requested_scope: context.requestedScope,
       snapshot: normalizeCopilotSnapshotV2(context.snapshot),
+      semantic_available: semanticAvailable,
     }));
 
     expectCanonicalEndpointAccepts(requests);
@@ -3450,11 +3476,19 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       (row) => row.data.role_id === "admin",
     );
     expect(adminRole?.data).toMatchObject({
-      entity: { type: "domain", namespace: "governance", kind: "governance_role", source_key: "admin" },
+      entity: { type: "observation", source: "governance/settings", source_key: "admin" },
       privileged: true,
       actionable: false,
       mutation_authorized: false,
     });
+    expect([
+      "governance_role",
+      "governance_policy",
+      "access_review_audience",
+      "audit_export_kind",
+    ].every((claim) =>
+      rowByClaim(context, claim).every((row) =>
+        (row.data.entity as { type: string }).type === "observation"))).toBe(true);
     expect(rowByClaim(context, "governance_policy").length).toBe(2);
     // Access-review audiences are the identity-collaboration evidence.
     expect(rowByClaim(context, "access_review_audience").length).toBe(2);
