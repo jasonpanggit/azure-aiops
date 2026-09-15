@@ -1079,6 +1079,47 @@ def _json_object_from_answer(text: str) -> dict[str, Any]:
     return payload
 
 
+def _normalize_coordinator_findings(text: str) -> str:
+    """Normalize benign model type drift before strict citation validation."""
+
+    payload = _json_object_from_answer(text)
+    rows = payload.get("findings")
+    if not isinstance(rows, list):
+        raise FoundryAgentError(
+            "Operations Copilot coordinator synthesis omitted findings"
+        )
+    required = _SPECIALIST_MANIFEST.output_contracts()[
+        EXECUTIVE_SPECIALIST_ID
+    ]["required"]
+    findings: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise FoundryAgentError(
+                "Operations Copilot coordinator finding is not an object"
+            )
+        normalized = {key: row.get(key) for key in required}
+        evidence_refs = normalized.get("evidence_refs")
+        if isinstance(evidence_refs, str):
+            normalized["evidence_refs"] = [evidence_refs]
+        uncertainty = normalized.get("uncertainty")
+        if isinstance(uncertainty, str):
+            normalized["uncertainty"] = (
+                [uncertainty.strip()] if uncertainty.strip() else []
+            )
+        elif uncertainty is None:
+            normalized["uncertainty"] = []
+        normalized["actionable"] = (
+            normalized.get("actionable")
+            if isinstance(normalized.get("actionable"), bool)
+            else False
+        )
+        for key in ("confidence", "freshness"):
+            if isinstance(normalized.get(key), str):
+                normalized[key] = normalized[key].strip().casefold()
+        findings.append(normalized)
+    return json.dumps({"findings": findings}, ensure_ascii=False)
+
+
 class FoundryCoordinatorPlanner:
     """Ask Operations Copilot for an untrusted typed delegation candidate."""
 
@@ -1200,11 +1241,18 @@ class FoundryCoordinatorSynthesisAgent:
             "evidence_refs present in context. Do not propose mutation.\n\n"
             f"OPERATOR QUESTION:\n{question}"
         )
-        return self.agent.answer(
+        answer = self.agent.answer(
             question=synthesis_question,
             context=context,
             max_output_tokens=3_000,
             timeout_seconds=timeout_seconds,
+        )
+        return AgentAnswer(
+            text=_normalize_coordinator_findings(answer.text),
+            agent_name=answer.agent_name,
+            model=answer.model,
+            grounded=answer.grounded,
+            agent_version=answer.agent_version,
         )
 
 
