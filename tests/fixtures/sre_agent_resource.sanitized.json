@@ -1,0 +1,83 @@
+{
+  "apiVersion": "2026-01-01",
+  "resource": {
+    "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/agents/sre-agent-sredemo",
+    "identity": {
+      "principalId": "003cb2df-6d1f-4555-ba0b-60766e616f2d",
+      "tenantId": "ffc83107-fcc0-4d2e-8798-d582da36505e",
+      "type": "SystemAssigned, UserAssigned",
+      "userAssignedIdentities": {
+        "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sre-agent-sredemo-amncvvib6atbg": {
+          "clientId": "aac9179b-4f55-4d7b-8b8e-6e719e5f2dac",
+          "principalId": "5b3b9ec4-16fb-4c0f-96fb-16887062f976"
+        }
+      }
+    },
+    "location": "australiaeast",
+    "name": "sre-agent-sredemo",
+    "properties": {
+      "actionConfiguration": {
+        "accessLevel": "Low",
+        "identity": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sre-agent-sredemo-amncvvib6atbg",
+        "mode": "Review"
+      },
+      "agentIdentity": null,
+      "agentSpaceId": null,
+      "aoaiDeploymentSku": "GlobalStandard",
+      "dashboardConfiguration": null,
+      "defaultModel": {
+        "name": "Automatic",
+        "provider": "MicrosoftFoundry"
+      },
+      "experimentalSettings": {
+        "EnableWorkspaceTools": true
+      },
+      "firstPartyConfiguration": null,
+      "gitHubConfiguration": {},
+      "incidentManagementConfiguration": {
+        "apiConnectionName": null,
+        "connectionName": "azmonitor",
+        "connectionUrl": null,
+        "oboUser": "",
+        "type": "AzMonitor"
+      },
+      "knowledgeGraphConfiguration": {
+        "identity": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourcegroups/rg-sredemo-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sre-agent-sredemo-amncvvib6atbg",
+        "managedResources": [
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-api-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/Microsoft.App/containerapps/ca-web-sredemo-dev",
+          "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev/providers/microsoft.insights/components/appi-sredemo-dev"
+        ]
+      },
+      "logConfiguration": {
+        "applicationInsightsConfiguration": {
+          "appId": "55f20823-66c8-4f3a-b987-6cfc3ab096a5",
+          "applicationInsightsResourceId": null
+        },
+        "logAnalyticsConfiguration": null
+      },
+      "mcpServers": null,
+      "monthlyAgentUnitLimit": 10000,
+      "outboundConnectionConfiguration": null,
+      "permissions": null,
+      "sandboxConfiguration": {
+        "egress": {
+          "allowHttpMcpServerNetworkAccess": null,
+          "allowedCodeRepositories": null,
+          "allowedHosts": null,
+          "allowedRegistries": null,
+          "httpProxy": null,
+          "mode": "Unrestricted",
+          "vnetConfiguration": null
+        },
+        "packages": null
+      },
+      "upgradeChannel": "Stable",
+      "vnetConfiguration": {
+        "subnetResourceId": null
+      }
+    },
+    "type": "Microsoft.App/agents"
+  }
+}

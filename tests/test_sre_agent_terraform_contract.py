@@ -42,9 +42,15 @@ def test_sre_agent_preserves_observed_identity_and_writable_settings() -> None:
     assert '"5b3b9ec4-16fb-4c0f-96fb-16887062f976"' in terraform
     assert 'accessLevel = "Low"' in body
     assert 'mode        = "Review"' in body
-    assert 'type = "AzMonitor"' in body
+    assert 'aoaiDeploymentSku = "GlobalStandard"' in body
+    assert "EnableWorkspaceTools = true" in body
+    assert 'connectionName = "azmonitor"' in body
+    assert 'oboUser        = ""' in body
+    assert 'type           = "AzMonitor"' in body
     assert 'name     = "Automatic"' in body
     assert 'provider = "MicrosoftFoundry"' in body
+    assert '"55f20823-66c8-4f3a-b987-6cfc3ab096a5"' in terraform
+    assert "applicationInsightsConfiguration" in body
     assert "monthlyAgentUnitLimit = 10000" in body
     assert 'mode = "Unrestricted"' in body
     assert 'upgradeChannel = "Stable"' in body
@@ -59,6 +65,8 @@ def test_sre_agent_body_excludes_read_only_service_properties() -> None:
         "powerState",
         "provisioningState",
         "runningState",
+        "connectionKey",
+        "connectionString",
     ):
         assert read_only_property not in body
 

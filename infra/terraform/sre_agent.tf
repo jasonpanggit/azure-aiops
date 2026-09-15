@@ -38,6 +38,7 @@ locals {
   sre_agent_user_assigned_identity_id = "/subscriptions/${local.sre_agent_subscription_id}/resourcegroups/${local.sre_agent_resource_group}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sre-agent-sredemo-amncvvib6atbg"
   sre_agent_system_principal_id       = "003cb2df-6d1f-4555-ba0b-60766e616f2d"
   sre_agent_user_principal_id         = "5b3b9ec4-16fb-4c0f-96fb-16887062f976"
+  sre_agent_application_insights_id   = "55f20823-66c8-4f3a-b987-6cfc3ab096a5"
 
   sre_agent_mcp_server_urls = [
     "https://aiops-dev-apim.azure-api.net/operations-mcp",
@@ -91,16 +92,27 @@ resource "azapi_resource" "sre_agent" {
         identity    = local.sre_agent_user_assigned_identity_id
         mode        = "Review"
       }
+      aoaiDeploymentSku = "GlobalStandard"
+      experimentalSettings = {
+        EnableWorkspaceTools = true
+      }
       knowledgeGraphConfiguration = {
         identity         = local.sre_agent_user_assigned_identity_id
         managedResources = var.sre_agent_managed_resources
       }
       incidentManagementConfiguration = {
-        type = "AzMonitor"
+        connectionName = "azmonitor"
+        oboUser        = ""
+        type           = "AzMonitor"
       }
       defaultModel = {
         name     = "Automatic"
         provider = "MicrosoftFoundry"
+      }
+      logConfiguration = {
+        applicationInsightsConfiguration = {
+          appId = local.sre_agent_application_insights_id
+        }
       }
       monthlyAgentUnitLimit = 10000
       sandboxConfiguration = {
