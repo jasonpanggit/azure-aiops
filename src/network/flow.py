@@ -544,7 +544,14 @@ class TrafficFlowValidator:
         if table is None:
             return None, False
 
-        best = self._longest_prefix_match(table.routes, destination)
+        # "Internet" has no address to run a longest-prefix match against, but
+        # it is exactly what a route table's default route (0.0.0.0/0) covers,
+        # so look that up directly instead of reporting a false "no route".
+        best = (
+            table.default_route
+            if destination.is_internet
+            else self._longest_prefix_match(table.routes, destination)
+        )
         if best is None:
             return (
                 FlowHop(
