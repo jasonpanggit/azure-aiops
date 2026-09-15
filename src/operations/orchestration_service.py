@@ -1294,6 +1294,30 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        overview_ranking_claims = self._deterministic_overview_ranking_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
+        if overview_ranking_claims:
+            used_refs = {
+                str(reference)
+                for claim in overview_ranking_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_overview_ranking",
+                domain_count=4,
+                claims=overview_ranking_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         highest_risk_compliance = (
             snapshot is not None
             and is_highest_risk_compliance_question(
@@ -1970,6 +1994,193 @@ class OrchestrationService:
             if len(claims) >= 8:
                 break
         return claims
+
+    @staticmethod
+    def _deterministic_overview_ranking_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Rank the four visible Overview signals from retained page facts."""
+
+        if (
+            snapshot is None
+            or snapshot.page_id != "operations-overview"
+            or snapshot.page_kind not in {"overview", "resource"}
+            or not retained_evidence
+        ):
+            return []
+        lowered = " ".join(question.casefold().split())
+        if not (
+            "needs attention" in lowered
+            or re.search(r"\brank(?:ed|ing|s)?\b", lowered)
+            or "most important issue" in lowered
+        ):
+            return []
+
+        evidence_refs: list[str] = []
+        uncertainty: list[str] = []
+        network_values: list[int] = []
+        vulnerability_values: list[int] = []
+        p1_situations = 0
+        unhealthy_connections = 0
+
+        def count_value(value: Any) -> int | None:
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None
+            return value if value >= 0 else None
+
+        for item in retained_evidence:
+            data = item.get("data")
+            evidence_id = str(item.get("evidence_id") or "")
+            if not isinstance(data, Mapping) or not evidence_id:
+                continue
+            claim_type = str(
+                item.get("claim_type") or data.get("claim_type") or ""
+            ).casefold()
+            if claim_type == "network_summary":
+                value = count_value(data.get("gap_count"))
+                if value is not None:
+                    network_values.append(value)
+                    evidence_refs.append(evidence_id)
+            elif claim_type == "vulnerability_summary":
+                value = count_value(data.get("internet_exposed_count"))
+                if value is not None:
+                    vulnerability_values.append(value)
+                    evidence_refs.append(evidence_id)
+            elif claim_type == "situation":
+                if str(data.get("priority") or "").casefold() == "p1":
+                    p1_situations += 1
+                    evidence_refs.append(evidence_id)
+            elif claim_type == "subscription_connection":
+                if (
+                    str(data.get("health_status") or "").casefold() == "stale"
+                    or str(data.get("sync_status") or "").casefold() == "failed"
+                ):
+                    unhealthy_connections += 1
+                    evidence_refs.append(evidence_id)
+
+        def single_summary_value(
+            values: Sequence[int],
+            *,
+            signal: str,
+        ) -> int | None:
+            distinct = sorted(set(values))
+            if len(distinct) == 1:
+                return distinct[0]
+            if len(distinct) > 1:
+                uncertainty.append(
+                    f"Conflicting retained {signal} counts were excluded."
+                )
+            else:
+                uncertainty.append(
+                    f"The retained Overview {signal} count is unavailable."
+                )
+            return None
+
+        network_control_gaps = single_summary_value(
+            network_values,
+            signal="network control gap",
+        )
+        internet_reachable_cves = single_summary_value(
+            vulnerability_values,
+            signal="internet-reachable CVE",
+        )
+        counts: list[tuple[str, str, int | None]] = [
+            ("Priority situations", "P1 situations", p1_situations),
+            (
+                "Internet exposure",
+                "internet-reachable CVEs",
+                internet_reachable_cves,
+            ),
+            ("Network control", "network control gaps", network_control_gaps),
+            ("Data health", "unhealthy connections", unhealthy_connections),
+        ]
+        available = [item for item in counts if item[2] is not None]
+        if not available:
+            return []
+
+        comparison = "; ".join(
+            (
+                f"{value} {count_label}"
+                if value is not None
+                else f"{count_label} unavailable"
+            )
+            for _domain, count_label, value in counts
+        )
+        highest_count = max(value for _domain, _label, value in available)
+        tied = [
+            item for item in available if item[2] == highest_count
+        ]
+        if highest_count == 0 and len(available) == len(counts):
+            ranking = (
+                "No domain ranks above another: all four visible counts are 0."
+            )
+        elif len(tied) == 1:
+            domain, count_label, value = tied[0]
+            ranking = (
+                f"{domain} is the single top visible domain with "
+                f"{value} {count_label}."
+            )
+        else:
+            domain, _count_label, value = tied[0]
+            tied_domains = ", ".join(item[0] for item in tied)
+            ranking = (
+                f"{domain} is selected as the single top visible domain at "
+                f"{value} by stable domain order because {tied_domains} tie "
+                "for the highest visible count."
+            )
+
+        unavailable_sources = [
+            f"{item.source} ({item.status})"
+            for item in snapshot.freshness
+            if item.status != "fresh"
+        ]
+        if unavailable_sources:
+            uncertainty.append(
+                "Overview sources are degraded or unavailable: "
+                + ", ".join(unavailable_sources)
+                + "."
+            )
+        if not snapshot.coverage.complete:
+            uncertainty.insert(0, "visible subset is incomplete")
+        ranking_basis = (
+            "Ranking basis: highest available visible count across the four "
+            "Overview signals"
+            if len(available) < len(counts)
+            else (
+                "Ranking basis: highest visible count across the four "
+                "Overview signals"
+            )
+        )
+        summary = (
+            f"{ranking} Visible comparison: {comparison}. {ranking_basis}. "
+            "This ranking is read-only and does not approve or execute any action."
+        )
+        citation_ids = list(dict.fromkeys(evidence_refs))
+        if not citation_ids:
+            return []
+        return [
+            {
+                "finding_id": (
+                    "overview-ranking:"
+                    + hashlib.sha256(
+                        "|".join(citation_ids).encode()
+                    ).hexdigest()[:24]
+                ),
+                "summary": summary[:1000],
+                "evidence_refs": citation_ids,
+                "confidence": "medium" if uncertainty else "high",
+                "freshness": "partial" if uncertainty else "fresh",
+                "uncertainty": list(dict.fromkeys(uncertainty)),
+                "actionable": False,
+                "next_check": (
+                    "Refresh the Overview sources and compare the same four "
+                    "visible counts before making a governed decision."
+                ),
+            }
+        ]
 
     @staticmethod
     def _deterministic_remediation_claims(
