@@ -664,6 +664,7 @@ describe("inventory Copilot page adapter", () => {
           expect.objectContaining({
             specialistId: "network",
             tool: "firewall_nsg_gaps",
+            toolArguments: { category: "firewall_bypass" },
           }),
         ]),
       );

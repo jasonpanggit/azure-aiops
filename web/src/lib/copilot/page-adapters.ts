@@ -2826,7 +2826,7 @@ const NETWORK_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "Show inspection bypass paths.",
     specialistId: "network",
     tool: "firewall_nsg_gaps",
-    toolArguments: {},
+    toolArguments: { category: "firewall_bypass" },
   },
 ];
 
@@ -2835,7 +2835,7 @@ const COMPLIANCE_STARTERS: CoreCopilotStarterQuestion[] = [
     label: "Which PROD workloads bypass the firewall?",
     specialistId: "network",
     tool: "firewall_nsg_gaps",
-    toolArguments: {},
+    toolArguments: { category: "firewall_bypass" },
   },
   {
     label: "Which CVEs affect our critical services?",

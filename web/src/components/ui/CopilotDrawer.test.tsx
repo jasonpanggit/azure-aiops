@@ -198,6 +198,8 @@ describe("CopilotDrawer", () => {
       ...result,
       data: {
         ...result.data,
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
         tool_results: [{
           call_id: "network:0",
           specialist_id: "network",
@@ -426,7 +428,9 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Review inventory health/ }));
 
     expect(await screen.findByText("Showing governed results directly because optional narration is unavailable.")).toBeInTheDocument();
-    expect(screen.getByText("1 of 4 visible records")).toBeInTheDocument();
+    expect(screen.getByLabelText("Investigation coverage")).toHaveTextContent(
+      "1 of 4 visible recordsPartial coverage",
+    );
     expect(screen.getByText("visible subset is incomplete")).toBeInTheDocument();
     expect(screen.getByText("inventory:azure:stable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
@@ -485,8 +489,11 @@ describe("CopilotDrawer", () => {
 
     expect(await screen.findByText(/KB5001 applies to Windows Server 2022/)).toBeInTheDocument();
     expect(screen.getByText("retained:selection:kb-current")).toBeInTheDocument();
-    expect(screen.getAllByText(/Foundry narration unavailable/)).toHaveLength(2);
-    expect(screen.getByText("1 of 137 visible records")).toBeInTheDocument();
+    expect(screen.getAllByText(/Foundry narration unavailable/)).toHaveLength(1);
+    expect(screen.getByText("About this response")).toBeInTheDocument();
+    expect(screen.getByLabelText("Investigation coverage")).toHaveTextContent(
+      "1 of 137 visible recordsPartial coverage",
+    );
   });
 
   it("renders canonical synthesis claims without duplicating their tool result cards", async () => {
@@ -498,6 +505,8 @@ describe("CopilotDrawer", () => {
       ...result,
       data: {
         ...result.data,
+        policy_status: "fallback",
+        fallback_reason: "planner_unavailable",
         tool_results: [{
           call_id: "network:0",
           specialist_id: "network",
@@ -511,6 +520,11 @@ describe("CopilotDrawer", () => {
           status: "synthesized",
           reason: "cross_domain",
           domain_count: 2,
+          coordinator: {
+            name: "operations-copilot",
+            version: "provider-version-1234567890-extra",
+            planned: true,
+          },
           claims: [{
             finding_id: "finding:payments-path",
             summary: "The payments service depends on hub-vnet.",
@@ -538,8 +552,15 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Summarize dependencies/ }));
 
     expect(await screen.findByText("The payments service depends on hub-vnet.")).toBeInTheDocument();
-    expect(screen.getByText("Evidence: tool:evidence:one")).toBeInTheDocument();
-    expect(screen.getByText("Narrated by Executive synthesis.")).toBeInTheDocument();
+    expect(screen.getByText("tool:evidence:one")).toBeInTheDocument();
+    expect(screen.getByText("Narrated by operations-copilot.")).toBeInTheDocument();
+    expect(screen.getByText("Foundry · vprovider-version-1234567890-extra")).toBeInTheDocument();
+    expect(
+      screen.getByTitle("Foundry · vprovider-version-1234567890-extra"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Optional narration is unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByText("Planning fallback")).toBeInTheDocument();
+    expect(screen.getByText(/planner_unavailable/)).toBeInTheDocument();
     expect(screen.queryByText("network_topology")).not.toBeInTheDocument();
   });
 
@@ -1354,7 +1375,7 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Explain CVE-2026-13221/ }));
     expect(await screen.findByText("CVE-2026-13221 current evidence")).toBeInTheDocument();
     expect(
-      screen.getByText(/Foundry narration is not configured/, {
+      screen.getByText(/Deterministic evidence is shown/, {
         selector: ".copilot-live-status",
       }),
     ).toBeInTheDocument();
@@ -1449,7 +1470,7 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: `Explain ${cveId} →` }));
 
     expect(await screen.findByText(`${cveId} durable CVE evidence`)).toBeInTheDocument();
-    expect(screen.getByText(/Foundry narration is not configured/, {
+    expect(screen.getByText(/Deterministic evidence is shown/, {
       selector: ".copilot-live-status",
     })).toBeInTheDocument();
     expect(screen.queryByText(/The request failed/)).not.toBeInTheDocument();
@@ -1593,6 +1614,11 @@ describe("CopilotDrawer", () => {
           status: "degraded",
           reason: "retained_compatibility",
           domain_count: 1,
+          coordinator: {
+            name: "operations-copilot",
+            version: "5",
+            planned: false,
+          },
           warning: "Foundry narration is not configured; deterministic cited network evidence was used.",
           claims: [{
             finding_id: "network:inspection",
@@ -1629,6 +1655,9 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText(/Spoke bypasses hub firewall/)).toBeInTheDocument();
     expect(screen.getByText(/NSG permits unrestricted inbound traffic/)).toBeInTheDocument();
     expect(screen.getByText("tool:network-retained:0")).toBeInTheDocument();
+    expect(screen.getByText("About this response")).toBeInTheDocument();
+    expect(screen.getByText(/Coordinator: operations-copilot · v5/)).toBeInTheDocument();
+    expect(screen.getByText(/Planning fallback: compatibility_rollout/)).toBeInTheDocument();
     expect(screen.queryByText(/Showing governed results directly/)).not.toBeInTheDocument();
     expect(screen.queryByText("firewall_nsg_gaps")).not.toBeInTheDocument();
   });

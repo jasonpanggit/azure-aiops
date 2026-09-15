@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -846,7 +847,7 @@ def test_activation_selector_supports_validated_active_and_rollback_maps():
         "foundry_activation_selection_valid",
         "foundry_coordinator_activation",
     ):
-        assert f"  {local_name} = " in foundry
+        assert re.search(rf"^\s*{local_name}\s*=", foundry, flags=re.MULTILINE)
 
 
 def test_promotion_gate_validates_only_the_mapping_selected_for_activation():
@@ -875,9 +876,69 @@ def test_pinned_activation_emits_the_validated_shared_coordinator_version():
     assert "foundry_promoted_coordinator" in coordinator
     assert "foundry_rollback_coordinator" in coordinator
     assert "provider_version_id" in coordinator
-    assert 'version = ""' in coordinator
+    assert "foundry_coordinator_artifact.provider_version_id" in coordinator
     assert 'name  = "FOUNDRY_AGENT_VERSION"' in container_apps
     assert "local.foundry_coordinator_activation.version" in container_apps
+
+
+def test_legacy_specialists_can_use_a_separately_pinned_coordinator():
+    variables = _read("infra/terraform/variables.tf")
+    foundry = _read("infra/terraform/foundry.tf")
+
+    assert 'variable "foundry_coordinator_activation_artifact"' in variables
+    assert 'variable "enable_foundry_coordinator_candidate_publish"' in variables
+    coordinator = _local_block(foundry, "foundry_coordinator_activation")
+    assert "local.foundry_coordinator_artifact.provider_version_id" in coordinator
+    assert '"coordinator_pinned"' in coordinator
+    assert 'resource "terraform_data" "foundry_coordinator_candidate"' in foundry
+    assert "publish-foundry-coordinator.sh" in foundry
+    assert "validate_foundry_coordinator.py" in foundry
+    assert "validation_digest" in foundry
+    assert "synthesis_probe" in foundry
+    assert "supersedes_unusable_versions" in foundry
+
+    publisher = _read("infra/scripts/publish-foundry-coordinator.sh")
+    assert "FOUNDRY_COORDINATOR_PYTHON" in publisher
+    assert ".venv/bin/python" in publisher
+    assert "validator interpreter lacks repository dependencies" in publisher
+
+
+def test_coordinator_validator_sends_the_supplied_foundry_token(monkeypatch):
+    module_path = REPO_ROOT / "scripts" / "validate_foundry_coordinator.py"
+    spec = importlib.util.spec_from_file_location(
+        "validate_foundry_coordinator",
+        module_path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"{}"
+
+    def urlopen(request, timeout):
+        observed["authorization"] = request.get_header("Authorization")
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert module._request_json(
+        "https://example.test",
+        token="test-foundry-token",
+    ) == {}
+    assert observed == {
+        "authorization": "Bearer test-foundry-token",
+        "timeout": 90,
+    }
 
 
 def test_rollback_rotation_uses_an_explicit_stable_epoch():

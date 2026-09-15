@@ -3288,6 +3288,12 @@ export interface CanonicalSynthesisClaim {
 export interface CanonicalInvestigationSynthesis {
   status: "synthesized" | "deterministic" | "degraded" | "skipped" | string;
   reason: string;
+  coordinator?: {
+    name: string;
+    version: string;
+    planned: boolean;
+    delegation_mode?: "governed_local_tools";
+  };
   domain_count: number;
   claims: CanonicalSynthesisClaim[];
   warning: string;

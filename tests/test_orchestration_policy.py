@@ -377,6 +377,10 @@ def test_compliance_questions_select_only_page_authorized_specialists(
         for step in validated.steps
         for call in step.tool_calls
     ] == expected_tools
+    if question == "Which PROD workloads bypass the firewall?":
+        assert validated.steps[0].tool_calls[0].arguments == {
+            "category": "firewall_bypass"
+        }
 
 
 @pytest.mark.parametrize(

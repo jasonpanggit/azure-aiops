@@ -475,7 +475,7 @@ def deterministic_network_claims(
             ),
         )
         highlights = []
-        for row in rows[:3]:
+        for row in rows[:5]:
             title = str(
                 row.get("title")
                 or row.get("detail")
@@ -486,24 +486,55 @@ def deterministic_network_claims(
             severity = str(row.get("severity") or "unknown").strip().casefold()
             resource = str(
                 row.get("resource_name")
+                or row.get("rule_name")
+                or row.get("control")
                 or row.get("resource_id")
                 or ""
             ).strip()
-            highlights.append(
-                f"{title} ({severity}{f', {resource}' if resource else ''})"
+            detail = str(row.get("detail") or "").strip()
+            recommendation = str(row.get("recommendation") or "").strip()
+            subject = f"**{resource}**: " if resource else ""
+            explanation = f" {detail}" if detail else ""
+            next_step = (
+                f" Recommended next step: {recommendation}"
+                if recommendation
+                else ""
             )
-        gap_label = "inspection gap" if len(gaps) == 1 else "inspection gaps"
-        finding_label = (
-            "firewall/NSG rule finding"
-            if len(findings) == 1
-            else "firewall/NSG rule findings"
+            highlights.append(
+                f"- {subject}{title} ({severity}).{explanation}{next_step}"
+            )
+        inspection_only = (
+            bool(gaps)
+            and not findings
+            and all(
+                str(row.get("category") or "").casefold()
+                == "firewall_bypass"
+                for row in gaps
+            )
         )
-        summary = (
-            f"Network evidence reports {len(gaps)} {gap_label} and "
-            f"{len(findings)} {finding_label}."
-        )
+        if inspection_only:
+            path_label = (
+                "inspection-bypass path"
+                if len(gaps) == 1
+                else "inspection-bypass paths"
+            )
+            summary = (
+                f"Network evidence identifies **{len(gaps)} {path_label}** "
+                "in the current scope."
+            )
+        else:
+            gap_label = "architecture gap" if len(gaps) == 1 else "architecture gaps"
+            finding_label = (
+                "firewall/NSG rule finding"
+                if len(findings) == 1
+                else "firewall/NSG rule findings"
+            )
+            summary = (
+                f"Network evidence reports **{len(gaps)} {gap_label}** and "
+                f"**{len(findings)} {finding_label}**."
+            )
         if highlights:
-            summary += f" Highest-priority findings: {'; '.join(highlights)}."
+            summary += "\n\n" + "\n".join(highlights)
         uncertainty = (
             []
             if snapshot.coverage.complete
@@ -577,20 +608,24 @@ class OrchestrationService:
         self,
         *,
         planner: Planner | None = None,
+        fallback_planner: Planner | None = None,
         executor: Executor = _default_executor,
         policy: OrchestrationPolicy | None = None,
         thread_store: InvestigationThreadStore | None = None,
         clock: Callable[[], float] = time.monotonic,
         executive_agent: Any = None,
         telemetry: Any = None,
+        always_synthesize: bool = False,
     ) -> None:
         self.planner = planner
+        self.fallback_planner = fallback_planner
         self.executor = executor
         self.policy = policy or OrchestrationPolicy()
         self.thread_store = thread_store or investigation_thread_store()
         self.clock = clock
         self.executive_agent = executive_agent
         self.telemetry = telemetry
+        self.always_synthesize = always_synthesize
 
     def execute(
         self,
@@ -1246,6 +1281,44 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        for claim in deterministic_claims:
+            evidence_refs = [
+                str(reference)
+                for reference in claim.get("evidence_refs") or []
+            ]
+            if not evidence_refs:
+                continue
+            findings.append(
+                {
+                    "finding_id": str(claim.get("finding_id") or ""),
+                    "specialist_id": (
+                        "network"
+                        if network_claims
+                        else "vulnerability"
+                        if cve_claims
+                        else "page_evidence"
+                    ),
+                    "status": STATUS_OK,
+                    "summary": str(claim.get("summary") or ""),
+                    "evidence_refs": evidence_refs,
+                    "observation_status": str(
+                        claim.get("freshness") or "unknown"
+                    ),
+                }
+            )
+        if self.always_synthesize and (findings or deterministic_claims):
+            decision = SynthesisDecision(
+                admitted=True,
+                reason="operations_copilot_coordinator",
+                domain_count=max(
+                    1,
+                    len({
+                        str(item.get("specialist_id") or "")
+                        for item in findings
+                        if item.get("specialist_id")
+                    }),
+                ),
+            )
         if deterministic_claims and self.executive_agent is None:
             evidence_kind = (
                 "CVE" if cve_claims else "network" if network_claims else "page"
@@ -1953,7 +2026,11 @@ class OrchestrationService:
         effective_scope: Scope,
         reason: str,
     ) -> tuple[CandidatePlan | None, str, str]:
-        fallback = _fallback_candidate(request)
+        fallback = (
+            self.fallback_planner(request)
+            if self.fallback_planner is not None
+            else _fallback_candidate(request)
+        )
         if fallback is None:
             return None, "fallback", "no_safe_tool_arguments"
         validated = self.policy.validate(

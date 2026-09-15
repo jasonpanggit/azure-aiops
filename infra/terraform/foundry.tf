@@ -360,10 +360,42 @@ locals {
     ? jsondecode(file(local.foundry_promotion_artifact_path))
     : null
   )
-  foundry_promoted_agents      = try(local.foundry_promotion_artifact.agents, {})
-  foundry_promoted_coordinator = try(local.foundry_promotion_artifact.coordinator, {})
-  foundry_rollback_agents      = try(local.foundry_promotion_artifact.rollback_target, {})
-  foundry_rollback_coordinator = try(local.foundry_promotion_artifact.rollback_coordinator, {})
+  foundry_promoted_agents           = try(local.foundry_promotion_artifact.agents, {})
+  foundry_promoted_coordinator      = try(local.foundry_promotion_artifact.coordinator, {})
+  foundry_rollback_agents           = try(local.foundry_promotion_artifact.rollback_target, {})
+  foundry_rollback_coordinator      = try(local.foundry_promotion_artifact.rollback_coordinator, {})
+  foundry_coordinator_artifact_path = var.foundry_coordinator_activation_artifact
+  foundry_coordinator_artifact_present = (
+    local.foundry_coordinator_artifact_path != "" &&
+    fileexists(local.foundry_coordinator_artifact_path)
+  )
+  foundry_coordinator_artifact = (
+    local.foundry_coordinator_artifact_present
+    ? jsondecode(file(local.foundry_coordinator_artifact_path))
+    : null
+  )
+  foundry_coordinator_validation_payload = {
+    status                       = try(local.foundry_coordinator_artifact.status, "")
+    manifest_digest              = try(local.foundry_coordinator_artifact.manifest_digest, "")
+    agent_name                   = try(local.foundry_coordinator_artifact.agent_name, "")
+    provider_version_id          = try(local.foundry_coordinator_artifact.provider_version_id, "")
+    model                        = try(local.foundry_coordinator_artifact.model, "")
+    planning_probe               = try(local.foundry_coordinator_artifact.planning_probe, "")
+    synthesis_probe              = try(local.foundry_coordinator_artifact.synthesis_probe, "")
+    supersedes_unusable_versions = try(local.foundry_coordinator_artifact.supersedes_unusable_versions, [])
+  }
+  foundry_coordinator_artifact_valid = (
+    try(local.foundry_coordinator_artifact.status, "") == "validated" &&
+    try(local.foundry_coordinator_artifact.manifest_digest, "") == local.specialist_manifest_digest &&
+    try(local.foundry_coordinator_artifact.agent_name, "") == var.foundry_agent_name &&
+    try(local.foundry_coordinator_artifact.provider_version_id, "") != "" &&
+    try(local.foundry_coordinator_artifact.model, "") == local.foundry_model_deployment_name &&
+    try(local.foundry_coordinator_artifact.planning_probe, "") == "pass" &&
+    try(local.foundry_coordinator_artifact.synthesis_probe, "") == "pass" &&
+    try(local.foundry_coordinator_artifact.supersedes_unusable_versions, []) == ["1", "2", "3", "4"] &&
+    !contains(["1", "2", "3", "4"], try(local.foundry_coordinator_artifact.provider_version_id, "")) &&
+    try(local.foundry_coordinator_artifact.validation_digest, "") == sha256(jsonencode(local.foundry_coordinator_validation_payload))
+  )
 
   # The parity gate wrote "validated" only after an exact live comparison.
   foundry_promotion_status_ok = try(local.foundry_promotion_artifact.status, "") == "validated"
@@ -488,8 +520,8 @@ locals {
     source  = "validated_rollback"
     } : {
     name    = var.foundry_agent_name
-    version = ""
-    source  = "legacy_unversioned"
+    version = local.foundry_coordinator_artifact_valid ? local.foundry_coordinator_artifact.provider_version_id : ""
+    source  = local.foundry_coordinator_artifact_valid ? "coordinator_pinned" : "legacy_unversioned"
   }
 
   # Before staged adoption the legacy runtime may remain unversioned. Setting
@@ -1077,6 +1109,58 @@ resource "terraform_data" "foundry_agent" {
     azurerm_role_assignment.foundry_project_search_index_data_contributor,
     azurerm_role_assignment.foundry_project_search_service_contributor,
     terraform_data.foundry_knowledge_index,
+    azurerm_container_app.api,
+  ]
+}
+
+resource "terraform_data" "foundry_coordinator_candidate" {
+  count = var.create_foundry_agent && var.enable_foundry_coordinator_candidate_publish ? 1 : 0
+
+  triggers_replace = {
+    endpoint         = local.foundry_project_endpoint
+    agent_name       = var.foundry_agent_name
+    model            = azurerm_cognitive_deployment.chat.name
+    instructions     = sha256(local.agent_instructions)
+    manifest_digest  = local.specialist_manifest_digest
+    activation_path  = local.foundry_coordinator_artifact_path
+    publisher        = filesha256("${path.module}/../scripts/publish-foundry-coordinator.sh")
+    validator        = filesha256("${path.module}/../../scripts/validate_foundry_coordinator.py")
+    runtime_verified = var.foundry_version_pinning_runtime_verified
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.foundry_version_pinning_runtime_verified
+      error_message = "Coordinator publication requires the deployed version-pinning runtime to be verified."
+    }
+
+    precondition {
+      condition     = local.foundry_coordinator_artifact_path != ""
+      error_message = "Coordinator publication requires a persistent foundry_coordinator_activation_artifact path."
+    }
+  }
+
+  provisioner "local-exec" {
+    command     = "${path.module}/../scripts/publish-foundry-coordinator.sh"
+    interpreter = ["/bin/bash", "-c"]
+
+    environment = {
+      FOUNDRY_PROJECT_ENDPOINT           = local.foundry_project_endpoint
+      FOUNDRY_AGENT_NAME                 = var.foundry_agent_name
+      FOUNDRY_AGENT_MODEL                = azurerm_cognitive_deployment.chat.name
+      FOUNDRY_AGENT_PROMPT               = local.agent_instructions
+      FOUNDRY_COORDINATOR_RECORD         = local.foundry_coordinator_artifact_path
+      FOUNDRY_SPECIALIST_MANIFEST_DIGEST = local.specialist_manifest_digest
+      AZURE_TENANT_ID                    = var.tenant_id
+      AZURE_CLIENT_ID                    = var.client_id
+      AZURE_CLIENT_SECRET                = var.client_secret
+    }
+  }
+
+  depends_on = [
+    azurerm_cognitive_deployment.chat,
+    azurerm_cognitive_account_project.ops,
+    azurerm_role_assignment.deployer_foundry_manager,
     azurerm_container_app.api,
   ]
 }
