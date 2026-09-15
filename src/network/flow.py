@@ -952,9 +952,20 @@ class TrafficFlowValidator:
     ) -> bool | None:
         matches: list[bool | None] = []
         if rule.destination_addresses:
-            matches.append(
-                self._any_address_match(rule.destination_specs(), dest_value, destination)
-            )
+            destination_specs = rule.destination_specs()
+            if (
+                destination.is_internet
+                and self._destination_hostname(destination) is None
+            ):
+                matches.append(
+                    self._generic_internet_address_match(destination_specs)
+                )
+            else:
+                matches.append(
+                    self._any_address_match(
+                        destination_specs, dest_value, destination
+                    )
+                )
         if rule.destination_fqdns:
             matches.append(self._fqdn_match(rule.destination_fqdns, destination))
         if rule.fqdn_tags or rule.destination_ip_groups:
@@ -969,6 +980,30 @@ class TrafficFlowValidator:
             return True
         if any(match is None for match in matches):
             return None
+        return False
+
+    @staticmethod
+    def _generic_internet_address_match(
+        specs: tuple[AddressSpec, ...],
+    ) -> bool | None:
+        """Evaluate address selectors without inventing a concrete Internet IP."""
+
+        if any(spec.is_internet for spec in specs):
+            return True
+        for spec in specs:
+            if spec.service_tag and not spec.is_virtual_network:
+                return None
+            for cidr in spec.networks:
+                try:
+                    network = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    return None
+                if not (
+                    network.is_private
+                    or network.is_loopback
+                    or network.is_link_local
+                ):
+                    return None
         return False
 
     def _fqdn_match(

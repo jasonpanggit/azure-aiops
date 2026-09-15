@@ -474,6 +474,86 @@ class TestFirewallRuleEvaluation:
         assert observed.applicability == "specific_destination_required"
         assert "specific host" in firewall_hops[0].reason
 
+    def test_generic_internet_matches_a_broad_default_address_rule(self) -> None:
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/allow-all-internet",
+            name="allow-all-internet",
+            priority=20,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/allow-all-internet/rules/allow-all",
+                    name="allow-all",
+                    rule_type="NetworkRule",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["0.0.0.0/0"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="internet",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        firewall_hop = next(
+            hop for hop in result.hops if hop.control == "azure_firewall"
+        )
+        assert firewall_hop.decision == "allow"
+        assert firewall_hop.rule_name == "allow-all"
+
+    def test_generic_internet_does_not_assume_a_specific_public_cidr_misses(
+        self,
+    ) -> None:
+        collection = FirewallRuleCollection(
+            resource_id="/fwp/rulecollections/public-cidr",
+            name="public-cidr",
+            priority=20,
+            action="Allow",
+            collection_type="NetworkRuleCollection",
+            rules=(
+                FirewallRule(
+                    resource_id="/fwp/rulecollections/public-cidr/rules/allow-dns",
+                    name="allow-dns",
+                    rule_type="NetworkRule",
+                    protocols=["Tcp"],
+                    source_addresses=["10.1.0.0/16"],
+                    destination_addresses=["8.8.8.0/24"],
+                    destination_ports=["443"],
+                ),
+            ),
+        )
+        service = self._service_with_collections(collection)
+
+        result = service.validate_flow(
+            FlowQuery(
+                source=PROD_SUBNET,
+                destination="internet",
+                port=443,
+                protocol="Tcp",
+            )
+        )
+
+        assert result.verdict == VERDICT_INDETERMINATE
+        firewall_hop = next(
+            hop for hop in result.hops if hop.control == "azure_firewall"
+        )
+        assert firewall_hop.decision == "unknown"
+        observed = next(
+            item
+            for item in firewall_hop.rule_analysis
+            if item.rule_name == "allow-dns"
+        )
+        assert observed.applicability == "specific_destination_required"
+
     def test_network_rules_are_processed_before_application_rules(self) -> None:
         application_allow = FirewallRuleCollection(
             resource_id="/fwp/rulecollections/application-first-by-number",
