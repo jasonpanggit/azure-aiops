@@ -281,12 +281,19 @@ def _validate_bound_cve_request(
             flags=re.IGNORECASE,
         )
     }
-    hint_cve = (
-        canonical_cve_id(payload.hint.arguments.get("cve_id"))
-        if payload.hint is not None
-        and payload.hint.tool in {"cve_detail", "cve_attack_path"}
-        else ""
-    )
+    hint_cve = ""
+    hint_requires_exact_cve = False
+    if payload.hint is not None:
+        if payload.hint.tool in {"cve_detail", "cve_attack_path"}:
+            hint_requires_exact_cve = True
+            hint_cve = canonical_cve_id(
+                payload.hint.arguments.get("cve_id")
+            )
+        elif payload.hint.tool == "cve_exposure":
+            hint_requires_exact_cve = True
+            hint_cve = canonical_cve_id(
+                payload.hint.arguments.get("query")
+            )
     filtered_cves = {
         canonical_cve_id(value)
         for value in snapshot.filters.get("weakness_id", ())
@@ -300,6 +307,7 @@ def _validate_bound_cve_request(
     }
     conflicting = (
         (referenced and referenced != {page_cve})
+        or (hint_requires_exact_cve and not hint_cve)
         or (hint_cve and hint_cve != page_cve)
         or any(value and value != page_cve for value in filtered_cves)
         or any(value and value != page_cve for value in selected_cves)

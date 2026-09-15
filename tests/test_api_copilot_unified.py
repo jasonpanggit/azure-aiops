@@ -2451,6 +2451,38 @@ def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(
     assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
 
 
+@pytest.mark.parametrize("query", ["CVE-2026-99999", "", "critical"])
+def test_canonical_cve_rejects_unbound_exposure_hint_before_tool_io(
+    tmp_path,
+    monkeypatch,
+    query,
+):
+    body = _cve_canonical_body("CVE-2026-13221")
+    body["hint"] = {
+        "specialist_id": "vulnerability",
+        "tool": "cve_exposure",
+        "arguments": {"query": query} if query else {},
+    }
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unbound CVE exposure hint reached tool I/O"
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
+
+
 def test_authenticated_canonical_route_preserves_governed_result(
     tmp_path,
     monkeypatch,
