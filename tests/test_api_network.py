@@ -19,6 +19,7 @@ from network_scenario import (
     PROD_SUB,
     PROD_VNET,
     UAT_SUB,
+    UAT_SUBNET,
     network_rows,
 )
 
@@ -670,6 +671,25 @@ class TestTrafficFlow:
             headers=_auth(),
         )
         assert response.status_code == 400
+
+    def test_selected_subnet_to_manual_internet_returns_egress_path(self, client):
+        response = client.get(
+            "/api/v1/network/traffic-flow",
+            params={
+                "source": UAT_SUBNET,
+                "destination": "internet",
+                "port": 443,
+            },
+            headers=_auth(),
+        )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["source"]["subnet_id"] == UAT_SUBNET.casefold()
+        assert data["destination"]["is_internet"] is True
+        assert data["destination"]["resolved"] is True
+        assert data["unknowns"] == []
+        assert any(hop["stage"] == "source_egress" for hop in data["hops"])
 
 
 class TestGaps:

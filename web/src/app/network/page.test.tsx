@@ -10,7 +10,11 @@ import {
   buildTopologyEnvelope,
 } from "@/test/network-fixtures";
 import { ApiError } from "@/lib/types";
-import type { NetworkDesignPolicy } from "@/lib/types";
+import type {
+  FlowResult,
+  NetworkDesignPolicy,
+  NetworkTopologyResource,
+} from "@/lib/types";
 import type { ScopeSelection } from "@/lib/scope";
 
 const mocks = vi.hoisted(() => ({
@@ -165,6 +169,85 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function endpointResource(
+  id: string,
+  name: string,
+  entityType: string,
+  subscriptionId = "sub-a",
+  resourceGroup = "rg-network",
+): NetworkTopologyResource {
+  return {
+    id,
+    name,
+    entity_type: entityType,
+    subscription_id: subscriptionId,
+    resource_group: resourceGroup,
+    location: "eastus",
+    connection_id: `conn-${subscriptionId}`,
+    environment: "test",
+    business_service: "",
+    application: "",
+    owner: "",
+    tags: {},
+    details: {},
+  };
+}
+
+function topologyWithEndpoints(
+  resources: NetworkTopologyResource[],
+  relationships: Array<{
+    id: string;
+    source: string;
+    target: string;
+    relationship_type: string;
+    label: string;
+    details: Record<string, unknown>;
+  }> = [],
+) {
+  const envelope = buildTopologyEnvelope(0, 0);
+  envelope.data.topology.resources = resources;
+  envelope.data.topology.relationships = relationships;
+  return envelope;
+}
+
+function flowEnvelope(source: string, destination: string) {
+  const endpoint = (raw: string, isInternet = false) => ({
+    raw,
+    ip_address: "",
+    subnet_id: "",
+    vnet_id: "",
+    nsg_id: "",
+    resource_id: raw,
+    environment: "",
+    name: isInternet ? "Internet" : raw,
+    is_internet: isInternet,
+    resolved: true,
+  });
+  const data: FlowResult = {
+    query: {
+      source,
+      destination,
+      port: 443,
+      protocol: "TCP",
+      environment_scope: "",
+    },
+    source: endpoint(source),
+    destination: endpoint(destination, destination.toLowerCase() === "internet"),
+    verdict: "allowed",
+    hops: [],
+    missing_enforcement_points: [],
+    unknowns: [],
+    path_summary: `${source} => ${destination}: allowed`,
+  };
+  return {
+    data,
+    evidence: [],
+    scope: {},
+    knowledge_version: "network-fixture-v1",
+    warnings: [],
+  };
+}
+
 function primeSuccessfulLoaders(gapTotal = 340, findingTotal = 620) {
   const topology = buildTopologyEnvelope();
   topology.data.summary = buildNetworkSummary({
@@ -183,6 +266,373 @@ function primeSuccessfulLoaders(gapTotal = 340, findingTotal = 620) {
   mocks.firewallBypass.mockResolvedValue(bypassEnvelope());
   mocks.policy.mockResolvedValue(policyEnvelope());
 }
+
+describe("Network path endpoint selectors", () => {
+  const subnetA =
+    "/subscriptions/sub-a/resourcegroups/rg-a/providers/microsoft.network/virtualnetworks/vnet-a/subnets/apps";
+  const subnetB =
+    "/subscriptions/sub-b/resourcegroups/rg-b/providers/microsoft.network/virtualnetworks/vnet-b/subnets/apps";
+  const subnetC =
+    "/subscriptions/sub-a/resourcegroups/rg-network/providers/microsoft.network/virtualnetworks/vnet-c/subnets/apps";
+  const nic =
+    "/subscriptions/sub-a/resourcegroups/rg-a/providers/microsoft.network/networkinterfaces/vm-a-nic";
+  const vm =
+    "/subscriptions/sub-a/resourcegroups/rg-a/providers/microsoft.compute/virtualmachines/vm-a";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeSuccessfulLoaders();
+    mocks.buildNetworkCopilotContext.mockReturnValue({
+      requestedScope: {},
+      snapshot: {
+        version: "1",
+        page_kind: "network",
+        page_id: "network-topology",
+        selected_resources: [],
+        filters: {},
+        freshness: [],
+        scope: { declared: {}, authorized: true },
+        evidence: [],
+        question: "Summarize the visible page evidence.",
+        rechecks: [],
+      },
+      starterQuestions: [],
+    });
+    mocks.topology.mockResolvedValue(
+      topologyWithEndpoints(
+        [
+          endpointResource(subnetA, "apps", "Subnet"),
+          endpointResource(subnetB, "apps", "Subnet", "sub-b", "rg-b"),
+          endpointResource(subnetC, "apps", "Subnet"),
+          endpointResource(nic, "vm-a-nic", "NetworkInterface"),
+          endpointResource(vm, "vm-a", "VirtualMachine"),
+          endpointResource(
+            "/subscriptions/sub-a/resourcegroups/rg-a/providers/microsoft.network/networksecuritygroups/apps-nsg",
+            "apps-nsg",
+            "NetworkSecurityGroup",
+          ),
+        ],
+        [
+          {
+            id: "nic-attached-to-vm",
+            source: nic,
+            target: vm,
+            relationship_type: "attached_to",
+            label: "attached to workload",
+            details: {},
+          },
+        ],
+      ),
+    );
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope(subnetA, subnetB));
+  });
+
+  it("offers only scoped resolver-safe resources with canonical values and disambiguated labels", async () => {
+    renderPage();
+
+    const source = await screen.findByRole("combobox", {
+      name: "Source endpoint",
+    });
+    expect(
+      within(source).getByRole("option", {
+        name: "apps — Subnet · sub-a / rg-network / vnet-a",
+      }),
+    ).toHaveValue(subnetA);
+    expect(
+      within(source).getByRole("option", {
+        name: "apps — Subnet · sub-b / rg-b / vnet-b",
+      }),
+    ).toHaveValue(subnetB);
+    expect(
+      within(source).getByRole("option", {
+        name: "apps — Subnet · sub-a / rg-network / vnet-c",
+      }),
+    ).toHaveValue(subnetC);
+    expect(
+      within(source).getByRole("option", {
+        name: "vm-a — Virtual Machine",
+      }),
+    ).toHaveValue(vm);
+    expect(
+      within(source).queryByRole("option", { name: /apps-nsg/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+    ).not.toBe(source);
+  });
+
+  it("submits selected resources by canonical ARM ID", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      subnetB,
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    await waitFor(() =>
+      expect(mocks.trafficFlow).toHaveBeenCalledWith({
+        source: subnetA,
+        destination: subnetB,
+        port: 443,
+        protocol: "TCP",
+        scope: {},
+      }),
+    );
+  });
+
+  it("reveals manual inputs only in manual mode and sends Internet unchanged", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope(subnetA, "internet"));
+    renderPage();
+
+    const source = await screen.findByRole("combobox", {
+      name: "Source endpoint",
+    });
+    const destination = screen.getByRole("combobox", {
+      name: "Destination endpoint",
+    });
+    expect(
+      screen.queryByRole("textbox", { name: "Manual source endpoint" }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(source, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual source endpoint" }),
+      "10.0.0.4",
+    );
+    await user.selectOptions(source, subnetA);
+    expect(
+      screen.queryByRole("textbox", { name: "Manual source endpoint" }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(destination, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    await waitFor(() =>
+      expect(mocks.trafficFlow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: subnetA,
+          destination: "internet",
+        }),
+      ),
+    );
+
+    await user.selectOptions(source, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual source endpoint" }),
+      "Internet",
+    );
+    await user.selectOptions(destination, subnetB);
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    await waitFor(() =>
+      expect(mocks.trafficFlow).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          source: "Internet",
+          destination: subnetB,
+        }),
+      ),
+    );
+  });
+
+  it("reloads scoped options, clears selected resources, preserves active manual text, and resets results", async () => {
+    const user = userEvent.setup();
+    const narrowSubnet =
+      "/subscriptions/sub-narrow/resourcegroups/rg-narrow/providers/microsoft.network/virtualnetworks/vnet/subnets/apps";
+    mocks.topology.mockImplementation((scope: ScopeSelection) =>
+      Promise.resolve(
+        scope.subscription?.includes("sub-narrow")
+          ? topologyWithEndpoints([
+              endpointResource(
+                narrowSubnet,
+                "narrow-apps",
+                "Subnet",
+                "sub-narrow",
+                "rg-narrow",
+              ),
+            ])
+          : topologyWithEndpoints([
+              endpointResource(subnetA, "apps", "Subnet"),
+            ]),
+      ),
+    );
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope(subnetA, "internet"));
+    renderPage(true);
+
+    const source = await screen.findByRole("combobox", {
+      name: "Source endpoint",
+    });
+    const destination = screen.getByRole("combobox", {
+      name: "Destination endpoint",
+    });
+    await user.selectOptions(source, subnetA);
+    await user.selectOptions(destination, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+    expect(await screen.findByText("Reachability verdict")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Narrow test scope" }));
+
+    await waitFor(() =>
+      expect(
+        within(source).getByRole("option", { name: "narrow-apps — Subnet" }),
+      ).toHaveValue(narrowSubnet),
+    );
+    expect(source).toHaveValue("");
+    expect(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+    ).toHaveValue("internet");
+    expect(screen.queryByText("Reachability verdict")).not.toBeInTheDocument();
+    expect(mocks.topology).toHaveBeenLastCalledWith(
+      { subscription: ["sub-narrow"] },
+      { detail: "summary" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("reports scoped option failures without an unscoped fallback while preserving manual analysis", async () => {
+    const user = userEvent.setup();
+    mocks.topology.mockRejectedValue(new Error("scoped topology unavailable"));
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope("10.0.0.4", "internet"));
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Endpoint options are unavailable",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "No unscoped resource list was substituted",
+    );
+    const source = screen.getByRole("combobox", { name: "Source endpoint" });
+    const destination = screen.getByRole("combobox", {
+      name: "Destination endpoint",
+    });
+    expect(within(source).getAllByRole("option")).toHaveLength(2);
+
+    await user.selectOptions(source, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual source endpoint" }),
+      "10.0.0.4",
+    );
+    await user.selectOptions(destination, "__enter_manually__");
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    await waitFor(() => expect(mocks.trafficFlow).toHaveBeenCalledTimes(1));
+  });
+
+  it("announces scoped option loading and empty states", async () => {
+    const pending = deferred<ReturnType<typeof buildTopologyEnvelope>>();
+    mocks.topology.mockReturnValue(pending.promise);
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Loading scoped endpoint options",
+      }),
+    ).toBeInTheDocument();
+
+    await act(async () => pending.resolve(topologyWithEndpoints([])));
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "No selectable network endpoints",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze path" })).toBeDisabled();
+  });
+
+  it("warns when endpoint options are partial because relationships were truncated", async () => {
+    const partial = topologyWithEndpoints([
+      endpointResource(subnetA, "apps", "Subnet"),
+    ]);
+    partial.data.topology.coverage = {
+      total: 1,
+      returned: 1,
+      truncated: false,
+      nodes: { total: 1, returned: 1, truncated: false },
+      relationships: { total: 2, returned: 1, truncated: true },
+    };
+    mocks.topology.mockResolvedValue(partial);
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Endpoint options are partial",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores an in-flight verdict after the endpoint query changes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<ReturnType<typeof flowEnvelope>>();
+    mocks.trafficFlow.mockReturnValue(pending.promise);
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      subnetB,
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "internet",
+    );
+    await act(async () => pending.resolve(flowEnvelope(subnetA, subnetB)));
+
+    expect(screen.queryByText("Reachability verdict")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze path" })).toBeEnabled();
+  });
+
+  it("keeps analysis disabled until both endpoints exist and while a request is pending", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<ReturnType<typeof flowEnvelope>>();
+    mocks.trafficFlow.mockReturnValue(pending.promise);
+    renderPage();
+
+    const analyze = screen.getByRole("button", { name: "Analyze path" });
+    expect(analyze).toBeDisabled();
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    expect(analyze).toBeDisabled();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      subnetB,
+    );
+    expect(analyze).toBeEnabled();
+
+    await user.click(analyze);
+    expect(screen.getByRole("button", { name: "Analyzing…" })).toBeDisabled();
+    await act(async () => pending.resolve(flowEnvelope(subnetA, subnetB)));
+  });
+});
 
 describe("Network page honest totals and server pagination", () => {
   beforeEach(() => {
