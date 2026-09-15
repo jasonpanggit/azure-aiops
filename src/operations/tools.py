@@ -1065,15 +1065,26 @@ def _tool_patch_priorities(
 
     def run(vulnerability: Any) -> ToolResult:
         rows = vulnerability.patch_priorities(tool_context.scope)
-        if not rows:
-            return ToolResult(status=STATUS_EMPTY)
+        kb_rows = [
+            row
+            for row in rows
+            if (
+                str(row.get("priority_type") or "").casefold() == "kb"
+                and _canonical_kb_id(row.get("kb_id"))
+            )
+        ]
+        if not kb_rows:
+            return ToolResult(
+                status=STATUS_EMPTY,
+                warning="No canonical KB priorities were found in this scope",
+            )
         ranked = [
             {
                 "rank": index,
                 **dict(row),
                 "cve_count": len(row.get("cve_ids") or ()),
             }
-            for index, row in enumerate(rows, start=1)
+            for index, row in enumerate(kb_rows, start=1)
         ]
         top = dict(ranked[0])
         top_kb_id = _canonical_kb_id(top.get("kb_id"))

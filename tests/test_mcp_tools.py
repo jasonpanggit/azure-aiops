@@ -154,6 +154,30 @@ class _PatchPriorityProvider:
         assert scope.to_dict() == {"subscription": ["sub-a"]}
         return [
             {
+                "priority_id": "DEFENDER:CVE-2026-63076",
+                "priority_type": "defender_cve",
+                "kb_id": "",
+                "cve_ids": ["CVE-2026-63076"],
+                "affected_server_count": 658,
+                "affected_application_count": 12,
+                "affected_business_service_count": 5,
+                "expected_risk_reduction": 19917.66,
+                "priority_score": 19927.66,
+                "recommended_action": "Review the Defender recommendation.",
+            },
+            {
+                "priority_id": "DEFENDER:CVE-2026-70000",
+                "priority_type": "kb",
+                "kb_id": "",
+                "cve_ids": ["CVE-2026-70000"],
+                "affected_server_count": 4,
+                "affected_application_count": 1,
+                "affected_business_service_count": 1,
+                "expected_risk_reduction": 19000.0,
+                "priority_score": 19010.0,
+                "recommended_action": "Review the malformed priority.",
+            },
+            {
                 "priority_id": "5123099",
                 "priority_type": "kb",
                 "kb_id": "5123099",
@@ -167,7 +191,19 @@ class _PatchPriorityProvider:
                     "Patch through the approved change process; "
                     "this platform executes no remediation."
                 ),
-            }
+            },
+            {
+                "priority_id": "5030000",
+                "priority_type": "kb",
+                "kb_id": "5030000",
+                "cve_ids": ["CVE-2026-60000"],
+                "affected_server_count": 1,
+                "affected_application_count": 1,
+                "affected_business_service_count": 1,
+                "expected_risk_reduction": 900.0,
+                "priority_score": 910.0,
+                "recommended_action": "Review KB5030000.",
+            },
         ]
 
 
@@ -258,9 +294,20 @@ def test_patch_priority_and_kb_tools_use_server_catalog_not_exposure_images():
         },
     }
     assert priorities.data["top_priority"]["cve_count"] == 126
+    assert priorities.data["total_count"] == 2
+    assert priorities.data["returned_count"] == 2
+    assert [
+        (item["rank"], item["priority_id"], item["priority_type"])
+        for item in priorities.data["items"]
+    ] == [
+        (1, "5123099", "kb"),
+        (2, "5030000", "kb"),
+    ]
+    assert all(item["kb_id"] for item in priorities.data["items"])
     assert priorities.data["top_priority"]["recommended_action"].startswith(
         "Patch through the approved change process"
     )
+    assert "DEFENDER:CVE-2026-63076" not in str(priorities.data)
     assert "container_image" not in str(priorities.data)
     assert [item.source_table for item in priorities.evidence] == [
         "vulnerability_projection",
