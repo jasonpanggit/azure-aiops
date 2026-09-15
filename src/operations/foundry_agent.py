@@ -319,6 +319,85 @@ def normalize_cited_findings(
     material finding and is omitted entirely.
     """
 
+    def bounded_utf8(value: str, limit: int) -> str:
+        encoded = value.encode("utf-8")
+        return (
+            value
+            if len(encoded) <= limit
+            else encoded[:limit].decode("utf-8", errors="ignore")
+        )
+
+    def bounded_text(value: Any, limit: int = 160) -> str:
+        if not isinstance(value, str):
+            return ""
+        normalized = " ".join(value.split())
+        if normalized.casefold().startswith("/subscriptions/"):
+            return ""
+        return bounded_utf8(normalized, limit)
+
+    def hub_dependents_summary(data: Any) -> str:
+        if not isinstance(data, Mapping):
+            return ""
+        hub_name = bounded_text(data.get("hub_name")) or "the requested hub"
+        dependents = [
+            item
+            for item in data.get("dependent_vnets") or data.get("dependents") or []
+            if isinstance(item, Mapping)
+        ]
+        raw_count = data.get("dependent_count")
+        dependent_count = (
+            raw_count
+            if isinstance(raw_count, int) and raw_count >= 0
+            else len(dependents)
+        )
+        dependent_labels = []
+        for item in dependents:
+            label = bounded_text(item.get("name"))
+            if label:
+                dependent_labels.append(label)
+            if len(dependent_labels) >= 8:
+                break
+        summary = f"Hub {hub_name} has {dependent_count} dependent VNets"
+        if dependent_labels:
+            suffix = (
+                f" (showing {len(dependent_labels)}): "
+                if dependent_count > len(dependent_labels)
+                else ": "
+            )
+            summary += suffix + "; ".join(dependent_labels)
+        summary += "."
+
+        services = [
+            item
+            for item in data.get("shared_services") or []
+            if isinstance(item, Mapping)
+        ]
+        if services:
+            labels = []
+            for item in services:
+                service_type = bounded_text(
+                    item.get("service_kind") or item.get("type"),
+                    80,
+                )
+                name = bounded_text(item.get("name"), 160)
+                label = " ".join(part for part in (service_type, name) if part)
+                if label:
+                    labels.append(label)
+                if len(labels) >= 8:
+                    break
+            if labels:
+                count_text = (
+                    f"{len(services)} total; showing {len(labels)}"
+                    if len(services) > len(labels)
+                    else str(len(services))
+                )
+                summary += (
+                    f" Shared services ({count_text}): "
+                    + "; ".join(labels)
+                    + "."
+                )
+        return bounded_utf8(summary, 2_000)
+
     findings: list[dict[str, Any]] = []
     for result in tool_results:
         if not isinstance(result, Mapping):
@@ -338,12 +417,17 @@ def normalize_cited_findings(
         if not refs:
             continue
         status = str(result.get("status") or "")
+        summary = (
+            hub_dependents_summary(result.get("data"))
+            if tool == "hub_dependents" and status == "ok"
+            else ""
+        )
         findings.append(
             {
                 "finding_id": call_id,
                 "specialist_id": specialist_id,
                 "status": status,
-                "summary": f"{specialist_id} reported {status} from {tool}.",
+                "summary": summary or f"{specialist_id} reported {status} from {tool}.",
                 "evidence_refs": refs,
                 "observation_status": str(
                     result.get("observation_status") or "current"
