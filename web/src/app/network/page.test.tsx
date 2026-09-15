@@ -210,7 +210,11 @@ function topologyWithEndpoints(
   return envelope;
 }
 
-function flowEnvelope(source: string, destination: string) {
+function flowEnvelope(
+  source: string,
+  destination: string,
+  overrides: Partial<FlowResult> = {},
+) {
   const endpoint = (raw: string, isInternet = false) => ({
     raw,
     ip_address: "",
@@ -232,12 +236,16 @@ function flowEnvelope(source: string, destination: string) {
       environment_scope: "",
     },
     source: endpoint(source),
-    destination: endpoint(destination, destination.toLowerCase() === "internet"),
+    destination: endpoint(
+      destination,
+      destination.toLowerCase() === "internet" || destination.includes("."),
+    ),
     verdict: "allowed",
     hops: [],
     missing_enforcement_points: [],
     unknowns: [],
     path_summary: `${source} => ${destination}: allowed`,
+    ...overrides,
   };
   return {
     data,
@@ -443,6 +451,92 @@ describe("Network path endpoint selectors", () => {
         }),
       ),
     );
+  });
+
+  it("presents Internet as a resolved external endpoint", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope(subnetA, "Internet"));
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "Internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    const destination = await screen.findByRole("article", {
+      name: "Destination endpoint",
+    });
+    expect(destination).toHaveTextContent("External network endpoint");
+    expect(destination).toHaveTextContent("Resolved");
+    expect(destination).not.toHaveTextContent("Endpoint unresolved");
+  });
+
+  it("presents a public FQDN as a resolved external endpoint", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(flowEnvelope(subnetA, "www.google.com"));
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "www.google.com",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    const destination = await screen.findByRole("article", {
+      name: "Destination endpoint",
+    });
+    expect(destination).toHaveTextContent("External network endpoint");
+    expect(destination).toHaveTextContent("External");
+    expect(destination).toHaveTextContent("Resolved");
+    expect(destination).not.toHaveTextContent("Environment unknown");
+    expect(destination).not.toHaveTextContent("Endpoint unresolved");
+  });
+
+  it("shows partial resolution instead of a false fully-resolved claim", async () => {
+    const user = userEvent.setup();
+    mocks.trafficFlow.mockResolvedValue(
+      flowEnvelope(subnetA, "Internet", {
+        verdict: "indeterminate",
+        unknowns: [],
+      }),
+    );
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Source endpoint" }),
+      subnetA,
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Destination endpoint" }),
+      "__enter_manually__",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Manual destination endpoint" }),
+      "Internet",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze path" }));
+
+    expect(await screen.findByText("Path partially resolved")).toBeInTheDocument();
+    expect(screen.queryByText("Path fully resolved")).not.toBeInTheDocument();
+    expect(screen.queryByText("No unresolved path elements.")).not.toBeInTheDocument();
+    expect(screen.getByText(/observed controls were insufficient/i)).toBeInTheDocument();
   });
 
   it("reloads scoped options, clears selected resources, preserves active manual text, and resets results", async () => {
