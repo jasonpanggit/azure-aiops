@@ -71,6 +71,49 @@ locals {
   }
 }
 
+check "sre_agent_patch_execution_configuration" {
+  assert {
+    condition = !var.enable_sre_agent_patch_execution || (
+      var.sre_agent_http_trigger_secret_id != "" &&
+      var.sre_agent_endpoint != "" &&
+      startswith(
+        lower(var.sre_agent_patch_target_prefix),
+        "/subscriptions/${lower(local.sre_agent_subscription_id)}/"
+      ) &&
+      strcontains(lower(var.sre_agent_patch_target_prefix), "/resourcegroups/")
+    )
+    error_message = "SRE Agent patch execution requires an expected agent endpoint, an existing trigger secret URI, and a target prefix inside the configured SRE Agent subscription."
+  }
+}
+
+resource "azurerm_role_definition" "sre_agent_trigger_invoker" {
+  count = var.enable_sre_agent_patch_execution ? 1 : 0
+
+  name  = "${local.base}-sre-agent-trigger-invoker"
+  scope = "/subscriptions/${local.sre_agent_subscription_id}"
+
+  permissions {
+    actions     = []
+    not_actions = []
+    data_actions = [
+      "Microsoft.App/agents/threads/read",
+      "Microsoft.App/agents/threads/write",
+    ]
+    not_data_actions = []
+  }
+
+  assignable_scopes = ["/subscriptions/${local.sre_agent_subscription_id}"]
+}
+
+resource "azurerm_role_assignment" "apps_sre_agent_trigger_invoker" {
+  count = var.enable_sre_agent_patch_execution ? 1 : 0
+
+  scope                            = local.sre_agent_resource_id
+  role_definition_id               = azurerm_role_definition.sre_agent_trigger_invoker[0].role_definition_resource_id
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
 resource "azapi_resource" "sre_agent" {
   count = var.enable_sre_agent_management ? 1 : 0
 
@@ -166,5 +209,19 @@ output "sre_agent_identity_principal_ids" {
   value = {
     system_assigned = local.sre_agent_system_principal_id
     user_assigned   = local.sre_agent_user_principal_id
+  }
+}
+
+output "sre_agent_patch_execution_environment" {
+  description = "Non-secret, default-off runtime contract for the pre-created SRE Agent patch trigger. The trigger URL remains a Key Vault-backed Container Apps secret."
+  value = {
+    enabled                             = var.enable_sre_agent_patch_execution
+    AIOPS_PATCH_EXECUTION               = var.enable_sre_agent_patch_execution ? "sre-agent" : "azure"
+    AIOPS_SRE_AGENT_ENDPOINT            = var.sre_agent_endpoint
+    AIOPS_SRE_AGENT_SUBSCRIPTION_ID     = local.sre_agent_subscription_id
+    AIOPS_SRE_AGENT_TARGET_PREFIX       = var.sre_agent_patch_target_prefix
+    AIOPS_SRE_AGENT_TRIGGER_SCOPE       = var.sre_agent_trigger_scope
+    AIOPS_SRE_AGENT_THREAD_SCOPE        = var.sre_agent_thread_scope
+    trigger_url_is_key_vault_referenced = var.sre_agent_http_trigger_secret_id != ""
   }
 }

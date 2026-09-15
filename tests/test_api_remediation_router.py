@@ -829,18 +829,22 @@ def _seed_execution(
     status: str,
     evidence_reconciliation: dict | None = None,
     ineligibility_reason: str = "",
+    patch_ids: list[str] | None = None,
+    snapshot_kind: str = "",
 ) -> dict:
+    selected_patch_ids = ["KB600001"] if patch_ids is None else patch_ids
     record, _ = store.create_or_get(
         plan_id,
         requested_by="operator@example.com",
         approved_by="approver@example.com",
         execution_snapshot={
             "target_id": "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments",
-            "patch_ids": ["KB600001"],
+            "patch_ids": selected_patch_ids,
             "target_kind": "Azure VM",
             "operation": "install_patches",
             "action_version": "v1",
             "snapshot_hash": "hash-1",
+            **({"snapshot_kind": snapshot_kind} if snapshot_kind else {}),
         },
     )
     running = store.transition(
@@ -936,7 +940,13 @@ def test_verify_step_complete_when_succeeded_and_reconciled_clean(tmp_path) -> N
 def test_verify_step_complete_when_succeeded_with_no_reconciliation_applicable(tmp_path) -> None:
     client, _planner, store = _client_with_execution_store(tmp_path)
     plan = _patch_recovery_plan(client)
-    _seed_execution(store, plan["plan_id"], status="succeeded")
+    _seed_execution(
+        store,
+        plan["plan_id"],
+        status="succeeded",
+        patch_ids=[],
+        snapshot_kind="defender_configuration",
+    )
 
     response = client.get(
         f"/api/v1/remediation/plans/{plan['plan_id']}/workflow", headers=_auth()
@@ -946,6 +956,21 @@ def test_verify_step_complete_when_succeeded_with_no_reconciliation_applicable(t
     workflow = response.json()["data"]
     verify = next(step for step in workflow["steps"] if step["id"] == "verify")
     assert verify["status"] == "complete"
+
+
+def test_verify_step_not_complete_for_unreconciled_patch_success(tmp_path) -> None:
+    client, _planner, store = _client_with_execution_store(tmp_path)
+    plan = _patch_recovery_plan(client)
+    _seed_execution(store, plan["plan_id"], status="succeeded")
+
+    response = client.get(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/workflow", headers=_auth()
+    )
+
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    verify = next(step for step in workflow["steps"] if step["id"] == "verify")
+    assert verify["status"] == "current"
 
 
 def test_blockers_include_preview_error_row_at_review_step(tmp_path) -> None:

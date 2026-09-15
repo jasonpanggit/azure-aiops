@@ -792,6 +792,10 @@ def plan_workflow(
     latest_reconciliation_status = str(
         (latest_execution or {}).get("evidence_reconciliation", {}).get("status") or ""
     )
+    latest_snapshot = (latest_execution or {}).get("execution_snapshot") or {}
+    latest_requires_reconciliation = bool(latest_snapshot.get("patch_ids")) and (
+        latest_snapshot.get("snapshot_kind") != "defender_configuration"
+    )
     verify_blocked = latest_execution is not None and (
         latest_execution_status in {"failed", "cancelled"}
         or (
@@ -805,7 +809,10 @@ def plan_workflow(
     )
     verify_complete = latest_execution is not None and (
         latest_execution_status == "succeeded"
-        and latest_reconciliation_status in {"", "reconciled_clean"}
+        and (
+            latest_reconciliation_status == "reconciled_clean"
+            or not latest_requires_reconciliation
+        )
     )
     if not action.executable:
         recommended_step = "manual_review"
