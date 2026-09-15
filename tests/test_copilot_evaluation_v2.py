@@ -39,9 +39,11 @@ from operations.orchestration_contract import (
     EvidenceSnapshotV2,
     InvestigationRequest,
     MaterialClaim,
+    ObservationRef,
     OrchestrationResult,
     SnapshotCoverage,
     SnapshotEvidence,
+    SnapshotFreshness,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -1058,11 +1060,13 @@ def _browser_claim_snapshot(
 
 def _execute_browser_claim_snapshot(
     snapshot: EvidenceSnapshotV2,
+    *,
+    question: str = "Summarize the reported totals and names.",
 ) -> Any:
     from operations.page_context import canonicalize_snapshot_v2
 
     request = InvestigationRequest(
-        question="Summarize the reported totals and names.",
+        question=question,
         requested_scope={"subscription": ["sub-a"]},
         snapshot=snapshot.model_copy(
             update={
@@ -1096,6 +1100,150 @@ def _execute_browser_claim_snapshot(
         selection_snapshot=snapshot,
         canonical_selection_snapshot=canonical,
     )
+
+
+def _overview_signal_snapshot(
+    counts: dict[str, int],
+    *,
+    complete: bool,
+) -> EvidenceSnapshotV2:
+    sources = {
+        "incidents": "situations",
+        "exposure": "vulnerabilities",
+        "network": "network",
+        "data_health": "connections",
+    }
+    rows = [
+        SnapshotEvidence(
+            evidence_id=f"overview-{domain}",
+            source=sources[domain],
+            source_key=f"{domain}-signal",
+            entity=ObservationRef(
+                type="observation",
+                source=sources[domain],
+                source_key=f"{domain}-signal",
+            ),
+            claim_type="overview_signal",
+            status="ok",
+            quality="high",
+            data={
+                "domain": domain,
+                "label": domain.replace("_", " "),
+                "visible_count": count,
+            },
+        )
+        for domain, count in counts.items()
+    ]
+    return _browser_claim_snapshot(rows).model_copy(
+        update={
+            "page_kind": "overview",
+            "page_id": "operations-overview",
+            "coverage": SnapshotCoverage(
+                visible_count=len(rows),
+                total_count=len(rows) if complete else len(rows) + 1,
+                complete=complete,
+            ),
+            "freshness": [
+                SnapshotFreshness(
+                    source=sources[domain],
+                    observed_at="2026-09-15T18:30:57Z",
+                    status="fresh",
+                )
+                for domain in counts
+            ],
+        }
+    )
+
+
+def test_overview_attention_question_ranks_visible_signals_with_basis_and_uncertainty() -> None:
+    snapshot = _overview_signal_snapshot(
+        {
+            "incidents": 0,
+            "exposure": 0,
+            "network": 23,
+            "data_health": 0,
+        },
+        complete=False,
+    )
+
+    turn = _execute_browser_claim_snapshot(
+        snapshot,
+        question="What needs attention right now?",
+    )
+
+    assert turn.synthesis.reason == "deterministic_overview_ranking"
+    assert len(turn.synthesis.claims) == 1
+    claim = turn.synthesis.claims[0]
+    assert "network" in claim["summary"].casefold()
+    assert "23" in claim["summary"]
+    assert "visible" in claim["summary"].casefold()
+    assert "count" in claim["summary"].casefold()
+    assert "severity-equivalent" in claim["summary"].casefold()
+    assert "incomplete" in " ".join(claim["uncertainty"]).casefold()
+    assert len(claim["evidence_refs"]) == 4
+    assert claim["actionable"] is False
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    (
+        (
+            {
+                "incidents": 9,
+                "exposure": 2,
+                "network": 1,
+                "data_health": 0,
+            },
+            "Critical situations rank first with 9 visible items.",
+        ),
+        (
+            {
+                "incidents": 0,
+                "exposure": 4,
+                "network": 4,
+                "data_health": 0,
+            },
+            "No single issue ranks first",
+        ),
+        (
+            {
+                "incidents": 0,
+                "exposure": 0,
+                "network": 0,
+                "data_health": 0,
+            },
+            "No non-zero visible issue ranks first.",
+        ),
+    ),
+)
+def test_overview_ranking_is_not_overfit_to_network(
+    counts: dict[str, int],
+    expected: str,
+) -> None:
+    turn = _execute_browser_claim_snapshot(
+        _overview_signal_snapshot(counts, complete=True),
+        question="Rank the most important issue in this overview.",
+    )
+
+    assert expected in turn.synthesis.claims[0]["summary"]
+
+
+def test_overview_ranking_discloses_a_missing_signal() -> None:
+    turn = _execute_browser_claim_snapshot(
+        _overview_signal_snapshot(
+            {
+                "incidents": 2,
+                "exposure": 1,
+                "data_health": 0,
+            },
+            complete=False,
+        ),
+        question="What needs attention right now?",
+    )
+    claim = turn.synthesis.claims[0]
+
+    assert "network control gaps unavailable" in claim["summary"]
+    assert "incomplete" in " ".join(claim["uncertainty"]).casefold()
 
 
 def test_conflicting_browser_totals_are_excluded_with_explicit_uncertainty() -> None:

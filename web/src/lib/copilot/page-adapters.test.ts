@@ -474,8 +474,8 @@ describe("inventory Copilot page adapter", () => {
       expect(context.starterQuestions).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            specialistId: "incident",
-            tool: "incidents",
+            label: "What needs attention right now?",
+            specialistId: "executive_summary",
           }),
           expect.objectContaining({
             specialistId: "executive_summary",
@@ -491,7 +491,121 @@ describe("inventory Copilot page adapter", () => {
         context.starterQuestions.filter(
           (starter) => starter.specialistId === "executive_summary",
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
+    });
+
+    it("retains the four visible Overview signals as non-authoritative ranking evidence", () => {
+      const observedAt = "2026-09-15T18:30:57Z";
+      const evidence = [{
+        source_engine: "OverviewRegression",
+        source_table: "visible",
+        timestamp: observedAt,
+        confidence: "high" as const,
+        freshness: "fresh" as const,
+      }];
+      const context = buildOverviewCopilotContext({
+        scope: {},
+        situations: {
+          data: [],
+          evidence,
+          scope: {},
+          pagination: {
+            offset: 0,
+            limit: 100,
+            total: 0,
+            next_offset: null,
+          },
+        },
+        network: {
+          data: {
+            hub_count: 1,
+            spoke_count: 1,
+            isolated_vnet_count: 0,
+            peering_count: 1,
+            cross_subscription_peering_count: 0,
+            unhealthy_peering_count: 0,
+            shared_service_count: 0,
+            connection_count: 1,
+            gap_count: 23,
+            gaps_by_severity: { high: 23 },
+            gaps_by_category: { missing_nsg: 23 },
+            rule_finding_count: 5,
+            rule_findings_by_severity: { high: 5 },
+            rule_findings_by_category: { broad_source: 5 },
+            intended_design_declared: true,
+            resource_counts: { vnets: 2 },
+            projected_full_node_count: 2,
+          },
+          evidence,
+          scope: {},
+        },
+        vulnerabilities: {
+          data: {
+            cve_count: 132,
+            finding_count: 132,
+            affected_server_count: 127,
+            affected_business_service_count: 1,
+            reachable_server_count: 0,
+            internet_exposed_count: 0,
+            critical_count: 127,
+            top_priority: [],
+            freshness: observedAt,
+            metadata_source: "live",
+            defender_finding_count: 0,
+            defender_observed_server_count: 0,
+            defender_recommendation_count: 0,
+            affected_asset_count: 127,
+            defender_observed_asset_count: 0,
+            defender_posture_count: 0,
+          },
+          evidence,
+          scope: {},
+        },
+        connections: {
+          data: [{
+            connection_id: "conn-1",
+            name: "Connection",
+            subscription_id: "sub-a",
+            tenant_id: "tenant-a",
+            scope_key: "sub-a",
+            is_active: true,
+            business_service: "Platform",
+            environment: "prod",
+            criticality: "high",
+            sync_status: "succeeded",
+            health_status: "healthy",
+          }],
+          evidence,
+          scope: {},
+          pagination: {
+            offset: 0,
+            limit: 100,
+            total: 1,
+            next_offset: null,
+          },
+        },
+      });
+      const snapshot = normalizeCopilotSnapshotV2(context.snapshot);
+      const signals = snapshot.evidence.filter(
+        (row) => row.claim_type === "overview_signal",
+      );
+
+      expect(signals).toHaveLength(4);
+      expect(Object.fromEntries(signals.map((row) => [
+        row.data.domain,
+        row.data.visible_count,
+      ]))).toEqual({
+        data_health: 0,
+        exposure: 0,
+        incidents: 0,
+        network: 23,
+      });
+      expect(signals.every((row) => row.entity?.type === "observation")).toBe(true);
+      expect(context.starterQuestions[0]).toMatchObject({
+        label: "What needs attention right now?",
+        specialistId: "executive_summary",
+      });
+      expect(context.starterQuestions[0]).not.toHaveProperty("tool");
     });
 
     it("preserves Network selection, tab filters, pagination coverage, freshness, and read-only hints", () => {

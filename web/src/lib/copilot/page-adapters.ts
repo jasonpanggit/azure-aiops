@@ -1559,6 +1559,7 @@ export interface CoreCopilotRecord {
   status?: CopilotSnapshotStatus;
   selected?: boolean;
   priority?: number;
+  observation?: boolean;
 }
 
 /** Visible-versus-total coverage for one collection rendered by a page. */
@@ -2799,8 +2800,7 @@ const INVENTORY_STARTERS: Array<{
 const OVERVIEW_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What needs attention right now?",
-    specialistId: "incident",
-    tool: "incidents",
+    specialistId: "executive_summary",
     toolArguments: {},
   },
   {
@@ -3239,11 +3239,18 @@ function coreRecordSourceKey(record: CoreCopilotRecord): string {
   ]))}`;
 }
 
-function coreRecordEntity(record: CoreCopilotRecord): CopilotEntityRef {
+function coreRecordEntity(record: CoreCopilotRecord): CopilotEvidenceIdentity {
   if (isCanonicalAzureResourceId(record.resourceId)) {
     return {
       type: "azure",
       resource_id: canonicalResourceId(record.resourceId),
+    };
+  }
+  if (record.observation) {
+    return {
+      type: "observation",
+      source: boundedString("observation source", record.source, 1, 128),
+      source_key: coreRecordSourceKey(record),
     };
   }
   return {
@@ -3471,6 +3478,7 @@ function buildCoreCopilotContext(
   const selectedRecords = input.records.filter((record) => record.selected);
   const selectedEntities = selectedRecords
     .map(coreRecordEntity)
+    .filter((entity): entity is CopilotEntityRef => entity.type !== "observation")
     .filter((entity, index, entities) =>
       entities.findIndex((candidate) =>
         entityOrderingKey(candidate) === entityOrderingKey(entity)) === index)
@@ -3676,7 +3684,31 @@ function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterI
     })
     : loadedSituations;
   const connections = input.connections?.data ?? [];
+  const sourceStatuses = [
+    envelopeSourceStatus("connections", input.connections),
+    envelopeSourceStatus("network", input.network),
+    envelopeSourceStatus("situations", input.situations),
+    envelopeSourceStatus("vulnerabilities", input.vulnerabilities),
+  ];
+  const observedAt = (source: string) =>
+    sourceStatuses.find((status) => status.source === source)?.observedAt;
   const records: CoreCopilotRecord[] = [
+    ...(input.situations ? [{
+      identity: "critical-situations",
+      namespace: "overview",
+      kind: "overview_signal",
+      source: "situations",
+      observedAt: observedAt("situations"),
+      priority: 0,
+      observation: true,
+      data: {
+        domain: "incidents",
+        label: "Critical situations",
+        visible_count: situations.filter((situation) =>
+          situation.priority === "P1").length,
+        ranking_basis: "visible_count",
+      },
+    }] : []),
     ...situations.slice(0, 50).map((situation, index) => ({
       identity: situation.situation_id,
       namespace: "operations",
@@ -3696,25 +3728,50 @@ function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterI
       },
     })),
     ...(input.network ? [{
-      identity: "network-summary",
-      namespace: "operations",
-      kind: "network_summary",
-      source: "network/summary",
-      priority: 60,
-      data: { ...input.network.data },
+      identity: "network-control-gaps",
+      namespace: "overview",
+      kind: "overview_signal",
+      source: "network",
+      observedAt: observedAt("network"),
+      priority: 1,
+      observation: true,
+      data: {
+        domain: "network",
+        label: "Network control gaps",
+        visible_count: input.network.data.gap_count,
+        ranking_basis: "visible_count",
+      },
     }] : []),
     ...(input.vulnerabilities ? [{
-      identity: "vulnerability-summary",
-      namespace: "operations",
-      kind: "vulnerability_summary",
-      source: "vulnerability/summary",
-      priority: 60,
+      identity: "internet-reachable-cves",
+      namespace: "overview",
+      kind: "overview_signal",
+      source: "vulnerabilities",
+      observedAt: observedAt("vulnerabilities"),
+      priority: 2,
+      observation: true,
       data: {
-        cve_count: input.vulnerabilities.data.cve_count,
-        affected_server_count: input.vulnerabilities.data.affected_server_count,
-        reachable_server_count: input.vulnerabilities.data.reachable_server_count,
-        internet_exposed_count: input.vulnerabilities.data.internet_exposed_count,
-        critical_count: input.vulnerabilities.data.critical_count,
+        domain: "exposure",
+        label: "Internet-reachable CVEs",
+        visible_count: input.vulnerabilities.data.internet_exposed_count,
+        ranking_basis: "visible_count",
+      },
+    }] : []),
+    ...(input.connections ? [{
+      identity: "data-coverage-risk",
+      namespace: "overview",
+      kind: "overview_signal",
+      source: "connections",
+      observedAt: observedAt("connections"),
+      priority: 3,
+      observation: true,
+      data: {
+        domain: "data_health",
+        label: "Data coverage risk",
+        visible_count: connections.filter((connection) =>
+          connection.health_status === "stale"
+          || connection.sync_status === "failed").length,
+        ranking_basis: "visible_count",
       },
     }] : []),
     ...connections.slice(0, 25).map((connection) => ({
@@ -3765,12 +3822,7 @@ function overviewCoreInput(input: OverviewCopilotPageInput): CoreCopilotAdapterI
         available: Boolean(input.connections),
       },
     ],
-    sourceStatuses: [
-      envelopeSourceStatus("connections", input.connections),
-      envelopeSourceStatus("network", input.network),
-      envelopeSourceStatus("situations", input.situations),
-      envelopeSourceStatus("vulnerabilities", input.vulnerabilities),
-    ],
+    sourceStatuses,
   };
 }
 

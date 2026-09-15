@@ -5898,6 +5898,110 @@ def test_unhinted_typed_questions_use_governed_page_context(
         assert result["synthesis"]["reason"] == "explicit_intent"
 
 
+def test_overview_route_ranks_retained_visible_signals_when_providers_degrade(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="provider deferred",
+        ),
+    )
+    counts = {
+        "incidents": 0,
+        "exposure": 0,
+        "network": 23,
+        "data_health": 0,
+    }
+    sources = {
+        "incidents": "situations",
+        "exposure": "vulnerabilities",
+        "network": "network",
+        "data_health": "connections",
+    }
+    body = _canonical_body()
+    body["question"] = "What needs attention right now?"
+    body["hint"] = None
+    body["snapshot"] = {
+        "version": "2",
+        "page_kind": "overview",
+        "page_id": "operations-overview",
+        "filters": {"view": ["overview"]},
+        "query": "",
+        "generation_id": f"generation:{'a' * 64}",
+        "coverage": {
+            "visible_count": 4,
+            "total_count": 5,
+            "complete": False,
+        },
+        "freshness": [
+            {
+                "source": sources[domain],
+                "observed_at": "2026-09-15T18:30:57Z",
+                "status": "unavailable",
+            }
+            for domain in counts
+        ],
+        "selected_entities": [],
+        "evidence": [
+            {
+                "evidence_id": f"overview-{domain}",
+                "source": sources[domain],
+                "source_key": f"{domain}-signal",
+                "entity": {
+                    "type": "observation",
+                    "source": sources[domain],
+                    "source_key": f"{domain}-signal",
+                },
+                "claim_type": "overview_signal",
+                "status": "ok",
+                "quality": "high",
+                "data": {
+                    "domain": domain,
+                    "visible_count": count,
+                    "ranking_basis": "visible_count",
+                },
+            }
+            for domain, count in counts.items()
+        ],
+        "material_claims": [
+            {
+                "claim_id": f"claim-{domain}",
+                "evidence_refs": [f"overview-{domain}"],
+                "requires_complete_coverage": False,
+            }
+            for domain in counts
+        ],
+    }
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["synthesis"]["reason"] == "deterministic_overview_ranking"
+    assert result["synthesis"]["status"] == "deterministic"
+    claim = result["synthesis"]["claims"][0]
+    assert "Network control gaps rank first with 23 visible items." in (
+        claim["summary"]
+    )
+    assert "not severity-equivalent" in claim["summary"]
+    assert "provisional" in " ".join(claim["uncertainty"])
+    assert set(claim["evidence_refs"]) <= {
+        citation["citation_id"] for citation in result["citations"]
+    }
+    assert result["mutation_authorized"] is False
+
+
 def test_canonical_endpoint_returns_409_for_stale_revision_before_tool_io(
     tmp_path,
     monkeypatch,

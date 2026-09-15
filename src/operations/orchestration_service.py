@@ -1294,6 +1294,11 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        overview_claims = self._deterministic_overview_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         highest_risk_compliance = (
             snapshot is not None
             and is_highest_risk_compliance_question(
@@ -1301,17 +1306,37 @@ class OrchestrationService:
                 question,
             )
         )
-        deterministic_claims = (
-            [*page_claims, *network_claims][:8]
-            if highest_risk_compliance and page_claims
-            else (
+        if overview_claims:
+            deterministic_claims = overview_claims
+        elif highest_risk_compliance and page_claims:
+            deterministic_claims = [*page_claims, *network_claims][:8]
+        else:
+            deterministic_claims = (
                 cve_claims
                 or patch_claims
                 or network_claims
                 or remediation_claims
                 or page_claims
             )
-        )
+        if overview_claims:
+            used_evidence_ids = {
+                reference
+                for claim in overview_claims
+                for reference in claim["evidence_refs"]
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_overview_ranking",
+                domain_count=len(used_evidence_ids),
+                claims=overview_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if item.get("evidence_id") in used_evidence_ids
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         for claim in deterministic_claims:
             evidence_refs = [
                 str(reference)
@@ -1970,6 +1995,177 @@ class OrchestrationService:
             if len(claims) >= 8:
                 break
         return claims
+
+    @staticmethod
+    def _deterministic_overview_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Rank the Overview's four rendered signals without equating severity."""
+
+        lowered = " ".join(question.casefold().split())
+        if (
+            snapshot is None
+            or snapshot.page_kind != "overview"
+            or not (
+                "what needs attention" in lowered
+                or "most important" in lowered
+                or ("rank" in lowered and "issue" in lowered)
+            )
+        ):
+            return []
+
+        labels = {
+            "incidents": "critical situations",
+            "exposure": "internet-reachable CVEs",
+            "network": "network control gaps",
+            "data_health": "data coverage risks",
+        }
+        signal_sources = {
+            "incidents": "situations",
+            "exposure": "vulnerabilities",
+            "network": "network",
+            "data_health": "connections",
+        }
+        signals: dict[str, tuple[int, str]] = {}
+        ambiguous_domains: set[str] = set()
+        for item in retained_evidence:
+            if (
+                item.get("claim_type") != "overview_signal"
+                or not isinstance(item.get("data"), Mapping)
+            ):
+                continue
+            data = item["data"]
+            domain = str(data.get("domain") or "")
+            count = data.get("visible_count")
+            evidence_id = str(item.get("evidence_id") or "")
+            if (
+                domain not in labels
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+                or count > 1_000_000
+                or not evidence_id
+            ):
+                continue
+            if domain in signals:
+                ambiguous_domains.add(domain)
+                signals.pop(domain, None)
+                continue
+            if domain in ambiguous_domains:
+                continue
+            signals[domain] = (count, evidence_id)
+        if not signals:
+            return []
+
+        ordered_domains = tuple(labels)
+        available = sorted(
+            signals.items(),
+            key=lambda item: (
+                -item[1][0],
+                ordered_domains.index(item[0]),
+            ),
+        )
+        top_count = available[0][1][0]
+        leaders = [
+            domain
+            for domain, (count, _) in available
+            if count == top_count
+        ]
+        rendered_counts = "; ".join(
+            (
+                f"{signals[domain][0]} {labels[domain]}"
+                if domain in signals
+                else f"{labels[domain]} unavailable"
+            )
+            for domain in ordered_domains
+        )
+        if top_count == 0:
+            ranking = "No non-zero visible issue ranks first."
+        elif len(leaders) > 1:
+            ranking = (
+                "No single issue ranks first: "
+                + ", ".join(labels[domain] for domain in leaders)
+                + f" are tied at {top_count}."
+            )
+        else:
+            ranking = (
+                f"{labels[leaders[0]].capitalize()} rank first with "
+                f"{top_count} visible items."
+            )
+        summary = (
+            f"{ranking} Visible counts: {rendered_counts}. "
+            "The ranking basis is visible item count only; these cross-domain "
+            "signals are not severity-equivalent."
+        )
+        uncertainty = [
+            (
+                "Cross-domain visible counts are not severity-equivalent; "
+                "business impact may justify a different operator priority."
+            )
+        ]
+        missing = [
+            labels[domain]
+            for domain in ordered_domains
+            if domain not in signals
+        ]
+        if missing:
+            uncertainty.append(
+                "Overview data is incomplete because these signals are "
+                f"unavailable: {', '.join(missing)}."
+            )
+        if ambiguous_domains:
+            uncertainty.append(
+                "Conflicting duplicate Overview signals were excluded from "
+                "the ranking."
+            )
+        if not snapshot.coverage.complete:
+            uncertainty.append(
+                "Overview snapshot coverage is incomplete; omitted items may "
+                "change the ranking."
+            )
+        freshness = {
+            item.source: item.status for item in snapshot.freshness
+        }
+        freshness_degraded = (
+            any(
+                freshness.get(signal_sources[domain]) != "fresh"
+                for domain in signals
+            )
+        )
+        if freshness_degraded:
+            uncertainty.append(
+                "One or more Overview sources are stale, partial, or "
+                "unavailable; the ranking is provisional."
+            )
+        evidence_refs = [
+            signals[domain][1]
+            for domain in ordered_domains
+            if domain in signals
+        ]
+        finding_seed = ":".join(sorted(evidence_refs))
+        return [{
+            "finding_id": (
+                "overview:"
+                + hashlib.sha256(finding_seed.encode()).hexdigest()[:24]
+            ),
+            "summary": summary,
+            "evidence_refs": evidence_refs,
+            "confidence": "low" if len(uncertainty) > 1 else "medium",
+            "freshness": (
+                "partial"
+                if freshness_degraded
+                else "fresh"
+            ),
+            "uncertainty": uncertainty,
+            "actionable": False,
+            "next_check": (
+                "Refresh the Overview sources and reassess business impact "
+                "before choosing an operator action."
+            ),
+        }]
 
     @staticmethod
     def _deterministic_remediation_claims(
