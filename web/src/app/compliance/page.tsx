@@ -511,53 +511,52 @@ export default function CompliancePage() {
       {loading ? <StatePanel title="Evaluating architecture posture" message="Comparing discovered subscriptions, VNets, routes, peerings, rules, private endpoints, and shared services to policy." tone="loading" /> : null}
 
 
-      <div className="compliance-layout">
-        <section className="card">
-          <div className="card-header">
-            <div><h2>Violations</h2><p>Business-context posture findings with evidence, remediation, and exception state.</p></div>
-          </div>
-          <div className="compliance-list">
-            {violations.map((violation) => (
-              <button type="button" key={violation.id} className={`compliance-row ${selected?.id === violation.id ? "compliance-row-selected" : ""}`} onClick={() => setSelectedId(violation.id)}>
-                <StatusBadge label={violation.severity} tone={statusTone(violation.severity)} compact />
-                <div>
-                  <strong>{violation.title}</strong>
-                  <span>{titleize(violation.type)} - {violation.businessService || violation.resource || "business context pending"}</span>
-                </div>
-                {acceptedIds.has(violation.id) ? <StatusBadge label="Accepted risk" tone="warning" compact /> : <StatusBadge label="Open" tone="critical" compact />}
-              </button>
-            ))}
-            {violations.length === 0 && !loading ? <StatePanel title="No policy violations" message="Current discovered architecture satisfies the active policy pack." /> : null}
-          </div>
-        </section>
-
-        <aside className="card">
-          <div className="card-header">
-            <div><h2>Violation context</h2><p>Owner, affected traffic, CVE exposure, evidence, and remediation candidate.</p></div>
-          </div>
-          <div className="card-body compliance-detail">
-            {selected ? (
-              <>
-                <h3>{selected.title}</h3>
-                <p>{selected.detail}</p>
-                <dl className="compliance-fact-list">
-                  <dt>Application</dt><dd>{selected.application || "Not mapped"}</dd>
-                  <dt>Business service</dt><dd>{selected.businessService || "Not mapped"}</dd>
-                  <dt>Owner</dt><dd>{selected.owner}</dd>
-                  <dt>Affected traffic</dt><dd>{selected.affectedTraffic}</dd>
-                  <dt>Vulnerability exposure</dt><dd>{selected.vulnerabilityExposure}</dd>
-                  <dt>Remediation candidate</dt><dd>{selected.remediation}</dd>
-                </dl>
-                <Link className="button button-primary" href={remediationHref(selected)}>Open remediation</Link>
-                <details>
-                  <summary>Evidence</summary>
-                  <StructuredData value={selected.evidence} />
-                </details>
-              </>
-            ) : <StatePanel title="No violation selected" message="Select a violation to review evidence and remediation." />}
-          </div>
-        </aside>
-      </div>
+      <section className="card compliance-violations-panel">
+        <div className="card-header">
+          <div><h2>Violations</h2><p>Business-context posture findings with evidence, remediation, and exception state. Select a violation to expand its details inline.</p></div>
+        </div>
+        <div className="compliance-list">
+          {violations.map((violation) => {
+            const isSelected = selected?.id === violation.id;
+            return (
+              <div key={violation.id} className="compliance-row-group">
+                <button
+                  type="button"
+                  className={`compliance-row ${isSelected ? "compliance-row-selected" : ""}`}
+                  aria-expanded={isSelected}
+                  onClick={() => setSelectedId(violation.id)}
+                >
+                  <StatusBadge label={violation.severity} tone={statusTone(violation.severity)} compact />
+                  <div>
+                    <strong>{violation.title}</strong>
+                    <span>{titleize(violation.type)} - {violation.businessService || violation.resource || "business context pending"}</span>
+                  </div>
+                  {acceptedIds.has(violation.id) ? <StatusBadge label="Accepted risk" tone="warning" compact /> : <StatusBadge label="Open" tone="critical" compact />}
+                </button>
+                {isSelected ? (
+                  <div className="card-body compliance-detail compliance-detail-inline">
+                    <p>{violation.detail}</p>
+                    <dl className="compliance-fact-list">
+                      <dt>Application</dt><dd>{violation.application || "Not mapped"}</dd>
+                      <dt>Business service</dt><dd>{violation.businessService || "Not mapped"}</dd>
+                      <dt>Owner</dt><dd>{violation.owner}</dd>
+                      <dt>Affected traffic</dt><dd>{violation.affectedTraffic}</dd>
+                      <dt>Vulnerability exposure</dt><dd>{violation.vulnerabilityExposure}</dd>
+                      <dt>Remediation candidate</dt><dd>{violation.remediation}</dd>
+                    </dl>
+                    <Link className="button button-primary" href={remediationHref(violation)}>Open remediation</Link>
+                    <details>
+                      <summary>Evidence</summary>
+                      <StructuredData value={violation.evidence} />
+                    </details>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {violations.length === 0 && !loading ? <StatePanel title="No policy violations" message="Current discovered architecture satisfies the active policy pack." /> : null}
+        </div>
+      </section>
 
       <div className="compliance-layout">
         <section className="card">
