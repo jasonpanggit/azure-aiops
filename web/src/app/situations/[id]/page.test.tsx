@@ -4,11 +4,14 @@ import { ScopeProvider } from "@/lib/scope-context";
 
 const { get, audit } = vi.hoisted(() => ({ get: vi.fn(), audit: vi.fn() }));
 
-vi.mock("@/lib/services", () => ({
-  situationsApi: { get, audit },
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  copilotEvidenceRows: () => [],
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    situationsApi: { get, audit },
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    copilotEvidenceRows: () => [],
+  };
+});
 
 import SituationDetailPage from "./page";
 

@@ -17,7 +17,7 @@ const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDevia
 vi.mock("@/lib/services", async () => {
   const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
-    buildCopilotSnapshot: (input: Record<string, unknown>) => input,
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
     copilotEvidenceRows: () => [],
     isCanonicalAzureResourceId: actual.isCanonicalAzureResourceId,
     networkApi: { topology, gaps, ruleFindings },
@@ -31,9 +31,13 @@ vi.mock("@/lib/services", async () => {
   };
 });
 
-vi.mock("@/lib/copilot/page-adapters", () => ({
-  buildComplianceCopilotContext,
-}));
+vi.mock("@/lib/copilot/page-adapters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/page-adapters")>();
+  return {
+    ...actual,
+    buildComplianceCopilotContext,
+  };
+});
 
 import CompliancePage from "./page";
 

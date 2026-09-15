@@ -10,11 +10,14 @@ const { compare, graph, scenario, traverse, twinExport } = vi.hoisted(() => ({
   twinExport: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({
-  twinApi: { compare, graph, scenario, traverse, export: twinExport },
-  buildCopilotSnapshot: (input: Record<string, unknown>) => input,
-  copilotEvidenceRows: () => [],
-}));
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    twinApi: { compare, graph, scenario, traverse, export: twinExport },
+    buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    copilotEvidenceRows: () => [],
+  };
+});
 
 import OperationalTwinPage from "./page";
 
