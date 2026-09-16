@@ -723,6 +723,7 @@ function RemediationContent() {
   const [confirmRun, setConfirmRun] = useState(false);
   const [selectedPatchIds, setSelectedPatchIds] = useState<string[] | null>(null);
   const [patchSelectionRefusal, setPatchSelectionRefusal] = useState("");
+  const [patchRevalidating, setPatchRevalidating] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [handoffSubmitting, setHandoffSubmitting] = useState(false);
   const [handoffResult, setHandoffResult] = useState("");
@@ -730,6 +731,8 @@ function RemediationContent() {
   const [copilotOpen, setCopilotOpen] = useState(false);
   const riskInvokerRef = useRef<HTMLButtonElement>(null);
   const requestId = useRef(0);
+  const patchFetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workflowFetchKeyRef = useRef<string | null>(null);
 
   // Phase 03.5 CR-05 fix: a decision attests exactly one required role
   // (approval_role_id), so the operator must pick which unmet requirement
@@ -787,27 +790,65 @@ function RemediationContent() {
   useEffect(() => {
     if (!selectedPlanId) {
       setWorkflow(null);
+      setWorkflowLoading(false);
       setWorkflowError("");
+      setPatchRevalidating(false);
+      workflowFetchKeyRef.current = null;
       return;
     }
-    const currentRequest = ++requestId.current;
-    setWorkflowLoading(true);
-    setWorkflowError("");
-    void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? [])
-      .then((response) => {
-        if (requestId.current !== currentRequest) return;
-        setWorkflow(response.data);
-      })
-      .catch((error) => {
-        if (requestId.current !== currentRequest) return;
-        setWorkflow(null);
-        setWorkflowError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (requestId.current === currentRequest) setWorkflowLoading(false);
-      });
+    // A checkbox toggle in step 2 (review impact) only changes
+    // selectedPatchIds -- scope/plan/workflowRefresh stay the same. That
+    // case is a background revalidation of the selection against live
+    // evidence, not a fresh navigation, so it must not blank the whole
+    // panel behind a full "Loading workflow" state (which reads as a page
+    // reload) and it's debounced so rapid clicks don't fire one request
+    // per keystroke.
+    const fetchKey = `${scopeKey}::${selectedPlanId}::${workflowRefresh}`;
+    const isPatchSelectionOnlyChange = workflowFetchKeyRef.current === fetchKey;
+    workflowFetchKeyRef.current = fetchKey;
+
+    const runFetch = () => {
+      const currentRequest = ++requestId.current;
+      if (isPatchSelectionOnlyChange) {
+        setPatchRevalidating(true);
+      } else {
+        setWorkflowLoading(true);
+        setPatchRevalidating(false);
+      }
+      setWorkflowError("");
+      void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? [])
+        .then((response) => {
+          if (requestId.current !== currentRequest) return;
+          setWorkflow(response.data);
+        })
+        .catch((error) => {
+          if (requestId.current !== currentRequest) return;
+          setWorkflow(null);
+          setWorkflowError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (requestId.current !== currentRequest) return;
+          setWorkflowLoading(false);
+          setPatchRevalidating(false);
+        });
+    };
+
+    if (patchFetchDebounceRef.current) {
+      clearTimeout(patchFetchDebounceRef.current);
+      patchFetchDebounceRef.current = null;
+    }
+    if (isPatchSelectionOnlyChange) {
+      patchFetchDebounceRef.current = setTimeout(runFetch, 400);
+    } else {
+      runFetch();
+    }
+
     return () => {
-      if (requestId.current === currentRequest) requestId.current += 1;
+      if (patchFetchDebounceRef.current) {
+        clearTimeout(patchFetchDebounceRef.current);
+        patchFetchDebounceRef.current = null;
+      }
+      requestId.current += 1;
     };
     // scopeKey intentionally invalidates the request when any scope dimension changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1538,6 +1579,11 @@ function RemediationContent() {
                                 {selectedPatchIds === null
                                   ? `All ${workflow.preview.execution_snapshot.available_patches.length} eligible patches are selected.`
                                   : `${selectedPatchIds.length} of ${workflow.preview.execution_snapshot.available_patches.length} patches explicitly selected.`}
+                                {patchRevalidating ? (
+                                  <span className="remediation-patch-revalidating" role="status">
+                                    {" "}Revalidating impact against latest evidence…
+                                  </span>
+                                ) : null}
                               </p>
                               <ul className="remediation-patch-list">
                                 {workflow.preview.execution_snapshot.available_patches.map((patch) => {

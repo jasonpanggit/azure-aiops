@@ -531,6 +531,46 @@ describe("Governed remediation workflow", () => {
     ));
   });
 
+  it("ignores a superseded patch revalidation while the next selection is debouncing", async () => {
+    let resolveStale: ((value: ReturnType<typeof envelope>) => void) | undefined;
+    workflow
+      .mockResolvedValueOnce(envelope(workflowFixture({
+        availablePatches: [
+          { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+          { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+        ],
+      })))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveStale = resolve;
+      }))
+      .mockResolvedValueOnce(envelope(workflowFixture({
+        availablePatches: [
+          { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+          { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+        ],
+      })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600002/);
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    await waitFor(() => expect(workflow).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Loading workflow")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    await act(async () => {
+      resolveStale?.(envelope(workflowFixture({
+        availablePatches: [
+          { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        ],
+      })));
+      await Promise.resolve();
+    });
+
+    expect(screen.getAllByText(/KB600002/).length).toBeGreaterThan(0);
+    await waitFor(() => expect(workflow).toHaveBeenCalledTimes(3));
+  });
+
   it("refuses to deselect the last remaining checked patch (CR-07)", async () => {
     workflow.mockResolvedValue(envelope(workflowFixture({
       availablePatches: [
