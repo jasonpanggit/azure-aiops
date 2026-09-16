@@ -948,7 +948,7 @@ def test_trigger_payload_schema_mismatch_is_detected() -> None:
 def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
     module = _load_module()
     normalized = module._normalize_live_trigger(
-        [_real_live_trigger_row(module)],
+        [_real_live_trigger_row(module, description="")],
         expected_trigger_id=REAL_TRIGGER_ID,
         expected_trigger_origin=TRIGGER_ORIGIN,
     )
@@ -963,6 +963,11 @@ def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
 
     assert result["status"] == "trigger-ready"
     assert result["triggerId"] == REAL_TRIGGER_ID
+    assert result["description"] == {
+        "serverDescriptionAvailable": False,
+        "serverDescriptionStatus": "not-returned-or-empty-by-live-api",
+        "validatedAgainst": "canonical-definition-hash",
+    }
     assert result["payloadSchema"] == {
         "status": "runtime-outbound-envelope-ready",
         "source": "src.operations.patching.sre_agent_adapter",
@@ -979,6 +984,7 @@ def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
         ({"agentMode": "review"}, "agentMode must be autonomous"),
         ({"triggerEnabled": False}, "trigger must be enabled"),
         ({"threadId": "shared-thread"}, "threadId must be empty"),
+        ({"description": "different description"}, "trigger drift detected"),
         ({"id": "wrong-trigger-id"}, "exact trigger once"),
         (
             {
