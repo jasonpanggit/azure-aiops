@@ -65,7 +65,13 @@ def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
     incident = " ".join(str(composite["incident_status"]).casefold().split())
-    if incident in {"failed", "failure", "error"}:
+    if incident in {
+        "failed",
+        "failure",
+        "error",
+        "failed_without_action",
+        "blocked_no_action",
+    }:
         return (
             "failed",
             "Failed",
@@ -327,6 +333,18 @@ class SreAgentExecutionVerifier:
                 "failure_details": (
                     "Azure SRE Agent completed without submitting the approved "
                     "patch operation."
+                ),
+                "verification_evidence": evidence,
+            }
+        if normalized == "submission_ambiguous":
+            return {
+                "verifiable": True,
+                "outcome": "failed",
+                "verified_state": raw_status,
+                "failure_class": "submission_ambiguous",
+                "failure_details": (
+                    "Azure SRE Agent could not prove whether the exact approved "
+                    "patch operation crossed the provider boundary."
                 ),
                 "verification_evidence": evidence,
             }

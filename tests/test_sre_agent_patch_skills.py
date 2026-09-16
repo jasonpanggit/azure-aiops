@@ -48,9 +48,18 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert "--first 257" in text
     assert "patchassessmentresources" in text
     assert "maximum_age_seconds = 86400" in text
-    assert "child_activity_id == assessment_activity_id" in text
+    assert "child_activity_id != assessment_activity_id" in text
     assert "child_last_modified_at != assessment_last_modified_at" in text
-    assert "set_has_element(approved_patch_ids, approved_patch_id)" in text
+    assert "approved_patch_id in~ ({{approved_patch_ids_kql}})" in text
+    assert "{{target_resource_type}}" in text
+    assert "\nlet " not in text
+    assert "materialize(" not in text
+    assert "\nprint " not in text
+    assert "$left" not in text
+    assert "$right" not in text
+    assert "`skip_token` to be null or empty" in text
+    assert "zero count" in text
+    assert "`blocked_patch_not_applicable`" in text
     assert "properties.extended.instanceView.powerState.code" in text
     assert "blocked_target_not_running" in text
     assert "reboot_pending = tobool(properties.rebootPending)" in text

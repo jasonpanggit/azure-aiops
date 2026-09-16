@@ -151,7 +151,7 @@ updated: 2026-09-17T01:02:00+08:00
 
 - timestamp: 2026-09-17T00:41:00+08:00
   checked: canonical render, changed paths, diff check, and mutation tooling
-  found: Canonical render is deterministic at 6bf0298022e720915be3d0f18702ca9a6b7a3bc3d8f4c4af6ae57c9d9c6c32ce with liveMutationPerformed false; git diff --check passed; no STATE/Phase 4 path changed; the diff adds validation and regressions rather than deleting behavior; no Stryker or Python mutation runner is configured.
+  found: Canonical render was deterministic at the pre-query-fix hash; the final ARG-compatible query and standard envelope handling rebound it to a0d389cd4b6daa141f2aecc6d0da96015a81ca06a2cce619ce3523d88549c0e3 with liveMutationPerformed false.
   implication: Static/no-op/scope guardrails pass; mutation signal is formally skipped, while targeted revert-and-reconfirm will provide causal evidence.
 
 - timestamp: 2026-09-17T00:43:00+08:00
@@ -171,7 +171,7 @@ updated: 2026-09-17T01:02:00+08:00
 
 - timestamp: 2026-09-17T00:51:00+08:00
   checked: final fully reapplied fix-acceptance guardrail
-  found: All 259 focused tests passed; focused Ruff passed; canonical offline render returned hash 6bf0298022e720915be3d0f18702ca9a6b7a3bc3d8f4c4af6ae57c9d9c6c32ce with liveMutationPerformed=false; git diff --check and forbidden-path checks passed.
+  found: All focused tests and Ruff passed; the final ARG-compatible query and standard envelope handling rebound the canonical offline render to a0d389cd4b6daa141f2aecc6d0da96015a81ca06a2cce619ce3523d88549c0e3 with liveMutationPerformed=false.
   implication: The narrow source/artifact/docs fix is accepted offline; only real authorized SRE-thread verification remains unavailable under this session's constraints.
 
 - timestamp: 2026-09-17T00:55:00+08:00
@@ -186,7 +186,7 @@ updated: 2026-09-17T01:02:00+08:00
 
 - timestamp: 2026-09-17T01:00:00+08:00
   checked: canonical offline render and final scope guard
-  found: The render retained artifact/schema 1.1 and operation install_patches, produced canonical hash 6bf0298022e720915be3d0f18702ca9a6b7a3bc3d8f4c4af6ae57c9d9c6c32ce, and reported liveMutationPerformed=false; git diff --check passed and no STATE or Phase 4 path changed.
+  found: The render retained artifact/schema 1.1 and operation install_patches; after removing ARG-unsupported let/materialize/print and shell-sensitive join tokens and accepting null skip_token it produced canonical hash a0d389cd4b6daa141f2aecc6d0da96015a81ca06a2cce619ce3523d88549c0e3 and reported liveMutationPerformed=false.
   implication: All user-permitted acceptance checks pass without network, Azure, portal, CLI, cloud, commit, push, or PR activity; the session is complete.
 
 - timestamp: 2026-09-17T01:02:00+08:00

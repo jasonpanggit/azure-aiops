@@ -271,6 +271,36 @@ def test_typed_failed_without_action_never_becomes_success() -> None:
     assert result["verified_state"] != "Complete"
 
 
+def test_composite_failed_without_action_overrides_conflicting_submission_proof() -> None:
+    verifier, _credential = _verifier(
+        {
+            "status": {
+                "actionsStatus": {
+                    "hasCriticalActions": False,
+                    "hasWarningActions": False,
+                },
+                "incidentStatus": {"status": "failed_without_action"},
+            },
+            "lastMessage": {"isComplete": True},
+            "provider_operation": _provider_operation(),
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["verified_state"] == "Failed"
+
+
+def test_scalar_submission_ambiguous_preserves_recovery_block() -> None:
+    verifier, _credential = _verifier({"status": "submission_ambiguous"})
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+
+
 @pytest.mark.parametrize(
     ("payload", "outcome", "state"),
     [

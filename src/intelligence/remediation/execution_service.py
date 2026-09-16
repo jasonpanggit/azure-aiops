@@ -36,7 +36,6 @@ from .execution_store import (
     ExecutionClaimConflict,
     _is_patch_evidence_candidate,
     execution_scope_attributes,
-    is_manual_resolution_required,
     is_submission_ambiguous,
     submitted_attempt_count,
 )
@@ -1941,19 +1940,16 @@ def _supersede_eligibility(record: dict[str, Any]) -> str:
     .supersede` (the write-side guard) and :meth:`execution_view` (the
     read-side projection) so the two can never disagree (CONTEXT.md's
     Supersession decision): refused for anything still active, anything
-    already superseded, or a submission-ambiguous latest attempt that may
-    still be running against the provider. An SRE ambiguity that exhausted
-    its reconciliation deadline is the narrow exception: retry remains
-    prohibited, but explicit supersession becomes the required manual
-    recovery path. Returns ``""`` when eligible, else the specific
-    ineligibility reason.
+    already superseded, or any submission-ambiguous latest attempt that may
+    still be running against the provider. Returns ``""`` when eligible,
+    else the specific ineligibility reason.
     """
     status = str(record.get("status") or "")
     if status not in {"failed", "cancelled"}:
         return "execution_active"
     if record.get("superseded_by"):
         return "already_superseded"
-    if is_submission_ambiguous(record) and not is_manual_resolution_required(record):
+    if is_submission_ambiguous(record):
         return "submission_ambiguous"
     return ""
 

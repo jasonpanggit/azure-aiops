@@ -601,20 +601,21 @@ def test_sre_ambiguity_remains_non_retryable_after_deadline_without_proof():
         "unreconciled_manual_resolution"
     )
     assert result["retryable"] is False
-    assert result["supersede_ineligibility_reason"] == ""
+    assert result["supersede_ineligibility_reason"] == "submission_ambiguous"
     assert store.list_due_for_verification(now=NOW + timedelta(seconds=180)) == []
 
     with pytest.raises(RemediationExecutionError) as excinfo:
         service.retry(execution_id)
     assert getattr(excinfo.value, "reason", "") == "submission_ambiguous"
 
-    superseding = service.supersede(
-        execution_id,
-        requested_by="operator@example.com",
-        reason="Operator confirmed no recoverable thread handle",
-    )
-    assert superseding["execution_id"] != execution_id
-    assert store.get(execution_id)["superseded_by"] == superseding["execution_id"]
+    with pytest.raises(RemediationExecutionError) as supersede_error:
+        service.supersede(
+            execution_id,
+            requested_by="operator@example.com",
+            reason="Operator confirmed no recoverable thread handle",
+        )
+    assert getattr(supersede_error.value, "reason", "") == "submission_ambiguous"
+    assert store.get(execution_id)["superseded_by"] == ""
 
 
 def test_reconcile_ambiguous_submission_skips_refresher_for_defender_configuration():
