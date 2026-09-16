@@ -5025,6 +5025,15 @@ function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreC
   ];
   const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
     ? [
+      ...input.sourceStatuses
+        .filter((status) => status.source === "fabric/manifest")
+        .map((status) => ({
+          source: "coverage",
+          observedAt: status.observedAt ?? input.observedAt,
+          status: status.availability === "unavailable"
+            ? "unavailable" as const
+            : freshnessStatus(status.freshness ?? "unknown"),
+        })),
       ...input.sourceStatuses.map((status) => ({
         source: status.source,
         observedAt: status.observedAt ?? input.observedAt,

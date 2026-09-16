@@ -3490,6 +3490,11 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
         status: "stale",
       },
       {
+        source: "coverage",
+        observed_at: "2026-09-01T16:15:42Z",
+        status: "stale",
+      },
+      {
         source: "fabric.medallion_health/metadata_source_status",
         observed_at: "2026-09-07T09:30:00Z",
         status: "partial",
