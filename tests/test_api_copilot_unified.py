@@ -9986,7 +9986,7 @@ def test_canonical_multi_agent_route_shares_orchestration_semantics_with_copilot
     assert agents["citations"] == copilot["citations"]
     assert agents["thread_id"] == copilot["thread_id"]
     # Neither surface asserts any execution authority.
-    assert "mutation_authorized" not in agents
+    assert agents["mutation_authorized"] is False
     assert copilot.get("mutation_authorized") in (None, False)
 
 
@@ -10013,6 +10013,44 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
         # reported unavailable rather than implied to exist.
         assert agent["foundry"].get("configured") is False
         assert status == "unavailable"
+        assert agent["foundry"]["activation_source"] == "unconfigured"
+        assert agent["foundry"]["degraded_reason"]
+
+
+def test_multi_agent_compatibility_runtime_projects_canonical_degraded_activation(
+    tmp_path,
+    monkeypatch,
+):
+    """Unavailable Foundry specialists remain deterministic plans, not agents."""
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "legacy_unversioned")
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *_args, **_kwargs: _canonical_multi_agent_result(),
+    )
+
+    response = TestClient(create_app(_context(tmp_path, None))).post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Summarize network topology", "timeout_seconds": 3},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    ledger = response.json()["data"]
+    assert ledger["orchestration"]["runtime"] == "canonical"
+    assert ledger["activation"] == {
+        "mode": "deterministic_degraded",
+        "source": "legacy_unversioned",
+        "foundry_ready": 0,
+        "selected_specialists": 1,
+        "version_pinning_required": True,
+    }
+    assert ledger["selected_agents"][0]["foundry"]["configured"] is False
+    assert ledger["agent_runs"][0]["activation"]["configured"] is False
+    assert ledger["citations"]
+    assert ledger["findings"][0]["citation_ids"]
+    assert ledger["mutation_authorized"] is False
 
 
 def test_canonical_multi_agent_ledger_isolated_from_foreign_principal(
