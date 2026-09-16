@@ -228,6 +228,7 @@ class RemediationExecutionService:
                 plan_id,
                 requested_by=requested_by,
                 approved_by=str(decision.get("approver") or ""),
+                approval_decision_id=str(decision.get("decision_id") or ""),
                 execution_snapshot=snapshot,
                 rollback_guidance=rollback_guidance,
                 scope_attributes={
@@ -900,6 +901,7 @@ class RemediationExecutionService:
                 plan_id=plan_id,
                 requested_by=requested_by,
                 approved_by=str(decision.get("approver") or ""),
+                approval_decision_id=str(decision.get("decision_id") or ""),
                 execution_snapshot=approved_snapshot,
                 rollback_guidance=rollback_guidance,
                 scope_attributes={

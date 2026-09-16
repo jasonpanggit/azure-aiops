@@ -70,6 +70,15 @@ Confirm a governed action exists and at least one trigger has known matching evi
 
 Inspect stage gates and approval policy conditions. Correct governed policy data rather than inserting roles in code.
 
+### A completed run still has patches remaining
+
+When verification reports `reconciled_incomplete`, or the prior execution
+terminates as `failed`/`cancelled` for a non-ambiguous reason, use **Start a new
+run** to return to the approval step. Record a fresh approval for the
+still-applicable snapshot before running again. Repeated clicks under one
+approval remain idempotent, and queued, active, retrying, or
+submission-ambiguous related executions block a new submission.
+
 ### Risk reduction appears overstated
 
 Review catalog effectiveness provenance. Simulation is declarative and must not infer unsupported outcomes.

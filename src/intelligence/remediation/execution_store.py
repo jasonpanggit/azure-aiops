@@ -73,7 +73,7 @@ class ExecutionLockContended(RuntimeError):
 class RemediationExecutionStore:
     """Revisioned execution records with cross-process claim serialization."""
 
-    _SCHEMA_VERSION = "2.3.0"
+    _SCHEMA_VERSION = "2.4.0"
 
     def __init__(
         self,
@@ -104,13 +104,19 @@ class RemediationExecutionStore:
         requested_by: str,
         approved_by: str,
         execution_snapshot: dict[str, Any],
+        approval_decision_id: str = "",
         rollback_guidance: list[str] | None = None,
         scope_attributes: dict[str, str] | None = None,
         now: datetime | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        """Atomically claim the permanent identity for one approved snapshot."""
+        """Atomically claim one approval-scoped execution identity."""
         timestamp = _timestamp(now)
-        identity = _execution_identity(plan_id, execution_snapshot)
+        decision_id = str(approval_decision_id or "").strip()
+        identity = _execution_identity(
+            plan_id,
+            execution_snapshot,
+            approval_decision_id=decision_id,
+        )
         with self._claim_lock():
             state = self._read_state()
             existing = next(
@@ -119,7 +125,8 @@ class RemediationExecutionStore:
                     for row in state["executions"]
                     if str(row.get("execution_identity") or "") == identity
                     or (
-                        not row.get("execution_identity")
+                        not decision_id
+                        and not row.get("execution_identity")
                         and str(row.get("plan_id") or "") == str(plan_id)
                     )
                 ),
@@ -127,6 +134,17 @@ class RemediationExecutionStore:
             )
             if existing is not None:
                 return copy.deepcopy(existing), False
+            related = next(
+                (
+                    row
+                    for row in state["executions"]
+                    if _same_approved_snapshot(row, plan_id, execution_snapshot)
+                    and _blocks_new_approval_execution(row)
+                ),
+                None,
+            )
+            if related is not None:
+                return copy.deepcopy(related), False
             if len(state["executions"]) >= self.max_executions:
                 raise ValueError("Remediation execution store is full")
             snapshot = copy.deepcopy(execution_snapshot)
@@ -139,6 +157,7 @@ class RemediationExecutionStore:
             record = {
                 "execution_id": "RME-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper(),
                 "execution_identity": identity,
+                "approval_decision_id": decision_id,
                 "plan_id": str(plan_id),
                 "status": EXECUTION_STATUS_QUEUED,
                 "revision": 0,
@@ -202,6 +221,7 @@ class RemediationExecutionStore:
         requested_by: str,
         approved_by: str,
         execution_snapshot: dict[str, Any],
+        approval_decision_id: str = "",
         rollback_guidance: list[str] | None = None,
         scope_attributes: dict[str, str] | None = None,
         reason: str,
@@ -237,10 +257,14 @@ class RemediationExecutionStore:
                 raise ExecutionClaimConflict("execution_store_full", old_record)
 
             snapshot = copy.deepcopy(execution_snapshot)
-            action_version = str(snapshot.get("action_version") or "")
-            snapshot_hash = str(snapshot.get("snapshot_hash") or "")
+            decision_id = str(approval_decision_id or "").strip()
             identity = (
-                f"{plan_id}|{snapshot_hash}|{action_version}|supersedes:{old_execution_id}"
+                _execution_identity(
+                    plan_id,
+                    snapshot,
+                    approval_decision_id=decision_id,
+                )
+                + f"|supersedes:{old_execution_id}"
             )
             if any(
                 str(row.get("execution_identity") or "") == identity
@@ -261,6 +285,7 @@ class RemediationExecutionStore:
             new_record = {
                 "execution_id": "RME-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper(),
                 "execution_identity": identity,
+                "approval_decision_id": decision_id,
                 "plan_id": str(plan_id),
                 "status": EXECUTION_STATUS_QUEUED,
                 "revision": 0,
@@ -668,14 +693,44 @@ class RemediationExecutionStore:
                 os.unlink(temporary)
 
 
-def _execution_identity(plan_id: str, snapshot: dict[str, Any]) -> str:
-    return "|".join(
+def _execution_identity(
+    plan_id: str,
+    snapshot: dict[str, Any],
+    *,
+    approval_decision_id: str = "",
+) -> str:
+    identity = "|".join(
         (
             str(plan_id),
             str(snapshot.get("snapshot_hash") or ""),
             str(snapshot.get("action_version") or ""),
         )
     )
+    decision_id = str(approval_decision_id or "")
+    return f"{identity}|{decision_id}" if decision_id else identity
+
+
+def _same_approved_snapshot(
+    record: dict[str, Any],
+    plan_id: str,
+    snapshot: dict[str, Any],
+) -> bool:
+    current = record.get("execution_snapshot")
+    return (
+        isinstance(current, dict)
+        and str(record.get("plan_id") or "") == str(plan_id)
+        and str(current.get("snapshot_hash") or "")
+        == str(snapshot.get("snapshot_hash") or "")
+        and str(current.get("action_version") or "")
+        == str(snapshot.get("action_version") or "")
+    )
+
+
+def _blocks_new_approval_execution(record: dict[str, Any]) -> bool:
+    """Keep unsafe same-snapshot work from being replaced by a fresh approval."""
+    if str(record.get("status") or "") in {"queued", "running", "retrying"}:
+        return True
+    return is_submission_ambiguous(record)
 
 
 def _subscription_id_from_target_id(target_id: str) -> str:
@@ -928,6 +983,7 @@ def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record = copy.deepcopy(item)
     record.setdefault("revision", 0)
     record.setdefault("execution_identity", "")
+    record.setdefault("approval_decision_id", "")
     record.setdefault("execution_snapshot", {})
     record.setdefault("attempts", [])
     record.setdefault("history", [])

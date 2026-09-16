@@ -344,6 +344,52 @@ def test_execute_approved_plan_remains_running_and_is_pollable(tmp_path) -> None
     assert execution["plan_id"] == plan["plan_id"]
 
 
+def test_execute_same_approval_is_idempotent_but_fresh_terminal_approval_resubmits(
+    tmp_path,
+) -> None:
+    adapter = RecordingPatchExecutionAdapter()
+    client, planner, execution_store = _client(tmp_path, adapter=adapter)
+    plan = _patch_recovery_plan(client)
+    _approve(planner, plan)
+
+    first_response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute", headers=_auth()
+    )
+    repeated_response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute", headers=_auth()
+    )
+
+    assert first_response.status_code == 202, first_response.text
+    assert repeated_response.status_code == 202, repeated_response.text
+    first = first_response.json()["data"]
+    repeated = repeated_response.json()["data"]
+    assert repeated["execution_id"] == first["execution_id"]
+    assert repeated["approval_decision_id"] == first["approval_decision_id"]
+    assert len(adapter.submissions) == 1
+
+    execution_store.update(
+        first["execution_id"],
+        status="succeeded",
+        evidence_reconciliation={
+            "status": "reconciled_incomplete",
+            "kbs_cleared": [],
+            "kbs_remaining": ["KB600001"],
+            "assessed_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    _approve(planner, plan)
+
+    fresh_response = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute", headers=_auth()
+    )
+
+    assert fresh_response.status_code == 202, fresh_response.text
+    fresh = fresh_response.json()["data"]
+    assert fresh["execution_id"] != first["execution_id"]
+    assert fresh["approval_decision_id"] != first["approval_decision_id"]
+    assert len(adapter.submissions) == 2
+
+
 def test_admin_decision_via_real_http_route_satisfies_shipped_fabric_planner_defaults(
     tmp_path,
 ) -> None:

@@ -979,6 +979,7 @@ export interface RemediationExecutionAttempt {
 
 export interface RemediationExecution {
   execution_id: string;
+  approval_decision_id?: string;
   plan_id: string;
   status: RemediationExecutionStatus;
   requested_by: string;

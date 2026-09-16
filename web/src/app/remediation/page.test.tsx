@@ -1673,6 +1673,107 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     expect(screen.getByText("Confirmed cleared: KB600001.")).toBeInTheDocument();
   });
 
+  it("offers Start a new run only for terminal reconciled-incomplete evidence and returns to Approve without executing", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalCurrent: true,
+      execution: executionRecord({
+        status: "succeeded",
+        outcome: "succeeded",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        evidence_reconciliation: {
+          status: "reconciled_incomplete",
+          kbs_cleared: [],
+          kbs_remaining: ["KB600001"],
+          assessed_at: "2026-09-04T00:00:00Z",
+        },
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+    expect(screen.getByText("Enter the approval rationale.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    expect(screen.getByRole("alertdialog", { name: "Confirm governed execution" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start a new run" }));
+
+    expect(screen.getByRole("heading", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByText(
+      "A fresh approval decision is required before another run can start.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText("Enter the approval rationale.")).not.toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+    expect(screen.getByRole("button", { name: "Review and run" })).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog", { name: "Confirm governed execution" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["failed", "provider_rejected"],
+    ["cancelled", "operator_cancelled"],
+  ])("offers Start a new run for terminal non-ambiguous %s execution without calling the provider", async (status, failureClass) => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      approvalCurrent: true,
+      execution: executionRecord({
+        status,
+        outcome: status,
+        failure_class: failureClass,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start a new run" }));
+
+    expect(screen.getByRole("heading", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByText(
+      "A fresh approval decision is required before another run can start.",
+    )).toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["queued", "reconciled_incomplete", ""],
+    ["running", "reconciled_incomplete", ""],
+    ["retrying", "reconciled_incomplete", ""],
+    ["succeeded", "reconciled_clean", ""],
+    ["failed", "unreconciled_timed_out", "submission_ambiguous"],
+    ["cancelled", "", "submission_ambiguous"],
+    ["succeeded", "reconciled_incomplete", "submission_ambiguous"],
+  ])("does not offer Start a new run for %s execution with %s evidence and %s failure class", async (status, reconciliationStatus, failureClass) => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status,
+        failure_class: failureClass,
+        evidence_reconciliation: {
+          status: reconciliationStatus,
+          kbs_cleared: [],
+          kbs_remaining: [],
+          assessed_at: "2026-09-04T00:00:00Z",
+        },
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.queryByRole("button", { name: "Start a new run" })).not.toBeInTheDocument();
+  });
+
   it("renders nothing from the Reconciliation section when evidence_reconciliation is absent or status is empty", async () => {
     workflow.mockResolvedValue(envelope(workflowFixture({
       execution: executionRecord({ status: "succeeded", outcome: "succeeded" }),
