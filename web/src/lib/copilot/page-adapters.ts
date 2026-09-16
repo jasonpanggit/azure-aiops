@@ -4877,6 +4877,9 @@ function predeployCoreInput(input: PredeployCopilotPageInput): CoreCopilotAdapte
 
 function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAdapterInput {
   const selectedId = input.selectedConnectionId ?? null;
+  const pageStatus = (
+    input.available ? input.freshness : "unavailable"
+  ) as CopilotFreshnessStatusV2;
   const records: CoreCopilotRecord[] = input.connections.slice(0, 50).map((connection, index) => {
     const sync = String(connection.sync_status ?? "").toLowerCase();
     const health = String(connection.health_status ?? "").toLowerCase();
@@ -4925,10 +4928,20 @@ function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAd
     ],
     sourceStatuses: [
       {
+        source: "coverage",
+        observedAt: input.observedAt,
+        status: pageStatus,
+      },
+      {
         source: "connections/registry",
         observedAt: input.observedAt,
-        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+        status: pageStatus,
       },
+      ...input.evidence.map((item) => ({
+        source: `${item.source_engine}/${item.source_table}`,
+        observedAt: item.timestamp,
+        status: evidenceFreshness(item.freshness),
+      })),
     ],
   };
 }
