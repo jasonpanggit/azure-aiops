@@ -1464,6 +1464,75 @@ def test_scoped_live_search_does_not_require_deferred_semantic_graph(
     assert response.json()["data"]["graph_freshness"] == ""
 
 
+def test_service_detail_fallbacks_do_not_require_deferred_semantic_graph(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "aiops"
+    ConnectionRegistry(home).add(
+        SubscriptionConnection(
+            connection_id="conn-service",
+            name="Service connection",
+            tenant_id="tenant-a",
+            subscription_id="sub-a",
+            credential=CredentialReference(
+                credential_id="credential-a",
+                tenant_id="tenant-a",
+                client_id="client-a",
+                secret_ref="env://SECRET_A",
+            ),
+            metadata={
+                "business": {
+                    "business_service": "Demo",
+                    "project_owner": "Service owner",
+                    "support_team": "Operations",
+                    "environment": "production",
+                    "criticality": "high",
+                }
+            },
+        )
+    )
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    monkeypatch.setattr(
+        runtime_module,
+        "_build_provider_runtime",
+        lambda _onboarding: ProviderRuntime({}),
+    )
+    client = TestClient(create_app(build_context()), raise_server_exceptions=False)
+    configured_token = next(iter(json.loads(TOKENS)))
+    headers = {"Authorization": f"{'Bearer'} {configured_token}"}
+
+    service = client.get("/api/v1/business-services/Demo", headers=headers)
+    risk = client.get("/api/v1/risk/Demo", headers=headers)
+    impact = client.get("/api/v1/impact/Demo", headers=headers)
+
+    assert service.status_code == 200, service.text
+    assert service.json()["data"]["subject"] == {
+        "entity_type": "BusinessService",
+        "name": "Demo",
+        "business_service": "Demo",
+        "owner": "Service owner",
+        "support_team": "Operations",
+        "environment": "production",
+        "criticality": "high",
+    }
+    assert service.json()["data"]["source_status"] == {
+        "semantic-graph": "unavailable",
+        "subscription-connections": "ok",
+    }
+
+    assert risk.status_code == 200, risk.text
+    assert risk.json()["data"]["risk"] == {}
+    assert "no service-specific risk facts are asserted" in risk.text
+
+    assert impact.status_code == 200, impact.text
+    assert impact.json()["data"]["sections"] == {}
+    assert "no dependency facts are asserted" in impact.text
+
+
 def test_default_auth_mode_requires_configured_tokens():
     with pytest.raises(RuntimeError, match="AIOPS_API_TOKENS"):
         build_authenticator()

@@ -278,19 +278,22 @@ def search(
 def business_service_context(
     name: str, context: Context, scope: ReadScope
 ) -> dict[str, Any]:
-    subscription_ids = live_subscription_ids(context, scope)
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     if context.hybrid_business_service_provider is not None and subscription_ids:
         result = context.hybrid_business_service_provider(name, subscription_ids)
+        subject_public = None
     else:
-        result = context.semantic().get_service_context(name, subject_type="BusinessService")
+        semantic = context.semantic()
+        result = semantic.get_service_context(name, subject_type="BusinessService")
+        subject_public = semantic.public_subject(
+            name, types={"BusinessService"}
+        )
     return _respond(
         result,
         scope,
         source_table="ontology_entities",
         resource_id=name,
-        subject_public=context.semantic().public_subject(
-            name, types={"BusinessService"}
-        ),
+        subject_public=subject_public,
     )
 
 
@@ -370,7 +373,7 @@ def resource_context(
 
 @router.get("/risk/{subject}", summary="Aggregated risk for a subject")
 def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = live_subscription_ids(context, scope)
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     if context.hybrid_risk_provider is not None and subscription_ids:
         result = context.hybrid_risk_provider(subject, subscription_ids)
     else:
@@ -386,7 +389,7 @@ def risk_context(subject: str, context: Context, scope: ReadScope) -> dict[str, 
 
 @router.get("/impact/{subject}", summary="Blast radius for a subject")
 def impact_context(subject: str, context: Context, scope: ReadScope) -> dict[str, Any]:
-    subscription_ids = live_subscription_ids(context, scope)
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     if context.hybrid_impact_provider is not None and subscription_ids:
         result = context.hybrid_impact_provider(subject, subscription_ids)
     else:
