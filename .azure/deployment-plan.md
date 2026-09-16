@@ -2,6 +2,162 @@
 
 Status: Validated
 
+## Draft: SRE Agent selected-patch live-trigger readiness — 2026-09-15
+
+This is a Phase 3 source-only follow-up. It does not change or satisfy active
+Phase 4 gates. Source merge is not live authorization and does not approve a
+trigger, RBAC, secret, Terraform state/plan/apply, deployment, canary, or
+production action.
+
+### Current sanitized read-only facts
+
+- ARM GET for the existing agent succeeded: provisioning, running, and power
+  states are `Succeeded` / `Running` / `Running`; action fallback is
+  Review/Low; the action identity is the known SRE UAI; and the exact
+  `rg-sredemo-dev` managed resource covers the candidate target prefix.
+- The exact thread endpoint is
+  `https://sre-agent-sredemo--8b71343d.ba56c019.australiaeast.azuresre.ai`.
+  Official trigger examples may use a different origin, so trigger origin and
+  thread endpoint are independently pinned.
+- Read-only trigger listing returned HTTP 403. Trigger existence, definition,
+  mode, grouping, ID, enabled state, and origin remain unverified blockers.
+- The API UAI has no agent-scoped custom thread role. The SRE UAI has no exact
+  custom VM/Arc patch role at the target scope. Existing unrelated roles do
+  not substitute for either contract.
+- Key Vault metadata listing returned no
+  `sre-agent-http-trigger-url` secret. The live API revision has direct ARM
+  mode configured and no SRE Agent environment values.
+- The tenant exposes one enabled subscription. All future RBAC captures must
+  still use `--all --include-inherited --include-groups` for both identities
+  and resolve every observed role definition.
+
+### Source readiness contract
+
+- Canonical operator review body:
+  `infra/sre-agent/patch-trigger.v1.json`.
+- Offline-only verifier:
+  `scripts/preflight_sre_agent_patch_execution.py`.
+- Exact action-role writes are limited to VM/Arc resource read plus
+  `installPatches/action`; no Contributor fallback, assessment action, or
+  result-read permission is included.
+- RBAC bootstrap is independently gated by
+  `enable_sre_agent_patch_rbac=false`; dispatch cannot be enabled unless that
+  flag is true. The first approved plan/apply contains only the three exact
+  role definitions/assignments with execution still false.
+- Target scope must be a canonical resource-group-or-narrower ID in the
+  selected subscription and must be covered by
+  `sre_agent_managed_resources`.
+- API UAI thread `write` and thread `read` use separate custom roles at the
+  individual agent scope. SRE action UAI patch actions are assigned only at
+  the target scope. The split permits read-only verification retention during
+  rollback without retaining trigger invocation.
+- With the feature flag false, Terraform omits
+  `AIOPS_PATCH_EXECUTION`, preserving the application's refusing default.
+- Official trigger CRUD lacks a formal request schema and ETag/`If-Match`
+  contract. No mutation mode is implemented; trigger creation/update is a
+  portal-only human gate.
+- The non-secret reviewed trigger ID is required independently from the secret
+  URL. Runtime, normalized trigger evidence, and Key Vault metadata
+  attestation must all bind the same exact ID.
+- RBAC readiness ingests complete raw `az role assignment list --all
+  --include-inherited --include-groups` results for both known principals in every visible
+  subscription after `az account list --all --refresh`, plus a distinct
+  subscription-scoped `--include-inherited --include-groups` query for parent
+  management-group grants. Row counts/digests and raw role-definition captures
+  at their subscription or management-group scope are reconciled internally;
+  manually reduced assignment arrays are rejected. Effective group grants are evaluated for
+  broad roles, while required custom roles must remain direct UAI assignments.
+
+Render and offline verification:
+
+```sh
+python3 scripts/preflight_sre_agent_patch_execution.py render
+
+python3 scripts/preflight_sre_agent_patch_execution.py verify \
+  --trigger-json /tmp/sre-readiness/trigger.sanitized.json \
+  --agent-json /tmp/sre-readiness/agent.sanitized.json \
+  --rbac-json /tmp/sre-readiness/rbac.sanitized.json \
+  --secret-json /tmp/sre-readiness/secret.sanitized.json \
+  --expected-trigger-id '<reviewed-trigger-id>' \
+  --expected-trigger-origin 'https://<reviewed-trigger-origin>' \
+  --expected-agent-endpoint \
+    'https://sre-agent-sredemo--8b71343d.ba56c019.australiaeast.azuresre.ai' \
+  --target-prefix \
+    '/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev'
+```
+
+Offline `build-rbac`/`verify` output is always classified
+`offline-evidence-valid` with `fresh live collector required`; it cannot
+authorize a trigger or canary. The exact value-free capture commands and
+evidence schemas are in `docs/SRE_AGENT_PATCH_EXECUTION.md`.
+
+The mandatory pre-trigger RBAC completeness gate is:
+
+```sh
+python3 scripts/preflight_sre_agent_patch_execution.py collect-live-rbac \
+  --target-prefix \
+    '/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/rg-sredemo-dev'
+```
+
+The mandatory post-trigger/pre-plan gate is `live-predeploy`; it same-process
+collects the agent, exact trigger through a no-redirect authenticated GET,
+exact versioned value-free secret metadata, and RBAC
+and can emit only `ready-for-approved-enable-plan`. The mandatory pre-canary
+gate is `live-canary`; it repeats those reads and also collects the deployed
+ACA secret/environment state. Only that same-process fixed-argv collector can emit
+`ready-for-approved-trigger-canary`; re-imported JSON never can. Optional
+sanitized output is mode `0600`, informational only, contains no raw rows or
+secret values, and is written only after successful validation.
+
+### Separately approved live sequence
+
+1. Save and machine-check a distinct RBAC bootstrap plan with
+   `enable_sre_agent_patch_rbac=true` and execution false. After separate
+   approval applies only the three roles/assignments, immediately require
+   `collect-live-rbac=live-rbac-valid`.
+2. Obtain named approval for portal trigger creation using the exact rendered
+   body/hash, Autonomous mode, New chat thread for each run, and no URL stored
+   in source.
+3. Separately provision the trigger URL as a Key Vault secret with exact
+   trigger-ID, trigger-origin, and canonical-hash metadata tags; provide only
+   `https://aiops-dev-kv-g6ludc.vault.azure.net/secrets/sre-agent-http-trigger-url/<version>` to
+   Terraform.
+4. Run `live-predeploy` immediately after provisioning. Require the exact
+   canonical trigger, running/succeeded agent, exact independent endpoints,
+   managed-resource coverage, complete refreshed RBAC, exact roles/scopes, and
+   enabled value-free versioned secret metadata.
+5. Review enablement values for the trigger secret URI, exact trigger ID,
+   trigger origin, agent endpoint, exact managed resources, and the
+   resource-group-or-narrower target prefix.
+6. Require `live-predeploy=ready-for-approved-enable-plan`, then save a
+   refresh-enabled Terraform plan. Require **zero RBAC changes** because the
+   bootstrap is already applied. Allow only the Key Vault-backed ACA secret
+   reference, exact SRE environment, and resulting API revision update.
+   Require zero unrelated create/update/destroy/replace actions and zero agent,
+   identity, APIM, MCP, ACA-shape, state-import, or other RBAC changes.
+7. Separately approve and apply only that saved plan. Require the new API
+   revision healthy/ready at 100% traffic and capture its revision, image,
+   health evidence, and normalized SRE environment/secret-reference diff.
+8. Select one non-critical in-scope VM or Arc target, one applicable low-risk
+   patch, and an approved reboot setting. Record the immutable envelope,
+   canonical hash, plan hash, trigger ID, deployed API revision, and pre-state.
+9. Run the full `live-canary` collector immediately before the canary and
+   require its production-ready verdict. Run exactly one canary only after
+   separate approval. Require 202 acceptance,
+   one thread ID, terminal Complete, and refreshed evidence reconciliation for
+   every selected patch. Agent prose is not proof.
+
+Rollback routes traffic to a prior refusing API revision or separately applies
+`enable_sre_agent_patch_execution=false`,
+`enable_sre_agent_patch_rbac=false`, with
+`retain_sre_agent_thread_verification=true`. This removes trigger write and
+patch action authorization while keeping only thread read. Keep polling until
+outstanding attempts reconcile, then separately set the retention flag false.
+Preserve the trigger thread, execution attempt, approval, audit, and evidence;
+never delete them as rollback cleanup.
+The full acceptance-evidence checklist is in
+`docs/SRE_AGENT_PATCH_EXECUTION.md`.
+
 ## Draft: Core Azure SRE Agent import live readiness — 2026-09-14
 
 This draft covers only the existing

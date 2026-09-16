@@ -218,6 +218,86 @@ def test_unrestricted_incidents_use_all_active_onboarded_subscriptions(
     assert response.json()["data"]["incidents"][0]["incident_id"] == "incident-live-1"
 
 
+def test_unrestricted_service_detail_routes_use_active_subscription_hybrid_fallbacks(
+    tmp_path,
+) -> None:
+    onboarding = SubscriptionOnboardingService(tmp_path / "aiops")
+    subscription_id = "11111111-1111-1111-1111-111111111111"
+    onboarding.add(
+        connection_id="active-service",
+        name="Active service",
+        tenant_id="33333333-3333-3333-3333-333333333333",
+        subscription_id=subscription_id,
+        client_id="44444444-4444-4444-4444-444444444444",
+        secret_ref="keyvault://example/secrets/active-service",
+    )
+    calls: list[tuple[str, list[str]]] = []
+
+    def service_fallback(_name: str, subscription_ids: list[str]) -> dict:
+        calls.append(("service", subscription_ids))
+        return {
+            "subject": {
+                "entity_type": "BusinessService",
+                "name": "Demo",
+                "business_service": "Demo",
+            },
+            "sections": {},
+            "source_status": {"semantic-graph": "unavailable"},
+            "warnings": ["Semantic graph service context is unavailable."],
+        }
+
+    def risk_fallback(_subject: str, subscription_ids: list[str]) -> dict:
+        calls.append(("risk", subscription_ids))
+        return {
+            "subject": {"name": "Demo", "business_service": "Demo"},
+            "risk": {},
+            "source_status": {"semantic-graph": "unavailable"},
+            "warnings": ["Service risk evidence is unavailable."],
+        }
+
+    def impact_fallback(_subject: str, subscription_ids: list[str]) -> dict:
+        calls.append(("impact", subscription_ids))
+        return {
+            "root": {"name": "Demo", "business_service": "Demo"},
+            "sections": {},
+            "source_status": {"semantic-graph": "unavailable"},
+            "warnings": [
+                "Dependency evidence is unavailable; no dependency facts are asserted."
+            ],
+        }
+
+    context = ApiContext(
+        onboarding=onboarding,
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        semantic_provider=lambda: None,
+        hybrid_business_service_provider=service_fallback,
+        hybrid_risk_provider=risk_fallback,
+        hybrid_impact_provider=impact_fallback,
+    )
+    live_client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    for path in (
+        "/api/v1/business-services/Demo",
+        "/api/v1/risk/Demo",
+        "/api/v1/impact/Demo",
+    ):
+        response = live_client.get(path, headers=HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["source_status"]["semantic-graph"] == (
+            "unavailable"
+        )
+
+    assert calls == [
+        ("service", [subscription_id]),
+        ("risk", [subscription_id]),
+        ("impact", [subscription_id]),
+    ]
+
+
 @pytest.mark.parametrize(
     "path",
     [

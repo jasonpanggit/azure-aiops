@@ -6825,6 +6825,169 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
+def test_service_detail_keeps_risk_unavailability_out_of_foundry_narration(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if "Select the smallest" in question:
+                return AgentAnswer(
+                    text=json.dumps({
+                        "steps": [{
+                            "specialist_id": "resource_health_observability",
+                            "tool_calls": [{
+                                "tool": "incidents",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                                "mutation": False,
+                            }],
+                            "depends_on": [],
+                        }],
+                        "estimated_tokens": 0,
+                        "max_wall_seconds": 5,
+                        "mutation_intent": False,
+                    }),
+                    agent_name=self.agent_name,
+                )
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "narrator-omission",
+                        "evidence_refs": [],
+                        "confidence": "low",
+                        "uncertainty": [],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Check later.",
+                        "summary": "No useful status.",
+                    }]
+                }),
+                agent_name=self.agent_name,
+            )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The semantic provider is deferred",
+        ),
+    )
+    body = {
+        "contract_version": "1",
+        "question": "What operational risks are directly visible for this service?",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "service_detail",
+            "page_id": "service:Demo",
+            "filters": {},
+            "query": "",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 1,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "impact",
+                    "observed_at": "2026-09-16T00:00:00Z",
+                    "status": "unavailable",
+                }
+            ],
+            "selected_entities": [],
+            "evidence": [
+                {
+                    "evidence_id": "service:risk-unavailable",
+                    "source": "service_section_status",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T00:00:00Z",
+                    "resource_id": "",
+                    "source_key": "Demo:risk:status",
+                    "entity": {
+                        "type": "observation",
+                        "source": "service_section_status",
+                        "source_key": "Demo:risk:status",
+                    },
+                    "claim_type": "service_section_status",
+                    "citations": [],
+                    "selected": True,
+                    "direct": True,
+                    "actionable": False,
+                    "severity": "unknown",
+                    "quality": "unknown",
+                    "data": {
+                        "section": "risk",
+                        "availability": "unavailable",
+                        "detail": (
+                            "Service risk evidence is unavailable; "
+                            "no service-specific risk facts are asserted."
+                        ),
+                        "source_status": ["semantic-graph:unavailable"],
+                        "selected": True,
+                        "actionable": False,
+                        "mutation_authorized": False,
+                    },
+                }
+            ],
+            "material_claims": [
+                {
+                    "claim_id": "service-risk-unavailable",
+                    "evidence_refs": ["service:risk-unavailable"],
+                    "requires_complete_coverage": False,
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": "resource_health_observability",
+            "tool": "incidents",
+            "arguments": {},
+        },
+    }
+    coordinator = Coordinator()
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["resource_health_observability"]
+    assert data["selected_tools"] == ["incidents"]
+    assert data["tool_results"][0]["status"] == "unavailable"
+    assert data["mutation_authorized"] is False
+    assert data["synthesis"]["status"] == "deterministic"
+    assert data["synthesis"]["reason"] == "deterministic_service_status"
+    assert len(coordinator.calls) == 1
+    claims = data["synthesis"]["claims"]
+    assert any(
+        "Service risk evidence is unavailable" in claim["summary"]
+        and "no service-specific risk facts are asserted" in claim["summary"]
+        for claim in claims
+    )
+    citation_ids = {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    assert {
+        reference
+        for claim in claims
+        for reference in claim["evidence_refs"]
+    } <= citation_ids
+    assert "risk_score" not in response.text
+
+
 @pytest.mark.parametrize(
     ("page_kind", "page_id", "question", "expected_specialists"),
     (

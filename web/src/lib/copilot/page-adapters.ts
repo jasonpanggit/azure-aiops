@@ -2655,6 +2655,10 @@ export interface ServiceDetailSection {
   freshness: CopilotFreshnessStatusV2;
   observedAt?: string;
   sections?: string[];
+  /** Per-provider state retained from the loaded section response. */
+  sourceStatus?: Record<string, string>;
+  /** Explicit server degradation warnings that remain citation-eligible. */
+  warnings?: string[];
 }
 
 /** Bounded dependency/blast-radius entity the Service detail adapter cites. */
@@ -5517,6 +5521,7 @@ function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterI
     namespace: "operations",
     kind: "business_service",
     source: "services/catalog",
+    evidenceIdentity: "observation",
     selected: input.selectedServiceName != null
       && service.name === input.selectedServiceName,
     priority: index,
@@ -5570,12 +5575,44 @@ function serviceDetailCoreInput(
   const dependencies = input.dependencies ?? [];
   const sectionCount = (section: ServiceDetailSection): number =>
     section.sections?.length ?? 0;
+  const sectionStatusRecords: CoreCopilotRecord[] = (
+    [
+      ["context", input.context],
+      ["risk", input.risk],
+      ["impact", input.impact],
+    ] as const
+  ).flatMap(([key, section], index) => {
+    const detail = section.warnings?.find((warning) => warning.trim());
+    if (!detail && section.available) return [];
+    return [{
+      identity: `${input.name}:${key}:status`,
+      namespace: "operations",
+      kind: "service_section_status",
+      source: "service_section_status",
+      evidenceIdentity: "observation" as const,
+      selected: true,
+      priority: 1 + index,
+      // The observation itself is current and valid; its data explicitly
+      // records that the underlying provider section is unavailable.
+      status: "ok" as const,
+      observedAt: section.observedAt,
+      data: {
+        section: key,
+        availability: section.available ? "partial" : "unavailable",
+        detail: detail ?? `${key} evidence is unavailable.`,
+        source_status: Object.entries(section.sourceStatus ?? {})
+          .sort(([left], [right]) => compareCodePoints(left, right))
+          .map(([source, status]) => `${source}:${status}`),
+      },
+    }];
+  });
   const records: CoreCopilotRecord[] = [
     {
       identity: input.name,
       namespace: "operations",
       kind: "business_service",
       source: "services/context",
+      evidenceIdentity: "observation",
       selected: true,
       priority: 0,
       data: {
@@ -5587,11 +5624,15 @@ function serviceDetailCoreInput(
         application: subject?.application ?? undefined,
       },
     },
+    ...sectionStatusRecords,
     ...dependencies.slice(0, 50).map((dependency, index) => ({
       identity: dependency.id,
       namespace: "operations",
       kind: "service_dependency",
       source: "services/impact",
+      ...(!isCanonicalAzureResourceId(dependency.resource_id)
+        ? { evidenceIdentity: "observation" as const }
+        : {}),
       resourceId: isCanonicalAzureResourceId(dependency.resource_id)
         ? dependency.resource_id
         : undefined,

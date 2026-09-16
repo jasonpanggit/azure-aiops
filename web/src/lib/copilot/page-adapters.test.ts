@@ -4228,6 +4228,17 @@ describe("situation detail and service Copilot page adapters", () => {
     );
   });
 
+  it("keeps rendered Services facts as non-authoritative observations when semantic resolution is unavailable", () => {
+    const services = buildServicesCopilotContext(servicesInput);
+    const serviceRow = services.snapshot.evidence.find(
+      (row) => row.data.service === "Payments",
+    );
+    expect(serviceRow?.data.entity).toMatchObject({
+      type: "observation",
+      source: "services/catalog",
+    });
+  });
+
   const serviceDetailInput = {
     scope: { subscription: ["sub-a"] },
     name: "Payments",
@@ -4285,25 +4296,45 @@ describe("situation detail and service Copilot page adapters", () => {
       page_kind: "resource",
       page_id: "service:Payments",
     });
-    expect(context.selectedEntities).toEqual([
-      {
-        type: "domain",
-        namespace: "operations",
-        kind: "business_service",
-        source_key: "Payments",
-      },
-    ]);
+    expect(context.selectedEntities).toEqual([]);
     // The canonical ARM dependency is retained as a normalized azure entity.
     expect(context.snapshot.evidence.some((row) =>
       row.resource_id
         === "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.sql/servers/db")).toBe(true);
-    // The non-ARM dependency stays a domain entity.
+    // The non-ARM dependency stays a non-authoritative page observation.
     expect(context.snapshot.evidence.some((row) =>
       row.data.relation === "serves"
-      && (row.data.entity as { type?: string } | undefined)?.type === "domain")).toBe(true);
+      && (row.data.entity as { type?: string } | undefined)?.type === "observation")).toBe(true);
     expect(context.snapshot.evidence.some((row) => row.data.owner === "Payments SRE")).toBe(true);
     expect(context.starterQuestions.every((q) => q.specialistId === "resource_health_observability")).toBe(true);
     expect(context.starterQuestions.some((q) => q.label.includes("Payments"))).toBe(true);
+  });
+
+  it("keeps service detail facts as observations while retaining ARM dependency identity", () => {
+    const context = buildServiceDetailCopilotContext(serviceDetailInput);
+    const subject = context.snapshot.evidence.find(
+      (row) => row.data.owner === "Payments SRE",
+    );
+    const domainDependency = context.snapshot.evidence.find(
+      (row) => row.data.relation === "serves",
+    );
+    const armDependency = context.snapshot.evidence.find(
+      (row) => row.data.relation === "depends_on",
+    );
+
+    expect(subject?.data.entity).toMatchObject({
+      type: "observation",
+      source: "services/context",
+    });
+    expect(domainDependency?.data.entity).toMatchObject({
+      type: "observation",
+      source: "services/impact",
+    });
+    expect(armDependency?.data.entity).toMatchObject({
+      type: "azure",
+      resource_id:
+        "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.sql/servers/db",
+    });
   });
 
   it("keeps an unavailable service section distinct from a fresh one", () => {
@@ -4317,6 +4348,40 @@ describe("situation detail and service Copilot page adapters", () => {
         expect.objectContaining({ source: "risk", status: "unavailable" }),
       ]),
     );
+  });
+
+  it("retains explicit unavailable dependency evidence without inventing dependencies", () => {
+    const context = buildServiceDetailCopilotContext({
+      ...serviceDetailInput,
+      impact: {
+        ...serviceDetailInput.impact,
+        available: false,
+        freshness: "unavailable" as const,
+        sourceStatus: { "semantic-graph": "unavailable" },
+        warnings: [
+          "Dependency evidence is unavailable; no dependency facts are asserted.",
+        ],
+      },
+      dependencies: [],
+    });
+
+    expect(context.coverage.dependencies.complete).toBe(false);
+    expect(context.snapshot.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          section: "service_section_status",
+          status: "ok",
+          data: expect.objectContaining({
+            entity: expect.objectContaining({ type: "observation" }),
+            detail:
+              "Dependency evidence is unavailable; no dependency facts are asserted.",
+            section: "impact",
+          }),
+        }),
+      ]),
+    );
+    expect(context.snapshot.evidence.some((row) =>
+      row.data.relation != null)).toBe(false);
   });
 });
 
