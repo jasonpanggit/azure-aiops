@@ -444,6 +444,23 @@ def _complete_empty_page_kind(
     return None
 
 
+def _is_unsubmitted_predeploy_snapshot(
+    snapshot: EvidenceSnapshotV2 | None,
+) -> bool:
+    return (
+        snapshot is not None
+        and snapshot.page_kind == "changes_predeploy"
+        and snapshot.page_id == "predeploy"
+        and snapshot.coverage.visible_count == 0
+        and snapshot.coverage.total_count == 0
+        and not snapshot.coverage.complete
+        and not snapshot.selected_entities
+        and not snapshot.material_claims
+        and bool(snapshot.freshness)
+        and all(item.status == "unavailable" for item in snapshot.freshness)
+    )
+
+
 def deterministic_network_claims(
     *,
     snapshot: EvidenceSnapshotV2 | None,
@@ -1339,6 +1356,16 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        if _is_unsubmitted_predeploy_snapshot(snapshot) and page_claims:
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_predeploy_no_assessment",
+                domain_count=1,
+                claims=page_claims,
+                used_retained_evidence=[],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if overview_ranking_claims:
             used_refs = {
                 str(reference)
@@ -1934,6 +1961,29 @@ class OrchestrationService:
 
         if snapshot is None:
             return []
+        if _is_unsubmitted_predeploy_snapshot(snapshot):
+            return [{
+                "finding_id": "page:predeploy-no-assessment",
+                "summary": (
+                    "No pre-deployment assessment is loaded or submitted in "
+                    "this view, so predicted risk, impacted services, and "
+                    "governed remediation requirements cannot be determined."
+                ),
+                "evidence_refs": [COVERAGE_CITATION_ID],
+                "confidence": "low",
+                "freshness": "unavailable",
+                "uncertainty": [
+                    (
+                        "Assessment evidence is unavailable because no "
+                        "assessment result exists to analyze."
+                    )
+                ],
+                "actionable": False,
+                "next_check": (
+                    "Submit and review a proposed-change assessment before "
+                    "drawing any impact, risk, or remediation conclusion."
+                ),
+            }]
         empty_page_kind = _complete_empty_page_kind(snapshot)
         if empty_page_kind is not None:
             freshness = snapshot_claim_freshness(snapshot)
