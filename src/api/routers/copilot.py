@@ -2188,10 +2188,21 @@ def investigate_canonical(
     }
     if comparison is not None:
         result_data["rollout"]["comparison"] = comparison
+    synthesis_evidence_refs = {
+        str(reference)
+        for claim in (result_data.get("synthesis") or {}).get("claims", [])
+        for reference in claim.get("evidence_refs", [])
+    }
     result_data["citations"] = [
         citation
         for citation in result_data["citations"]
-        if citation["citation_id"].startswith(("tool:", "retained:"))
+        if (
+            (
+                citation["citation_id"] == COVERAGE_CITATION_ID
+                and COVERAGE_CITATION_ID in synthesis_evidence_refs
+            )
+            or citation["citation_id"].startswith(("tool:", "retained:"))
+        )
     ]
     return envelope(
         result_data,

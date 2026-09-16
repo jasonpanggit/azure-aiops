@@ -5915,6 +5915,17 @@ function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdap
       evidence_state: situation.evidence_state,
     },
   }));
+  const evidenceStatuses = input.evidence.map((item) =>
+    evidenceFreshness(item.freshness));
+  const inferredStatus = !input.available
+    ? "unavailable"
+    : evidenceStatuses.length
+      ? evidenceStatuses.reduce((current, candidate) =>
+        FRESHNESS_WARNING_PRIORITY[candidate]
+          > FRESHNESS_WARNING_PRIORITY[current]
+          ? candidate
+          : current)
+      : "unavailable";
   const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
     ? input.sourceStatuses.map((status) => ({
       source: status.source_family,
@@ -5926,7 +5937,7 @@ function situationsCoreInput(input: SituationsCopilotPageInput): CoreCopilotAdap
     : [{
       source: "situations",
       observedAt: input.observedAt,
-      status: (input.available ? "fresh" : "unavailable") as CopilotFreshnessStatusV2,
+      status: inferredStatus,
     }];
   return {
     scope: input.scope,

@@ -1529,6 +1529,40 @@ describe("inventory Copilot page adapter", () => {
         ]),
       );
     });
+
+    it("does not claim fresh Situations evidence when an empty live envelope reports unknown freshness", () => {
+      const context = buildSituationsCopilotContext({
+        ...situationsInput,
+        situations: [],
+        totalCount: 0,
+        nextOffset: null,
+        selectedSituationId: null,
+        available: true,
+        observedAt: "",
+        evidence: [
+          {
+            source_engine: "aiops.situations",
+            source_table: "silver_situations",
+            timestamp: "",
+            confidence: "unknown",
+            freshness: "unknown",
+          },
+        ],
+      });
+
+      expect(context.coverage.situations).toMatchObject({
+        visible_count: 0,
+        total_count: 0,
+        complete: true,
+      });
+      expect(context.snapshot.freshness).toEqual([
+        {
+          source: "situations",
+          observed_at: "unknown",
+          status: "unavailable",
+        },
+      ]);
+    });
   });
 
   describe("remediation Copilot page adapter", () => {

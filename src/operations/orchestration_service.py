@@ -431,6 +431,17 @@ def snapshot_claim_freshness(snapshot: EvidenceSnapshotV2) -> str:
     return "partial"
 
 
+def _is_complete_empty_situations_snapshot(
+    snapshot: EvidenceSnapshotV2,
+) -> bool:
+    return (
+        snapshot.page_kind == "situations"
+        and snapshot.page_id == "situations"
+        and snapshot.coverage.complete
+        and snapshot.coverage.total_count == 0
+    )
+
+
 def deterministic_network_claims(
     *,
     snapshot: EvidenceSnapshotV2 | None,
@@ -744,6 +755,9 @@ class OrchestrationService:
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
+        citations[0] = self._snapshot_citations(
+            request.model_copy(update={"snapshot": page_snapshot})
+        )[0]
         citations.extend(
             Citation(
                 citation_id=str(item["evidence_id"]),
@@ -869,7 +883,11 @@ class OrchestrationService:
             selected_tools=selected_tools,
             tool_results=tool_results,
             uncertainty=uncertainty,
-            coverage=request.snapshot.coverage,
+            coverage=(
+                page_snapshot.coverage
+                if _is_complete_empty_situations_snapshot(page_snapshot)
+                else request.snapshot.coverage
+            ),
             citations=self._deduplicate_citations(citations),
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
@@ -1907,7 +1925,40 @@ class OrchestrationService:
     ) -> list[dict[str, Any]]:
         """Build direct factual claims only from citation-closed current rows."""
 
-        if snapshot is None or not retained_evidence:
+        if snapshot is None:
+            return []
+        if _is_complete_empty_situations_snapshot(snapshot):
+            freshness = snapshot_claim_freshness(snapshot)
+            freshness_caveat = (
+                ""
+                if freshness == "fresh"
+                else (
+                    " This does not confirm source health because Situations "
+                    f"evidence freshness is {freshness}."
+                )
+            )
+            uncertainty = (
+                []
+                if freshness == "fresh"
+                else [f"Situations evidence freshness is {freshness}"]
+            )
+            return [{
+                "finding_id": "page:situations-empty",
+                "summary": (
+                    "No active situations are visible in the current authorized "
+                    f"scope.{freshness_caveat}"
+                ),
+                "evidence_refs": [COVERAGE_CITATION_ID],
+                "confidence": "high" if freshness == "fresh" else "low",
+                "freshness": freshness,
+                "uncertainty": uncertainty,
+                "actionable": False,
+                "next_check": (
+                    "Refresh the Situations source before treating the empty "
+                    "queue as a source-health confirmation."
+                ),
+            }]
+        if not retained_evidence:
             return []
         by_original_id = {
             str(item.get("original_evidence_id") or ""): item
