@@ -3124,12 +3124,14 @@ const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "Which services are impacted by resource pressure?",
     specialistId: "resource_health_observability",
-    toolArguments: {},
+    tool: "search",
+    toolArguments: { query: "resource pressure service impact" },
   },
   {
     label: "Search resource utilization anomalies.",
     specialistId: "resource_health_observability",
-    toolArguments: {},
+    tool: "search",
+    toolArguments: { query: "resource utilization anomalies" },
   },
 ];
 
@@ -5400,29 +5402,46 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
 
 function resourceHealthCoreInput(input: ResourceHealthCopilotPageInput): CoreCopilotAdapterInput {
   const selectedId = input.selectedResourceId ?? null;
-  const records: CoreCopilotRecord[] = input.resources.slice(0, 50).map((resource, index) => ({
-    identity: resource.resource_id,
-    namespace: "observability",
-    kind: "resource_utilization",
-    source: "resource-health/metrics",
-    resourceId: resource.resource_id,
-    name: resource.resource_name,
-    observedAt: resource.observed_at ?? input.observedAt,
-    selected: selectedId != null && resource.resource_id === selectedId,
-    priority: index,
-    data: {
-      resource_name: resource.resource_name,
-      resource_type: resource.resource_type,
-      status: resource.status,
-      cpu_percent: resource.cpu_percent,
-      memory_percent: resource.memory_percent,
-      disk_free_percent: resource.disk_free_percent,
-      // Missing series are stated, never fabricated as zero.
-      unavailable_metrics: resource.unavailable_metrics,
-      series_point_count: resource.series_point_count,
-      observed_at: resource.observed_at,
+  const retainedResources = input.resources.slice(0, 50);
+  const records: CoreCopilotRecord[] = [
+    ...retainedResources.map((resource, index) => ({
+      identity: resource.resource_id,
+      namespace: "observability",
+      kind: "resource_utilization",
+      source: "resource-health/metrics",
+      resourceId: resource.resource_id,
+      name: resource.resource_name,
+      observedAt: resource.observed_at ?? input.observedAt,
+      selected: selectedId != null && resource.resource_id === selectedId,
+      priority: index,
+      data: {
+        resource_name: resource.resource_name,
+        resource_type: resource.resource_type,
+        status: resource.status,
+        cpu_percent: resource.cpu_percent,
+        memory_percent: resource.memory_percent,
+        disk_free_percent: resource.disk_free_percent,
+        // Missing series are stated, never fabricated as zero.
+        unavailable_metrics: resource.unavailable_metrics,
+        series_point_count: resource.series_point_count,
+        observed_at: resource.observed_at,
+      },
+    })),
+    {
+      identity: "metric-coverage",
+      namespace: "observability",
+      kind: "resource_metric_coverage",
+      source: "resource-health/metrics",
+      evidenceIdentity: "observation",
+      observedAt: input.observedAt,
+      priority: 39,
+      data: {
+        unavailable_metrics: input.unavailableMetrics ?? [],
+        warnings: input.warnings ?? [],
+        cached: input.cached ?? false,
+      },
     },
-  }));
+  ];
   return {
     scope: input.scope,
     filters: input.filters ?? { view: ["resource-health"] },
@@ -5431,19 +5450,36 @@ function resourceHealthCoreInput(input: ResourceHealthCopilotPageInput): CoreCop
     coverage: [
       {
         key: "resources",
-        visibleCount: input.loadedCount,
+        visibleCount: Math.min(input.loadedCount, retainedResources.length),
         totalCount: Math.max(input.loadedCount, input.totalCount),
-        truncated: input.loadedCount < input.totalCount,
+        truncated:
+          input.loadedCount > retainedResources.length
+          || input.loadedCount < input.totalCount,
         available: input.available,
       },
     ],
     sourceStatuses: [
+      {
+        source: "coverage",
+        observedAt: input.observedAt,
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
       {
         source: "resource_health",
         observedAt: input.observedAt,
         // A cached snapshot is still fresh evidence, not a degraded source.
         status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
       },
+      {
+        source: "resource-health/metrics",
+        observedAt: input.observedAt,
+        status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
+      },
+      ...input.evidence.map((item) => ({
+        source: `${item.source_engine}/${item.source_table}`,
+        observedAt: item.timestamp,
+        status: evidenceFreshness(item.freshness),
+      })),
     ],
   };
 }
