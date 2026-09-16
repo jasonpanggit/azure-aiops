@@ -8,7 +8,7 @@ are validated end to end rather than in isolation.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -276,6 +276,49 @@ class TestAuthorization:
             "total": 2,
             "next_offset": None,
         }
+
+    def test_connection_list_evidence_uses_latest_visible_sync_timestamp(
+        self,
+        client,
+        onboarding,
+        monkeypatch,
+    ):
+        observed = datetime.now(UTC)
+        observed_at = observed.isoformat()
+        lexically_later_but_older = (observed - timedelta(hours=2)).astimezone(
+            timezone(timedelta(hours=14))
+        ).isoformat()
+        assert lexically_later_but_older > observed_at
+        monkeypatch.setattr(
+            onboarding,
+            "list",
+            lambda *, include_disabled=True: [
+                {
+                    "connection_id": "conn-a",
+                    "name": "conn-a",
+                    "subscription_id": SUB_A,
+                    "last_synced_at": observed_at,
+                    "last_successful_sync_at": observed_at,
+                },
+                {
+                    "connection_id": "conn-b",
+                    "name": "conn-b",
+                    "subscription_id": SUB_B,
+                    "last_synced_at": lexically_later_but_older,
+                    "last_successful_sync_at": lexically_later_but_older,
+                }
+            ],
+        )
+
+        response = client.get(
+            "/api/v1/subscription-connections",
+            headers=_auth(ADMIN_TOKEN),
+        )
+
+        assert response.status_code == 200
+        evidence = response.json()["evidence"][0]
+        assert evidence["timestamp"] == observed_at
+        assert evidence["freshness"] == "fresh"
 
     def test_response_carries_a_correlation_id(self, client):
         response = client.get(
