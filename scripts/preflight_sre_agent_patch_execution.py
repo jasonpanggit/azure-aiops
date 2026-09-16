@@ -24,6 +24,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.operations.patching.models import OPERATION_INSTALL_PATCHES
+from src.operations.patching.sre_agent_adapter import (
+    SRE_PATCH_ENVELOPE_VERSION,
+)
+
 DEFAULT_DEFINITION = REPO_ROOT / "infra/sre-agent/patch-trigger.v1.json"
 DEFAULT_READ_SKILL_ARTIFACT = (
     REPO_ROOT
@@ -82,7 +87,7 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "64eca0f0832560c3a0324b9409edaf6af9de30fc5e22bf48d26133ca6c360ad7"
+    "b54de6ded5e57867705a742799cca145523021f0f735c53ee445b934bf2a8856"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
@@ -95,11 +100,13 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "f472851acf2e098d4fee1c059e5271b7fabfe28125c2a68ac9ce3719054bb443"
+    "067f8940acb89797b67cb26c106a7766c0c867286709ada20c0cc5bec6b4936a"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
 PATCH_WRITE_OUTPUT_SCHEMA_VERSION = "1.0"
+PATCH_INPUT_SCHEMA_VERSION = SRE_PATCH_ENVELOPE_VERSION
+PATCH_INPUT_OPERATION = OPERATION_INSTALL_PATCHES
 TRIGGER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 SUBSCRIPTION_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -225,6 +232,14 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
         raise ReadinessError("Skill Builder raw-byte hash drift detected")
     if any(term not in text for term in spec["required"]):
         raise ReadinessError("Skill Builder instruction contract is incomplete")
+    input_contract = (
+        f"Require schema version `{PATCH_INPUT_SCHEMA_VERSION}`, "
+        f"operation `{PATCH_INPUT_OPERATION}`"
+    )
+    if input_contract not in text:
+        raise ReadinessError(
+            "Skill Builder input contract does not match the runtime envelope"
+        )
     if name == PATCH_READ_SKILL_NAME:
         if (
             text.count("az graph query --graph-query") != 1
@@ -264,8 +279,10 @@ def _canonical_skill_chain() -> dict[str, Any]:
 def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and return the versioned canonical trigger review body."""
     _exact_fields(definition, ARTIFACT_FIELDS, "trigger definition")
-    if definition.get("artifactVersion") != "1.1":
-        raise ReadinessError("artifactVersion must be exactly 1.1")
+    if definition.get("artifactVersion") != PATCH_INPUT_SCHEMA_VERSION:
+        raise ReadinessError(
+            f"artifactVersion must be exactly {PATCH_INPUT_SCHEMA_VERSION}"
+        )
     if definition.get("name") != "aiops-selected-patch-execution-v1":
         raise ReadinessError("trigger name does not match the versioned contract")
     if definition.get("runMode") != "Review":

@@ -127,8 +127,16 @@ not patched. The verifier polls the documented
   warning action, records `Pending Review` and remains provider-active;
 - composite incident `Failed`/`Error` and `Cancelled` are typed terminal
   failures without reading message prose; and
-- scalar `Complete` or composite `lastMessage.isComplete=true` records
-  provider completion.
+- scalar `Complete` or composite `lastMessage.isComplete=true` without an
+  exact typed `provider_operation` fails closed as
+  `submission_ambiguous`, so retry and supersession remain refused;
+- completion advances only when `provider_operation` has exactly schema
+  `1.0`, a nonempty provider operation ID, a submitted/running/succeeded/
+  completed status, the bound write skill name/version,
+  `operation=install_patches`, and target/ordered patch IDs exactly equal to
+  the immutable snapshot; and
+- terminal `failed_without_action` is an explicit no-write failure, never
+  provider success.
 
 A provider-active Pending Review remains running even beyond the local
 verification deadline, so retry and supersede stay refused while the original
@@ -137,7 +145,12 @@ thread remains approvable.
 Provider completion is never clean patch proof. The existing refreshed target
 evidence reconciliation must still clear every immutable selected patch ID;
 only `evidence_reconciliation.status=reconciled_clean` completes the workflow.
-Free-form SRE Agent messages are never parsed as evidence.
+For SRE Agent only, the refreshed `assessed_at` must strictly postdate both
+the persisted provider-handle transition and the first terminal thread
+transition. Older, missing, malformed, or timezone-naive evidence remains
+pending/ambiguous under the existing deadline and recovery rules. Direct ARM
+behavior is unchanged. Free-form SRE Agent messages are never parsed as
+evidence.
 
 The HTTP trigger has no documented idempotency guarantee. The durable
 pre-submit execution claim and immutable `run_id` remain authoritative.
@@ -515,9 +528,9 @@ representations and still requires the exact secret reference.
    thread origin before the separately approved canary.
 8. Run `live-canary` immediately before the canary and require
    `ready-for-approved-trigger-canary`. Then accept only HTTP 202 plus
-   `success=true` and one thread ID, terminal `Complete`, and refreshed evidence
-   that reconciles every selected patch as clean. Prompt prose is never
-   acceptance evidence.
+   `success=true` and one thread ID, terminal `Complete` with the exact typed
+   `provider_operation`, and post-terminal refreshed evidence that reconciles
+   every selected patch as clean. Prompt prose is never acceptance evidence.
 
 Rollback switches API traffic to a prior revision where
 `AIOPS_PATCH_EXECUTION` is absent/refusing, or applies a separately approved

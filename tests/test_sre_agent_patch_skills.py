@@ -111,6 +111,48 @@ def test_envelope_accepts_both_exact_target_kinds_and_binds_review_contract() ->
 
 
 @pytest.mark.parametrize(
+    ("artifact", "old", "new", "hash_attribute"),
+    [
+        (
+            READ_SKILL,
+            "Require schema version `1.1`, operation `install_patches`",
+            "Require schema version `1.4`, operation `applicability_check`",
+            "PATCH_READ_SKILL_SHA256",
+        ),
+        (
+            WRITE_SKILL,
+            "Require schema version `1.1`, operation `install_patches`",
+            "Require schema version `1.0`, operation `install_selected_patches`",
+            "PATCH_WRITE_SKILL_SHA256",
+        ),
+    ],
+)
+def test_skill_input_contract_drift_fails_even_when_artifact_is_rehashed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: Path,
+    old: str,
+    new: str,
+    hash_attribute: str,
+) -> None:
+    drifted_dir = tmp_path / artifact.parent.name
+    drifted_dir.mkdir()
+    drifted = drifted_dir / "SKILL.md"
+    drifted.write_text(
+        artifact.read_text(encoding="utf-8").replace(old, new, 1),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        preflight,
+        hash_attribute,
+        hashlib.sha256(drifted.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(preflight.ReadinessError, match="input contract"):
+        preflight.canonical_skill_builder_artifact(drifted)
+
+
+@pytest.mark.parametrize(
     ("artifact", "old", "new"),
     [
         (READ_SKILL, "--first 257", "--first 1000"),

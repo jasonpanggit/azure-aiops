@@ -51,6 +51,36 @@ def _record(**overrides: object) -> dict[str, object]:
     return record
 
 
+def _submitted_record(**overrides: object) -> dict[str, object]:
+    record = _record(
+        scope_attributes={"subscription": "sub-1"},
+        execution_snapshot={
+            "target_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+            "target_kind": "Azure VM",
+            "patch_ids": ["KB600001"],
+            "operation": "install_patches",
+            "snapshot_hash": "a" * 64,
+        },
+    )
+    record.update(overrides)
+    return record
+
+
+def _provider_operation(**overrides: object) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "schema_version": "1.0",
+        "operation_id": "provider-operation-1",
+        "status": "submitted",
+        "skill_name": "aiops-install-selected-patches-v1",
+        "skill_version": "1.0",
+        "operation": "install_patches",
+        "target_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        "patch_ids": ["KB600001"],
+    }
+    evidence.update(overrides)
+    return evidence
+
+
 def _verifier(
     payload: dict[str, object],
     *,
@@ -99,7 +129,7 @@ def test_pending_user_input_remains_active_for_review_approval() -> None:
     assert result["provider_active"] is True
 
 
-def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
+def test_complete_without_typed_write_submission_does_not_succeed() -> None:
     verifier, _credential = _verifier(
         {
             "status": "Complete",
@@ -109,12 +139,136 @@ def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
 
     result = verifier.verify(_record())
 
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert result["verified_state"] == "Complete"
+
+
+def test_no_wait_completion_requires_exact_typed_write_submission() -> None:
+    verifier, _credential = _verifier(
+        {
+            "status": {
+                "actionsStatus": {
+                    "hasCriticalActions": False,
+                    "hasWarningActions": False,
+                },
+                "incidentStatus": {"status": ""},
+            },
+            "lastMessage": {"isComplete": True},
+            "provider_operation": _provider_operation(),
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
     assert result == {
         "verifiable": True,
         "outcome": "succeeded",
         "verified_state": "Complete",
-        "verification_evidence": {"thread_status": "Complete"},
+        "verification_evidence": {
+            "thread_status": {
+                "last_message_complete": True,
+                "has_critical_actions": False,
+                "has_warning_actions": False,
+                "incident_status": "",
+            },
+            "provider_operation": {
+                "schema_version": "1.0",
+                "operation_id": "provider-operation-1",
+                "status": "submitted",
+                "skill_name": "aiops-install-selected-patches-v1",
+                "skill_version": "1.0",
+                "operation": "install_patches",
+                "target_id": _submitted_record()["execution_snapshot"]["target_id"],
+                "patch_ids": ["KB600001"],
+            },
+        },
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "1.4"),
+        ("operation_id", ""),
+        ("status", "failed_without_action"),
+        ("skill_name", "other-write-skill"),
+        ("skill_version", "1.4"),
+        ("operation", "applicability_check"),
+        ("target_id", "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-other"),
+        ("patch_ids", ["KB600002"]),
+    ],
+)
+def test_completed_thread_with_mismatched_write_submission_never_succeeds(
+    field: str,
+    value: object,
+) -> None:
+    verifier, _credential = _verifier(
+        {
+            "status": {
+                "actionsStatus": {
+                    "hasCriticalActions": False,
+                    "hasWarningActions": False,
+                },
+                "incidentStatus": {"status": ""},
+            },
+            "lastMessage": {"isComplete": True},
+            "provider_operation": _provider_operation(**{field: value}),
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+
+
+def test_completed_thread_rejects_extra_provider_operation_fields() -> None:
+    operation = _provider_operation()
+    operation["unexpected"] = "not-allowed"
+    verifier, _credential = _verifier(
+        {
+            "status": "Complete",
+            "provider_operation": operation,
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+
+
+def test_completed_thread_cannot_make_a_noncanonical_snapshot_operation_valid() -> None:
+    record = _submitted_record()
+    record["execution_snapshot"]["operation"] = "applicability_check"
+    verifier, _credential = _verifier(
+        {
+            "status": "Complete",
+            "provider_operation": _provider_operation(
+                operation="applicability_check"
+            ),
+        }
+    )
+
+    result = verifier.verify(record)
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+
+
+def test_typed_failed_without_action_never_becomes_success() -> None:
+    verifier, _credential = _verifier(
+        {
+            "status": "failed_without_action",
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "provider_rejected"
+    assert result["verified_state"] != "Complete"
 
 
 @pytest.mark.parametrize(
@@ -131,8 +285,8 @@ def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
                 },
                 "lastMessage": {"isComplete": True, "content": "failed"},
             },
-            "succeeded",
-            "Complete",
+            "failed",
+            "CompleteWithoutSubmissionProof",
         ),
         (
             {
