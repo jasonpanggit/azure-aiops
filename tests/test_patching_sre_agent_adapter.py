@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 import operations.patching.sre_agent_adapter as sre_adapter
+from intelligence.remediation.approval_decisions import execution_snapshot_hash
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import AvailablePatch, PatchRun, PatchTarget
 from operations.patching.sre_agent_adapter import (
@@ -25,6 +28,7 @@ AGENT_ENDPOINT = "https://sre-agent.example.azure.com"
 SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000001"
 TARGET_PREFIX = f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-prod"
 VM_ID = f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/vm-payments"
+ARC_ID = f"{TARGET_PREFIX}/providers/Microsoft.HybridCompute/machines/arc-payments"
 
 
 class _Credential:
@@ -64,16 +68,38 @@ def _target(**overrides: object) -> PatchTarget:
 
 
 def _run(**overrides: object) -> PatchRun:
+    target_id = str(overrides.get("target_id", VM_ID))
+    target_kind = str(overrides.get("inventory_kind", "Azure VM"))
+    patch_ids = tuple(overrides.get("patch_ids", ("KB600001",)))
+    operation = str(overrides.get("operation", "install_patches"))
+    snapshot = {
+        "target_id": target_id,
+        "patch_ids": list(patch_ids),
+        "target_kind": target_kind,
+        "operation": operation,
+        "action_version": "action-version-1",
+    }
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     values = {
         "run_id": "run-immutable-1",
-        "target_id": VM_ID,
-        "inventory_kind": "Azure VM",
-        "operation": "install_patches",
-        "patch_ids": ("KB600001",),
+        "target_id": target_id,
+        "inventory_kind": target_kind,
+        "operation": operation,
+        "patch_ids": patch_ids,
         "reboot_setting": "IfRequired",
         "requested_by": "operator@example.com",
         "approved_by": "approver@example.com",
         "subscription_id": SUBSCRIPTION_ID,
+        "details": {
+            "approval_context": {
+                "decision_id": "RMD-APPROVED-1",
+                "decision": "approved",
+                "decided_at": "2026-09-16T08:00:00+00:00",
+                "expires_at": "2026-09-17T08:00:00+00:00",
+                "approved_by": "approver@example.com",
+                "execution_snapshot": snapshot,
+            }
+        },
     }
     values.update(overrides)
     return PatchRun(**values)
@@ -100,6 +126,7 @@ def _adapter(
             subscription_id=SUBSCRIPTION_ID,
             target_prefix=target_prefix,
             client=client,
+            now=lambda: datetime(2026, 9, 16, 12, tzinfo=UTC),
         ),
         selected_credential,
     )
@@ -124,13 +151,16 @@ def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
     request = requests[0]
     assert str(request.url) == TRIGGER_URL
     assert request.headers["Authorization"] == "Bearer " + credential.token
-    assert json.loads(request.content) == {
-        "schema_version": "1.0",
+    payload = json.loads(request.content)
+    assert payload == {
+        "schema_version": "1.1",
         "run_id": "run-immutable-1",
         "subscription_id": SUBSCRIPTION_ID,
         "target_id": VM_ID,
         "target_kind": "Azure VM",
         "patch_ids": ["KB600001"],
+        "approval": _run().details["approval_context"],
+        "skill_chain": sre_adapter._skill_contract(),
         "reboot_setting": "IfRequired",
         "maximum_duration": "PT2H",
         "requested_by": "operator@example.com",
@@ -147,7 +177,7 @@ def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
         "thread_id": "thread-123",
         "resource_id": VM_ID,
         "subscription_id": SUBSCRIPTION_ID,
-        "schema_version": "1.0",
+        "schema_version": "1.1",
     }
 
 
@@ -195,13 +225,12 @@ def test_operator_identity_is_audit_data_and_never_used_as_bearer_token() -> Non
         )
 
     adapter, credential = _adapter(handler)
-    adapter.submit(
-        _run(
-            requested_by="operator-token-value",
-            approved_by="approver-token-value",
-        ),
-        _target(),
+    run = _run(
+        requested_by="operator-token-value",
+        approved_by="approver-token-value",
     )
+    run.details["approval_context"]["approved_by"] = "approver-token-value"
+    adapter.submit(run, _target())
 
     authorization = requests[0].headers["Authorization"]
     payload = json.loads(requests[0].content)
@@ -213,7 +242,7 @@ def test_operator_identity_is_audit_data_and_never_used_as_bearer_token() -> Non
 
 
 def test_arc_target_uses_the_same_exact_bounded_envelope() -> None:
-    arc_id = f"{TARGET_PREFIX}/providers/Microsoft.HybridCompute/machines/arc-payments"
+    arc_id = ARC_ID
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -237,10 +266,68 @@ def test_arc_target_uses_the_same_exact_bounded_envelope() -> None:
 
 
 @pytest.mark.parametrize(
+    ("target_id", "target_kind"),
+    [
+        (
+            (
+                f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/vm-a/"
+                "extensions/agent"
+            ),
+            "Azure VM",
+        ),
+        (f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/vm a", "Azure VM"),
+        (VM_ID, "Arc-enabled server"),
+        (ARC_ID, "Azure VM"),
+    ],
+)
+def test_malformed_child_or_cross_kind_targets_are_rejected_before_http(
+    target_id: str,
+    target_kind: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    adapter, credential = _adapter(
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        )
+    )
+
+    with pytest.raises(PatchExecutionUnavailable, match="exact VM or Arc"):
+        adapter.submit(
+            _run(target_id=target_id, inventory_kind=target_kind),
+            _target(target_id=target_id, inventory_kind=target_kind),
+        )
+
+    assert requests == []
+    assert credential.scopes == []
+
+
+def test_approval_snapshot_drift_is_rejected_before_token_or_http() -> None:
+    requests: list[httpx.Request] = []
+    run = _run()
+    approval = copy.deepcopy(run.details["approval_context"])
+    approval["execution_snapshot"]["patch_ids"] = ["KB600002"]
+    run.details["approval_context"] = approval
+    adapter, credential = _adapter(
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        )
+    )
+
+    with pytest.raises(PatchExecutionUnavailable, match="locked contract"):
+        adapter.submit(run, _target())
+
+    assert requests == []
+    assert credential.scopes == []
+
+
+@pytest.mark.parametrize(
     ("run_overrides", "target_overrides", "message"),
     [
         ({"patch_ids": ()}, {}, "non-empty patch IDs"),
         ({"patch_ids": ("",)}, {}, "non-empty patch IDs"),
+        ({"patch_ids": ("KB600001;echo",)}, {}, "non-empty patch IDs"),
         ({"patch_ids": ("KB600001", "KB600001")}, {}, "bounded set"),
         ({"patch_ids": ("KB-NOT-AVAILABLE",)}, {}, "not available"),
         (
@@ -281,7 +368,8 @@ def test_invalid_or_cross_scope_submissions_are_refused_before_http(
     )
 
     with pytest.raises(PatchExecutionUnavailable, match=message) as excinfo:
-        adapter.submit(_run(**run_overrides), _target(**target_overrides))
+        run = _run(**run_overrides)
+        adapter.submit(run, _target(**target_overrides))
 
     assert requests == []
     assert excinfo.value.provider_submitted is False

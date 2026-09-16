@@ -30,6 +30,7 @@ from operations.defender_configuration import (
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import PatchTarget
 from operations.patching.service import PatchingService, PatchValidationError
+from operations.patching.sre_agent_adapter import SRE_AGENT_PROVIDER
 
 from .execution_store import (
     ExecutionClaimConflict,
@@ -522,6 +523,26 @@ class RemediationExecutionService:
                     requested_by=requested_by,
                     approved_by=str(decision.get("approver") or ""),
                     dry_run=False,
+                    approval_context={
+                        "decision_id": str(decision.get("decision_id") or ""),
+                        "decision": str(decision.get("decision") or ""),
+                        "decided_at": str(decision.get("decided_at") or ""),
+                        "expires_at": str(decision.get("expires_at") or ""),
+                        "approved_by": str(decision.get("approver") or ""),
+                        "execution_snapshot": {
+                            field: copy.deepcopy(
+                                (decision.get("execution_snapshot") or {}).get(field)
+                            )
+                            for field in (
+                                "target_id",
+                                "patch_ids",
+                                "target_kind",
+                                "operation",
+                                "action_version",
+                                "snapshot_hash",
+                            )
+                        },
+                    },
                 )
         except (
             DefenderConfigurationUnavailable,
@@ -1188,7 +1209,12 @@ class RemediationExecutionService:
                 ).isoformat(),
             )
 
-        if self._is_verification_deadline_exceeded(record):
+        deadline_exceeded = self._is_verification_deadline_exceeded(record)
+        provider_review_thread = (
+            str(record.get("provider") or "") == SRE_AGENT_PROVIDER
+            and bool(record.get("provider_job_id"))
+        )
+        if deadline_exceeded and not provider_review_thread:
             return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
@@ -1218,43 +1244,50 @@ class RemediationExecutionService:
         ).isoformat()
 
         if self._verifier is None:
-            message = _append_note(
-                record.get("message"),
-                "Verification unavailable: no execution verifier is configured",
-            )
-            return self._transition_or_current(
-                execution_id,
-                expected_revision=int(record.get("revision") or 0),
-                expected_status="running",
-                status="running",
-                actor="execution-verifier",
-                message=message,
-                verification_evidence={},
-                verification_attempts=next_attempts,
-                next_verification_at=backoff_at,
-            )
-
-        try:
-            outcome = self._verifier.verify(record)
-        except ExecutionVerificationUnavailable as exc:
-            message = _append_note(record.get("message"), f"Verification unavailable: {exc}")
-            return self._transition_or_current(
-                execution_id,
-                expected_revision=int(record.get("revision") or 0),
-                expected_status="running",
-                status="running",
-                actor="execution-verifier",
-                message=message,
-                verification_evidence={},
-                verification_attempts=next_attempts,
-                next_verification_at=backoff_at,
-            )
+            outcome = {
+                "verifiable": False,
+                "reason": "no execution verifier is configured",
+                "verification_evidence": {},
+            }
+        else:
+            try:
+                outcome = self._verifier.verify(record)
+            except ExecutionVerificationUnavailable as exc:
+                outcome = {
+                    "verifiable": False,
+                    "reason": str(exc),
+                    "verification_evidence": {},
+                }
 
         if not outcome.get("verifiable", False):
             message = _append_note(
                 record.get("message"),
                 f"Verification not available: {outcome.get('reason', 'unknown')}",
             )
+            if deadline_exceeded:
+                return self._transition_or_current(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status="running",
+                    status="failed",
+                    actor="execution-verifier",
+                    outcome="unknown",
+                    failure_class="verification_timed_out",
+                    verified_state="verification_deadline_exceeded",
+                    message=_append_note(
+                        message,
+                        "The Azure SRE Agent Review thread could not be proven "
+                        "active after the verification deadline; confirm target "
+                        "state before recovery.",
+                    ),
+                    failure_details=(
+                        "The Azure SRE Agent Review thread could not be proven "
+                        "active after the verification deadline; confirm target "
+                        "state before recovery."
+                    ),
+                    verification_evidence=outcome.get("verification_evidence") or {},
+                    verification_attempts=next_attempts,
+                )
             return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
@@ -1318,6 +1351,28 @@ class RemediationExecutionService:
                     or "Provider reported a terminal outcome with no additional detail."
                 ),
                 outcome="cancelled",
+                verification_evidence=outcome.get("verification_evidence") or {},
+                verification_attempts=next_attempts,
+            )
+        if deadline_exceeded and not outcome.get("provider_active", False):
+            return self._transition_or_current(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="failed",
+                actor="execution-verifier",
+                outcome="unknown",
+                failure_class="verification_timed_out",
+                verified_state="verification_deadline_exceeded",
+                message=_append_note(
+                    record.get("message"),
+                    "Verification did not prove that the Azure SRE Agent Review "
+                    "thread remains active; confirm target state before recovery.",
+                ),
+                failure_details=(
+                    "Verification did not prove that the Azure SRE Agent Review "
+                    "thread remains active; confirm target state before recovery."
+                ),
                 verification_evidence=outcome.get("verification_evidence") or {},
                 verification_attempts=next_attempts,
             )

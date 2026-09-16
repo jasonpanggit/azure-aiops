@@ -17,6 +17,56 @@ from operations.patching.sre_agent_adapter import (
 from .execution_verifier import ExecutionVerificationUnavailable
 
 
+def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize the production thread status without reading message prose."""
+    status = payload.get("status")
+    last_message = payload.get("lastMessage")
+    if not isinstance(status, dict) or not isinstance(last_message, dict):
+        return None
+    actions = status.get("actionsStatus")
+    incident = status.get("incidentStatus")
+    if not isinstance(actions, dict) or not isinstance(incident, dict):
+        return None
+    complete = last_message.get("isComplete")
+    critical = actions.get("hasCriticalActions")
+    warning = actions.get("hasWarningActions")
+    incident_status = incident.get("status")
+    if (
+        not isinstance(complete, bool)
+        or not isinstance(critical, bool)
+        or not isinstance(warning, bool)
+        or not isinstance(incident_status, str)
+    ):
+        return None
+    return {
+        "last_message_complete": complete,
+        "has_critical_actions": critical,
+        "has_warning_actions": warning,
+        "incident_status": incident_status.strip(),
+    }
+
+
+def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
+    incident = " ".join(str(composite["incident_status"]).casefold().split())
+    if incident in {"failed", "failure", "error"}:
+        return (
+            "failed",
+            "Failed",
+            "Azure SRE Agent reported a terminal failed incident status.",
+        )
+    if incident in {"cancelled", "canceled"}:
+        return (
+            "cancelled",
+            "Cancelled",
+            "Azure SRE Agent reported a terminal cancelled incident status.",
+        )
+    if composite["has_critical_actions"] is True:
+        return ("running", "Pending Review", "")
+    if composite["last_message_complete"] is True:
+        return ("succeeded", "Complete", "")
+    return ("running", "In Progress", "")
+
+
 def _scrub_authorization(
     response: httpx.Response | None,
     headers: dict[str, str],
@@ -140,11 +190,27 @@ class SreAgentExecutionVerifier:
             payload = {}
         raw_status = (
             str(payload.get("status") or "").strip()
-            if isinstance(payload, dict)
+            if isinstance(payload, dict) and isinstance(payload.get("status"), str)
             else ""
         )
         normalized = " ".join(raw_status.casefold().split())
-        evidence = {"thread_status": raw_status or "unknown"}
+        composite = (
+            _composite_thread_status(payload) if isinstance(payload, dict) else None
+        )
+        evidence = {"thread_status": composite or raw_status or "unknown"}
+        if composite is not None:
+            outcome, verified_state, failure_details = _composite_outcome(composite)
+            result = {
+                "verifiable": True,
+                "outcome": outcome,
+                "verified_state": verified_state,
+                "verification_evidence": evidence,
+            }
+            if outcome == "running":
+                result["provider_active"] = True
+            if failure_details:
+                result["failure_details"] = failure_details
+            return result
         if normalized == "complete":
             return {
                 "verifiable": True,
@@ -155,11 +221,9 @@ class SreAgentExecutionVerifier:
         if normalized == "pending user input":
             return {
                 "verifiable": True,
-                "outcome": "failed",
-                "verified_state": raw_status,
-                "failure_details": (
-                    "Autonomous SRE Agent execution unexpectedly requires user input."
-                ),
+                "outcome": "running",
+                "verified_state": "Pending Review",
+                "provider_active": True,
                 "verification_evidence": evidence,
             }
         return {

@@ -25,6 +25,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_DEFINITION = REPO_ROOT / "infra/sre-agent/patch-trigger.v1.json"
+DEFAULT_READ_SKILL_ARTIFACT = (
+    REPO_ROOT
+    / "infra/sre-agent/skills/aiops-read-patch-applicability-v1/SKILL.md"
+)
+DEFAULT_WRITE_SKILL_ARTIFACT = (
+    REPO_ROOT
+    / "infra/sre-agent/skills/aiops-install-selected-patches-v1/SKILL.md"
+)
 SUBSCRIPTION_ID = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
 TENANT_ID = "ffc83107-fcc0-4d2e-8798-d582da36505e"
 AGENT_RESOURCE_ID = (
@@ -74,8 +82,24 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "5af9fc622b3ea870ae6a024e2bd8db70179aa6e4d51d47fc14f404cc9209d13f"
+    "64eca0f0832560c3a0324b9409edaf6af9de30fc5e22bf48d26133ca6c360ad7"
 )
+PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
+PATCH_READ_SKILL_VERSION = "1.0"
+PATCH_READ_SKILL_SHA256 = (
+    "f037dc85c779e8858160aee766b51e4ca9d59e286b775f64dcbb90adcd07a080"
+)
+PATCH_READ_SKILL_TOOLS = ("RunAzCliReadCommands",)
+PATCH_READ_SKILL_OPERATION = "read_patch_applicability"
+PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
+PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
+PATCH_WRITE_SKILL_VERSION = "1.0"
+PATCH_WRITE_SKILL_SHA256 = (
+    "f472851acf2e098d4fee1c059e5271b7fabfe28125c2a68ac9ce3719054bb443"
+)
+PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
+PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
+PATCH_WRITE_OUTPUT_SCHEMA_VERSION = "1.0"
 TRIGGER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 SUBSCRIPTION_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -89,6 +113,7 @@ DEFINITION_FIELDS = frozenset(
         "payloadSchema",
         "prompt",
         "runMode",
+        "skills",
         "threadGrouping",
     }
 )
@@ -145,18 +170,111 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
+    """Validate one exact raw Skill Builder artifact and return its receipt."""
+    specs = {
+        PATCH_READ_SKILL_NAME: {
+            "version": PATCH_READ_SKILL_VERSION,
+            "sha256": PATCH_READ_SKILL_SHA256,
+            "tools": PATCH_READ_SKILL_TOOLS,
+            "operation": PATCH_READ_SKILL_OPERATION,
+            "output": PATCH_READ_OUTPUT_SCHEMA_VERSION,
+            "required": (
+                "Use only `RunAzCliReadCommands`",
+                "az graph query",
+                "--first 257",
+                "maximum_age_seconds = 86400",
+                "assessment_activity_id",
+                "blocked_no_action",
+            ),
+        },
+        PATCH_WRITE_SKILL_NAME: {
+            "version": PATCH_WRITE_SKILL_VERSION,
+            "sha256": PATCH_WRITE_SKILL_SHA256,
+            "tools": PATCH_WRITE_SKILL_TOOLS,
+            "operation": PATCH_WRITE_SKILL_OPERATION,
+            "output": PATCH_WRITE_OUTPUT_SCHEMA_VERSION,
+            "required": (
+                "Use only `RunAzCliWriteCommands`",
+                "az vm install-patches --ids",
+                "az connectedmachine install-patches --ids",
+                "Present exactly one command in Review mode",
+                "no more than 300 seconds",
+                "blocked_no_action",
+            ),
+        },
+    }
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ReadinessError(f"cannot read Skill Builder artifact: {exc}") from exc
+    if "\r" in text or not text.endswith("\n"):
+        raise ReadinessError("Skill Builder artifact must be canonical LF text")
+    lines = text.splitlines()
+    if len(lines) < 4 or lines[0] != "---" or lines[3] != "---":
+        raise ReadinessError("Skill Builder frontmatter must be name and description")
+    if not lines[1].startswith("name: ") or not lines[2].startswith("description: "):
+        raise ReadinessError("Skill Builder frontmatter must be name and description")
+    name = lines[1].removeprefix("name: ")
+    spec = specs.get(name)
+    if spec is None or path.parent.name != name:
+        raise ReadinessError("Skill Builder name/path drift detected")
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != spec["sha256"]:
+        raise ReadinessError("Skill Builder raw-byte hash drift detected")
+    if any(term not in text for term in spec["required"]):
+        raise ReadinessError("Skill Builder instruction contract is incomplete")
+    if name == PATCH_READ_SKILL_NAME:
+        if (
+            text.count("az graph query --graph-query") != 1
+            or "Do not use `RunAzCliWriteCommands`" not in text
+        ):
+            raise ReadinessError("read skill command/tool isolation drift detected")
+    elif (
+        text.count("az vm install-patches") != 1
+        or text.count("az connectedmachine install-patches") != 1
+        or "Do not use `RunAzCliReadCommands`" not in text
+    ):
+        raise ReadinessError("write skill command/tool isolation drift detected")
+    return {
+        "name": name,
+        "version": spec["version"],
+        "artifact": "SKILL.md",
+        "raw_sha256": digest,
+        "tools": list(spec["tools"]),
+        "operation": spec["operation"],
+        "output_schema_version": spec["output"],
+    }
+
+
+def _canonical_skill_chain() -> dict[str, Any]:
+    read = canonical_skill_builder_artifact(DEFAULT_READ_SKILL_ARTIFACT)
+    read.update({"maximum_rows": 257, "maximum_age": "PT24H"})
+    write = canonical_skill_builder_artifact(DEFAULT_WRITE_SKILL_ARTIFACT)
+    write.update(
+        {
+            "required_read_evidence_maximum_age": "PT5M",
+            "review_command_count": 1,
+        }
+    )
+    return {"sequence": ["read", "write"], "read": read, "write": write}
+
+
 def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and return the versioned canonical trigger review body."""
     _exact_fields(definition, ARTIFACT_FIELDS, "trigger definition")
-    if definition.get("artifactVersion") != "1.0":
-        raise ReadinessError("artifactVersion must be exactly 1.0")
+    if definition.get("artifactVersion") != "1.1":
+        raise ReadinessError("artifactVersion must be exactly 1.1")
     if definition.get("name") != "aiops-selected-patch-execution-v1":
         raise ReadinessError("trigger name does not match the versioned contract")
-    if definition.get("runMode") != "Autonomous":
-        raise ReadinessError("trigger runMode must be Autonomous")
+    if definition.get("runMode") != "Review":
+        raise ReadinessError("trigger runMode must be Review")
     if definition.get("threadGrouping") != "NewThreadPerRun":
         raise ReadinessError("trigger threadGrouping must be NewThreadPerRun")
     _canonical_secret_contract(definition)
+    if definition.get("skills") != _canonical_skill_chain():
+        raise ReadinessError("trigger skills do not match raw reviewed artifacts")
     for field in ("description", "prompt"):
         if not isinstance(definition.get(field), str) or not definition[field].strip():
             raise ReadinessError(f"trigger {field} must be a non-empty string")
@@ -167,23 +285,19 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ReadinessError("trigger prompt does not match the canonical contract")
     required_prompt_terms = (
-        "run_id",
-        "subscription_id",
-        "target_id",
-        "patch_ids",
-        "reboot_setting",
-        "maximum_duration to equal PT2H",
-        "reboot_setting, maximum_duration, requested_by, and approved_by as immutable",
-        "exact reboot_setting and maximum_duration",
-        "available read-only tools and knowledge sources",
-        "Operations API or MCP through APIM only for read-only contract-liveness",
-        "never invoke a mutating operation through it",
-        "approved snapshot as authorization, not proof of current state",
-        "live state differs materially from the snapshot",
-        "contract liveness cannot be established",
-        "Do not discover or select alternative targets or patches",
-        "fall back to all available patches",
-        "stop without fallback",
+        "schema_version 1.1",
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.HybridCompute/machines",
+        "RunAzCliReadCommands",
+        "PatchAssessmentResources",
+        "PT24H",
+        "PT5M",
+        "RunAzCliWriteCommands",
+        "Review mode present exactly one",
+        "az vm install-patches",
+        "az connectedmachine install-patches",
+        "Forbid empty filters",
+        "Provider completion never substitutes",
     )
     missing_terms = [term for term in required_prompt_terms if term not in prompt]
     if missing_terms:
@@ -196,6 +310,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
     properties = _mapping(payload_schema.get("properties"), "payloadSchema.properties")
     expected_fields = {
         "approved_by",
+        "approval",
         "operation",
         "patch_ids",
         "reboot_setting",
@@ -203,6 +318,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "requested_by",
         "run_id",
         "schema_version",
+        "skill_chain",
         "subscription_id",
         "target_id",
         "target_kind",
@@ -213,12 +329,16 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         raise ReadinessError("payloadSchema.additionalProperties must be false")
     if set(required) != expected_fields or set(properties) != expected_fields:
         raise ReadinessError("payloadSchema fields do not match the runtime envelope")
-    if properties["schema_version"] != {"const": "1.0"}:
-        raise ReadinessError("payload schema_version must be fixed at 1.0")
+    if properties["schema_version"] != {"const": "1.1"}:
+        raise ReadinessError("payload schema_version must be fixed at 1.1")
     if properties["operation"] != {"const": "install_patches"}:
         raise ReadinessError("payload operation must be fixed at install_patches")
     if properties["maximum_duration"] != {"const": "PT2H"}:
         raise ReadinessError("payload maximum_duration must be fixed at PT2H")
+    if properties["reboot_setting"] != {"const": "IfRequired"}:
+        raise ReadinessError("payload reboot_setting must be fixed at IfRequired")
+    if properties.get("skill_chain") != {"const": _canonical_skill_chain()}:
+        raise ReadinessError("payload skill_chain does not match reviewed skills")
 
     return {field: definition[field] for field in sorted(DEFINITION_FIELDS)}
 
@@ -789,7 +909,7 @@ def _next_commands(
     return [
         (
             "HUMAN GATE: create or update the HTTP trigger in Azure portal for "
-            f"{AGENT_RESOURCE_ID}; set Autonomous and New chat thread for each run, "
+            f"{AGENT_RESOURCE_ID}; set Review and New chat thread for each run, "
             "then compare the rendered canonical hash before saving."
         ),
         (
@@ -1555,8 +1675,8 @@ def _normalize_live_trigger(
         raise ReadinessError("live trigger invocation URL is not exact")
     if raw.get("agent") is not None:
         raise ReadinessError("live trigger response agent must remain the default")
-    if raw.get("agentMode") != "autonomous":
-        raise ReadinessError("live trigger agentMode must be autonomous")
+    if raw.get("agentMode") != "review":
+        raise ReadinessError("live trigger agentMode must be review")
     raw_thread_id = raw.get("threadId")
     if raw_thread_id not in ("", None):
         raise ReadinessError("live trigger threadId must be empty for NewThreadPerRun")
@@ -1564,7 +1684,7 @@ def _normalize_live_trigger(
         "id": trigger_id,
         "enabled": raw.get("triggerEnabled"),
         "prompt": raw.get("agentPrompt"),
-        "runMode": "Autonomous",
+        "runMode": "Review",
         "threadGrouping": "NewThreadPerRun",
         "name": raw.get("name"),
     }

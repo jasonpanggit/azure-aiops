@@ -50,7 +50,7 @@ def _fixture(path: Path) -> dict[str, object]:
 def _real_live_trigger_row(module, **overrides: object) -> dict[str, object]:
     row = {
         "agent": None,
-        "agentMode": "autonomous",
+        "agentMode": "review",
         "agentPrompt": module.canonical_trigger_body(_fixture(DEFINITION))["prompt"],
         "createdAt": "2026-09-16T01:00:00Z",
         "createdBy": "operator",
@@ -319,12 +319,12 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     module = _load_module()
     body = module.canonical_trigger_body(_fixture(DEFINITION))
 
-    assert body["runMode"] == "Autonomous"
+    assert body["runMode"] == "Review"
     assert body["threadGrouping"] == "NewThreadPerRun"
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "8a5d5bbe29833d94a19553458c30a5ded68e3619f6400a496660a6839ee4c3e0"
+        == "34912b20f1bd69ceadd10af6e42f4f91e67c23751854edb0dbe2ea62f8aa3819"
     )
 
 
@@ -945,7 +945,7 @@ def test_blocked_live_collector_does_not_write_evidence(
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
-        ("runMode", "Review"),
+        ("runMode", "Autonomous"),
         ("threadGrouping", "SameThread"),
         ("prompt", "Install available patches."),
         ("artifactVersion", "2.0"),
@@ -968,6 +968,9 @@ def test_trigger_drift_is_detected(field: str, replacement: object) -> None:
 def test_trigger_payload_schema_mismatch_is_detected() -> None:
     module = _load_module()
     trigger = _fixture(TRIGGER_FIXTURE)
+    trigger["trigger"]["payloadSchema"] = copy.deepcopy(
+        _fixture(DEFINITION)["payloadSchema"]
+    )
     trigger["trigger"]["payloadSchema"]["properties"]["operation"] = {
         "const": "assess_patches"
     }
@@ -1023,10 +1026,7 @@ def test_safety_discovery_prompt_requires_stale_snapshot_guard() -> None:
     module = _load_module()
     definition = _fixture(DEFINITION)
     definition["prompt"] = definition["prompt"].replace(
-        "Treat the approved snapshot as authorization, not proof of current state. ",
-        "",
-    ).replace(
-        "If live state differs materially from the snapshot, a selected patch is no longer applicable, or discovery identifies any other issue, flag it and stop without submitting a patch operation. ",
+        "Validate the exact current upstream approval and equality of subscription_id, target_id, target_kind, patch_ids, operation, approver, and snapshot hash before any tool. ",
         "",
     )
 
@@ -1038,7 +1038,7 @@ def test_safety_discovery_prompt_requires_read_only_contract_liveness_tooling() 
     module = _load_module()
     definition = _fixture(DEFINITION)
     definition["prompt"] = definition["prompt"].replace(
-        "When available, use the repository-managed Operations API or MCP through APIM only for read-only contract-liveness context; never invoke a mutating operation through it. ",
+        "Invoke the bound read skill first using only RunAzCliReadCommands and its fixed bounded PatchAssessmentResources query. ",
         "",
     )
 
@@ -1185,7 +1185,7 @@ def test_real_live_trigger_row_uses_exact_observed_production_keys() -> None:
     ("overrides", "expected"),
     [
         ({"agentPrompt": "Install available patches."}, "trigger drift detected"),
-        ({"agentMode": "review"}, "agentMode must be autonomous"),
+        ({"agentMode": "autonomous"}, "agentMode must be review"),
         ({"triggerEnabled": False}, "trigger must be enabled"),
         ({"threadId": "shared-thread"}, "threadId must be empty"),
         ({"agent": "other-agent"}, "response agent must remain the default"),
@@ -2130,7 +2130,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "8a5d5bbe29833d94a19553458c30a5ded68e3619f6400a496660a6839ee4c3e0"
+        "34912b20f1bd69ceadd10af6e42f4f91e67c23751854edb0dbe2ea62f8aa3819"
     )
 
 
