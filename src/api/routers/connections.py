@@ -7,6 +7,7 @@ role and operational routes require ``operate``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Query, Response
@@ -53,6 +54,26 @@ def _scope_row(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _latest_registry_timestamp(rows: list[dict[str, Any]]) -> str:
+    candidates: list[tuple[datetime, str]] = []
+    for row in rows:
+        for raw_timestamp in (
+            row.get("last_synced_at"),
+            row.get("last_successful_sync_at"),
+        ):
+            timestamp = str(raw_timestamp or "").strip()
+            if not timestamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(timestamp)
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            candidates.append((parsed.astimezone(UTC), timestamp))
+    return max(candidates, default=(datetime.min.replace(tzinfo=UTC), ""))[1]
+
+
 def _authorize_connection(scope: Scope, detail: dict[str, Any]) -> None:
     """Ensure a single connection falls inside the caller's effective scope."""
     if not scope.is_unrestricted() and not scope.matches(_scope_row(detail)):
@@ -85,9 +106,10 @@ def list_connections(
 ) -> dict[str, Any]:
     rows = context.onboarding.list(include_disabled=include_disabled)
     visible = [row for row in rows if scope.is_unrestricted() or scope.matches(_scope_row(row))]
+    page_rows = visible[page.offset : page.offset + page.limit]
     return envelope(
-        visible[page.offset : page.offset + page.limit],
-        evidence=_evidence(),
+        page_rows,
+        evidence=_evidence(timestamp=_latest_registry_timestamp(page_rows)),
         scope=scope.to_dict(),
         pagination=page.to_dict(len(visible)),
     )
