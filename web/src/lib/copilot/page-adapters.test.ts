@@ -3403,15 +3403,25 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     observedAt: "2026-09-07T09:30:00Z",
     evidence: [
       {
-        source_engine: "Fabric",
-        source_table: "medallion_health",
+        source_engine: "fabric.medallion_health",
+        source_table: "metadata_source_status",
         timestamp: "2026-09-07T09:30:00Z",
         confidence: "medium" as const,
         freshness: "aging" as const,
       },
+      {
+        source_engine: "ontology.publication_manifest",
+        source_table: "metadata_publication_manifest",
+        timestamp: "2026-09-01T16:15:42Z",
+        confidence: "high" as const,
+        freshness: "stale" as const,
+      },
     ],
     sourceStatuses: [
-      { source: "fabric_medallion", freshness: "partial", observedAt: "2026-09-07T09:30:00Z" },
+      { source: "fabric/medallion-layers", freshness: "aging", observedAt: "2026-09-07T09:30:00Z" },
+      { source: "fabric/manifest", freshness: "stale", observedAt: "2026-09-01T16:15:42Z" },
+      { source: "fabric/governance", freshness: "fresh", observedAt: "2026-09-07T09:30:00Z" },
+      { source: "fabric/capabilities", freshness: "fresh", observedAt: "2026-09-07T09:30:00Z" },
     ],
   };
 
@@ -3426,16 +3436,27 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       (row) => row.data.layer === "silver",
     );
     expect(silver?.data).toMatchObject({
-      entity: { type: "domain", namespace: "fabric", kind: "medallion_layer", source_key: "silver" },
+      entity: { type: "observation", source: "fabric/medallion-layers", source_key: "silver" },
       healthy: 2,
       total: 3,
       actionable: false,
       mutation_authorized: false,
     });
+    expect(silver?.observed_at).toBe("2026-09-07T09:30:00Z");
     // Gold layer is healthy-empty (0/0), never an outage.
     const gold = rowByClaim(context, "medallion_layer").find((row) => row.data.layer === "gold");
     expect(gold?.data).toMatchObject({ healthy: 0, total: 0 });
     expect(rowByClaim(context, "fabric_manifest").length).toBe(1);
+    expect(rowByClaim(context, "fabric_manifest")[0]).toMatchObject({
+      observed_at: "2026-09-01T16:15:42Z",
+      data: {
+        entity: {
+          type: "observation",
+          source: "fabric/manifest",
+          source_key: "inventory_gold",
+        },
+      },
+    });
     expect(rowByClaim(context, "fabric_governance")[0]?.data).toMatchObject({
       ownership_gap_count: 2,
       tag_gap_count: 1,
@@ -3452,8 +3473,41 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     });
     // Partial freshness is surfaced as uncertainty, not hidden.
     expect(context.uncertainty).toEqual(
-      expect.arrayContaining(["fabric_medallion freshness is partial"]),
+      expect.arrayContaining([
+        "fabric/medallion-layers freshness is partial",
+        "fabric/manifest freshness is stale",
+      ]),
     );
+    expect(context.snapshot.freshness).toEqual(expect.arrayContaining([
+      {
+        source: "fabric/medallion-layers",
+        observed_at: "2026-09-07T09:30:00Z",
+        status: "partial",
+      },
+      {
+        source: "fabric/manifest",
+        observed_at: "2026-09-01T16:15:42Z",
+        status: "stale",
+      },
+      {
+        source: "fabric.medallion_health/metadata_source_status",
+        observed_at: "2026-09-07T09:30:00Z",
+        status: "partial",
+      },
+      {
+        source: "ontology.publication_manifest/metadata_publication_manifest",
+        observed_at: "2026-09-01T16:15:42Z",
+        status: "stale",
+      },
+    ]));
+    expect(context.snapshot.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        section: "ontology.publication_manifest/metadata_publication_manifest",
+        observed_at: "2026-09-01T16:15:42Z",
+      }),
+    ]));
+    expect(context.snapshot.evidence.every((row) =>
+      row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     expect(context.starterQuestions.every((starter) =>
       starter.specialistId === "inventory_data_health"
       && starter.tool === "inventory_resources")).toBe(true);
@@ -3472,7 +3526,7 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       available: true,
       freshness: "fresh" as const,
       sourceStatuses: [
-        { source: "fabric_medallion", availability: "blocked", freshness: "unknown" },
+        { source: "fabric/capabilities", availability: "blocked", freshness: "unknown" },
       ],
     });
     expect(blocked.uncertainty).toEqual(
@@ -3493,15 +3547,41 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       deploymentBlocked: false,
       freshness: "unavailable" as const,
       sourceStatuses: [
-        { source: "fabric_medallion", availability: "unavailable", freshness: "unknown" },
+        { source: "fabric/medallion-layers", availability: "unavailable", freshness: "unknown" },
       ],
     });
     expect(unavailable.uncertainty).toEqual(
-      expect.arrayContaining(["fabric_medallion freshness is unavailable"]),
+      expect.arrayContaining(["fabric/medallion-layers freshness is unavailable"]),
     );
     expect(unavailable.uncertainty).not.toEqual(
       expect.arrayContaining(["fabric_medallion is deployment-blocked"]),
     );
+  });
+
+  it("reports retained-manifest coverage honestly beyond the evidence-row bound", () => {
+    const manifest = Array.from({ length: 205 }, (_, index) => ({
+      projection_name: `projection_${index}`,
+      disposition: "active",
+      compatibility_version: "v2",
+      subscription_id: "00000000-0000-0000-0000-000000000001",
+    }));
+    const context = buildFabricMedallionCopilotContext({
+      ...fabricInput,
+      manifest,
+      manifestTotalCount: manifest.length,
+    });
+
+    expect(context.coverage.manifest).toMatchObject({
+      visible_count: 205,
+      total_count: 205,
+      complete: false,
+      truncated: true,
+    });
+    expect(rowByClaim(context, "fabric_manifest").length).toBeLessThan(205);
+    expect(context.uncertainty).toEqual(expect.arrayContaining([
+      "manifest coverage is truncated",
+      expect.stringMatching(/^evidence retention omitted \d+ rows$/),
+    ]));
   });
 
   const governanceInput = {

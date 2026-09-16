@@ -9,6 +9,7 @@ const {
   fabricIngestionHistory,
   fabricLayers,
   fabricManifest,
+  buildFabricMedallionCopilotContext,
   list,
   replace,
   searchParams,
@@ -19,6 +20,7 @@ const {
   fabricIngestionHistory: vi.fn(),
   fabricLayers: vi.fn(),
   fabricManifest: vi.fn(),
+  buildFabricMedallionCopilotContext: vi.fn(),
   list: vi.fn(),
   replace: vi.fn(),
   searchParams: { current: new URLSearchParams() },
@@ -28,6 +30,17 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace }),
   useSearchParams: () => searchParams.current,
 }));
+
+vi.mock("@/lib/copilot/page-adapters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/page-adapters")>();
+  buildFabricMedallionCopilotContext.mockImplementation(
+    actual.buildFabricMedallionCopilotContext,
+  );
+  return {
+    ...actual,
+    buildFabricMedallionCopilotContext,
+  };
+});
 
 vi.mock("@/lib/services", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/services")>();
@@ -79,10 +92,21 @@ const connections = [
   },
 ];
 
-function envelope<T>(data: T) {
+function envelope<T>(
+  data: T,
+  sourceEngine = "fabric.medallion_health",
+  freshness: "fresh" | "aging" | "stale" = "fresh",
+  timestamp = "2026-01-01T00:00:00Z",
+) {
   return {
     data,
-    evidence: [{ source_engine: "fabric.medallion_health", source_table: "metadata_source_status", timestamp: "2026-01-01T00:00:00Z", confidence: "high" }],
+    evidence: [{
+      source_engine: sourceEngine,
+      source_table: "metadata_source_status",
+      timestamp,
+      confidence: "high",
+      freshness,
+    }],
     scope: {},
     knowledge_version: "fabric-test",
   };
@@ -106,6 +130,7 @@ describe("Per-subscription Fabric medallion page", () => {
     fabricGovernance.mockReset();
     fabricIngestionHistory.mockReset();
     fabricDataset.mockReset();
+    buildFabricMedallionCopilotContext.mockClear();
     searchParams.current = new URLSearchParams();
 
     list.mockResolvedValue({
@@ -125,8 +150,16 @@ describe("Per-subscription Fabric medallion page", () => {
       semantic_readiness: { status: "available" },
       data_agent_readiness: { status: "available", configured: true },
     }));
-    fabricManifest.mockResolvedValue(envelope({ entries: [] }));
-    fabricGovernance.mockResolvedValue(envelope({ ownership_gap_count: 0, tag_gap_count: 0, referential_integrity_blockers: 0, gaps: [] }));
+    fabricManifest.mockResolvedValue(envelope(
+      { entries: [] },
+      "ontology.publication_manifest",
+      "stale",
+      "2025-12-01T00:00:00Z",
+    ));
+    fabricGovernance.mockResolvedValue(envelope(
+      { ownership_gap_count: 0, tag_gap_count: 0, referential_integrity_blockers: 0, gaps: [] },
+      "fabric.data_quality",
+    ));
     fabricIngestionHistory.mockResolvedValue(envelope({ runs: [] }));
     fabricDataset.mockResolvedValue(envelope({ table_name: "bronze_resources", availability: "healthy", row_count: 5, freshness: "current", quality: "passing", watermark: "2026-01-01T00:00:00Z", observed_at: "2026-01-01T00:00:00Z", lineage_ref: "ref" }));
   });
@@ -184,5 +217,50 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(await screen.findByRole("region", { name: "Fabric medallion health" })).toBeInTheDocument();
     expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
     expect(screen.getByText("Bronze tables")).toBeInTheDocument();
+  });
+
+  it("retains independent Fabric page evidence and freshness in Copilot context", async () => {
+    renderPage();
+
+    await waitFor(() => {
+      expect(buildFabricMedallionCopilotContext).toHaveBeenCalled();
+      const input = buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0];
+      expect(input).toMatchObject({
+        available: true,
+        sourceStatuses: expect.arrayContaining([
+          {
+            source: "fabric/medallion-layers",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            source: "fabric/manifest",
+            availability: "available",
+            freshness: "stale",
+            observedAt: "2025-12-01T00:00:00Z",
+          },
+          {
+            source: "fabric/governance",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            source: "fabric/capabilities",
+            availability: "available",
+            freshness: "fresh",
+            observedAt: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      });
+      expect(input && "evidence" in input
+        ? input.evidence.map((item: { source_engine: string }) => item.source_engine)
+        : []).toEqual(expect.arrayContaining([
+        "fabric.medallion_health",
+        "ontology.publication_manifest",
+        "fabric.data_quality",
+      ]));
+    });
   });
 });

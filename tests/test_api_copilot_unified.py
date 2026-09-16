@@ -5438,6 +5438,433 @@ def test_connections_starter_preserves_authorized_page_truth_without_semantic_pr
     ]
 
 
+def test_fabric_starters_preserve_exact_page_truth_before_optional_narration(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def inventory_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={"resources": [], "total": 0},
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/resource_observations",
+                    timestamp="2026-09-16T09:32:03Z",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    def observation(
+        evidence_id,
+        source,
+        source_key,
+        claim_type,
+        data,
+        *,
+        observed_at="2026-09-16T09:32:03Z",
+    ):
+        return {
+            "evidence_id": evidence_id,
+            "source": source,
+            "status": "ok",
+            "observed_at": observed_at,
+            "source_key": source_key,
+            "entity": {
+                "type": "observation",
+                "source": source,
+                "source_key": source_key,
+            },
+            "claim_type": claim_type,
+            "direct": True,
+            "quality": "high",
+            "data": {
+                **data,
+                "selected": False,
+                "actionable": False,
+                "mutation_authorized": False,
+            },
+        }
+
+    evidence = [
+        observation(
+            f"fabric:layer:{layer}",
+            "fabric/medallion-layers",
+            layer,
+            "medallion_layer",
+            {"layer": layer, "healthy": healthy, "total": total},
+        )
+        for layer, healthy, total in (
+            ("bronze", 18, 18),
+            ("silver", 27, 27),
+            ("gold", 0, 0),
+        )
+    ]
+    evidence.extend(
+        [
+            observation(
+                "fabric:governance",
+                "fabric/governance",
+                "fabric-governance",
+                "fabric_governance",
+                {
+                    "ownership_gap_count": 49525,
+                    "tag_gap_count": 26375,
+                    "referential_integrity_blockers": 0,
+                },
+            ),
+            observation(
+                "fabric:capabilities",
+                "fabric/capabilities",
+                "fabric-capacity",
+                "fabric_capacity",
+                {
+                    "status": "healthy",
+                    "semantic_status": "deployment-blocked",
+                    "data_agent_status": "unknown",
+                    "data_agent_configured": False,
+                    "lineage_ref": "https://fabric.microsoft.com/workspace/abc",
+                    "deployment_blocked": False,
+                },
+            ),
+            observation(
+                "fabric:manifest:active",
+                "fabric/manifest",
+                "topology_entities",
+                "fabric_manifest",
+                {
+                    "projection_name": "topology_entities",
+                    "disposition": "active",
+                    "subscription_id": "system",
+                },
+                observed_at="2026-09-01T16:15:42Z",
+            ),
+            observation(
+                "fabric:manifest:dormant",
+                "fabric/manifest",
+                "silver_alerts",
+                "fabric_manifest",
+                {
+                    "projection_name": "silver_alerts",
+                    "disposition": "dormant",
+                    "subscription_id": "system",
+                },
+                observed_at="2026-09-01T16:15:42Z",
+            ),
+        ]
+    )
+    body = {
+        "contract_version": "1",
+        "question": "",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "connections_fabric",
+            "page_id": "fabric-medallion",
+            "filters": {"view": ["fabric-medallion"]},
+            "coverage": {
+                "visible_count": 2,
+                "total_count": 2,
+                "complete": True,
+            },
+            "freshness": [
+                {
+                    "source": "fabric/medallion-layers",
+                    "observed_at": "2026-09-16T09:32:03Z",
+                    "status": "fresh",
+                },
+                {
+                    "source": "fabric/manifest",
+                    "observed_at": "2026-09-01T16:15:42Z",
+                    "status": "stale",
+                },
+                {
+                    "source": "fabric/governance",
+                    "observed_at": "2026-09-16T09:32:03Z",
+                    "status": "fresh",
+                },
+                {
+                    "source": "fabric/capabilities",
+                    "observed_at": "2026-09-16T09:32:03Z",
+                    "status": "fresh",
+                },
+            ],
+            "evidence": evidence,
+            "material_claims": [
+                {
+                    "claim_id": f"claim:{item['evidence_id'].replace(':', '-')}",
+                    "evidence_refs": [item["evidence_id"]],
+                    "requires_complete_coverage": False,
+                }
+                for item in evidence
+            ],
+        },
+        "hint": {
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {},
+        },
+    }
+    monkeypatch.setattr("api.routers.copilot.call_tool", inventory_tool)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    layer_request = json.loads(json.dumps(body))
+    layer_request["question"] = "How healthy are the Bronze, Silver, and Gold layers?"
+    layer_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=layer_request,
+        headers=HEADERS,
+    )
+
+    assert layer_response.status_code == 200, layer_response.text
+    layer_data = layer_response.json()["data"]
+    assert layer_data["selected_specialists"] == [INVENTORY_DATA_HEALTH_ID]
+    assert layer_data["selected_tools"] == ["inventory_resources"]
+    assert layer_data["coverage"]["complete"] is True
+    assert layer_data["synthesis"]["reason"] == "deterministic_fabric_page_evidence"
+    layer_claims = layer_data["synthesis"]["claims"]
+    assert [claim["summary"] for claim in layer_claims] == [
+        "Bronze layer health is 18 of 18 datasets healthy.",
+        "Silver layer health is 27 of 27 datasets healthy.",
+        (
+            "Gold is healthy-empty with 0 healthy of 0 total datasets; "
+            "this does not establish an outage."
+        ),
+    ]
+    assert all(claim["freshness"] == "fresh" for claim in layer_claims)
+    assert all(claim["evidence_refs"] for claim in layer_claims)
+    citation_ids = {
+        citation["citation_id"] for citation in layer_data["citations"]
+    }
+    assert all(
+        set(claim["evidence_refs"]) <= citation_ids for claim in layer_claims
+    )
+    assert layer_data["mutation_authorized"] is False
+
+    gap_request = json.loads(json.dumps(body))
+    gap_request["question"] = "Which datasets have governance or lineage gaps?"
+    gap_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=gap_request,
+        headers=HEADERS,
+    )
+
+    assert gap_response.status_code == 200, gap_response.text
+    gap_data = gap_response.json()["data"]
+    assert gap_data["synthesis"]["reason"] == "deterministic_fabric_page_evidence"
+    gap_summaries = [
+        claim["summary"] for claim in gap_data["synthesis"]["claims"]
+    ]
+    assert gap_summaries == [
+        (
+            "Fabric governance reports 49525 ownership gaps, 26375 tag gaps, "
+            "and 0 referential-integrity blockers. These are aggregate counts; "
+            "the retained page evidence does not identify which individual "
+            "datasets have those gaps."
+        ),
+        (
+            "A native Fabric lineage reference is available, but the retained "
+            "page evidence does not enumerate dataset-level lineage gaps."
+        ),
+    ]
+    assert gap_data["mutation_authorized"] is False
+
+    mixed = json.loads(json.dumps(layer_request))
+    mixed["snapshot"]["evidence"].append(
+        observation(
+            "fabric:unresolved",
+            "fabric/manifest",
+            "unresolved",
+            "fabric_manifest",
+            {
+                "projection_name": "unresolved",
+                "disposition": "dormant",
+                "subscription_id": "system",
+            },
+        )
+    )
+    mixed["snapshot"]["evidence"][-1]["entity"] = {
+        "type": "domain",
+        "namespace": "fabric",
+        "kind": "fabric_manifest",
+        "source_key": "unresolved",
+    }
+    mixed["snapshot"]["material_claims"].append(
+        {
+            "claim_id": "claim:fabric-unresolved",
+            "evidence_refs": ["fabric:unresolved"],
+            "requires_complete_coverage": False,
+        }
+    )
+    mixed["snapshot"]["coverage"] = {
+        "visible_count": 3,
+        "total_count": 3,
+        "complete": True,
+    }
+    mixed_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=mixed,
+        headers=HEADERS,
+    )
+
+    assert mixed_response.status_code == 200, mixed_response.text
+    mixed_data = mixed_response.json()["data"]
+    assert mixed_data["coverage"]["complete"] is False
+    assert "visible subset is incomplete" in mixed_data["uncertainty"]
+    assert any(
+        "unresolved domain page evidence was excluded" in warning
+        for warning in mixed_data["uncertainty"]
+    )
+    assert mixed_data["synthesis"]["reason"] == (
+        "fabric_page_evidence_not_authorized"
+    )
+    assert mixed_data["synthesis"]["claims"] == []
+    assert mixed_data["mutation_authorized"] is False
+
+    forged = json.loads(json.dumps(layer_request))
+    forged["snapshot"]["evidence"][0]["entity"]["source_key"] = "forged-bronze"
+    forged_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=forged,
+        headers=HEADERS,
+    )
+
+    assert forged_response.status_code == 200, forged_response.text
+    forged_data = forged_response.json()["data"]
+    assert forged_data["coverage"]["complete"] is False
+    assert "visible subset is incomplete" in forged_data["uncertainty"]
+    assert forged_data["synthesis"]["reason"] == (
+        "fabric_page_evidence_not_authorized"
+    )
+    assert forged_data["synthesis"]["claims"] == []
+    assert forged_data["mutation_authorized"] is False
+
+    duplicate = json.loads(json.dumps(layer_request))
+    duplicate_bronze = observation(
+        "fabric:layer:bronze:duplicate",
+        "fabric/medallion-layers",
+        "bronze",
+        "medallion_layer",
+        {"layer": "bronze", "healthy": 17, "total": 18},
+    )
+    duplicate["snapshot"]["evidence"].append(duplicate_bronze)
+    duplicate["snapshot"]["material_claims"].append(
+        {
+            "claim_id": "claim:fabric-layer-bronze-duplicate",
+            "evidence_refs": ["fabric:layer:bronze:duplicate"],
+            "requires_complete_coverage": False,
+        }
+    )
+    duplicate_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=duplicate,
+        headers=HEADERS,
+    )
+
+    assert duplicate_response.status_code == 200, duplicate_response.text
+    duplicate_data = duplicate_response.json()["data"]
+    assert duplicate_data["coverage"]["complete"] is False
+    assert "visible subset is incomplete" in duplicate_data["uncertainty"]
+    assert duplicate_data["synthesis"]["reason"] == (
+        "fabric_page_evidence_not_authorized"
+    )
+    assert duplicate_data["synthesis"]["claims"] == []
+    assert duplicate_data["mutation_authorized"] is False
+
+    unavailable_layer = json.loads(json.dumps(layer_request))
+    unavailable_layer["snapshot"]["evidence"][0]["status"] = "unavailable"
+    unavailable_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=unavailable_layer,
+        headers=HEADERS,
+    )
+
+    assert unavailable_response.status_code == 200, unavailable_response.text
+    unavailable_data = unavailable_response.json()["data"]
+    assert unavailable_data["coverage"]["complete"] is False
+    assert unavailable_data["synthesis"]["reason"] == (
+        "fabric_page_evidence_not_authorized"
+    )
+    assert unavailable_data["synthesis"]["claims"] == []
+    assert unavailable_data["mutation_authorized"] is False
+
+    ambiguous_governance = json.loads(json.dumps(gap_request))
+    duplicate_governance = observation(
+        "fabric:governance:duplicate",
+        "fabric/governance",
+        "fabric-governance",
+        "fabric_governance",
+        {
+            "ownership_gap_count": 1,
+            "tag_gap_count": 2,
+            "referential_integrity_blockers": 3,
+        },
+    )
+    ambiguous_governance["snapshot"]["evidence"].append(duplicate_governance)
+    ambiguous_governance["snapshot"]["material_claims"].append(
+        {
+            "claim_id": "claim:fabric-governance-duplicate",
+            "evidence_refs": ["fabric:governance:duplicate"],
+            "requires_complete_coverage": False,
+        }
+    )
+    ambiguous_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=ambiguous_governance,
+        headers=HEADERS,
+    )
+
+    assert ambiguous_response.status_code == 200, ambiguous_response.text
+    ambiguous_data = ambiguous_response.json()["data"]
+    assert ambiguous_data["coverage"]["complete"] is False
+    assert ambiguous_data["synthesis"]["reason"] == (
+        "fabric_page_evidence_not_authorized"
+    )
+    assert ambiguous_data["synthesis"]["claims"] == []
+    assert ambiguous_data["mutation_authorized"] is False
+
+    unrelated = json.loads(json.dumps(layer_request))
+    unrelated["question"] = "Is the Fabric capacity healthy?"
+    unrelated_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=unrelated,
+        headers=HEADERS,
+    )
+
+    assert unrelated_response.status_code == 200, unrelated_response.text
+    assert unrelated_response.json()["data"]["synthesis"]["reason"] != (
+        "deterministic_fabric_page_evidence"
+    )
+
+    widened = json.loads(json.dumps(layer_request))
+    widened["requested_scope"] = {"subscription": ["sub-b"]}
+    widened_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=widened,
+        headers=HEADERS,
+    )
+
+    assert widened_response.status_code == 400
+    assert widened_response.json()["error"]["details"]["reason"] == "scope_widening"
+    assert tool_calls == [
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Plan 11-03 Task 2: Thin canonical compatibility adapters for legacy routes
 # ---------------------------------------------------------------------------

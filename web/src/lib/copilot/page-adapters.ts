@@ -1114,7 +1114,7 @@ function freshnessStatus(status: string): CopilotFreshnessStatusV2 {
     || status === "available"
   ) return "fresh";
   if (status === "stale") return "stale";
-  if (status === "partial" || status === "degraded") return "partial";
+  if (status === "aging" || status === "partial" || status === "degraded") return "partial";
   return "unavailable";
 }
 
@@ -4947,13 +4947,28 @@ function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAd
 }
 
 function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreCopilotAdapterInput {
+  const sectionState = (source: string) => {
+    const statuses = (input.sourceStatuses ?? []).filter((status) => status.source === source);
+    const observedAt = statuses.reduce(
+      (latest, status) => (status.observedAt ?? "") > latest ? status.observedAt! : latest,
+      "",
+    );
+    const unavailable = statuses.length
+      ? statuses.every((status) => status.availability === "unavailable")
+      : !input.available;
+    return {
+      evidenceIdentity: "observation" as const,
+      observedAt: observedAt || input.observedAt,
+      status: unavailable ? "unavailable" as const : "ok" as const,
+    };
+  };
   const records: CoreCopilotRecord[] = [
     ...input.layers.map((layer, index) => ({
       identity: layer.layer,
       namespace: "fabric",
       kind: "medallion_layer",
       source: "fabric/medallion-layers",
-      observedAt: input.observedAt,
+      ...sectionState("fabric/medallion-layers"),
       priority: index,
       data: {
         layer: layer.layer,
@@ -4961,12 +4976,12 @@ function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreC
         total: layer.total,
       },
     })),
-    ...input.manifest.slice(0, 50).map((entry, index) => ({
+    ...input.manifest.map((entry, index) => ({
       identity: entry.projection_name,
       namespace: "fabric",
       kind: "fabric_manifest",
       source: "fabric/manifest",
-      observedAt: input.observedAt,
+      ...sectionState("fabric/manifest"),
       priority: 10 + index,
       data: {
         projection_name: entry.projection_name,
@@ -4980,7 +4995,7 @@ function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreC
       namespace: "fabric",
       kind: "fabric_governance",
       source: "fabric/governance",
-      observedAt: input.observedAt,
+      ...sectionState("fabric/governance"),
       priority: 8,
       data: {
         ownership_gap_count: input.governance.ownership_gap_count,
@@ -4993,7 +5008,7 @@ function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreC
       namespace: "fabric",
       kind: "fabric_capacity",
       source: "fabric/capabilities",
-      observedAt: input.observedAt,
+      ...sectionState("fabric/capabilities"),
       priority: 9,
       data: {
         status: input.capacity?.status ?? "unknown",
@@ -5009,13 +5024,20 @@ function fabricMedallionCoreInput(input: FabricMedallionCopilotPageInput): CoreC
     }] : []),
   ];
   const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
-    ? input.sourceStatuses.map((status) => ({
-      source: status.source,
-      observedAt: status.observedAt ?? input.observedAt,
-      status: status.availability === "unavailable"
-        ? "unavailable"
-        : freshnessStatus(status.freshness ?? "unknown"),
-    }))
+    ? [
+      ...input.sourceStatuses.map((status) => ({
+        source: status.source,
+        observedAt: status.observedAt ?? input.observedAt,
+        status: status.availability === "unavailable"
+          ? "unavailable" as const
+          : freshnessStatus(status.freshness ?? "unknown"),
+      })),
+      ...input.evidence.map((item) => ({
+        source: `${item.source_engine}/${item.source_table}`,
+        observedAt: item.timestamp,
+        status: evidenceFreshness(item.freshness),
+      })),
+    ]
     : [{
       source: "fabric_medallion",
       observedAt: input.observedAt,
