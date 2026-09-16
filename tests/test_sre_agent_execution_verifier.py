@@ -152,6 +152,20 @@ def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
             {
                 "status": {
                     "actionsStatus": {
+                        "hasCriticalActions": False,
+                        "hasWarningActions": True,
+                    },
+                    "incidentStatus": {"status": "Active"},
+                },
+                "lastMessage": {"isComplete": True},
+            },
+            "running",
+            "Pending Review",
+        ),
+        (
+            {
+                "status": {
+                    "actionsStatus": {
                         "hasCriticalActions": True,
                         "hasWarningActions": False,
                     },

@@ -66,7 +66,10 @@ The prompt and skills are not security boundaries. Before enabling the mode:
   only `RunAzCliWriteCommands`. Do not select `GetAzCliHelp`. Their names,
   versions, raw-byte SHA-256 hashes, tool sets, operations, output schemas,
   and read-then-write ordering are bound into both the trigger artifact and
-  runtime envelope.
+  runtime envelope. After confirming those exact values in the portal, record
+  the value-free skill names, versions, hashes, and tool sets as metadata tags
+  on the versioned trigger secret. `live-predeploy` and `live-canary` reject
+  missing or drifted skill attestation tags.
 - The authenticated remediation API and its recorded approval snapshot remain
   the authorization boundary. SRE Agent may use read-only tools and knowledge
   skill's fixed Azure Resource Graph query to evaluate every and only selected
@@ -123,8 +126,8 @@ not patched. The verifier polls the documented
 `GET {agentEndpoint}/api/v1/threads/{threadId}` endpoint:
 
 - `In Progress` remains running.
-- scalar `Pending User Input`, or a composite incomplete thread with a
-  critical action, records `Pending Review` and remains provider-active;
+- scalar `Pending User Input`, or a composite thread with a critical or
+  warning action, records `Pending Review` and remains provider-active;
 - composite incident `Failed`/`Error` and `Cancelled` are typed terminal
   failures without reading message prose; and
 - scalar `Complete` or composite `lastMessage.isComplete=true` records
