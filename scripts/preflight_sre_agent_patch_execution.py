@@ -315,6 +315,15 @@ def validate_trigger_evidence(
             "canonical definition hash bound to Key Vault metadata"
         ),
         "canonicalHash": canonical_hash(expected_body),
+        "description": {
+            "serverDescriptionAvailable": "description" in trigger,
+            "serverDescriptionStatus": (
+                "returned-by-live-api"
+                if "description" in trigger
+                else "not-returned-or-empty-by-live-api"
+            ),
+            "validatedAgainst": "canonical-definition-hash",
+        },
         "payloadSchema": envelope_result,
     }
 
@@ -1512,9 +1521,12 @@ def _normalize_live_trigger(
         "runMode": "Autonomous",
         "threadGrouping": raw.get("threadGrouping", "NewThreadPerRun"),
     }
-    for field in ("artifactVersion", "description", "name", "payloadSchema"):
+    for field in ("artifactVersion", "name", "payloadSchema"):
         if field in raw:
             trigger[field] = raw.get(field)
+    raw_description = raw.get("description")
+    if raw_description not in (None, ""):
+        trigger["description"] = raw_description
     return {
         "captureVersion": "1.0",
         "sourceOrigin": observed_origin,
