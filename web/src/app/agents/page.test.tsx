@@ -50,7 +50,8 @@ const ledger = {
     evidence: [{ source_engine: "network.NetworkIntelligenceService", source_table: "ontology_entities", timestamp: "2026-01-01T10:00:00Z", confidence: "high", freshness: "fresh" }],
     confidence: "high",
     hidden_reasoning_exposed: false,
-    activation: { configured: false, status: "unavailable", activation_source: "legacy_unversioned", degraded_reason: "Pinned Foundry activation is unavailable." },
+    activation: { configured: true, status: "ready", activation_source: "terraform", degraded_reason: "" },
+    execution_mode: "deterministic_local",
   }],
   reconciliation: { conflicts: [], stale_evidence: [], missing_providers: [], unsupported_conclusions: [], evidence_count: 1, reconciled_confidence: "high" },
   synthesis: { summary: "1 evidence-backed finding was produced", recommended_plan: "Assign owner and approve governed remediation.", required_decision: "Accept or request more evidence.", unresolved_questions: [], confidence: "high" },
@@ -88,13 +89,15 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
 
     expect(await screen.findByText("Network Agent")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Investigation objective"), { target: { value: "Investigate Payroll risk" } });
-    fireEvent.click(screen.getByRole("button", { name: "Run investigation" }));
+    fireEvent.click(screen.getByRole("button", { name: /Run (deterministic )?investigation/ }));
 
-    expect(await screen.findByRole("heading", { name: "Agent activity" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Specialist plan activity" })).toBeInTheDocument();
     expect(screen.getAllByText("network_topology returned 2 scoped fields").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Assign owner and approve governed remediation.").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Groundedness").length).toBeGreaterThan(0);
     expect(screen.getByText("Deterministic specialist plans")).toBeInTheDocument();
+    expect(screen.getByText("Deterministic local fallback")).toBeInTheDocument();
+    expect(screen.queryByText("Foundry agent")).toBeNull();
     expect(screen.getAllByText(/Foundry unavailable/i).length).toBeGreaterThan(0);
     expect(screen.queryByText("Specialists coordinated")).toBeNull();
 
@@ -117,10 +120,30 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(unavailableStatus).toBeInTheDocument();
   });
 
+  it("labels an all-unavailable catalog as deterministic fallback, never ready agents", async () => {
+    catalog.mockResolvedValue(envelope({
+      agents: catalogAgents.map((agent) => ({
+        ...agent,
+        foundry: {
+          ...agent.foundry,
+          configured: false,
+          status: "unavailable",
+          activation_source: "legacy_unversioned",
+          degraded_reason: "Pinned Foundry activation is unavailable.",
+        },
+      })),
+    }));
+    renderPage();
+
+    expect(await screen.findByText(/Foundry unavailable · deterministic fallback/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeInTheDocument();
+    expect(screen.queryByText("Foundry ready")).toBeNull();
+  });
+
   it("keeps ledger decisions principal-scoped and confers no execution authority", async () => {
     renderPage();
 
-    fireEvent.click(screen.getByRole("button", { name: "Run investigation" }));
+    fireEvent.click(screen.getByRole("button", { name: /Run (deterministic )?investigation/ }));
     expect(await screen.findByRole("heading", { name: "Human-in-the-loop controls" })).toBeInTheDocument();
 
     // Approving the plan is a governed handoff only — the ledger decision never

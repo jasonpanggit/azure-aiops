@@ -8188,6 +8188,8 @@ def test_multi_agent_canonical_projection_retains_complete_results(
     }
     assert set(data["evaluation"]) == {
         "groundedness",
+        "groundedness_status",
+        "groundedness_reason",
         "scope_isolation",
         "tool_correctness",
         "convergence",
@@ -10017,40 +10019,120 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
         assert agent["foundry"]["degraded_reason"]
 
 
+def test_multi_agent_catalog_reports_mixed_foundry_activation_exactly(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_VERSION", "42")
+    monkeypatch.setenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "terraform")
+
+    agents = TestClient(create_app(_context(tmp_path, None))).get(
+        "/api/v1/agents/catalog?subscription=sub-a",
+        headers=HEADERS,
+    ).json()["data"]["agents"]
+    by_id = {agent["id"]: agent for agent in agents}
+
+    assert by_id["network"]["foundry"] == {
+        "id": "network",
+        "name": "network-agent",
+        "version": "42",
+        "model": "gpt-4.1",
+        "status": "ready",
+        "configured": True,
+        "activation_source": "terraform",
+        "version_pinning_required": False,
+        "degraded_reason": "",
+    }
+    assert by_id["vulnerability"]["foundry"]["configured"] is False
+    assert by_id["vulnerability"]["foundry"]["status"] == "unavailable"
+    assert by_id["vulnerability"]["foundry"]["degraded_reason"]
+
+
 def test_multi_agent_compatibility_runtime_projects_canonical_degraded_activation(
     tmp_path,
     monkeypatch,
 ):
     """Unavailable Foundry specialists remain deterministic plans, not agents."""
+    from test_api_multi_agent import _auth, _client
+
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
     monkeypatch.setenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "legacy_unversioned")
     monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
-    monkeypatch.setattr(
-        "api.routers.multi_agent.execute_from_question",
-        lambda *_args, **_kwargs: _canonical_multi_agent_result(),
-    )
 
-    response = TestClient(create_app(_context(tmp_path, None))).post(
-        "/api/v1/agents/investigations?subscription=sub-a",
-        json={"objective": "Summarize network topology", "timeout_seconds": 3},
-        headers=HEADERS,
+    response = _client(tmp_path).post(
+        "/api/v1/agents/investigations?subscription=sub-prod",
+        json={
+            "objective": (
+                'Investigate "Payroll" incident network CVE remediation owner'
+            ),
+            "timeout_seconds": 3,
+        },
+        headers=_auth(),
     )
 
     assert response.status_code == 200
     ledger = response.json()["data"]
-    assert ledger["orchestration"]["runtime"] == "canonical"
+    assert ledger["orchestration"]["runtime"] == "legacy_deterministic"
     assert ledger["activation"] == {
         "mode": "deterministic_degraded",
         "source": "legacy_unversioned",
         "foundry_ready": 0,
-        "selected_specialists": 1,
+        "selected_specialists": len(ledger["selected_agents"]),
         "version_pinning_required": True,
+        "coordinator": {
+            "status": "unavailable",
+            "name": "",
+            "version": "",
+        },
     }
     assert ledger["selected_agents"][0]["foundry"]["configured"] is False
     assert ledger["agent_runs"][0]["activation"]["configured"] is False
+    assert ledger["agent_runs"][0]["execution_mode"] == "deterministic_local"
+    assert ledger["agent_runs"][0]["mutation_authorized"] is False
+    assert all(
+        call["mutation_authorized"] is False
+        for call in ledger["agent_runs"][0]["tool_calls"]
+    )
     assert ledger["citations"]
-    assert ledger["findings"][0]["citation_ids"]
+    assert any(finding["citation_ids"] for finding in ledger["findings"])
+    citation_ids = {citation["citation_id"] for citation in ledger["citations"]}
+    assert all(
+        set(finding["citation_ids"]) <= citation_ids
+        for finding in ledger["findings"]
+    )
     assert ledger["mutation_authorized"] is False
+
+
+def test_multi_agent_malformed_request_rejects_before_orchestration(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        "api.routers.multi_agent.execute_from_question",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    string_timeout = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={"objective": "Review risk", "timeout_seconds": "8"},
+        headers=HEADERS,
+    )
+    extra_authority = client.post(
+        "/api/v1/agents/investigations?subscription=sub-a",
+        json={
+            "objective": "Review risk",
+            "requested_scope": {"subscription": ["sub-b"]},
+        },
+        headers=HEADERS,
+    )
+
+    assert string_timeout.status_code == 400
+    assert extra_authority.status_code == 400
+    assert calls == []
 
 
 def test_canonical_multi_agent_ledger_isolated_from_foreign_principal(
@@ -10135,5 +10217,5 @@ def test_canonical_multi_agent_ledger_action_confers_no_execution_authority(
     assert any(
         decision["action"] == "approve_plan" for decision in updated["decisions"]
     )
-    assert "mutation_authorized" not in updated
+    assert updated["mutation_authorized"] is False
     assert updated["outcome"] != "executed"
