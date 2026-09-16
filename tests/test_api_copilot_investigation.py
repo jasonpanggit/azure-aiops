@@ -334,6 +334,27 @@ def test_investigation_rejects_unknown_tool_hint(client):
     assert response.status_code == 400
 
 
+def test_investigation_rejects_malformed_tool_arguments_before_io(
+    client, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = _investigate(
+        client,
+        "show list of VMs",
+        tool="inventory_resources",
+        tool_arguments={"resource_type": 123},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
+
+
 def test_investigation_degrades_when_agent_unavailable(tmp_path):
     client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
     response = _investigate(client, "Tell me about Retail Banking")
