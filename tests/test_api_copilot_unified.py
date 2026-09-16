@@ -5865,6 +5865,452 @@ def test_fabric_starters_preserve_exact_page_truth_before_optional_narration(
     ]
 
 
+def test_resource_health_starters_preserve_exact_page_truth_and_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def unavailable_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="unavailable",
+            warning=f"The {name} provider is deferred",
+        )
+
+    def resource(
+        evidence_id,
+        resource_id,
+        name,
+        status,
+        cpu_percent,
+        series_point_count,
+    ):
+        return {
+            "evidence_id": evidence_id,
+            "source": "resource-health/metrics",
+            "status": "ok",
+            "observed_at": "2026-09-16T13:07:02Z",
+            "resource_id": resource_id,
+            "source_key": resource_id,
+            "entity": {"type": "azure", "resource_id": resource_id},
+            "claim_type": "resource_utilization",
+            "direct": True,
+            "quality": "high",
+            "data": {
+                "resource_name": name,
+                "resource_type": "microsoft.compute/virtualmachines",
+                "status": status,
+                "cpu_percent": cpu_percent,
+                "memory_percent": None,
+                "disk_free_percent": None,
+                "unavailable_metrics": [],
+                "series_point_count": series_point_count,
+                "selected": False,
+                "actionable": False,
+                "mutation_authorized": False,
+            },
+        }
+
+    resources = [
+        resource(
+            "health:vm-1",
+            (
+                "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                "Microsoft.Compute/virtualMachines/vm-1"
+            ),
+            "vm-1",
+            "healthy",
+            12.5,
+            12,
+        ),
+        resource(
+            "health:vm-2",
+            (
+                "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                "Microsoft.Compute/virtualMachines/vm-2"
+            ),
+            "vm-2",
+            "unknown",
+            None,
+            0,
+        ),
+    ]
+    metric_coverage = {
+        "evidence_id": "health:metric-coverage",
+        "source": "resource-health/metrics",
+        "status": "ok",
+        "observed_at": "2026-09-16T13:07:02Z",
+        "source_key": "metric-coverage",
+        "entity": {
+            "type": "observation",
+            "source": "resource-health/metrics",
+            "source_key": "metric-coverage",
+        },
+        "claim_type": "resource_metric_coverage",
+        "direct": True,
+        "quality": "high",
+        "data": {
+            "unavailable_metrics": ["disk_free_percent", "memory_percent"],
+            "warnings": ["Guest metrics are unavailable."],
+            "cached": True,
+            "selected": False,
+            "actionable": False,
+            "mutation_authorized": False,
+        },
+    }
+    evidence = [*resources, metric_coverage]
+    body = {
+        "contract_version": "1",
+        "question": "",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "resource_health",
+            "page_id": "resource-health",
+            "filters": {"view": ["resource-health"]},
+            "coverage": {
+                "visible_count": 2,
+                "total_count": 2,
+                "complete": True,
+            },
+            "freshness": [
+                {
+                    "source": source,
+                    "observed_at": "2026-09-16T13:07:02Z",
+                    "status": "fresh",
+                }
+                for source in (
+                    "coverage",
+                    "resource_health",
+                    "resource-health/metrics",
+                )
+            ],
+            "evidence": evidence,
+            "material_claims": [
+                {
+                    "claim_id": f"claim:{item['evidence_id'].replace(':', '-')}",
+                    "evidence_refs": [item["evidence_id"]],
+                    "requires_complete_coverage": False,
+                }
+                for item in evidence
+            ],
+        },
+    }
+    monkeypatch.setattr("api.routers.copilot.call_tool", unavailable_tool)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    cases = (
+        (
+            "What incidents relate to these resources?",
+            "incidents",
+            {},
+            "no incident relationship can be established",
+        ),
+        (
+            "Which services are impacted by resource pressure?",
+            "search",
+            {"query": "resource pressure service impact"},
+            "no impacted service can be named",
+        ),
+        (
+            "Search resource utilization anomalies.",
+            "search",
+            {"query": "resource utilization anomalies"},
+            "unknown is not treated as unhealthy or as zero",
+        ),
+    )
+
+    for question, tool, arguments, expected_summary in cases:
+        request = json.loads(json.dumps(body))
+        request["question"] = question
+        request["hint"] = {
+            "specialist_id": "resource_health_observability",
+            "tool": tool,
+            "arguments": arguments,
+        }
+        response = client.post(
+            "/api/v1/copilot/investigations?subscription=sub-a",
+            json=request,
+            headers=HEADERS,
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["selected_specialists"] == [
+            "resource_health_observability"
+        ]
+        assert data["selected_tools"] == [tool]
+        assert data["coverage"] == {
+            "visible_count": 2,
+            "total_count": 2,
+            "complete": True,
+        }
+        assert data["synthesis"]["reason"] == (
+            "deterministic_resource_health_page_evidence"
+        )
+        assert any(
+            expected_summary in claim["summary"]
+            for claim in data["synthesis"]["claims"]
+        )
+        assert all(
+            claim["confidence"] == "medium"
+            for claim in data["synthesis"]["claims"]
+        )
+        assert "retained evidence freshness is unknown" not in data["uncertainty"]
+        assert "all retained evidence has unknown freshness" not in data["uncertainty"]
+        assert data["mutation_authorized"] is False
+        citation_ids = {
+            citation["citation_id"] for citation in data["citations"]
+        }
+        assert {
+            reference
+            for claim in data["synthesis"]["claims"]
+            for reference in claim["evidence_refs"]
+        } <= citation_ids
+
+    pressure = json.loads(json.dumps(body))
+    pressure["question"] = cases[2][0]
+    pressure["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[2][1],
+        "arguments": cases[2][2],
+    }
+    pressure["snapshot"]["evidence"][0]["data"].update(
+        {"status": "critical", "cpu_percent": 95.0}
+    )
+    pressure_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=pressure,
+        headers=HEADERS,
+    )
+    assert pressure_response.status_code == 200, pressure_response.text
+    pressure_claim = pressure_response.json()["data"]["synthesis"]["claims"][0]
+    assert "vm-1 is critical at 95.0% CPU" in pressure_claim["summary"]
+    assert "No resource is classified as warning or critical" not in pressure_claim[
+        "summary"
+    ]
+
+    partial_pressure = json.loads(json.dumps(pressure))
+    partial_pressure["snapshot"]["coverage"] = {
+        "visible_count": 2,
+        "total_count": 3,
+        "complete": False,
+    }
+    partial_pressure_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=partial_pressure,
+        headers=HEADERS,
+    )
+    assert (
+        partial_pressure_response.status_code == 200
+    ), partial_pressure_response.text
+    partial_claim = partial_pressure_response.json()["data"]["synthesis"]["claims"][0]
+    assert "vm-1 is critical at 95.0% CPU" in partial_claim["summary"]
+    assert "Retained classifications cover only the visible subset" in partial_claim[
+        "summary"
+    ]
+    assert "No anomaly determination is possible" not in partial_claim["summary"]
+
+    duplicate_name = json.loads(json.dumps(body))
+    duplicate_name["question"] = cases[2][0]
+    duplicate_name["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[2][1],
+        "arguments": cases[2][2],
+    }
+    duplicate_name["snapshot"]["evidence"][1]["data"]["resource_name"] = "vm-1"
+    duplicate_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=duplicate_name,
+        headers=HEADERS,
+    )
+    assert duplicate_response.status_code == 200, duplicate_response.text
+    duplicate_data = duplicate_response.json()["data"]
+    assert duplicate_data["coverage"]["complete"] is False
+    assert duplicate_data["synthesis"]["reason"] == (
+        "resource_health_page_evidence_not_authorized"
+    )
+    assert duplicate_data["synthesis"]["claims"] == []
+
+    for variant_question in (
+        "Search resource utilization anomalies!",
+        "  Search resource utilization anomalies.  ",
+    ):
+        variant = json.loads(json.dumps(body))
+        variant["question"] = variant_question
+        variant["hint"] = {
+            "specialist_id": "resource_health_observability",
+            "tool": cases[2][1],
+            "arguments": cases[2][2],
+        }
+        variant_response = client.post(
+            "/api/v1/copilot/investigations?subscription=sub-a",
+            json=variant,
+            headers=HEADERS,
+        )
+        assert variant_response.status_code == 200, variant_response.text
+        assert variant_response.json()["data"]["synthesis"]["reason"] != (
+            "deterministic_resource_health_page_evidence"
+        )
+
+    invalid_cpu = json.loads(json.dumps(body))
+    invalid_cpu["question"] = cases[2][0]
+    invalid_cpu["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[2][1],
+        "arguments": cases[2][2],
+    }
+    invalid_cpu["snapshot"]["evidence"][0]["data"]["cpu_percent"] = "95"
+    invalid_cpu_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=invalid_cpu,
+        headers=HEADERS,
+    )
+    assert invalid_cpu_response.status_code == 200, invalid_cpu_response.text
+    invalid_cpu_data = invalid_cpu_response.json()["data"]
+    assert invalid_cpu_data["coverage"]["complete"] is False
+    assert invalid_cpu_data["synthesis"]["reason"] == (
+        "resource_health_page_evidence_not_authorized"
+    )
+    assert invalid_cpu_data["synthesis"]["claims"] == []
+
+    forged = json.loads(json.dumps(body))
+    forged["question"] = cases[2][0]
+    forged["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[2][1],
+        "arguments": cases[2][2],
+    }
+    forged["snapshot"]["evidence"][0]["entity"]["resource_id"] = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/forged"
+    )
+    forged_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=forged,
+        headers=HEADERS,
+    )
+    assert forged_response.status_code == 200, forged_response.text
+    forged_data = forged_response.json()["data"]
+    assert forged_data["coverage"]["complete"] is False
+    assert forged_data["synthesis"]["reason"] == (
+        "resource_health_page_evidence_not_authorized"
+    )
+    assert forged_data["synthesis"]["claims"] == []
+
+    mismatched_kind = json.loads(json.dumps(body))
+    mismatched_kind["question"] = cases[0][0]
+    mismatched_kind["snapshot"]["page_kind"] = "resource"
+    mismatched_kind["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[0][1],
+        "arguments": cases[0][2],
+    }
+    calls_before_mismatch = list(tool_calls)
+    mismatch_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=mismatched_kind,
+        headers=HEADERS,
+    )
+    assert mismatch_response.status_code == 400
+    assert mismatch_response.json()["error"]["details"]["reason"] == (
+        "page_not_granted"
+    )
+    assert tool_calls == calls_before_mismatch
+
+    unavailable = json.loads(json.dumps(body))
+    unavailable["question"] = cases[2][0]
+    unavailable["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[2][1],
+        "arguments": cases[2][2],
+    }
+    unavailable["snapshot"]["evidence"] = [metric_coverage]
+    unavailable["snapshot"]["material_claims"] = [
+        unavailable["snapshot"]["material_claims"][-1]
+    ]
+    unavailable["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 2,
+        "complete": False,
+    }
+    unavailable["snapshot"]["freshness"] = [
+        {
+            "source": "resource-health/metrics",
+            "observed_at": "unknown",
+            "status": "unavailable",
+        }
+    ]
+    unavailable_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=unavailable,
+        headers=HEADERS,
+    )
+    assert unavailable_response.status_code == 200, unavailable_response.text
+    unavailable_claims = unavailable_response.json()["data"]["synthesis"]["claims"]
+    assert all(
+        "No resource is classified as warning or critical" not in claim["summary"]
+        for claim in unavailable_claims
+    )
+    unavailable_direct_claims = (
+        OrchestrationService._deterministic_resource_health_claims(
+            cases[2][0],
+            snapshot=EvidenceSnapshotV2(
+                page_kind="resource_health",
+                page_id="resource-health",
+                coverage=SnapshotCoverage(
+                    visible_count=0,
+                    total_count=2,
+                    complete=False,
+                ),
+                freshness=[
+                    SnapshotFreshness(
+                        source="resource-health/metrics",
+                        observed_at="unknown",
+                        status="unavailable",
+                    )
+                ],
+            ),
+            retained_evidence=[
+                {
+                    "evidence_id": "retained:metric-coverage",
+                    "source": (
+                        "page_snapshot:resource_health:"
+                        "resource-health/metrics"
+                    ),
+                    "claim_type": "resource_metric_coverage",
+                    "data": metric_coverage["data"],
+                }
+            ],
+        )
+    )
+    assert any(
+        "No anomaly determination is possible" in claim["summary"]
+        for claim in unavailable_direct_claims
+    )
+
+    calls_before_widening = list(tool_calls)
+    widened = json.loads(json.dumps(body))
+    widened["question"] = cases[0][0]
+    widened["hint"] = {
+        "specialist_id": "resource_health_observability",
+        "tool": cases[0][1],
+        "arguments": cases[0][2],
+    }
+    widened["requested_scope"] = {"subscription": ["sub-b"]}
+    widened_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=widened,
+        headers=HEADERS,
+    )
+    assert widened_response.status_code == 400
+    assert widened_response.json()["error"]["details"]["reason"] == "scope_widening"
+    assert tool_calls == calls_before_widening
+
+
 # ---------------------------------------------------------------------------
 # Plan 11-03 Task 2: Thin canonical compatibility adapters for legacy routes
 # ---------------------------------------------------------------------------

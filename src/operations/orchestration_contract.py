@@ -6,7 +6,14 @@ import hashlib
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from api.scope import Scope
 from operations.specialist_manifest import PageMapping
@@ -408,7 +415,10 @@ class InvestigationRequest(ContractModel):
     """Canonical request shared by all Operations Copilot surfaces."""
 
     contract_version: Literal["1"] = "1"
-    question: str = Field(min_length=1, max_length=1024)
+    question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=False, min_length=1, max_length=1024),
+    ]
     requested_scope: dict[str, list[str]]
     snapshot: EvidenceSnapshotV2
     thread_id: str | None = Field(

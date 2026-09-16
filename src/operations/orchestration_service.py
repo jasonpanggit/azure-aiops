@@ -236,6 +236,77 @@ def _fabric_starter_kind(question: str) -> str | None:
     return None
 
 
+def _resource_health_starter_kind(question: str) -> str | None:
+    if question == "What incidents relate to these resources?":
+        return "incidents"
+    if question == "Which services are impacted by resource pressure?":
+        return "services"
+    if question == "Search resource utilization anomalies.":
+        return "anomalies"
+    return None
+
+
+def _valid_resource_health_observation(item: SnapshotEvidence) -> bool:
+    data = item.data
+    cpu_percent = data.get("cpu_percent")
+    if not (
+        cpu_percent is None
+        or (
+            isinstance(cpu_percent, (int, float))
+            and not isinstance(cpu_percent, bool)
+            and math.isfinite(cpu_percent)
+            and 0 <= cpu_percent <= 100
+        )
+    ):
+        return False
+    expected_status = (
+        "unknown"
+        if cpu_percent is None
+        else "critical"
+        if cpu_percent >= 90
+        else "warning"
+        if cpu_percent >= 70
+        else "healthy"
+    )
+    return (
+        item.claim_type == "resource_utilization"
+        and item.status in {"ok", "partial"}
+        and item.source == "resource-health/metrics"
+        and isinstance(item.entity, AzureEntityRef)
+        and item.entity.resource_id == item.resource_id
+        and item.source_key.casefold() == item.resource_id.casefold()
+        and item.direct
+        and item.observed_at != ""
+        and str(data.get("resource_name") or "").strip() != ""
+        and str(data.get("resource_type") or "").strip() != ""
+        and str(data.get("status") or "").casefold() == expected_status
+        and data.get("actionable") is False
+        and data.get("mutation_authorized") is False
+        and all(
+            value is None
+            or (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and 0 <= value <= 100
+            )
+            for value in (
+                cpu_percent,
+                data.get("memory_percent"),
+                data.get("disk_free_percent"),
+            )
+        )
+        and isinstance(data.get("series_point_count"), int)
+        and not isinstance(data.get("series_point_count"), bool)
+        and data["series_point_count"] >= 0
+        and isinstance(data.get("unavailable_metrics"), list)
+        and all(
+            isinstance(value, str)
+            for value in data["unavailable_metrics"]
+        )
+    )
+
+
 def _question_route(
     question: str,
     *,
@@ -786,6 +857,11 @@ class OrchestrationService:
             requested_scope,
             domains_authorized=canonical_selection_snapshot is not None,
         )
+        if (
+            page_snapshot.page_id == "resource-health"
+            and page_snapshot.page_kind != "resource_health"
+        ):
+            raise PolicyViolation("page_not_granted", page_snapshot.page_kind)
         evidence_selection_id = self._evidence_selection_identity(
             request.model_copy(update={"snapshot": page_snapshot}),
             requested_scope,
@@ -986,8 +1062,59 @@ class OrchestrationService:
             and canonical_selection_snapshot.coverage.complete
             == page_snapshot.coverage.complete
         )
+        resource_health_rows = [
+            item
+            for item in page_snapshot.evidence
+            if item.claim_type == "resource_utilization"
+        ]
+        resource_metric_coverage_rows = [
+            item
+            for item in page_snapshot.evidence
+            if item.claim_type == "resource_metric_coverage"
+        ]
+        exact_resource_health_contract = (
+            page_snapshot.page_kind == "resource_health"
+            and page_snapshot.page_id == "resource-health"
+            and len(resource_health_rows) == page_snapshot.coverage.visible_count
+            and len(resource_metric_coverage_rows) == 1
+            and len({item.resource_id for item in resource_health_rows})
+            == len(resource_health_rows)
+            and len({
+                str(item.data.get("resource_name") or "").casefold()
+                for item in resource_health_rows
+            })
+            == len(resource_health_rows)
+            and all(
+                _valid_resource_health_observation(item)
+                for item in resource_health_rows
+            )
+            and all(
+                item.status in {"ok", "partial"}
+                and item.source == "resource-health/metrics"
+                and isinstance(item.entity, ObservationRef)
+                and item.entity.source == "resource-health/metrics"
+                and item.entity.source_key == item.source_key == "metric-coverage"
+                and isinstance(item.data.get("unavailable_metrics"), list)
+                and isinstance(item.data.get("warnings"), list)
+                and isinstance(item.data.get("cached"), bool)
+                for item in resource_metric_coverage_rows
+            )
+        )
+        accepted_resource_health_observations = (
+            exact_resource_health_contract
+            and canonical_selection_snapshot is not None
+            and canonical_selection_snapshot.classification in {"ready", "empty"}
+            and canonical_selection_snapshot.coverage.visible_count
+            == page_snapshot.coverage.visible_count
+            and canonical_selection_snapshot.coverage.total_count
+            == page_snapshot.coverage.total_count
+            and canonical_selection_snapshot.coverage.complete
+            == page_snapshot.coverage.complete
+        )
         authorized_page_truth = (
-            authorized_connections_truth or authorized_fabric_truth
+            authorized_connections_truth
+            or authorized_fabric_truth
+            or accepted_resource_health_observations
         )
         uncertainty_request = (
             request.model_copy(update={"snapshot": page_snapshot})
@@ -1026,6 +1153,9 @@ class OrchestrationService:
             deadline=deadline,
             narrator_state=narrator_state,
             fabric_page_truth_authorized=authorized_fabric_truth,
+            resource_health_page_observations_accepted=(
+                accepted_resource_health_observations
+            ),
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
@@ -1454,6 +1584,7 @@ class OrchestrationService:
         deadline: float | None = None,
         narrator_state: str = "configured",
         fabric_page_truth_authorized: bool = False,
+        resource_health_page_observations_accepted: bool = False,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
@@ -1478,12 +1609,21 @@ class OrchestrationService:
             retained_evidence=current_retained_evidence,
         )
         fabric_starter_kind = _fabric_starter_kind(question)
+        resource_health_starter_kind = _resource_health_starter_kind(question)
         page_claims = (
             []
             if (
                 snapshot is not None
-                and snapshot.page_kind == "connections_fabric"
-                and fabric_starter_kind is not None
+                and (
+                    (
+                        snapshot.page_kind == "connections_fabric"
+                        and fabric_starter_kind is not None
+                    )
+                    or (
+                        snapshot.page_kind == "resource_health"
+                        and resource_health_starter_kind is not None
+                    )
+                )
             )
             else self._deterministic_page_claims(
                 question,
@@ -1516,6 +1656,30 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         ) if fabric_page_truth_authorized else []
+        resource_health_claims = self._deterministic_resource_health_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        ) if resource_health_page_observations_accepted else []
+        if (
+            snapshot is not None
+            and snapshot.page_kind == "resource_health"
+            and resource_health_starter_kind is not None
+            and not resource_health_page_observations_accepted
+        ):
+            synthesis = ExecutiveSynthesis(
+                status="skipped",
+                reason="resource_health_page_evidence_not_authorized",
+                domain_count=1,
+                claims=[],
+                warning=(
+                    "Resource Health page evidence is incomplete or failed "
+                    "identity validation; no deterministic claim was made."
+                ),
+                used_retained_evidence=[],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if (
             snapshot is not None
             and snapshot.page_kind == "connections_fabric"
@@ -1556,6 +1720,25 @@ class OrchestrationService:
                 reason="deterministic_fabric_page_evidence",
                 domain_count=1,
                 claims=fabric_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if resource_health_claims:
+            used_refs = {
+                str(reference)
+                for claim in resource_health_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_resource_health_page_evidence",
+                domain_count=1,
+                claims=resource_health_claims,
                 used_retained_evidence=[
                     dict(item)
                     for item in current_retained_evidence
@@ -2368,6 +2551,231 @@ class OrchestrationService:
                 )
             return claims
         return []
+
+    @staticmethod
+    def _deterministic_resource_health_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Answer the three Resource Health starters from exact page facts."""
+
+        if (
+            snapshot is None
+            or snapshot.page_kind != "resource_health"
+            or snapshot.page_id != "resource-health"
+        ):
+            return []
+        starter_kind = _resource_health_starter_kind(question)
+        if starter_kind is None:
+            return []
+
+        resource_rows = [
+            item
+            for item in retained_evidence
+            if (
+                item.get("claim_type") == "resource_utilization"
+                and item.get("source")
+                == "page_snapshot:resource_health:resource-health/metrics"
+                and item.get("evidence_id")
+                and isinstance(item.get("data"), Mapping)
+            )
+        ]
+        coverage_rows = [
+            item
+            for item in retained_evidence
+            if (
+                item.get("claim_type") == "resource_metric_coverage"
+                and item.get("source")
+                == "page_snapshot:resource_health:resource-health/metrics"
+                and item.get("evidence_id")
+                and isinstance(item.get("data"), Mapping)
+            )
+        ]
+        if (
+            len(resource_rows) != snapshot.coverage.visible_count
+            or len(coverage_rows) != 1
+        ):
+            return []
+
+        statuses = {"healthy": 0, "warning": 0, "critical": 0, "unknown": 0}
+        by_resource_id: dict[str, Mapping[str, Any]] = {}
+        resource_names: set[str] = set()
+        for item in resource_rows:
+            data = item["data"]
+            name = str(data.get("resource_name") or "").strip()
+            status = str(data.get("status") or "").casefold()
+            resource_id = str(item.get("resource_id") or "").casefold()
+            if (
+                not name
+                or status not in statuses
+                or not resource_id
+                or resource_id in by_resource_id
+                or name.casefold() in resource_names
+            ):
+                return []
+            statuses[status] += 1
+            by_resource_id[resource_id] = item
+            resource_names.add(name.casefold())
+
+        freshness_priority = {
+            "fresh": 0,
+            "partial": 1,
+            "stale": 2,
+            "unavailable": 3,
+        }
+        freshness = max(
+            (
+                item.status
+                for item in snapshot.freshness
+                if item.source == "resource-health/metrics"
+            ),
+            default="unavailable",
+            key=freshness_priority.get,
+        )
+        evidence_refs = sorted(
+            str(item["evidence_id"]) for item in resource_rows
+        )
+        coverage_ref = str(coverage_rows[0]["evidence_id"])
+        coverage_data = coverage_rows[0]["data"]
+        unavailable_metrics = sorted(
+            {
+                str(value)
+                for value in coverage_data.get("unavailable_metrics") or []
+                if str(value)
+            }
+        )
+        metric_uncertainty = [
+            (
+                f"{metric} is unavailable in the retained page snapshot; "
+                "absence is not treated as zero."
+            )
+            for metric in unavailable_metrics
+        ]
+        counts = (
+            f"{len(resource_rows)} utilization observations: "
+            f"{statuses['healthy']} healthy, {statuses['warning']} warning, "
+            f"{statuses['critical']} critical, and {statuses['unknown']} unknown"
+        )
+        common = {
+            # Canonicalization proves scope and identity, not the truth of
+            # browser-supplied metric values. These remain observations.
+            "confidence": "medium",
+            "freshness": freshness,
+            "actionable": False,
+            "next_check": (
+                "Refresh Resource Health and correlate separate Azure "
+                "availability, Service Health, or service-mapping evidence "
+                "before taking action."
+            ),
+        }
+
+        if starter_kind == "incidents":
+            return [{
+                "finding_id": "resource-health:incident-correlation",
+                "summary": (
+                    f"The retained Resource Health page reports {counts}. "
+                    "It contains no incident records, Azure availability-status "
+                    "records, or Service Health advisory correlation, so no "
+                    "incident relationship can be established."
+                ),
+                "evidence_refs": [*evidence_refs, coverage_ref],
+                "uncertainty": [
+                    *metric_uncertainty,
+                    (
+                        "Incident, Azure availability-status, and Service Health "
+                        "advisory evidence are outside this retained page snapshot."
+                    ),
+                ],
+                **common,
+            }]
+
+        if starter_kind == "services":
+            return [{
+                "finding_id": "resource-health:service-impact",
+                "summary": (
+                    f"The retained Resource Health page reports {counts}. "
+                    "No service-to-resource mapping or service-impact record is "
+                    "present, so no impacted service can be named from this "
+                    "snapshot."
+                ),
+                "evidence_refs": [*evidence_refs, coverage_ref],
+                "uncertainty": [
+                    *metric_uncertainty,
+                    "Service-to-resource impact mapping is unavailable.",
+                ],
+                **common,
+            }]
+
+        unknown_rows = [
+            item
+            for item in resource_rows
+            if str(item["data"].get("status") or "").casefold() == "unknown"
+        ]
+        unknown_detail = ""
+        if unknown_rows:
+            names = ", ".join(sorted(
+                str(item["data"]["resource_name"])
+                for item in unknown_rows
+            ))
+            unknown_detail = (
+                f" {names} is unknown because the retained page has no CPU "
+                "observation; unknown is not treated as unhealthy or as zero."
+            )
+        warning_or_critical = [
+            item
+            for item in resource_rows
+            if str(item["data"].get("status") or "").casefold()
+            in {"warning", "critical"}
+        ]
+        anomaly_detail = (
+            (
+                " No anomaly determination is possible because retained "
+                "Resource Health coverage is incomplete or unavailable."
+            )
+            if (
+                not resource_rows
+                and (
+                    not snapshot.coverage.complete
+                    or freshness == "unavailable"
+                )
+            )
+            else (
+                " No retained resource is classified as warning or critical, "
+                "but coverage is partial, so unretained resources are not "
+                "assessed."
+            )
+            if not snapshot.coverage.complete and not warning_or_critical
+            else " No resource is classified as warning or critical."
+            if not warning_or_critical
+            else " Resource pressure classifications are: " + "; ".join(
+                (
+                    f"{item['data']['resource_name']} is "
+                    f"{item['data']['status']} at "
+                    f"{item['data']['cpu_percent']}% CPU"
+                )
+                for item in sorted(
+                    warning_or_critical,
+                    key=lambda row: str(row["resource_id"]),
+                )
+            )
+            + (
+                ". Retained classifications cover only the visible subset."
+                if not snapshot.coverage.complete
+                else "."
+            )
+        )
+        return [{
+            "finding_id": "resource-health:utilization-anomalies",
+            "summary": (
+                f"The retained Resource Health page reports {counts}. "
+                f"{anomaly_detail}{unknown_detail}"
+            ),
+            "evidence_refs": [*evidence_refs, coverage_ref],
+            "uncertainty": metric_uncertainty,
+            **common,
+        }]
 
     @staticmethod
     def _deterministic_page_claims(

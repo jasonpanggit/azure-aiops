@@ -4093,6 +4093,9 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       page_kind: "resource",
       page_id: "resource-health",
     });
+    expect(normalizeCopilotSnapshotV2(context.snapshot).page_kind).toBe(
+      "resource_health",
+    );
     // Each resource is a canonical ARM identity.
     const resourceRows = rowByClaim(context, "resource_utilization");
     expect(resourceRows.length).toBe(2);
@@ -4109,6 +4112,16 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     });
     // Missing series/metrics are stated, never fabricated as zero.
     expect(selected?.data.unavailable_metrics).toEqual(["memory_percent", "disk_free_percent"]);
+    expect(rowByClaim(context, "resource_metric_coverage")).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          unavailable_metrics: ["memory_percent", "disk_free_percent"],
+          warnings: ["No Log Analytics workspace discovered for guest counters"],
+          cached: true,
+          mutation_authorized: false,
+        }),
+      }),
+    ]);
     expect(context.coverage.resources).toMatchObject({
       visible_count: 2,
       total_count: 2,
@@ -4128,6 +4141,32 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         || ["incidents", "impact_context", "search"].includes(starter.tool)
       )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+    expect(context.starterQuestions).toEqual([
+      expect.objectContaining({
+        label: "What incidents relate to these resources?",
+        tool: "incidents",
+        toolArguments: {},
+      }),
+      expect.objectContaining({
+        label: "Which services are impacted by resource pressure?",
+        tool: "search",
+        toolArguments: { query: "resource pressure service impact" },
+      }),
+      expect.objectContaining({
+        label: "Search resource utilization anomalies.",
+        tool: "search",
+        toolArguments: { query: "resource utilization anomalies" },
+      }),
+    ]);
+    expect(context.snapshot.freshness).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "coverage", status: "fresh" }),
+      expect.objectContaining({ source: "resource_health", status: "fresh" }),
+      expect.objectContaining({ source: "resource-health/metrics", status: "fresh" }),
+      expect.objectContaining({
+        source: "AzureMonitor/resource_metrics",
+        status: "fresh",
+      }),
+    ]));
   });
 
   it("keeps an unavailable resource-health provider distinct from an empty scope", () => {
@@ -4169,6 +4208,35 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     expect(empty.uncertainty).not.toEqual(
       expect.arrayContaining(["resource_health freshness is unavailable"]),
     );
+  });
+
+  it("marks retained Resource Health evidence partial above the 50-resource bound", () => {
+    const resources = Array.from({ length: 51 }, (_, index) => ({
+      ...healthInput.resources[0],
+      resource_id:
+        `/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-${index}`,
+      resource_name: `vm-${index}`,
+    }));
+
+    const context = buildResourceHealthCopilotContext({
+      ...healthInput,
+      resources,
+      loadedCount: resources.length,
+      totalCount: resources.length,
+      selectedResourceId: null,
+    });
+
+    expect(context.coverage.resources).toMatchObject({
+      visible_count: 50,
+      total_count: 51,
+      complete: false,
+      truncated: true,
+    });
+    expect(context.uncertainty).toContain("resources coverage is truncated");
+    expect(context.snapshot.evidence.filter(
+      (row) => row.data.claim_type === "resource_utilization",
+    )).toHaveLength(50);
+    expect(context.snapshot.evidence.length).toBeLessThanOrEqual(200);
   });
 });
 
