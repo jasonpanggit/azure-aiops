@@ -2382,6 +2382,26 @@ describe("inventory Copilot page adapter", () => {
         row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     });
 
+    it("binds default Changes freshness to the loaded evidence source and timestamp", () => {
+      const context = buildChangesCopilotContext({
+        ...changesInput,
+        changes: [],
+        loadedCount: 0,
+        totalCount: 0,
+        selectedId: null,
+        observedAt: "2026-09-07T10:00:00Z",
+        sourceStatuses: undefined,
+      });
+
+      expect(context.snapshot.freshness).toEqual([
+        {
+          source: "Situations/incident_timeline",
+          observed_at: "2026-09-07T10:00:00Z",
+          status: "fresh",
+        },
+      ]);
+    });
+
     const predeployInput = {
       scope: { subscription: ["sub-a"] },
       change: {

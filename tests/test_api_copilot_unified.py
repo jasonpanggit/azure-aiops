@@ -7029,6 +7029,11 @@ def test_empty_changes_answer_is_direct_cited_and_correlation_safe(
     assert claim["evidence_refs"] == ["snapshot:coverage"]
     assert claim["freshness"] == "fresh"
     assert "Temporal proximity is correlation, not causation." in claim["uncertainty"]
+    assert "visible subset is incomplete" not in data["uncertainty"]
+    assert not any(
+        "freshness is unavailable" in warning
+        for warning in data["uncertainty"]
+    )
     assert "snapshot:coverage" in {
         citation["citation_id"] for citation in data["citations"]
     }
