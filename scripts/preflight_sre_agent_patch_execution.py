@@ -81,6 +81,14 @@ SECRET_ENVIRONMENT_VARIABLE = "AIOPS_SRE_AGENT_TRIGGER_URL"
 SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
+SECRET_TAG_READ_SKILL_NAME = "aiops-read-skill-name"
+SECRET_TAG_READ_SKILL_VERSION = "aiops-read-skill-version"
+SECRET_TAG_READ_SKILL_SHA256 = "aiops-read-skill-sha256"
+SECRET_TAG_READ_SKILL_TOOLS = "aiops-read-skill-tools"
+SECRET_TAG_WRITE_SKILL_NAME = "aiops-write-skill-name"
+SECRET_TAG_WRITE_SKILL_VERSION = "aiops-write-skill-version"
+SECRET_TAG_WRITE_SKILL_SHA256 = "aiops-write-skill-sha256"
+SECRET_TAG_WRITE_SKILL_TOOLS = "aiops-write-skill-tools"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
     "64eca0f0832560c3a0324b9409edaf6af9de30fc5e22bf48d26133ca6c360ad7"
 )
@@ -259,6 +267,19 @@ def _canonical_skill_chain() -> dict[str, Any]:
         }
     )
     return {"sequence": ["read", "write"], "read": read, "write": write}
+
+
+def _skill_attestation_tags() -> dict[str, str]:
+    return {
+        SECRET_TAG_READ_SKILL_NAME: PATCH_READ_SKILL_NAME,
+        SECRET_TAG_READ_SKILL_VERSION: PATCH_READ_SKILL_VERSION,
+        SECRET_TAG_READ_SKILL_SHA256: PATCH_READ_SKILL_SHA256,
+        SECRET_TAG_READ_SKILL_TOOLS: ",".join(PATCH_READ_SKILL_TOOLS),
+        SECRET_TAG_WRITE_SKILL_NAME: PATCH_WRITE_SKILL_NAME,
+        SECRET_TAG_WRITE_SKILL_VERSION: PATCH_WRITE_SKILL_VERSION,
+        SECRET_TAG_WRITE_SKILL_SHA256: PATCH_WRITE_SKILL_SHA256,
+        SECRET_TAG_WRITE_SKILL_TOOLS: ",".join(PATCH_WRITE_SKILL_TOOLS),
+    }
 
 
 def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
@@ -739,12 +760,14 @@ def validate_secret_evidence(
     if metadata_id.casefold() != secret_id.casefold():
         raise ReadinessError("secret metadata does not match the configured reference")
     tags = _mapping(metadata.get("tags"), "metadata.tags")
+    skill_attestation = _skill_attestation_tags()
     _exact_fields(
         tags,
         {
             SECRET_TAG_CANONICAL_HASH,
             SECRET_TAG_TRIGGER_ID,
             SECRET_TAG_TRIGGER_ORIGIN,
+            *skill_attestation,
         },
         "metadata.tags",
     )
@@ -763,6 +786,10 @@ def validate_secret_evidence(
         raise ReadinessError(
             "secret metadata canonical hash attestation does not match"
         )
+    if any(tags.get(name) != value for name, value in skill_attestation.items()):
+        raise ReadinessError(
+            "secret metadata live Skill Builder attestation does not match"
+        )
     return {
         "status": "secret-ready",
         "secretName": SECRET_NAME,
@@ -770,6 +797,13 @@ def validate_secret_evidence(
         "secretValueRead": False,
         "triggerId": trigger_id,
         "triggerOrigin": trigger_origin,
+        "skillAttestation": {
+            "status": "portal-attested",
+            "readSkill": PATCH_READ_SKILL_NAME,
+            "readSkillSha256": PATCH_READ_SKILL_SHA256,
+            "writeSkill": PATCH_WRITE_SKILL_NAME,
+            "writeSkillSha256": PATCH_WRITE_SKILL_SHA256,
+        },
     }
 
 
@@ -922,7 +956,15 @@ def _next_commands(
             f'--name {SECRET_NAME} --value "$SRE_TRIGGER_URL" '
             f'--tags "{SECRET_TAG_TRIGGER_ID}={expected_trigger_id}" '
             f'"{SECRET_TAG_TRIGGER_ORIGIN}={expected_trigger_origin}" '
-            f'"{SECRET_TAG_CANONICAL_HASH}={canonical_body_hash}"'
+            f'"{SECRET_TAG_CANONICAL_HASH}={canonical_body_hash}" '
+            f'"{SECRET_TAG_READ_SKILL_NAME}={PATCH_READ_SKILL_NAME}" '
+            f'"{SECRET_TAG_READ_SKILL_VERSION}={PATCH_READ_SKILL_VERSION}" '
+            f'"{SECRET_TAG_READ_SKILL_SHA256}={PATCH_READ_SKILL_SHA256}" '
+            f'"{SECRET_TAG_READ_SKILL_TOOLS}={",".join(PATCH_READ_SKILL_TOOLS)}" '
+            f'"{SECRET_TAG_WRITE_SKILL_NAME}={PATCH_WRITE_SKILL_NAME}" '
+            f'"{SECRET_TAG_WRITE_SKILL_VERSION}={PATCH_WRITE_SKILL_VERSION}" '
+            f'"{SECRET_TAG_WRITE_SKILL_SHA256}={PATCH_WRITE_SKILL_SHA256}" '
+            f'"{SECRET_TAG_WRITE_SKILL_TOOLS}={",".join(PATCH_WRITE_SKILL_TOOLS)}"'
         ),
         (
             "terraform -chdir=infra/terraform plan -input=false "
