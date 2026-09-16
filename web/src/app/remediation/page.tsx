@@ -790,7 +790,9 @@ function RemediationContent() {
   useEffect(() => {
     if (!selectedPlanId) {
       setWorkflow(null);
+      setWorkflowLoading(false);
       setWorkflowError("");
+      setPatchRevalidating(false);
       workflowFetchKeyRef.current = null;
       return;
     }
@@ -811,6 +813,7 @@ function RemediationContent() {
         setPatchRevalidating(true);
       } else {
         setWorkflowLoading(true);
+        setPatchRevalidating(false);
       }
       setWorkflowError("");
       void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? [])
@@ -840,13 +843,12 @@ function RemediationContent() {
       runFetch();
     }
 
-    const requestAtScheduleTime = requestId.current;
     return () => {
       if (patchFetchDebounceRef.current) {
         clearTimeout(patchFetchDebounceRef.current);
         patchFetchDebounceRef.current = null;
       }
-      if (requestId.current === requestAtScheduleTime) requestId.current += 1;
+      requestId.current += 1;
     };
     // scopeKey intentionally invalidates the request when any scope dimension changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
