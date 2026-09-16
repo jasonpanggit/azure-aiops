@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -544,14 +544,29 @@ def _status_only_answer(
         )
     ):
         return None
-    statuses = []
-    for call in calls:
-        warning = call.result.warning.strip()
-        status = f"{call.tool} is {call.result.status}"
-        statuses.append(f"{status} ({warning})" if warning else status)
+    status_counts = Counter(call.result.status for call in calls)
+    statuses = [
+        (
+            f"{count} governed lookup{'' if count == 1 else 's'} "
+            f"returned {status}"
+        )
+        for status, count in sorted(status_counts.items())
+    ]
+    degradation = []
+    if STATUS_EMPTY in status_counts:
+        degradation.append(
+            "The available governed lookups returned no matching records."
+        )
+    if STATUS_UNAVAILABLE in status_counts:
+        degradation.append("Required provider data is unavailable.")
+    if STATUS_DENIED in status_counts:
+        degradation.append(
+            "Some governed lookups were not permitted for the current scope."
+        )
     return {
         "text": (
-            f"{'; '.join(statuses)}. No provider-backed records were returned, "
+            f"{'; '.join(statuses)}. {' '.join(degradation)} "
+            "No provider-backed records were returned, "
             "so the requested operational facts cannot be determined."
         ),
         "agent_name": "operations-copilot",
