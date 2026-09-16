@@ -55,17 +55,26 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
   const risk = useApi(() => contextApi.risk(name, scope), [name, scope]);
   const impact = useApi(() => contextApi.impact(name, scope), [name, scope]);
   const [copilotOpen, setCopilotOpen] = useState(false);
-  const error = context.error ?? risk.error ?? impact.error;
-
-  if (error) {
-    return <div className="page-container"><StatePanel title="Service view is unavailable" message={error.message} tone="error" /></div>;
-  }
 
   const sectionKeys = (context?: SemanticContext): string[] => Object.keys(context?.sections ?? {});
   const sectionState = (
-    api: { data?: { data?: SemanticContext } | null; error?: Error | null },
+    api: {
+      data?: {
+        data?: SemanticContext;
+        warnings?: string[];
+      } | null;
+      error?: Error | null;
+    },
   ) => {
-    const available = !api.error && Boolean(api.data);
+    const sourceStatus = api.data?.data?.source_status ?? {};
+    const statuses = Object.values(sourceStatus).map((status) =>
+      String(status).trim().toLowerCase());
+    const allUnavailable = statuses.length > 0
+      && statuses.every((status) =>
+        ["deferred", "empty", "unavailable"].includes(status));
+    const partiallyUnavailable = statuses.some((status) =>
+      ["deferred", "empty", "unavailable"].includes(status));
+    const available = !api.error && Boolean(api.data) && !allUnavailable;
     return {
       subject: api.data?.data?.subject
         ? {
@@ -82,9 +91,20 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
           }
         : null,
       available,
-      freshness: (available ? "fresh" : "unavailable") as CopilotFreshnessStatusV2,
+      freshness: (
+        !available
+          ? "unavailable"
+          : partiallyUnavailable
+            ? "partial"
+            : "fresh"
+      ) as CopilotFreshnessStatusV2,
       observedAt: api.data?.data?.live_observed_at,
       sections: sectionKeys(api.data?.data ?? undefined),
+      sourceStatus,
+      warnings: [
+        ...(api.data?.warnings ?? []),
+        ...(api.error ? [api.error.message] : []),
+      ],
     };
   };
 
@@ -122,9 +142,9 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
         <StatePanel title="Building service operating view" message="Resolving context, risk, and blast radius." tone="loading" />
       ) : (
         <div className="service-detail-grid">
-          <section className="card"><div className="card-header"><h2>Service context</h2></div><div className="card-body"><StructuredData value={context.data?.data ?? {}} /></div></section>
-          <section className="card"><div className="card-header"><h2>Aggregated risk</h2></div><div className="card-body"><StructuredData value={risk.data?.data ?? {}} /></div></section>
-          <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body"><StructuredData value={impact.data?.data ?? {}} /></div></section>
+          <section className="card"><div className="card-header"><h2>Service context</h2></div><div className="card-body">{context.error ? <StatePanel title="Service context unavailable" message={context.error.message} tone="partial" /> : <StructuredData value={context.data?.data ?? {}} />}</div></section>
+          <section className="card"><div className="card-header"><h2>Aggregated risk</h2></div><div className="card-body">{risk.error ? <StatePanel title="Risk evidence unavailable" message={risk.error.message} tone="partial" /> : <StructuredData value={risk.data?.data ?? {}} />}</div></section>
+          <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body">{impact.error ? <StatePanel title="Dependency evidence unavailable" message={impact.error.message} tone="partial" /> : <StructuredData value={impact.data?.data ?? {}} />}</div></section>
         </div>
       )}
 

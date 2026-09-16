@@ -4849,8 +4849,60 @@ def build_context() -> ApiContext:
     def hybrid_business_service(
         service: str, subscription_ids: list[str]
     ) -> dict[str, Any]:
+        graph = providers.get("semantic_graph", optional=True)
+        if graph is None:
+            requested = {value.casefold() for value in subscription_ids}
+            connection_rows = [
+                {
+                    "subscription_id": subscription_id,
+                    **business,
+                }
+                for subscription_id, business in sorted(
+                    live_connection_business_context().items()
+                )
+                if subscription_id in requested
+                and str(business.get("business_service") or "").casefold()
+                == service.casefold()
+            ]
+
+            def unique_value(field: str) -> str:
+                values = {
+                    str(row.get(field) or "").strip()
+                    for row in connection_rows
+                    if str(row.get(field) or "").strip()
+                }
+                return next(iter(values)) if len(values) == 1 else ""
+
+            return {
+                "subject": {
+                    "entity_type": "BusinessService",
+                    "name": service,
+                    "business_service": service,
+                    "owner": unique_value("owner"),
+                    "support_team": unique_value("support_team"),
+                    "environment": unique_value("environment"),
+                    "criticality": unique_value("criticality"),
+                },
+                "sections": {
+                    "subscription_connections": connection_rows,
+                },
+                "graph_freshness": "",
+                "live_observed_at": "",
+                "source_status": {
+                    "semantic-graph": "unavailable",
+                    "subscription-connections": (
+                        "ok" if connection_rows else "empty"
+                    ),
+                },
+                "warnings": [
+                    (
+                        "Semantic graph service context is unavailable; "
+                        "only retained subscription-connection facts are shown."
+                    )
+                ],
+            }
         return HybridQueryService(
-            providers.get("semantic_graph"),
+            graph,
             live_resources,
         ).service_context(
             service,
@@ -4859,7 +4911,22 @@ def build_context() -> ApiContext:
         )
 
     def hybrid_impact(subject: str, subscription_ids: list[str]) -> dict[str, Any]:
-        graph = providers.get("semantic_graph")
+        graph = providers.get("semantic_graph", optional=True)
+        if graph is None:
+            return {
+                "root": {
+                    "name": subject,
+                    "business_service": subject,
+                },
+                "sections": {},
+                "source_status": {"semantic-graph": "unavailable"},
+                "warnings": [
+                    (
+                        "Dependency evidence is unavailable; "
+                        "no dependency facts are asserted."
+                    )
+                ],
+            }
         result = graph.get_impact_context(subject)
         result["source_status"] = {"semantic-graph": "ok"}
         return result
@@ -4872,15 +4939,31 @@ def build_context() -> ApiContext:
         result = (
             graph.get_risk_context(subject)
             if graph is not None
-            else {"subject": {"name": subject}, "risk": {}}
+            else {
+                "subject": {
+                    "name": subject,
+                    "business_service": subject,
+                },
+                "risk": {},
+                "sections": {},
+            }
         )
+        if graph is None:
+            result["source_status"] = {"semantic-graph": "unavailable"}
+            result["warnings"] = [
+                (
+                    "Service risk evidence is unavailable; "
+                    "no service-specific risk facts are asserted."
+                )
+            ]
+            return result
         try:
             vulnerability = hybrid_vulnerability(subscription_ids)
             live_summary = vulnerability.summary() if vulnerability is not None else {}
         except (RuntimeError, ValueError, TypeError, AttributeError):
             live_summary = {}
         result["source_status"] = {
-            "semantic-graph": "ok" if graph is not None else "unavailable",
+            "semantic-graph": "ok",
             "live-vulnerability": "ok" if live_summary else "unavailable",
         }
         result["live_vulnerability_summary"] = live_summary

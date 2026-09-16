@@ -6825,6 +6825,121 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
+def test_service_detail_retains_cited_unavailable_dependency_truth(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The semantic provider is deferred",
+        ),
+    )
+    body = {
+        "contract_version": "1",
+        "question": "What depends on Demo?",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "service_detail",
+            "page_id": "service:Demo",
+            "filters": {},
+            "query": "",
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 1,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "impact",
+                    "observed_at": "2026-09-16T00:00:00Z",
+                    "status": "unavailable",
+                }
+            ],
+            "selected_entities": [],
+            "evidence": [
+                {
+                    "evidence_id": "service:impact-unavailable",
+                    "source": "service_section_status",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T00:00:00Z",
+                    "resource_id": "",
+                    "source_key": "Demo:impact:status",
+                    "entity": {
+                        "type": "observation",
+                        "source": "service_section_status",
+                        "source_key": "Demo:impact:status",
+                    },
+                    "claim_type": "service_section_status",
+                    "citations": [],
+                    "selected": True,
+                    "direct": True,
+                    "actionable": False,
+                    "severity": "unknown",
+                    "quality": "unknown",
+                    "data": {
+                        "section": "impact",
+                        "availability": "unavailable",
+                        "detail": (
+                            "Dependency evidence is unavailable; "
+                            "no dependency facts are asserted."
+                        ),
+                        "source_status": ["semantic-graph:unavailable"],
+                        "selected": True,
+                        "actionable": False,
+                        "mutation_authorized": False,
+                    },
+                }
+            ],
+            "material_claims": [
+                {
+                    "claim_id": "service-impact-unavailable",
+                    "evidence_refs": ["service:impact-unavailable"],
+                    "requires_complete_coverage": False,
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": "resource_health_observability",
+            "tool": "impact_context",
+            "arguments": {"subject": "Demo"},
+        },
+    }
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["resource_health_observability"]
+    assert data["selected_tools"] == ["impact_context"]
+    assert data["tool_results"][0]["status"] == "unavailable"
+    assert data["mutation_authorized"] is False
+    claims = data["synthesis"]["claims"]
+    assert any(
+        "Dependency evidence is unavailable" in claim["summary"]
+        and "no dependency facts are asserted" in claim["summary"]
+        for claim in claims
+    )
+    citation_ids = {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    assert {
+        reference
+        for claim in claims
+        for reference in claim["evidence_refs"]
+    } <= citation_ids
+    assert "depends_on" not in response.text
+
+
 @pytest.mark.parametrize(
     ("page_kind", "page_id", "question", "expected_specialists"),
     (
