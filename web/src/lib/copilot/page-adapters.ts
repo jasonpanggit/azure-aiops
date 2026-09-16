@@ -4889,6 +4889,7 @@ function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAd
       namespace: "connection",
       kind: "subscription_connection",
       source: "connections/registry",
+      evidenceIdentity: "observation",
       observedAt: connection.last_successful_sync_at ?? input.observedAt,
       selected: selectedId != null && connection.connection_id === selectedId,
       priority: index,
@@ -4924,7 +4925,7 @@ function connectionsCoreInput(input: ConnectionsCopilotPageInput): CoreCopilotAd
     ],
     sourceStatuses: [
       {
-        source: "connections",
+        source: "connections/registry",
         observedAt: input.observedAt,
         status: (input.available ? input.freshness : "unavailable") as CopilotFreshnessStatusV2,
       },

@@ -472,14 +472,24 @@ def _without_unresolved_domain_evidence(
         for item in snapshot.evidence
         if not isinstance(item.entity, DomainEntityRef)
     ]
+    selected_entities = [
+        entity
+        for entity in snapshot.selected_entities
+        if not isinstance(entity, DomainEntityRef)
+    ]
+    excluded_domain_evidence = (
+        len(evidence) != len(snapshot.evidence)
+        or len(selected_entities) != len(snapshot.selected_entities)
+    )
     evidence_ids = {item.evidence_id for item in evidence}
     return snapshot.model_copy(
         update={
-            "selected_entities": [
-                entity
-                for entity in snapshot.selected_entities
-                if not isinstance(entity, DomainEntityRef)
-            ],
+            "coverage": (
+                snapshot.coverage.model_copy(update={"complete": False})
+                if excluded_domain_evidence
+                else snapshot.coverage
+            ),
+            "selected_entities": selected_entities,
             "evidence": evidence,
             "material_claims": [
                 claim
@@ -1745,12 +1755,24 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     _validate_bound_cve_request(payload, browser_snapshot)
+    unresolved_domain_evidence_excluded = False
     try:
         semantic = context.resolve_provider(
             "semantic",
             optional=True,
         )
         semantic_unavailable = semantic is None
+        unresolved_domain_evidence_excluded = semantic_unavailable and any(
+            isinstance(entity, DomainEntityRef)
+            for entity in [
+                *browser_snapshot.selected_entities,
+                *[
+                    item.entity
+                    for item in browser_snapshot.evidence
+                    if item.entity is not None
+                ],
+            ]
+        )
         selection_snapshot = (
             _without_unresolved_domain_evidence(browser_snapshot)
             if semantic_unavailable
@@ -2123,7 +2145,7 @@ def investigate_canonical(
             details={"field": "thread_id"},
         ) from exc
 
-    if semantic_unavailable:
+    if unresolved_domain_evidence_excluded:
         semantic_warning = (
             "Semantic identity resolution is unavailable; unresolved domain "
             "page evidence was excluded."

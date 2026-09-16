@@ -54,6 +54,7 @@ from operations.orchestration_contract import (
     DomainEntityRef,
     EvidenceSnapshotV2,
     InvestigationRequest,
+    ObservationRef,
     OrchestrationResult,
     SnapshotCoverage,
     SpecialistStep,
@@ -851,9 +852,42 @@ class OrchestrationService:
             if budget_exhausted:
                 break
 
+        connection_rows = [
+            item
+            for item in page_snapshot.evidence
+            if item.claim_type == "subscription_connection"
+        ]
+        exact_connections_contract = (
+            page_snapshot.page_kind == "connections"
+            and page_snapshot.page_id == "connections"
+            and (
+                page_snapshot.coverage.total_count == 0
+                or len(connection_rows) == page_snapshot.coverage.visible_count
+            )
+            and all(
+                item.source == "connections/registry"
+                and isinstance(item.entity, ObservationRef)
+                and item.entity.source == "connections/registry"
+                for item in connection_rows
+            )
+        )
+        authorized_connections_truth = (
+            exact_connections_contract
+            and canonical_selection_snapshot is not None
+            and canonical_selection_snapshot.classification in {"ready", "empty"}
+            and canonical_selection_snapshot.coverage.visible_count
+            == page_snapshot.coverage.visible_count
+            and canonical_selection_snapshot.coverage.total_count
+            == page_snapshot.coverage.total_count
+            and canonical_selection_snapshot.coverage.complete
+            == page_snapshot.coverage.complete
+        )
         uncertainty_request = (
             request.model_copy(update={"snapshot": page_snapshot})
-            if _complete_empty_page_kind(page_snapshot) is not None
+            if (
+                authorized_connections_truth
+                or _complete_empty_page_kind(page_snapshot) is not None
+            )
             else request
         )
         uncertainty = self._uncertainty(
@@ -909,7 +943,10 @@ class OrchestrationService:
             uncertainty=uncertainty,
             coverage=(
                 page_snapshot.coverage
-                if _complete_empty_page_kind(page_snapshot) is not None
+                if (
+                    authorized_connections_truth
+                    or _complete_empty_page_kind(page_snapshot) is not None
+                )
                 else request.snapshot.coverage
             ),
             citations=self._deduplicate_citations(citations),

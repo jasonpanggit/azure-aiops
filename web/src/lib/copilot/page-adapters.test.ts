@@ -3289,9 +3289,8 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     expect(selected?.resource_id).toBeUndefined();
     expect(selected?.data).toMatchObject({
       entity: {
-        type: "domain",
-        namespace: "connection",
-        kind: "subscription_connection",
+        type: "observation",
+        source: "connections/registry",
         source_key: "prod",
       },
       health_status: "healthy",
@@ -3323,6 +3322,9 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       && starter.tool === "inventory_resources")).toBe(true);
     expect(context.snapshot.evidence.every((row) =>
       row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    expect(context.snapshot.freshness).toContainEqual(
+      expect.objectContaining({ source: "connections/registry", status: "fresh" }),
+    );
   });
 
   it("distinguishes a healthy-empty connection registry from an unavailable one", () => {
@@ -3356,7 +3358,7 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     });
     expect(unavailable.coverage.connections.complete).toBe(false);
     expect(unavailable.uncertainty).toEqual(
-      expect.arrayContaining(["connections freshness is unavailable"]),
+      expect.arrayContaining(["connections/registry freshness is unavailable"]),
     );
   });
 
