@@ -56,6 +56,11 @@ production action.
 - Official trigger CRUD lacks a formal request schema and ETag/`If-Match`
   contract. No mutation mode is implemented; trigger creation/update is a
   portal-only human gate.
+- Live trigger readiness accepts only the exact observed production GET row,
+  validates `agentPrompt`, lowercase `agentMode`, `triggerEnabled`, default
+  response agent, empty thread ID, and exact URL/ID/origin, and rejects aliases
+  or unknown fields. The absent service payload schema remains enforced
+  against the runtime's locked outgoing envelope and canonical hash.
 - The non-secret reviewed trigger ID is required independently from the secret
   URL. Runtime, normalized trigger evidence, and Key Vault metadata
   attestation must all bind the same exact ID.

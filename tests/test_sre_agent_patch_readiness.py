@@ -48,11 +48,20 @@ def _fixture(path: Path) -> dict[str, object]:
 
 def _real_live_trigger_row(module, **overrides: object) -> dict[str, object]:
     row = {
-        "id": REAL_TRIGGER_ID,
-        "agentPrompt": module.canonical_trigger_body(_fixture(DEFINITION))["prompt"],
+        "agent": None,
         "agentMode": "autonomous",
-        "triggerEnabled": True,
+        "agentPrompt": module.canonical_trigger_body(_fixture(DEFINITION))["prompt"],
+        "createdAt": "2026-09-16T01:00:00Z",
+        "createdBy": "operator",
+        "description": "",
+        "executionCount": 0,
+        "id": REAL_TRIGGER_ID,
+        "lastExecutionTime": None,
+        "modelTier": None,
+        "name": "aiops-selected-patch-execution-v1",
         "threadId": "",
+        "triggerEnabled": True,
+        "triggerLastCalledAt": None,
         "triggerUrl": f"{TRIGGER_ORIGIN}/api/v1/httptriggers/trigger/{REAL_TRIGGER_ID}",
     }
     row.update(overrides)
@@ -222,15 +231,11 @@ def _all_live_dependencies(module, *, deployed: bool = True):
     rbac_runner, calls, rbac_responses = _live_runner(module)
     agent = _fixture(AGENT_FIXTURE)["resource"]
     secret = _fixture(SECRET_FIXTURE)
-    trigger = _fixture(TRIGGER_FIXTURE)["trigger"]
-    trigger_row = {
-        "id": trigger["id"],
-        "agentPrompt": trigger["prompt"],
-        "agentMode": "autonomous",
-        "triggerEnabled": trigger["enabled"],
-        "threadId": "",
-        "triggerUrl": f"{TRIGGER_ORIGIN}/api/v1/httptriggers/trigger/{TRIGGER_ID}",
-    }
+    trigger_row = _real_live_trigger_row(
+        module,
+        id=TRIGGER_ID,
+        triggerUrl=f"{TRIGGER_ORIGIN}/api/v1/httptriggers/trigger/{TRIGGER_ID}",
+    )
     app_state = {
         "secrets": [
             {
@@ -977,6 +982,31 @@ def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
     }
 
 
+def test_real_live_trigger_row_uses_exact_observed_production_keys() -> None:
+    module = _load_module()
+
+    expected = {
+        "agent",
+        "agentMode",
+        "agentPrompt",
+        "createdAt",
+        "createdBy",
+        "description",
+        "executionCount",
+        "id",
+        "lastExecutionTime",
+        "modelTier",
+        "name",
+        "threadId",
+        "triggerEnabled",
+        "triggerLastCalledAt",
+        "triggerUrl",
+    }
+    assert len(expected) == 15
+    assert module.RAW_LIVE_TRIGGER_FIELDS == expected
+    assert set(_real_live_trigger_row(module)) == expected
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
@@ -984,6 +1014,7 @@ def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
         ({"agentMode": "review"}, "agentMode must be autonomous"),
         ({"triggerEnabled": False}, "trigger must be enabled"),
         ({"threadId": "shared-thread"}, "threadId must be empty"),
+        ({"agent": "other-agent"}, "response agent must remain the default"),
         ({"description": "different description"}, "trigger drift detected"),
         ({"id": "wrong-trigger-id"}, "exact trigger once"),
         (
@@ -1014,6 +1045,39 @@ def test_real_live_trigger_shape_drift_fails_closed(
             expected_trigger_id=REAL_TRIGGER_ID,
             expected_trigger_origin=TRIGGER_ORIGIN,
             definition=_fixture(DEFINITION),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "url-alias"])
+def test_real_live_trigger_shape_must_be_exact(mutation: str) -> None:
+    module = _load_module()
+    row = _real_live_trigger_row(module)
+    if mutation == "missing":
+        del row["description"]
+    elif mutation == "extra":
+        row["unexpected"] = "field"
+    else:
+        row["url"] = row.pop("triggerUrl")
+
+    with pytest.raises(module.ReadinessError, match="fields do not match"):
+        module._normalize_live_trigger(
+            [row],
+            expected_trigger_id=REAL_TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+        )
+
+
+@pytest.mark.parametrize("suffix", ["?api-version=1", "#fragment", "/extra"])
+def test_real_live_trigger_url_must_be_exact(suffix: str) -> None:
+    module = _load_module()
+    row = _real_live_trigger_row(module)
+    row["triggerUrl"] += suffix
+
+    with pytest.raises(module.ReadinessError, match="invocation URL"):
+        module._normalize_live_trigger(
+            [row],
+            expected_trigger_id=REAL_TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
         )
 
 
