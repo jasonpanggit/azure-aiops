@@ -76,8 +76,11 @@ The prompt is not a security boundary. Before enabling the mode:
   documented install operation and are deliberately excluded.
 
 The adapter sends only `schema_version`, `run_id`, `subscription_id`,
-`target_id`, `target_kind`, `patch_ids`, `reboot_setting`, `requested_by`,
-`approved_by`, and `operation`. It supports Azure VM and Arc
+`target_id`, `target_kind`, `patch_ids`, `reboot_setting`,
+`maximum_duration=PT2H`, `requested_by`, `approved_by`, and `operation`. The
+duration is the same bounded constant used by the direct ARM adapter and is
+required by Arc patch installation; neither the operator nor agent may widen
+it. It supports Azure VM and Arc
 `install_patches` runs only; AKS node-image upgrades, empty patch selections,
 cross-subscription targets, and targets outside the configured prefix fail
 before submission.

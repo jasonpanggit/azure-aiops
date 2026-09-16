@@ -24,13 +24,13 @@ TRIGGER_ORIGIN = "https://trigger.example.sre.azure.com"
 AGENT_ENDPOINT = "https://sre-agent.example.azure.com"
 SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000001"
 TARGET_PREFIX = f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-prod"
-VM_ID = (
-    f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/vm-payments"
-)
+VM_ID = f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/vm-payments"
 
 
 class _Credential:
-    def __init__(self, *, token: str = "workload-token", error: Exception | None = None) -> None:
+    def __init__(
+        self, *, token: str = "workload-token", error: Exception | None = None
+    ) -> None:
         self.token = token
         self.error = error
         self.scopes: list[tuple[str, ...]] = []
@@ -132,6 +132,7 @@ def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
         "target_kind": "Azure VM",
         "patch_ids": ["KB600001"],
         "reboot_setting": "IfRequired",
+        "maximum_duration": "PT2H",
         "requested_by": "operator@example.com",
         "approved_by": "approver@example.com",
         "operation": "install_patches",
@@ -167,8 +168,10 @@ def test_submit_rejects_real_payload_builder_drift_before_http(
         drifted_payload,
     )
     adapter, credential = _adapter(
-        lambda request: requests.append(request)
-        or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        )
     )
 
     with pytest.raises(PatchExecutionUnavailable, match="locked contract") as excinfo:
@@ -210,9 +213,7 @@ def test_operator_identity_is_audit_data_and_never_used_as_bearer_token() -> Non
 
 
 def test_arc_target_uses_the_same_exact_bounded_envelope() -> None:
-    arc_id = (
-        f"{TARGET_PREFIX}/providers/Microsoft.HybridCompute/machines/arc-payments"
-    )
+    arc_id = f"{TARGET_PREFIX}/providers/Microsoft.HybridCompute/machines/arc-payments"
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -258,7 +259,9 @@ def test_arc_target_uses_the_same_exact_bounded_envelope() -> None:
             "configured subscription",
         ),
         (
-            {"target_id": f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/other"},
+            {
+                "target_id": f"{TARGET_PREFIX}/providers/Microsoft.Compute/virtualMachines/other"
+            },
             {},
             "does not match",
         ),
@@ -271,8 +274,10 @@ def test_invalid_or_cross_scope_submissions_are_refused_before_http(
 ) -> None:
     requests: list[httpx.Request] = []
     adapter, _credential = _adapter(
-        lambda request: requests.append(request)
-        or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        )
     )
 
     with pytest.raises(PatchExecutionUnavailable, match=message) as excinfo:
@@ -285,8 +290,10 @@ def test_invalid_or_cross_scope_submissions_are_refused_before_http(
 def test_target_outside_configured_prefix_is_refused() -> None:
     requests: list[httpx.Request] = []
     adapter, _credential = _adapter(
-        lambda request: requests.append(request)
-        or httpx.Response(202, json={"success": True, "threadId": "unused"}),
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        ),
         target_prefix=f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/other-rg",
     )
 
@@ -319,8 +326,10 @@ def test_payload_bound_rejects_more_than_256_patch_ids() -> None:
 def test_token_failure_is_pre_submit_authorization_failure() -> None:
     requests: list[httpx.Request] = []
     adapter, _credential = _adapter(
-        lambda request: requests.append(request)
-        or httpx.Response(202, json={"success": True, "threadId": "unused"}),
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        ),
         credential=_Credential(error=RuntimeError("identity unavailable")),
     )
 
@@ -335,8 +344,10 @@ def test_token_failure_is_pre_submit_authorization_failure() -> None:
 def test_empty_token_is_pre_submit_authorization_failure() -> None:
     requests: list[httpx.Request] = []
     adapter, credential = _adapter(
-        lambda request: requests.append(request)
-        or httpx.Response(202, json={"success": True, "threadId": "unused"}),
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        ),
         credential=_Credential(token=""),
     )
 
@@ -369,7 +380,9 @@ def test_non_202_responses_are_rejected_without_following_redirects(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        headers = {"Location": "https://attacker.example/steal"} if status == 307 else {}
+        headers = (
+            {"Location": "https://attacker.example/steal"} if status == 307 else {}
+        )
         return httpx.Response(status, json=payload, headers=headers, request=request)
 
     adapter, _credential = _adapter(handler)

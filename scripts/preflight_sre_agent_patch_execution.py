@@ -70,6 +70,9 @@ SECRET_ENVIRONMENT_VARIABLE = "AIOPS_SRE_AGENT_TRIGGER_URL"
 SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
+CANONICAL_TRIGGER_PROMPT_SHA256 = (
+    "a722b0dd17fd09557846d46c06a183cd0051c984e072da91b3ec0818cab389f6"
+)
 TRIGGER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 SUBSCRIPTION_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -156,12 +159,19 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
             raise ReadinessError(f"trigger {field} must be a non-empty string")
 
     prompt = definition["prompt"]
+    if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != (
+        CANONICAL_TRIGGER_PROMPT_SHA256
+    ):
+        raise ReadinessError("trigger prompt does not match the canonical contract")
     required_prompt_terms = (
         "run_id",
         "subscription_id",
         "target_id",
         "patch_ids",
         "reboot_setting",
+        "maximum_duration to equal PT2H",
+        "reboot_setting, maximum_duration, requested_by, and approved_by as immutable",
+        "exact reboot_setting and maximum_duration",
         "Do not discover",
         "fall back to all available patches",
         "stop without fallback",
@@ -180,6 +190,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "operation",
         "patch_ids",
         "reboot_setting",
+        "maximum_duration",
         "requested_by",
         "run_id",
         "schema_version",
@@ -197,6 +208,8 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         raise ReadinessError("payload schema_version must be fixed at 1.0")
     if properties["operation"] != {"const": "install_patches"}:
         raise ReadinessError("payload operation must be fixed at install_patches")
+    if properties["maximum_duration"] != {"const": "PT2H"}:
+        raise ReadinessError("payload maximum_duration must be fixed at PT2H")
 
     return {field: definition[field] for field in sorted(DEFINITION_FIELDS)}
 
@@ -1011,6 +1024,8 @@ def collect_live_predeploy(
     target_prefix: str,
 ) -> dict[str, Any]:
     """Collect every pre-deploy gate in-process using fixed read-only calls."""
+    canonical_trigger_body(definition)
+    _validate_runtime_outbound_envelope(definition)
     provenance: list[dict[str, Any]] = []
     agent_raw = _run_fixed_json_object(
         runner,

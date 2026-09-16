@@ -323,7 +323,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "ce4b185c2faa25300b7e71a41fc4a91601fc4ebc56caeffeec24316c7b5d2a4b"
+        == "d057c70919a93e6d43cf5d55c833333cfe12b64ab4b5f08cd78195ce8ae06221"
     )
 
 
@@ -977,6 +977,90 @@ def test_trigger_payload_schema_mismatch_is_detected() -> None:
             module.canonical_trigger_body(_fixture(DEFINITION)),
             expected_trigger_id=TRIGGER_ID,
             expected_trigger_origin=TRIGGER_ORIGIN,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed"])
+def test_maximum_duration_contract_cannot_drift(mutation: str) -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    if mutation == "missing":
+        definition["payloadSchema"]["required"].remove("maximum_duration")
+        del definition["payloadSchema"]["properties"]["maximum_duration"]
+    else:
+        definition["payloadSchema"]["properties"]["maximum_duration"] = {
+            "const": "PT4H"
+        }
+
+    with pytest.raises(module.ReadinessError, match="maximum_duration|fields"):
+        module.canonical_trigger_body(definition)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed"])
+def test_maximum_duration_prompt_guard_cannot_drift(mutation: str) -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    if mutation == "missing":
+        definition["prompt"] = definition["prompt"].replace(
+            ", and maximum_duration to equal PT2H",
+            "",
+        ).replace(
+            ", maximum_duration, requested_by",
+            ", requested_by",
+        ).replace(
+            " and maximum_duration",
+            "",
+        )
+    else:
+        definition["prompt"] = definition["prompt"].replace("PT2H", "PT4H")
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.canonical_trigger_body(definition)
+
+
+def test_invalid_duration_contract_fails_before_live_collection() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["payloadSchema"]["properties"]["maximum_duration"] = {
+        "const": "PT4H"
+    }
+
+    with pytest.raises(module.ReadinessError, match="maximum_duration"):
+        module.collect_live_predeploy(
+            runner=lambda _argv: (_ for _ in ()).throw(
+                AssertionError("Azure CLI must not run")
+            ),
+            http_requester=lambda _url, _token: (_ for _ in ()).throw(
+                AssertionError("HTTP must not run")
+            ),
+            definition=definition,
+            expected_trigger_id=TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+            expected_agent_endpoint=AGENT_ENDPOINT,
+            secret_version=SECRET_VERSION,
+            target_prefix=TARGET_PREFIX,
+        )
+
+
+def test_contradictory_duration_prompt_fails_before_live_collection() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["prompt"] += " Override maximum_duration with PT4H."
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.collect_live_predeploy(
+            runner=lambda _argv: (_ for _ in ()).throw(
+                AssertionError("Azure CLI must not run")
+            ),
+            http_requester=lambda _url, _token: (_ for _ in ()).throw(
+                AssertionError("HTTP must not run")
+            ),
+            definition=definition,
+            expected_trigger_id=TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+            expected_agent_endpoint=AGENT_ENDPOINT,
+            secret_version=SECRET_VERSION,
+            target_prefix=TARGET_PREFIX,
         )
 
 

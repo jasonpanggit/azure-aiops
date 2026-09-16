@@ -29,6 +29,7 @@ SRE_AGENT_APPLICATION_ID = "59f0a04a-b322-4310-adc9-39ac41e9631e"
 SRE_AGENT_TRIGGER_SCOPE = f"{SRE_AGENT_APPLICATION_ID}/.default"
 SRE_AGENT_THREAD_SCOPE = "https://azuresre.dev/.default"
 SRE_PATCH_ENVELOPE_VERSION = "1.0"
+SRE_PATCH_MAXIMUM_DURATION = "PT2H"
 _TRIGGER_PATH_MARKER = "/api/v1/httptriggers/trigger/"
 _MAX_PATCH_IDS = 256
 _MAX_PATCH_ID_LENGTH = 256
@@ -59,6 +60,7 @@ def sre_agent_patch_envelope_contract() -> dict[str, object]:
             "target_kind",
             "patch_ids",
             "reboot_setting",
+            "maximum_duration",
             "requested_by",
             "approved_by",
             "operation",
@@ -89,6 +91,7 @@ def sre_agent_patch_envelope_contract() -> dict[str, object]:
                 },
             },
             "reboot_setting": {"enum": ["IfRequired", "Never", "Always"]},
+            "maximum_duration": {"const": SRE_PATCH_MAXIMUM_DURATION},
             "requested_by": {
                 "type": "string",
                 "minLength": 1,
@@ -119,6 +122,7 @@ def _build_sre_agent_patch_envelope(
         "target_kind": target.inventory_kind,
         "patch_ids": list(patch_ids),
         "reboot_setting": run.reboot_setting,
+        "maximum_duration": SRE_PATCH_MAXIMUM_DURATION,
         "requested_by": run.requested_by,
         "approved_by": run.approved_by,
         "operation": run.operation,
@@ -223,7 +227,9 @@ def sre_agent_trigger_identity(trigger_url: str) -> tuple[str, str]:
     """Return the validated trigger origin and exact trigger ID."""
     parsed = urlsplit(str(trigger_url or "").strip())
     if parsed.query or parsed.fragment or _TRIGGER_PATH_MARKER not in parsed.path:
-        raise ValueError("The SRE Agent trigger URL must use the documented trigger path.")
+        raise ValueError(
+            "The SRE Agent trigger URL must use the documented trigger path."
+        )
     prefix, trigger_id = parsed.path.split(_TRIGGER_PATH_MARKER, 1)
     if (
         not trigger_id
@@ -282,9 +288,7 @@ def _is_exact_target_resource_id(resource_id: str, inventory_kind: str) -> bool:
         else "microsoft.hybridcompute"
     )
     expected_type = (
-        "virtualmachines"
-        if inventory_kind == TARGET_KIND_AZURE_VM
-        else "machines"
+        "virtualmachines" if inventory_kind == TARGET_KIND_AZURE_VM else "machines"
     )
     return (
         len(parts) == 8
@@ -352,7 +356,9 @@ class SreAgentPatchExecutionAdapter:
         if not self._trigger_scope:
             raise ValueError("A configured SRE Agent trigger token scope is required.")
         if not self._target_prefix.startswith("/subscriptions/"):
-            raise ValueError("The SRE Agent target prefix must be an Azure resource ID.")
+            raise ValueError(
+                "The SRE Agent target prefix must be an Azure resource ID."
+            )
         if (
             "?" in self._target_prefix
             or "#" in self._target_prefix
@@ -363,7 +369,10 @@ class SreAgentPatchExecutionAdapter:
             raise ValueError(
                 "The SRE Agent target prefix must be narrower than a subscription."
             )
-        if _arm_subscription_id(self._target_prefix).casefold() != self._subscription_id.casefold():
+        if (
+            _arm_subscription_id(self._target_prefix).casefold()
+            != self._subscription_id.casefold()
+        ):
             raise ValueError(
                 "The SRE Agent target prefix must be inside the configured subscription."
             )
@@ -523,7 +532,10 @@ class SreAgentPatchExecutionAdapter:
                 provider_submitted=False,
                 failure_class="target_precondition",
             )
-        if run.inventory_kind != target.inventory_kind or run.target_id != target.target_id:
+        if (
+            run.inventory_kind != target.inventory_kind
+            or run.target_id != target.target_id
+        ):
             raise PatchExecutionUnavailable(
                 "The immutable patch run does not match the resolved target.",
                 capability="sre_agent_patch_execution",
@@ -595,7 +607,9 @@ class SreAgentPatchExecutionAdapter:
             )
         prefix = self._target_prefix.casefold()
         normalized_target = target_id.casefold()
-        if normalized_target != prefix and not normalized_target.startswith(f"{prefix}/"):
+        if normalized_target != prefix and not normalized_target.startswith(
+            f"{prefix}/"
+        ):
             raise PatchExecutionUnavailable(
                 "The target is outside the configured SRE Agent resource prefix.",
                 capability="sre_agent_patch_execution",
@@ -645,6 +659,7 @@ __all__ = [
     "SRE_AGENT_PROVIDER",
     "SRE_AGENT_THREAD_SCOPE",
     "SRE_AGENT_TRIGGER_SCOPE",
+    "SRE_PATCH_MAXIMUM_DURATION",
     "SreAgentPatchExecutionAdapter",
     "sre_agent_endpoint",
     "sre_agent_patch_envelope_contract",
