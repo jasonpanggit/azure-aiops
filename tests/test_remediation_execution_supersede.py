@@ -266,6 +266,9 @@ def test_supersede_creates_a_new_execution_and_preserves_old_history(tmp_path) -
     new_execution_id = new_data["execution_id"]
     assert new_execution_id != execution_id
     assert new_data["supersedes"] == execution_id
+    latest_decision = planner.repository.decisions.list(plan["plan_id"])[-1]
+    assert new_data["approval_decision_id"] == latest_decision["decision_id"]
+    assert f"|{latest_decision['decision_id']}|supersedes:" in new_data["execution_identity"]
 
     follow_up = client.get(
         f"/api/v1/remediation/executions/{execution_id}", headers=_auth()

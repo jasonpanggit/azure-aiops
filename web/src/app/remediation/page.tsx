@@ -91,6 +91,23 @@ interface ComplianceFindingReview {
   recommendation: string;
 }
 
+function canStartNewApprovalRun(execution: RemediationExecution): boolean {
+  const latestAttempt = execution.attempts[execution.attempts.length - 1];
+  if (
+    execution.failure_class === "submission_ambiguous"
+    || latestAttempt?.failure_class === "submission_ambiguous"
+  ) {
+    return false;
+  }
+  if (execution.status === "failed" || execution.status === "cancelled") {
+    return true;
+  }
+  return (
+    execution.status === "succeeded"
+    && execution.evidence_reconciliation?.status === "reconciled_incomplete"
+  );
+}
+
 function ComplianceFindingReviewPanel({ review }: { review: ComplianceFindingReview }) {
   return (
     <section
@@ -727,7 +744,9 @@ function RemediationContent() {
   const [selectedRoleId, setSelectedRoleId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const [confirmRun, setConfirmRun] = useState(false);
+  const [supersedeIneligibilityReason, setSupersedeIneligibilityReason] = useState("");
   const [selectedPatchIds, setSelectedPatchIds] = useState<string[] | null>(null);
   const [patchSelectionRefusal, setPatchSelectionRefusal] = useState("");
   const [patchRevalidating, setPatchRevalidating] = useState(false);
@@ -864,7 +883,9 @@ function RemediationContent() {
   useEffect(() => {
     setActiveStep(selectedPlanId ? "review" : "select");
     setActionError("");
+    setActionNotice("");
     setConfirmRun(false);
+    setSupersedeIneligibilityReason("");
     setSelectedPatchIds(null);
     setPatchSelectionRefusal("");
     setSelectedRoleId("");
@@ -962,6 +983,7 @@ function RemediationContent() {
       );
       setDecisionReason("");
       setSelectedRoleId("");
+      setActionNotice("");
       setWorkflowRefresh((value) => value + 1);
       setActiveStep(
         decision === "approved" && unmetRoleOptions.length <= 1
@@ -986,6 +1008,7 @@ function RemediationContent() {
     if (!planId || !workflow?.approval.current || submitting) return;
     setSubmitting(true);
     setActionError("");
+    setActionNotice("");
     try {
       const revalidated = await remediationApi.workflow(
         planId,
@@ -1039,8 +1062,6 @@ function RemediationContent() {
     }
   };
 
-  const [supersedeIneligibilityReason, setSupersedeIneligibilityReason] = useState("");
-
   const cancelExecution = async (execution: RemediationExecution) => {
     if (!execution.cancellable || submitting) return;
     setSubmitting(true);
@@ -1077,6 +1098,19 @@ function RemediationContent() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const startNewRun = () => {
+    setConfirmRun(false);
+    setActionError("");
+    setWorkflowError("");
+    setSupersedeIneligibilityReason("");
+    setDecision("approved");
+    setDecisionReason("");
+    setDecisionExpiresAt("");
+    setSelectedRoleId("");
+    setActionNotice("A fresh approval decision is required before another run can start.");
+    setActiveStep("approve");
   };
 
   const selectedEvidence = workflow?.evidence ?? [];
@@ -1832,18 +1866,26 @@ function RemediationContent() {
                         </p>
                       )}
                       {workflow.execution && (
-                        <RecoveryControls
-                          execution={workflow.execution}
-                          onCancel={() => cancelExecution(workflow.execution!)}
-                          onRetry={() => retryExecution(workflow.execution!)}
-                          onSupersede={(reason) => supersedeExecution(workflow.execution!, reason)}
-                          submitting={submitting}
-                          supersedeIneligibilityReason={supersedeIneligibilityReason}
-                        />
+                        <>
+                          <RecoveryControls
+                            execution={workflow.execution}
+                            onCancel={() => cancelExecution(workflow.execution!)}
+                            onRetry={() => retryExecution(workflow.execution!)}
+                            onSupersede={(reason) => supersedeExecution(workflow.execution!, reason)}
+                            submitting={submitting}
+                            supersedeIneligibilityReason={supersedeIneligibilityReason}
+                          />
+                          {canStartNewApprovalRun(workflow.execution) && (
+                            <button type="button" className="button" onClick={startNewRun}>
+                              Start a new run
+                            </button>
+                          )}
+                        </>
                       )}
                     </>
                   )}
 
+                  {actionNotice && <p className="callout" role="status">{actionNotice}</p>}
                   {actionError && <p className="callout callout-warning" role="alert">{actionError}</p>}
                 </div>
               </>

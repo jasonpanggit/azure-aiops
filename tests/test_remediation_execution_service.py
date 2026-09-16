@@ -141,8 +141,9 @@ def _approve(
     *,
     expires_at: str = "",
     execution_snapshot: dict | None = None,
-) -> None:
-    store.append(
+    now: datetime = NOW,
+) -> dict:
+    return store.append(
         plan=plan,
         decision="approved",
         approver="approver@example.com",
@@ -151,7 +152,7 @@ def _approve(
         action_version=plan["action_version"],
         expires_at=expires_at or (NOW + timedelta(days=1)).isoformat(),
         execution_snapshot=execution_snapshot or _execution_snapshot(plan),
-        now=NOW,
+        now=now,
     )
 
 
@@ -650,13 +651,14 @@ def test_execution_store_rejects_concurrent_execution_for_same_plan():
     "status",
     ["queued", "running", "retrying", "failed", "cancelled", "succeeded"],
 )
-def test_execution_identity_is_permanent_after_every_status(status):
+def test_same_approval_execution_identity_is_idempotent_after_every_status(status):
     store = RemediationExecutionStore()
     snapshot = _execution_snapshot(_plan())
     first, created = store.create_or_get(
         "RMP-0001",
         requested_by="operator@example.com",
         approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
         execution_snapshot=snapshot,
     )
     assert created is True
@@ -666,11 +668,237 @@ def test_execution_identity_is_permanent_after_every_status(status):
         "RMP-0001",
         requested_by="other@example.com",
         approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
         execution_snapshot=snapshot,
     )
 
     assert created is False
     assert second["execution_id"] == first["execution_id"]
+
+
+@pytest.mark.parametrize(
+    ("status", "failure_class"),
+    [
+        ("failed", "provider_rejected"),
+        ("cancelled", "operator_cancelled"),
+        ("succeeded", ""),
+    ],
+)
+def test_fresh_approval_creates_execution_after_terminal_non_ambiguous_status(
+    status,
+    failure_class,
+):
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    first, _ = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
+        execution_snapshot=snapshot,
+    )
+    store.update(
+        first["execution_id"],
+        status=status,
+        failure_class=failure_class,
+    )
+
+    second, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="other@example.com",
+        approved_by="approver2@example.com",
+        approval_decision_id="RMD-APPROVAL-2",
+        execution_snapshot=snapshot,
+    )
+
+    assert created is True
+    assert second["execution_id"] != first["execution_id"]
+    assert second["approval_decision_id"] == "RMD-APPROVAL-2"
+
+
+def test_fresh_approval_creates_execution_after_reconciled_incomplete_terminal():
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    first, _ = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
+        execution_snapshot=snapshot,
+    )
+    store.update(
+        first["execution_id"],
+        status="succeeded",
+        evidence_reconciliation={
+            "status": "reconciled_incomplete",
+            "kbs_cleared": [],
+            "kbs_remaining": ["KB600001"],
+            "assessed_at": NOW.isoformat(),
+        },
+    )
+
+    second, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="other@example.com",
+        approved_by="approver2@example.com",
+        approval_decision_id="RMD-APPROVAL-2",
+        execution_snapshot=snapshot,
+    )
+
+    assert created is True
+    assert second["execution_id"] != first["execution_id"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "retrying"])
+def test_fresh_approval_is_blocked_by_related_active_execution(status):
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    first, _ = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
+        execution_snapshot=snapshot,
+    )
+    if status != "queued":
+        store.update(first["execution_id"], status=status)
+
+    second, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="other@example.com",
+        approved_by="approver2@example.com",
+        approval_decision_id="RMD-APPROVAL-2",
+        execution_snapshot=snapshot,
+    )
+
+    assert created is False
+    assert second["execution_id"] == first["execution_id"]
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_fresh_approval_is_blocked_by_any_related_submission_ambiguity(status):
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    first, _ = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-APPROVAL-1",
+        execution_snapshot=snapshot,
+    )
+    store.update(
+        first["execution_id"],
+        status=status,
+        failure_class="submission_ambiguous",
+    )
+
+    second, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="other@example.com",
+        approved_by="approver2@example.com",
+        approval_decision_id="RMD-APPROVAL-2",
+        execution_snapshot=snapshot,
+    )
+
+    assert created is False
+    assert second["execution_id"] == first["execution_id"]
+
+
+def test_empty_decision_id_preserves_legacy_three_part_identity():
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+
+    record, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="legacy@example.com",
+        approved_by="",
+        execution_snapshot=snapshot,
+    )
+
+    assert created is True
+    assert record["execution_identity"] == (
+        f"RMP-0001|{snapshot['snapshot_hash']}|{snapshot['action_version']}"
+    )
+    assert record["approval_decision_id"] == ""
+    assert record["approval_decided_at"] == ""
+
+
+def test_legacy_terminal_execution_requires_provably_later_approval():
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    legacy, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=snapshot,
+        now=NOW,
+    )
+    assert created is True
+    terminal_at = NOW + timedelta(minutes=5)
+    store.update(legacy["execution_id"], status="succeeded", now=terminal_at)
+
+    repeated, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-LEGACY-APPROVAL",
+        approval_decided_at=(NOW - timedelta(minutes=1)).isoformat(),
+        execution_snapshot=snapshot,
+        now=terminal_at + timedelta(minutes=1),
+    )
+
+    assert created is False
+    assert repeated["execution_id"] == legacy["execution_id"]
+
+    fresh_decided_at = terminal_at + timedelta(minutes=2)
+    fresh, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-FRESH-APPROVAL",
+        approval_decided_at=fresh_decided_at.isoformat(),
+        execution_snapshot=snapshot,
+        now=fresh_decided_at + timedelta(seconds=1),
+    )
+
+    assert created is True
+    assert fresh["execution_id"] != legacy["execution_id"]
+    assert fresh["approval_decision_id"] == "RMD-FRESH-APPROVAL"
+    assert fresh["approval_decided_at"] == fresh_decided_at.isoformat()
+
+
+def test_service_resubmits_same_snapshot_only_after_fresh_terminal_approval():
+    plan = _plan()
+    adapter = RecordingPatchExecutionAdapter()
+    service, store = _service_with_store(plan=plan, adapter=adapter)
+
+    first = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    repeated = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    assert repeated["execution_id"] == first["execution_id"]
+    assert len(adapter.submissions) == 1
+
+    store.update(
+        first["execution_id"],
+        status="succeeded",
+        evidence_reconciliation={
+            "status": "reconciled_incomplete",
+            "kbs_cleared": [],
+            "kbs_remaining": ["KB600001"],
+            "assessed_at": NOW.isoformat(),
+        },
+    )
+    fresh_decision = _approve(
+        service._plans.decisions,
+        _full_plan(plan),
+        execution_snapshot=first["execution_snapshot"],
+        now=NOW + timedelta(seconds=1),
+    )
+
+    second = service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    assert second["execution_id"] != first["execution_id"]
+    assert second["approval_decision_id"] == fresh_decision["decision_id"]
+    assert len(adapter.submissions) == 2
 
 
 def test_execute_persists_running_until_authoritative_terminal_verification():
