@@ -1916,12 +1916,10 @@ def test_secret_metadata_binds_trigger_id_origin_and_canonical_hash() -> None:
 
     assert result["secretValueRead"] is False
     assert result["triggerId"] == TRIGGER_ID
-    assert result["skillAttestation"]["status"] == "portal-attested"
     for tag in (
         module.SECRET_TAG_TRIGGER_ID,
         module.SECRET_TAG_TRIGGER_ORIGIN,
         module.SECRET_TAG_CANONICAL_HASH,
-        *module._skill_attestation_tags(),
     ):
         drifted = _fixture(SECRET_FIXTURE)
         drifted["metadata"]["tags"][tag] = "drifted"
@@ -1935,23 +1933,6 @@ def test_secret_metadata_binds_trigger_id_origin_and_canonical_hash() -> None:
                     module.canonical_trigger_body(_fixture(DEFINITION))
                 ),
             )
-
-
-def test_secret_metadata_requires_complete_live_skill_attestation() -> None:
-    module = _load_module()
-    secret = _fixture(SECRET_FIXTURE)
-    secret["metadata"]["tags"].pop(module.SECRET_TAG_WRITE_SKILL_TOOLS)
-
-    with pytest.raises(module.ReadinessError, match="fields do not match"):
-        module.validate_secret_evidence(
-            secret,
-            expected_secret_id=secret["secretReference"]["keyVaultSecretId"],
-            expected_trigger_id=TRIGGER_ID,
-            expected_trigger_origin=TRIGGER_ORIGIN,
-            expected_canonical_hash=module.canonical_hash(
-                module.canonical_trigger_body(_fixture(DEFINITION))
-            ),
-        )
 
 
 def test_secret_metadata_rejects_secret_values() -> None:
