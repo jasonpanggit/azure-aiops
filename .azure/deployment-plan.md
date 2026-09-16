@@ -41,7 +41,10 @@ production action.
   `infra/sre-agent/skills/aiops-install-selected-patches-v1/SKILL.md`
   (`RunAzCliWriteCommands` only). Their raw-byte hashes, versions, operations,
   output schemas, and read-then-write order are immutable trigger-envelope
-  fields.
+  fields. Read applicability is accepted solely from the fixed read query's
+  returned `outcome=applicable` and `blockers=[]`; an empty
+  `child_activity_id` from a `softwarePatches` child resource is valid and is
+  not an independent blocker when the query has already accepted the evidence.
 - Offline-only verifier:
   `scripts/preflight_sre_agent_patch_execution.py`.
 - Exact action-role writes are limited to VM/Arc resource read plus
