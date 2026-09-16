@@ -55,6 +55,7 @@ export default function ChangesPage() {
     totalCount: changes.length,
     available: !incidents.error && Boolean(incidents.data),
     freshness: incidents.error || !incidents.data ? "unavailable" : "fresh",
+    observedAt: incidents.data?.evidence?.[0]?.timestamp,
     evidence: incidents.data?.evidence ?? [],
   });
 

@@ -86,7 +86,8 @@
       "operations_mcp_tools": ["incidents", "defender_alerts", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "monitor_activitylog_list", "monitor_resource_log_query", "resourcehealth_health-events_list"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
-      "page_mappings": ["incident", "situations", "situation_detail", "investigate"],
+      "page_mappings": ["incident", "situations", "situation_detail", "changes", "investigate"],
+      "page_tool_grants": {"changes": ["incidents"]},
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,
@@ -149,7 +150,8 @@
       "operations_mcp_tools": ["remediation_plans", "remediation_opportunities", "defender_alerts", "defender_attack_paths", "defender_secure_score", "defender_remediation_cases", "remediation_business_decision", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
-      "page_mappings": ["compliance", "remediation"],
+      "page_mappings": ["compliance", "remediation", "changes"],
+      "page_tool_grants": {"changes": ["remediation_opportunities"]},
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,

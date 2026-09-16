@@ -141,6 +141,28 @@ describe("manifest / adapter specialist parity (COP-03, D-03, D-05, D-06)", () =
     }
   });
 
+  it("keeps every Changes starter inside its exact manifest page and tool grant", () => {
+    const disposition = COPILOT_ROUTE_DISPOSITIONS["/changes"];
+    expect(disposition).toEqual({ kind: "integrated", pageKind: "changes" });
+    if (disposition.kind !== "integrated") return;
+
+    for (const hint of COPILOT_ROUTE_STARTER_HINTS["/changes"]) {
+      const specialist = manifest.specialists.find(
+        (entry) => entry.id === hint.specialistId,
+      );
+      expect(
+        specialist?.page_mappings.includes(disposition.pageKind),
+        `/changes: "${hint.specialistId}" is not granted page "${disposition.pageKind}"`,
+      ).toBe(true);
+      if (hint.tool) {
+        expect(
+          specialist?.page_tool_grants?.[disposition.pageKind]?.includes(hint.tool),
+          `/changes: "${hint.tool}" lacks an explicit page-specific grant`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("references exactly the manifest specialist portfolio in both directions", () => {
     // Every specialist the UI can reach is a page-kind anchor owner or a starter
     // hint; every manifest specialist is reachable. Exact set equality catches
