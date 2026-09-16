@@ -2795,6 +2795,10 @@ const CORE_PAGE_CONFIG = {
     pageKind: "governance",
     pageId: "compliance-posture",
   },
+  investigate: {
+    pageKind: "investigate",
+    pageId: "investigate",
+  },
   exposure: {
     pageKind: "vulnerability",
     pageId: "exposure",
@@ -6202,6 +6206,44 @@ export function buildOverviewCopilotContext(
     CORE_PAGE_CONFIG.overview,
     isCoreCopilotInput(input) ? input : overviewCoreInput(input),
     OVERVIEW_STARTERS,
+  );
+}
+
+/** Builds bounded non-authorizing observations for the investigation workspace. */
+export function buildInvestigationCopilotContext(
+  input: CoreCopilotAdapterInput,
+): CoreCopilotContext {
+  const sourceCoverageKeys: Record<string, string> = {
+    "investigate/incidents": "incidents",
+    "investigate/timeline": "timeline",
+    "investigate/network": "network_gaps",
+    "investigate/network-rules": "network_rules",
+    "investigate/vulnerabilities": "vulnerabilities",
+    "investigate/remediation": "remediation",
+    "investigate/topology": "topology",
+  };
+  const coverageByKey = new Map(
+    input.coverage.map((item) => [item.key, item]),
+  );
+  const retainedBySource = new Map<string, number>();
+  const records = input.records.filter((record) => {
+    const coverageKey = sourceCoverageKeys[record.source];
+    if (!coverageKey) return true;
+    const coverage = coverageByKey.get(coverageKey);
+    if (!coverage) {
+      throw new Error(
+        `investigation source ${record.source} lacks declared coverage`,
+      );
+    }
+    const retained = retainedBySource.get(record.source) ?? 0;
+    if (retained >= coverage.visibleCount) return false;
+    retainedBySource.set(record.source, retained + 1);
+    return true;
+  });
+  return buildCoreCopilotContext(
+    CORE_PAGE_CONFIG.investigate,
+    { ...input, records },
+    [],
   );
 }
 

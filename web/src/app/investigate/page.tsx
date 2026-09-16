@@ -15,14 +15,20 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
 import {
   contextApi,
-  askCanonicalInvestigation,
   toCanonicalInvestigationView,
-  ROOT_COPILOT_SESSION,
   networkApi,
   operationsApi,
   vulnerabilityApi,
 } from "@/lib/services";
-import type { CanonicalInvestigationView, CopilotInvestigation } from "@/lib/services";
+import type { CanonicalInvestigationView } from "@/lib/services";
+import {
+  buildInvestigationCopilotContext,
+  investigateCanonical,
+  normalizeCopilotSnapshotV2,
+  type CanonicalCopilotResult,
+  type CoreCopilotRecord,
+  type CoreCopilotSourceStatus,
+} from "@/lib/copilot/page-adapters";
 import { useOptionalThreadContinuity } from "@/lib/copilot/thread-context";
 import type {
   Envelope,
@@ -37,6 +43,7 @@ import type {
   CveDetail,
   VulnerabilityExposure,
   VulnerabilitySummary,
+  EvidenceItem,
 } from "@/lib/types";
 
 type EntryType =
@@ -69,7 +76,7 @@ interface WorkspaceState {
   vulnerabilities?: Envelope<VulnerabilitySummary>;
   exposures?: Envelope<VulnerabilityExposure[]>;
   remediation?: Envelope<RemediationPlanReport>;
-  copilot?: Envelope<CopilotInvestigation>;
+  copilot?: Envelope<CanonicalCopilotResult>;
   copilotView?: CanonicalInvestigationView;
   cveDetail?: Envelope<CveDetail>;
   attackPath?: Envelope<AttackPathGraph>;
@@ -162,6 +169,46 @@ function modeDescription(mode: Mode): string {
   return mode === "executive"
     ? "Business impact, accountable owner, trend, risk drivers, and required decision."
     : "Resource IDs, paths, rules, CVEs, timestamps, raw evidence references, and diagnostic detail.";
+}
+
+function sourceFreshness(
+  freshness: EvidenceItem["freshness"],
+): CoreCopilotSourceStatus["status"] {
+  if (freshness === "fresh") return "fresh";
+  if (freshness === "stale") return "stale";
+  if (freshness === "aging") return "partial";
+  return "unavailable";
+}
+
+function investigationSourceStatus(
+  source: string,
+  envelope?: {
+    evidence?: EvidenceItem[];
+    live_observed_at?: string;
+    source_status?: Record<string, string>;
+  },
+): CoreCopilotSourceStatus {
+  if (!envelope) {
+    return { source, observedAt: "unknown", status: "unavailable" };
+  }
+  const evidence = envelope.evidence ?? [];
+  const statuses = evidence.map((item) => sourceFreshness(item.freshness));
+  const status = statuses.includes("stale")
+    ? "stale"
+    : statuses.includes("partial")
+      ? "partial"
+      : statuses.length > 0 && statuses.every((item) => item === "fresh")
+        ? "fresh"
+        : Object.values(envelope.source_status ?? {}).some(
+            (item) => item === "unavailable" || item === "deferred",
+          )
+          ? "unavailable"
+          : "partial";
+  const observedAt = evidence.reduce(
+    (latest, item) => item.timestamp > latest ? item.timestamp : latest,
+    envelope.live_observed_at ?? "",
+  );
+  return { source, observedAt: observedAt || "unknown", status };
 }
 
 /** Prerender-safe query-context boundary around the investigation workspace. */
@@ -283,17 +330,20 @@ function InvestigationWorkspaceContent() {
     ...(state.incidents?.evidence ?? []),
     ...(state.vulnerabilities?.evidence ?? []),
     ...(state.topology?.evidence ?? []),
+    ...(state.gaps?.evidence ?? []),
+    ...(state.ruleFindings?.evidence ?? []),
+    ...(state.exposures?.evidence ?? []),
     ...(state.remediation?.evidence ?? []),
     ...(state.cveDetail?.evidence ?? []),
     ...(state.attackPath?.evidence ?? []),
   ];
-  const timeline = [
+  const fullTimeline = [
     ...(state.incidentDetail?.data.finding.timeline ?? []),
     ...activeIncidents.flatMap((item) => item.timeline ?? []),
   ]
     .slice()
-    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
-    .slice(0, 8);
+    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
+  const timeline = fullTimeline.slice(0, 8);
 
   const setFocus = (entity: FocusEntity) => {
     setSelected(entity);
@@ -303,9 +353,267 @@ function InvestigationWorkspaceContent() {
   const runCopilot = async () => {
     const focusPrompt = selected ? ` Current focus is ${selected.kind} ${selected.label}: ${selected.reason ?? selected.id}.` : "";
     const question = `Summarize the investigation for ${entryType} ${subject || "current scope"}; explain business risk, affected dependencies, evidence, and recommended decision.${focusPrompt}`;
+    const visibleIncidents = activeIncidents.slice(0, 25);
+    const visibleGaps = (state.gaps?.data.gaps ?? []).slice(0, 50);
+    const visibleRuleFindings = (state.ruleFindings?.data.findings ?? []).slice(0, 50);
+    const visibleExposures = (state.exposures?.data ?? []).slice(0, 8);
+    const visiblePlans = (state.remediation?.data.plans ?? []).slice(0, 6);
+    const incidentTotal = Math.max(
+      activeIncidents.length,
+      state.incidents?.pagination?.total ?? 0,
+    );
+    const gapTotal = Math.max(
+      state.gaps?.data.gaps.length ?? 0,
+      state.gaps?.pagination?.total ?? 0,
+    );
+    const ruleFindingTotal = Math.max(
+      state.ruleFindings?.data.findings.length ?? 0,
+      state.ruleFindings?.pagination?.total ?? 0,
+    );
+    const exposureTotal = Math.max(
+      state.exposures?.data?.length ?? 0,
+      state.exposures?.pagination?.total ?? 0,
+    );
+    const remediationTotal = Math.max(
+      state.remediation?.data.plans?.length ?? 0,
+      state.remediation?.pagination?.total ?? 0,
+    );
+    const sourceStatuses: CoreCopilotSourceStatus[] = [
+      investigationSourceStatus("investigate/incidents", state.incidents),
+      investigationSourceStatus("investigate/timeline", state.incidentDetail ?? state.incidents),
+      investigationSourceStatus("investigate/network", state.gaps),
+      investigationSourceStatus("investigate/network-rules", state.ruleFindings),
+      investigationSourceStatus("investigate/vulnerabilities", state.exposures),
+      investigationSourceStatus("investigate/remediation", state.remediation),
+      investigationSourceStatus("investigate/topology", state.topology),
+    ];
+    const summaryStatus = sourceStatuses.some((item) => item.status === "stale")
+      ? "stale"
+      : sourceStatuses.some((item) => item.status !== "fresh")
+        ? "partial"
+        : "fresh";
+    sourceStatuses.unshift({
+      source: "investigate/summary",
+      observedAt: sourceStatuses.reduce(
+        (latest, item) => (item.observedAt ?? "") > latest
+          ? item.observedAt ?? ""
+          : latest,
+        "",
+      ) || "unknown",
+      status: summaryStatus,
+    });
+    const records: CoreCopilotRecord[] = [
+      {
+        identity: `summary:${entryType}:${subject || "current-scope"}`,
+        namespace: "operations",
+        kind: "investigation_summary",
+        source: "investigate/summary",
+        evidenceIdentity: "observation",
+        selected: true,
+        priority: 0,
+        data: {
+          entry_type: entryType,
+          subject: subject || "current scope",
+          mode,
+          risk_score: score,
+          owner,
+          recommended_decision: decision,
+          incident_count: activeIncidents.length,
+          vulnerability_count: state.exposures?.data?.length ?? 0,
+          network_gap_count: state.gaps?.data.gaps.length ?? 0,
+          remediation_plan_count: state.remediation?.data.plans?.length ?? 0,
+          mutation_authorized: false,
+        },
+      },
+      ...visibleIncidents.map((item, index) => ({
+        identity: item.incident.incident_id,
+        namespace: "operations",
+        kind: "incident",
+        source: "investigate/incidents",
+        evidenceIdentity: "observation" as const,
+        observedAt: item.incident.started_at,
+        priority: 10 + index,
+        data: {
+          title: item.incident.title,
+          severity: item.incident.severity,
+          status: item.incident.status,
+          owner: item.business_impact.owners?.[0],
+          business_services: item.business_impact.business_services,
+        },
+      })),
+      ...timeline.map((event, index) => ({
+        identity: `${event.event_id}:${event.timestamp}:${event.source}`,
+        namespace: "operations",
+        kind: "timeline_event",
+        source: "investigate/timeline",
+        evidenceIdentity: "observation" as const,
+        observedAt: event.timestamp,
+        priority: 40 + index,
+        data: {
+          event_type: event.event_type,
+          summary: event.summary,
+          source: event.source,
+        },
+      })),
+      ...visibleGaps.map((gap, index) => ({
+        identity: gap.gap_id,
+        namespace: "operations",
+        kind: "network_gap",
+        source: "investigate/network",
+        evidenceIdentity: "observation" as const,
+        priority: 60 + index,
+        data: {
+          title: gap.title,
+          severity: gap.severity,
+          category: gap.category,
+        },
+      })),
+      ...visibleRuleFindings.map((finding, index) => ({
+        identity: String(finding.rule_id ?? finding.finding_id ?? index),
+        namespace: "operations",
+        kind: "network_rule_finding",
+        source: "investigate/network-rules",
+        evidenceIdentity: "observation" as const,
+        priority: 100 + index,
+        data: {
+          title: finding.title,
+          severity: finding.severity,
+          rule_name: finding.rule_name,
+          control: finding.control,
+          affected_resource_count: finding.affected_resource_ids?.length ?? 0,
+        },
+      })),
+      ...visibleExposures.map((exposure, index) => ({
+        identity: exposure.cve_id,
+        namespace: "operations",
+        kind: "vulnerability_exposure",
+        source: "investigate/vulnerabilities",
+        evidenceIdentity: "observation" as const,
+        priority: 120 + index,
+        data: {
+          cve_id: exposure.cve_id,
+          severity: exposure.severity,
+          affected_server_count: exposure.affected_server_count,
+          affected_business_service_count: exposure.affected_business_service_count,
+          reachable_server_count: exposure.reachable_server_count,
+          recommended_patch: exposure.recommended_patch,
+        },
+      })),
+      ...visiblePlans.map((plan, index) => ({
+        identity: plan.plan_id,
+        namespace: "operations",
+        kind: "remediation_plan",
+        source: "investigate/remediation",
+        evidenceIdentity: "observation" as const,
+        priority: 150 + index,
+        data: {
+          title: plan.title,
+          status: plan.status,
+          risk_reduction_percent: plan.simulation_result?.risk_reduction_percent,
+        },
+      })),
+      {
+        identity: "topology-summary",
+        namespace: "operations",
+        kind: "network_summary",
+        source: "investigate/topology",
+        evidenceIdentity: "observation",
+        priority: 180,
+        data: {
+          hub_count: state.topology?.data.topology.hubs.length ?? 0,
+          spoke_count: state.topology?.data.topology.spokes.length ?? 0,
+          link_count: state.topology?.data.topology.links.length ?? 0,
+        },
+      },
+    ];
+    const pageContext = buildInvestigationCopilotContext({
+      scope,
+      filters: {
+        entry_type: [entryType],
+        mode: [mode],
+        subject: subject ? [subject] : [],
+      },
+      records,
+      evidence,
+      coverage: [
+        {
+          key: "incidents",
+          visibleCount: visibleIncidents.length,
+          totalCount: Math.max(
+            visibleIncidents.length,
+            incidentTotal,
+          ),
+          truncated: visibleIncidents.length < incidentTotal,
+          available: Boolean(state.incidents),
+        },
+        {
+          key: "timeline",
+          visibleCount: timeline.length,
+          totalCount: fullTimeline.length,
+          truncated: timeline.length < fullTimeline.length,
+          available: Boolean(state.incidents || state.incidentDetail),
+        },
+        {
+          key: "network_gaps",
+          visibleCount: visibleGaps.length,
+          totalCount: gapTotal,
+          truncated: visibleGaps.length < gapTotal,
+          available: Boolean(state.gaps),
+        },
+        {
+          key: "network_rules",
+          visibleCount: visibleRuleFindings.length,
+          totalCount: ruleFindingTotal,
+          truncated: visibleRuleFindings.length < ruleFindingTotal,
+          available: Boolean(state.ruleFindings),
+        },
+        {
+          key: "vulnerabilities",
+          visibleCount: visibleExposures.length,
+          totalCount: exposureTotal,
+          truncated: visibleExposures.length < exposureTotal,
+          available: Boolean(state.exposures),
+        },
+        {
+          key: "remediation",
+          visibleCount: visiblePlans.length,
+          totalCount: remediationTotal,
+          truncated: visiblePlans.length < remediationTotal,
+          available: Boolean(state.remediation),
+        },
+        {
+          key: "topology",
+          visibleCount: state.topology ? 1 : 0,
+          totalCount: state.topology ? 1 : 0,
+          available: Boolean(state.topology),
+        },
+        {
+          key: "citations",
+          visibleCount: evidence.length,
+          totalCount: evidence.length,
+          available: true,
+        },
+      ],
+      sourceStatuses,
+    });
+    const snapshot = normalizeCopilotSnapshotV2(pageContext.snapshot);
     setLoading(true);
     try {
-      const result = await askCanonicalInvestigation(question, scope, { sessionId: ROOT_COPILOT_SESSION });
+      const result = await investigateCanonical(
+        {
+          contract_version: "1",
+          question,
+          requested_scope: scope,
+          snapshot,
+          ...(threadContinuity?.thread
+            ? {
+                thread_id: threadContinuity.thread.threadId,
+                expected_thread_revision: threadContinuity.thread.threadRevision,
+              }
+            : {}),
+        },
+        scope,
+      );
       const view = toCanonicalInvestigationView(result.data);
       // Mirror the server-issued thread into the shared root continuity so every
       // dedicated surface reflects one authorized handle (best-effort; the
@@ -464,8 +772,8 @@ function InvestigationWorkspaceContent() {
         <section className="card investigation-panel">
           <div className="card-header"><h2>Timeline</h2><span>{timeline.length} events</span></div>
           <div className="card-body investigation-timeline">
-            {timeline.length === 0 ? <span className="muted">No timeline events in scope.</span> : timeline.map((event) => (
-              <button key={event.event_id} type="button" className="timeline-row" onClick={() => setFocus({ kind: "Evidence", id: event.event_id, label: event.event_type, reason: event.summary })}>
+            {timeline.length === 0 ? <span className="muted">No timeline events in scope.</span> : timeline.map((event, index) => (
+              <button key={`${event.event_id}:${event.timestamp}:${event.source}:${index}`} type="button" className="timeline-row" onClick={() => setFocus({ kind: "Evidence", id: event.event_id, label: event.event_type, reason: event.summary })}>
                 <strong>{event.event_type}</strong>
                 <span>{event.timestamp}</span>
                 <p>{event.summary || event.event_id}</p>

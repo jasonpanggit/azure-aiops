@@ -188,12 +188,15 @@ describe("Executive Investigation Workspace", () => {
       policy_status: "fallback",
       fallback_reason: "planner_unavailable",
       coverage: { visible_count: 1, total_count: 2, complete: false },
-      uncertainty: ["Visible subset is incomplete; widen scope for full coverage."],
+      uncertainty: [
+        "Visible subset is incomplete; widen scope for full coverage.",
+        "Visible subset is incomplete; widen scope for full coverage.",
+      ],
       citations: [
         { citation_id: "tool:0:vulnerability:1", source: "azure-resource-graph", status: "ok", observed_at: "2026-01-01T10:00:00Z", resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1" },
       ],
       synthesis: {
-        status: "synthesized",
+        status: "degraded",
         reason: "multi_domain",
         domain_count: 2,
         claims: [
@@ -229,7 +232,7 @@ describe("Executive Investigation Workspace", () => {
           version: "2",
           page_kind: "investigate",
           page_id: "investigate",
-          coverage: expect.objectContaining({ complete: false }),
+          coverage: expect.objectContaining({ complete: true }),
           evidence: expect.arrayContaining([
             expect.objectContaining({ source: "investigate/incidents" }),
             expect.objectContaining({ source: "investigate/vulnerabilities" }),

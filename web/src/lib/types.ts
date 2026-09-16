@@ -3120,7 +3120,7 @@ export interface ResourceHealthSnapshot {
   cache_ttl_seconds: number;
 }
 
-export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "remediation" | "resource";
+export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "remediation" | "resource" | "investigate";
 export type CopilotSnapshotStatus = "ok" | "empty" | "unavailable" | "denied";
 export interface CopilotSelectedResource { resource_id: string; resource_type: string; name?: string; attributes?: Record<string, string>; }
 export interface CopilotFreshnessRecord { source: string; observed_at: string; status: "fresh" | "stale" | "partial" | "unavailable"; }

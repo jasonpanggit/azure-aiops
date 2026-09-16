@@ -299,6 +299,9 @@ describe("investigation Copilot adapter", () => {
     });
     expect(snapshot.selected_entities).toEqual([]);
     expect(snapshot.evidence.every((row) => row.actionable === false)).toBe(true);
+    expect(snapshot.evidence.filter(
+      (row) => row.source === "investigate/incidents",
+    )).toHaveLength(50);
     expect(context.uncertainty).toContain("incidents coverage is truncated");
   });
 });

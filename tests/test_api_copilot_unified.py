@@ -8562,6 +8562,163 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
+def _investigate_page_body():
+    return {
+        "contract_version": "1",
+        "question": (
+            "Summarize the investigation for the current scope; explain "
+            "business risk, evidence, and recommended decision."
+        ),
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "investigate",
+            "page_id": "investigate",
+            "filters": {"entry_type": ["BusinessService"]},
+            "coverage": {
+                "visible_count": 2,
+                "total_count": 51,
+                "complete": False,
+            },
+            "freshness": [
+                {
+                    "source": "incident_projection",
+                    "observed_at": "2026-09-16T19:00:00Z",
+                    "status": "fresh",
+                }
+            ],
+            "selected_entities": [],
+            "evidence": [
+                {
+                    "evidence_id": "investigate:incident:1",
+                    "source": "investigate/incidents",
+                    "source_key": "INC-1",
+                    "entity": {
+                        "type": "observation",
+                        "source": "investigate/incidents",
+                        "source_key": "INC-1",
+                    },
+                    "claim_type": "incident",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T19:00:00Z",
+                    "direct": True,
+                    "actionable": False,
+                    "data": {
+                        "title": "Payment latency",
+                        "severity": "high",
+                        "mutation_authorized": False,
+                    },
+                },
+                {
+                    "evidence_id": "investigate:remediation:1",
+                    "source": "investigate/remediation",
+                    "source_key": "plan-1",
+                    "entity": {
+                        "type": "observation",
+                        "source": "investigate/remediation",
+                        "source_key": "plan-1",
+                    },
+                    "claim_type": "remediation_plan",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T19:00:00Z",
+                    "direct": True,
+                    "actionable": False,
+                    "data": {
+                        "title": "Patch payment servers",
+                        "status": "candidate",
+                        "mutation_authorized": False,
+                    },
+                },
+            ],
+            "material_claims": [
+                {
+                    "claim_id": "investigate-incident",
+                    "evidence_refs": ["investigate:incident:1"],
+                    "requires_complete_coverage": False,
+                },
+                {
+                    "claim_id": "investigate-remediation",
+                    "evidence_refs": ["investigate:remediation:1"],
+                    "requires_complete_coverage": False,
+                },
+            ],
+        },
+    }
+
+
+def test_investigate_page_retains_cited_evidence_when_tool_is_deferred(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The incidents provider is deferred",
+        ),
+    )
+
+    response = TestClient(create_app(_context(tmp_path, None))).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_investigate_page_body(),
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["mutation_authorized"] is False
+    assert result["coverage"] == {
+        "visible_count": 2,
+        "total_count": 51,
+        "complete": False,
+    }
+    citation_ids = {item["citation_id"] for item in result["citations"]}
+    claims = result["synthesis"]["claims"]
+    assert claims
+    assert all(set(claim["evidence_refs"]) <= citation_ids for claim in claims)
+    assert any("Payment latency" in claim["summary"] for claim in claims)
+    assert any("Patch payment servers" in claim["summary"] for claim in claims)
+
+
+def test_investigate_page_rejects_mismatch_and_invalid_numeric_before_io(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    invalid_numeric = _investigate_page_body()
+    invalid_numeric["snapshot"]["coverage"]["visible_count"] = -1
+    mismatched = _investigate_page_body()
+    mismatched["hint"] = {
+        "specialist_id": "vulnerability",
+        "tool": "incidents",
+        "arguments": {},
+    }
+    client = TestClient(create_app(_context(tmp_path, None)))
+
+    numeric_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=invalid_numeric,
+    )
+    assert numeric_response.status_code == 400
+    assert calls == []
+
+    mismatch_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=mismatched,
+    )
+
+    assert mismatch_response.status_code == 400
+    assert calls == []
+
+
 def test_empty_situations_answer_is_direct_cited_and_freshness_honest(
     tmp_path,
     monkeypatch,
