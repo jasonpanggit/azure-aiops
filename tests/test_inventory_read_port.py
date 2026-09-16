@@ -99,6 +99,10 @@ def test_read_port_scope_family_type_and_lookup_semantics() -> None:
     assert absent is None
     assert out_of_scope is None
     assert listed["family_availability"]["software"]["state"] == "degraded"
+    assert listed["observed_at"] == "2026-08-26T06:00:00Z"
+    assert listed["query_version"] == "inventory-os-v1"
+    assert narrowed["group_total"] == 1
+    assert narrowed["groups"][0]["key"] == "microsoft.web:sites|P1v3|PremiumV3"
 
 
 def test_api_cross_family_route_matches_read_port(tmp_path: Path) -> None:

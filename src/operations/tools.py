@@ -1696,20 +1696,30 @@ def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]
             limit=_MAX_ITEMS,
         )
         rows = result.get("resources") or []
-        if not rows:
-            return ToolResult(status=STATUS_EMPTY)
+        groups = result.get("groups") or []
+        observed_at = str(result.get("observed_at") or "")
+        query_version = str(result.get("query_version") or "")
         return ToolResult(
-            status=STATUS_OK,
+            status=STATUS_OK if rows or groups else STATUS_EMPTY,
             data=_bound(
                 {
                     "resources": rows,
                     "total": result.get("total", len(rows)),
-                }
+                    "groups": groups,
+                    "group_total": result.get("group_total"),
+                    "observed_at": observed_at,
+                    "query_version": query_version,
+                },
+                limit=50,
             ),
             evidence=(
                 Evidence(
                     source_engine="intelligence.inventory.InventoryReadPort",
-                    source_table="inventory/resource_observations",
+                    source_table={
+                        "os": "inventory/os_observations",
+                        "software": "inventory/software_observations",
+                    }.get(family, "inventory/resource_observations"),
+                    timestamp=observed_at,
                     confidence=CONFIDENCE_HIGH,
                 ),
             ),

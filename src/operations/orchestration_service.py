@@ -184,6 +184,278 @@ _FABRIC_CLAIM_SOURCES = {
     "fabric_capacity": "fabric/capabilities",
 }
 
+_INVENTORY_PAGE_CONTRACT = {
+    "inventory:os": (
+        "os",
+        "inventory/os_observations",
+        "os_group",
+    ),
+    "inventory:software": (
+        "software",
+        "inventory/software_observations",
+        "software_group",
+    ),
+    "inventory:azure": (
+        "paas",
+        "inventory/resource_observations",
+        "azure_group",
+    ),
+}
+
+
+def inventory_starter_kind(question: str) -> str | None:
+    normalized = " ".join(question.casefold().split()).rstrip("?.! ")
+    if normalized == "review visible inventory health":
+        return "health"
+    if normalized == "where is inventory coverage incomplete":
+        return "coverage"
+    return None
+
+
+def _nonnegative_int(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+
+
+def valid_inventory_page_snapshot(snapshot: EvidenceSnapshotV2) -> bool:
+    """Validate the exact bounded Inventory page-observation contract."""
+
+    contract = _INVENTORY_PAGE_CONTRACT.get(snapshot.page_id)
+    if snapshot.page_kind != "inventory" or contract is None:
+        return False
+    family, source, claim_type = contract
+    if (
+        snapshot.coverage.visible_count == 0
+    ):
+        if len(snapshot.evidence) != 1:
+            return False
+        item = snapshot.evidence[0]
+        context = item.data.get("inventory_context")
+        return (
+            item.source == source
+            and item.claim_type == "page_context"
+            and item.status == STATUS_EMPTY
+            and isinstance(item.entity, ObservationRef)
+            and item.entity.source == source
+            and item.entity.source_key == item.source_key
+            and item.source_key == (
+                f"page-context:{'azure' if family == 'paas' else family}"
+            )
+            and isinstance(context, Mapping)
+            and context.get("tab") == (
+                "azure" if family == "paas" else family
+            )
+            and item.data.get("selected") is False
+            and item.data.get("mutation_authorized") is False
+            and not item.direct
+            and not item.actionable
+        )
+    if (
+        len(snapshot.evidence) > 50
+        or len(snapshot.evidence) != snapshot.coverage.visible_count
+        or snapshot.coverage.visible_count > snapshot.coverage.total_count
+    ):
+        return False
+    identities: set[str] = set()
+    expected_kind = {
+        "os": "os_group",
+        "software": "software_group",
+        "paas": "azure_group",
+    }[family]
+    for item in snapshot.evidence:
+        data = item.data
+        context = data.get("inventory_context")
+        identity = item.source_key.casefold()
+        if (
+            item.source != source
+            or item.claim_type != claim_type
+            or item.status not in {"ok", "partial"}
+            or not item.direct
+            or item.actionable
+            or not item.observed_at
+            or not identity
+            or identity in identities
+            or not isinstance(item.entity, DomainEntityRef)
+            or item.entity.namespace != "inventory"
+            or item.entity.kind != expected_kind
+            or item.entity.source_key != item.source_key
+            or not isinstance(context, Mapping)
+            or context.get("tab") != (
+                "azure" if family == "paas" else family
+            )
+            or not isinstance(data.get("selected"), bool)
+            or data.get("mutation_authorized") is not False
+        ):
+            return False
+        identities.add(identity)
+
+        if family == "os":
+            os_name = str(data.get("os_name") or "").strip()
+            os_version = str(data.get("os_version") or "").strip()
+            days_remaining = data.get("days_remaining")
+            if (
+                not os_name
+                or not os_version
+                or item.source_key != f"{os_name}|{os_version}"
+                or not _nonnegative_int(data.get("machine_count"))
+                or not isinstance(data.get("source_types"), list)
+                or not data["source_types"]
+                or any(
+                    not isinstance(value, str) or not value.strip()
+                    for value in data["source_types"]
+                )
+                or len(data["source_types"]) != len(set(data["source_types"]))
+                or not str(data.get("lifecycle_status") or "").strip()
+                or not (
+                    days_remaining is None
+                    or (
+                        isinstance(days_remaining, int)
+                        and not isinstance(days_remaining, bool)
+                    )
+                )
+                or not isinstance(data.get("review_required"), bool)
+            ):
+                return False
+        elif family == "software":
+            name = str(data.get("software_name") or "").strip()
+            version = str(data.get("software_version") or "").strip()
+            counts = (
+                data.get("install_count"),
+                data.get("linked_count"),
+                data.get("unlinked_count"),
+            )
+            if (
+                not name
+                or not version
+                or item.source_key != f"{name}|{version}"
+                or not all(_nonnegative_int(value) for value in counts)
+                or counts[1] + counts[2] != counts[0]
+            ):
+                return False
+        else:
+            resource_type = str(data.get("resource_type") or "").strip()
+            sku = str(data.get("sku") or "")
+            tier = str(data.get("tier") or "")
+            expected_key = "|".join(
+                (
+                    resource_type.replace("/", ":"),
+                    sku or "Unknown",
+                    tier or "Unknown",
+                )
+            )
+            if (
+                not resource_type
+                or item.source_key != expected_key
+                or not _nonnegative_int(data.get("resource_count"))
+            ):
+                return False
+    return True
+
+
+def _inventory_page_authority(
+    snapshot: EvidenceSnapshotV2,
+    tool_results: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    contract = _INVENTORY_PAGE_CONTRACT.get(snapshot.page_id)
+    if not valid_inventory_page_snapshot(snapshot) or contract is None:
+        return None
+    family = contract[0]
+    matching = [
+        result
+        for result in tool_results
+        if (
+            result.get("specialist_id") == "inventory_data_health"
+            and result.get("tool") == "inventory_resources"
+            and isinstance(result.get("arguments"), Mapping)
+            and result["arguments"].get("family") == family
+            and result.get("status") in {STATUS_OK, STATUS_EMPTY}
+            and isinstance(result.get("data"), Mapping)
+        )
+    ]
+    if len(matching) != 1:
+        return None
+    data = matching[0]["data"]
+    total = data.get("total")
+    group_total = data.get("group_total")
+    groups = data.get("groups")
+    observed_at = str(data.get("observed_at") or "")
+    query_version = str(data.get("query_version") or "")
+    if (
+        not _nonnegative_int(total)
+        or not _nonnegative_int(group_total)
+        or not isinstance(groups, list)
+        or group_total != snapshot.coverage.total_count
+        or not observed_at
+        or not query_version
+        or any(item.observed_at != observed_at for item in snapshot.evidence)
+    ):
+        return None
+
+    by_key = {
+        str(group.get("key") or ""): group
+        for group in groups
+        if isinstance(group, Mapping) and group.get("key")
+    }
+    if len(by_key) != len(groups):
+        return None
+    if snapshot.coverage.visible_count == 0:
+        return data
+    fields = (
+        (
+            "os_name",
+            "os_version",
+            "machine_count",
+            "source_types",
+            "lifecycle_status",
+            "support_end",
+            "days_remaining",
+            "review_required",
+        )
+        if family == "os"
+        else (
+                "software_name",
+                "software_version",
+                "install_count",
+                "linked_count",
+                "unlinked_count",
+                "source_types",
+                "publishers",
+        )
+        if family == "software"
+        else ("resource_type", "sku", "tier", "resource_count")
+    )
+    for item in snapshot.evidence:
+        group = by_key.get(item.source_key)
+        if group is None:
+            return None
+        for key in fields:
+            if group.get(key) != item.data.get(key):
+                return None
+
+    resources = data.get("resources")
+    if family == "software" and resources is None:
+        resources = []
+    if not isinstance(resources, list):
+        return None
+    resource_ids: set[str] = set()
+    for resource in resources:
+        if not isinstance(resource, Mapping):
+            return None
+        resource_id = str(resource.get("resource_id") or "").casefold()
+        if (
+            not resource_id
+            or resource_id in resource_ids
+            or resource.get("family") != family
+        ):
+            return None
+        resource_ids.add(resource_id)
+    if len(resources) > total:
+        return None
+    return data
+
 
 def _valid_fabric_observation(item: SnapshotEvidence) -> bool:
     source = _FABRIC_CLAIM_SOURCES.get(item.claim_type)
@@ -969,6 +1241,11 @@ class OrchestrationService:
                     }
                 )
                 for index, evidence in enumerate(result.evidence):
+                    result_data = (
+                        result.data
+                        if isinstance(result.data, Mapping)
+                        else {}
+                    )
                     citations.append(
                         Citation(
                             citation_id=f"tool:{call_id}:{index}",
@@ -979,6 +1256,9 @@ class OrchestrationService:
                             ),
                             status=result.status,
                             observed_at=evidence.timestamp,
+                            query_version=str(
+                                result_data.get("query_version") or ""
+                            ),
                             resource_id=evidence.resource_id,
                         )
                     )
@@ -1111,10 +1391,38 @@ class OrchestrationService:
             and canonical_selection_snapshot.coverage.complete
             == page_snapshot.coverage.complete
         )
+        inventory_authority = (
+            _inventory_page_authority(
+                page_snapshot,
+                tool_results,
+            )
+            if page_snapshot.page_kind == "inventory"
+            else None
+        )
+        accepted_inventory_observations = inventory_authority is not None
+        if inventory_authority is not None:
+            current_retained_evidence = self._current_exact_inventory_evidence(
+                page_snapshot,
+                evidence_selection_id=evidence_selection_id,
+                observed_at=str(inventory_authority["observed_at"]),
+                query_version=str(inventory_authority["query_version"]),
+            )
+            citations.extend(
+                Citation(
+                    citation_id=str(item["evidence_id"]),
+                    source=str(item["source"]),
+                    status=str(item["status"]),
+                    observed_at=str(item.get("observed_at") or ""),
+                    query_version=str(item.get("query_version") or ""),
+                    resource_id=str(item.get("resource_id") or ""),
+                )
+                for item in current_retained_evidence
+            )
         authorized_page_truth = (
             authorized_connections_truth
             or authorized_fabric_truth
             or accepted_resource_health_observations
+            or accepted_inventory_observations
         )
         uncertainty_request = (
             request.model_copy(update={"snapshot": page_snapshot})
@@ -1155,6 +1463,9 @@ class OrchestrationService:
             fabric_page_truth_authorized=authorized_fabric_truth,
             resource_health_page_observations_accepted=(
                 accepted_resource_health_observations
+            ),
+            inventory_page_observations_accepted=(
+                accepted_inventory_observations
             ),
         )
         if synthesis.warning:
@@ -1360,6 +1671,54 @@ class OrchestrationService:
             snapshot,
             evidence_selection_id=evidence_selection_id,
         )
+        return retained
+
+    @staticmethod
+    def _current_exact_inventory_evidence(
+        snapshot: EvidenceSnapshotV2,
+        *,
+        evidence_selection_id: str,
+        observed_at: str,
+        query_version: str,
+    ) -> list[dict[str, Any]]:
+        """Mint current citations after exact Inventory/tool parity succeeds."""
+
+        retained: list[dict[str, Any]] = []
+        for item in snapshot.evidence:
+            data = OrchestrationService._bounded_page_facts(item.data)
+            if (
+                not data
+                and item.claim_type == "page_context"
+                and snapshot.coverage.visible_count == 0
+            ):
+                data = {
+                    "visible_count": 0,
+                    "total_count": snapshot.coverage.total_count,
+                }
+            if not data:
+                continue
+            citation_seed = f"{evidence_selection_id}:{item.evidence_id}".encode()
+            retained.append(
+                {
+                    "evidence_id": (
+                        "retained:"
+                        + hashlib.sha256(citation_seed).hexdigest()[:32]
+                    ),
+                    "original_evidence_id": item.evidence_id,
+                    "source": f"page_snapshot:inventory:{item.source}",
+                    "status": item.status,
+                    "observed_at": observed_at,
+                    "query_version": query_version,
+                    "resource_id": item.resource_id,
+                    "observation_status": OBSERVATION_CURRENT,
+                    "claim_type": item.claim_type,
+                    "selected": item.selected,
+                    "direct": item.direct,
+                    "quality": item.quality,
+                    "severity": item.severity,
+                    "data": data,
+                }
+            )
         return retained
 
     @staticmethod
@@ -1585,6 +1944,7 @@ class OrchestrationService:
         narrator_state: str = "configured",
         fabric_page_truth_authorized: bool = False,
         resource_health_page_observations_accepted: bool = False,
+        inventory_page_observations_accepted: bool = False,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
@@ -1610,6 +1970,7 @@ class OrchestrationService:
         )
         fabric_starter_kind = _fabric_starter_kind(question)
         resource_health_starter_kind = _resource_health_starter_kind(question)
+        inventory_starter = inventory_starter_kind(question)
         page_claims = (
             []
             if (
@@ -1622,6 +1983,10 @@ class OrchestrationService:
                     or (
                         snapshot.page_kind == "resource_health"
                         and resource_health_starter_kind is not None
+                    )
+                    or (
+                        snapshot.page_kind == "inventory"
+                        and inventory_starter is not None
                     )
                 )
             )
@@ -1661,6 +2026,30 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         ) if resource_health_page_observations_accepted else []
+        inventory_claims = self._deterministic_inventory_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        ) if inventory_page_observations_accepted else []
+        if (
+            snapshot is not None
+            and snapshot.page_kind == "inventory"
+            and inventory_starter is not None
+            and not inventory_page_observations_accepted
+        ):
+            synthesis = ExecutiveSynthesis(
+                status="skipped",
+                reason="inventory_page_evidence_not_authorized",
+                domain_count=1,
+                claims=[],
+                warning=(
+                    "Inventory page evidence is incomplete or failed exact "
+                    "page-to-tool parity; no deterministic claim was made."
+                ),
+                used_retained_evidence=[],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if (
             snapshot is not None
             and snapshot.page_kind == "resource_health"
@@ -1739,6 +2128,25 @@ class OrchestrationService:
                 reason="deterministic_resource_health_page_evidence",
                 domain_count=1,
                 claims=resource_health_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if inventory_claims:
+            used_refs = {
+                str(reference)
+                for claim in inventory_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_inventory_page_evidence",
+                domain_count=1,
+                claims=inventory_claims,
                 used_retained_evidence=[
                     dict(item)
                     for item in current_retained_evidence
@@ -2774,6 +3182,158 @@ class OrchestrationService:
             ),
             "evidence_refs": [*evidence_refs, coverage_ref],
             "uncertainty": metric_uncertainty,
+            **common,
+        }]
+
+    @staticmethod
+    def _deterministic_inventory_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Answer exact Inventory starters from parity-checked page facts."""
+
+        if (
+            snapshot is None
+            or snapshot.page_kind != "inventory"
+            or snapshot.page_id not in _INVENTORY_PAGE_CONTRACT
+        ):
+            return []
+        starter_kind = inventory_starter_kind(question)
+        if starter_kind is None:
+            return []
+        family, source, claim_type = _INVENTORY_PAGE_CONTRACT[snapshot.page_id]
+        rows = [
+            item
+            for item in retained_evidence
+            if (
+                item.get("claim_type") == claim_type
+                and item.get("source") == f"page_snapshot:inventory:{source}"
+                and item.get("evidence_id")
+                and isinstance(item.get("data"), Mapping)
+            )
+        ]
+        if len(rows) != snapshot.coverage.visible_count:
+            return []
+        freshness = snapshot_claim_freshness(snapshot)
+        evidence_refs = sorted(str(item["evidence_id"]) for item in rows)
+        if not evidence_refs and snapshot.coverage.visible_count == 0:
+            evidence_refs = [
+                str(item["evidence_id"])
+                for item in retained_evidence
+                if (
+                    item.get("claim_type") == "page_context"
+                    and item.get("source")
+                    == f"page_snapshot:inventory:{source}"
+                    and item.get("evidence_id")
+                )
+            ]
+        if not evidence_refs:
+            return []
+        unit = {
+            "os": "OS groups",
+            "software": "software groups",
+            "paas": "Azure resource groups",
+        }[family]
+        coverage_text = (
+            f"complete at {snapshot.coverage.visible_count} of "
+            f"{snapshot.coverage.total_count} {unit}"
+            if snapshot.coverage.complete
+            else (
+                f"partial at {snapshot.coverage.visible_count} visible of "
+                f"{snapshot.coverage.total_count} {unit}"
+            )
+        )
+        common = {
+            "confidence": "medium",
+            "freshness": freshness,
+            "evidence_refs": evidence_refs[:32],
+            "actionable": False,
+            "next_check": (
+                "Refresh the cited Inventory source and review the exact "
+                "resource identities before taking governed action."
+            ),
+        }
+        uncertainty = (
+            []
+            if snapshot.coverage.complete and freshness == "fresh"
+            else [
+                *(
+                    []
+                    if snapshot.coverage.complete
+                    else ["Visible Inventory coverage is incomplete."]
+                ),
+                *(
+                    []
+                    if freshness == "fresh"
+                    else [f"Inventory evidence freshness is {freshness}."]
+                ),
+            ]
+        )
+        if starter_kind == "coverage":
+            return [{
+                "finding_id": f"inventory:{family}-coverage",
+                "summary": (
+                    f"Visible Inventory coverage is {coverage_text}. "
+                    "This describes the retained page grouping and its "
+                    "parity-checked scoped Inventory read; it does not imply "
+                    "coverage for unavailable source families."
+                ),
+                "uncertainty": uncertainty,
+                **common,
+            }]
+
+        if family == "os":
+            lifecycle_counts: dict[str, int] = {}
+            machine_count = 0
+            for item in rows:
+                data = item["data"]
+                count = int(data["machine_count"])
+                machine_count += count
+                status = str(data["lifecycle_status"])
+                lifecycle_counts[status] = lifecycle_counts.get(status, 0) + count
+            lifecycle = ", ".join(
+                f"{count} {status}"
+                for status, count in sorted(lifecycle_counts.items())
+            )
+            summary = (
+                f"The retained Inventory view contains {len(rows)} OS groups "
+                f"representing {machine_count} machines ({lifecycle} by "
+                "lifecycle status). These are inventory and lifecycle facts, "
+                "not live availability or utilization health."
+            )
+        elif family == "software":
+            installs = sum(int(item["data"]["install_count"]) for item in rows)
+            unlinked = sum(int(item["data"]["unlinked_count"]) for item in rows)
+            summary = (
+                f"The retained Inventory view contains {len(rows)} software "
+                f"groups representing {installs} installations, including "
+                f"{unlinked} unlinked installations. This is software "
+                "inventory coverage, not vulnerability or runtime health."
+            )
+        else:
+            resources = sum(int(item["data"]["resource_count"]) for item in rows)
+            resource_types = len({
+                str(item["data"]["resource_type"]).casefold()
+                for item in rows
+            })
+            summary = (
+                f"The retained Inventory view contains {len(rows)} Azure "
+                f"resource groups representing {resources} resources across "
+                f"{resource_types} resource types. This is inventory coverage, "
+                "not live Resource Health status."
+            )
+        return [{
+            "finding_id": f"inventory:{family}-visible-health",
+            "summary": summary,
+            "uncertainty": [
+                *uncertainty,
+                (
+                    "Live availability, utilization, and Service Health "
+                    "evidence are outside this Inventory snapshot."
+                ),
+            ],
             **common,
         }]
 

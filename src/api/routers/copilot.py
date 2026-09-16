@@ -73,8 +73,10 @@ from operations.orchestration_service import (
     OrchestrationService,
     deterministic_network_claims,
     execute_from_question,
+    inventory_starter_kind,
     legacy_session_history,
     snapshot_claim_freshness,
+    valid_inventory_page_snapshot,
 )
 from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
 from operations.specialist_manifest import (
@@ -675,7 +677,15 @@ def _server_inventory_result(result: Mapping[str, Any] | None) -> ToolResult:
     total = int(result.get("total") or 0)
     raw_data = result.get("data")
     data = (
-        {**raw_data, "total": total}
+        {
+            **raw_data,
+            "total": total,
+            **(
+                {"group_total": total}
+                if isinstance(raw_data.get("groups"), list)
+                else {}
+            ),
+        }
         if isinstance(raw_data, Mapping)
         else {"items": raw_data, "total": total}
     )
@@ -709,7 +719,10 @@ def _inventory_executor(
             resource_selector=effective_arguments.get("resource_type"),
         )
         resource_selector = validated.resource_selector or ""
-        if validated.family in {"os", "paas"} and not resource_selector.startswith("group:"):
+        if (
+            validated.family in {"os", "software", "paas"}
+            and not resource_selector.startswith("group:")
+        ):
             tool_arguments: dict[str, str] = {"family": validated.family}
             if resource_selector.startswith("type:"):
                 tool_arguments["resource_type"] = resource_selector.removeprefix("type:")
@@ -1755,6 +1768,19 @@ def investigate_canonical(
     )
     browser_snapshot = request.snapshot
     _validate_bound_cve_request(payload, browser_snapshot)
+    exact_inventory_starter = (
+        browser_snapshot.page_kind == "inventory"
+        and inventory_starter_kind(payload.question) is not None
+    )
+    if (
+        exact_inventory_starter
+        and not valid_inventory_page_snapshot(browser_snapshot)
+    ):
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Inventory page evidence failed the exact bounded contract",
+            details={"field": "snapshot"},
+        )
     unresolved_domain_evidence_excluded = False
     try:
         semantic = context.resolve_provider(
@@ -1762,7 +1788,14 @@ def investigate_canonical(
             optional=True,
         )
         semantic_unavailable = semantic is None
-        unresolved_domain_evidence_excluded = semantic_unavailable and any(
+        selected_inventory_domain_unresolved = (
+            exact_inventory_starter
+            and any(
+                isinstance(entity, DomainEntityRef)
+                for entity in browser_snapshot.selected_entities
+            )
+        )
+        has_domain_evidence = any(
             isinstance(entity, DomainEntityRef)
             for entity in [
                 *browser_snapshot.selected_entities,
@@ -1773,9 +1806,21 @@ def investigate_canonical(
                 ],
             ]
         )
+        unresolved_domain_evidence_excluded = (
+            selected_inventory_domain_unresolved
+            or (
+                semantic_unavailable
+                and not exact_inventory_starter
+                and has_domain_evidence
+            )
+        )
         selection_snapshot = (
             _without_unresolved_domain_evidence(browser_snapshot)
-            if semantic_unavailable
+            if (
+                semantic_unavailable
+                and not exact_inventory_starter
+            )
+            or selected_inventory_domain_unresolved
             else _with_bounded_overview_observations(browser_snapshot)
         )
         resolved_domains: dict[

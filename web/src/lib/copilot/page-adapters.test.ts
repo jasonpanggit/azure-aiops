@@ -2825,6 +2825,42 @@ describe("inventory Copilot page adapter", () => {
     });
   });
 
+  it("retains at most 50 inventory rows and reports exact truncation", () => {
+    const records = Array.from({ length: 51 }, (_, index) => ({
+      identity: `Windows Server|20${String(index).padStart(2, "0")}`,
+      kind: "os_group" as const,
+      source: "inventory/os_observations",
+      data: {
+        os_name: "Windows Server",
+        os_version: `20${String(index).padStart(2, "0")}`,
+        machine_count: 1,
+        source_types: ["azure_vm"],
+        lifecycle_status: "Supported",
+        support_end: "2034-11-14",
+        days_remaining: 2981,
+        review_required: false,
+      },
+    }));
+
+    const context = buildInventoryCopilotContext({
+      ...baseInput,
+      records,
+      selectedIdentity: null,
+      totalCount: 51,
+      limit: 100,
+    });
+
+    expect(context.snapshot.evidence).toHaveLength(50);
+    expect(context.snapshot.coverage).toEqual({
+      visible_count: 50,
+      total_count: 51,
+      complete: false,
+    });
+    expect(context.uncertainty).toContain(
+      "evidence retention omitted 1 inventory row",
+    );
+  });
+
   it("emits discriminated canonical Azure and non-Azure entities", () => {
     const snapshot = buildInventoryCopilotContext(baseInput).snapshot;
     const domain = snapshot.evidence.find(
@@ -3031,9 +3067,27 @@ describe("inventory Copilot page adapter", () => {
           offset: 0,
           limit: 50,
         },
+        mutation_authorized: false,
         selected: false,
       },
     });
+  });
+
+  it("keeps a filtered-empty page partial against its server total", () => {
+    const context = buildInventoryCopilotContext({
+      ...baseInput,
+      records: [],
+      totalCount: 2,
+    });
+
+    expect(context.snapshot.coverage).toEqual({
+      visible_count: 0,
+      total_count: 2,
+      complete: false,
+    });
+    expect(context.snapshot.evidence).toHaveLength(1);
+    expect(context.snapshot.evidence[0].data.mutation_authorized).toBe(false);
+    expect(context.uncertainty).toContain("visible subset is incomplete");
   });
 
   it("merges exact duplicates independently of input order", () => {
