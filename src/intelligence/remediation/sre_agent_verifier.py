@@ -33,6 +33,30 @@ _PROVIDER_OPERATION_FIELDS = frozenset(
     }
 )
 
+_TERMINAL_FAILED_INCIDENT_STATUSES = frozenset(
+    {
+        "failed",
+        "failure",
+        "error",
+        "failed_without_action",
+        "blocked_no_action",
+    }
+)
+
+_TERMINAL_CANCELLED_INCIDENT_STATUSES = frozenset({"cancelled", "canceled"})
+
+# Only an explicitly typed terminal-success incident status ends the thread
+# without submission evidence; message-level completion never does.
+_TERMINAL_SUCCEEDED_INCIDENT_STATUSES = frozenset(
+    {
+        "complete",
+        "completed",
+        "succeeded",
+        "success",
+        "resolved",
+    }
+)
+
 
 def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize the production thread status without reading message prose."""
@@ -63,33 +87,39 @@ def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
+def _composite_outcome(
+    composite: dict[str, Any],
+    *,
+    has_submitted_operation: bool,
+) -> tuple[str, str, str]:
+    """Map a composite thread status to an outcome without inferring terminality.
+
+    ``lastMessage.isComplete`` only states that the *current* message finished
+    streaming; the provider thread stays active and approvable afterwards (the
+    agent can still read applicability, present Review commands, and type a
+    terminal status). Terminality therefore requires either an explicit typed
+    terminal incident status or exact typed write-submission evidence.
+    """
     incident = " ".join(str(composite["incident_status"]).casefold().split())
-    if incident in {
-        "failed",
-        "failure",
-        "error",
-        "failed_without_action",
-        "blocked_no_action",
-    }:
+    if incident in _TERMINAL_FAILED_INCIDENT_STATUSES:
         return (
             "failed",
             "Failed",
             "Azure SRE Agent reported a terminal failed incident status.",
         )
-    if incident in {"cancelled", "canceled"}:
+    if incident in _TERMINAL_CANCELLED_INCIDENT_STATUSES:
         return (
             "cancelled",
             "Cancelled",
             "Azure SRE Agent reported a terminal cancelled incident status.",
         )
+    if has_submitted_operation or incident in _TERMINAL_SUCCEEDED_INCIDENT_STATUSES:
+        return ("succeeded", "Complete", "")
     if (
         composite["has_critical_actions"] is True
         or composite["has_warning_actions"] is True
     ):
         return ("running", "Pending Review", "")
-    if composite["last_message_complete"] is True:
-        return ("succeeded", "Complete", "")
     return ("running", "In Progress", "")
 
 
@@ -295,7 +325,10 @@ class SreAgentExecutionVerifier:
         if submitted_operation is not None:
             evidence["provider_operation"] = submitted_operation
         if composite is not None:
-            outcome, verified_state, failure_details = _composite_outcome(composite)
+            outcome, verified_state, failure_details = _composite_outcome(
+                composite,
+                has_submitted_operation=submitted_operation is not None,
+            )
             if outcome == "succeeded" and submitted_operation is None:
                 return _completion_without_submission(
                     verified_state="CompleteWithoutSubmissionProof",

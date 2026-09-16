@@ -132,9 +132,14 @@ not patched. The verifier polls the documented
   warning action, records `Pending Review` and remains provider-active;
 - composite incident `Failed`/`Error` and `Cancelled` are typed terminal
   failures without reading message prose; and
-- scalar `Complete` or composite `lastMessage.isComplete=true` without an
-  exact typed `provider_operation` fails closed as
-  `submission_ambiguous`, so retry and supersession remain refused;
+- composite `lastMessage.isComplete=true` only means the current message
+  finished streaming, so a composite thread with no typed terminal incident
+  status stays provider-active (`In Progress`) even before `actionsStatus`
+  flips for Review;
+- scalar `Complete`, or a composite thread whose incident status is an
+  explicit typed terminal success, without an exact typed
+  `provider_operation` fails closed as `submission_ambiguous`, so retry and
+  supersession remain refused;
 - completion advances only when `provider_operation` has exactly schema
   `1.0`, a nonempty provider operation ID, a submitted/running/succeeded/
   completed status, the bound write skill name/version,

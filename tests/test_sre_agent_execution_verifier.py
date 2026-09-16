@@ -5,6 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from intelligence.remediation.execution_service import (
+    _supersede_eligibility,
+)
+from intelligence.remediation.execution_store import RETRYABLE_STATUSES
 from intelligence.remediation.execution_verifier import (
     ExecutionVerificationUnavailable,
 )
@@ -210,7 +214,7 @@ def test_completed_thread_with_mismatched_write_submission_never_succeeds(
                     "hasCriticalActions": False,
                     "hasWarningActions": False,
                 },
-                "incidentStatus": {"status": ""},
+                "incidentStatus": {"status": "Completed"},
             },
             "lastMessage": {"isComplete": True},
             "provider_operation": _provider_operation(**{field: value}),
@@ -221,6 +225,40 @@ def test_completed_thread_with_mismatched_write_submission_never_succeeds(
 
     assert result["outcome"] == "failed"
     assert result["failure_class"] == "submission_ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "1.4"),
+        ("operation_id", ""),
+        ("skill_name", "other-write-skill"),
+        ("patch_ids", ["KB600002"]),
+    ],
+)
+def test_active_thread_with_mismatched_write_submission_stays_running(
+    field: str,
+    value: object,
+) -> None:
+    verifier, _credential = _verifier(
+        {
+            "status": {
+                "actionsStatus": {
+                    "hasCriticalActions": False,
+                    "hasWarningActions": False,
+                },
+                "incidentStatus": {"status": ""},
+            },
+            "lastMessage": {"isComplete": True},
+            "provider_operation": _provider_operation(**{field: value}),
+        }
+    )
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "running"
+    assert result["provider_active"] is True
+    assert "provider_operation" not in result["verification_evidence"]
 
 
 def test_completed_thread_rejects_extra_provider_operation_fields() -> None:
@@ -315,8 +353,8 @@ def test_scalar_submission_ambiguous_preserves_recovery_block() -> None:
                 },
                 "lastMessage": {"isComplete": True, "content": "failed"},
             },
-            "failed",
-            "CompleteWithoutSubmissionProof",
+            "running",
+            "In Progress",
         ),
         (
             {
@@ -390,6 +428,234 @@ def test_production_composite_thread_shapes_are_typed_without_prose(
     assert result["verification_evidence"]["thread_status"][
         "last_message_complete"
     ] is payload["lastMessage"]["isComplete"]
+
+
+_LIVE_MESSAGE_COMPLETE_THREAD: dict[str, object] = {
+    "status": {
+        "actionsStatus": {
+            "hasCriticalActions": False,
+            "hasWarningActions": False,
+        },
+        "incidentStatus": {"incidentId": "", "status": ""},
+    },
+    "lastMessage": {"isComplete": True},
+}
+
+
+def test_live_message_complete_thread_stays_active_before_review_actions() -> None:
+    """RME-D7CEC1940ECEC97C regression: the 23:44:44 poll of provider thread
+    26937248-4e53-4205-84d7-527477354736 returned a message-complete composite
+    while the agent still went on to read applicability and present a Review
+    command at 23:45:57. That shape must remain provider-active."""
+    verifier, _credential = _verifier(_LIVE_MESSAGE_COMPLETE_THREAD)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "running"
+    assert result["verified_state"] == "In Progress"
+    assert result["provider_active"] is True
+    assert "failure_class" not in result
+    assert result["verification_evidence"]["thread_status"] == {
+        "last_message_complete": True,
+        "has_critical_actions": False,
+        "has_warning_actions": False,
+        "incident_status": "",
+    }
+
+
+def test_live_message_complete_thread_is_not_retryable_or_supersedable() -> None:
+    """The still-active thread must not unlock retry or supersession while the
+    original Review command remains approvable."""
+    verifier, _credential = _verifier(_LIVE_MESSAGE_COMPLETE_THREAD)
+
+    result = verifier.verify(_submitted_record())
+
+    record = {
+        "status": "running" if result["outcome"] == "running" else result["outcome"],
+        "verification_evidence": result["verification_evidence"],
+    }
+    assert _supersede_eligibility(record) == "execution_active"
+    assert record["status"] not in RETRYABLE_STATUSES
+
+
+def test_message_complete_never_reports_submission_ambiguous_without_terminality() -> (
+    None
+):
+    """Message-level completion alone must not produce the recovery-blocking
+    ``submission_ambiguous`` failure class."""
+    verifier, _credential = _verifier(_LIVE_MESSAGE_COMPLETE_THREAD)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] != "failed"
+    assert result.get("failure_class") is None
+    assert result["verified_state"] != "CompleteWithoutSubmissionProof"
+
+
+def test_message_incomplete_thread_also_stays_running() -> None:
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": False,
+                "hasWarningActions": False,
+            },
+            "incidentStatus": {"incidentId": "", "status": ""},
+        },
+        "lastMessage": {"isComplete": False},
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "running"
+    assert result["verified_state"] == "In Progress"
+
+
+@pytest.mark.parametrize(
+    "incident_status",
+    ["failed_without_action", "blocked_no_action", "Failed", " error "],
+)
+def test_explicit_terminal_failure_incident_status_still_fails(
+    incident_status: str,
+) -> None:
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": False,
+                "hasWarningActions": False,
+            },
+            "incidentStatus": {"incidentId": "inc-1", "status": incident_status},
+        },
+        "lastMessage": {"isComplete": True},
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "failed"
+    assert result["verified_state"] == "Failed"
+
+
+@pytest.mark.parametrize("incident_status", ["cancelled", "Canceled"])
+def test_explicit_terminal_cancelled_incident_status_still_cancels(
+    incident_status: str,
+) -> None:
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": False,
+                "hasWarningActions": False,
+            },
+            "incidentStatus": {"incidentId": "inc-1", "status": incident_status},
+        },
+        "lastMessage": {"isComplete": True},
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == "cancelled"
+    assert result["verified_state"] == "Cancelled"
+
+
+def test_explicit_terminal_success_without_submission_proof_stays_blocked() -> None:
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": False,
+                "hasWarningActions": False,
+            },
+            "incidentStatus": {"incidentId": "inc-1", "status": "Completed"},
+        },
+        "lastMessage": {"isComplete": True},
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert result["verified_state"] == "CompleteWithoutSubmissionProof"
+
+
+def test_declined_review_prose_is_never_read_as_an_outcome() -> None:
+    """The live thread's final typed prose was ``failed_without_action`` in
+    message text only; prose must never drive the verified outcome."""
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": False,
+                "hasWarningActions": False,
+            },
+            "incidentStatus": {"incidentId": "", "status": ""},
+        },
+        "lastMessage": {
+            "isComplete": True,
+            "content": "failed_without_action: the user declined the patch install",
+        },
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "running"
+    assert result["provider_active"] is True
+
+
+@pytest.mark.parametrize(
+    ("critical", "warning"),
+    [(True, False), (False, True)],
+)
+def test_typed_submission_proof_outranks_pending_action_flags(
+    critical: bool,
+    warning: bool,
+) -> None:
+    """Stale action flags must not hold a proven submission open forever."""
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": critical,
+                "hasWarningActions": warning,
+            },
+            "incidentStatus": {"incidentId": "", "status": ""},
+        },
+        "lastMessage": {"isComplete": True},
+        "provider_operation": _provider_operation(),
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "succeeded"
+    assert result["verified_state"] == "Complete"
+
+
+@pytest.mark.parametrize(
+    ("critical", "warning"),
+    [(True, False), (False, True)],
+)
+def test_terminal_success_status_with_action_flags_still_blocks_recovery(
+    critical: bool,
+    warning: bool,
+) -> None:
+    """A terminal-success thread without proof must reach the recovery block
+    rather than poll forever behind a stale action flag."""
+    payload = {
+        "status": {
+            "actionsStatus": {
+                "hasCriticalActions": critical,
+                "hasWarningActions": warning,
+            },
+            "incidentStatus": {"incidentId": "inc-1", "status": "Completed"},
+        },
+        "lastMessage": {"isComplete": True},
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
 
 
 def test_unknown_status_remains_running_until_deadline() -> None:
