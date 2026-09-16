@@ -42,8 +42,11 @@ def _query(client: httpx.AsyncClient) -> GoldGroundingQueryResult:
 
 
 def test_query_gold_grounding_returns_one_correlated_result() -> None:
-    result = _query(
-        _client(
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _response(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -53,7 +56,8 @@ def test_query_gold_grounding_returns_one_correlated_result() -> None:
                 },
             }
         )
-    )
+
+    result = _query(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
     assert result == GoldGroundingQueryResult(
         GoldGroundingStatus.SUCCESS,
@@ -62,6 +66,7 @@ def test_query_gold_grounding_returns_one_correlated_result() -> None:
             "content": [{"type": "text", "text": "ok"}],
         },
     )
+    assert requests[0].headers["Authorization"] == "Bearer delegated-token"
 
 
 @pytest.mark.parametrize(
