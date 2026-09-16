@@ -334,6 +334,60 @@ def test_investigation_rejects_unknown_tool_hint(client):
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "resource_type",
+    [123, [], {}, True, None, "", "   "],
+)
+def test_investigation_rejects_malformed_tool_arguments_before_io(
+    client, monkeypatch, resource_type
+):
+    calls = []
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = _investigate(
+        client,
+        "show list of VMs",
+        tool="inventory_resources",
+        tool_arguments={"resource_type": resource_type},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "tool_arguments",
+    [
+        {},
+        {"resource_type": "Microsoft.Compute/virtualMachines"},
+    ],
+)
+def test_investigation_accepts_valid_or_omitted_inventory_filter(
+    client, monkeypatch, tool_arguments
+):
+    calls = []
+
+    def execute(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr("operations.investigation.call_tool", execute)
+
+    response = _investigate(
+        client,
+        "show list of VMs",
+        tool="inventory_resources",
+        tool_arguments=tool_arguments,
+    )
+
+    assert response.status_code == 200
+    assert calls == [("inventory_resources", tool_arguments)]
+
+
 def test_investigation_degrades_when_agent_unavailable(tmp_path):
     client = TestClient(create_app(_context(tmp_path, None)), raise_server_exceptions=False)
     response = _investigate(client, "Tell me about Retail Banking")

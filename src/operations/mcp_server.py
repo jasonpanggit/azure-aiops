@@ -60,7 +60,7 @@ class MCPRequest(BaseModel):
 
 
 class ToolArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str | None = Field(default=None, min_length=1, max_length=256)
     subject: str | None = Field(default=None, min_length=1, max_length=512)
     vnet_id: str | None = Field(default=None, min_length=1, max_length=512)
@@ -82,6 +82,7 @@ class ToolArguments(BaseModel):
     category: str | None = Field(default=None, min_length=1, max_length=128)
     sort_by: str | None = Field(default=None, min_length=1, max_length=64)
     sort_direction: str | None = Field(default=None, min_length=1, max_length=8)
+    active: bool | None = None
     entity_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
@@ -108,6 +109,7 @@ _REQUIRED: dict[str, tuple[str, ...]] = {
 # a tool can accept a field without forcing the caller to supply it.
 _OPTIONAL: dict[str, tuple[str, ...]] = {
     "firewall_nsg_gaps": ("category",),
+    "traffic_flow": ("port", "protocol"),
     "cve_exposure": (
         "business_service",
         "generation",
@@ -117,6 +119,7 @@ _OPTIONAL: dict[str, tuple[str, ...]] = {
         "query",
         "sort_by",
         "sort_direction",
+        "active",
     ),
     "defender_remediation_cases": ("business_service",),
     "incidents": ("incident_id",),
@@ -186,15 +189,15 @@ def validate_tool_arguments(
 
     if not isinstance(arguments, Mapping) or not _safe_size(arguments, MAX_ARGUMENT_BYTES):
         raise ValueError("invalid or oversized tool arguments")
-    cleaned_arguments = {
-        key: value
-        for key, value in arguments.items()
-        if not (isinstance(value, str) and value.strip() == "")
-    }
     try:
-        validated = ToolArguments.model_validate(cleaned_arguments)
+        validated = ToolArguments.model_validate(arguments)
     except ValidationError as exc:
         raise ValueError("invalid tool arguments") from exc
+    if any(
+        getattr(validated, field) is None
+        for field in validated.model_fields_set
+    ):
+        raise ValueError("explicit null tool arguments are invalid")
     args = validated.model_dump(exclude_none=True)
     allowed_fields = set(_REQUIRED.get(name, ())) | set(_OPTIONAL.get(name, ()))
     if set(args) - allowed_fields:

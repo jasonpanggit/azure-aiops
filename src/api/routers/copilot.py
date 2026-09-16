@@ -50,6 +50,7 @@ from operations.maf_orchestrator import (
     canonical_orchestration_enabled,
     copilot_rollout_decision,
 )
+from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
@@ -1388,8 +1389,33 @@ def investigate(
     """
     question = payload.question.strip()
     started = time.monotonic()
+    validated_arguments: dict[str, Any] = {}
+    known_tools = tool_catalog_names()
+    canonical_enabled = canonical_orchestration_enabled(
+        stable_key=principal.subject
+    )
 
-    if canonical_orchestration_enabled(stable_key=principal.subject):
+    if payload.tool in known_tools:
+        try:
+            validated_arguments, _ = validate_tool_arguments(
+                payload.tool,
+                payload.tool_arguments,
+            )
+        except ValueError as exc:
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                f"Invalid arguments for tool {payload.tool!r}",
+                details={"tool": payload.tool},
+            ) from exc
+    elif payload.tool:
+        validated_arguments = dict(payload.tool_arguments)
+    elif payload.tool_arguments:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Tool arguments require a tool hint",
+        )
+
+    if canonical_enabled:
         return _investigate_via_canonical(
             question,
             started=started,
@@ -1398,14 +1424,14 @@ def investigate(
             principal=principal,
             session_id=payload.session_id,
             hint_tool=payload.tool,
-            hint_arguments=payload.tool_arguments,
+            hint_arguments=validated_arguments,
         )
 
-    if payload.tool and payload.tool not in tool_catalog_names():
+    if payload.tool and payload.tool not in known_tools:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,
             f"Unknown tool {payload.tool!r}",
-            details={"supported_tools": sorted(tool_catalog_names())},
+            details={"supported_tools": sorted(known_tools)},
         )
 
     investigation = run_investigation(
@@ -1414,7 +1440,7 @@ def investigate(
         scope=scope,
         principal=principal,
         hint_tool=payload.tool or None,
-        hint_args=payload.tool_arguments,
+        hint_args=validated_arguments,
     )
     duration_ms = (time.monotonic() - started) * 1000.0
     if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
