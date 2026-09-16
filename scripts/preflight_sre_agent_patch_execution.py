@@ -1243,7 +1243,11 @@ def validate_container_app_state(
         name = _nonempty_string(row.get("name"), "Container App env name")
         if name in env:
             raise ReadinessError(f"duplicate Container App environment: {name}")
-        env[name] = {"value": row.get("value"), "secretRef": row.get("secretRef")}
+        value = row.get("value")
+        secret_ref = row.get("secretRef")
+        if secret_ref and value == "":
+            value = None
+        env[name] = {"value": value, "secretRef": secret_ref}
     expected = {
         "AIOPS_PATCH_EXECUTION": {"value": "sre-agent", "secretRef": None},
         SECRET_ENVIRONMENT_VARIABLE: {"value": None, "secretRef": SECRET_NAME},
