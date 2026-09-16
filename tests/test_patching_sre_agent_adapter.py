@@ -7,6 +7,7 @@ import json
 import httpx
 import pytest
 
+import operations.patching.sre_agent_adapter as sre_adapter
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.models import AvailablePatch, PatchRun, PatchTarget
 from operations.patching.sre_agent_adapter import (
@@ -147,6 +148,36 @@ def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
         "subscription_id": SUBSCRIPTION_ID,
         "schema_version": "1.0",
     }
+
+
+def test_submit_rejects_real_payload_builder_drift_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    original = sre_adapter._build_sre_agent_patch_envelope
+
+    def drifted_payload(**kwargs: object) -> dict[str, object]:
+        payload = original(**kwargs)
+        payload["operation"] = "assess_patches"
+        return payload
+
+    monkeypatch.setattr(
+        sre_adapter,
+        "_build_sre_agent_patch_envelope",
+        drifted_payload,
+    )
+    adapter, credential = _adapter(
+        lambda request: requests.append(request)
+        or httpx.Response(202, json={"success": True, "threadId": "unused"})
+    )
+
+    with pytest.raises(PatchExecutionUnavailable, match="locked contract") as excinfo:
+        adapter.submit(_run(), _target())
+
+    assert requests == []
+    assert credential.scopes == []
+    assert excinfo.value.provider_submitted is False
+    assert excinfo.value.failure_class == "internal_validation"
 
 
 def test_operator_identity_is_audit_data_and_never_used_as_bearer_token() -> None:

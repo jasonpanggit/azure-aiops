@@ -87,6 +87,12 @@ DEFINITION_FIELDS = frozenset(
     }
 )
 ARTIFACT_FIELDS = DEFINITION_FIELDS | {"keyVault"}
+LIVE_TRIGGER_REQUIRED_FIELDS = {"enabled", "id", "prompt", "runMode", "threadGrouping"}
+LIVE_TRIGGER_OPTIONAL_FIELDS = DEFINITION_FIELDS - {
+    "prompt",
+    "runMode",
+    "threadGrouping",
+}
 SECRET_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 
 
@@ -176,6 +182,42 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
     return {field: definition[field] for field in sorted(DEFINITION_FIELDS)}
 
 
+def _runtime_patch_envelope_contract() -> dict[str, Any]:
+    try:
+        from src.operations.patching.sre_agent_adapter import (
+            sre_agent_patch_envelope_contract,
+        )
+    except ImportError as exc:
+        raise ReadinessError(
+            "cannot import runtime SRE Agent patch envelope contract"
+        ) from exc
+    contract = sre_agent_patch_envelope_contract()
+    if not isinstance(contract, dict):
+        raise ReadinessError("runtime SRE Agent patch envelope contract is invalid")
+    return contract
+
+
+def _validate_runtime_outbound_envelope(
+    definition: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_schema = _mapping(definition.get("payloadSchema"), "payloadSchema")
+    runtime_schema = _mapping(
+        _runtime_patch_envelope_contract(),
+        "runtime SRE Agent patch envelope contract",
+    )
+    if runtime_schema != expected_schema:
+        raise ReadinessError(
+            "runtime outbound SRE Agent patch envelope drift detected"
+        )
+    return {
+        "status": "runtime-outbound-envelope-ready",
+        "source": "src.operations.patching.sre_agent_adapter",
+        "serverPayloadSchemaAvailable": False,
+        "serverPayloadSchemaStatus": "not-returned-by-live-api",
+        "validatedAgainst": "runtime-locked-outgoing-envelope",
+    }
+
+
 def canonical_hash(body: Mapping[str, Any]) -> str:
     """Return the SHA-256 hash of deterministic canonical JSON."""
     return _json_sha256(body)
@@ -197,6 +239,7 @@ def validate_trigger_evidence(
     *,
     expected_trigger_id: str,
     expected_trigger_origin: str,
+    definition: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate normalized read-only trigger evidence against the canonical body."""
     _exact_fields(
@@ -212,11 +255,16 @@ def validate_trigger_evidence(
     if source_origin != expected_origin:
         raise ReadinessError("trigger sourceOrigin does not match the reviewed origin")
     trigger = _mapping(payload.get("trigger"), "trigger")
-    _exact_fields(
-        trigger,
-        set(DEFINITION_FIELDS) | {"enabled", "id"},
-        "trigger",
+    trigger_fields = set(LIVE_TRIGGER_REQUIRED_FIELDS) | (
+        set(trigger) & LIVE_TRIGGER_OPTIONAL_FIELDS
     )
+    _exact_fields(trigger, trigger_fields, "trigger")
+    missing_trigger_fields = sorted(LIVE_TRIGGER_REQUIRED_FIELDS - set(trigger))
+    if missing_trigger_fields:
+        raise ReadinessError(
+            "trigger is missing required normalized fields: "
+            + ", ".join(missing_trigger_fields)
+        )
     trigger_id = _trigger_id(trigger.get("id"), "trigger.id")
     reviewed_trigger_id = _trigger_id(
         expected_trigger_id,
@@ -226,21 +274,48 @@ def validate_trigger_evidence(
         raise ReadinessError("trigger.id does not match the reviewed trigger ID")
     if trigger.get("enabled") is not True:
         raise ReadinessError("trigger must be enabled")
-    actual_body = {field: trigger[field] for field in DEFINITION_FIELDS}
+    actual_body = {
+        field: trigger[field]
+        for field in (set(DEFINITION_FIELDS) - {"payloadSchema"})
+        if field in trigger
+    }
     _exact_fields(canonical_body, DEFINITION_FIELDS, "canonical trigger body")
     expected_body = dict(canonical_body)
     drift = sorted(
         field
-        for field in DEFINITION_FIELDS
+        for field in actual_body
         if actual_body[field] != expected_body[field]
     )
+    if (
+        "payloadSchema" in trigger
+        and trigger["payloadSchema"] != expected_body["payloadSchema"]
+    ):
+        drift.append("payloadSchema")
     if drift:
         raise ReadinessError("trigger drift detected in: " + ", ".join(drift))
+    envelope_result = (
+        _validate_runtime_outbound_envelope(definition)
+        if definition is not None
+        else {
+            "status": "not-validated",
+            "serverPayloadSchemaAvailable": "payloadSchema" in trigger,
+            "serverPayloadSchemaStatus": (
+                "returned-by-evidence"
+                if "payloadSchema" in trigger
+                else "not-returned-by-live-api"
+            ),
+        }
+    )
     return {
         "status": "trigger-ready",
         "triggerId": trigger_id,
         "triggerOrigin": source_origin,
+        "canonicalTriggerName": expected_body["name"],
+        "canonicalTriggerNameEvidence": (
+            "canonical definition hash bound to Key Vault metadata"
+        ),
         "canonicalHash": canonical_hash(expected_body),
+        "payloadSchema": envelope_result,
     }
 
 
@@ -607,6 +682,7 @@ def _build_readiness_report(
                 body,
                 expected_trigger_id=expected_trigger_id,
                 expected_trigger_origin=expected_trigger_origin,
+                definition=definition,
             ),
         ),
         (
@@ -1421,8 +1497,24 @@ def _normalize_live_trigger(
         "expected trigger origin",
     ):
         raise ReadinessError("live trigger invocation origin does not match")
-    trigger = {field: raw.get(field) for field in DEFINITION_FIELDS}
-    trigger.update({"id": trigger_id, "enabled": raw.get("enabled")})
+    raw_run_mode = raw.get("runMode", raw.get("agentMode"))
+    if not isinstance(raw_run_mode, str):
+        raise ReadinessError("live trigger row is missing its agent mode")
+    if raw_run_mode.casefold() != "autonomous":
+        raise ReadinessError("live trigger agentMode must be autonomous")
+    raw_thread_id = raw.get("threadId", None)
+    if raw_thread_id not in ("", None):
+        raise ReadinessError("live trigger threadId must be empty for NewThreadPerRun")
+    trigger = {
+        "id": trigger_id,
+        "enabled": raw.get("enabled", raw.get("triggerEnabled")),
+        "prompt": raw.get("prompt", raw.get("agentPrompt")),
+        "runMode": "Autonomous",
+        "threadGrouping": raw.get("threadGrouping", "NewThreadPerRun"),
+    }
+    for field in ("artifactVersion", "description", "name", "payloadSchema"):
+        if field in raw:
+            trigger[field] = raw.get(field)
     return {
         "captureVersion": "1.0",
         "sourceOrigin": observed_origin,
