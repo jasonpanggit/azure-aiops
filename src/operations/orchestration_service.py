@@ -1294,6 +1294,11 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        service_status_claims = self._deterministic_service_status_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         overview_ranking_claims = self._deterministic_overview_ranking_claims(
             question,
             snapshot=snapshot,
@@ -1395,6 +1400,25 @@ class OrchestrationService:
                 claims=deterministic_claims,
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if service_status_claims:
+            used_refs = {
+                str(reference)
+                for claim in service_status_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_service_status",
+                domain_count=1,
+                claims=service_status_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
                 ],
             )
             self._record_synthesis_metric(synthesis)
@@ -2018,6 +2042,60 @@ class OrchestrationService:
             if len(claims) >= 8:
                 break
         return claims
+
+    @staticmethod
+    def _deterministic_service_status_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Preserve cited service degradation truth without model paraphrase."""
+
+        if snapshot is None or snapshot.page_kind != "service_detail":
+            return []
+        lowered = " ".join(question.casefold().split())
+        if any(term in lowered for term in ("depend", "impact", "blast radius")):
+            requested_section = "impact"
+        elif "risk" in lowered:
+            requested_section = "risk"
+        else:
+            return []
+
+        for item in retained_evidence:
+            if str(item.get("claim_type") or "") != "service_section_status":
+                continue
+            data = item.get("data")
+            if not isinstance(data, Mapping):
+                continue
+            if (
+                str(data.get("section") or "").casefold() != requested_section
+                or str(data.get("availability") or "").casefold() != "unavailable"
+            ):
+                continue
+            detail = str(data.get("detail") or "").strip()
+            evidence_id = str(item.get("evidence_id") or "")
+            if not detail or not evidence_id:
+                continue
+            return [{
+                "finding_id": (
+                    "service-status:"
+                    + hashlib.sha256(evidence_id.encode()).hexdigest()[:24]
+                ),
+                "summary": detail,
+                "evidence_refs": [evidence_id],
+                "confidence": "high",
+                "freshness": "fresh",
+                "uncertainty": [
+                    "The requested service section is unavailable."
+                ],
+                "actionable": False,
+                "next_check": (
+                    "Refresh the cited service section before drawing a "
+                    "dependency or risk conclusion."
+                ),
+            }]
+        return []
 
     @staticmethod
     def _deterministic_finops_savings_claims(

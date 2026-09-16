@@ -6825,11 +6825,55 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
-def test_service_detail_retains_cited_unavailable_dependency_truth(
+def test_service_detail_keeps_risk_unavailability_out_of_foundry_narration(
     tmp_path,
     monkeypatch,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if "Select the smallest" in question:
+                return AgentAnswer(
+                    text=json.dumps({
+                        "steps": [{
+                            "specialist_id": "resource_health_observability",
+                            "tool_calls": [{
+                                "tool": "incidents",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                                "mutation": False,
+                            }],
+                            "depends_on": [],
+                        }],
+                        "estimated_tokens": 0,
+                        "max_wall_seconds": 5,
+                        "mutation_intent": False,
+                    }),
+                    agent_name=self.agent_name,
+                )
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "narrator-omission",
+                        "evidence_refs": [],
+                        "confidence": "low",
+                        "uncertainty": [],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Check later.",
+                        "summary": "No useful status.",
+                    }]
+                }),
+                agent_name=self.agent_name,
+            )
+
     monkeypatch.setattr(
         "api.routers.copilot.call_tool",
         lambda *_args, **_kwargs: ToolResult(
@@ -6839,7 +6883,7 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
     )
     body = {
         "contract_version": "1",
-        "question": "What depends on Demo?",
+        "question": "What operational risks are directly visible for this service?",
         "requested_scope": {"subscription": ["sub-a"]},
         "snapshot": {
             "version": "2",
@@ -6862,16 +6906,16 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
             "selected_entities": [],
             "evidence": [
                 {
-                    "evidence_id": "service:impact-unavailable",
+                    "evidence_id": "service:risk-unavailable",
                     "source": "service_section_status",
                     "status": "ok",
                     "observed_at": "2026-09-16T00:00:00Z",
                     "resource_id": "",
-                    "source_key": "Demo:impact:status",
+                    "source_key": "Demo:risk:status",
                     "entity": {
                         "type": "observation",
                         "source": "service_section_status",
-                        "source_key": "Demo:impact:status",
+                        "source_key": "Demo:risk:status",
                     },
                     "claim_type": "service_section_status",
                     "citations": [],
@@ -6881,11 +6925,11 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
                     "severity": "unknown",
                     "quality": "unknown",
                     "data": {
-                        "section": "impact",
+                        "section": "risk",
                         "availability": "unavailable",
                         "detail": (
-                            "Dependency evidence is unavailable; "
-                            "no dependency facts are asserted."
+                            "Service risk evidence is unavailable; "
+                            "no service-specific risk facts are asserted."
                         ),
                         "source_status": ["semantic-graph:unavailable"],
                         "selected": True,
@@ -6896,20 +6940,21 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
             ],
             "material_claims": [
                 {
-                    "claim_id": "service-impact-unavailable",
-                    "evidence_refs": ["service:impact-unavailable"],
+                    "claim_id": "service-risk-unavailable",
+                    "evidence_refs": ["service:risk-unavailable"],
                     "requires_complete_coverage": False,
                 }
             ],
         },
         "hint": {
             "specialist_id": "resource_health_observability",
-            "tool": "impact_context",
-            "arguments": {"subject": "Demo"},
+            "tool": "incidents",
+            "arguments": {},
         },
     }
+    coordinator = Coordinator()
     response = TestClient(
-        create_app(_context(tmp_path, None)),
+        create_app(_context(tmp_path, coordinator)),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
@@ -6920,13 +6965,16 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["selected_specialists"] == ["resource_health_observability"]
-    assert data["selected_tools"] == ["impact_context"]
+    assert data["selected_tools"] == ["incidents"]
     assert data["tool_results"][0]["status"] == "unavailable"
     assert data["mutation_authorized"] is False
+    assert data["synthesis"]["status"] == "deterministic"
+    assert data["synthesis"]["reason"] == "deterministic_service_status"
+    assert len(coordinator.calls) == 1
     claims = data["synthesis"]["claims"]
     assert any(
-        "Dependency evidence is unavailable" in claim["summary"]
-        and "no dependency facts are asserted" in claim["summary"]
+        "Service risk evidence is unavailable" in claim["summary"]
+        and "no service-specific risk facts are asserted" in claim["summary"]
         for claim in claims
     )
     citation_ids = {
@@ -6937,7 +6985,7 @@ def test_service_detail_retains_cited_unavailable_dependency_truth(
         for claim in claims
         for reference in claim["evidence_refs"]
     } <= citation_ids
-    assert "depends_on" not in response.text
+    assert "risk_score" not in response.text
 
 
 @pytest.mark.parametrize(
