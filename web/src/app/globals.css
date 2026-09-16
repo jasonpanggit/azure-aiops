@@ -8049,6 +8049,11 @@ body.topology-fullscreen-open {
   font-size: 13px;
 }
 
+.remediation-patch-revalidating {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 .remediation-review-actions {
   display: flex;
   justify-content: flex-end;
