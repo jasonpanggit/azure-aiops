@@ -87,12 +87,12 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "b54de6ded5e57867705a742799cca145523021f0f735c53ee445b934bf2a8856"
+    "179ea677da0b26b2e680836e78b1da52d79241fd152a651bd1bda21e6cbfe67d"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
 PATCH_READ_SKILL_SHA256 = (
-    "1762f4a875fb15164d83db44f64503a088f78962761a818b83aa8f7a5995fa25"
+    "cdc0e860b96742d1f355420279b42132e8c1359fc5526cfceaacdc7220af41c8"
 )
 PATCH_READ_SKILL_TOOLS = ("RunAzCliReadCommands",)
 PATCH_READ_SKILL_OPERATION = "read_patch_applicability"
@@ -307,6 +307,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "Microsoft.HybridCompute/machines",
         "RunAzCliReadCommands",
         "PatchAssessmentResources",
+        "empty child_activity_id must be accepted",
         "PT24H",
         "PT5M",
         "RunAzCliWriteCommands",

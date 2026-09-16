@@ -103,13 +103,18 @@ nonempty approved patch selection is valid negative evidence: return
 handoff. Any nonzero count that differs from the immutable patch count is also
 blocked as incomplete applicability evidence. Only an exact count may proceed.
 Require every and only selected patch exactly once.
-Every row must preserve the exact subscription, target, parent ID, activity
-ID, parent/child timestamp, and patch ID; have both row counts equal to one;
-prove exactly one matching target resource; for an Azure VM have
-`vm_power_state=PowerState/running`; have `reboot_pending=false`; have PT24H
-freshness (`maximum_age_seconds=86400`),
-`0 <= age_seconds <= 86400`, and
-`outcome=applicable`.
+Acceptance is governed entirely by the query-returned `outcome` and
+`blockers` fields, not by independently re-deriving activity correlation from
+raw row fields. `child_activity_id` may legitimately be empty because Azure
+does not populate `assessmentActivityId` on `softwarePatches` child resources;
+an empty `child_activity_id` must not be treated as blocking when the query
+returns `outcome=applicable` and `blockers=[]`. Every row must preserve the
+exact subscription, target, parent ID, parent timestamp, child timestamp, and
+patch ID; have both row counts equal to one; prove exactly one matching target
+resource; for an Azure VM have `vm_power_state=PowerState/running`; have
+`reboot_pending=false`; have PT24H freshness
+(`maximum_age_seconds=86400`), `0 <= age_seconds <= 86400`,
+`outcome=applicable`, and no returned blockers.
 
 If a selected patch has no child row, return
 `blocked_patch_not_applicable`; this is an honest no-selected-patch result and
@@ -120,6 +125,8 @@ resolves it and obtains a fresh assessment.
 
 Return only schema `1.0` structured evidence with the exact subscription,
 target, selected patch membership, provider `observed_at`,
-`outcome=applicable`, and `blockers=[]`. Evidence is valid only as the direct
-same-run input to the bound write skill. Never store, reconstruct, or reuse
-it. Model prose is not applicability or patch-success evidence.
+`outcome=applicable`, and `blockers=[]`. Any query-computed
+`outcome` other than `applicable`, including `blocked_patch_activity`, is
+rejected exactly as returned. Evidence is valid only as the direct same-run
+input to the bound write skill. Never store, reconstruct, or reuse it. Model
+prose is not applicability or patch-success evidence.

@@ -80,9 +80,14 @@ The prompt and skills are not security boundaries. Before enabling the mode:
   deallocated, or unknown-power VM is never auto-started; a pending or unknown
   reboot state blocks until separately resolved and freshly reassessed. A
   missing selected-patch child row is an honest not-applicable result, never
-  fabricated applicability. The write is allowed only when direct same-run
-  evidence is at most PT5M old and exactly matches every write input. Missing,
-  stale, ambiguous, partial, or extra evidence stops without action.
+  fabricated applicability. The read skill accepts applicability solely from
+  the fixed query's returned `outcome=applicable` and `blockers=[]`; an empty
+  `child_activity_id` on a `softwarePatches` child row is valid because Azure
+  does not populate `assessmentActivityId` there, and must not be
+  independently re-blocked when the query has already accepted the row. The
+  write is allowed only when direct same-run evidence is at most PT5M old and
+  exactly matches every write input. Missing, stale, ambiguous, partial,
+  extra, or query-blocked evidence stops without action.
 - The write skill presents exactly one command, waits for Review approval,
   and then invokes it once. Empty filters, classifications, discovery,
   alternate targets/patches, shell use, second commands, fallback, and retry

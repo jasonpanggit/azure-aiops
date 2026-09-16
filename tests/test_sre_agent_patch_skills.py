@@ -73,6 +73,35 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert "Do not use `RunAzCliWriteCommands`" in text
 
 
+def test_read_skill_accepts_query_applicable_with_empty_child_activity_id() -> None:
+    text = READ_SKILL.read_text(encoding="utf-8")
+    assert (
+        "Acceptance is governed entirely by the query-returned `outcome` and\n"
+        "`blockers` fields, not by independently re-deriving activity correlation"
+    ) in text
+    assert "`child_activity_id` may legitimately be empty" in text
+    assert "does not populate `assessmentActivityId` on `softwarePatches`" in text
+    assert (
+        "an empty `child_activity_id` must not be treated as blocking when the query\n"
+        "returns `outcome=applicable` and `blockers=[]`"
+    ) in text
+    assert "and no returned blockers" in text
+    assert (
+        "child_activity_count > 1 or isnotempty(child_activity_id) and "
+        "child_activity_id != assessment_activity_id, 'blocked_patch_activity'"
+    ) in text
+
+
+def test_read_skill_rejects_query_computed_non_applicable_outcome() -> None:
+    text = READ_SKILL.read_text(encoding="utf-8")
+    assert (
+        "Any query-computed\n"
+        "`outcome` other than `applicable`, including `blocked_patch_activity`, is\n"
+        "rejected exactly as returned."
+    ) in text
+    assert "Do not edit, extend, regenerate, or replace the query." in text
+
+
 def test_write_skill_routes_exact_vm_and_arc_commands() -> None:
     text = WRITE_SKILL.read_text(encoding="utf-8")
     vm = (

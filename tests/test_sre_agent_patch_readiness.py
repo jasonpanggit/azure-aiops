@@ -324,7 +324,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "9b90a389d555e857feca74f4176630b6c47b9f3438ed252ddd16058e48697894"
+        == "b2a283bfa757ced8b1966ff602c4da151c5844fdac1bbd777aa8c172c9f6f2cc"
     )
 
 
@@ -1040,6 +1040,36 @@ def test_safety_discovery_prompt_requires_read_only_contract_liveness_tooling() 
     definition["prompt"] = definition["prompt"].replace(
         "Invoke the bound read skill first using only RunAzCliReadCommands and its fixed bounded PatchAssessmentResources query. ",
         "",
+    )
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.canonical_trigger_body(definition)
+
+
+def test_safety_discovery_prompt_accepts_empty_child_activity_by_query_outcome() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    prompt = definition["prompt"]
+    assert "the read query's own outcome-field parent/activity/timestamp" in prompt
+    assert (
+        "Acceptance is governed entirely by the read query's returned outcome "
+        "and blockers fields"
+    ) in prompt
+    assert (
+        "empty child_activity_id must be accepted, never independently "
+        "re-blocked, when outcome is applicable and blockers are empty"
+    ) in prompt
+    assert module.canonical_trigger_body(definition)["prompt"] == prompt
+
+
+def test_safety_discovery_prompt_cannot_reblock_empty_child_activity_id() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["prompt"] = definition["prompt"].replace(
+        "empty child_activity_id must be accepted, never independently "
+        "re-blocked, when outcome is applicable and blockers are empty",
+        "empty child_activity_id must be blocked even when outcome is applicable "
+        "and blockers are empty",
     )
 
     with pytest.raises(module.ReadinessError, match="canonical contract"):
@@ -2130,7 +2160,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "9b90a389d555e857feca74f4176630b6c47b9f3438ed252ddd16058e48697894"
+        "b2a283bfa757ced8b1966ff602c4da151c5844fdac1bbd777aa8c172c9f6f2cc"
     )
 
 
