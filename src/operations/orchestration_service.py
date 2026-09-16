@@ -431,15 +431,17 @@ def snapshot_claim_freshness(snapshot: EvidenceSnapshotV2) -> str:
     return "partial"
 
 
-def _is_complete_empty_situations_snapshot(
+def _complete_empty_page_kind(
     snapshot: EvidenceSnapshotV2,
-) -> bool:
-    return (
-        snapshot.page_kind == "situations"
-        and snapshot.page_id == "situations"
-        and snapshot.coverage.complete
-        and snapshot.coverage.total_count == 0
-    )
+) -> str | None:
+    if not snapshot.coverage.complete or snapshot.coverage.total_count != 0:
+        return None
+    page = (snapshot.page_kind, snapshot.page_id)
+    if page == ("situations", "situations"):
+        return "situations"
+    if page == ("changes", "changes"):
+        return "changes"
+    return None
 
 
 def deterministic_network_claims(
@@ -885,7 +887,7 @@ class OrchestrationService:
             uncertainty=uncertainty,
             coverage=(
                 page_snapshot.coverage
-                if _is_complete_empty_situations_snapshot(page_snapshot)
+                if _complete_empty_page_kind(page_snapshot) is not None
                 else request.snapshot.coverage
             ),
             citations=self._deduplicate_citations(citations),
@@ -1927,36 +1929,57 @@ class OrchestrationService:
 
         if snapshot is None:
             return []
-        if _is_complete_empty_situations_snapshot(snapshot):
+        empty_page_kind = _complete_empty_page_kind(snapshot)
+        if empty_page_kind is not None:
             freshness = snapshot_claim_freshness(snapshot)
-            freshness_caveat = (
-                ""
-                if freshness == "fresh"
-                else (
-                    " This does not confirm source health because Situations "
-                    f"evidence freshness is {freshness}."
+            if empty_page_kind == "changes":
+                summary = (
+                    "No correlated changes are visible near active situations "
+                    "in the current authorized scope. This does not establish "
+                    "that no changes occurred."
                 )
-            )
-            uncertainty = (
-                []
-                if freshness == "fresh"
-                else [f"Situations evidence freshness is {freshness}"]
-            )
-            return [{
-                "finding_id": "page:situations-empty",
-                "summary": (
+                uncertainty = [
+                    "Temporal proximity is correlation, not causation."
+                ]
+                if freshness != "fresh":
+                    uncertainty.append(
+                        f"Changes evidence freshness is {freshness}"
+                    )
+                next_check = (
+                    "Refresh the cited incident timeline evidence before "
+                    "drawing a change-correlation conclusion."
+                )
+            else:
+                freshness_caveat = (
+                    ""
+                    if freshness == "fresh"
+                    else (
+                        " This does not confirm source health because Situations "
+                        f"evidence freshness is {freshness}."
+                    )
+                )
+                summary = (
                     "No active situations are visible in the current authorized "
                     f"scope.{freshness_caveat}"
-                ),
+                )
+                uncertainty = (
+                    []
+                    if freshness == "fresh"
+                    else [f"Situations evidence freshness is {freshness}"]
+                )
+                next_check = (
+                    "Refresh the Situations source before treating the empty "
+                    "queue as a source-health confirmation."
+                )
+            return [{
+                "finding_id": f"page:{empty_page_kind}-empty",
+                "summary": summary,
                 "evidence_refs": [COVERAGE_CITATION_ID],
                 "confidence": "high" if freshness == "fresh" else "low",
                 "freshness": freshness,
                 "uncertainty": uncertainty,
                 "actionable": False,
-                "next_check": (
-                    "Refresh the Situations source before treating the empty "
-                    "queue as a source-health confirmation."
-                ),
+                "next_check": next_check,
             }]
         if not retained_evidence:
             return []
