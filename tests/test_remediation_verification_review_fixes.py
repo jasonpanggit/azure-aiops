@@ -40,6 +40,7 @@ from intelligence.remediation.execution_verifier import (
     ExecutionVerifier,
 )
 from intelligence.remediation.plan_repository import PlanRepository
+from intelligence.remediation.sre_agent_verifier import SreAgentExecutionVerifier
 from intelligence.remediation.verification_coordinator import (
     RemediationVerificationCoordinator,
 )
@@ -47,6 +48,7 @@ from onboarding.local_seed import DEFAULT_LOCAL_SUBSCRIPTION_ID, seed_local_envi
 from onboarding.service import SubscriptionOnboardingService
 from operations.patching.adapters import RecordingPatchExecutionAdapter
 from operations.patching.service import PatchingService
+from operations.patching.sre_agent_adapter import SRE_AGENT_PROVIDER
 from semantic.live_provider import LiveObservation
 
 TARGET_ID = "/subscriptions/sub-1/resourcegroups/rg-prod/providers/microsoft.compute/virtualmachines/vm-payments"
@@ -979,3 +981,83 @@ def test_hybrid_vulnerability_cache_serializes_concurrent_builds_for_same_key(
     assert results[0] is results[1]
     assert graph_resolution_modes
     assert all(graph_resolution_modes)
+
+
+# ---------------------------------------------------------------------------
+# Live regression (RME-D7CEC1940ECEC97C / provider thread
+# 26937248-4e53-4205-84d7-527477354736): a composite SRE Agent thread whose
+# only "completion" signal is ``lastMessage.isComplete`` is still active.
+# ---------------------------------------------------------------------------
+
+
+_LIVE_SRE_AGENT_ENDPOINT = "https://sre-agent.example.azure.com"
+_LIVE_SRE_THREAD_URL = (
+    f"{_LIVE_SRE_AGENT_ENDPOINT}/api/v1/threads/"
+    "26937248-4e53-4205-84d7-527477354736"
+)
+_LIVE_SRE_THREAD_PAYLOAD = {
+    "status": {
+        "actionsStatus": {"hasCriticalActions": False, "hasWarningActions": False},
+        "incidentStatus": {"incidentId": "", "status": ""},
+    },
+    "lastMessage": {"isComplete": True},
+}
+
+
+def test_message_complete_sre_thread_never_transitions_terminal_or_unlocks_recovery():
+    """End-to-end regression with the real ``SreAgentExecutionVerifier``, the
+    real ``RemediationExecutionService`` and the real store: the production
+    composite polled at 2026-09-16T23:44:44Z (clear action flags, empty
+    incident status, ``lastMessage.isComplete=true``) must stay ``running``
+    across repeated polls, because that same thread went on to read
+    applicability at 23:45:42 and present its single Review command at
+    23:45:57. A false terminal transition there would open retry and
+    supersession while the original Review command was still approvable."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_LIVE_SRE_THREAD_PAYLOAD, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_FakeCredential(),
+        agent_endpoint=_LIVE_SRE_AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    service, store, plan = _service_with_store()
+    service._verifier = verifier
+
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+    running = store.get(execution_id)
+    store.transition(
+        execution_id,
+        expected_revision=int(running["revision"]),
+        expected_status="running",
+        status="running",
+        actor="operator@example.com",
+        provider=SRE_AGENT_PROVIDER,
+        provider_job_id=_LIVE_SRE_THREAD_URL,
+    )
+
+    for _ in range(3):
+        polled = service.poll_verification(execution_id)
+        assert polled["status"] == "running"
+        assert polled.get("outcome") not in {"failed", "succeeded", "cancelled"}
+
+    stored = store.get(execution_id)
+    assert stored["status"] == "running"
+    assert stored["verified_state"] == "In Progress"
+    assert stored.get("failure_class") in {None, ""}
+
+    with pytest.raises(RemediationExecutionError) as retry_error:
+        service.retry(execution_id)
+    assert retry_error.value.reason == "execution_not_retryable"
+
+    with pytest.raises(RemediationExecutionError) as supersede_error:
+        service.supersede(
+            execution_id,
+            requested_by="operator@example.com",
+            reason="live thread still approvable",
+        )
+    assert supersede_error.value.reason == "execution_active"
+
+    assert store.get(execution_id)["revision"] == stored["revision"]
