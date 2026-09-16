@@ -5171,12 +5171,87 @@ def test_connections_starter_preserves_authorized_page_truth_without_semantic_pr
             },
             "freshness": [
                 {
+                    "source": "coverage",
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "status": "fresh",
+                },
+                {
                     "source": "connections/registry",
                     "observed_at": "2026-09-16T07:45:00Z",
                     "status": "fresh",
-                }
+                },
+                {
+                    "source": (
+                        "onboarding.SubscriptionOnboardingService/"
+                        "connection_registry"
+                    ),
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "status": "fresh",
+                },
             ],
             "evidence": [
+                {
+                    "evidence_id": "connections:coverage",
+                    "source": "coverage",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "source_key": "connections",
+                    "entity": {
+                        "type": "observation",
+                        "source": "page/coverage",
+                        "source_key": "connections",
+                    },
+                    "claim_type": "coverage",
+                    "direct": True,
+                    "quality": "high",
+                    "data": {
+                        "coverage": {
+                            "visible_count": 1,
+                            "total_count": 1,
+                            "complete": True,
+                        },
+                        "selected": False,
+                        "actionable": False,
+                        "mutation_authorized": False,
+                    },
+                },
+                {
+                    "evidence_id": "connections:source",
+                    "source": (
+                        "onboarding.SubscriptionOnboardingService/"
+                        "connection_registry"
+                    ),
+                    "status": "ok",
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "source_key": (
+                        "onboarding.SubscriptionOnboardingService:"
+                        "connection_registry"
+                    ),
+                    "entity": {
+                        "type": "observation",
+                        "source": (
+                            "onboarding.SubscriptionOnboardingService/"
+                            "connection_registry"
+                        ),
+                        "source_key": (
+                            "onboarding.SubscriptionOnboardingService:"
+                            "connection_registry"
+                        ),
+                    },
+                    "claim_type": "source_observation",
+                    "direct": False,
+                    "quality": "high",
+                    "data": {
+                        "source_engine": (
+                            "onboarding.SubscriptionOnboardingService"
+                        ),
+                        "source_table": "connection_registry",
+                        "freshness": "fresh",
+                        "selected": False,
+                        "actionable": False,
+                        "mutation_authorized": False,
+                    },
+                },
                 {
                     "evidence_id": "connections:demo",
                     "source": "connections/registry",
@@ -5205,6 +5280,11 @@ def test_connections_starter_preserves_authorized_page_truth_without_semantic_pr
                 }
             ],
             "material_claims": [
+                {
+                    "claim_id": "connections-coverage",
+                    "evidence_refs": ["connections:coverage"],
+                    "requires_complete_coverage": False,
+                },
                 {
                     "claim_id": "connections-demo",
                     "evidence_refs": ["connections:demo"],
@@ -5236,11 +5316,22 @@ def test_connections_starter_preserves_authorized_page_truth_without_semantic_pr
     }
     assert "visible subset is incomplete" not in data["uncertainty"]
     assert "connections/registry freshness is unavailable" not in data["uncertainty"]
+    assert "retained evidence freshness is unknown" not in data["uncertainty"]
+    assert "all retained evidence has unknown freshness" not in data["uncertainty"]
     assert data["synthesis"]["claims"]
-    assert "deployment blocked False" in data["synthesis"]["claims"][0]["summary"]
-    assert "record count 49474" in data["synthesis"]["claims"][0]["summary"]
-    assert data["synthesis"]["claims"][0]["freshness"] == "fresh"
-    assert data["synthesis"]["claims"][0]["evidence_refs"][0].startswith("retained:")
+    claim_summaries = [
+        claim["summary"] for claim in data["synthesis"]["claims"]
+    ]
+    assert any("deployment blocked False" in summary for summary in claim_summaries)
+    assert any("record count 49474" in summary for summary in claim_summaries)
+    assert all(
+        claim["freshness"] == "fresh" for claim in data["synthesis"]["claims"]
+    )
+    assert all(
+        reference.startswith("retained:")
+        for claim in data["synthesis"]["claims"]
+        for reference in claim["evidence_refs"]
+    )
     assert data["mutation_authorized"] is False
     assert tool_calls == [("inventory_resources", {})]
 
@@ -5323,7 +5414,12 @@ def test_connections_starter_preserves_authorized_page_truth_without_semantic_pr
     assert unbound_response.json()["data"]["coverage"]["complete"] is False
 
     mismatched_source = json.loads(json.dumps(body))
-    mismatched_source["snapshot"]["evidence"][0]["entity"]["source"] = (
+    mismatched_connection = next(
+        row
+        for row in mismatched_source["snapshot"]["evidence"]
+        if row["claim_type"] == "subscription_connection"
+    )
+    mismatched_connection["entity"]["source"] = (
         "browser/forged-connections"
     )
     source_response = client.post(

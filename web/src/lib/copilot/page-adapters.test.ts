@@ -3261,8 +3261,8 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
     filters: { view: ["subscriptions"], page: ["1"] },
     evidence: [
       {
-        source_engine: "Connections",
-        source_table: "subscription_connections",
+        source_engine: "onboarding.SubscriptionOnboardingService",
+        source_table: "connection_registry",
         timestamp: "2026-09-07T10:00:00Z",
         confidence: "high" as const,
         freshness: "fresh" as const,
@@ -3324,6 +3324,15 @@ describe("connections, Fabric medallion, and governance Copilot page adapters", 
       row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
     expect(context.snapshot.freshness).toContainEqual(
       expect.objectContaining({ source: "connections/registry", status: "fresh" }),
+    );
+    expect(context.snapshot.freshness).toContainEqual(
+      expect.objectContaining({ source: "coverage", status: "fresh" }),
+    );
+    expect(context.snapshot.freshness).toContainEqual(
+      expect.objectContaining({
+        source: "onboarding.SubscriptionOnboardingService/connection_registry",
+        status: "fresh",
+      }),
     );
   });
 
