@@ -114,4 +114,23 @@ describe("Operational Digital Twin workspace", () => {
     fireEvent.click(trigger);
     expect(await screen.findByRole("dialog", { name: "Operations Copilot" })).toBeInTheDocument();
   });
+
+  it("passes Twin provider degradation into the contextual snapshot", async () => {
+    graph.mockResolvedValueOnce({
+      ...envelope(snapshot),
+      source_status: {
+        semantic_graph: "unavailable",
+        live_operational_sources: "partial",
+        snapshot_materialization: "disabled",
+      },
+      warnings: ["semantic unavailable: Unavailable"],
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Twin model" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Data warnings")).toHaveTextContent(
+      "semantic unavailable",
+    );
+  });
 });

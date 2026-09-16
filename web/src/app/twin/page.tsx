@@ -40,9 +40,9 @@ function firstResource(snapshot: Envelope<TwinSnapshot> | null): string {
   return resource?.id.replace(/^resource:/, "") ?? "";
 }
 
-function riskScore(snapshot: Envelope<TwinSnapshot> | null): number {
+function riskScore(snapshot: Envelope<TwinSnapshot> | null): number | null {
   const point = snapshot?.data.temporal.risk_trend[0];
-  return typeof point?.risk_score === "number" ? point.risk_score : 0;
+  return typeof point?.risk_score === "number" ? point.risk_score : null;
 }
 
 /** Current and historical operating-state twin for impact, scenario, and traversal analysis. */
@@ -97,7 +97,10 @@ export default function OperationalTwinPage() {
     };
   }, [scenarioType, scope, selectedResource]);
 
-  const risk = riskScore(snapshot);
+  const observedRisk = snapshot?.source_status?.live_operational_sources === "unavailable"
+    ? null
+    : riskScore(snapshot);
+  const risk = observedRisk ?? 0;
 
   // Read-only contextual Copilot over the already-loaded request-time twin.
   // Entity/relationship/temporal/scenario/traversal identities keep provenance
@@ -113,6 +116,7 @@ export default function OperationalTwinPage() {
     observedAt: twinData?.observed_at,
     liveObservedAt: snapshot?.live_observed_at,
     confidence: twinData?.confidence,
+    riskScore: observedRisk,
     entities: (twinData?.entities ?? []).map((entity) => {
       const properties = entity.properties ?? {};
       const resourceId = typeof properties.resource_id === "string" ? properties.resource_id : undefined;
@@ -167,6 +171,7 @@ export default function OperationalTwinPage() {
     staleTemporalEvidence: comparison?.data.previous_version
       ? [`previous revision ${comparison.data.previous_version}`]
       : [],
+    sourceStatus: snapshot?.source_status,
     evidence: snapshot?.evidence ?? [],
   });
 

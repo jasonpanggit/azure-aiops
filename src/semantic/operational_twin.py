@@ -306,6 +306,7 @@ class OperationalTwinComposer:
             "entities": matched_entities[:50],
             "relationships": snapshot["relationships"],
             "timeline": snapshot["timeline"][:25],
+            "warnings": snapshot["warnings"],
         }
 
     def compare(self) -> dict[str, Any]:
@@ -318,6 +319,7 @@ class OperationalTwinComposer:
             "removed": [],
             "changed": snapshot["timeline"][:10],
             "summary": f"{current} current entities; prior state retained as {snapshot['previous_version']} for temporal comparison.",
+            "warnings": snapshot["warnings"],
         }
 
     def scenario(self, scenario_type: str, target: str = "") -> dict[str, Any]:
@@ -343,6 +345,7 @@ class OperationalTwinComposer:
                 "Scenario is advisory and requires operator validation.",
                 "Impact follows current twin relationships and live observations only.",
             ],
+            "warnings": snapshot["warnings"],
         }
 
     def traverse(self, resource_id: str) -> dict[str, Any]:
@@ -367,6 +370,7 @@ class OperationalTwinComposer:
             "path": [entity for entity in path if entity],
             "relationships": related,
             "business_consequence": consequence or ["No business consequence mapped"],
+            "warnings": snapshot["warnings"],
         }
 
     def export(self) -> dict[str, Any]:
@@ -375,6 +379,7 @@ class OperationalTwinComposer:
             "format": "operational-twin-export",
             "exported_at": _utc_now(),
             "snapshot": snapshot,
+            "warnings": snapshot["warnings"],
         }
 
     @staticmethod

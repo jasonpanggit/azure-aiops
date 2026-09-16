@@ -162,6 +162,8 @@ def test_twin_graph_composes_live_sources_with_semantic_envelope(tmp_path):
     data = body["data"]
     assert body["evidence"][0]["source_engine"] == "semantic.OperationalTwinComposer"
     assert body["source_status"]["snapshot_materialization"] == "disabled"
+    assert body["source_status"]["semantic_graph"] == "current"
+    assert body["source_status"]["live_operational_sources"] == "request_time"
     assert {entity["kind"] for entity in data["entities"]} >= {
         "resource",
         "business_service",
@@ -176,6 +178,35 @@ def test_twin_graph_composes_live_sources_with_semantic_envelope(tmp_path):
     )
     assert data["temporal"]["current_state_version"] == data["version"]
     assert data["timeline"]
+
+
+def test_twin_source_status_reports_missing_optional_providers(tmp_path):
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        semantic_provider=lambda: None,
+        vulnerability_provider=lambda: _Vulnerability(),
+    )
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).get("/api/v1/twin/graph", headers=_auth())
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source_status"] == {
+        "semantic_graph": "unavailable",
+        "live_operational_sources": "partial",
+        "snapshot_materialization": "disabled",
+    }
+    assert {
+        warning.split(" unavailable:", 1)[0]
+        for warning in body["warnings"]
+    } >= {"semantic", "network", "incident", "remediation"}
 
 
 def test_twin_scenario_and_traversal_explain_business_impact(tmp_path):
