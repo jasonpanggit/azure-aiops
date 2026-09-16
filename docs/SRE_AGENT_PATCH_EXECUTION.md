@@ -44,11 +44,12 @@ does not create, update, or delete the trigger. The checked-in operator review
 body is `infra/sre-agent/patch-trigger.v1.json`; it is not asserted to be the
 undocumented service wire format.
 
-Configure the trigger as **Autonomous**. AIOps approval and its immutable
-execution snapshot are the upstream authorization boundary; an autonomous
-trigger must not introduce another interactive approval state.
+Configure the demo trigger as **Review**. AIOps approval and its immutable
+execution snapshot remain the upstream authorization boundary. Review mode
+must display exactly one bounded install command and wait for explicit
+approval; it may not reconstruct or widen the approved action.
 
-Use the exact prompt, description, Autonomous mode, NewThreadPerRun grouping,
+Use the exact prompt, description, Review mode, NewThreadPerRun grouping,
 and payload contract from the versioned artifact. Render its deterministic
 review body and SHA-256 hash with:
 
@@ -56,23 +57,36 @@ review body and SHA-256 hash with:
 python3 scripts/preflight_sre_agent_patch_execution.py render
 ```
 
-The prompt is not a security boundary. Before enabling the mode:
+The prompt and skills are not security boundaries. Before enabling the mode:
 
+- Import exactly the two repository-reviewed Skill Builder artifacts:
+  `infra/sre-agent/skills/aiops-read-patch-applicability-v1/SKILL.md` with
+  only `RunAzCliReadCommands`, and
+  `infra/sre-agent/skills/aiops-install-selected-patches-v1/SKILL.md` with
+  only `RunAzCliWriteCommands`. Do not select `GetAzCliHelp`. Their names,
+  versions, raw-byte SHA-256 hashes, tool sets, operations, output schemas,
+  and read-then-write ordering are bound into both the trigger artifact and
+  runtime envelope.
 - The authenticated remediation API and its recorded approval snapshot remain
   the authorization boundary. SRE Agent may use read-only tools and knowledge
-  sources to evaluate feasibility, applicability, prerequisites, conflicts,
-  and safety for the exact target and selected patches. The approved snapshot
-  authorizes the exact change but is not proof of current state. If live state
-  materially differs, a patch is no longer applicable, or another issue is
-  found, the agent must flag it and stop without mutation. It must never select
-  an alternative target or patch, widen scope, or add another change.
-- When a separately approved authenticated connector is available, the agent
-  may use the repository-managed Operations API/MCP through APIM only as
-  read-only contract-liveness context. It may not invoke mutation through that
-  tool. The Terraform `sre_agent_pending_mcp_connectors` output remains a
-  non-secret design contract, not a provisioned connector: this source change
-  does not create the connector or grant APIM/MCP access. If contract liveness
-  is required but cannot be established, execution must stop without mutation.
+  skill's fixed Azure Resource Graph query to evaluate every and only selected
+  KB. Azure Resource Graph is not a built-in Azure SRE Agent skill, so the
+  reviewed custom read skill is required. Do not paste or accept
+  caller-supplied KQL.
+- Read evidence is capped at 257 rows, must be within PT24H, and must retain
+  one exact target and assessment parent/activity/generation. Immediately
+  before Review handoff it must also prove an Azure VM is
+  `PowerState/running` and the assessment has `rebootPending=false`. A stopped,
+  deallocated, or unknown-power VM is never auto-started; a pending or unknown
+  reboot state blocks until separately resolved and freshly reassessed. A
+  missing selected-patch child row is an honest not-applicable result, never
+  fabricated applicability. The write is allowed only when direct same-run
+  evidence is at most PT5M old and exactly matches every write input. Missing,
+  stale, ambiguous, partial, or extra evidence stops without action.
+- The write skill presents exactly one command, waits for Review approval,
+  and then invokes it once. Empty filters, classifications, discovery,
+  alternate targets/patches, shell use, second commands, fallback, and retry
+  are forbidden.
 
 - Restrict the SRE Agent `managedResources` to the approved subscription and
   target resource set.
@@ -92,11 +106,12 @@ The prompt is not a security boundary. Before enabling the mode:
   documented install operation and are deliberately excluded.
 
 The adapter sends only `schema_version`, `run_id`, `subscription_id`,
-`target_id`, `target_kind`, `patch_ids`, `reboot_setting`,
+`target_id`, `target_kind`, `patch_ids`, `approval`, `skill_chain`, `reboot_setting`,
 `maximum_duration=PT2H`, `requested_by`, `approved_by`, and `operation`. The
-duration is the same bounded constant used by the direct ARM adapter and is
-required by Arc patch installation; neither the operator nor agent may widen
-it. It supports Azure VM and Arc
+approval is the exact current durable decision and hash-bound snapshot. The
+skill chain contains exact raw-byte hashes and cannot be replaced at runtime.
+The duration is the same bounded constant used by the direct ARM adapter,
+and reboot mode is fixed to `IfRequired`. It supports Azure VM and Arc
 `install_patches` runs only; AKS node-image upgrades, empty patch selections,
 cross-subscription targets, and targets outside the configured prefix fail
 before submission.
@@ -108,9 +123,16 @@ not patched. The verifier polls the documented
 `GET {agentEndpoint}/api/v1/threads/{threadId}` endpoint:
 
 - `In Progress` remains running.
-- `Pending User Input` fails because it violates the Autonomous trigger
-  contract.
-- `Complete` records provider completion.
+- scalar `Pending User Input`, or a composite incomplete thread with a
+  critical action, records `Pending Review` and remains provider-active;
+- composite incident `Failed`/`Error` and `Cancelled` are typed terminal
+  failures without reading message prose; and
+- scalar `Complete` or composite `lastMessage.isComplete=true` records
+  provider completion.
+
+A provider-active Pending Review remains running even beyond the local
+verification deadline, so retry and supersede stay refused while the original
+thread remains approvable.
 
 Provider completion is never clean patch proof. The existing refreshed target
 evidence reconciliation must still clear every immutable selected patch ID;
@@ -145,7 +167,7 @@ sre_agent_managed_resources      = [
 ]
 ```
 
-Do not enable the flag until the pre-created Autonomous trigger,
+Do not enable the flag until the pre-created Review trigger,
 `managedResources`, action-identity patch permissions, Key Vault secret, and
 agent-scoped caller role have all been reviewed. Enabling or applying this
 configuration is an Azure write and is outside this source-only change.
@@ -277,7 +299,7 @@ the exact observed production row keys: `agent`, `agentMode`, `agentPrompt`,
 `createdAt`, `createdBy`, `description`, `executionCount`, `id`,
 `lastExecutionTime`, `modelTier`, `name`, `threadId`, `triggerEnabled`,
 `triggerLastCalledAt`, and `triggerUrl`. It requires the default response agent
-(`agent: null`), lowercase `autonomous`, enabled state, empty/null `threadId`,
+(`agent: null`), lowercase `review`, enabled state, empty/null `threadId`,
 exact canonical name/prompt, and exact trigger URL/ID/origin with no query,
 fragment, alias, or extra path. Missing or additional fields preserve HOLD.
 
@@ -465,7 +487,7 @@ representations and still requires the exact secret reference.
 2. Immediately require `collect-live-rbac=live-rbac-valid`, then a named
    approver creates or updates the trigger after reviewing the canonical
    SHA-256, exact prompt, payload
-   schema, Autonomous mode, and New chat thread for each run in the portal
+   schema, Review mode, and New chat thread for each run in the portal
    before saving the trigger. Do not use undocumented trigger PUT/POST
    automation.
 3. Separately approve secret provisioning. Put the copied trigger URL into

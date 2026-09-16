@@ -35,7 +35,10 @@ from intelligence.remediation.execution_store import (
     ExecutionLockContended,
     RemediationExecutionStore,
 )
-from intelligence.remediation.execution_verifier import ExecutionVerifier
+from intelligence.remediation.execution_verifier import (
+    ExecutionVerificationUnavailable,
+    ExecutionVerifier,
+)
 from intelligence.remediation.plan_repository import PlanRepository
 from intelligence.remediation.verification_coordinator import (
     RemediationVerificationCoordinator,
@@ -157,6 +160,21 @@ def _service_with_store(
     return service, store, plan
 
 
+def test_execution_passes_exact_durable_approval_to_patch_adapter() -> None:
+    service, _store, plan = _service_with_store()
+
+    service.execute(plan["plan_id"], requested_by="operator@example.com")
+
+    run, _target = service._patching._adapter.submissions[0]
+    approval = run.details["approval_context"]
+    assert approval["decision"] == "approved"
+    assert approval["approved_by"] == "approver@example.com"
+    assert approval["execution_snapshot"] == _execution_snapshot(plan)
+    assert approval["decision_id"].startswith("RMD-")
+    assert approval["decided_at"] == NOW.isoformat()
+    assert approval["expires_at"] == (NOW + timedelta(days=1)).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # CR-01: verification deadline seeded atomically with the running/retrying
 # claim, not one write later -- so no crash window leaves a record
@@ -205,6 +223,95 @@ def test_execute_crash_between_running_claim_and_submission_seeds_deadline_and_r
     stored = store.get(execution_id)
     assert stored["status"] == "failed"
     assert stored["attempts"][-1]["failure_class"] == "verification_timed_out"
+
+
+def test_pending_review_thread_stays_active_past_local_deadline() -> None:
+    class _PendingReviewVerifier:
+        def verify(self, _record):
+            return {
+                "verifiable": True,
+                "outcome": "running",
+                "verified_state": "Pending Review",
+                "provider_active": True,
+                "verification_evidence": {
+                    "thread_status": {
+                        "last_message_complete": False,
+                        "has_critical_actions": True,
+                        "has_warning_actions": False,
+                        "incident_status": "Active",
+                    }
+                },
+            }
+
+    service, store, plan = _service_with_store()
+    service._verifier = _PendingReviewVerifier()
+    created, _claimed = store.create_or_get(
+        plan["plan_id"],
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=_execution_snapshot(plan),
+        now=NOW,
+    )
+    running = store.transition(
+        created["execution_id"],
+        expected_revision=int(created["revision"]),
+        expected_status="queued",
+        status="running",
+        actor="operator@example.com",
+        provider="sre-agent",
+        provider_job_id="https://sre.example/api/v1/threads/thread-1",
+        verification_deadline_at=(NOW - timedelta(seconds=1)).isoformat(),
+        next_verification_at=NOW.isoformat(),
+        now=NOW,
+    )
+
+    result = service.poll_verification(running["execution_id"])
+
+    assert result["status"] == "running"
+    assert result["verified_state"] == "Pending Review"
+    assert result["retryable"] is False
+    assert result["supersedable"] is False
+    assert store.get(running["execution_id"])["status"] == "running"
+
+
+@pytest.mark.parametrize("mode", ["missing", "unavailable", "not_verifiable"])
+def test_unproven_review_thread_times_out_instead_of_running_forever(
+    mode: str,
+) -> None:
+    class _UnavailableVerifier:
+        def verify(self, _record):
+            if mode == "unavailable":
+                raise ExecutionVerificationUnavailable("thread unavailable")
+            return {"verifiable": False, "reason": "thread not verifiable"}
+
+    service, store, plan = _service_with_store()
+    service._verifier = None if mode == "missing" else _UnavailableVerifier()
+    created, _claimed = store.create_or_get(
+        plan["plan_id"],
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=_execution_snapshot(plan),
+        now=NOW,
+    )
+    running = store.transition(
+        created["execution_id"],
+        expected_revision=int(created["revision"]),
+        expected_status="queued",
+        status="running",
+        actor="operator@example.com",
+        provider="sre-agent",
+        provider_job_id="https://sre.example/api/v1/threads/thread-1",
+        verification_deadline_at=(NOW - timedelta(seconds=1)).isoformat(),
+        next_verification_at=NOW.isoformat(),
+        now=NOW,
+    )
+
+    result = service.poll_verification(running["execution_id"])
+
+    assert result["status"] == "failed"
+    assert result["failure_class"] == "verification_timed_out"
+    assert result["retryable"] is True
+    assert result["supersedable"] is True
 
 
 def test_retry_crash_between_claim_and_running_transition_seeds_deadline_and_recovers():

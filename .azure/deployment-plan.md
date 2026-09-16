@@ -35,6 +35,13 @@ production action.
 
 - Canonical operator review body:
   `infra/sre-agent/patch-trigger.v1.json`.
+- Exact reviewed skill artifacts:
+  `infra/sre-agent/skills/aiops-read-patch-applicability-v1/SKILL.md`
+  (`RunAzCliReadCommands` only) and
+  `infra/sre-agent/skills/aiops-install-selected-patches-v1/SKILL.md`
+  (`RunAzCliWriteCommands` only). Their raw-byte hashes, versions, operations,
+  output schemas, and read-then-write order are immutable trigger-envelope
+  fields.
 - Offline-only verifier:
   `scripts/preflight_sre_agent_patch_execution.py`.
 - Exact action-role writes are limited to VM/Arc resource read plus
@@ -57,7 +64,7 @@ production action.
   contract. No mutation mode is implemented; trigger creation/update is a
   portal-only human gate.
 - Live trigger readiness accepts only the exact observed production GET row,
-  validates `agentPrompt`, lowercase `agentMode=autonomous`, `triggerEnabled`,
+  validates `agentPrompt`, lowercase `agentMode=review`, `triggerEnabled`,
   default
   response agent, empty thread ID, and exact URL/ID/origin, and rejects aliases
   or unknown fields. The absent service payload schema remains enforced
@@ -127,7 +134,7 @@ secret values, and is written only after successful validation.
    approval applies only the three roles/assignments, immediately require
    `collect-live-rbac=live-rbac-valid`.
 2. Obtain named approval for portal trigger creation using the exact rendered
-   body/hash, Autonomous mode, New chat thread for each run, and no URL stored
+   body/hash, Review mode, New chat thread for each run, and no URL stored
    in source.
 3. Separately provision the trigger URL as a Key Vault secret with exact
    trigger-ID, trigger-origin, and canonical-hash metadata tags; provide only
@@ -149,14 +156,19 @@ secret values, and is written only after successful validation.
 7. Separately approve and apply only that saved plan. Require the new API
    revision healthy/ready at 100% traffic and capture its revision, image,
    health evidence, and normalized SRE environment/secret-reference diff.
-8. Select one non-critical in-scope VM or Arc target, one applicable low-risk
-   patch, and an approved reboot setting. Record the immutable envelope,
-   canonical hash, plan hash, trigger ID, deployed API revision, and pre-state.
+8. Select one non-critical in-scope running VM or Arc target with
+   `rebootPending=false`, one applicable low-risk patch, and the fixed
+   `IfRequired` reboot setting. Record the immutable envelope, canonical hash,
+   plan hash, trigger ID, deployed API revision, and pre-state. A stopped,
+   deallocated, or unknown-power VM is never auto-started; resolve the state
+   separately and obtain a fresh assessment before retrying readiness.
 9. Run the full `live-canary` collector immediately before the canary and
    require its production-ready verdict. Run exactly one canary only after
    separate approval. Require 202 acceptance,
-   one thread ID, terminal Complete, and refreshed evidence reconciliation for
-   every selected patch. Agent prose is not proof.
+   one thread ID, explicit approval of exactly one displayed command, terminal
+   provider completion, and refreshed evidence reconciliation for every
+   selected patch. Pending Review remains provider-active and cannot become
+   retryable or supersedable. Agent prose is not proof.
 
 Rollback routes traffic to a prior refusing API revision or separately applies
 `enable_sre_agent_patch_execution=false`,

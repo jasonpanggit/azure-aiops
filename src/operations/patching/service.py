@@ -8,6 +8,7 @@ available-patch allowlist before any adapter is called.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
@@ -327,6 +328,7 @@ class PatchingService:
         reboot_setting: str = "IfRequired",
         node_pool: str = "",
         dry_run: bool = False,
+        approval_context: dict[str, Any] | None = None,
     ) -> PatchRun:
         """Validate and submit one patch run. Raises before touching Azure."""
         if not target.patchable:
@@ -391,6 +393,11 @@ class PatchingService:
                 "target_name": target.name,
                 "resource_group": target.resource_group,
                 **({"node_pool": pool} if pool else {}),
+                **(
+                    {"approval_context": copy.deepcopy(approval_context)}
+                    if approval_context is not None
+                    else {}
+                ),
             },
         )
 

@@ -89,14 +89,14 @@ def test_in_progress_maps_to_running_and_uses_data_plane_scope(status: str) -> N
     assert requests[0].headers["Authorization"] == "Bearer " + credential.token
 
 
-def test_pending_user_input_fails_an_autonomous_execution() -> None:
+def test_pending_user_input_remains_active_for_review_approval() -> None:
     verifier, _credential = _verifier({"status": "Pending User Input"})
 
     result = verifier.verify(_record())
 
-    assert result["outcome"] == "failed"
-    assert result["verified_state"] == "Pending User Input"
-    assert "unexpectedly requires user input" in result["failure_details"]
+    assert result["outcome"] == "running"
+    assert result["verified_state"] == "Pending Review"
+    assert result["provider_active"] is True
 
 
 def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
@@ -115,6 +115,83 @@ def test_complete_is_provider_complete_without_parsing_model_prose() -> None:
         "verified_state": "Complete",
         "verification_evidence": {"thread_status": "Complete"},
     }
+
+
+@pytest.mark.parametrize(
+    ("payload", "outcome", "state"),
+    [
+        (
+            {
+                "status": {
+                    "actionsStatus": {
+                        "hasCriticalActions": False,
+                        "hasWarningActions": False,
+                    },
+                    "incidentStatus": {"status": ""},
+                },
+                "lastMessage": {"isComplete": True, "content": "failed"},
+            },
+            "succeeded",
+            "Complete",
+        ),
+        (
+            {
+                "status": {
+                    "actionsStatus": {
+                        "hasCriticalActions": True,
+                        "hasWarningActions": False,
+                    },
+                    "incidentStatus": {"status": "Active"},
+                },
+                "lastMessage": {"isComplete": True},
+            },
+            "running",
+            "Pending Review",
+        ),
+        (
+            {
+                "status": {
+                    "actionsStatus": {
+                        "hasCriticalActions": True,
+                        "hasWarningActions": False,
+                    },
+                    "incidentStatus": {"status": "Active"},
+                },
+                "lastMessage": {"isComplete": False},
+            },
+            "running",
+            "Pending Review",
+        ),
+        (
+            {
+                "status": {
+                    "actionsStatus": {
+                        "hasCriticalActions": False,
+                        "hasWarningActions": True,
+                    },
+                    "incidentStatus": {"status": "Failed"},
+                },
+                "lastMessage": {"isComplete": True, "content": "success"},
+            },
+            "failed",
+            "Failed",
+        ),
+    ],
+)
+def test_production_composite_thread_shapes_are_typed_without_prose(
+    payload: dict[str, object],
+    outcome: str,
+    state: str,
+) -> None:
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_record())
+
+    assert result["outcome"] == outcome
+    assert result["verified_state"] == state
+    assert result["verification_evidence"]["thread_status"][
+        "last_message_complete"
+    ] is payload["lastMessage"]["isComplete"]
 
 
 def test_unknown_status_remains_running_until_deadline() -> None:
