@@ -97,10 +97,140 @@ def test_investigation_plans_tools_and_narrates(client, agent):
     assert "facts" in grounding
     assert all("status" in fact for fact in grounding["facts"])
     assert body["mutation_authorized"] is False
+    for field in (
+        "selected_specialists",
+        "selected_tools",
+        "coverage",
+        "freshness",
+        "uncertainty",
+        "citations",
+        "synthesis",
+    ):
+        assert field in body
+        assert body[field] is not None
 
 
-def test_failed_patch_starter_does_not_join_unrelated_inventory(
+def test_compatibility_projection_cites_tool_status_without_provider_evidence(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The semantic provider is deferred",
+        ),
+    )
+
+    body = _investigate(client, "production applications").json()["data"]
+
+    assert body["citations"] == [
+        {
+            "citation_id": "legacy:0:status:search",
+            "source": "tool:search",
+            "status": "unavailable",
+            "observed_at": "",
+            "query_version": "",
+            "resource_id": "",
+        }
+    ]
+    assert body["synthesis"]["claims"][0]["evidence_refs"] == [
+        "legacy:0:status:search"
+    ]
+    assert body["answer"]["model"] == "deterministic"
+    assert "No provider-backed records were returned" in body["answer"]["text"]
+
+
+def test_status_only_fallback_does_not_hide_successful_uncited_tool_data(
     client, agent, monkeypatch
+):
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="ok",
+            data={"items": [{"entity_id": "entity-1"}], "total_count": 1},
+        ),
+    )
+
+    body = _investigate(
+        client,
+        "anything",
+        tool="list_changed_entities",
+    ).json()["data"]
+
+    assert body["answer"]["text"] == "Narrated answer."
+    assert body["synthesis"]["status"] == "degraded"
+    assert body["synthesis"]["claims"] == []
+    assert agent.calls
+
+
+def test_compatibility_claim_uses_aging_evidence_freshness(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="ok",
+            data={"resources": [{"resource_name": "vm1"}], "total": 1},
+            evidence=(
+                Evidence(
+                    source_engine="inventory",
+                    source_table="resource_observations",
+                    timestamp="2026-09-16T05:00:00Z",
+                    freshness="aging",
+                ),
+            ),
+        ),
+    )
+
+    body = _investigate(client, "show list of VMs").json()["data"]
+
+    assert body["freshness"] == [
+        {
+            "source": "inventory/resource_observations",
+            "observed_at": "2026-09-16T05:00:00Z",
+            "status": "aging",
+        }
+    ]
+    assert body["synthesis"]["claims"][0]["freshness"] == "aging"
+
+
+@pytest.mark.parametrize(
+    "untrusted_field",
+    [
+        {"page_kind": "inventory"},
+        {"requested_scope": {"subscription": ["sub-other"]}},
+    ],
+)
+def test_compatibility_rejects_page_and_scope_authority_before_tool_io(
+    client, monkeypatch, untrusted_field
+):
+    calls = []
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = client.post(
+        "/api/v1/copilot/investigate",
+        json={"question": "show list of VMs", **untrusted_field},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "servers with failed patches",
+        "Which servers have failed patches?",
+        "Show VM patch priorities.",
+    ],
+)
+def test_failed_patch_starter_does_not_join_unrelated_inventory(
+    client, agent, monkeypatch, question
 ):
     def execute(tool, _arguments, **_kwargs):
         if tool == "patch_priorities":
@@ -119,6 +249,8 @@ def test_failed_patch_starter_does_not_join_unrelated_inventory(
                     Evidence(
                         source_engine="patch",
                         source_table="patch_priorities",
+                        timestamp="2026-09-16T07:43:15Z",
+                        freshness="stale",
                     ),
                 ),
                 warning="KB snapshot freshness is stale",
@@ -137,19 +269,41 @@ def test_failed_patch_starter_does_not_join_unrelated_inventory(
                 Evidence(
                     source_engine="inventory",
                     source_table="resource_observations",
+                    timestamp="2026-09-16T16:31:16Z",
+                    freshness="fresh",
                 ),
             ),
         )
 
     monkeypatch.setattr("operations.investigation.call_tool", execute)
 
-    response = _investigate(client, "servers with failed patches")
+    response = _investigate(client, question)
 
     assert response.status_code == 200
     body = response.json()["data"]
     assert body["mutation_authorized"] is False
+    assert body["selected_specialist"] == "patch"
+    assert body["selected_specialists"] == ["patch"]
+    assert body["selected_tools"] == [
+        "patch_priorities",
+        "inventory_resources",
+    ]
+    assert body["coverage"] == {
+        "visible_count": 3,
+        "total_count": 3,
+        "complete": False,
+        "basis": "bounded_tool_record_sum",
+    }
+    assert len(body["freshness"]) == 2
+    assert len(body["citations"]) == 2
+    citation_ids = {item["citation_id"] for item in body["citations"]}
+    assert set(body["synthesis"]["claims"][0]["evidence_refs"]) == citation_ids
+    assert body["synthesis"]["claims"][0]["freshness"] == "stale"
+    assert body["uncertainty"] == [
+        "patch_priorities: KB snapshot freshness is stale"
+    ]
     assert body["answer"]["model"] == "deterministic"
-    assert "No specific server can be confirmed" in body["answer"]["text"]
+    assert "No specific resource can be confirmed" in body["answer"]["text"]
     assert "vm1" not in body["answer"]["text"]
     assert "vm2" not in body["answer"]["text"]
     assert agent.calls == []

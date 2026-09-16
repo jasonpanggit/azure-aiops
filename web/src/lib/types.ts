@@ -3323,11 +3323,17 @@ export interface CanonicalInvestigationSemantics {
   contract_version?: "1";
   thread_id?: string;
   thread_revision?: number;
+  selected_specialist?: string | null;
+  selected_specialists?: string[];
+  selected_tools?: string[];
   policy_status?: "accepted" | "fallback";
   fallback_reason?: string;
   coverage?: CopilotSnapshotCoverageV2;
+  freshness?: Array<{ source: string; observed_at: string; status: string }>;
   citations?: CanonicalCopilotCitation[];
+  uncertainty?: string[];
   synthesis?: CanonicalInvestigationSynthesis | null;
+  mutation_authorized?: false;
 }
 
 export interface CopilotContextFinding {

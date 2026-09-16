@@ -32,7 +32,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -218,15 +218,347 @@ class Investigation:
     answer: dict[str, Any] | None
     fact_status: str  # ok | partial | empty | unavailable
     warnings: tuple[str, ...] = ()
+    selected_specialist: str | None = None
+    deterministic_answer: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        citations = _legacy_citations(self.calls)
+        freshness = _legacy_freshness(self.calls)
+        uncertainty = list(self.warnings)
         return {
+            "contract_version": "1",
             "question": self.question,
             "tool_calls": [call.to_dict() for call in self.calls],
             "answer": self.answer,
             "fact_status": self.fact_status,
-            "warnings": list(self.warnings),
+            "warnings": uncertainty,
+            "selected_specialist": self.selected_specialist,
+            "selected_specialists": (
+                [self.selected_specialist] if self.selected_specialist else []
+            ),
+            "selected_tools": [call.tool for call in self.calls],
+            "policy_status": "fallback",
+            "fallback_reason": "compatibility_rollout",
+            "coverage": _legacy_coverage(self.calls),
+            "freshness": freshness,
+            "citations": citations,
+            "uncertainty": uncertainty,
+            "synthesis": _legacy_synthesis(
+                self.answer,
+                citations=citations,
+                deterministic=self.deterministic_answer,
+                freshness=freshness,
+                uncertainty=uncertainty,
+                selected_specialist=self.selected_specialist,
+            ),
+            "mutation_authorized": False,
         }
+
+
+def _legacy_citations(calls: Sequence[ToolCallRecord]) -> list[dict[str, str]]:
+    """Project governed tool evidence into the dedicated surface citation wire."""
+    citations: list[dict[str, str]] = []
+    for call_index, call in enumerate(calls):
+        data = call.result.data if isinstance(call.result.data, Mapping) else {}
+        query_version = str(data.get("query_version") or "")
+        if not call.result.evidence:
+            citations.append(
+                {
+                    "citation_id": f"legacy:{call_index}:status:{call.tool}",
+                    "source": f"tool:{call.tool}",
+                    "status": call.result.status,
+                    "observed_at": "",
+                    "query_version": query_version,
+                    "resource_id": "",
+                }
+            )
+            continue
+        for evidence_index, evidence in enumerate(call.result.evidence):
+            citations.append(
+                {
+                    "citation_id": (
+                        f"legacy:{call_index}:{evidence_index}:{call.tool}"
+                    ),
+                    "source": "/".join(
+                        part
+                        for part in (
+                            evidence.source_engine,
+                            evidence.source_table,
+                        )
+                        if part
+                    ),
+                    "status": call.result.status,
+                    "observed_at": evidence.timestamp,
+                    "query_version": query_version,
+                    "resource_id": evidence.resource_id,
+                }
+            )
+    return citations
+
+
+def _legacy_coverage(calls: Sequence[ToolCallRecord]) -> dict[str, Any]:
+    """Summarize bounded per-tool record coverage without entity joins."""
+    visible_count = 0
+    total_count = 0
+    complete = bool(calls)
+    list_keys = (
+        "resources",
+        "items",
+        "results",
+        "records",
+        "gaps",
+        "incidents",
+        "plans",
+        "findings",
+    )
+    total_keys = ("total", "total_count", "count")
+
+    for call in calls:
+        data = call.result.data if isinstance(call.result.data, Mapping) else {}
+        visible = next(
+            (
+                len(value)
+                for key in list_keys
+                if isinstance((value := data.get(key)), list)
+            ),
+            None,
+        )
+        total = next(
+            (
+                value
+                for key in total_keys
+                if (value := _nonnegative_int(data.get(key))) is not None
+            ),
+            None,
+        )
+        if visible is None:
+            visible = 0
+            if call.result.status != STATUS_EMPTY:
+                complete = False
+        if total is None or total < visible:
+            total = visible
+            complete = False
+        visible_count += visible
+        total_count += total
+        if (
+            call.result.status not in {STATUS_OK, STATUS_EMPTY}
+            or total != visible
+            or "truncat" in call.result.warning.casefold()
+        ):
+            complete = False
+    if len(calls) > 1:
+        complete = False
+
+    return {
+        "visible_count": visible_count,
+        "total_count": total_count,
+        "complete": complete,
+        "basis": "bounded_tool_record_sum",
+    }
+
+
+def _legacy_freshness(
+    calls: Sequence[ToolCallRecord],
+) -> list[dict[str, str]]:
+    """Return source-specific freshness projected from governed evidence."""
+    freshness: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for call in calls:
+        for evidence in call.result.evidence:
+            if (
+                evidence.freshness
+                not in {"fresh", "aging", "stale", "partial", "unavailable"}
+            ):
+                continue
+            source = "/".join(
+                part
+                for part in (evidence.source_engine, evidence.source_table)
+                if part
+            )
+            key = (source, evidence.timestamp, evidence.freshness)
+            if key in seen:
+                continue
+            seen.add(key)
+            freshness.append(
+                {
+                    "source": source,
+                    "observed_at": evidence.timestamp,
+                    "status": evidence.freshness,
+                }
+            )
+    return freshness
+
+
+def _legacy_synthesis(
+    answer: Mapping[str, Any] | None,
+    *,
+    citations: Sequence[Mapping[str, str]],
+    deterministic: bool,
+    freshness: Sequence[Mapping[str, str]],
+    uncertainty: Sequence[str],
+    selected_specialist: str | None,
+) -> dict[str, Any]:
+    """Close a compatibility narration over its governed evidence citations."""
+    citation_ids = []
+    for citation in citations:
+        citation_id = str(citation.get("citation_id") or "")
+        if not citation_id:
+            continue
+        if not deterministic and ":status:" in citation_id:
+            continue
+        citation_ids.append(citation_id)
+    text = str((answer or {}).get("text") or "").strip()
+    if not text or not citation_ids:
+        return {
+            "status": "degraded",
+            "reason": "citation_closed_narration_unavailable",
+            "domain_count": 1 if selected_specialist else 0,
+            "claims": [],
+            "warning": (
+                "Compatibility tool evidence is shown without an uncited "
+                "narrative claim."
+            ),
+        }
+    freshness_states = {
+        str(record.get("status") or "unknown") for record in freshness
+    }
+    if "stale" in freshness_states:
+        claim_freshness = "stale"
+    elif "aging" in freshness_states:
+        claim_freshness = "aging"
+    elif "partial" in freshness_states:
+        claim_freshness = "partial"
+    elif freshness_states == {"fresh"}:
+        claim_freshness = "fresh"
+    else:
+        claim_freshness = "unknown"
+    return {
+        "status": "deterministic" if deterministic else "synthesized",
+        "reason": "compatibility_citation_projection",
+        "domain_count": 1 if selected_specialist else 0,
+        "claims": [
+            {
+                "finding_id": "legacy:compatibility:answer",
+                "summary": text,
+                "evidence_refs": citation_ids,
+                "confidence": "medium",
+                "freshness": claim_freshness,
+                "uncertainty": list(uncertainty),
+            }
+        ],
+        "warning": (
+            "Compatibility orchestration used governed local tools; citations "
+            "were projected from those tool results."
+        ),
+    }
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _failed_patch_starter_answer(
+    question: str,
+    calls: Sequence[ToolCallRecord],
+) -> dict[str, Any] | None:
+    """Return a fail-closed answer for aggregate failed-patch server intent."""
+    tool_names = {call.tool for call in calls}
+    if tool_names != {"patch_priorities", "inventory_resources"}:
+        return None
+
+    by_tool = {call.tool: call for call in calls}
+    patch_call = by_tool.get("patch_priorities")
+    inventory_call = by_tool.get("inventory_resources")
+    patch_data = (
+        patch_call.result.data
+        if patch_call is not None and isinstance(patch_call.result.data, Mapping)
+        else {}
+    )
+    inventory_data = (
+        inventory_call.result.data
+        if inventory_call is not None
+        and isinstance(inventory_call.result.data, Mapping)
+        else {}
+    )
+    patch_count = _nonnegative_int(patch_data.get("total_count"))
+    inventory_count = _nonnegative_int(inventory_data.get("total"))
+
+    statements: list[str] = []
+    if patch_count is not None:
+        statements.append(
+            f"Patch priority evidence lists {patch_count} record"
+            f"{'' if patch_count == 1 else 's'}, but it does not include "
+            "per-server resource identifiers."
+        )
+    elif patch_call is not None and patch_call.result.status == STATUS_UNAVAILABLE:
+        statements.append("Patch priority evidence is unavailable.")
+    else:
+        statements.append(
+            "Patch priority evidence does not provide a valid record count or "
+            "per-server resource identifiers."
+        )
+
+    if inventory_count is not None:
+        statements.append(
+            f"Inventory separately lists {inventory_count} resource record"
+            f"{'' if inventory_count == 1 else 's'}."
+        )
+    elif inventory_call is not None and inventory_call.result.status == STATUS_UNAVAILABLE:
+        statements.append("Resource inventory is unavailable.")
+    else:
+        statements.append("Resource inventory has no valid total.")
+
+    statements.append(
+        "No specific resource can be confirmed as having a failed patch from "
+        "the available evidence."
+    )
+    warnings = [
+        call.result.warning.strip()
+        for call in calls
+        if call.result.warning.strip()
+    ]
+    if warnings:
+        statements.append(" ".join(dict.fromkeys(warnings)))
+
+    return {
+        "text": " ".join(statements),
+        "agent_name": "patch",
+        "model": "deterministic",
+        "grounded": True,
+        "agent_version": "",
+    }
+
+
+def _status_only_answer(
+    calls: Sequence[ToolCallRecord],
+) -> dict[str, Any] | None:
+    """Describe provider status only when no factual evidence was returned."""
+    if (
+        not calls
+        or any(call.result.evidence for call in calls)
+        or any(
+            call.result.status not in {STATUS_EMPTY, STATUS_UNAVAILABLE, STATUS_DENIED}
+            for call in calls
+        )
+    ):
+        return None
+    statuses = []
+    for call in calls:
+        warning = call.result.warning.strip()
+        status = f"{call.tool} is {call.result.status}"
+        statuses.append(f"{status} ({warning})" if warning else status)
+    return {
+        "text": (
+            f"{'; '.join(statuses)}. No provider-backed records were returned, "
+            "so the requested operational facts cannot be determined."
+        ),
+        "agent_name": "operations-copilot",
+        "model": "deterministic",
+        "grounded": True,
+        "agent_version": "",
+    }
 
 
 def _overall_status(calls: list[ToolCallRecord]) -> str:
@@ -355,22 +687,31 @@ def run_investigation(
     warnings: list[str] = []
     for call in calls:
         if call.result.status == STATUS_UNAVAILABLE:
-            warnings.append(f"{call.tool}: {call.result.warning or 'provider unavailable'}")
+            warnings.append(
+                f"{call.tool}: {call.result.warning or 'provider unavailable'}"
+            )
         elif call.result.status == STATUS_DENIED:
-            warnings.append(f"{call.tool}: {call.result.warning or 'not permitted for this scope'}")
+            warnings.append(
+                f"{call.tool}: "
+                f"{call.result.warning or 'not permitted for this scope'}"
+            )
+        elif call.result.warning:
+            warnings.append(f"{call.tool}: {call.result.warning}")
 
-    answer: dict[str, Any] | None = None
-    
-    # Select specialist agent by page context, or fallback to generic Copilot agent
+    answer = _failed_patch_starter_answer(question, calls)
+    if answer is None:
+        answer = _status_only_answer(calls)
+    deterministic_answer = answer is not None
+
     specialist_id = _specialist_agent_for_context(question, page_kind)
-    if specialist_id and hasattr(context, "specialist_agent"):
+    if answer is None and specialist_id and hasattr(context, "specialist_agent"):
         agent = context.specialist_agent(specialist_id)
-    elif hasattr(context, "foundry_agent"):
+    elif answer is None and hasattr(context, "foundry_agent"):
         agent = context.foundry_agent()
     else:
         agent = None
-    
-    if fact_status in (STATUS_OK, "partial") or calls:
+
+    if answer is None and (fact_status in (STATUS_OK, "partial") or calls):
         if agent is None:
             warnings.append(
                 "No Foundry prompt agent is configured; returning tool results without narration."
@@ -392,6 +733,8 @@ def run_investigation(
         answer=answer,
         fact_status=fact_status,
         warnings=tuple(warnings),
+        selected_specialist=specialist_id,
+        deterministic_answer=deterministic_answer,
     )
 
 

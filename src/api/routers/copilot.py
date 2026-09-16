@@ -154,6 +154,8 @@ class CopilotRequest(BaseModel):
 class InvestigationRequest(BaseModel):
     """A multi-step Copilot turn: plan tools, execute, narrate."""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     question: str = Field(min_length=1, max_length=1024)
     session_id: str = Field(
         default="",
