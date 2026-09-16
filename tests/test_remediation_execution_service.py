@@ -820,6 +820,51 @@ def test_empty_decision_id_preserves_legacy_three_part_identity():
         f"RMP-0001|{snapshot['snapshot_hash']}|{snapshot['action_version']}"
     )
     assert record["approval_decision_id"] == ""
+    assert record["approval_decided_at"] == ""
+
+
+def test_legacy_terminal_execution_requires_provably_later_approval():
+    store = RemediationExecutionStore()
+    snapshot = _execution_snapshot(_plan())
+    legacy, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=snapshot,
+        now=NOW,
+    )
+    assert created is True
+    terminal_at = NOW + timedelta(minutes=5)
+    store.update(legacy["execution_id"], status="succeeded", now=terminal_at)
+
+    repeated, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-LEGACY-APPROVAL",
+        approval_decided_at=(NOW - timedelta(minutes=1)).isoformat(),
+        execution_snapshot=snapshot,
+        now=terminal_at + timedelta(minutes=1),
+    )
+
+    assert created is False
+    assert repeated["execution_id"] == legacy["execution_id"]
+
+    fresh_decided_at = terminal_at + timedelta(minutes=2)
+    fresh, created = store.create_or_get(
+        "RMP-0001",
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        approval_decision_id="RMD-FRESH-APPROVAL",
+        approval_decided_at=fresh_decided_at.isoformat(),
+        execution_snapshot=snapshot,
+        now=fresh_decided_at + timedelta(seconds=1),
+    )
+
+    assert created is True
+    assert fresh["execution_id"] != legacy["execution_id"]
+    assert fresh["approval_decision_id"] == "RMD-FRESH-APPROVAL"
+    assert fresh["approval_decided_at"] == fresh_decided_at.isoformat()
 
 
 def test_service_resubmits_same_snapshot_only_after_fresh_terminal_approval():

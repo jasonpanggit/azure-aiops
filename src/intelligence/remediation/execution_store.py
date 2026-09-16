@@ -73,7 +73,7 @@ class ExecutionLockContended(RuntimeError):
 class RemediationExecutionStore:
     """Revisioned execution records with cross-process claim serialization."""
 
-    _SCHEMA_VERSION = "2.4.0"
+    _SCHEMA_VERSION = "2.5.0"
 
     def __init__(
         self,
@@ -105,6 +105,7 @@ class RemediationExecutionStore:
         approved_by: str,
         execution_snapshot: dict[str, Any],
         approval_decision_id: str = "",
+        approval_decided_at: str = "",
         rollback_guidance: list[str] | None = None,
         scope_attributes: dict[str, str] | None = None,
         now: datetime | None = None,
@@ -112,6 +113,7 @@ class RemediationExecutionStore:
         """Atomically claim one approval-scoped execution identity."""
         timestamp = _timestamp(now)
         decision_id = str(approval_decision_id or "").strip()
+        decided_at = str(approval_decided_at or "").strip()
         identity = _execution_identity(
             plan_id,
             execution_snapshot,
@@ -139,7 +141,10 @@ class RemediationExecutionStore:
                     row
                     for row in state["executions"]
                     if _same_approved_snapshot(row, plan_id, execution_snapshot)
-                    and _blocks_new_approval_execution(row)
+                    and _blocks_new_approval_execution(
+                        row,
+                        approval_decided_at=decided_at,
+                    )
                 ),
                 None,
             )
@@ -158,6 +163,7 @@ class RemediationExecutionStore:
                 "execution_id": "RME-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper(),
                 "execution_identity": identity,
                 "approval_decision_id": decision_id,
+                "approval_decided_at": decided_at,
                 "plan_id": str(plan_id),
                 "status": EXECUTION_STATUS_QUEUED,
                 "revision": 0,
@@ -222,6 +228,7 @@ class RemediationExecutionStore:
         approved_by: str,
         execution_snapshot: dict[str, Any],
         approval_decision_id: str = "",
+        approval_decided_at: str = "",
         rollback_guidance: list[str] | None = None,
         scope_attributes: dict[str, str] | None = None,
         reason: str,
@@ -258,6 +265,7 @@ class RemediationExecutionStore:
 
             snapshot = copy.deepcopy(execution_snapshot)
             decision_id = str(approval_decision_id or "").strip()
+            decided_at = str(approval_decided_at or "").strip()
             identity = (
                 _execution_identity(
                     plan_id,
@@ -286,6 +294,7 @@ class RemediationExecutionStore:
                 "execution_id": "RME-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper(),
                 "execution_identity": identity,
                 "approval_decision_id": decision_id,
+                "approval_decided_at": decided_at,
                 "plan_id": str(plan_id),
                 "status": EXECUTION_STATUS_QUEUED,
                 "revision": 0,
@@ -726,11 +735,36 @@ def _same_approved_snapshot(
     )
 
 
-def _blocks_new_approval_execution(record: dict[str, Any]) -> bool:
+def _blocks_new_approval_execution(
+    record: dict[str, Any],
+    *,
+    approval_decided_at: str,
+) -> bool:
     """Keep unsafe same-snapshot work from being replaced by a fresh approval."""
     if str(record.get("status") or "") in {"queued", "running", "retrying"}:
         return True
-    return is_submission_ambiguous(record)
+    if is_submission_ambiguous(record):
+        return True
+    if str(record.get("approval_decision_id") or "").strip():
+        return False
+    return not _approval_postdates_legacy_execution(record, approval_decided_at)
+
+
+def _approval_postdates_legacy_execution(
+    record: dict[str, Any],
+    approval_decided_at: str,
+) -> bool:
+    decided_at = _parse_timestamp(approval_decided_at)
+    terminal_at = _parse_timestamp(str(record.get("updated_at") or ""))
+    return decided_at is not None and terminal_at is not None and decided_at > terminal_at
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").strip())
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _subscription_id_from_target_id(target_id: str) -> str:
@@ -984,6 +1018,7 @@ def _with_defaults(item: dict[str, Any]) -> dict[str, Any]:
     record.setdefault("revision", 0)
     record.setdefault("execution_identity", "")
     record.setdefault("approval_decision_id", "")
+    record.setdefault("approval_decided_at", "")
     record.setdefault("execution_snapshot", {})
     record.setdefault("attempts", [])
     record.setdefault("history", [])
