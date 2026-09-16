@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: "Situations live reliability audit: the advertised question 'Which situations are highest priority?' must answer the valid empty/degraded live truth directly, with citations, freshness/uncertainty, mismatch 400 pre-I/O, mutation=false, and zero errors."
 created: 2026-09-16T03:34:03Z
-updated: 2026-09-16T04:12:00Z
+updated: 2026-09-16T04:18:00Z
 ---
 
 ## Current Focus
@@ -21,7 +21,7 @@ reasoning_checkpoint:
     - "environment: the optional incidents provider is deferred in the deployed revision"
     - "data: the valid live queue is empty and its source evidence has unknown freshness"
   and_gate: "yes — the empty dataset plus deferred tool exposes the missing deterministic path, while the adapter and planning/result conflation independently distort freshness and completeness."
-next_action: Commit and open the narrow PR for Unified deployment, then rerun the same sanitized live Playwright audit against the deployed revision before advancing to Changes.
+next_action: Await Unified deployment of PR 171, then rerun the same sanitized live Playwright audit against the new API revision before advancing to Changes.
 
 ## Symptoms
 
@@ -79,6 +79,10 @@ started: Observed on origin/main commit 2a92253e against deployed API revision a
   checked: Fix-acceptance guardrail
   found: Target regressions pass; reverting only the implementation makes both regressions fail and reapplying makes both pass; boundary neighbors reject partial-empty, singleton, and another page kind; full adjacent backend suite, full web suite, web lint/typecheck, Ruff, and all nine offline specialist parity checks pass.
   implication: The patch addresses the mechanism without widening untrusted browser authority or altering non-Situations empty behavior.
+- timestamp: 2026-09-16T04:18:00Z
+  checked: Pull request and hosted CI
+  found: PR 171 is open from jasonpanggit-fantastic-succotash to main. All three GitHub Actions jobs were prevented from starting by account billing/spending-limit enforcement; each has zero steps. Local equivalent backend, frontend, static, and parity gates passed.
+  implication: The patch is ready for Unified deployment review, but hosted CI is externally blocked rather than code-failing.
 
 ## Resolution
 
