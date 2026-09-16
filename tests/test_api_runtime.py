@@ -215,6 +215,8 @@ def _clean_env(monkeypatch, tmp_path):
         "AIOPS_SRE_AGENT_SUBSCRIPTION_ID",
         "AIOPS_SRE_AGENT_TARGET_PREFIX",
         "AIOPS_SRE_AGENT_THREAD_SCOPE",
+        "AIOPS_SRE_AGENT_TRIGGER_ID",
+        "AIOPS_SRE_AGENT_TRIGGER_ORIGIN",
         "AIOPS_SRE_AGENT_TRIGGER_SCOPE",
         "AIOPS_SRE_AGENT_TRIGGER_URL",
         "AZURE_CLIENT_ID",
@@ -2319,14 +2321,41 @@ def test_sre_agent_patch_execution_requires_complete_configuration(
         _patch_execution_adapter(SimpleNamespace())
 
 
+def test_sre_agent_patch_execution_requires_reviewed_trigger_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "AIOPS_PATCH_EXECUTION": "sre-agent",
+        "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_ORIGIN": "https://trigger.sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_URL": (
+            "https://trigger.sre.example/api/v1/httptriggers/trigger/secret-id"
+        ),
+        "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
+            "00000000-0000-0000-0000-000000000001"
+        ),
+        "AIOPS_SRE_AGENT_TARGET_PREFIX": (
+            "/subscriptions/00000000-0000-0000-0000-000000000001/"
+            "resourceGroups/rg-prod"
+        ),
+        "AZURE_CLIENT_ID": "api-uai-client-id",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match="trigger_id"):
+        _patch_execution_adapter(SimpleNamespace())
+
+
 def test_sre_agent_mode_uses_workload_identity_and_routes_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = {
         "AIOPS_PATCH_EXECUTION": "sre-agent",
         "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_ID": "secret-id",
+        "AIOPS_SRE_AGENT_TRIGGER_ORIGIN": "https://trigger.sre.example",
         "AIOPS_SRE_AGENT_TRIGGER_URL": (
-            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+            "https://trigger.sre.example/api/v1/httptriggers/trigger/secret-id"
         ),
         "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
             "00000000-0000-0000-0000-000000000001"
@@ -2366,6 +2395,7 @@ def test_sre_agent_mode_uses_workload_identity_and_routes_verification(
     verifier = _execution_verifier(SimpleNamespace())
 
     assert adapter.name == "sre-agent"
+    assert adapter._trigger_id == "secret-id"
     assert credentials == ["api-uai-client-id", "api-uai-client-id"]
     assert observed["credential"] is credential
     assert observed["agent_endpoint"] == "https://sre.example"
@@ -2378,8 +2408,10 @@ def test_sre_agent_mode_does_not_resolve_operator_subscription_credentials(
     for name, value in {
         "AIOPS_PATCH_EXECUTION": "sre-agent",
         "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_ID": "secret-id",
+        "AIOPS_SRE_AGENT_TRIGGER_ORIGIN": "https://trigger.sre.example",
         "AIOPS_SRE_AGENT_TRIGGER_URL": (
-            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+            "https://trigger.sre.example/api/v1/httptriggers/trigger/secret-id"
         ),
         "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
             "00000000-0000-0000-0000-000000000001"
@@ -2416,8 +2448,10 @@ def test_verifier_routes_persisted_arm_and_sre_jobs_independent_of_write_mode(
     for name, value in {
         "AIOPS_PATCH_EXECUTION": write_mode,
         "AIOPS_SRE_AGENT_ENDPOINT": "https://sre.example",
+        "AIOPS_SRE_AGENT_TRIGGER_ID": "secret-id",
+        "AIOPS_SRE_AGENT_TRIGGER_ORIGIN": "https://trigger.sre.example",
         "AIOPS_SRE_AGENT_TRIGGER_URL": (
-            "https://sre.example/api/v1/httptriggers/trigger/secret-id"
+            "https://trigger.sre.example/api/v1/httptriggers/trigger/secret-id"
         ),
         "AIOPS_SRE_AGENT_SUBSCRIPTION_ID": (
             "00000000-0000-0000-0000-000000000001"

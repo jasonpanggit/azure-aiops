@@ -34,7 +34,9 @@ _MAX_PATCH_ID_LENGTH = 256
 _MAX_AUDIT_IDENTITY_LENGTH = 320
 _MAX_RESOURCE_ID_LENGTH = 2048
 _MAX_RUN_ID_LENGTH = 128
+_MAX_TRIGGER_ID_LENGTH = 256
 _REBOOT_SETTINGS = frozenset({"IfRequired", "Never", "Always"})
+_TRIGGER_ID = re.compile(r"^[A-Za-z0-9._~-]+$")
 _SUBSCRIPTION_ID = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -74,17 +76,29 @@ def validate_sre_agent_endpoint(endpoint: str) -> str:
     return normalized
 
 
-def sre_agent_endpoint(trigger_url: str) -> str:
-    """Return the validated per-agent endpoint encoded in a trigger URL."""
+def sre_agent_trigger_identity(trigger_url: str) -> tuple[str, str]:
+    """Return the validated trigger origin and exact trigger ID."""
     parsed = urlsplit(str(trigger_url or "").strip())
     if parsed.query or parsed.fragment or _TRIGGER_PATH_MARKER not in parsed.path:
         raise ValueError("The SRE Agent trigger URL must use the documented trigger path.")
     prefix, trigger_id = parsed.path.split(_TRIGGER_PATH_MARKER, 1)
-    if not trigger_id or "/" in trigger_id:
+    if (
+        not trigger_id
+        or len(trigger_id) > _MAX_TRIGGER_ID_LENGTH
+        or not _TRIGGER_ID.fullmatch(trigger_id)
+    ):
         raise ValueError("The SRE Agent trigger URL must name exactly one trigger.")
-    return validate_sre_agent_endpoint(
-        f"{parsed.scheme}://{parsed.netloc}{prefix}".rstrip("/")
+    return (
+        validate_sre_agent_endpoint(
+            f"{parsed.scheme}://{parsed.netloc}{prefix}".rstrip("/")
+        ),
+        trigger_id,
     )
+
+
+def sre_agent_endpoint(trigger_url: str) -> str:
+    """Return the validated trigger origin encoded in a trigger URL."""
+    return sre_agent_trigger_identity(trigger_url)[0]
 
 
 def _arm_subscription_id(resource_id: str) -> str:
@@ -150,6 +164,8 @@ class SreAgentPatchExecutionAdapter:
         credential: TokenCredential,
         *,
         trigger_url: str,
+        trigger_id: str,
+        trigger_origin: str,
         agent_endpoint: str,
         subscription_id: str,
         target_prefix: str,
@@ -159,12 +175,26 @@ class SreAgentPatchExecutionAdapter:
     ) -> None:
         self._credential = credential
         self._trigger_url = str(trigger_url or "").strip()
-        trigger_endpoint = sre_agent_endpoint(self._trigger_url)
+        observed_trigger_origin, observed_trigger_id = sre_agent_trigger_identity(
+            self._trigger_url
+        )
+        self._trigger_id = str(trigger_id or "")
+        self._trigger_origin = validate_sre_agent_endpoint(trigger_origin)
         self._agent_endpoint = validate_sre_agent_endpoint(agent_endpoint)
-        if trigger_endpoint != self._agent_endpoint:
+        if observed_trigger_origin != self._trigger_origin:
             raise ValueError(
                 "The secret SRE Agent trigger URL does not match the configured "
-                "agent endpoint."
+                "trigger origin."
+            )
+        if (
+            not self._trigger_id
+            or len(self._trigger_id) > _MAX_TRIGGER_ID_LENGTH
+            or not _TRIGGER_ID.fullmatch(self._trigger_id)
+            or observed_trigger_id != self._trigger_id
+        ):
+            raise ValueError(
+                "The secret SRE Agent trigger URL does not match the configured "
+                "trigger ID."
             )
         self._subscription_id = str(subscription_id or "").strip()
         self._target_prefix = _normalize_arm_id(target_prefix)
@@ -479,5 +509,6 @@ __all__ = [
     "SRE_AGENT_TRIGGER_SCOPE",
     "SreAgentPatchExecutionAdapter",
     "sre_agent_endpoint",
+    "sre_agent_trigger_identity",
     "validate_sre_agent_endpoint",
 ]

@@ -267,12 +267,14 @@ resource "azurerm_container_app" "api" {
         value = "0"
       }
 
-      # Direct ARM patch execution remains the deployed default. The SRE Agent
-      # alternative is independently opt-in and still uses the existing
-      # approval, immutable snapshot, target, and patch allowlist gates.
-      env {
-        name  = "AIOPS_PATCH_EXECUTION"
-        value = var.enable_sre_agent_patch_execution ? "sre-agent" : "azure"
+      # Omit the write-mode variable unless SRE Agent execution is explicitly
+      # enabled. The application then retains its fail-closed refusing default.
+      dynamic "env" {
+        for_each = var.enable_sre_agent_patch_execution ? [1] : []
+        content {
+          name  = "AIOPS_PATCH_EXECUTION"
+          value = "sre-agent"
+        }
       }
 
       dynamic "env" {
@@ -287,6 +289,8 @@ resource "azurerm_container_app" "api" {
         for_each = var.enable_sre_agent_patch_execution ? {
           AIOPS_SRE_AGENT_SUBSCRIPTION_ID = local.sre_agent_subscription_id
           AIOPS_SRE_AGENT_TARGET_PREFIX   = var.sre_agent_patch_target_prefix
+          AIOPS_SRE_AGENT_TRIGGER_ID      = var.sre_agent_trigger_id
+          AIOPS_SRE_AGENT_TRIGGER_ORIGIN  = var.sre_agent_trigger_origin
           AIOPS_SRE_AGENT_TRIGGER_SCOPE   = var.sre_agent_trigger_scope
         } : {}
         content {
@@ -627,6 +631,13 @@ resource "azurerm_container_app" "api" {
     # promoted provider-ID mapping or the legacy eight-agent rollback set.
     terraform_data.foundry_specialist_promotion_gate,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_sre_agent_patch_execution || local.sre_agent_patch_execution_config_valid
+      error_message = "API SRE Agent execution requires bootstrapped RBAC and the complete canonical trigger, secret, endpoint, and managed target configuration."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
