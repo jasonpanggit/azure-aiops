@@ -24,6 +24,8 @@ def _resolve(
 ) -> Any | None:
     try:
         provider = context.resolve_provider(name, optional=True)
+        if provider is None:
+            errors.append({"source": name, "error": "Unavailable"})
         if generation is not None and hasattr(provider, "for_generation"):
             return provider.for_generation(generation)
         return provider
@@ -96,12 +98,38 @@ def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
 
 
 def _respond(data: dict[str, Any], scope: Scope, *, resource_id: str = "") -> dict[str, Any]:
+    warnings = data.get("warnings", [])
+    unavailable_sources = {
+        str(warning).split(" unavailable:", 1)[0]
+        for warning in warnings
+        if " unavailable:" in str(warning)
+    }
+    unavailable_live_sources = unavailable_sources.intersection(
+        {"network", "vulnerability", "incident", "incidents", "remediation"}
+    )
+    incident_unavailable = bool(
+        {"incident", "incidents"}.intersection(unavailable_sources)
+    )
+    unavailable_live_family_count = (
+        int("network" in unavailable_sources)
+        + int("vulnerability" in unavailable_sources)
+        + int(incident_unavailable)
+        + int("remediation" in unavailable_sources)
+    )
     payload = {
         **data,
         "live_observed_at": str(data.get("observed_at") or data.get("exported_at") or ""),
         "source_status": {
-            "semantic_graph": "current",
-            "live_operational_sources": "request_time",
+            "semantic_graph": (
+                "unavailable" if "semantic" in unavailable_sources else "current"
+            ),
+            "live_operational_sources": (
+                "unavailable"
+                if unavailable_live_family_count == 4
+                else "partial"
+                if unavailable_live_sources
+                else "request_time"
+            ),
             "snapshot_materialization": "disabled",
         },
     }
@@ -115,7 +143,7 @@ def _respond(data: dict[str, Any], scope: Scope, *, resource_id: str = "") -> di
         ),
         scope=scope.to_dict(),
         knowledge_version=str(data.get("version") or data.get("current_version") or ""),
-        warnings=data.get("warnings", []),
+        warnings=warnings,
     )
 
 

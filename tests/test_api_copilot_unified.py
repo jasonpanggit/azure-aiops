@@ -6989,6 +6989,182 @@ def test_service_detail_keeps_risk_unavailability_out_of_foundry_narration(
 
 
 @pytest.mark.parametrize(
+    ("question", "detail_field", "expected_summary"),
+    (
+        (
+            "Which business services are affected if this changes?",
+            "dependency_detail",
+            (
+                "The current twin contains no relationship evidence, so "
+                "affected business services and dependencies cannot be asserted."
+            ),
+        ),
+        (
+            "What operational risks are directly visible in this twin?",
+            "risk_detail",
+            (
+                "The current twin reports a scenario-weighted risk score of 50 "
+                "with 5 visible vulnerability entities."
+            ),
+        ),
+    ),
+)
+def test_twin_status_truth_bypasses_optional_narrator(
+    tmp_path,
+    monkeypatch,
+    question,
+    detail_field,
+    expected_summary,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            if "Select the smallest" in question:
+                return AgentAnswer(
+                    text=json.dumps({
+                        "steps": [{
+                            "specialist_id": "network",
+                            "tool_calls": [{
+                                "tool": "network_topology",
+                                "arguments": {},
+                                "citation_ids": ["snapshot:coverage"],
+                                "mutation": False,
+                            }],
+                            "depends_on": [],
+                        }],
+                        "estimated_tokens": 0,
+                        "max_wall_seconds": 5,
+                        "mutation_intent": False,
+                    }),
+                    agent_name=self.agent_name,
+                )
+            return AgentAnswer(
+                text=json.dumps({
+                    "findings": [{
+                        "finding_id": "narrator-omission",
+                        "evidence_refs": [],
+                        "confidence": "low",
+                        "uncertainty": [],
+                        "freshness": "unknown",
+                        "actionable": False,
+                        "next_check": "Check later.",
+                        "summary": "No useful Twin status.",
+                    }]
+                }),
+                agent_name=self.agent_name,
+            )
+
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The network provider is deferred",
+        ),
+    )
+    body = {
+        "contract_version": "1",
+        "question": question,
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "twin",
+            "page_id": "twin",
+            "filters": {},
+            "query": "",
+            "coverage": {
+                "visible_count": 5,
+                "total_count": 5,
+                "complete": False,
+            },
+            "freshness": [{
+                "source": "twin",
+                "observed_at": "2026-09-16T00:00:00Z",
+                "status": "partial",
+            }],
+            "selected_entities": [],
+            "evidence": [{
+                "evidence_id": "twin:status",
+                "source": "twin/status",
+                "status": "ok",
+                "observed_at": "2026-09-16T00:00:00Z",
+                "resource_id": "",
+                "source_key": "operational-twin:status",
+                "entity": {
+                    "type": "observation",
+                    "source": "twin/status",
+                    "source_key": "operational-twin:status",
+                },
+                "claim_type": "twin_status",
+                "citations": [],
+                "selected": True,
+                "direct": True,
+                "actionable": False,
+                "severity": "unknown",
+                "quality": "unknown",
+                "data": {
+                    "entity_count": 5,
+                    "business_service_count": 0,
+                    "resource_count": 0,
+                    "vulnerability_count": 5,
+                    "relationship_count": 0,
+                    "dependency_detail": (
+                        "The current twin contains no relationship evidence, so "
+                        "affected business services and dependencies cannot be asserted."
+                    ),
+                    "risk_detail": (
+                        "The current twin reports a scenario-weighted risk score "
+                        "of 50 with 5 visible vulnerability entities."
+                    ),
+                    "selected": True,
+                    "actionable": False,
+                    "mutation_authorized": False,
+                },
+            }],
+            "material_claims": [{
+                "claim_id": "twin-status",
+                "evidence_refs": ["twin:status"],
+                "requires_complete_coverage": False,
+            }],
+        },
+    }
+    if detail_field == "dependency_detail":
+        body["hint"] = {
+            "specialist_id": "network",
+            "tool": "network_topology",
+            "arguments": {},
+        }
+    coordinator = Coordinator()
+
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["synthesis"]["status"] == "deterministic"
+    assert data["synthesis"]["reason"] == "deterministic_twin_status"
+    assert data["synthesis"]["claims"][0]["summary"] == expected_summary
+    assert data["synthesis"]["claims"][0]["evidence_refs"][0].startswith(
+        "retained:"
+    )
+    assert data["mutation_authorized"] is False
+    assert len(coordinator.calls) == 1
+
+
+@pytest.mark.parametrize(
     ("page_kind", "page_id", "question", "expected_specialists"),
     (
         (

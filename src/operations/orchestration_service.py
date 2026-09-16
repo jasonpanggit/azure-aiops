@@ -1299,6 +1299,11 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        twin_status_claims = self._deterministic_twin_status_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         overview_ranking_claims = self._deterministic_overview_ranking_claims(
             question,
             snapshot=snapshot,
@@ -1415,6 +1420,25 @@ class OrchestrationService:
                 reason="deterministic_service_status",
                 domain_count=1,
                 claims=service_status_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if twin_status_claims:
+            used_refs = {
+                str(reference)
+                for claim in twin_status_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_twin_status",
+                domain_count=1,
+                claims=twin_status_claims,
                 used_retained_evidence=[
                     dict(item)
                     for item in current_retained_evidence
@@ -2093,6 +2117,69 @@ class OrchestrationService:
                 "next_check": (
                     "Refresh the cited service section before drawing a "
                     "dependency or risk conclusion."
+                ),
+            }]
+        return []
+
+    @staticmethod
+    def _deterministic_twin_status_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Answer Twin coverage/risk questions from exact retained page status."""
+
+        if snapshot is None or snapshot.page_kind != "twin":
+            return []
+        lowered = " ".join(question.casefold().split())
+        if "risk" in lowered:
+            detail_field = "risk_detail"
+        elif any(
+            term in lowered
+            for term in (
+                "affected",
+                "business service",
+                "depend",
+                "impact",
+                "topology",
+            )
+        ):
+            detail_field = "dependency_detail"
+        else:
+            return []
+
+        for item in retained_evidence:
+            if str(item.get("claim_type") or "") != "twin_status":
+                continue
+            data = item.get("data")
+            if not isinstance(data, Mapping):
+                continue
+            detail = str(data.get(detail_field) or "").strip()
+            evidence_id = str(item.get("evidence_id") or "")
+            if not detail or not evidence_id:
+                continue
+            return [{
+                "finding_id": (
+                    "twin-status:"
+                    + hashlib.sha256(evidence_id.encode()).hexdigest()[:24]
+                ),
+                "summary": detail,
+                "evidence_refs": [evidence_id],
+                "confidence": "medium",
+                "freshness": "fresh",
+                "uncertainty": (
+                    ["The current Twin has no relationship evidence."]
+                    if (
+                        detail_field == "dependency_detail"
+                        and int(data.get("relationship_count") or 0) == 0
+                    )
+                    else []
+                ),
+                "actionable": False,
+                "next_check": (
+                    "Refresh the cited Twin snapshot before drawing a "
+                    "dependency, impact, or risk conclusion."
                 ),
             }]
         return []

@@ -4394,6 +4394,12 @@ describe("operational twin Copilot page adapter", () => {
     observedAt: "2026-01-01T10:00:00Z",
     liveObservedAt: "2026-01-01T10:00:00Z",
     confidence: "medium",
+    riskScore: 32,
+    sourceStatus: {
+      semantic_graph: "current",
+      live_operational_sources: "request_time",
+      snapshot_materialization: "disabled",
+    },
     entities: [
       {
         id: "resource:vm-payroll-1",
@@ -4469,6 +4475,11 @@ describe("operational twin Copilot page adapter", () => {
     // Relationship identity and provenance are retained.
     expect(context.snapshot.evidence.some((row) =>
       row.data.type === "supports" && row.data.source === "resource:vm-payroll-1")).toBe(true);
+    expect(context.snapshot.evidence.find((row) =>
+      row.data.type === "supports")?.data.entity).toMatchObject({
+        type: "observation",
+        source: "twin/relationships",
+      });
     // Scenario projection is marked hypothetical, never observed reality.
     expect(context.snapshot.evidence.some((row) =>
       row.data.scenario === "firewall_failure" && row.data.observed === false)).toBe(true);
@@ -4478,6 +4489,45 @@ describe("operational twin Copilot page adapter", () => {
     expect(context.starterQuestions.every((q) => q.specialistId === "network")).toBe(true);
     expect(context.snapshot.evidence.every((row) =>
       row.data.actionable === false && row.data.mutation_authorized === false)).toBe(true);
+    expect(context.snapshot.freshness).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "semantic_graph", status: "fresh" }),
+      expect.objectContaining({ source: "live_operational_sources", status: "fresh" }),
+      expect.objectContaining({ source: "snapshot_materialization", status: "unavailable" }),
+    ]));
+    expect(context.snapshot.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        section: "twin/status",
+        status: "ok",
+        data: expect.objectContaining({
+          business_service_count: 1,
+          relationship_count: 1,
+          risk_detail: expect.stringContaining("risk score of 32"),
+          entity: expect.objectContaining({ type: "observation" }),
+        }),
+      }),
+    ]));
+  });
+
+  it("states when service impact cannot be asserted from an empty relationship set", () => {
+    const context = buildTwinCopilotContext({
+      ...twinInput,
+      entities: twinInput.entities.filter((entity) => entity.kind !== "business_service"),
+      entitiesTotal: 1,
+      relationships: [],
+      relationshipsTotal: 0,
+    });
+    const status = context.snapshot.evidence.find(
+      (row) => row.section === "twin/status",
+    );
+
+    expect(status?.data).toMatchObject({
+      business_service_count: 0,
+      relationship_count: 0,
+      dependency_detail:
+        "The current twin contains no relationship evidence, so affected business services and dependencies cannot be asserted.",
+    });
+    expect(context.snapshot.evidence.some((row) =>
+      row.section === "twin/relationships")).toBe(false);
   });
 
   it("exposes visible/total/truncated coverage for bounded graph and traversal results", () => {
@@ -4524,6 +4574,7 @@ describe("operational twin Copilot page adapter", () => {
       unsupportedRelationships: [],
       staleTemporalEvidence: [],
       available: false,
+      sourceStatus: undefined,
       evidence: [],
     });
     const empty = buildTwinCopilotContext({
@@ -4539,6 +4590,7 @@ describe("operational twin Copilot page adapter", () => {
       unsupportedRelationships: [],
       staleTemporalEvidence: [],
       available: true,
+      sourceStatus: undefined,
       evidence: [],
     });
     expect(unavailable.coverage.entities.complete).toBe(false);

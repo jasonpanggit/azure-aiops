@@ -1105,9 +1105,16 @@ export function normalizeCopilotSnapshotV2(
 }
 
 function freshnessStatus(status: string): CopilotFreshnessStatusV2 {
-  if (status === "ready" || status === "fresh") return "fresh";
+  if (
+    status === "ready"
+    || status === "fresh"
+    || status === "current"
+    || status === "request_time"
+    || status === "ok"
+    || status === "available"
+  ) return "fresh";
   if (status === "stale") return "stale";
-  if (status === "partial") return "partial";
+  if (status === "partial" || status === "degraded") return "partial";
   return "unavailable";
 }
 
@@ -2737,6 +2744,8 @@ export interface TwinCopilotPageInput {
   observedAt?: string;
   liveObservedAt?: string;
   confidence?: string;
+  /** Scenario-weighted risk score already rendered by the Twin page. */
+  riskScore?: number | null;
   entities: TwinEntityObservation[];
   entitiesTotal: number;
   relationships: TwinRelationshipObservation[];
@@ -5697,12 +5706,65 @@ function serviceDetailCoreInput(
 function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
   const selectedId = input.selectedResourceId
     ?? (input.traversal ? input.traversal.resource_id : null);
+  const businessServiceCount = input.entities.filter(
+    (entity) => entity.kind === "business_service",
+  ).length;
+  const resourceCount = input.entities.filter(
+    (entity) => entity.kind === "resource",
+  ).length;
+  const vulnerabilityCount = input.entities.filter(
+    (entity) => entity.kind === "vulnerability",
+  ).length;
+  const relationshipCount = input.relationships.length;
+  const dependencyDetail = relationshipCount > 0
+    ? (
+        `The current twin contains ${relationshipCount} relationship `
+        + `record${relationshipCount === 1 ? "" : "s"} and `
+        + `${businessServiceCount} business service `
+        + `entit${businessServiceCount === 1 ? "y" : "ies"}.`
+      )
+    : (
+        "The current twin contains no relationship evidence, so affected "
+        + "business services and dependencies cannot be asserted."
+      );
+  const riskDetail = typeof input.riskScore === "number"
+    ? (
+        `The current twin reports a scenario-weighted risk score of `
+        + `${input.riskScore} with ${vulnerabilityCount} visible vulnerability `
+        + `entit${vulnerabilityCount === 1 ? "y" : "ies"}.`
+      )
+    : (
+        "The current twin has no scenario-weighted risk score, so a current "
+        + "risk level cannot be asserted."
+      );
   const records: CoreCopilotRecord[] = [
+    {
+      identity: `${input.twinId}:status`,
+      namespace: "operations",
+      kind: "twin_status",
+      source: "twin/status",
+      evidenceIdentity: "observation",
+      selected: true,
+      priority: 0,
+      observedAt: input.liveObservedAt ?? input.observedAt,
+      data: {
+        entity_count: input.entities.length,
+        business_service_count: businessServiceCount,
+        resource_count: resourceCount,
+        vulnerability_count: vulnerabilityCount,
+        relationship_count: relationshipCount,
+        dependency_detail: dependencyDetail,
+        risk_detail: riskDetail,
+      },
+    },
     ...input.entities.slice(0, 50).map((entity, index) => ({
       identity: entity.id,
       namespace: "operations",
       kind: boundedString("twin entity kind", entity.kind || "entity", 1, 64),
       source: "twin/entities",
+      ...(!isCanonicalAzureResourceId(entity.resource_id)
+        ? { evidenceIdentity: "observation" as const }
+        : {}),
       resourceId: isCanonicalAzureResourceId(entity.resource_id)
         ? entity.resource_id
         : undefined,
@@ -5723,6 +5785,7 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       namespace: "operations",
       kind: "twin_relationship",
       source: "twin/relationships",
+      evidenceIdentity: "observation" as const,
       priority: 60 + index,
       data: {
         source: relationship.source,
@@ -5738,6 +5801,7 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       namespace: "operations",
       kind: "twin_event",
       source: "twin/timeline",
+      evidenceIdentity: "observation" as const,
       observedAt: event.timestamp,
       priority: 120 + index,
       data: {
@@ -5751,6 +5815,9 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       namespace: "operations",
       kind: "twin_traversal",
       source: "twin/traversal",
+      ...(!isCanonicalAzureResourceId(input.traversal.resource_id)
+        ? { evidenceIdentity: "observation" as const }
+        : {}),
       resourceId: isCanonicalAzureResourceId(input.traversal.resource_id)
         ? input.traversal.resource_id
         : undefined,
@@ -5766,6 +5833,7 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       namespace: "operations",
       kind: "twin_scenario",
       source: "twin/scenario",
+      evidenceIdentity: "observation" as const,
       priority: 190,
       data: {
         scenario: input.scenario.scenario,
