@@ -21,6 +21,7 @@ from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from operations.foundry_agent import AgentAnswer, FoundryAgentError
 from operations.investigation import conversation_store
+from operations.tools import Evidence, ToolResult
 
 TOKEN = "admin-token-0123456789abcdef"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
@@ -95,6 +96,63 @@ def test_investigation_plans_tools_and_narrates(client, agent):
     grounding = agent.calls[0]["context"]
     assert "facts" in grounding
     assert all("status" in fact for fact in grounding["facts"])
+    assert body["mutation_authorized"] is False
+
+
+def test_failed_patch_starter_does_not_join_unrelated_inventory(
+    client, agent, monkeypatch
+):
+    def execute(tool, _arguments, **_kwargs):
+        if tool == "patch_priorities":
+            return ToolResult(
+                status="ok",
+                data={
+                    "total_count": 1,
+                    "items": [
+                        {
+                            "kb_id": "5123099",
+                            "affected_server_count": 1,
+                        }
+                    ],
+                },
+                evidence=(
+                    Evidence(
+                        source_engine="patch",
+                        source_table="patch_priorities",
+                    ),
+                ),
+                warning="KB snapshot freshness is stale",
+            )
+        assert tool == "inventory_resources"
+        return ToolResult(
+            status="ok",
+            data={
+                "resources": [
+                    {"resource_name": "vm1"},
+                    {"resource_name": "vm2"},
+                ],
+                "total": 2,
+            },
+            evidence=(
+                Evidence(
+                    source_engine="inventory",
+                    source_table="resource_observations",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("operations.investigation.call_tool", execute)
+
+    response = _investigate(client, "servers with failed patches")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["mutation_authorized"] is False
+    assert body["answer"]["model"] == "deterministic"
+    assert "No specific server can be confirmed" in body["answer"]["text"]
+    assert "vm1" not in body["answer"]["text"]
+    assert "vm2" not in body["answer"]["text"]
+    assert agent.calls == []
 
 
 def test_investigation_reports_fact_status_ok_for_matched_service(client):
