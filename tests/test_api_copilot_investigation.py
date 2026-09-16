@@ -138,6 +138,60 @@ def test_compatibility_projection_cites_tool_status_without_provider_evidence(
     ]
     assert body["answer"]["model"] == "deterministic"
     assert "No provider-backed records were returned" in body["answer"]["text"]
+    assert "search" not in body["answer"]["text"]
+    assert "The semantic provider is deferred" not in body["answer"]["text"]
+    assert "Required provider data is unavailable" in body["answer"]["text"]
+
+
+@pytest.mark.parametrize(
+    ("status", "warning", "expected"),
+    [
+        (
+            "empty",
+            "application_context returned empty",
+            "no matching records",
+        ),
+        (
+            "unavailable",
+            "inventory_resources failed to answer",
+            "provider data is unavailable",
+        ),
+        (
+            "denied",
+            "risk_context denied for supplied arguments",
+            "not permitted for the current scope",
+        ),
+    ],
+)
+def test_status_only_narration_never_leaks_tool_or_warning_details(
+    client,
+    monkeypatch,
+    status,
+    warning,
+    expected,
+):
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status=status,
+            warning=warning,
+        ),
+    )
+
+    body = _investigate(
+        client,
+        "anything",
+        tool="search",
+        tool_arguments={"query": "anything"},
+    ).json()["data"]
+
+    answer = body["answer"]["text"]
+    assert expected in answer.casefold()
+    assert "search" not in answer
+    assert "application_context" not in answer
+    assert "inventory_resources" not in answer
+    assert "risk_context" not in answer
+    assert warning not in answer
 
 
 def test_status_only_fallback_does_not_hide_successful_uncited_tool_data(
