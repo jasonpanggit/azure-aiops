@@ -7,9 +7,13 @@ for why that step is not automatable from this repo today)."""
 
 from __future__ import annotations
 
+import base64
+import json
+
 from fabric.data_agent_manager import (
     RELATIONSHIP_SUGGESTION_INSTRUCTIONS,
     build_data_agent_definition,
+    ensure_data_agent,
 )
 from fabric_pipelines.relationship_suggestion_parser import (
     parse_suggestions,
@@ -21,6 +25,10 @@ from fabric_pipelines.relationship_suggestions_contract import (
     RelationshipSuggestion,
     to_suggestion_row,
 )
+from ontology_discovery.generation_resolver import (
+    CompatibilityAlias,
+    GenerationSelection,
+)
 
 
 def test_relationship_suggestions_contract_is_separate_from_relationships_contract():
@@ -29,7 +37,10 @@ def test_relationship_suggestions_contract_is_separate_from_relationships_contra
     )
 
     assert RELATIONSHIP_SUGGESTIONS_CONTRACT.table_name == "relationship_suggestions"
-    assert RELATIONSHIP_SUGGESTIONS_CONTRACT.table_name != ONTOLOGY_RELATIONSHIPS_CONTRACT.table_name
+    assert (
+        RELATIONSHIP_SUGGESTIONS_CONTRACT.table_name
+        != ONTOLOGY_RELATIONSHIPS_CONTRACT.table_name
+    )
     # Distinct pyarrow schema objects -- the suggestions schema carries
     # confidence/rationale/suggested_by/status columns the authoritative
     # relationships schema does not.
@@ -68,9 +79,6 @@ def test_to_suggestion_row_shapes_expected_delta_row():
 
 
 def test_build_data_agent_definition_stages_lakehouse_datasource_and_instructions():
-    import base64
-    import json
-
     definition = build_data_agent_definition(
         lakehouse_id="lakehouse-id-123",
         lakehouse_workspace_id="workspace-id-456",
@@ -93,10 +101,17 @@ def test_build_data_agent_definition_stages_lakehouse_datasource_and_instruction
     assert datasource_payload["type"] == "lakehouse_tables"
 
     stage_config_payload = json.loads(
-        base64.b64decode(parts_by_path["Files/Config/draft/stage_config.json"]["payload"])
+        base64.b64decode(
+            parts_by_path["Files/Config/draft/stage_config.json"]["payload"]
+        )
     )
-    assert stage_config_payload["aiInstructions"] == RELATIONSHIP_SUGGESTION_INSTRUCTIONS
-    assert "advisory" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower() or "suggest" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower()
+    assert (
+        stage_config_payload["aiInstructions"] == RELATIONSHIP_SUGGESTION_INSTRUCTIONS
+    )
+    assert (
+        "advisory" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower()
+        or "suggest" in RELATIONSHIP_SUGGESTION_INSTRUCTIONS.lower()
+    )
 
     # Discovered live during this session: a datasource with no selected
     # table elements leaves the agent with nothing to query. Every
@@ -111,9 +126,6 @@ def test_build_data_agent_definition_stages_lakehouse_datasource_and_instruction
 
 
 def test_build_data_agent_definition_stages_data_source_instructions_and_few_shots():
-    import base64
-    import json
-
     definition = build_data_agent_definition(
         lakehouse_id="lakehouse-id-123",
         lakehouse_workspace_id="workspace-id-456",
@@ -135,16 +147,62 @@ def test_build_data_agent_definition_stages_data_source_instructions_and_few_sho
     fewshots_path = next(
         path for path in parts_by_path if path.endswith("/fewshots.json")
     )
-    datasource = json.loads(
-        base64.b64decode(parts_by_path[datasource_path]["payload"])
-    )
-    fewshots = json.loads(
-        base64.b64decode(parts_by_path[fewshots_path]["payload"])
-    )
+    datasource = json.loads(base64.b64decode(parts_by_path[datasource_path]["payload"]))
+    fewshots = json.loads(base64.b64decode(parts_by_path[fewshots_path]["payload"]))
 
     assert datasource["dataSourceInstructions"] == "Use exact identifiers."
     assert fewshots["fewShots"][0]["question"] == "Show active relationships."
     assert fewshots["fewShots"][0]["query"].startswith("SELECT")
+
+
+def test_ensure_data_agent_create_uses_generation_validated_definition() -> None:
+    class _Manager:
+        def __init__(self) -> None:
+            self.created: dict | None = None
+
+        def resolve(self, **_kwargs):
+            return None
+
+        def create(self, _display_name: str, **kwargs):
+            self.created = kwargs
+            return {"id": "agent-1"}
+
+    selection = GenerationSelection(
+        active_generation="/generations/generation-7",
+        active_generation_uri="abfss://lake/generations/generation-7",
+        prior_generation=None,
+        pointer_etag="etag-7",
+        source_generation="inventory-7",
+    )
+    aliases = {
+        name: CompatibilityAlias(
+            logical_name=name,
+            physical_path=f"/generations/generation-7/{name}",
+            generation_id="generation-7",
+        )
+        for name in ("ontology_entities", "ontology_relationships")
+    }
+    manager = _Manager()
+
+    result = ensure_data_agent(
+        manager,
+        display_name="ontology-review",
+        lakehouse_id="lakehouse-id",
+        lakehouse_workspace_id="workspace-id",
+        lakehouse_display_name="operational_context_graph",
+        generation=selection,
+        table_aliases=aliases,
+    )
+
+    assert result["action"] == "created"
+    assert manager.created is not None
+    definition = manager.created["prebuilt_definition"]
+    datasource = next(
+        json.loads(base64.b64decode(part["payload"]))
+        for part in definition["parts"]
+        if part["path"].endswith("/datasource.json")
+    )
+    assert {item["display_name"] for item in datasource["elements"]} == set(aliases)
 
 
 def test_parse_suggestions_extracts_json_lines_and_ignores_prose():
@@ -179,7 +237,10 @@ def test_parse_suggestions_extracts_json_lines_and_ignores_prose():
 
 
 def test_parse_suggestions_returns_empty_list_for_pure_prose():
-    assert parse_suggestions("I don't see any additional relationships worth suggesting.") == []
+    assert (
+        parse_suggestions("I don't see any additional relationships worth suggesting.")
+        == []
+    )
 
 
 def test_suggestions_to_rows_produces_valid_delta_rows():

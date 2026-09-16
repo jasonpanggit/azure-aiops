@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MAX_CHANGED_ENTITIES = 50
 MAX_CANDIDATE_PAIRS = 200
 MAX_EVIDENCE_RECORDS = 40
+MAX_REVIEW_SIGNALS_BYTES = 16_384
 
 
 class RelationshipProposal(BaseModel):
@@ -86,9 +87,7 @@ def proposal_content_id(
             "object_id": _required_text(
                 proposal.get("object_id"), "object_id"
             ).casefold(),
-            "object_type": _required_text(
-                proposal.get("object_type"), "object_type"
-            ),
+            "object_type": _required_text(proposal.get("object_type"), "object_type"),
         },
         "evidence_refs": sorted(
             {
@@ -195,9 +194,7 @@ class AdmissionEvaluationSnapshot(BaseModel):
             "object_type": object_type,
             "shadow_started_at": shadow_started_at,
             "evaluated_at": evaluated_at,
-            "expert_adjudicated_eligible_count": (
-                expert_adjudicated_eligible_count
-            ),
+            "expert_adjudicated_eligible_count": (expert_adjudicated_eligible_count),
             "critical_failures": tuple(sorted(critical_failures)),
             "escalation_recall": escalation_recall,
             "recall": recall,
@@ -264,9 +261,16 @@ class EvidenceBatch:
     changed_entities: tuple[Mapping[str, Any], ...] = ()
     candidate_pairs: tuple[Mapping[str, Any], ...] = ()
     evidence_records: tuple[Mapping[str, Any], ...] = ()
+    review_signals: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for name in ("batch_id", "scope", "source_generation_id", "freshness", "coverage"):
+        for name in (
+            "batch_id",
+            "scope",
+            "source_generation_id",
+            "freshness",
+            "coverage",
+        ):
             if not str(getattr(self, name) or "").strip():
                 raise ValueError(f"{name} must not be empty")
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
@@ -303,6 +307,23 @@ class EvidenceBatch:
                 scope=scope,
             ),
         )
+        review_signals = copy.deepcopy(dict(self.review_signals or {}))
+        signal_generation = str(
+            review_signals.get("source_generation_id") or ""
+        ).strip()
+        if review_signals and not signal_generation:
+            raise ValueError("non-empty review_signals requires source_generation_id")
+        if signal_generation != self.source_generation_id and review_signals:
+            raise ValueError("review_signals must match the batch generation")
+        serialized_signals = json.dumps(
+            review_signals,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        if len(serialized_signals.encode()) > MAX_REVIEW_SIGNALS_BYTES:
+            raise ValueError("review_signals exceeds the serialized byte limit")
+        object.__setattr__(self, "review_signals", review_signals)
 
     def all_records(self) -> tuple[Mapping[str, Any], ...]:
         """Return every complete record in deterministic category order."""
@@ -320,6 +341,7 @@ class EvidenceBatch:
             "changed_entities": copy.deepcopy(list(self.changed_entities)),
             "candidate_pairs": copy.deepcopy(list(self.candidate_pairs)),
             "evidence_records": copy.deepcopy(list(self.evidence_records)),
+            "review_signals": copy.deepcopy(dict(self.review_signals)),
         }
 
     @classmethod
@@ -336,6 +358,7 @@ class EvidenceBatch:
             changed_entities=tuple(value.get("changed_entities") or ()),
             candidate_pairs=tuple(value.get("candidate_pairs") or ()),
             evidence_records=tuple(value.get("evidence_records") or ()),
+            review_signals=dict(value.get("review_signals") or {}),
         )
 
 

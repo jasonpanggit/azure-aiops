@@ -311,12 +311,15 @@ def test_proposal_review_requires_approve_and_enforces_revision(
         "reason": "Evidence reproduced.",
     }
 
-    assert client.post(
-        f"/api/v1/ontology-discovery/proposals/{proposal_id}/review",
-        params=_scope(),
-        headers=_headers("operator"),
-        json=payload,
-    ).status_code == 403
+    assert (
+        client.post(
+            f"/api/v1/ontology-discovery/proposals/{proposal_id}/review",
+            params=_scope(),
+            headers=_headers("operator"),
+            json=payload,
+        ).status_code
+        == 403
+    )
 
     accepted = client.post(
         f"/api/v1/ontology-discovery/proposals/{proposal_id}/review",
@@ -329,6 +332,14 @@ def test_proposal_review_requires_approve_and_enforces_revision(
     assert decision["status"] == "accepted"
     assert decision["revision"] == 1
     assert all("actor" not in event for event in decision["events"])
+    assert decision["events"][0]["actor_roles"] == ["approver"]
+    assert (
+        decision["events"][0]["policy_version"]
+        == api_fixture["proposal_a"]["policy_version"]
+    )
+    assert decision["events"][0]["approved_at"]
+    assert decision["events"][0]["proposer_identity"] == "ontology_curator"
+    assert decision["events"][0]["separation_of_duty"] is True
 
     stale = client.post(
         f"/api/v1/ontology-discovery/proposals/{proposal_id}/review",
@@ -683,12 +694,15 @@ def test_maintenance_command_requires_distinct_authority_and_coordinator_cas(
         "maintenance/full-reconciliation-due"
     )
 
-    assert client.post(
-        path,
-        params={"subscription": SUB_A},
-        headers=_headers("operator"),
-        json=payload,
-    ).status_code == 403
+    assert (
+        client.post(
+            path,
+            params={"subscription": SUB_A},
+            headers=_headers("operator"),
+            json=payload,
+        ).status_code
+        == 403
+    )
     response = client.post(
         path,
         params={"subscription": SUB_A},

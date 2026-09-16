@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 from api.scope import Scope
-from fabric.gold_grounding_client import GoldGroundingUnavailable
-from fabric_pipelines.gold_grounding_contract import GoldGroundedFinding
+from fabric.gold_grounding_client import GoldGroundingQueryResult
+from fabric_pipelines.gold_grounding_contract import (
+    GoldGroundedFinding,
+    GoldGroundingStatus,
+)
 from operations.foundry_agent import AgentAnswer
-from operations.gold_grounding_specialist import answer_with_gold_grounding
+from operations.gold_grounding_specialist import (
+    answer_with_gold_grounding,
+    gold_grounding_configured,
+)
+
+RESOURCE = (
+    "/subscriptions/sub-1/resourceGroups/rg-1/providers/"
+    "Microsoft.Compute/virtualMachines/vm-a"
+)
+GENERATION = "generation-1"
 
 
 @dataclass(frozen=True)
@@ -18,9 +29,7 @@ class _Scope:
     gold_grounding_tool_name: str = "DataAgent_AI_Ops_Data_Agent"
     fabric_delegated_token: str = "delegated-token"
     evidence_refs: set[str] = frozenset({"ontology"})
-    resource_ids: set[str] = frozenset(
-        {"/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"}
-    )
+    resource_ids: set[str] = frozenset({RESOURCE})
 
 
 class _Agent:
@@ -43,13 +52,11 @@ class _ProviderContext:
 
 
 class _InventoryPort:
-    def __init__(self, mapping: dict[str, dict[str, object] | None]) -> None:
-        self.mapping = {key.casefold(): value for key, value in mapping.items()}
-        self.calls: list[tuple[object, str]] = []
+    def __init__(self, resource: dict[str, object] | None) -> None:
+        self.resource = resource
 
-    def get_resource(self, scope, resource_id: str):
-        self.calls.append((scope, resource_id))
-        return self.mapping.get(resource_id.casefold())
+    def get_resource(self, _scope, _resource_id: str):
+        return self.resource
 
 
 class _Metrics:
@@ -60,401 +67,294 @@ class _Metrics:
     def record_inventory_conflict(self) -> None:
         self.inventory_conflict_calls += 1
 
-    def record_query(
-        self, *, degraded: bool, degraded_reason: str, citation_count: int, duration_ms: float
-    ) -> None:
-        self.query_calls.append(
-            {
-                "degraded": degraded,
-                "degraded_reason": degraded_reason,
-                "citation_count": citation_count,
-                "duration_ms": duration_ms,
-            }
-        )
+    def record_query(self, **kwargs) -> None:
+        self.query_calls.append(kwargs)
 
 
 def _finding_line(
     *,
-    resource_ids: list[str] | None = None,
-    citations: list[dict[str, object]] | None = None,
+    resource_id: str = RESOURCE,
+    generation_id: str = GENERATION,
     summary: str = "gold finding",
 ) -> str:
-    payload = {
-        "finding_id": "gold-finding-1",
-        "resource_ids": resource_ids
-        or ["/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"],
-        "citations": citations
-        or [
-            {
-                "gold_table": "gold_business_service_health",
-                "row_key": "row-1",
-                "as_of": "2026-09-01T00:00:00Z",
-                "confidence": 0.9,
-            }
-        ],
-        "scope_ok": True,
-        "degraded": False,
-        "degraded_reason": "",
-        "summary": summary,
-    }
-    return GoldGroundedFinding.model_validate(payload).model_dump_json()
-
-
-def test_successful_query_merges_gold_evidence_into_existing_context(monkeypatch) -> None:
-    def fake_query_gold_grounding(**_kwargs):
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": _finding_line()}],
+    return GoldGroundedFinding.model_validate(
+        {
+            "finding_id": "gold-finding-1",
+            "generation_id": generation_id,
+            "citations": [
+                {
+                    "resource_id": resource_id,
+                    "generation_id": generation_id,
+                    "gold_table": "gold_business_service_health",
+                    "row_key": "row-1",
+                    "as_of": "2026-09-01T00:00:00Z",
+                    "confidence": 0.9,
+                }
+            ],
+            "scope_ok": True,
+            "summary": summary,
         }
+    ).model_dump_json()
+
+
+def _query_result(
+    status: GoldGroundingStatus,
+    *,
+    text: str = "",
+    reason: str = "",
+) -> GoldGroundingQueryResult:
+    payload = (
+        {"isError": False, "content": [{"type": "text", "text": text}]}
+        if status == GoldGroundingStatus.SUCCESS
+        else None
+    )
+    return GoldGroundingQueryResult(status, payload=payload, reason=reason)
+
+
+def _run(
+    monkeypatch,
+    result: GoldGroundingQueryResult,
+    *,
+    ontology_context: dict | None = None,
+    provider_context=None,
+    effective_scope=None,
+    metrics=None,
+) -> tuple[AgentAnswer, _Agent]:
+    async def fake_query(**_kwargs):
+        return result
 
     monkeypatch.setattr(
         "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
+        fake_query,
     )
     agent = _Agent()
-    ontology_context = {"findings": [{"summary": "ontology"}], "ontology_only": True}
-
-    answer = asyncio.run(
-        answer_with_gold_grounding(
-            question="What is the health?",
-            ontology_context=ontology_context,
-            scope=_Scope(),
-            agent=agent,
-        )
-    )
-
-    assert answer.text == "ok"
-    call = agent.calls[0]
-    merged_context = call["context"]
-    assert isinstance(merged_context, dict)
-    assert merged_context["ontology_only"] is True
-    assert merged_context["gold_grounding"] is not None
-    assert "gold_grounding" in call["evidence_refs"]
-
-
-def test_gold_unavailable_degrades_without_breaking_ontology_answer(monkeypatch) -> None:
-    def fake_query_gold_grounding(**_kwargs):
-        raise GoldGroundingUnavailable("mcp unavailable")
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    ontology_context = {"findings": [{"summary": "ontology-still-present"}]}
-
     answer = asyncio.run(
         answer_with_gold_grounding(
             question="What changed?",
-            ontology_context=ontology_context,
+            ontology_context=ontology_context
+            or {"generation_id": GENERATION, "findings": [{"summary": "ontology"}]},
             scope=_Scope(),
             agent=agent,
-        )
-    )
-
-    assert answer.text == "ok"
-    call = agent.calls[0]
-    merged_context = call["context"]
-    assert merged_context["findings"] == ontology_context["findings"]
-    assert merged_context["gold_grounding_degraded"] == "mcp unavailable"
-
-
-def test_unparseable_gold_response_degrades_without_claiming_gold_success(monkeypatch) -> None:
-    def fake_query_gold_grounding(**_kwargs):
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": "No structured findings available."}],
-        }
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    metrics = _Metrics()
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="What changed?",
-            ontology_context={"findings": [{"summary": "ontology-still-present"}]},
-            scope=_Scope(),
-            agent=agent,
-            metrics=metrics,
-        )
-    )
-
-    merged_context = agent.calls[0]["context"]
-    assert merged_context["gold_grounding"] is None
-    assert merged_context["gold_grounding_degraded"] == "unparseable Gold evidence"
-    assert metrics.query_calls[0]["degraded"] is True
-    assert metrics.query_calls[0]["citation_count"] == 0
-
-
-def test_gold_citations_are_ranked_and_truncated_before_ontology_context(monkeypatch) -> None:
-    now = datetime(2026, 9, 1, tzinfo=UTC)
-    citations: list[dict[str, object]] = []
-    for index in range(8):
-        citations.append(
-            {
-                "gold_table": "gold_topology",
-                "row_key": f"row-{index}-" + ("x" * 700),
-                "as_of": (now - timedelta(hours=index)).isoformat().replace("+00:00", "Z"),
-                "confidence": round(1.0 - (index * 0.1), 2),
-            }
-        )
-    # Scramble order so ranking must be applied.
-    unsorted = [citations[i] for i in (5, 7, 1, 6, 0, 4, 2, 3)]
-
-    def fake_query_gold_grounding(**_kwargs):
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": _finding_line(citations=unsorted)}],
-        }
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    ontology_context = {"ontology_payload": "o" * 19_000}
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="What depends on demo-vnet?",
-            ontology_context=ontology_context,
-            scope=_Scope(),
-            agent=agent,
-        )
-    )
-
-    merged_context = agent.calls[0]["context"]
-    assert merged_context["ontology_payload"] == ontology_context["ontology_payload"]
-    kept = merged_context["gold_grounding"]["findings"][0]["citations"]
-    assert len(kept) < len(unsorted)
-    assert kept[0]["row_key"].startswith("row-0-")
-    kept_row_indices = [int(citation["row_key"].split("-")[1]) for citation in kept]
-    assert kept_row_indices == sorted(kept_row_indices)
-
-
-def test_narration_call_sets_max_output_tokens_800(monkeypatch) -> None:
-    def fake_query_gold_grounding(**_kwargs):
-        return {"isError": False, "content": [{"type": "text", "text": _finding_line()}]}
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="Question",
-            ontology_context={"findings": []},
-            scope=_Scope(),
-            agent=agent,
-        )
-    )
-
-    assert agent.calls[0]["max_output_tokens"] == 800
-
-
-def test_inventory_missing_resource_adds_conflict_notice(monkeypatch) -> None:
-    def fake_query_gold_grounding(**_kwargs):
-        return {"isError": False, "content": [{"type": "text", "text": _finding_line()}]}
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    inventory = _InventoryPort(mapping={})
-    metrics = _Metrics()
-    effective_scope = Scope.from_mapping({"subscription": ["sub-1"]})
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="Question",
-            ontology_context={"findings": []},
-            scope=_Scope(),
-            agent=agent,
-            provider_context=_ProviderContext(inventory),
+            provider_context=provider_context,
             effective_scope=effective_scope,
             metrics=metrics,
         )
     )
+    return answer, agent
 
-    merged_context = agent.calls[0]["context"]
-    assert "gold_grounding_inventory_conflicts" in merged_context
-    conflicts = merged_context["gold_grounding_inventory_conflicts"]
-    assert conflicts[0]["reason"] == "resource_not_found"
-    assert conflicts[0]["citation"]["row_key"] == "row-1"
-    assert "Inventory is authoritative" in merged_context["gold_grounding_inventory_conflict_notice"]
+
+def test_successful_query_merges_generation_bound_evidence(monkeypatch) -> None:
+    requested: dict[str, str] = {}
+
+    async def fake_query(**kwargs):
+        requested["question"] = kwargs["question"]
+        return _query_result(
+            GoldGroundingStatus.SUCCESS,
+            text=_finding_line(),
+        )
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query,
+    )
+    inventory = {
+        "resource_id": RESOURCE,
+        "subscription_id": "sub-1",
+        "resource_group": "rg-1",
+        "lifecycle_status": "active",
+    }
+    agent = _Agent()
+    answer = asyncio.run(
+        answer_with_gold_grounding(
+            question="What changed?",
+            ontology_context={
+                "generation_id": GENERATION,
+                "findings": [{"summary": "ontology"}],
+            },
+            scope=_Scope(),
+            agent=agent,
+            provider_context=_ProviderContext(_InventoryPort(inventory)),
+            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
+        )
+    )
+
+    assert answer.text == "ok"
+    assert f"PINNED_GENERATION_ID={GENERATION}" in requested["question"]
+    assert '"subscription":["sub-1"]' in requested["question"]
+    assert RESOURCE in requested["question"]
+    call = agent.calls[0]
+    assert call["context"]["gold_grounding"]["status"] == "success"
+    assert call["context"]["gold_grounding"]["generation_id"] == GENERATION
+    assert (
+        call["context"]["gold_grounding"]["findings"][0]["summary"]
+        == "1 scoped Gold citation available for deterministic review."
+    )
+    assert "gold finding" not in str(call["context"])
+    assert "gold_grounding" in call["evidence_refs"]
+    assert call["max_output_tokens"] == 800
+
+
+def test_transport_failure_degrades_without_breaking_ontology(monkeypatch) -> None:
+    _, agent = _run(
+        monkeypatch,
+        _query_result(
+            GoldGroundingStatus.UNAVAILABLE,
+            reason="mcp unavailable",
+        ),
+    )
+
+    context = agent.calls[0]["context"]
+    assert context["findings"] == [{"summary": "ontology"}]
+    assert context["gold_grounding"]["status"] == "unavailable"
+    assert context["gold_grounding"]["findings"] == []
+    assert context["gold_grounding_degraded"] == "mcp unavailable"
+
+
+def test_unparseable_and_stale_evidence_are_distinct(monkeypatch) -> None:
+    _, malformed_agent = _run(
+        monkeypatch,
+        _query_result(
+            GoldGroundingStatus.SUCCESS,
+            text="No structured findings available.",
+        ),
+    )
+    _, stale_agent = _run(
+        monkeypatch,
+        _query_result(
+            GoldGroundingStatus.SUCCESS,
+            text=_finding_line(generation_id="generation-2"),
+        ),
+    )
+
+    assert (
+        malformed_agent.calls[0]["context"]["gold_grounding"]["status"] == "malformed"
+    )
+    assert stale_agent.calls[0]["context"]["gold_grounding"]["status"] == "stale"
+
+
+def test_manifest_backed_empty_proof_is_healthy_empty(monkeypatch) -> None:
+    proof = (
+        '{"status":"healthy_empty","generation_id":"generation-1",'
+        '"gold_table":"metadata_exposure_gold_generations",'
+        '"row_key":"generation-1","as_of":"2026-09-01T00:00:00Z",'
+        '"reconciliation_status":"reconciled","scoped_row_count":0,'
+        '"scope_ok":true}'
+    )
+    _, agent = _run(
+        monkeypatch,
+        _query_result(GoldGroundingStatus.SUCCESS, text=proof),
+        ontology_context={
+            "generation_id": GENERATION,
+            "findings": [],
+            "gold_empty_manifest": {
+                "status": "healthy_empty",
+                "generation_id": GENERATION,
+                "gold_table": "metadata_exposure_gold_generations",
+                "row_key": GENERATION,
+                "as_of": "2026-09-01T00:00:00Z",
+                "reconciliation_status": "reconciled",
+                "scoped_row_count": 0,
+                "scope_ok": True,
+            },
+        },
+    )
+
+    context = agent.calls[0]["context"]
+    assert context["gold_grounding"]["status"] == "healthy_empty"
+    assert context["gold_grounding"]["empty_proof"]["row_key"] == GENERATION
+
+
+def test_missing_generation_skips_data_agent(monkeypatch) -> None:
+    called = False
+
+    async def fake_query(**_kwargs):
+        nonlocal called
+        called = True
+        return _query_result(GoldGroundingStatus.SUCCESS, text=_finding_line())
+
+    monkeypatch.setattr(
+        "operations.gold_grounding_specialist.query_gold_grounding",
+        fake_query,
+    )
+    agent = _Agent()
+    asyncio.run(
+        answer_with_gold_grounding(
+            question="What changed?",
+            ontology_context={"findings": []},
+            scope=_Scope(),
+            agent=agent,
+        )
+    )
+
+    assert called is False
+    assert (
+        agent.calls[0]["context"]["gold_grounding_degraded"]
+        == "ontology generation is not pinned"
+    )
+
+
+def test_environment_token_is_not_treated_as_caller_delegation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "workspace-id")
+    monkeypatch.setenv("FABRIC_GOLD_GROUNDING_AGENT_ID", "agent-id")
+    monkeypatch.setenv("FABRIC_DELEGATED_TOKEN", "shared-token")
+
+    assert gold_grounding_configured(Scope.unrestricted()) is False
+
+
+def test_inventory_conflict_withholds_untrusted_evidence(monkeypatch) -> None:
+    metrics = _Metrics()
+    _, agent = _run(
+        monkeypatch,
+        _query_result(
+            GoldGroundingStatus.SUCCESS,
+            text=_finding_line(summary="must not reach narration"),
+        ),
+        provider_context=_ProviderContext(_InventoryPort(None)),
+        effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
+        metrics=metrics,
+    )
+
+    context = agent.calls[0]["context"]
+    assert context["gold_grounding"]["status"] == "unavailable"
+    assert context["gold_grounding"]["findings"] == []
+    assert context["gold_grounding_inventory_conflicts"] == [
+        {"reason": "resource_not_found"}
+    ]
+    assert "must not reach narration" not in str(context)
     assert metrics.inventory_conflict_calls == 1
-    assert inventory.calls and inventory.calls[0][0] == effective_scope
 
 
-def test_inventory_ownership_or_lifecycle_mismatch_adds_conflict_notice(monkeypatch) -> None:
-    resource_a = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
-    resource_b = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-b"
-
-    def fake_query_gold_grounding(**_kwargs):
-        return {
-            "isError": False,
-            "content": [
-                {
-                    "type": "text",
-                    "text": _finding_line(
-                        resource_ids=[resource_a, resource_b],
-                        citations=[
-                            {
-                                "gold_table": "gold_business_service_health",
-                                "row_key": "row-subscription-mismatch",
-                                "as_of": "2026-09-01T00:00:00Z",
-                                "confidence": 0.9,
-                            },
-                            {
-                                "gold_table": "gold_business_service_health",
-                                "row_key": "row-lifecycle-retired",
-                                "as_of": "2026-09-01T00:00:00Z",
-                                "confidence": 0.8,
-                            },
-                        ],
-                    ),
-                }
-            ],
-        }
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    inventory = _InventoryPort(
-        mapping={
-            resource_a: {
-                "resource_id": resource_a,
-                "subscription_id": "sub-other",
-                "resource_group": "rg-1",
-                "lifecycle_status": "active",
-            },
-            resource_b: {
-                "resource_id": resource_b,
-                "subscription_id": "sub-1",
-                "resource_group": "rg-1",
-                "lifecycle_status": "retired",
-            },
-        }
-    )
-    metrics = _Metrics()
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="Question",
-            ontology_context={"findings": []},
-            scope=_Scope(resource_ids=frozenset({resource_a, resource_b})),
-            agent=agent,
-            provider_context=_ProviderContext(inventory),
-            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
-            metrics=metrics,
-        )
+def test_inventory_agreement_preserves_evidence(monkeypatch) -> None:
+    inventory = {
+        "resource_id": RESOURCE,
+        "subscription_id": "sub-1",
+        "resource_group": "rg-1",
+        "lifecycle_status": "active",
+    }
+    _, agent = _run(
+        monkeypatch,
+        _query_result(GoldGroundingStatus.SUCCESS, text=_finding_line()),
+        provider_context=_ProviderContext(_InventoryPort(inventory)),
+        effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
     )
 
-    conflicts = agent.calls[0]["context"]["gold_grounding_inventory_conflicts"]
-    reasons = {conflict["reason"] for conflict in conflicts}
-    assert "subscription_mismatch" in reasons
-    assert "lifecycle_mismatch" in reasons
-    assert metrics.inventory_conflict_calls == 2
+    context = agent.calls[0]["context"]
+    assert context["gold_grounding"]["status"] == "success"
+    assert len(context["gold_grounding"]["findings"]) == 1
+    assert "gold_grounding_inventory_conflicts" not in context
 
 
-def test_inventory_conflict_counter_increments_per_conflicting_citation(monkeypatch) -> None:
-    resource = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
-
-    def fake_query_gold_grounding(**_kwargs):
-        return {
-            "isError": False,
-            "content": [
-                {
-                    "type": "text",
-                    "text": _finding_line(
-                        resource_ids=[resource],
-                        citations=[
-                            {
-                                "gold_table": "gold_business_service_health",
-                                "row_key": "row-conflict-1",
-                                "as_of": "2026-09-01T00:00:00Z",
-                                "confidence": 0.9,
-                            },
-                            {
-                                "gold_table": "gold_business_service_health",
-                                "row_key": "row-conflict-2",
-                                "as_of": "2026-09-01T00:00:00Z",
-                                "confidence": 0.8,
-                            },
-                        ],
-                    ),
-                }
-            ],
-        }
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    inventory = _InventoryPort(mapping={resource: None})
-    metrics = _Metrics()
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="Question",
-            ontology_context={"findings": []},
-            scope=_Scope(resource_ids=frozenset({resource})),
-            agent=agent,
-            provider_context=_ProviderContext(inventory),
-            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
-            metrics=metrics,
-        )
+def test_transport_timeout_is_preserved_for_narration(monkeypatch) -> None:
+    _, agent = _run(
+        monkeypatch,
+        _query_result(
+            GoldGroundingStatus.TIMEOUT,
+            reason="Gold-grounding Data Agent exceeded the 30-second request budget",
+        ),
     )
 
-    assert metrics.inventory_conflict_calls == 2
-    assert len(agent.calls[0]["context"]["gold_grounding_inventory_conflicts"]) == 2
-
-
-def test_inventory_agreement_adds_no_conflict_and_no_counter_increment(monkeypatch) -> None:
-    resource = "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/virtualMachines/vm-a"
-
-    def fake_query_gold_grounding(**_kwargs):
-        return {"isError": False, "content": [{"type": "text", "text": _finding_line(resource_ids=[resource])}]}
-
-    monkeypatch.setattr(
-        "operations.gold_grounding_specialist.query_gold_grounding",
-        fake_query_gold_grounding,
-    )
-    agent = _Agent()
-    inventory = _InventoryPort(
-        mapping={
-            resource: {
-                "resource_id": resource,
-                "subscription_id": "sub-1",
-                "resource_group": "rg-1",
-                "lifecycle_status": "active",
-            }
-        }
-    )
-    metrics = _Metrics()
-
-    asyncio.run(
-        answer_with_gold_grounding(
-            question="Question",
-            ontology_context={"findings": []},
-            scope=_Scope(resource_ids=frozenset({resource})),
-            agent=agent,
-            provider_context=_ProviderContext(inventory),
-            effective_scope=Scope.from_mapping({"subscription": ["sub-1"]}),
-            metrics=metrics,
-        )
-    )
-
-    merged_context = agent.calls[0]["context"]
-    assert "gold_grounding_inventory_conflicts" not in merged_context
-    assert metrics.inventory_conflict_calls == 0
+    context = agent.calls[0]["context"]
+    assert context["gold_grounding"]["status"] == "timeout"
+    assert "request budget" in context["gold_grounding_degraded"]

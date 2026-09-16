@@ -336,10 +336,7 @@ class OntologyDiscoveryApi:
         can_rollback = bool(
             prior_generation
             and selection.pointer_etag
-            and (
-                self.command_intake is not None
-                or self._rollback_action is not None
-            )
+            and (self.command_intake is not None or self._rollback_action is not None)
         )
         reason = ""
         if not prior_generation:
@@ -420,9 +417,7 @@ class OntologyDiscoveryApi:
                     idempotency_key=idempotency_key,
                     reason=reason,
                     target_generation_id=generation_id,
-                    observed_active_generation=str(
-                        generation["active_generation"]
-                    ),
+                    observed_active_generation=str(generation["active_generation"]),
                     observed_pointer_etag=expected_etag,
                 )
             )
@@ -543,9 +538,7 @@ class OntologyDiscoveryApi:
         proposals = self.proposals(connection)
         pending = [
             self._project_pending(row)
-            for row in self.run_store.list_pending_relationships(
-                include_terminal=False
-            )
+            for row in self.run_store.list_pending_relationships(include_terminal=False)
             if self._scope_text_matches(str(row.get("scope") or ""), connection)
         ][:500]
         return {
@@ -599,11 +592,9 @@ class OntologyDiscoveryApi:
         projected["message"] = scrub(record.get("message"))
         status = str(record.get("status") or "")
         can_cancel = status in {RUN_QUEUED, RUN_RUNNING, RUN_RETRYING}
-        can_retry = (
-            status in {RUN_FAILED, RUN_CANCELLED}
-            and int(record.get("attempt_count") or 0)
-            < int(record.get("max_attempts") or 0)
-        )
+        can_retry = status in {RUN_FAILED, RUN_CANCELLED} and int(
+            record.get("attempt_count") or 0
+        ) < int(record.get("max_attempts") or 0)
         projected.update(
             {
                 "can_cancel": can_cancel,
@@ -633,7 +624,18 @@ class OntologyDiscoveryApi:
             "events": [
                 {
                     key: event.get(key)
-                    for key in ("revision", "action", "status", "reason", "recorded_at")
+                    for key in (
+                        "revision",
+                        "action",
+                        "status",
+                        "actor_roles",
+                        "policy_version",
+                        "approved_at",
+                        "proposer_identity",
+                        "separation_of_duty",
+                        "reason",
+                        "recorded_at",
+                    )
                 }
                 for event in list(review.get("events") or ())[-50:]
                 if isinstance(event, Mapping)
@@ -651,14 +653,12 @@ class OntologyDiscoveryApi:
         return {
             "proposal_id": str(record.get("proposal_id") or ""),
             "proposal": safe_proposal,
-            "source_generation_id": str(
-                record.get("source_generation_id") or ""
-            ),
+            "proposer_identity": str(record.get("proposer_identity") or ""),
+            "proposer_kind": str(record.get("proposer_kind") or ""),
+            "source_generation_id": str(record.get("source_generation_id") or ""),
             "schema_version": str(record.get("schema_version") or ""),
             "policy_version": str(record.get("policy_version") or ""),
-            "supersedes_proposal_id": str(
-                record.get("supersedes_proposal_id") or ""
-            ),
+            "supersedes_proposal_id": str(record.get("supersedes_proposal_id") or ""),
             "created_at": str(record.get("created_at") or ""),
             "review": cls._project_review(record.get("review") or {}),
         }
@@ -720,9 +720,7 @@ class OntologyDiscoveryApi:
         connection: Mapping[str, Any],
     ) -> bool:
         tokens = {
-            token
-            for token in re.split(r"[^a-z0-9_.-]+", value.casefold())
-            if token
+            token for token in re.split(r"[^a-z0-9_.-]+", value.casefold()) if token
         }
         identifiers = {
             str(connection.get("connection_id") or "").casefold(),
@@ -740,7 +738,11 @@ class OntologyDiscoveryApi:
             "pointer_etag": "",
             "fence": 0,
             "complete": False,
-            "validation": {"passed": False, "errors": [], "model_derived_relationships": 0},
+            "validation": {
+                "passed": False,
+                "errors": [],
+                "model_derived_relationships": 0,
+            },
             "compatibility": {"all_consumers_compatible": False},
             "publication": {"intent": "", "result": ""},
             "can_rollback": False,
@@ -1015,7 +1017,7 @@ def review_proposal(
             action=payload.action,
             expected_revision=payload.expected_revision,
             actor=principal.subject,
-            actor_roles={*principal.org_roles, "ontology_steward"},
+            actor_roles=set(principal.roles()),
             reason=payload.reason,
         )
     except ProposalReviewConflict as exc:

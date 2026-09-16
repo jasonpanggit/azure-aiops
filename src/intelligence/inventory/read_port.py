@@ -33,7 +33,12 @@ class InventoryReadPort:
                 for row in rows
                 if str(row.get("resource_type") or "").casefold() == wanted
             ]
-        rows.sort(key=lambda row: (str(row.get("family") or ""), str(row.get("resource_id") or "")))
+        rows.sort(
+            key=lambda row: (
+                str(row.get("family") or ""),
+                str(row.get("resource_id") or ""),
+            )
+        )
         return {
             "resources": rows[offset : offset + limit],
             "total": len(rows),
@@ -46,12 +51,12 @@ class InventoryReadPort:
         wanted = str(resource_id or "").casefold()
         if not wanted:
             return None
-        for row in self.list_resources(scope, limit=10_000)["resources"]:
-            if str(row.get("resource_id") or "").casefold() == wanted:
-                resolved = dict(row)
-                resolved["containment"] = self._containment_for(row)
-                return resolved
-        return None
+        row = self.service.resource(scope, wanted)
+        if row is None:
+            return None
+        resolved = dict(row)
+        resolved["containment"] = self._containment_for(row)
+        return resolved
 
     def list_containment(self, scope: Any) -> list[dict[str, Any]]:
         """Return management-group/subscription/resource-group rows derived
@@ -74,7 +79,9 @@ class InventoryReadPort:
                     "subscription_id": subscription_id,
                 }
             if resource_group:
-                rg_key = f"{subscription_key}/resourcegroups/{resource_group}".casefold()
+                rg_key = (
+                    f"{subscription_key}/resourcegroups/{resource_group}".casefold()
+                )
                 if rg_key not in containment:
                     containment[rg_key] = {
                         "id": rg_key,
@@ -88,7 +95,9 @@ class InventoryReadPort:
     def _containment_for(self, row: dict[str, Any]) -> dict[str, Any]:
         subscription_id = str(row.get("subscription_id") or "").strip()
         resource_group = str(row.get("resource_group") or "").strip()
-        subscription_key = f"/subscriptions/{subscription_id}".casefold() if subscription_id else ""
+        subscription_key = (
+            f"/subscriptions/{subscription_id}".casefold() if subscription_id else ""
+        )
         resource_group_key = (
             f"{subscription_key}/resourcegroups/{resource_group}".casefold()
             if subscription_key and resource_group

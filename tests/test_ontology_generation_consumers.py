@@ -42,9 +42,7 @@ class _RemoteStore:
     is_remote = True
     root = "lake/ontology"
     generations = "lake/ontology/generations"
-    uri_generations = (
-        "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/ontology/generations"
-    )
+    uri_generations = "abfss://workspace@onelake.dfs.fabric.microsoft.com/lake/Files/ontology/generations"
     pointer_path = "lake/ontology/current.json"
 
     def __init__(self) -> None:
@@ -96,9 +94,9 @@ def test_resolver_returns_one_immutable_generation_snapshot():
             "source_generation": "inventory-42",
         }
     )
-    store.fs.files[
-        f"{store.generations}/generation-new/ontology_entities.jsonl"
-    ] = '{"resource_id":"new"}\n'
+    store.fs.files[f"{store.generations}/generation-new/ontology_entities.jsonl"] = (
+        '{"resource_id":"new"}\n'
+    )
 
     # A request keeps using the originally selected immutable generation.
     assert resolver.read_dataset("ontology_entities", selection=selection) == [
@@ -188,12 +186,12 @@ def test_api_generation_loader_pins_one_generation_for_the_mapper():
             "source_generation": "inventory-42",
         }
     )
-    store.fs.files[
-        f"{store.generations}/generation-new/manifest.json"
-    ] = '{"sourceGeneration":"inventory-42"}'
-    store.fs.files[
-        f"{store.generations}/generation-new/ontology_entities.jsonl"
-    ] = '{"resource_id":"new"}\n'
+    store.fs.files[f"{store.generations}/generation-new/manifest.json"] = (
+        '{"sourceGeneration":"inventory-42"}'
+    )
+    store.fs.files[f"{store.generations}/generation-new/ontology_entities.jsonl"] = (
+        '{"resource_id":"new"}\n'
+    )
     new_tables, new_selection = _load_generation_tables(store, _Mapper(), "run-new")
     store.fs.files[store.pointer_path] = json.dumps(
         {
@@ -206,11 +204,17 @@ def test_api_generation_loader_pins_one_generation_for_the_mapper():
         store, _Mapper(), "run-rollback"
     )
 
-    assert [old_tables["ontology_entities"][0]["resource_id"], old_selection.generation_id] == [
+    assert [
+        old_tables["ontology_entities"][0]["resource_id"],
+        old_selection.generation_id,
+    ] == [
         "old",
         "generation-old",
     ]
-    assert [new_tables["ontology_entities"][0]["resource_id"], new_selection.generation_id] == [
+    assert [
+        new_tables["ontology_entities"][0]["resource_id"],
+        new_selection.generation_id,
+    ] == [
         "new",
         "generation-new",
     ]
@@ -248,6 +252,23 @@ def test_fabric_alias_preserves_public_table_names_and_binds_generation():
     # Existing Fabric Data Agent datasource schema remains unchanged; the
     # versioned alias binding is enforced before the definition is built.
     assert "generationBinding" not in datasource
+    assert datasource["metadata"] == {
+        "ontologyGenerationId": "generation-old",
+        "sourceGenerationId": "inventory-41",
+        "compatibilityAliasVersion": COMPATIBILITY_ALIAS_VERSION,
+        "compatibilityAliasBindings": json.dumps(
+            {
+                "ontology_entities": (
+                    "lake/ontology/generations/generation-old/ontology_entities"
+                ),
+                "ontology_relationships": (
+                    "lake/ontology/generations/generation-old/ontology_relationships"
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
     assert {table["name"] for table in model["model"]["tables"]} == {
         "ontology_entities",
         "ontology_relationships",

@@ -39,6 +39,7 @@ from .curator import OntologyCurator
 from .dispatch_store import CoordinatorDispatchView, PublisherDispatchStore
 from .incremental import classify_incremental, normalize_graph_state
 from .policy import ProposalPolicy
+from .review_signals import build_review_signals
 from .store import RUN_FAILED, RUN_SUCCEEDED, OntologyRunStore, RunClaimConflict
 
 _ALLOWED_RUNTIME_MODES = frozenset({"production", "validation"})
@@ -126,9 +127,7 @@ class ProductionRuntimeConfig:
         return cls(
             runtime_mode=runtime_mode,
             **roots,
-            foundry_endpoint=_foundry_endpoint(
-                values.get("FOUNDRY_PROJECT_ENDPOINT")
-            ),
+            foundry_endpoint=_foundry_endpoint(values.get("FOUNDRY_PROJECT_ENDPOINT")),
             agent_name=_required(
                 values.get("FOUNDRY_ONTOLOGY_AGENT_NAME"),
                 "FOUNDRY_ONTOLOGY_AGENT_NAME",
@@ -215,9 +214,7 @@ class CoordinatorIntakeAdapter:
                     actor_hash=claimed["actor_hash"],
                     reason=claimed["reason"],
                     cadence_seconds=claimed.get("cadence_seconds"),
-                    expected_revision=int(
-                        claimed["expected_cadence_revision"]
-                    ),
+                    expected_revision=int(claimed["expected_cadence_revision"]),
                     now=moment,
                 )
             else:  # Defensive: the typed consumer should never return rollback.
@@ -267,9 +264,9 @@ class CoordinatorIntakeAdapter:
             return None, "connection_not_found"
         if not connection.is_active:
             return None, "connection_inactive"
-        configured_environment = str(
-            connection.metadata.get("environment") or ""
-        ).strip().casefold()
+        configured_environment = (
+            str(connection.metadata.get("environment") or "").strip().casefold()
+        )
         if configured_environment and configured_environment != self._environment:
             return None, "environment_mismatch"
         if connection.metadata.get("ontology_discovery_enabled") is False:
@@ -311,9 +308,7 @@ class EligibleConnectionScheduler:
             raise ValueError("production coordinator limit must be exactly 1")
         moment = self.now()
         eligible, revision = self._eligible_snapshot()
-        registry_hash = _hash_json(
-            [connection.to_dict() for connection in eligible]
-        )
+        registry_hash = _hash_json([connection.to_dict() for connection in eligible])
         epoch = self.run_store.ensure_eligible_epoch(
             member_ids=[connection.connection_id for connection in eligible],
             registry_revision=revision,
@@ -329,24 +324,24 @@ class EligibleConnectionScheduler:
             "duplicates": 0,
             "epoch_drained": epoch["status"] == "drained",
         }
-        member = self.run_store.claim_next_epoch_member(
-            epoch["epoch_id"], now=moment
-        )
+        member = self.run_store.claim_next_epoch_member(epoch["epoch_id"], now=moment)
         if member is None:
             latest = self.run_store.active_or_latest_epoch()
-            counts["epoch_drained"] = bool(
-                latest and latest["status"] == "drained"
-            )
+            counts["epoch_drained"] = bool(latest and latest["status"] == "drained")
             return counts
         counts["selected"] = 1
         connection_id = member["connection_id"]
         try:
             connection = self.registry.get(connection_id)
         except ConnectionNotFoundError:
-            return self._exclude(epoch["epoch_id"], connection_id, "connection_deleted", moment, counts)
+            return self._exclude(
+                epoch["epoch_id"], connection_id, "connection_deleted", moment, counts
+            )
         reason = self._ineligible_reason(connection)
         if reason:
-            return self._exclude(epoch["epoch_id"], connection_id, reason, moment, counts)
+            return self._exclude(
+                epoch["epoch_id"], connection_id, reason, moment, counts
+            )
 
         source_generation_id = self.source_generation(connection)
         run, created = self.run_store.get_or_create_run(
@@ -419,8 +414,7 @@ class EligibleConnectionScheduler:
                 next_attempt_at=(
                     None
                     if exhausted
-                    else moment
-                    + timedelta(seconds=self.run_store.retry_base_seconds)
+                    else moment + timedelta(seconds=self.run_store.retry_base_seconds)
                 ),
                 now=moment,
             )
@@ -435,9 +429,7 @@ class EligibleConnectionScheduler:
             fencing_token=claimed["fencing_token"],
             checkpoint="publisher_dispatch_created",
             payload={
-                key: result[key]
-                for key in ("status", "dispatch_id")
-                if key in result
+                key: result[key] for key in ("status", "dispatch_id") if key in result
             },
             now=moment,
         )
@@ -467,9 +459,9 @@ class EligibleConnectionScheduler:
     def _ineligible_reason(self, connection: SubscriptionConnection) -> str:
         if not connection.is_active:
             return "connection_inactive"
-        configured_environment = str(
-            connection.metadata.get("environment") or ""
-        ).strip().casefold()
+        configured_environment = (
+            str(connection.metadata.get("environment") or "").strip().casefold()
+        )
         if configured_environment and configured_environment != self.environment:
             return "environment_mismatch"
         if connection.metadata.get("ontology_discovery_enabled") is False:
@@ -564,8 +556,7 @@ class ProductionConnectionProcessor:
             now=observed_at,
         )
         row_hashes = {
-            str(row["resource_id"]).casefold(): _hash_json(row)
-            for row in entities
+            str(row["resource_id"]).casefold(): _hash_json(row) for row in entities
         }
         delta = classify_incremental(
             previous_row_hashes={},
@@ -601,6 +592,11 @@ class ProductionConnectionProcessor:
                 for row in relationships
             ],
             "evidence_records": evidence_records,
+            "review_signals": build_review_signals(
+                entities=entities,
+                relationships=relationships,
+                source_generation_id=run["source_generation_id"],
+            ),
             "source_generation_id": run["source_generation_id"],
             "observed_at": observed_at,
             "freshness": "current",
@@ -628,12 +624,8 @@ class ProductionConnectionProcessor:
                     now=observed_at,
                 )
                 proposal_records.append(record)
-        entity_index = {
-            str(row["resource_id"]).casefold(): row for row in entities
-        }
-        evidence_index = {
-            str(row["evidence_id"]): row for row in evidence_records
-        }
+        entity_index = {str(row["resource_id"]).casefold(): row for row in entities}
+        evidence_index = {str(row["evidence_id"]): row for row in evidence_records}
         governed = self.policy_coordinator.build_candidate(
             proposals=proposal_records,
             deterministic_edges=relationships,
@@ -646,13 +638,16 @@ class ProductionConnectionProcessor:
         report = self.validator.validate(entities, candidate_relationships)
         if not report.passed:
             raise RuntimeError("ontology_candidate_validation_failed")
-        generation_id = "ontology-" + _hash_json(
-            {
-                "entities": entities,
-                "relationships": candidate_relationships,
-                "source_generation_id": run["source_generation_id"],
-            }
-        )[:24]
+        generation_id = (
+            "ontology-"
+            + _hash_json(
+                {
+                    "entities": entities,
+                    "relationships": candidate_relationships,
+                    "source_generation_id": run["source_generation_id"],
+                }
+            )[:24]
+        )
         dispatch, _ = self.dispatch.create_publish(
             run_id=run["run_id"],
             connection_id=connection.connection_id,
@@ -661,9 +656,7 @@ class ProductionConnectionProcessor:
                 "generation_id": generation_id,
                 "entities": entities,
                 "relationships": candidate_relationships,
-                "proposal_lineage": [
-                    row["proposal_id"] for row in proposal_records
-                ],
+                "proposal_lineage": [row["proposal_id"] for row in proposal_records],
                 "decision_lineage": [
                     f"decision:{decision.proposal_id}:{'admitted' if decision.admitted else 'shadow-excluded'}"
                     for decision in governed["decisions"]
@@ -813,10 +806,7 @@ class ValidationFixtureLifecycle:
         source_connection = source_candidates[0]
         connection_ids = [
             source_connection.connection_id,
-            *[
-                f"{prefix}-{role}"
-                for role in _FIXTURE_ROLES[1:]
-            ],
+            *[f"{prefix}-{role}" for role in _FIXTURE_ROLES[1:]],
         ]
         for index, (connection_id, role) in enumerate(
             zip(connection_ids, _FIXTURE_ROLES, strict=True), start=1
@@ -824,9 +814,7 @@ class ValidationFixtureLifecycle:
             metadata = {
                 "environment": "validation",
                 "ontology_discovery_enabled": True,
-                "fixture_drill_hash": hashlib.sha256(
-                    drill_id.encode()
-                ).hexdigest(),
+                "fixture_drill_hash": hashlib.sha256(drill_id.encode()).hexdigest(),
                 "fixture_role": role,
                 "fixture_owner_hash": self.owner_hash,
                 "fixture_fence": fence,
@@ -845,9 +833,7 @@ class ValidationFixtureLifecycle:
                         },
                     }
                 )
-                fixture_connection = SubscriptionConnection.from_mapping(
-                    source_payload
-                )
+                fixture_connection = SubscriptionConnection.from_mapping(source_payload)
             else:
                 fixture_connection = SubscriptionConnection(
                     connection_id=connection_id,
@@ -867,9 +853,7 @@ class ValidationFixtureLifecycle:
                     ),
                     metadata=metadata,
                 )
-            self.registry.add(
-                fixture_connection
-            )
+            self.registry.add(fixture_connection)
         revision = self.registry.revision()
         epoch = self.state.ensure_eligible_epoch(
             member_ids=connection_ids,
@@ -946,9 +930,7 @@ class ValidationFixtureLifecycle:
             now=moment,
         )
         record["status"] = "swept" if expired_only else "cleaned"
-        record["receipts"].append(
-            {"event": record["status"], "at": moment.isoformat()}
-        )
+        record["receipts"].append({"event": record["status"], "at": moment.isoformat()})
         self._write_control(control)
         return copy.deepcopy(record)
 
@@ -1109,9 +1091,7 @@ def _authorization_audit(
     command: Mapping[str, Any], *, outcome: str, reason_code: str
 ) -> dict[str, Any]:
     return {
-        "command_hash": hashlib.sha256(
-            str(command["command_id"]).encode()
-        ).hexdigest(),
+        "command_hash": hashlib.sha256(str(command["command_id"]).encode()).hexdigest(),
         "actor_hash": command["actor_hash"],
         "scope_hash": command["effective_scope_hash"],
         "action": command["action"],
@@ -1121,9 +1101,7 @@ def _authorization_audit(
 
 
 def _hash_json(value: object) -> str:
-    canonical = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), default=str
-    )
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 

@@ -72,12 +72,14 @@ def _service() -> InventoryService:
                     "source_table": "Resources",
                     "observed_at": "2026-08-26T06:00:00Z",
                     "query_version": "resource-observation-v1",
-                    "provider_payload_json": "{\"secret\":\"internal\"}",
+                    "provider_payload_json": '{"secret":"internal"}',
                     "tags_json": "{}",
                     "provenance_json": "{}",
                 }
             ],
-            "software_source_status": {"logs": {"state": "degraded", "error": "timeout"}},
+            "software_source_status": {
+                "logs": {"state": "degraded", "error": "timeout"}
+            },
         }
     )
 
@@ -87,7 +89,9 @@ def test_read_port_scope_family_type_and_lookup_semantics() -> None:
     scope = Scope.from_mapping({"subscription": ["sub-a"]})
 
     listed = port.list_resources(scope)
-    narrowed = port.list_resources(scope, family="paas", resource_type="microsoft.web/sites")
+    narrowed = port.list_resources(
+        scope, family="paas", resource_type="microsoft.web/sites"
+    )
     absent = port.get_resource(scope, "missing")
     out_of_scope = port.get_resource(
         scope,
@@ -119,9 +123,12 @@ def test_api_cross_family_route_matches_read_port(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["resources"] == InventoryReadPort(service).list_resources(
-        Scope.from_mapping({"subscription": ["sub-a"]}), limit=100
-    )["resources"]
+    assert (
+        response.json()["data"]["resources"]
+        == InventoryReadPort(service).list_resources(
+            Scope.from_mapping({"subscription": ["sub-a"]}), limit=100
+        )["resources"]
+    )
 
 
 def test_list_containment_returns_strict_parent_chain() -> None:
@@ -167,7 +174,9 @@ def test_get_resource_includes_containment_sub_object() -> None:
     assert containment["management_group_id"] is None
 
 
-def test_get_resource_without_resource_group_resolves_subscription_only_containment() -> None:
+def test_get_resource_without_resource_group_resolves_subscription_only_containment() -> (
+    None
+):
     service = InventoryService(
         {
             "observations": [],
@@ -213,6 +222,39 @@ def test_get_resource_without_resource_group_resolves_subscription_only_containm
     containment = resolved["containment"]
     assert containment["subscription_id"] == "/subscriptions/sub-a"
     assert containment["resource_group_id"] is None
+
+
+def test_get_resource_is_not_limited_to_first_ten_thousand_rows() -> None:
+    observations = [
+        {
+            "resource_id": (
+                f"/subscriptions/sub-a/resourceGroups/rg/providers/"
+                f"Microsoft.Compute/virtualMachines/vm-{index:05d}"
+            ),
+            "machine_name": f"vm-{index:05d}",
+            "source_type": "azure_vm",
+            "os_name": "Linux",
+            "os_version": "Unknown",
+            "subscription_id": "sub-a",
+            "resource_group": "rg",
+            "environment": "prod",
+            "observed_at": "2026-08-26T06:00:00Z",
+            "source_status": "ready",
+            "evidence": [],
+        }
+        for index in range(10_001)
+    ]
+    port = InventoryReadPort(InventoryService({"observations": observations}))
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+
+    resolved = port.get_resource(
+        scope,
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-10000",
+    )
+
+    assert resolved is not None
+    assert resolved["resource_name"] == "vm-10000"
 
 
 def test_guard_no_direct_inventory_dataset_reads_outside_inventory() -> None:

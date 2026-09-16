@@ -99,7 +99,7 @@ class PairReleaseConflict(RuntimeError):
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.3.0"
+    SCHEMA_VERSION = "1.4.0"
 
     def __init__(
         self,
@@ -157,7 +157,9 @@ class OntologyRunStore:
             raise ValueError("trigger must be initial, manual, or scheduled")
         identity = f"{connection}|{generation}"
         run_id = "ODR-" + hashlib.sha256(identity.encode()).hexdigest()[:16].upper()
-        deadline = deadline_at or moment + timedelta(seconds=self.default_deadline_seconds)
+        deadline = deadline_at or moment + timedelta(
+            seconds=self.default_deadline_seconds
+        )
         deadline = _aware(deadline)
         if deadline <= moment:
             raise ValueError("deadline_at must be in the future")
@@ -224,9 +226,7 @@ class OntologyRunStore:
             None,
         )
 
-    def latest_for_connection(
-        self, connection_id: str
-    ) -> dict[str, Any] | None:
+    def latest_for_connection(self, connection_id: str) -> dict[str, Any] | None:
         """Return the newest durable run for compatibility read projections."""
 
         connection = _required(connection_id, "connection_id").casefold()
@@ -320,6 +320,8 @@ class OntologyRunStore:
             record = {
                 "proposal_id": proposal_id,
                 "proposal": proposal_copy,
+                "proposer_identity": "ontology_curator",
+                "proposer_kind": "model",
                 "scope": _required(scope, "scope").casefold(),
                 "source_generation_id": _required(
                     source_generation_id, "source_generation_id"
@@ -338,11 +340,7 @@ class OntologyRunStore:
         with self._lock:
             rows = self._read_state()["proposals"]
         return next(
-            (
-                copy.deepcopy(row)
-                for row in rows
-                if row["proposal_id"] == proposal_id
-            ),
+            (copy.deepcopy(row) for row in rows if row["proposal_id"] == proposal_id),
             None,
         )
 
@@ -352,9 +350,7 @@ class OntologyRunStore:
         normalized_scope = str(scope or "").strip().casefold()
         with self._lock:
             state = self._read_state()
-        reviews = {
-            row["proposal_id"]: row for row in state["proposal_reviews"]
-        }
+        reviews = {row["proposal_id"]: row for row in state["proposal_reviews"]}
         rows = [
             row
             for row in state["proposals"]
@@ -388,9 +384,7 @@ class OntologyRunStore:
     def get_review(self, proposal_id: str) -> dict[str, Any]:
         with self._lock:
             state = self._read_state()
-        if not any(
-            row["proposal_id"] == proposal_id for row in state["proposals"]
-        ):
+        if not any(row["proposal_id"] == proposal_id for row in state["proposals"]):
             raise ValueError(f"Unknown ontology proposal {proposal_id!r}")
         existing = next(
             (
@@ -430,8 +424,8 @@ class OntologyRunStore:
                 if str(value).strip()
             }
         )
-        if "ontology_steward" not in roles:
-            raise ReviewerUnauthorized("ontology_steward role is required")
+        if not {"approver", "admin"}.intersection(roles):
+            raise ReviewerUnauthorized("approver or admin role is required")
         normalized_action = str(action or "").strip().casefold()
         statuses = {
             "accept": "accepted",
@@ -445,10 +439,25 @@ class OntologyRunStore:
         moment = _aware(now)
         with self._claim_lock():
             state = self._read_state()
-            if not any(
-                row["proposal_id"] == proposal_id for row in state["proposals"]
-            ):
+            proposal_record = next(
+                (
+                    row
+                    for row in state["proposals"]
+                    if row["proposal_id"] == proposal_id
+                ),
+                None,
+            )
+            if proposal_record is None:
                 raise ValueError(f"Unknown ontology proposal {proposal_id!r}")
+            proposer_identity = _required(
+                proposal_record.get("proposer_identity") or "ontology_curator",
+                "proposer_identity",
+            )
+            separation_of_duty = proposer_identity.casefold() != reviewer.casefold()
+            if not separation_of_duty:
+                raise ReviewerUnauthorized(
+                    "proposal author cannot review the same ontology proposal"
+                )
             index = next(
                 (
                     position
@@ -480,6 +489,14 @@ class OntologyRunStore:
                     "status": status,
                     "actor": reviewer,
                     "actor_roles": roles,
+                    "policy_version": _required(
+                        proposal_record.get("policy_version"), "policy_version"
+                    ),
+                    "approved_at": (
+                        moment.isoformat() if normalized_action == "accept" else None
+                    ),
+                    "proposer_identity": proposer_identity,
+                    "separation_of_duty": separation_of_duty,
                     "reason": explanation,
                     "recorded_at": moment.isoformat(),
                 }
@@ -530,9 +547,7 @@ class OntologyRunStore:
                 "snapshot": snapshot.model_dump(mode="json"),
                 "eligible": result.status == "ELIGIBLE",
                 "eligibility_reasons": list(result.reasons),
-                "wilson_precision_lower_bound": (
-                    result.wilson_precision_lower_bound
-                ),
+                "wilson_precision_lower_bound": (result.wilson_precision_lower_bound),
                 # Phase 13 always records the evaluated initial state as
                 # blocked/pending. Activation is a separate audited CAS.
                 "status": "BLOCKED/PENDING",
@@ -703,10 +718,7 @@ class OntologyRunStore:
 
         moment = _aware(now)
         normalized = sorted(
-            {
-                _required(value, "connection_id").casefold()
-                for value in member_ids
-            }
+            {_required(value, "connection_id").casefold() for value in member_ids}
         )
         identity_payload = json.dumps(
             {
@@ -717,17 +729,13 @@ class OntologyRunStore:
             sort_keys=True,
             separators=(",", ":"),
         )
-        epoch_id = "ODE-" + hashlib.sha256(
-            identity_payload.encode()
-        ).hexdigest()[:20].upper()
+        epoch_id = (
+            "ODE-" + hashlib.sha256(identity_payload.encode()).hexdigest()[:20].upper()
+        )
         with self._claim_lock():
             state = self._read_state()
             active = next(
-                (
-                    row
-                    for row in state["eligible_epochs"]
-                    if row["status"] == "active"
-                ),
+                (row for row in state["eligible_epochs"] if row["status"] == "active"),
                 None,
             )
             if active is not None:
@@ -844,8 +852,7 @@ class OntologyRunStore:
             )
             member["updated_at"] = moment.isoformat()
             if all(
-                value["outcome"] != "pending"
-                for value in epoch["members"].values()
+                value["outcome"] != "pending" for value in epoch["members"].values()
             ):
                 epoch["status"] = "drained"
             epoch["revision"] += 1
@@ -878,24 +885,18 @@ class OntologyRunStore:
         with self._claim_lock():
             state = self._read_state()
             matches = [
-                row
-                for row in state["eligible_epochs"]
-                if row["epoch_id"] == epoch_id
+                row for row in state["eligible_epochs"] if row["epoch_id"] == epoch_id
             ]
             if len(matches) != 1:
                 raise RunClaimConflict("fixture_epoch_not_unique", {})
             if sorted(matches[0]["member_order"]) != expected:
                 raise RunClaimConflict("fixture_epoch_members_changed", matches[0])
             state["eligible_epochs"] = [
-                row
-                for row in state["eligible_epochs"]
-                if row["epoch_id"] != epoch_id
+                row for row in state["eligible_epochs"] if row["epoch_id"] != epoch_id
             ]
             self._persist_advanced(state, moment)
 
-    def get_reconciliation_control(
-        self, connection_id: str
-    ) -> dict[str, Any] | None:
+    def get_reconciliation_control(self, connection_id: str) -> dict[str, Any] | None:
         connection = _required(connection_id, "connection_id").casefold()
         with self._lock:
             controls = self._read_state()["reconciliation_controls"]
@@ -1026,9 +1027,7 @@ class OntologyRunStore:
             state["reconciliation_audits"].append(
                 {
                     "command_id": command,
-                    "connection_hash": hashlib.sha256(
-                        connection.encode()
-                    ).hexdigest(),
+                    "connection_hash": hashlib.sha256(connection.encode()).hexdigest(),
                     "actor_hash": _required(actor_hash, "actor_hash"),
                     "prior_revision": prior_revision,
                     "new_revision": control["revision"],
@@ -1062,19 +1061,24 @@ class OntologyRunStore:
         moment = _aware(now)
         connection = _required(connection_id, "connection_id").casefold()
         parity = compare_graph_parity(full_graph, incremental_graph)
-        result_id = "ORR-" + hashlib.sha256(
-            json.dumps(
-                {
-                    "connection_id": connection,
-                    "predecessor_watermark": predecessor_watermark,
-                    "committed_watermark": watermark,
-                    "dispatch_id": dispatch,
-                    **parity,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()[:24].upper()
+        result_id = (
+            "ORR-"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "connection_id": connection,
+                        "predecessor_watermark": predecessor_watermark,
+                        "committed_watermark": watermark,
+                        "dispatch_id": dispatch,
+                        **parity,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            .hexdigest()[:24]
+            .upper()
+        )
         with self._claim_lock():
             state = self._read_state()
             control = next(
@@ -1100,9 +1104,7 @@ class OntologyRunStore:
             if result is None:
                 result = {
                     "result_id": result_id,
-                    "connection_hash": hashlib.sha256(
-                        connection.encode()
-                    ).hexdigest(),
+                    "connection_hash": hashlib.sha256(connection.encode()).hexdigest(),
                     "selected_mode": control["selected_mode"],
                     "selection_reason": control["selection_reason"],
                     "predecessor_watermark": predecessor_watermark,
@@ -1112,18 +1114,14 @@ class OntologyRunStore:
                     "drift_count": parity["drift_count"],
                     "drift_hash": parity["drift_hash"],
                     "full_graph_hash": parity["full_graph_hash"],
-                    "incremental_graph_hash": parity[
-                        "incremental_graph_hash"
-                    ],
+                    "incremental_graph_hash": parity["incremental_graph_hash"],
                     "repair_authority": "full",
                     "created_at": moment.isoformat(),
                 }
                 state["reconciliation_results"].append(result)
             control["committed_watermark"] = watermark
             control["full_graph_hash"] = parity["full_graph_hash"]
-            control["incremental_graph_hash"] = parity[
-                "incremental_graph_hash"
-            ]
+            control["incremental_graph_hash"] = parity["incremental_graph_hash"]
             control["drift_status"] = parity["status"]
             control["drift_count"] = parity["drift_count"]
             control["drift_hash"] = parity["drift_hash"]
@@ -1174,13 +1172,9 @@ class OntologyRunStore:
             "source_generation_id",
         )
         relationship_id = str(
-            candidate.get("resource_id")
-            or candidate.get("relationship_id")
-            or ""
+            candidate.get("resource_id") or candidate.get("relationship_id") or ""
         ).strip()
-        identity = (
-            f"{scope.casefold()}|{subject_id}|{predicate.casefold()}|{object_id}"
-        )
+        identity = f"{scope.casefold()}|{subject_id}|{predicate.casefold()}|{object_id}"
         pending_id = "OPR-" + hashlib.sha256(identity.encode()).hexdigest()[:20].upper()
         missing = sorted(
             {
@@ -1228,9 +1222,9 @@ class OntologyRunStore:
                 record["observations"] = _merge_observations(
                     record.get("observations"), observations
                 )
-                record["missing_endpoint_ids"] = missing or record[
-                    "missing_endpoint_ids"
-                ]
+                record["missing_endpoint_ids"] = (
+                    missing or record["missing_endpoint_ids"]
+                )
                 record["attempts"] = max(
                     _nonnegative_int(record.get("attempts")),
                     _nonnegative_int(candidate.get("attempts")),
@@ -1302,9 +1296,9 @@ class OntologyRunStore:
         """Return persisted batches in deterministic identity order."""
         with self._lock:
             rows = self._read_state()["evidence_batches"]
-        selected = rows if run_id is None else [
-            row for row in rows if row["run_id"] == run_id
-        ]
+        selected = (
+            rows if run_id is None else [row for row in rows if row["run_id"] == run_id]
+        )
         return copy.deepcopy(sorted(selected, key=lambda row: row["batch_id"]))
 
     def save_evidence_batch(
@@ -1586,17 +1580,18 @@ class OntologyRunStore:
             )
             if record["revision"] != expected_revision:
                 raise RunClaimConflict("run_revision_conflict", record)
-            can_retry = (
-                record["attempt_count"] < record["max_attempts"]
-                and moment < _parse_timestamp(record["deadline_at"])
-            )
+            can_retry = record["attempt_count"] < record[
+                "max_attempts"
+            ] and moment < _parse_timestamp(record["deadline_at"])
             status = RUN_RETRYING if can_retry else RUN_FAILED
             if can_retry:
                 delay = min(
                     self.retry_base_seconds * (2 ** (record["attempt_count"] - 1)),
                     self.retry_max_seconds,
                 )
-                record["next_attempt_at"] = (moment + timedelta(seconds=delay)).isoformat()
+                record["next_attempt_at"] = (
+                    moment + timedelta(seconds=delay)
+                ).isoformat()
             else:
                 record["next_attempt_at"] = ""
             record["failure_class"] = (
@@ -1628,7 +1623,10 @@ class OntologyRunStore:
         moment = _aware(now)
         with self._claim_lock():
             state, index, record = self._locate(run_id)
-            if record["revision"] != expected_revision or record["status"] in TERMINAL_STATUSES:
+            if (
+                record["revision"] != expected_revision
+                or record["status"] in TERMINAL_STATUSES
+            ):
                 raise RunClaimConflict("run_revision_conflict", record)
             if moment < _parse_timestamp(record["deadline_at"]):
                 raise RunClaimConflict("run_deadline_not_reached", record)
@@ -1697,7 +1695,10 @@ class OntologyRunStore:
         moment = _aware(now)
         with self._claim_lock():
             state, index, record = self._locate(run_id)
-            if record["revision"] != expected_revision or record["status"] in TERMINAL_STATUSES:
+            if (
+                record["revision"] != expected_revision
+                or record["status"] in TERMINAL_STATUSES
+            ):
                 raise RunClaimConflict("run_cancel_conflict", record)
             state["next_fencing_token"] += 1
             record["fencing_token"] = state["next_fencing_token"]
@@ -1857,9 +1858,7 @@ class OntologyRunStore:
             message=message,
         )
 
-    def _locate(
-        self, run_id: str
-    ) -> tuple[dict[str, Any], int, dict[str, Any]]:
+    def _locate(self, run_id: str) -> tuple[dict[str, Any], int, dict[str, Any]]:
         state = self._read_state()
         index = next(
             (
@@ -1909,7 +1908,9 @@ class OntologyRunStore:
             try:
                 payload = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("Ontology discovery run state is not valid JSON") from exc
+                raise ValueError(
+                    "Ontology discovery run state is not valid JSON"
+                ) from exc
         if not isinstance(payload, dict):
             raise TypeError("Ontology discovery run state must be an object")
         rows = payload.get("runs", [])
@@ -1966,19 +1967,11 @@ class OntologyRunStore:
                 payload.get("next_fencing_token", 0)
             ),
             "runs": [_with_defaults(row, self.max_attempts) for row in rows],
-            "pending_relationships": [
-                _pending_with_defaults(row) for row in pending
-            ],
-            "evidence_batches": [
-                _batch_with_defaults(row) for row in batches
-            ],
+            "pending_relationships": [_pending_with_defaults(row) for row in pending],
+            "evidence_batches": [_batch_with_defaults(row) for row in batches],
             "proposals": [_proposal_with_defaults(row) for row in proposals],
-            "proposal_reviews": [
-                _review_with_defaults(row) for row in reviews
-            ],
-            "admission_releases": [
-                _release_with_defaults(row) for row in releases
-            ],
+            "proposal_reviews": [_review_with_defaults(row) for row in reviews],
+            "admission_releases": [_release_with_defaults(row) for row in releases],
             "eligible_epochs": [_epoch_with_defaults(row) for row in epochs],
             "reconciliation_controls": [
                 _control_with_defaults(row) for row in controls
@@ -2019,15 +2012,15 @@ class OntologyRunStore:
                     expected_revision=expected_revision,
                 )
             except DocumentConflictError as exc:
-                raise RunClaimConflict(
-                    "run_store_revision_conflict", {}
-                ) from exc
+                raise RunClaimConflict("run_store_revision_conflict", {}) from exc
             return
         if self.path.exists():
             try:
                 current = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError("Ontology discovery run state is not valid JSON") from exc
+                raise ValueError(
+                    "Ontology discovery run state is not valid JSON"
+                ) from exc
             observed_revision = _nonnegative_int(current.get("revision", 0))
             if observed_revision != expected_revision:
                 raise RunClaimConflict("run_store_revision_conflict", {})
@@ -2145,8 +2138,10 @@ def _control_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _valid_watermark(value: object) -> bool:
     text = str(value or "").strip()
-    return bool(text) and len(text) <= 256 and all(
-        character.isalnum() or character in "-_.:" for character in text
+    return (
+        bool(text)
+        and len(text) <= 256
+        and all(character.isalnum() or character in "-_.:" for character in text)
     )
 
 
@@ -2188,9 +2183,7 @@ def _batch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     record.setdefault("persisted_at", "")
     record.setdefault("dispatched_at", "")
     record["batch"] = (
-        copy.deepcopy(record["batch"])
-        if isinstance(record.get("batch"), dict)
-        else {}
+        copy.deepcopy(record["batch"]) if isinstance(record.get("batch"), dict) else {}
     )
     record["result"] = (
         copy.deepcopy(record["result"])
@@ -2203,6 +2196,8 @@ def _batch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
 def _proposal_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     record = copy.deepcopy(dict(row))
     record.setdefault("proposal_id", "")
+    record.setdefault("proposer_identity", "ontology_curator")
+    record.setdefault("proposer_kind", "model")
     record["proposal"] = (
         copy.deepcopy(record["proposal"])
         if isinstance(record.get("proposal"), dict)
@@ -2391,9 +2386,7 @@ def _observations(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)):
         return []
     observations = [
-        copy.deepcopy(dict(item))
-        for item in value
-        if isinstance(item, Mapping)
+        copy.deepcopy(dict(item)) for item in value if isinstance(item, Mapping)
     ]
     return sorted(
         observations,

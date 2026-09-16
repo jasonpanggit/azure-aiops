@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from ontology_discovery.generation_resolver import ONTOLOGY_TABLES
+from ontology_discovery.generation_resolver import (
+    ONTOLOGY_TABLES,
+    CompatibilityAlias,
+    GenerationSelection,
+)
 
 from .data_agent_manager import build_data_agent_definition
 
@@ -16,6 +21,10 @@ GOLD_GROUNDING_TABLES = (
     "gold_exposure_evidence",
     "metadata_exposure_gold_generations",
     *ONTOLOGY_TABLES,
+    "ontology_health",
+    "ontology_quality_report",
+    "metadata_publication_manifest",
+    "metadata_source_status",
 )
 
 GOLD_GROUNDING_DATA_SOURCE_INSTRUCTIONS = """
@@ -26,6 +35,10 @@ gold_exposure_evidence for source status, freshness, and provenance. Use
 metadata_exposure_gold_generations to prove which generation is published and
 whether a zero-row Gold result is healthy-empty. Use
 ontology_entities and ontology_relationships for deterministic topology.
+Use ontology_health and ontology_quality_report for deterministic ontology
+quality verdicts. Use metadata_publication_manifest and metadata_source_status
+for lineage, disposition, freshness, and source availability. These tables
+contain the verdicts; explain them but never replace or override them.
 
 Join only on exact identifiers. Keep rows from the same
 read_model_generation_id when that field is available. For ontology, prefer
@@ -38,23 +51,34 @@ You are AI Ops Data Agent, a read-only evidence retrieval specialist used by
 Operations Copilot. Answer only from the selected Fabric tables. Never create,
 update, delete, or recommend directly executing a remediation.
 
-The operator request can include an AUTHORIZED_SCOPE object. Treat every
-dimension in it as a mandatory query filter. If scope is missing, ambiguous,
-or cannot be enforced from available columns, do not enumerate workspace-wide
-data and do not return structured findings. State that authorized scope is
-required. Never reveal rows, counts, identifiers, or aggregates outside the
-authorized scope.
+The operator request includes PINNED_GENERATION_ID, AUTHORIZED_SCOPE, and
+AUTHORIZED_RESOURCE_IDS before QUESTION. Treat the pinned generation and every
+scope dimension as mandatory query filters. Return only cited resource IDs in
+AUTHORIZED_RESOURCE_IDS when that list is non-empty. If generation or scope is
+missing, ambiguous, or cannot be enforced from available columns, do not
+enumerate workspace-wide data and do not return structured findings. State
+that authorized scope is required. Never reveal rows, counts, identifiers, or
+aggregates outside the authorized scope.
 
 Return evidence as line-delimited JSON with no Markdown fences and no prose
 before or after it. Emit at most 10 objects. Every object must contain exactly:
 - finding_id: stable string derived from cited row keys
-- resource_ids: array containing only full Azure ARM resource IDs
-- citations: non-empty array of objects with gold_table, row_key, as_of, and
-  confidence
+- generation_id: exactly PINNED_GENERATION_ID from the request
+- citations: non-empty array of objects with resource_id, generation_id,
+  gold_table, row_key, as_of, and confidence
 - scope_ok: boolean
-- degraded: boolean
-- degraded_reason: string
 - summary: factual text of at most 240 characters
+
+If a scoped query has no matching rows, do not return an empty response and do
+not fabricate a resource citation. Return exactly one generation-level object:
+- status: "healthy_empty"
+- generation_id: exactly PINNED_GENERATION_ID
+- gold_table: "metadata_exposure_gold_generations"
+- row_key: the reconciled generation row key
+- as_of: the generation publication timestamp
+- reconciliation_status: "reconciled", "reconciled_clean", or "passed"
+- scoped_row_count: 0
+- scope_ok: true
 
 Only cite rows actually returned by a query. For row_key use fact_id,
 dimension_key, facet_key, summary_key, evidence_id,
@@ -77,10 +101,10 @@ report only directly stored facts and deterministic relationships.
 
 When a scoped Gold query returns zero facts, query
 metadata_exposure_gold_generations. If its latest published, reconciled row
-proves that the selected Gold tables contain zero rows, return one
-non-degraded "no matching results" finding cited to that generation row. If
-no generation row can prove healthy-empty state, return no JSON objects and
-state plainly that Gold evidence availability could not be established.
+proves that the selected Gold tables contain zero rows, return the exact
+healthy-empty proof object above. If no generation row can prove healthy-empty
+state, return a structured finding only when it has resource-level evidence;
+otherwise the response is unavailable, not healthy-empty.
 """.strip()
 
 GOLD_GROUNDING_FEW_SHOTS = (
@@ -95,42 +119,42 @@ GOLD_GROUNDING_FEW_SHOTS = (
     },
     {
         "id": "c3470bed-d6b4-43c5-a011-a596ea498895",
-        "question": "Summarize active exposure by scope.",
+        "question": "Summarize the latest deterministic ontology health.",
         "query": (
-            "SELECT TOP (20) scope_key, summary_key, active_exposure_count, "
-            "server_exposure_count, container_exposure_count, "
-            "sla_overdue_count, [timestamp] FROM gold_exposure_summaries "
-            "ORDER BY active_exposure_count DESC, summary_key"
+            "SELECT TOP (1) resource_id, entity_count, relationship_count, "
+            "orphan_resources, missing_ownership, missing_tags, "
+            "synchronization_errors, [timestamp] FROM ontology_health "
+            "ORDER BY [timestamp] DESC"
         ),
     },
     {
         "id": "3cf8a579-c20e-466d-b3b5-b42ae0ac9178",
-        "question": "Which exposure evidence is stale or unsuccessful?",
+        "question": "Did the latest deterministic ontology quality check pass?",
         "query": (
-            "SELECT TOP (50) resource_id, evidence_id, source, status, stale, "
-            "source_at, succeeded_at, [timestamp] FROM gold_exposure_evidence "
-            "WHERE stale = 1 OR status <> 'succeeded' "
-            "ORDER BY [timestamp] DESC, evidence_id"
+            "SELECT TOP (1) resource_id, passed, report_json, [timestamp] "
+            "FROM ontology_quality_report ORDER BY [timestamp] DESC"
         ),
     },
     {
         "id": "1926657a-27b9-4ef8-beb5-f30c02d4ca69",
-        "question": "Show active deterministic dependency relationships.",
+        "question": "Which active resources have no ontology relationship?",
         "query": (
-            "SELECT TOP (50) resource_id, subject_id, subject_type, predicate, "
-            "object_id, object_type, confidence, source, [timestamp] "
-            "FROM ontology_relationships WHERE lifecycle_status = 'active' "
-            "AND predicate = 'dependsOn' ORDER BY confidence DESC, resource_id"
+            "SELECT TOP (50) e.resource_id, e.entity_type, e.name, e.[timestamp] "
+            "FROM ontology_entities e LEFT JOIN ontology_relationships r "
+            "ON e.resource_id = r.subject_id OR e.resource_id = r.object_id "
+            "WHERE e.lifecycle_status = 'active' AND r.resource_id IS NULL "
+            "ORDER BY e.resource_id"
         ),
     },
     {
         "id": "7d4d905c-bd10-4b06-b261-b00bd4daaf5a",
-        "question": "Is the latest empty Gold exposure result healthy?",
+        "question": "Which ontology products are active, empty, or retired?",
         "query": (
-            "SELECT TOP (1) resource_id, read_model_generation_id, "
-            "reconciliation_status, table_row_counts_json, published_at, "
-            "retain_until, [timestamp] FROM metadata_exposure_gold_generations "
-            "ORDER BY published_at DESC, read_model_generation_id DESC"
+            "SELECT TOP (50) resource_id, projection_name, disposition, "
+            "compatibility_version, retired_reason, updated_at, [timestamp] "
+            "FROM metadata_publication_manifest "
+            "WHERE projection_name LIKE 'ontology%' "
+            "ORDER BY updated_at DESC, projection_name"
         ),
     },
 )
@@ -141,6 +165,8 @@ def build_gold_grounding_definition(
     lakehouse_id: str,
     workspace_id: str,
     lakehouse_display_name: str,
+    generation: GenerationSelection,
+    table_aliases: Mapping[str, CompatibilityAlias],
 ) -> dict[str, Any]:
     """Build the reviewed draft definition consumed by AI Ops Data Agent."""
     return build_data_agent_definition(
@@ -149,6 +175,8 @@ def build_gold_grounding_definition(
         lakehouse_display_name=lakehouse_display_name,
         ai_instructions=GOLD_GROUNDING_INSTRUCTIONS,
         table_names=GOLD_GROUNDING_TABLES,
+        generation=generation,
+        table_aliases=table_aliases,
         data_source_instructions=GOLD_GROUNDING_DATA_SOURCE_INSTRUCTIONS,
         few_shots=GOLD_GROUNDING_FEW_SHOTS,
     )

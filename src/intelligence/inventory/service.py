@@ -69,7 +69,9 @@ class InventorySnapshot:
             if isinstance(row, (dict, MachineObservation))
         ]
         observations = tuple(_latest_observations(parsed_observations))
-        software_rows = metadata.get("software_observations") or metadata.get("software_rows") or []
+        software_rows = (
+            metadata.get("software_observations") or metadata.get("software_rows") or []
+        )
         if not isinstance(software_rows, list):
             raise TypeError("Inventory software observations must be a list")
         software_observations = tuple(
@@ -113,10 +115,19 @@ class InventorySnapshot:
                 statuses.append(
                     InventorySourceStatus(
                         source_type=source_type,
-                        state=str(raw.get("state") or _status_from_rows(observations, source_type)),
-                        observed_at=str(raw.get("observed_at") or metadata.get("observed_at") or ""),
+                        state=str(
+                            raw.get("state")
+                            or _status_from_rows(observations, source_type)
+                        ),
+                        observed_at=str(
+                            raw.get("observed_at") or metadata.get("observed_at") or ""
+                        ),
                         query_version=str(raw.get("query_version") or query_version),
-                        row_count=int(raw.get("row_count", _count_source(observations, source_type))),
+                        row_count=int(
+                            raw.get(
+                                "row_count", _count_source(observations, source_type)
+                            )
+                        ),
                         error=str(raw.get("error") or ""),
                         workspace_count=int(raw.get("workspace_count", 0)),
                     )
@@ -143,7 +154,11 @@ class InventorySnapshot:
                 InventorySourceStatus(
                     source_type="logs",
                     state=str(raw.get("state") or "ready"),
-                    observed_at=str(raw.get("observed_at") or metadata.get("observed_at") or _latest_software(software_observations)),
+                    observed_at=str(
+                        raw.get("observed_at")
+                        or metadata.get("observed_at")
+                        or _latest_software(software_observations)
+                    ),
                     query_version=str(raw.get("query_version") or query_version),
                     row_count=int(raw.get("row_count", len(software_observations))),
                     error=str(raw.get("error") or ""),
@@ -158,7 +173,9 @@ class InventorySnapshot:
             resource_observations=resource_observations,
             observed_at=str(metadata.get("observed_at") or _latest(observations)),
             query_version=query_version,
-            generation_id=str(metadata.get("generation_id") or metadata.get("run_id") or ""),
+            generation_id=str(
+                metadata.get("generation_id") or metadata.get("run_id") or ""
+            ),
             software_mapping_suggestions=tuple(
                 dict(item) for item in suggestions_payload if isinstance(item, dict)
             ),
@@ -229,7 +246,13 @@ class InventoryService:
         resource_rows = store.read_dataset("inventory/resource_observations")
         if not resource_rows:
             resource_rows = store.read_dataset("inventory_resource_observations")
-        if not rows and not status_rows and not software_rows and not software_status_rows and not resource_rows:
+        if (
+            not rows
+            and not status_rows
+            and not software_rows
+            and not software_status_rows
+            and not resource_rows
+        ):
             return None
         manifest = _store_manifest(store)
         statuses = {
@@ -262,7 +285,11 @@ class InventoryService:
         from .registry import default_inventory_registry
 
         registry = registry or default_inventory_registry()
-        os_state = "ready" if self.snapshot.observations or self.snapshot.source_status else "unavailable"
+        os_state = (
+            "ready"
+            if self.snapshot.observations or self.snapshot.source_status
+            else "unavailable"
+        )
         software_status = self.software_source_status()
         software_state = (
             next(iter(software_status.values())).get("state")
@@ -284,7 +311,9 @@ class InventoryService:
             },
             "paas": {
                 "family": "paas",
-                "state": "ready" if self.snapshot.resource_observations else "unavailable",
+                "state": "ready"
+                if self.snapshot.resource_observations
+                else "unavailable",
                 "row_count": len(self.snapshot.resource_observations),
                 "logical_dataset": "inventory/resource_observations",
             },
@@ -324,7 +353,9 @@ class InventoryService:
                 **item.to_dict(),
                 "row_count": _count_source(scoped_rows, item.source_type),
             }
-            for item in sorted(self.snapshot.source_status, key=lambda value: value.source_type)
+            for item in sorted(
+                self.snapshot.source_status, key=lambda value: value.source_type
+            )
         }
 
     def _scoped(self, scope: Scope) -> tuple[MachineObservation, ...]:
@@ -337,7 +368,15 @@ class InventoryService:
             for row in self.snapshot.observations
             if scope.matches(scope_attributes(_scope_row(row)))
         ]
-        return tuple(sorted(rows, key=lambda row: (group_key(row.os_name, row.os_version), row.resource_id)))
+        return tuple(
+            sorted(
+                rows,
+                key=lambda row: (
+                    group_key(row.os_name, row.os_version),
+                    row.resource_id,
+                ),
+            )
+        )
 
     def _classified(self, row: MachineObservation) -> MachineObservation:
         catalog = self.eol_review.catalog().catalog
@@ -360,25 +399,29 @@ class InventoryService:
     def _scoped_classified(self, scope: Scope) -> tuple[MachineObservation, ...]:
         return tuple(self._classified(row) for row in self._scoped(scope))
 
-    def lifecycle_review(
-        self, key: str, scope: Scope
-    ) -> dict[str, Any] | None:
+    def lifecycle_review(self, key: str, scope: Scope) -> dict[str, Any] | None:
         """Return candidates only for a group visible in the effective scope."""
         rows = self._scoped_classified(scope)
-        matching = tuple(row for row in rows if group_key(row.os_name, row.os_version) == key)
+        matching = tuple(
+            row for row in rows if group_key(row.os_name, row.os_version) == key
+        )
         if not matching:
             return None
         first = matching[0]
         return self.eol_review.review(first.os_name, first.os_version).to_dict()
 
-    def collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def collection(
+        self, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
         rows = self._scoped_classified(scope)
         grouped: dict[str, list[MachineObservation]] = {}
         for row in rows:
             grouped.setdefault(group_key(row.os_name, row.os_version), []).append(row)
         groups = [
             _make_group(key, items)
-            for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+            for key, items in sorted(
+                grouped.items(), key=lambda pair: pair[0].casefold()
+            )
         ]
         statuses = self.source_status(rows)
         data = {
@@ -400,14 +443,18 @@ class InventoryService:
         self, key: str, scope: Scope, *, offset: int = 0, limit: int = 100
     ) -> dict[str, Any] | None:
         rows = self._scoped_classified(scope)
-        matching = tuple(row for row in rows if group_key(row.os_name, row.os_version) == key)
+        matching = tuple(
+            row for row in rows if group_key(row.os_name, row.os_version) == key
+        )
         if not matching:
             return None
         group = _make_group(key, list(matching))
         return {
             "data": {
                 "group": group.to_dict(),
-                "machines": [row.to_dict() for row in matching[offset : offset + limit]],
+                "machines": [
+                    row.to_dict() for row in matching[offset : offset + limit]
+                ],
                 "source_status": self.source_status(rows),
                 "observed_at": self.observed_at,
                 "query_version": self.query_version,
@@ -465,7 +512,11 @@ class InventoryService:
                     for item in self.mapping_repository.read().mappings
                     if scopes_overlap(scope, _scope_from_mapping(item.scope_predicate))
                 ),
-                key=lambda item: (item.status, item.raw_name.casefold(), item.mapping_id),
+                key=lambda item: (
+                    item.status,
+                    item.raw_name.casefold(),
+                    item.mapping_id,
+                ),
             )
         )
 
@@ -481,7 +532,9 @@ class InventoryService:
         ]
         return {
             "data": {
-                "mappings": [item.to_dict() for item in mappings[offset : offset + limit]],
+                "mappings": [
+                    item.to_dict() for item in mappings[offset : offset + limit]
+                ],
                 "repository_revision": snapshot.repository_revision,
                 "requested_scope": scope.to_dict(),
             },
@@ -491,8 +544,11 @@ class InventoryService:
 
     def mapping_detail(self, mapping_id: str, scope: Scope) -> dict[str, Any] | None:
         item = next(
-            (candidate for candidate in self._visible_mappings(scope)
-             if candidate.mapping_id == mapping_id),
+            (
+                candidate
+                for candidate in self._visible_mappings(scope)
+                if candidate.mapping_id == mapping_id
+            ),
             None,
         )
         if item is None:
@@ -569,10 +625,14 @@ class InventoryService:
         rows = self._scoped_software(scope)
         grouped: dict[str, list[SoftwareObservation]] = {}
         for row in rows:
-            grouped.setdefault(f"{row.software_name}|{row.software_version}", []).append(row)
+            grouped.setdefault(
+                f"{row.software_name}|{row.software_version}", []
+            ).append(row)
         groups = [
             _make_software_group(key, items)
-            for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+            for key, items in sorted(
+                grouped.items(), key=lambda pair: pair[0].casefold()
+            )
         ]
         statuses = self.software_source_status(rows)
         data = {
@@ -604,7 +664,8 @@ class InventoryService:
         matching = tuple(
             row
             for row in rows
-            if row.software_name == software_name and row.software_version == software_version
+            if row.software_name == software_name
+            and row.software_version == software_version
         )
         if not matching:
             return None
@@ -612,7 +673,9 @@ class InventoryService:
         return {
             "data": {
                 "group": _make_software_group(key, list(matching)).to_dict(),
-                "machines": [row.to_dict() for row in matching[offset : offset + limit]],
+                "machines": [
+                    row.to_dict() for row in matching[offset : offset + limit]
+                ],
                 "source_status": statuses,
                 "observed_at": self.observed_at,
                 "query_version": self.query_version,
@@ -627,7 +690,9 @@ class InventoryService:
     # Explicit alias for consumers that use the grouped-detail terminology.
     software_group_detail = software_detail
 
-    def paas_collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def paas_collection(
+        self, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
         rows = self._scoped_resources(scope, family="paas")
         grouped: dict[str, list[ResourceObservation]] = {}
         for row in rows:
@@ -640,7 +705,9 @@ class InventoryService:
                 "tier": items[0].tier,
                 "resource_count": len(items),
             }
-            for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+            for key, items in sorted(
+                grouped.items(), key=lambda pair: pair[0].casefold()
+            )
         ]
         data = {
             "groups": groups[offset : offset + limit],
@@ -673,7 +740,9 @@ class InventoryService:
                     "tier": matching[0].tier,
                     "resource_count": len(matching),
                 },
-                "resources": [row.to_api_dict() for row in matching[offset : offset + limit]],
+                "resources": [
+                    row.to_api_dict() for row in matching[offset : offset + limit]
+                ],
                 "source_status": {"paas": self.family_availability()["paas"]},
                 "observed_at": self.observed_at,
                 "query_version": self.query_version,
@@ -685,7 +754,37 @@ class InventoryService:
             "warnings": _status_warnings({"paas": self.family_availability()["paas"]}),
         }
 
-    def resources(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def resources(
+        self, scope: Scope, *, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        rows = self._resource_rows(scope)
+        return {
+            "data": {
+                "resources": rows[offset : offset + limit],
+                "family_availability": self.family_availability(),
+                "requested_scope": scope.to_dict(),
+                "query_version": self.query_version,
+            },
+            "total": len(rows),
+            "evidence": self._resource_evidence(self._scoped_resources(scope)),
+            "warnings": _status_warnings(self.family_availability()),
+        }
+
+    def resource(self, scope: Scope, resource_id: str) -> dict[str, Any] | None:
+        """Return one exact scoped resource without a pagination ceiling."""
+        wanted = str(resource_id or "").strip().casefold()
+        if not wanted:
+            return None
+        return next(
+            (
+                row
+                for row in self._resource_rows(scope)
+                if str(row.get("resource_id") or "").casefold() == wanted
+            ),
+            None,
+        )
+
+    def _resource_rows(self, scope: Scope) -> list[dict[str, Any]]:
         rows = [
             {
                 "family": "os",
@@ -704,17 +803,7 @@ class InventoryService:
         ]
         rows.extend(row.to_api_dict() for row in self._scoped_resources(scope))
         rows.sort(key=lambda row: (row["family"], row["resource_id"]))
-        return {
-            "data": {
-                "resources": rows[offset : offset + limit],
-                "family_availability": self.family_availability(),
-                "requested_scope": scope.to_dict(),
-                "query_version": self.query_version,
-            },
-            "total": len(rows),
-            "evidence": self._resource_evidence(self._scoped_resources(scope)),
-            "warnings": _status_warnings(self.family_availability()),
-        }
+        return rows
 
     def narrative_aggregates(
         self,
@@ -734,19 +823,17 @@ class InventoryService:
         software_rows = self._scoped_software(scope)
         os_grouped: dict[str, list[MachineObservation]] = {}
         for row in os_rows:
-            os_grouped.setdefault(group_key(row.os_name, row.os_version), []).append(row)
-        os_groups = [
-            _make_group(key, items)
-            for key, items in os_grouped.items()
-        ]
+            os_grouped.setdefault(group_key(row.os_name, row.os_version), []).append(
+                row
+            )
+        os_groups = [_make_group(key, items) for key, items in os_grouped.items()]
         software_grouped: dict[str, list[SoftwareObservation]] = {}
         for row in software_rows:
             software_grouped.setdefault(
                 f"{row.software_name}|{row.software_version}", []
             ).append(row)
         software_groups = [
-            _make_software_group(key, items)
-            for key, items in software_grouped.items()
+            _make_software_group(key, items) for key, items in software_grouped.items()
         ]
         os_groups.sort(key=lambda item: (-item.machine_count, item.key.casefold()))
         software_groups.sort(
@@ -773,7 +860,9 @@ class InventoryService:
             ],
         }
 
-    def evidence_for_api(self, rows: tuple[MachineObservation, ...] = ()) -> list[Evidence]:
+    def evidence_for_api(
+        self, rows: tuple[MachineObservation, ...] = ()
+    ) -> list[Evidence]:
         from api.evidence import Evidence
 
         return [
@@ -872,7 +961,9 @@ def resource_group_key(row: ResourceObservation) -> str:
 
 
 def _make_group(key: str, rows: list[MachineObservation]) -> OSGroup:
-    ordered = sorted(rows, key=lambda row: (_lifecycle_rank(row.lifecycle_status), row.resource_id))
+    ordered = sorted(
+        rows, key=lambda row: (_lifecycle_rank(row.lifecycle_status), row.resource_id)
+    )
     selected = ordered[0]
     return OSGroup(
         key=key,
@@ -948,7 +1039,9 @@ def _unique_evidence(rows: tuple[MachineObservation, ...]) -> tuple[Any, ...]:
     return tuple(values.values())
 
 
-def _unique_software_evidence(rows: tuple[SoftwareObservation, ...]) -> tuple[dict[str, str], ...]:
+def _unique_software_evidence(
+    rows: tuple[SoftwareObservation, ...],
+) -> tuple[dict[str, str], ...]:
     values: dict[tuple[str, str, str], dict[str, str]] = {}
     for row in rows:
         for item in row.evidence:
@@ -971,7 +1064,10 @@ def _latest_observations(rows: list[MachineObservation]) -> list[MachineObservat
             selected[key] = row
     return sorted(
         selected.values(),
-        key=lambda row: (group_key(row.os_name, row.os_version), row.resource_id.casefold()),
+        key=lambda row: (
+            group_key(row.os_name, row.os_version),
+            row.resource_id.casefold(),
+        ),
     )
 
 
@@ -980,7 +1076,11 @@ def _store_manifest(store: DatasetStore) -> dict[str, Any]:
     generation = store.current_generation()
     if not generation:
         return {}
-    path = f"{generation}/manifest.json" if store.is_remote else Path(generation) / "manifest.json"
+    path = (
+        f"{generation}/manifest.json"
+        if store.is_remote
+        else Path(generation) / "manifest.json"
+    )
     try:
         if store.is_remote:
             if not store.fs.exists(path):
@@ -1006,10 +1106,7 @@ def _observation_time(value: str) -> datetime:
 
 def _status_warnings(statuses: dict[str, dict[str, Any]]) -> list[str]:
     return [
-        (
-            f"{source} inventory source is {payload['state']}; "
-            f"results may be incomplete."
-        )
+        (f"{source} inventory source is {payload['state']}; results may be incomplete.")
         for source, payload in statuses.items()
         if payload["state"] != "ready"
     ]

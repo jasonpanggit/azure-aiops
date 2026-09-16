@@ -50,7 +50,9 @@ class FakeSecretWriter:
 def _principals() -> dict[str, Principal]:
     return {
         ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
-        READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
+        READER_TOKEN: Principal(
+            subject="reader@example.com", grants=(Grant("reader"),)
+        ),
         OPERATOR_TOKEN: Principal(
             subject="operator@example.com", grants=(Grant("operator"),)
         ),
@@ -64,9 +66,7 @@ def _principals() -> dict[str, Principal]:
         ),
         SCOPED_OPERATOR_TOKEN: Principal(
             subject="scoped-operator@example.com",
-            grants=(
-                Grant("operator", Scope.from_mapping({"subscription": [SUB_A]})),
-            ),
+            grants=(Grant("operator", Scope.from_mapping({"subscription": [SUB_A]})),),
         ),
         SERVICE_ADMIN_TOKEN: Principal(
             subject="service-admin@example.com",
@@ -159,7 +159,8 @@ class TestAuthentication:
 
     def test_bad_token_is_401(self, client):
         response = client.get(
-            "/api/v1/subscription-connections", headers=_auth("wrong-token-aaaaaaaaaaaa")
+            "/api/v1/subscription-connections",
+            headers=_auth("wrong-token-aaaaaaaaaaaa"),
         )
         assert response.status_code == 401
 
@@ -245,7 +246,9 @@ class TestAuthorization:
 
         assert response.status_code == 404
 
-    def test_scoped_admin_cannot_remap_connection_outside_business_service(self, client):
+    def test_scoped_admin_cannot_remap_connection_outside_business_service(
+        self, client
+    ):
         _create(client, "conn-a", SUB_A)
         client.put(
             "/api/v1/subscription-connections/conn-a/metadata",
@@ -287,9 +290,10 @@ class TestAuthorization:
     def test_error_carries_a_correlation_id(self, client):
         response = client.get("/api/v1/subscription-connections")
         assert response.status_code == 401
-        assert response.json()["error"]["details"]["correlation_id"] == response.headers[
-            "x-correlation-id"
-        ]
+        assert (
+            response.json()["error"]["details"]["correlation_id"]
+            == response.headers["x-correlation-id"]
+        )
 
     def test_scoped_reader_gets_404_on_out_of_scope_detail(self, client):
         _create(client, "conn-b", SUB_B)
@@ -385,7 +389,8 @@ class TestConnectionsCrud:
     def test_disable_and_enable(self, client):
         _create(client, "conn-a", SUB_A)
         disabled = client.post(
-            "/api/v1/subscription-connections/conn-a/disable", headers=_auth(ADMIN_TOKEN)
+            "/api/v1/subscription-connections/conn-a/disable",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert disabled.status_code == 200
         assert disabled.json()["data"]["is_active"] is False
@@ -425,7 +430,9 @@ class TestConnectionsCrud:
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "invalid_request"
 
-    def test_create_accepts_client_secret_and_persists_key_vault_reference(self, client):
+    def test_create_accepts_client_secret_and_persists_key_vault_reference(
+        self, client
+    ):
         response = client.post(
             "/api/v1/subscription-connections",
             json={
@@ -525,7 +532,9 @@ class TestFabricMedallionRouterTask1:
         )
         app = create_app(context)
 
-        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        now = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         source_rows = [
             {
                 "source_family": "bronze_resources",
@@ -753,7 +762,9 @@ class TestFabricMedallionRouterTask1:
             }
         ]
 
-    def test_fabric_medallion_routes_enforce_auth_and_scope(self, fabric_medallion_client):
+    def test_fabric_medallion_routes_enforce_auth_and_scope(
+        self, fabric_medallion_client
+    ):
         unauthenticated = fabric_medallion_client.get("/api/v1/fabric-medallion/layers")
         assert unauthenticated.status_code == 401
 
@@ -798,7 +809,9 @@ def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
         local_root=lakehouse_root,
     )
     delta = DeltaWriter()
-    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    observed_at = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
     base = {
         "tenant_id": "tenant-a",
         "subscription_id": SUB_A,
@@ -886,8 +899,12 @@ def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
     client = TestClient(app, raise_server_exceptions=False)
 
     layers = client.get("/api/v1/fabric-medallion/layers", headers=_auth(ADMIN_TOKEN))
-    manifest = client.get("/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN))
-    governance = client.get("/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN))
+    manifest = client.get(
+        "/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN)
+    )
+    governance = client.get(
+        "/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN)
+    )
 
     assert layers.status_code == 200
     assert layers.json()["data"]["layers"]["gold"] == {"healthy": 1, "total": 1}
@@ -936,7 +953,9 @@ def test_fabric_medallion_governance_delta_fallback_filters_scope(
         "lakehouse-a",
         local_root=lakehouse_root,
     )
-    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    observed_at = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
     base = {
         "tenant_id": "tenant-a",
         "timestamp": observed_at,
@@ -1022,7 +1041,9 @@ class TestFabricMedallionRouterTask2:
         )
         app = create_app(context)
 
-        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        now = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         source_rows = [
             {
                 "source_family": "gold_operational_context",
@@ -1252,10 +1273,13 @@ class TestFabricMedallionRouterTask2:
             {"name": "Lakehouse.Reader", "permission_count": 0},
             {"name": "Lakehouse.Contributor", "permission_count": 0},
         ]
-        assert all("principal" not in role for role in data["data_access_roles"]["roles"])
+        assert all(
+            "principal" not in role for role in data["data_access_roles"]["roles"]
+        )
         assert data["maintenance"]["status"] == "healthy"
         assert data["semantic_readiness"]["status"] == "deployment-blocked"
-        assert data["data_agent_readiness"]["status"] == "available"
+        assert data["data_agent_readiness"]["status"] == "configured_unverified"
+        assert data["data_agent_readiness"]["runtime_verified"] is False
         assert data["lineage"]["native_lineage_url"].endswith("/workspace-abc")
         assert any(
             row["table_name"] == "gold_operational_context"

@@ -121,10 +121,10 @@ def classify_incremental(
         if current[resource_id] != previous[resource_id]
     }
     missing = set(previous) - set(current)
-    authoritative = (
-        normalized_coverage == "complete"
-        and normalized_freshness not in {"degraded", "unknown"}
-    )
+    authoritative = normalized_coverage == "complete" and normalized_freshness not in {
+        "degraded",
+        "unknown",
+    }
     if authoritative:
         retired = missing - unresolved
     else:
@@ -226,6 +226,7 @@ def split_evidence_batches(
     observed_at: datetime,
     freshness: str,
     coverage: str,
+    review_signals: Mapping[str, Any] | None = None,
 ) -> list[EvidenceBatch]:
     """Split complete records by scope and connected component under hard caps."""
     generation = str(source_generation_id or "").strip()
@@ -233,6 +234,7 @@ def split_evidence_batches(
         raise ValueError("source_generation_id must not be empty")
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
+    normalized_review_signals = copy.deepcopy(dict(review_signals or {}))
 
     typed_records = {
         "entity": _validated_records(changed_entities, "entity"),
@@ -280,11 +282,14 @@ def split_evidence_batches(
                         "component": component_key,
                         "index": index,
                         "record_ids": record_ids,
+                        "review_signals": normalized_review_signals,
                     },
                     sort_keys=True,
                     separators=(",", ":"),
                 )
-                batch_id = "OEB-" + hashlib.sha256(identity.encode()).hexdigest()[:20].upper()
+                batch_id = (
+                    "OEB-" + hashlib.sha256(identity.encode()).hexdigest()[:20].upper()
+                )
                 batches.append(
                     EvidenceBatch(
                         batch_id=batch_id,
@@ -296,6 +301,7 @@ def split_evidence_batches(
                         changed_entities=tuple(entities),
                         candidate_pairs=tuple(pairs),
                         evidence_records=tuple(evidence),
+                        review_signals=normalized_review_signals,
                     )
                 )
     return batches
@@ -406,11 +412,11 @@ def _validated_records(
                     f"{kind} record crosses its authorized scope",
                     record_id=record_id,
                 )
-        if len(record.get("changed_entity_ids") or ()) > MAX_CHANGED_ENTITIES or len(
-            record.get("candidate_pair_ids") or ()
-        ) > MAX_CANDIDATE_PAIRS or len(
-            record.get("evidence_ids") or ()
-        ) > MAX_EVIDENCE_RECORDS:
+        if (
+            len(record.get("changed_entity_ids") or ()) > MAX_CHANGED_ENTITIES
+            or len(record.get("candidate_pair_ids") or ()) > MAX_CANDIDATE_PAIRS
+            or len(record.get("evidence_ids") or ()) > MAX_EVIDENCE_RECORDS
+        ):
             raise EvidenceBatchRejected(
                 BatchRejectionReason.INDIVISIBLE_RECORD,
                 f"{kind} record contains an indivisible over-limit reference set",
@@ -426,7 +432,9 @@ def _record_identifier(record: Mapping[str, Any], kind: str) -> str:
         "pair": ("pair_id", "resource_id", "id"),
         "evidence": ("evidence_id", "resource_id", "id"),
     }[kind]
-    return next((_identifier(record.get(field)) for field in fields if record.get(field)), "")
+    return next(
+        (_identifier(record.get(field)) for field in fields if record.get(field)), ""
+    )
 
 
 def _priority_key(record: Mapping[str, Any], kind: str) -> tuple[Any, ...]:
@@ -530,7 +538,9 @@ def _chunk_count(size: int, limit: int) -> int:
     return (size + limit - 1) // limit
 
 
-def _slice(records: list[dict[str, Any]], index: int, limit: int) -> list[dict[str, Any]]:
+def _slice(
+    records: list[dict[str, Any]], index: int, limit: int
+) -> list[dict[str, Any]]:
     return records[index * limit : (index + 1) * limit]
 
 

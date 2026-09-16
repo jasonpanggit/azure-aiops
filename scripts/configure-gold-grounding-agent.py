@@ -23,6 +23,10 @@ from fabric.gold_grounding_definition import (
     build_gold_grounding_definition,
 )
 from fabric.lakehouse_manager import LakehouseManager
+from ontology_discovery.generation_resolver import (
+    CompatibilityAlias,
+    GenerationSelection,
+)
 
 DESCRIPTION = (
     "Read-only Gold and deterministic ontology evidence for Operations Copilot. "
@@ -34,6 +38,16 @@ def main() -> int:
     """Configure the existing Gold-grounding Data Agent from repository contracts."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fabric-config", default="fabric.config.yaml")
+    parser.add_argument(
+        "--generation-path",
+        required=True,
+        help="Immutable generation path selected for all Data Agent tables.",
+    )
+    parser.add_argument(
+        "--source-generation",
+        required=True,
+        help="Source generation recorded in the immutable ontology manifest.",
+    )
     parser.add_argument(
         "--publish",
         action="store_true",
@@ -80,10 +94,27 @@ def main() -> int:
     lakehouse_display_name = str(
         lakehouse.get("displayName") or lakehouse_name or "operational_context_graph"
     )
+    generation = GenerationSelection(
+        active_generation=args.generation_path,
+        active_generation_uri=args.generation_path,
+        prior_generation=None,
+        pointer_etag="operator-pinned",
+        source_generation=args.source_generation,
+    )
+    aliases = {
+        name: CompatibilityAlias(
+            logical_name=name,
+            physical_path=f"{args.generation_path.rstrip('/')}/{name}",
+            generation_id=generation.generation_id,
+        )
+        for name in GOLD_GROUNDING_TABLES
+    }
     definition = build_gold_grounding_definition(
         lakehouse_id=lakehouse_id,
         workspace_id=workspace_id,
         lakehouse_display_name=lakehouse_display_name,
+        generation=generation,
+        table_aliases=aliases,
     )
 
     item = manager.resolve(item_id=item_id)

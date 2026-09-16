@@ -106,16 +106,22 @@ class DataAgentManager:
         self.workspace_id = workspace_id
         self.base_path = f"/workspaces/{workspace_id}/items"
 
-    def resolve(self, *, item_id: str = "", display_name: str = "") -> dict[str, Any] | None:
+    def resolve(
+        self, *, item_id: str = "", display_name: str = ""
+    ) -> dict[str, Any] | None:
         if item_id:
             return self.client.request("GET", f"{self.base_path}/{item_id}")
         matches = [
             item
-            for item in self.client.iter_items(self.base_path, params={"type": self.ITEM_TYPE})
+            for item in self.client.iter_items(
+                self.base_path, params={"type": self.ITEM_TYPE}
+            )
             if str(item.get("displayName") or "") == display_name
         ]
         if len(matches) > 1:
-            raise ValueError(f"Multiple Fabric data agents named {display_name!r}; configure item_id")
+            raise ValueError(
+                f"Multiple Fabric data agents named {display_name!r}; configure item_id"
+            )
         return matches[0] if matches else None
 
     def create(
@@ -130,6 +136,7 @@ class DataAgentManager:
         table_names: tuple[str, ...] = ("ontology_entities", "ontology_relationships"),
         data_source_instructions: str = "",
         few_shots: tuple[Mapping[str, str], ...] = (),
+        prebuilt_definition: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Creates a DataAgent item with a public definition (per Microsoft
         Learn's "Data Agent item definition" article) that already stages a
@@ -137,14 +144,18 @@ class DataAgentManager:
         sets the relationship-suggestion AI instructions -- so the item is
         immediately usable (modulo publishing) rather than requiring a
         second manual portal configuration pass."""
-        definition = build_data_agent_definition(
-            lakehouse_id=lakehouse_id,
-            lakehouse_workspace_id=lakehouse_workspace_id,
-            lakehouse_display_name=lakehouse_display_name,
-            ai_instructions=ai_instructions,
-            table_names=table_names,
-            data_source_instructions=data_source_instructions,
-            few_shots=few_shots,
+        definition = (
+            copy.deepcopy(dict(prebuilt_definition))
+            if prebuilt_definition is not None
+            else build_data_agent_definition(
+                lakehouse_id=lakehouse_id,
+                lakehouse_workspace_id=lakehouse_workspace_id,
+                lakehouse_display_name=lakehouse_display_name,
+                ai_instructions=ai_instructions,
+                table_names=table_names,
+                data_source_instructions=data_source_instructions,
+                few_shots=few_shots,
+            )
         )
         return self.client.request(
             "POST",
@@ -190,7 +201,9 @@ class DataAgentManager:
             json_body={"format": "Default"},
         )
 
-    def publish(self, item_id: str, *, published_description: str = "") -> dict[str, Any]:
+    def publish(
+        self, item_id: str, *, published_description: str = ""
+    ) -> dict[str, Any]:
         """Publishes the staged DataAgent configuration, per Microsoft
         Learn's "Publish Data Agent" operation -- verified live against the
         actual API during this session, this is a DataAgent-specific path
@@ -264,7 +277,13 @@ def build_data_agent_definition(
     data_agent_json = {"$schema": _DATA_AGENT_SCHEMA_VERSION}
     stage_config_json = {
         "$schema": _STAGE_CONFIG_SCHEMA_VERSION,
-        "aiInstructions": ai_instructions,
+        "aiInstructions": (
+            f"{ai_instructions}\n\n"
+            f"PINNED_ONTOLOGY_GENERATION={generation.generation_id}. "
+            "Return no finding whose cited generation differs from this value."
+            if generation is not None
+            else ai_instructions
+        ),
     }
     datasource_json = {
         "$schema": _DATASOURCE_SCHEMA_VERSION,
@@ -288,6 +307,19 @@ def build_data_agent_definition(
     }
     if data_source_instructions.strip():
         datasource_json["dataSourceInstructions"] = data_source_instructions.strip()
+    if generation is not None:
+        datasource_json["metadata"] = {
+            "ontologyGenerationId": generation.generation_id,
+            "sourceGenerationId": generation.source_generation,
+            "compatibilityAliasVersion": generation.compatibility_alias_version,
+            "compatibilityAliasBindings": json.dumps(
+                {name: table_aliases[name].physical_path for name in table_names},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if table_aliases is not None
+            else "{}",
+        }
 
     parts = [
         {
@@ -333,7 +365,9 @@ def _normalize_few_shot(example: Mapping[str, str]) -> dict[str, str]:
     except ValueError as exc:
         raise ValueError("Data Agent few-shot id must be a UUID") from exc
     if not query.casefold().startswith("select"):
-        raise ValueError("Data Agent few-shot queries must be read-only SELECT statements")
+        raise ValueError(
+            "Data Agent few-shot queries must be read-only SELECT statements"
+        )
     return {"id": example_id, "question": question, "query": query}
 
 
@@ -357,7 +391,9 @@ def hydrate_data_agent_table_selection(
     live_payload = _decoded_part(live_part)
     for field in ("artifactId", "workspaceId", "displayName", "type"):
         if target_payload.get(field) != live_payload.get(field):
-            raise ValueError(f"Live Data Agent datasource {field} does not match the target")
+            raise ValueError(
+                f"Live Data Agent datasource {field} does not match the target"
+            )
 
     target_path = str(target_part.get("path") or "")
     live_path = str(live_part.get("path") or "")
@@ -388,8 +424,11 @@ def hydrate_data_agent_table_selection(
     if missing:
         raise ValueError(f"Fabric Data Agent tables are missing: {missing}")
     target_payload["elements"] = elements
-    if live_payload.get("metadata") is not None:
-        target_payload["metadata"] = copy.deepcopy(live_payload["metadata"])
+    target_metadata = dict(target_payload.get("metadata") or {})
+    for key, value in dict(live_payload.get("metadata") or {}).items():
+        target_metadata.setdefault(key, copy.deepcopy(value))
+    if target_metadata:
+        target_payload["metadata"] = target_metadata
     target_part["payload"] = _b64(target_payload)
     return _preserve_server_parts(hydrated, live_definition)
 
@@ -427,9 +466,7 @@ def _preserve_server_parts(
     if not isinstance(target_parts, list) or not isinstance(live_parts, list):
         raise TypeError("Data Agent definition parts are unavailable")
     target_paths = {
-        str(part.get("path") or "")
-        for part in target_parts
-        if isinstance(part, dict)
+        str(part.get("path") or "") for part in target_parts if isinstance(part, dict)
     }
     for part in live_parts:
         if not isinstance(part, dict):
@@ -459,8 +496,19 @@ def _bound_alias_names(
             alias = table_aliases[name]
         except KeyError as exc:
             raise ValueError(f"Missing compatibility alias for {name!r}") from exc
-        if alias.logical_name != name or alias.generation_id != generation.generation_id:
-            raise ValueError(f"Compatibility alias for {name!r} is not bound to the selection")
+        if (
+            alias.logical_name != name
+            or alias.generation_id != generation.generation_id
+        ):
+            raise ValueError(
+                f"Compatibility alias for {name!r} is not bound to the selection"
+            )
+        if not alias.physical_path.rstrip("/").endswith(
+            f"/{generation.generation_id}/{name}"
+        ):
+            raise ValueError(
+                f"Compatibility alias for {name!r} does not target the selected generation"
+            )
         bound.append(alias.logical_name)
     return tuple(bound)
 
@@ -472,10 +520,12 @@ def ensure_data_agent(
     lakehouse_id: str,
     lakehouse_workspace_id: str,
     lakehouse_display_name: str,
+    generation: GenerationSelection,
+    table_aliases: Mapping[str, CompatibilityAlias],
     item_id: str = "",
     ai_instructions: str = RELATIONSHIP_SUGGESTION_INSTRUCTIONS,
 ) -> dict[str, Any]:
-    """Idempotent resolve-or-create of the DataAgent item.
+    """Idempotent resolve-or-create of a generation-bound DataAgent item.
 
     When an existing item is resolved, its staged definition is always
     re-pushed via ``update_definition`` (not just left as-is) -- this was
@@ -490,6 +540,8 @@ def ensure_data_agent(
         lakehouse_workspace_id=lakehouse_workspace_id,
         lakehouse_display_name=lakehouse_display_name,
         ai_instructions=ai_instructions,
+        generation=generation,
+        table_aliases=table_aliases,
     )
     if item is not None:
         manager.update_definition(str(item["id"]), definition)
@@ -500,6 +552,7 @@ def ensure_data_agent(
         lakehouse_workspace_id=lakehouse_workspace_id,
         lakehouse_display_name=lakehouse_display_name,
         ai_instructions=ai_instructions,
+        prebuilt_definition=definition,
     )
     return {**created, "action": "created"}
 

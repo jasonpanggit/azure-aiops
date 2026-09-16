@@ -192,6 +192,13 @@ class BoundedEvidenceProcessor:
 
     async def advance(self, run: Mapping[str, Any]) -> CheckpointResult:
         evidence = await self._evidence_provider.collect(run)
+        review_signals = evidence.get("review_signals") or {}
+        if not isinstance(review_signals, Mapping):
+            raise RunProcessingFailure(
+                failure_class="evidence_batch_invalid",
+                checkpoint="evidence_batch_rejected",
+                payload={"reason": "invalid_review_signals"},
+            )
         try:
             batches = split_evidence_batches(
                 changed_entities=_records(evidence, "changed_entities"),
@@ -205,6 +212,7 @@ class BoundedEvidenceProcessor:
                 observed_at=_observed_at(evidence.get("observed_at")),
                 freshness=str(evidence.get("freshness") or "unknown"),
                 coverage=str(evidence.get("coverage") or "partial"),
+                review_signals=review_signals,
             )
         except EvidenceBatchRejected as exc:
             raise RunProcessingFailure(
@@ -236,13 +244,17 @@ class BoundedEvidenceProcessor:
                 raise RunProcessingFailure(
                     failure_class="run_cancelled",
                     checkpoint="evidence_dispatch_stopped",
-                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
+                    payload={
+                        "unresolved_batch_ids": [item.batch_id for item in batches]
+                    },
                 )
             if current["source_generation_id"] != batch.source_generation_id:
                 raise RunProcessingFailure(
                     failure_class="source_generation_changed",
                     checkpoint="evidence_dispatch_stopped",
-                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
+                    payload={
+                        "unresolved_batch_ids": [item.batch_id for item in batches]
+                    },
                 )
             persisted = self._store.save_evidence_batch(
                 run_id=current["run_id"],
@@ -370,7 +382,9 @@ class OntologyDiscoveryCoordinator:
                         message=str(exc) or exc.__class__.__name__,
                         now=moment,
                     )
-                    counts["retrying" if failed["status"] == RUN_RETRYING else "failed"] += 1
+                    counts[
+                        "retrying" if failed["status"] == RUN_RETRYING else "failed"
+                    ] += 1
                     _LOGGER.exception(
                         "ontology_discovery_run_failed",
                         extra={"run_id": run_id},
@@ -413,9 +427,7 @@ class OntologyDiscoveryCoordinator:
         return counts
 
 
-def _records(
-    evidence: Mapping[str, Any], name: str
-) -> list[Mapping[str, Any]]:
+def _records(evidence: Mapping[str, Any], name: str) -> list[Mapping[str, Any]]:
     value = evidence.get(name, ())
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"{name} must be a list of records")

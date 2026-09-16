@@ -40,14 +40,19 @@ CAPABILITIES_ENGINE = "fabric.medallion_capabilities"
 
 
 def _runtime_config() -> FabricRuntimeConfig | None:
-    config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "fabric.config.yaml").strip() or "fabric.config.yaml"
+    config_path = (
+        os.environ.get("AIOPS_FABRIC_CONFIG", "fabric.config.yaml").strip()
+        or "fabric.config.yaml"
+    )
     try:
         return FabricRuntimeConfig.load(config_path)
     except Exception:  # noqa: BLE001 - missing Fabric config degrades to JSON snapshot reads only
         return None
 
 
-def _evidence(*, source_engine: str, source_table: str, timestamp: str = "") -> Evidence:
+def _evidence(
+    *, source_engine: str, source_table: str, timestamp: str = ""
+) -> Evidence:
     return Evidence(
         source_engine=source_engine,
         source_table=source_table,
@@ -57,7 +62,9 @@ def _evidence(*, source_engine: str, source_table: str, timestamp: str = "") -> 
 
 
 def _status_timestamp(row: dict[str, Any]) -> str:
-    return str(row.get("ingested_at") or row.get("observed_at") or row.get("timestamp") or "")
+    return str(
+        row.get("ingested_at") or row.get("observed_at") or row.get("timestamp") or ""
+    )
 
 
 def _parse_requested_scope(row: dict[str, Any]) -> dict[str, list[str]]:
@@ -99,8 +106,12 @@ def _scope_attributes(row: dict[str, Any]) -> dict[str, str]:
             attributes[dimension] = values[0]
     if "subscription" not in attributes and row.get("subscription_id"):
         attributes["subscription"] = str(row.get("subscription_id") or "")
-    if "subscription_connection" not in attributes and row.get("subscription_connection"):
-        attributes["subscription_connection"] = str(row.get("subscription_connection") or "")
+    if "subscription_connection" not in attributes and row.get(
+        "subscription_connection"
+    ):
+        attributes["subscription_connection"] = str(
+            row.get("subscription_connection") or ""
+        )
     return attributes
 
 
@@ -145,7 +156,9 @@ def _lakehouse_delta_rows(table_name: str) -> list[dict[str, Any]]:
     ).read(onelake.table_uri(layer, logical_name))
 
 
-def _connection_rows(context: Context) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+def _connection_rows(
+    context: Context,
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
     rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for summary in context.onboarding.list(include_disabled=False):
         detail = context.onboarding.detail(str(summary.get("connection_id") or ""))
@@ -208,7 +221,9 @@ def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]
         dataset_root = str(detail.get("dataset_root") or "")
         if not dataset_root:
             continue
-        for row in DatasetStore(dataset_root).read_dataset("metadata_publication_manifest"):
+        for row in DatasetStore(dataset_root).read_dataset(
+            "metadata_publication_manifest"
+        ):
             projection = str(row.get("projection_name") or "")
             if not projection:
                 continue
@@ -216,7 +231,9 @@ def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]
             if detail.get("subscription_id"):
                 current["subscription_id"] = str(detail.get("subscription_id") or "")
             if detail.get("connection_id"):
-                current["subscription_connection"] = str(detail.get("connection_id") or "")
+                current["subscription_connection"] = str(
+                    detail.get("connection_id") or ""
+                )
             key = _manifest_key(current)
             previous = latest_by_projection.get(key)
             if previous is None or str(current.get("updated_at") or "") >= str(
@@ -262,11 +279,17 @@ def _connection_scope_attributes(detail: dict[str, Any]) -> dict[str, str]:
 def _connection_visible(scope: Scope, detail: dict[str, Any]) -> bool:
     if scope.is_unrestricted():
         return True
-    attributes = {key: value for key, value in _connection_scope_attributes(detail).items() if value}
+    attributes = {
+        key: value
+        for key, value in _connection_scope_attributes(detail).items()
+        if value
+    }
     return bool(attributes) and scope.matches(attributes)
 
 
-def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
+def _metadata_quality_report_rows(
+    context: Context, scope: Scope
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for detail, _status_rows in _connection_rows(context):
         if not _connection_visible(scope, detail):
@@ -276,8 +299,12 @@ def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[s
             continue
         for row in DatasetStore(dataset_root).read_dataset("metadata_quality_reports"):
             current = dict(row)
-            current.setdefault("subscription_id", str(detail.get("subscription_id") or ""))
-            current.setdefault("subscription_connection", str(detail.get("connection_id") or ""))
+            current.setdefault(
+                "subscription_id", str(detail.get("subscription_id") or "")
+            )
+            current.setdefault(
+                "subscription_connection", str(detail.get("connection_id") or "")
+            )
             rows.append(current)
     if not rows:
         rows.extend(
@@ -322,7 +349,10 @@ def _int_value(value: Any) -> int:
 
 
 def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
-    if not any(_connection_visible(scope, detail) for detail, _rows in _connection_rows(context)):
+    if not any(
+        _connection_visible(scope, detail)
+        for detail, _rows in _connection_rows(context)
+    ):
         return []
     coordinator = getattr(context.onboarding, "sync_coordinator", None)
     store = getattr(coordinator, "publication_state_store", None)
@@ -348,12 +378,16 @@ def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, 
                 "status": status,
                 "attempted_at": record.attempted_at,
                 "attempts": int(record.attempt_count),
-                "retry_eligible": bool(record.retryable) if status == "failed" else False,
+                "retry_eligible": bool(record.retryable)
+                if status == "failed"
+                else False,
                 "message": str(record.error or ""),
                 "source": "publication-state",
             }
         )
-    return sorted(mapped, key=lambda row: str(row.get("attempted_at") or ""), reverse=True)
+    return sorted(
+        mapped, key=lambda row: str(row.get("attempted_at") or ""), reverse=True
+    )
 
 
 def _capacity_config(context: Context, scope: Scope) -> dict[str, str]:
@@ -375,7 +409,10 @@ def _capacity_config(context: Context, scope: Scope) -> dict[str, str]:
             getattr(getattr(config, "capacity", None), "capacity_name", "")
             or os.environ.get("AIOPS_FABRIC_CAPACITY_NAME", "")
         ).strip(),
-        "workspace_id": str(getattr(config, "workspace_id", "") or os.environ.get("FABRIC_WORKSPACE_ID", "")).strip(),
+        "workspace_id": str(
+            getattr(config, "workspace_id", "")
+            or os.environ.get("FABRIC_WORKSPACE_ID", "")
+        ).strip(),
         "lakehouse_id": str(getattr(config, "lakehouse_id", "")).strip(),
     }
 
@@ -407,7 +444,10 @@ def _semantic_readiness(context: Context, scope: Scope) -> dict[str, str]:
     if latest:
         if str(latest.get("status") or "") == "succeeded":
             return {"status": "available"}
-        reason = str(latest.get("message") or "") or "no_recorded_semantic_model_deployment_result"
+        reason = (
+            str(latest.get("message") or "")
+            or "no_recorded_semantic_model_deployment_result"
+        )
         return {"status": "deployment-blocked", "reason": reason}
     return {
         "status": "deployment-blocked",
@@ -416,7 +456,9 @@ def _semantic_readiness(context: Context, scope: Scope) -> dict[str, str]:
 
 
 def _scoped_source_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
-    return [row for row in _metadata_source_status_rows(context) if _row_visible(scope, row)]
+    return [
+        row for row in _metadata_source_status_rows(context) if _row_visible(scope, row)
+    ]
 
 
 def _registered_tables(rows: list[dict[str, Any]]) -> list[str]:
@@ -468,7 +510,9 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
 
 
 @router.get("/datasets/{table_name}", summary="Fabric medallion dataset status")
-def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+def medallion_dataset(
+    table_name: str, context: Context, scope: ReadScope
+) -> dict[str, Any]:
     rows = _scoped_source_rows(context, scope)
     table_names = set(_registered_tables(rows))
     if table_name not in table_names:
@@ -505,7 +549,9 @@ def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
             "registered_at": str(row.get("registered_at") or ""),
             "updated_at": str(row.get("updated_at") or ""),
             "subscription_id": _manifest_subscription_id(scope, row),
-            "subscription_connection": _scope_attributes(row).get("subscription_connection", ""),
+            "subscription_connection": _scope_attributes(row).get(
+                "subscription_connection", ""
+            ),
         }
         for row in rows
         if str(row.get("projection_name") or "")
@@ -515,7 +561,9 @@ def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
         evidence=_evidence(
             source_engine=MANIFEST_ENGINE,
             source_table=MANIFEST_TABLE,
-            timestamp=max((str(row.get("updated_at") or "") for row in rows), default=""),
+            timestamp=max(
+                (str(row.get("updated_at") or "") for row in rows), default=""
+            ),
         ),
         scope=scope.to_dict(),
     )
@@ -552,7 +600,9 @@ def medallion_governance(context: Context, scope: ReadScope) -> dict[str, Any]:
                     "referential_integrity_blockers": 0,
                 },
             )
-            current["ownership_gap_count"] = _int_value(current["ownership_gap_count"]) + ownership
+            current["ownership_gap_count"] = (
+                _int_value(current["ownership_gap_count"]) + ownership
+            )
             current["tag_gap_count"] = _int_value(current["tag_gap_count"]) + tags
             current["referential_integrity_blockers"] = (
                 _int_value(current["referential_integrity_blockers"]) + referential
@@ -582,7 +632,9 @@ def medallion_governance(context: Context, scope: ReadScope) -> dict[str, Any]:
     )
 
 
-@router.get("/ingestion-history", summary="Fabric ingestion and publication run history")
+@router.get(
+    "/ingestion-history", summary="Fabric ingestion and publication run history"
+)
 def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str, Any]:
     source_rows = _scoped_source_rows(context, scope)
     runs: list[dict[str, Any]] = []
@@ -603,7 +655,9 @@ def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str,
             retry_eligible = False
         runs.append(
             {
-                "projection_name": str(row.get("source_family") or row.get("table_name") or ""),
+                "projection_name": str(
+                    row.get("source_family") or row.get("table_name") or ""
+                ),
                 "status": status,
                 "attempted_at": _status_timestamp(row),
                 "attempts": _int_value(row.get("attempts") or 1),
@@ -613,13 +667,17 @@ def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str,
             }
         )
     runs.extend(_publication_attempt_rows(context, scope))
-    ordered = sorted(runs, key=lambda row: str(row.get("attempted_at") or ""), reverse=True)
+    ordered = sorted(
+        runs, key=lambda row: str(row.get("attempted_at") or ""), reverse=True
+    )
     return envelope(
         {"runs": ordered},
         evidence=_evidence(
             source_engine=INGESTION_ENGINE,
             source_table=INGESTION_TABLE,
-            timestamp=max((str(row.get("attempted_at") or "") for row in ordered), default=""),
+            timestamp=max(
+                (str(row.get("attempted_at") or "") for row in ordered), default=""
+            ),
         ),
         scope=scope.to_dict(),
     )
@@ -661,7 +719,8 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
         table_rows = [
             row
             for row in source_rows
-            if str(row.get("source_family") or row.get("table_name") or "") == table_name
+            if str(row.get("source_family") or row.get("table_name") or "")
+            == table_name
         ]
         lineage_ref = next(
             (
@@ -674,7 +733,12 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
         lineage_rows.append(
             {
                 "table_name": table_name,
-                "status": str(dataset_status(table_name, source_status=source_rows).get("availability") or "unknown"),
+                "status": str(
+                    dataset_status(table_name, source_status=source_rows).get(
+                        "availability"
+                    )
+                    or "unknown"
+                ),
                 "lineage_ref": lineage_ref,
                 "lineage": entity_lineage_summary(lineage_ref, entities),
             }
@@ -691,8 +755,9 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
         "maintenance": maintenance,
         "semantic_readiness": _semantic_readiness(context, scope),
         "data_agent_readiness": {
-            "status": "available" if data_agent_ready else "unknown",
+            "status": "configured_unverified" if data_agent_ready else "unknown",
             "configured": data_agent_ready,
+            "runtime_verified": False,
         },
         "lineage": {
             "native_lineage_url": workspace_lineage_url,

@@ -35,15 +35,30 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from fabric.auth import FabricAuthConfig, build_credential  # noqa: E402
-from fabric.data_agent_manager import DataAgentManager, ensure_data_agent  # noqa: E402
-from fabric.fabric_client import FabricClient  # noqa: E402
-from fabric.lakehouse_manager import LakehouseManager  # noqa: E402
+from fabric.auth import FabricAuthConfig, build_credential
+from fabric.data_agent_manager import DataAgentManager, ensure_data_agent
+from fabric.fabric_client import FabricClient
+from fabric.lakehouse_manager import LakehouseManager
+from ontology_discovery.generation_resolver import (
+    ONTOLOGY_TABLES,
+    CompatibilityAlias,
+    GenerationSelection,
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fabric-config", default="fabric.config.yaml")
+    parser.add_argument(
+        "--generation-path",
+        required=True,
+        help="Immutable ontology generation path that the logical aliases currently target.",
+    )
+    parser.add_argument(
+        "--source-generation",
+        required=True,
+        help="Immutable source generation recorded in the ontology manifest.",
+    )
     parser.add_argument(
         "--publish",
         action="store_true",
@@ -60,7 +75,9 @@ def main() -> int:
     fabric_cfg = raw.get("fabric") or {}
     workspace_id = str(fabric_cfg.get("workspace_id") or "")
     if not workspace_id or workspace_id == "00000000-0000-0000-0000-000000000000":
-        print("error: fabric.workspace_id is not set to a real workspace", file=sys.stderr)
+        print(
+            "error: fabric.workspace_id is not set to a real workspace", file=sys.stderr
+        )
         return 1
 
     lakehouse_id = str(fabric_cfg.get("lakehouse_id") or "")
@@ -80,21 +97,46 @@ def main() -> int:
     # Resolve the lakehouse item so we can pass its live displayName through
     # (mirrors LakehouseManager's existing resolve-by-id usage elsewhere).
     lakehouse_manager = LakehouseManager(client, workspace_id)
-    lakehouse_item = lakehouse_manager.resolve(lakehouse_id=lakehouse_id, lakehouse_name=lakehouse_name)
-    lakehouse_display_name = str(lakehouse_item.get("displayName") or lakehouse_name or "ontology_lakehouse")
+    lakehouse_item = lakehouse_manager.resolve(
+        lakehouse_id=lakehouse_id, lakehouse_name=lakehouse_name
+    )
+    lakehouse_display_name = str(
+        lakehouse_item.get("displayName") or lakehouse_name or "ontology_lakehouse"
+    )
 
     manager = DataAgentManager(client, workspace_id)
-    print(f"Resolving/creating data agent '{display_name}' in workspace {workspace_id} ...")
+    generation = GenerationSelection(
+        active_generation=args.generation_path,
+        active_generation_uri=args.generation_path,
+        prior_generation=None,
+        pointer_etag="operator-pinned",
+        source_generation=args.source_generation,
+    )
+    aliases = {
+        name: CompatibilityAlias(
+            logical_name=name,
+            physical_path=f"{args.generation_path.rstrip('/')}/{name}",
+            generation_id=generation.generation_id,
+        )
+        for name in ONTOLOGY_TABLES
+    }
+    print(
+        f"Resolving/creating data agent '{display_name}' in workspace {workspace_id} ..."
+    )
     result = ensure_data_agent(
         manager,
         display_name=display_name,
         lakehouse_id=lakehouse_id,
         lakehouse_workspace_id=workspace_id,
         lakehouse_display_name=lakehouse_display_name,
+        generation=generation,
+        table_aliases=aliases,
         item_id=item_id,
     )
     agent_id = str(result["id"])
-    print(f"Data agent {result['action']}: id={agent_id} displayName={result.get('displayName')}")
+    print(
+        f"Data agent {result['action']}: id={agent_id} displayName={result.get('displayName')}"
+    )
 
     if args.publish:
         print("Publishing data agent staged configuration ...")
@@ -104,7 +146,9 @@ def main() -> int:
             f"https://api.fabric.microsoft.com/v1/mcp/workspaces/{workspace_id}"
             f"/dataagents/{agent_id}/agent"
         )
-        print(f"MCP query endpoint (per Microsoft Learn's Data Agent SDK doc): {mcp_url}")
+        print(
+            f"MCP query endpoint (per Microsoft Learn's Data Agent SDK doc): {mcp_url}"
+        )
 
     print(
         "Set fabric.relationship_suggestion_agent.item_id: "

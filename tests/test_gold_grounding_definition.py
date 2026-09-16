@@ -12,6 +12,10 @@ from fabric.gold_grounding_definition import (
     GOLD_GROUNDING_TABLES,
     build_gold_grounding_definition,
 )
+from ontology_discovery.generation_resolver import (
+    CompatibilityAlias,
+    GenerationSelection,
+)
 
 
 def _decoded_parts(definition: dict) -> dict[str, dict]:
@@ -21,12 +25,39 @@ def _decoded_parts(definition: dict) -> dict[str, dict]:
     }
 
 
-def test_gold_grounding_definition_matches_runtime_contract() -> None:
-    definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
+def _build_definition(
+    *,
+    lakehouse_id: str = "lakehouse-id",
+    workspace_id: str = "workspace-id",
+    lakehouse_display_name: str = "operational_context_graph_v2",
+    generation_id: str = "generation-7",
+) -> dict:
+    generation = GenerationSelection(
+        active_generation=f"/generations/{generation_id}",
+        active_generation_uri=f"abfss://lake/generations/{generation_id}",
+        prior_generation=None,
+        pointer_etag="etag-7",
+        source_generation="inventory-7",
     )
+    aliases = {
+        name: CompatibilityAlias(
+            logical_name=name,
+            physical_path=f"/generations/{generation_id}/{name}",
+            generation_id=generation_id,
+        )
+        for name in GOLD_GROUNDING_TABLES
+    }
+    return build_gold_grounding_definition(
+        lakehouse_id=lakehouse_id,
+        workspace_id=workspace_id,
+        lakehouse_display_name=lakehouse_display_name,
+        generation=generation,
+        table_aliases=aliases,
+    )
+
+
+def test_gold_grounding_definition_matches_runtime_contract() -> None:
+    definition = _build_definition()
     parts = _decoded_parts(definition)
     stage = parts["Files/Config/draft/stage_config.json"]
     datasource_path = next(path for path in parts if path.endswith("/datasource.json"))
@@ -41,14 +72,15 @@ def test_gold_grounding_definition_matches_runtime_contract() -> None:
     )
     assert selected == GOLD_GROUNDING_TABLES
     assert "inventory_resource_observations" not in selected
-    assert stage["aiInstructions"] == GOLD_GROUNDING_INSTRUCTIONS
+    assert stage["aiInstructions"].startswith(GOLD_GROUNDING_INSTRUCTIONS)
+    assert "PINNED_ONTOLOGY_GENERATION=generation-7" in stage["aiInstructions"]
+    assert datasource["metadata"]["ontologyGenerationId"] == "generation-7"
     for required_field in (
         "finding_id",
-        "resource_ids",
+        "generation_id",
+        "resource_id",
         "citations",
         "scope_ok",
-        "degraded",
-        "degraded_reason",
         "summary",
     ):
         assert required_field in GOLD_GROUNDING_INSTRUCTIONS
@@ -73,16 +105,8 @@ def test_gold_grounding_few_shots_are_bounded_read_only_queries() -> None:
 
 
 def test_hydrated_definition_selects_only_requested_tables() -> None:
-    definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
-    )
-    live_definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
-    )
+    definition = _build_definition()
+    live_definition = _build_definition()
     live_parts = _decoded_parts(live_definition)
     datasource_path = next(
         path for path in live_parts if path.endswith("/datasource.json")
@@ -121,7 +145,10 @@ def test_hydrated_definition_selects_only_requested_tables() -> None:
             ],
         },
     ]
-    live_parts[datasource_path]["metadata"] = {"schemaVersion": "live-v1"}
+    live_parts[datasource_path]["metadata"] = {
+        "schemaVersion": "live-v1",
+        "ontologyGenerationId": "stale-generation",
+    }
     live_encoded = {
         "definition": {
             "parts": [
@@ -173,7 +200,8 @@ def test_hydrated_definition_selects_only_requested_tables() -> None:
     table_nodes = datasource["elements"][0]["children"][0]["children"][0]["children"]
     selected = {node["display_name"] for node in table_nodes if node["is_selected"]}
     assert selected == set(GOLD_GROUNDING_TABLES)
-    assert datasource["metadata"] == {"schemaVersion": "live-v1"}
+    assert datasource["metadata"]["schemaVersion"] == "live-v1"
+    assert datasource["metadata"]["ontologyGenerationId"] == "generation-7"
     assert "Files/Config/publish_info.json" in hydrated_parts
     assert "Files/Config/published/stage_config.json" in hydrated_parts
     assert ".platform" in hydrated_parts
@@ -186,14 +214,9 @@ def test_hydrated_definition_selects_only_requested_tables() -> None:
 
 
 def test_hydration_rejects_a_different_live_datasource_identity() -> None:
-    definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
-    )
-    live_definition = build_gold_grounding_definition(
+    definition = _build_definition()
+    live_definition = _build_definition(
         lakehouse_id="different-lakehouse-id",
-        workspace_id="workspace-id",
         lakehouse_display_name="other_lakehouse",
     )
     live_encoded = {
@@ -218,16 +241,8 @@ def test_hydration_rejects_a_different_live_datasource_identity() -> None:
 
 
 def test_hydration_adopts_fabric_canonical_datasource_path() -> None:
-    definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
-    )
-    live_definition = build_gold_grounding_definition(
-        lakehouse_id="lakehouse-id",
-        workspace_id="workspace-id",
-        lakehouse_display_name="operational_context_graph_v2",
-    )
+    definition = _build_definition()
+    live_definition = _build_definition()
     for part in live_definition["parts"]:
         part["path"] = part["path"].replace(
             "/lakehouse_tables-operational_context_graph_v2/",

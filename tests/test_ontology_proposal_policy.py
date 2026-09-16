@@ -149,12 +149,8 @@ def _relationship(**overrides: object) -> dict[str, object]:
 
 
 def test_exact_triple_helpers_have_one_authoritative_source() -> None:
-    assert allowed_relationship_triples() == frozenset(
-        ONTOLOGY_RELATIONSHIP_TYPES
-    )
-    assert is_allowed_relationship_triple(
-        "VirtualMachine", "member_of", "Application"
-    )
+    assert allowed_relationship_triples() == frozenset(ONTOLOGY_RELATIONSHIP_TYPES)
+    assert is_allowed_relationship_triple("VirtualMachine", "member_of", "Application")
     assert not is_allowed_relationship_triple(
         "Application", "member_of", "VirtualMachine"
     )
@@ -260,7 +256,9 @@ def test_deterministic_edge_wins_collision_even_outside_shadow_test_path() -> No
     assert candidate == [deterministic]
 
 
-def test_full_candidate_validation_rechecks_scope_lifecycle_duplicates_and_triples() -> None:
+def test_full_candidate_validation_rechecks_scope_lifecycle_duplicates_and_triples() -> (
+    None
+):
     validator = OntologyValidator()
     entities = [
         _entity("vm-1", "VirtualMachine"),
@@ -297,12 +295,8 @@ def test_full_candidate_validation_rechecks_scope_lifecycle_duplicates_and_tripl
 def test_evidence_past_source_freshness_deadline_is_stale() -> None:
     inputs = _policy_inputs()
     evidence = deepcopy(inputs["evidence_records"])
-    evidence["evidence-1"]["observed_at"] = (
-        NOW - timedelta(hours=2)
-    ).isoformat()
-    evidence["evidence-1"]["expires_at"] = (
-        NOW - timedelta(seconds=1)
-    ).isoformat()
+    evidence["evidence-1"]["observed_at"] = (NOW - timedelta(hours=2)).isoformat()
+    evidence["evidence-1"]["expires_at"] = (NOW - timedelta(seconds=1)).isoformat()
     inputs["evidence_records"] = evidence
 
     decision = ProposalPolicy(now=lambda: NOW).evaluate(
@@ -364,7 +358,9 @@ def _eligible_snapshot(
     )
 
 
-def test_proposal_identity_covers_scope_generation_triple_evidence_and_versions() -> None:
+def test_proposal_identity_covers_scope_generation_triple_evidence_and_versions() -> (
+    None
+):
     baseline = _proposal_identity()
     proposal_id = proposal_content_id(**baseline)
     assert proposal_id == proposal_content_id(
@@ -409,13 +405,23 @@ def test_review_cas_is_authorized_immutable_and_restart_durable(
             reason="not authorized",
             now=NOW,
         )
+    with pytest.raises(ReviewerUnauthorized, match="author cannot review"):
+        store.review_proposal(
+            proposal["proposal_id"],
+            action="accept",
+            expected_revision=0,
+            actor="ontology_curator",
+            actor_roles={"approver"},
+            reason="self approval",
+            now=NOW,
+        )
 
     accepted = store.review_proposal(
         proposal["proposal_id"],
         action="accept",
         expected_revision=0,
         actor="steward@example.com",
-        actor_roles={"ontology_steward"},
+        actor_roles={"approver"},
         reason="Evidence reproduced.",
         now=NOW,
     )
@@ -425,7 +431,7 @@ def test_review_cas_is_authorized_immutable_and_restart_durable(
             action="reject",
             expected_revision=0,
             actor="steward@example.com",
-            actor_roles={"ontology_steward"},
+            actor_roles={"approver"},
             reason="stale decision",
             now=NOW,
         )
@@ -439,7 +445,11 @@ def test_review_cas_is_authorized_immutable_and_restart_durable(
         "action": "accept",
         "status": "accepted",
         "actor": "steward@example.com",
-        "actor_roles": ["ontology_steward"],
+        "actor_roles": ["approver"],
+        "policy_version": "proposal-policy-v1",
+        "approved_at": NOW.isoformat(),
+        "proposer_identity": "ontology_curator",
+        "separation_of_duty": True,
         "reason": "Evidence reproduced.",
         "recorded_at": NOW.isoformat(),
     }
@@ -449,7 +459,7 @@ def test_review_cas_is_authorized_immutable_and_restart_durable(
         action="reverse",
         expected_revision=1,
         actor="steward@example.com",
-        actor_roles={"ontology_steward"},
+        actor_roles={"approver"},
         reason="New contradictory evidence.",
         now=NOW + timedelta(seconds=1),
     )
@@ -463,7 +473,10 @@ def test_review_cas_is_authorized_immutable_and_restart_durable(
     [
         (_eligible_snapshot(shadow_days=29), "shadow_days"),
         (_eligible_snapshot(expert_count=199), "expert_adjudications"),
-        (_eligible_snapshot(critical_failures=("scope_disclosure",)), "critical_failures"),
+        (
+            _eligible_snapshot(critical_failures=("scope_disclosure",)),
+            "critical_failures",
+        ),
         (_eligible_snapshot(escalation_recall=0.99), "escalation_recall"),
         (_eligible_snapshot(recall=0.89), "recall"),
         (
@@ -567,9 +580,7 @@ def test_pair_release_is_disabled_by_default_and_scoped_revocation_is_immediate(
         reason="critical_event",
         now=NOW + timedelta(seconds=1),
     )
-    releases = {
-        item["pair_key"]: item for item in test_store.list_admission_releases()
-    }
+    releases = {item["pair_key"]: item for item in test_store.list_admission_releases()}
     assert revoked["status"] == "REVOKED"
     assert releases[second_enabled["pair_key"]]["status"] == "ENABLED"
 
@@ -584,7 +595,7 @@ def test_coordinator_persists_accepted_review_but_returns_shadow_candidate(
         action="accept",
         expected_revision=0,
         actor="steward@example.com",
-        actor_roles={"ontology_steward"},
+        actor_roles={"approver"},
         reason="Accepted for shadow evidence only.",
         now=NOW,
     )
