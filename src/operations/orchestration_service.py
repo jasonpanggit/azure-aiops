@@ -1299,6 +1299,11 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        finops_savings_claims = self._deterministic_finops_savings_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         if overview_ranking_claims:
             used_refs = {
                 str(reference)
@@ -1310,6 +1315,25 @@ class OrchestrationService:
                 reason="deterministic_overview_ranking",
                 domain_count=4,
                 claims=overview_ranking_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if finops_savings_claims:
+            used_refs = {
+                str(reference)
+                for claim in finops_savings_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_finops_savings",
+                domain_count=1,
+                claims=finops_savings_claims,
                 used_retained_evidence=[
                     dict(item)
                     for item in current_retained_evidence
@@ -1994,6 +2018,119 @@ class OrchestrationService:
             if len(claims) >= 8:
                 break
         return claims
+
+    @staticmethod
+    def _deterministic_finops_savings_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Aggregate cited savings by business service before optional narration."""
+
+        if (
+            snapshot is None
+            or snapshot.page_kind != "finops"
+            or snapshot.page_id != "finops"
+            or not retained_evidence
+        ):
+            return []
+        if question.strip() != "Which business services own the most savings?":
+            return []
+
+        grouped: dict[
+            tuple[str, str],
+            list[tuple[float, str]],
+        ] = {}
+        display_names: dict[tuple[str, str], tuple[str, str]] = {}
+        for item in retained_evidence:
+            if str(item.get("claim_type") or "").casefold() != "savings_opportunity":
+                continue
+            if str(item.get("status") or "") not in {STATUS_OK, "partial"}:
+                continue
+            data = item.get("data")
+            if not isinstance(data, Mapping):
+                continue
+            service = str(data.get("business_service") or "").strip()
+            currency = str(data.get("currency") or "").strip()
+            amount = data.get("annual_savings")
+            evidence_id = str(item.get("evidence_id") or "")
+            if (
+                not service
+                or not currency
+                or not evidence_id
+                or isinstance(amount, bool)
+                or not isinstance(amount, (int, float))
+                or not math.isfinite(float(amount))
+                or float(amount) < 0
+            ):
+                continue
+            key = (service.casefold(), currency.casefold())
+            display_names.setdefault(key, (service, currency))
+            grouped.setdefault(key, []).append((float(amount), evidence_id))
+        if not grouped:
+            return []
+        if len({currency for _service, currency in grouped}) != 1:
+            return []
+        if any(len(values) > 5 for values in grouped.values()):
+            return []
+
+        ranked = sorted(
+            grouped.items(),
+            key=lambda item: (
+                -math.fsum(amount for amount, _reference in item[1]),
+                item[0],
+            ),
+        )
+        if (
+            len(ranked) > 1
+            and math.isclose(
+                math.fsum(amount for amount, _reference in ranked[0][1]),
+                math.fsum(amount for amount, _reference in ranked[1][1]),
+            )
+        ):
+            return []
+        key, values = ranked[0]
+        ordered = sorted(values, key=lambda item: (-item[0], item[1]))
+        service, currency = display_names[key]
+        total = math.fsum(amount for amount, _reference in ordered)
+
+        def render_amount(value: float) -> str:
+            return format(value, ".15g")
+
+        evidence_refs = [reference for _amount, reference in ordered]
+        rendered_values = " + ".join(
+            f"{currency} {render_amount(amount)}" for amount, _reference in ordered
+        )
+        freshness = snapshot_claim_freshness(snapshot)
+        uncertainty = []
+        if not snapshot.coverage.complete:
+            uncertainty.append("visible subset is incomplete")
+        if freshness != "fresh":
+            uncertainty.append(f"FinOps evidence freshness is {freshness}")
+        return [
+            {
+                "finding_id": (
+                    "finops:"
+                    + hashlib.sha256("|".join(evidence_refs).encode()).hexdigest()[:24]
+                ),
+                "summary": (
+                    f"The current FinOps page shows business service {service} "
+                    "owns the most identified annual savings: "
+                    f"{rendered_values} = {currency} {render_amount(total)} "
+                    f"across {len(ordered)} quantified opportunities."
+                ),
+                "evidence_refs": evidence_refs,
+                "confidence": "high" if snapshot.coverage.complete else "medium",
+                "freshness": freshness,
+                "uncertainty": uncertainty,
+                "actionable": False,
+                "next_check": (
+                    "Refresh the cited FinOps opportunities before using the "
+                    "aggregate in a financial decision."
+                ),
+            }
+        ]
 
     @staticmethod
     def _deterministic_overview_ranking_claims(

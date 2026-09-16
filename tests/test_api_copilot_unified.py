@@ -1764,6 +1764,355 @@ def test_widened_request_scope_causes_zero_calls():
     assert calls == []
 
 
+def test_finops_business_service_savings_are_deterministic_before_narration():
+    class Coordinator:
+        calls = 0
+
+        def answer(self, **_kwargs):
+            self.calls += 1
+            pytest.fail("exact FinOps savings must not depend on model narration")
+
+    coordinator = Coordinator()
+    service = OrchestrationService(
+        executive_agent=coordinator,
+        always_synthesize=True,
+    )
+    snapshot = EvidenceSnapshotV2(
+        page_kind="finops",
+        page_id="finops",
+        coverage=SnapshotCoverage(
+            visible_count=7,
+            total_count=7,
+            complete=True,
+        ),
+    )
+    retained = [
+        {
+            "evidence_id": f"retained:opportunity:{index}",
+            "original_evidence_id": f"finops:opportunity:{index}",
+            "source": "page_snapshot:finops:finops/opportunities",
+            "status": "ok",
+            "claim_type": "savings_opportunity",
+            "selected": False,
+            "direct": True,
+            "quality": "high",
+            "severity": "unknown",
+            "data": {
+                "business_service": "demo",
+                "annual_savings": amount,
+                "currency": "USD",
+            },
+        }
+        for index, amount in enumerate((1691, 500, 418, 165, 72))
+    ]
+
+    synthesis = service._synthesize(
+        "Which business services own the most savings?",
+        [],
+        retained_evidence=retained,
+        current_retained_evidence=retained,
+        snapshot=snapshot,
+    )
+
+    assert coordinator.calls == 0
+    assert synthesis.status == "deterministic"
+    assert synthesis.reason == "deterministic_finops_savings"
+    assert len(synthesis.claims) == 1
+    claim = synthesis.claims[0]
+    assert "demo" in claim["summary"]
+    assert all(str(amount) in claim["summary"] for amount in (1691, 500, 418, 165, 72))
+    assert "2846" in claim["summary"]
+    assert claim["evidence_refs"] == [
+        f"retained:opportunity:{index}" for index in range(5)
+    ]
+    assert claim["actionable"] is False
+
+
+def test_finops_endpoint_returns_exact_cited_service_total_without_semantic(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    amounts = (1691, 500, 418, 165, 72)
+    body = _canonical_body()
+    body.pop("hint")
+    body["question"] = "Which business services own the most savings?"
+    body["snapshot"] = {
+        "version": "2",
+        "page_kind": "finops",
+        "page_id": "finops",
+        "coverage": {
+            "visible_count": len(amounts),
+            "total_count": len(amounts),
+            "complete": True,
+        },
+        "freshness": [
+            {
+                "source": "finops",
+                "observed_at": "2026-09-16T00:00:00Z",
+                "status": "fresh",
+            }
+        ],
+        "selected_entities": [],
+        "evidence": [
+            {
+                "evidence_id": f"finops:opportunity:{index}",
+                "source": "finops/opportunities",
+                "status": "ok",
+                "observed_at": "2026-09-16T00:00:00Z",
+                "source_key": f"opportunity-{index}",
+                "entity": {
+                    "type": "observation",
+                    "source": "finops/opportunities",
+                    "source_key": f"opportunity-{index}",
+                },
+                "claim_type": "savings_opportunity",
+                "citations": [],
+                "selected": False,
+                "direct": True,
+                "actionable": False,
+                "severity": "unknown",
+                "quality": "high",
+                "data": {
+                    "business_service": "demo",
+                    "annual_savings": amount,
+                    "currency": "USD",
+                },
+            }
+            for index, amount in enumerate(amounts)
+        ],
+        "material_claims": [
+            {
+                "claim_id": f"finops:claim:{index}",
+                "evidence_refs": [f"finops:opportunity:{index}"],
+                "requires_complete_coverage": False,
+            }
+            for index in range(len(amounts))
+        ],
+    }
+    calls: list[str] = []
+
+    def deferred_tool(name, _arguments, **_kwargs):
+        calls.append(name)
+        return ToolResult(
+            status="unavailable",
+            warning="The semantic provider is deferred",
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", deferred_tool)
+    context = _context(tmp_path, None)
+    context.provider_runtime = ProviderRuntime(
+        {
+            "semantic": ProviderSpec(
+                lambda: object(),
+                required=False,
+                scheduled=False,
+            ),
+        }
+    )
+
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == ["finops"]
+    assert data["selected_tools"] == ["business_service_context"]
+    assert calls == ["business_service_context"]
+    assert data["synthesis"]["status"] == "deterministic"
+    assert data["synthesis"]["reason"] == "deterministic_finops_savings"
+    claim = data["synthesis"]["claims"][0]
+    assert "demo" in claim["summary"]
+    assert all(str(amount) in claim["summary"] for amount in amounts)
+    assert "2846" in claim["summary"]
+    assert len(claim["evidence_refs"]) == 5
+    assert set(claim["evidence_refs"]) <= {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    assert claim["actionable"] is False
+    assert data["mutation_authorized"] is False
+
+
+def test_finops_deterministic_savings_refuses_mixed_currency_ranking():
+    snapshot = EvidenceSnapshotV2(
+        page_kind="finops",
+        page_id="finops",
+        coverage=SnapshotCoverage(
+            visible_count=2,
+            total_count=2,
+            complete=True,
+        ),
+    )
+    retained = [
+        {
+            "evidence_id": f"retained:{currency.casefold()}",
+            "status": "ok",
+            "claim_type": "savings_opportunity",
+            "direct": True,
+            "data": {
+                "business_service": service,
+                "annual_savings": amount,
+                "currency": currency,
+            },
+        }
+        for service, amount, currency in (
+            ("demo", 2846, "USD"),
+            ("payments", 3000, "EUR"),
+        )
+    ]
+
+    claims = OrchestrationService._deterministic_finops_savings_claims(
+        "Which business services own the most savings?",
+        snapshot=snapshot,
+        retained_evidence=retained,
+    )
+
+    assert claims == []
+
+
+@pytest.mark.parametrize(
+    ("question", "retained"),
+    (
+        (
+            "Show the business service savings breakdown.",
+            [
+                {
+                    "evidence_id": "retained:demo",
+                    "status": "ok",
+                    "claim_type": "savings_opportunity",
+                    "direct": True,
+                    "data": {
+                        "business_service": "demo",
+                        "annual_savings": 2846,
+                        "currency": "USD",
+                    },
+                }
+            ],
+        ),
+        (
+            "Which business services own the most savings",
+            [
+                {
+                    "evidence_id": "retained:demo",
+                    "status": "ok",
+                    "claim_type": "savings_opportunity",
+                    "direct": True,
+                    "data": {
+                        "business_service": "demo",
+                        "annual_savings": 2846,
+                        "currency": "USD",
+                    },
+                }
+            ],
+        ),
+        (
+            "Which business services own the most savings?",
+            [
+                {
+                    "evidence_id": f"retained:demo:{index}",
+                    "status": "ok",
+                    "claim_type": "savings_opportunity",
+                    "direct": True,
+                    "data": {
+                        "business_service": "demo",
+                        "annual_savings": amount,
+                        "currency": "USD",
+                    },
+                }
+                for index, amount in enumerate((100, 90, 80, 70, 60, 50))
+            ],
+        ),
+        (
+            "Which business services own the most savings?",
+            [
+                {
+                    "evidence_id": f"retained:{service}",
+                    "status": "ok",
+                    "claim_type": "savings_opportunity",
+                    "direct": True,
+                    "data": {
+                        "business_service": service,
+                        "annual_savings": 100,
+                        "currency": "USD",
+                    },
+                }
+                for service in ("demo", "payments")
+            ],
+        ),
+    ),
+    ids=(
+        "non-ranking-question",
+        "advertised-text-without-question-mark",
+        "more-than-five-refs",
+        "tied-services",
+    ),
+)
+def test_finops_deterministic_savings_refuses_unsafe_shapes(question, retained):
+    snapshot = EvidenceSnapshotV2(
+        page_kind="finops",
+        page_id="finops",
+        coverage=SnapshotCoverage(
+            visible_count=len(retained),
+            total_count=len(retained),
+            complete=True,
+        ),
+    )
+
+    claims = OrchestrationService._deterministic_finops_savings_claims(
+        question,
+        snapshot=snapshot,
+        retained_evidence=retained,
+    )
+
+    assert claims == []
+
+
+def test_finops_deterministic_savings_preserves_stale_freshness():
+    snapshot = EvidenceSnapshotV2(
+        page_kind="finops",
+        page_id="finops",
+        coverage=SnapshotCoverage(
+            visible_count=1,
+            total_count=1,
+            complete=True,
+        ),
+        freshness=[
+            SnapshotFreshness(
+                source="finops",
+                observed_at="2026-09-01T00:00:00Z",
+                status="stale",
+            )
+        ],
+    )
+
+    claims = OrchestrationService._deterministic_finops_savings_claims(
+        "Which business services own the most savings?",
+        snapshot=snapshot,
+        retained_evidence=[
+            {
+                "evidence_id": "retained:demo",
+                "status": "ok",
+                "claim_type": "savings_opportunity",
+                "direct": True,
+                "data": {
+                    "business_service": "demo",
+                    "annual_savings": 2846,
+                    "currency": "USD",
+                },
+            }
+        ],
+    )
+
+    assert claims[0]["freshness"] == "stale"
+    assert claims[0]["uncertainty"] == ["FinOps evidence freshness is stale"]
+
+
 def _canonical_body(**overrides):
     body = {
         "contract_version": "1",

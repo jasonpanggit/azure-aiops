@@ -15,9 +15,11 @@ from operations.patching.sre_agent_adapter import (
 )
 
 TRIGGER_URL = (
-    "https://sre-agent.example.azure.com/api/v1/httptriggers/trigger/"
+    "https://trigger.example.sre.azure.com/api/v1/httptriggers/trigger/"
     "secret-trigger-id"
 )
+TRIGGER_ID = "secret-trigger-id"
+TRIGGER_ORIGIN = "https://trigger.example.sre.azure.com"
 AGENT_ENDPOINT = "https://sre-agent.example.azure.com"
 SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000001"
 TARGET_PREFIX = f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg-prod"
@@ -91,6 +93,8 @@ def _adapter(
         SreAgentPatchExecutionAdapter(
             selected_credential,
             trigger_url=TRIGGER_URL,
+            trigger_id=TRIGGER_ID,
+            trigger_origin=TRIGGER_ORIGIN,
             agent_endpoint=AGENT_ENDPOINT,
             subscription_id=SUBSCRIPTION_ID,
             target_prefix=target_prefix,
@@ -413,6 +417,8 @@ def test_trigger_url_must_be_a_single_https_trigger(url: str) -> None:
         SreAgentPatchExecutionAdapter(
             _Credential(),
             trigger_url=url,
+            trigger_id=TRIGGER_ID,
+            trigger_origin=TRIGGER_ORIGIN,
             agent_endpoint=AGENT_ENDPOINT,
             subscription_id=SUBSCRIPTION_ID,
             target_prefix=TARGET_PREFIX,
@@ -441,6 +447,8 @@ def test_configuration_requires_one_guid_and_narrow_matching_prefix(
         SreAgentPatchExecutionAdapter(
             _Credential(),
             trigger_url=TRIGGER_URL,
+            trigger_id=TRIGGER_ID,
+            trigger_origin=TRIGGER_ORIGIN,
             agent_endpoint=AGENT_ENDPOINT,
             subscription_id=subscription_id,
             target_prefix=target_prefix,
@@ -448,25 +456,67 @@ def test_configuration_requires_one_guid_and_narrow_matching_prefix(
 
 
 @pytest.mark.parametrize(
-    "endpoint",
+    "trigger_origin",
     [
-        "https://other.example.azure.com",
+        "https://other.example.sre.azure.com",
         "https://localhost",
         "https://127.0.0.1",
         "https://[::1]",
-        "https://user@sre-agent.example.azure.com",
-        "https://sre-agent.example.azure.com:8443",
-        "https://sre-agent.example.azure.com/unexpected-path",
+        "https://user@trigger.example.sre.azure.com",
+        "https://trigger.example.sre.azure.com:8443",
+        "https://trigger.example.sre.azure.com/unexpected-path",
     ],
 )
-def test_trigger_url_must_match_independent_public_agent_endpoint(
-    endpoint: str,
+def test_trigger_url_must_match_independent_public_trigger_origin(
+    trigger_origin: str,
 ) -> None:
     with pytest.raises(ValueError):
         SreAgentPatchExecutionAdapter(
             _Credential(),
             trigger_url=TRIGGER_URL,
-            agent_endpoint=endpoint,
+            trigger_id=TRIGGER_ID,
+            trigger_origin=trigger_origin,
+            agent_endpoint=AGENT_ENDPOINT,
+            subscription_id=SUBSCRIPTION_ID,
+            target_prefix=TARGET_PREFIX,
+        )
+
+
+def test_trigger_and_thread_origins_are_independently_pinned() -> None:
+    adapter, _credential = _adapter(
+        lambda request: httpx.Response(
+            202,
+            json={"success": True, "threadId": "thread-123"},
+            request=request,
+        )
+    )
+
+    result = adapter.submit(_run(), _target())
+
+    assert result.provider_job_id.startswith(f"{AGENT_ENDPOINT}/api/v1/threads/")
+
+
+def test_same_origin_wrong_trigger_id_is_rejected() -> None:
+    with pytest.raises(ValueError, match="trigger ID"):
+        SreAgentPatchExecutionAdapter(
+            _Credential(),
+            trigger_url=TRIGGER_URL,
+            trigger_id="different-trigger-id",
+            trigger_origin=TRIGGER_ORIGIN,
+            agent_endpoint=AGENT_ENDPOINT,
+            subscription_id=SUBSCRIPTION_ID,
+            target_prefix=TARGET_PREFIX,
+        )
+
+
+def test_trigger_id_whitespace_is_not_normalized() -> None:
+    with pytest.raises(ValueError, match="trigger ID"):
+        SreAgentPatchExecutionAdapter(
+            _Credential(),
+            trigger_url=TRIGGER_URL,
+            trigger_id=f" {TRIGGER_ID} ",
+            trigger_origin=TRIGGER_ORIGIN,
+            agent_endpoint=AGENT_ENDPOINT,
             subscription_id=SUBSCRIPTION_ID,
             target_prefix=TARGET_PREFIX,
         )
