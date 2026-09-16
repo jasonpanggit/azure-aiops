@@ -1318,7 +1318,7 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
   });
 
-  it("renders a recognized blocker code in the cross-step summary panel using client fallback copy", async () => {
+  it("suppresses the workflow blockers banner while SHOW_WORKFLOW_BLOCKER_STATUS is temporarily off", async () => {
     workflow.mockResolvedValue(envelope(workflowFixture({
       blockers: [{ code: "not_approved", step: "approve" }],
     })));
@@ -1326,14 +1326,12 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     renderPage();
     await screen.findAllByText(/KB600001/);
 
-    expect(screen.getByText("Workflow blockers")).toBeInTheDocument();
-    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.queryByText("Workflow blockers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
     expect(screen.getAllByText("Approve").length).toBeGreaterThan(0);
-    expect(screen.getByText("No decision has been recorded yet.")).toBeInTheDocument();
-    expect(screen.getByText(/Record an approval decision for every required role\./)).toBeInTheDocument();
   });
 
-  it("renders the unrecognized-code fallback and logs telemetry exactly once even across re-renders", async () => {
+  it("suppresses the unrecognized-code fallback and its telemetry while SHOW_WORKFLOW_BLOCKER_STATUS is temporarily off", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     workflow.mockResolvedValue(envelope(workflowFixture({
       blockers: [{ code: "totally_novel_code", step: "review" }],
@@ -1342,16 +1340,15 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     renderPage();
     await screen.findAllByText(/KB600001/);
 
-    expect(screen.getByText("An unrecognized workflow condition (totally_novel_code) is blocking this step.")).toBeInTheDocument();
-    expect(warnSpy).toHaveBeenCalledWith("remediation.blocker.unknown_code", { code: "totally_novel_code" });
-    const callsAfterFirstRender = warnSpy.mock.calls.length;
+    expect(screen.queryByText("An unrecognized workflow condition (totally_novel_code) is blocking this step.")).not.toBeInTheDocument();
+    expect(warnSpy).not.toHaveBeenCalled();
 
-    // Trigger a re-render (switching steps) -- must not log again for the
-    // same unrecognized code.
+    // Trigger a re-render (switching steps) -- still must never log while
+    // suppressed.
     fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
     fireEvent.click(screen.getByRole("button", { name: /Review impact/ }));
 
-    expect(warnSpy).toHaveBeenCalledTimes(callsAfterFirstRender);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 

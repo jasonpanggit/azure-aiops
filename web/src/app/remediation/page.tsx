@@ -219,6 +219,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function stepBlockerEcho(blockers: RemediationBlocker[] | undefined, step: WorkflowStep) {
+  if (!SHOW_WORKFLOW_BLOCKER_STATUS) return null;
   const rows = (blockers ?? []).filter((row) => row.step === step && row.code !== "already_succeeded");
   if (!rows.length) return null;
   return (
@@ -619,6 +620,12 @@ function ContainerReviewHandoff({
     </section>
   );
 }
+
+// TEMPORARY: hides the "Blocked" step label and the workflow-blockers banner
+// while the underlying blocker semantics are being revisited. Does not
+// change any gating/eligibility logic -- purely a display suppression.
+// Remove once the blocker UX is finalized.
+const SHOW_WORKFLOW_BLOCKER_STATUS = false;
 
 /** Five-step, approval-gated remediation workflow. */
 export default function RemediationPage() {
@@ -1354,9 +1361,12 @@ function RemediationContent() {
         <nav className="remediation-workflow-steps" aria-label="Remediation workflow">
           {WORKFLOW_STEPS.map((step) => {
             const projected = workflow?.steps.find((item) => item.id === step.id)?.status;
-            const status = step.id === "select" ? "complete" : projected ?? "pending";
+            const rawStatus = step.id === "select" ? "complete" : projected ?? "pending";
             const stepBlockers = (workflow?.blockers ?? []).filter((row) => row.step === step.id);
-            const blockedSeverityStyle = status === "blocked"
+            // Suppress the "Blocked" label (fall back to "current") while
+            // SHOW_WORKFLOW_BLOCKER_STATUS is off; gating itself is untouched.
+            const status = !SHOW_WORKFLOW_BLOCKER_STATUS && rawStatus === "blocked" ? "current" : rawStatus;
+            const blockedSeverityStyle = SHOW_WORKFLOW_BLOCKER_STATUS && status === "blocked"
               ? {
                   color: stepBlockers.some((row) => (row.severity ?? BLOCKER_VOCABULARY[row.code]?.severity) === "critical")
                     ? "var(--color-critical)"
@@ -1380,7 +1390,7 @@ function RemediationContent() {
         </nav>
       )}
 
-      {workflow && workflow.blockers.length > 0 && (
+      {SHOW_WORKFLOW_BLOCKER_STATUS && workflow && workflow.blockers.length > 0 && (
         <WorkflowBlockers blockers={workflow.blockers} activeStep={activeStep} />
       )}
 
