@@ -57,6 +57,7 @@ from operations.orchestration_contract import (
     ObservationRef,
     OrchestrationResult,
     SnapshotCoverage,
+    SnapshotEvidence,
     SpecialistStep,
     ToolCallCandidate,
 )
@@ -174,6 +175,65 @@ def _preferred_page_kind(specialist: SpecialistDefinition) -> PageMapping:
     """Return the stable primary page mapping for a selected specialist."""
 
     return specialist.page_mappings[0]
+
+
+_FABRIC_CLAIM_SOURCES = {
+    "medallion_layer": "fabric/medallion-layers",
+    "fabric_manifest": "fabric/manifest",
+    "fabric_governance": "fabric/governance",
+    "fabric_capacity": "fabric/capabilities",
+}
+
+
+def _valid_fabric_observation(item: SnapshotEvidence) -> bool:
+    source = _FABRIC_CLAIM_SOURCES.get(item.claim_type)
+    if (
+        source is None
+        or item.status not in {"ok", "partial"}
+        or item.source != source
+        or not isinstance(item.entity, ObservationRef)
+        or item.entity.source != source
+        or item.entity.source_key != item.source_key
+    ):
+        return False
+    data = item.data
+    if item.claim_type == "medallion_layer":
+        layer = str(data.get("layer") or "").casefold()
+        healthy = data.get("healthy")
+        total = data.get("total")
+        return (
+            layer in {"bronze", "silver", "gold"}
+            and item.source_key == layer
+            and isinstance(healthy, int)
+            and not isinstance(healthy, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and 0 <= healthy <= total
+        )
+    if item.claim_type == "fabric_manifest":
+        return item.source_key == str(data.get("projection_name") or "")
+    if item.claim_type == "fabric_governance":
+        values = (
+            data.get("ownership_gap_count"),
+            data.get("tag_gap_count"),
+            data.get("referential_integrity_blockers"),
+        )
+        return item.source_key == "fabric-governance" and all(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+            for value in values
+        )
+    return item.source_key == "fabric-capacity"
+
+
+def _fabric_starter_kind(question: str) -> str | None:
+    normalized = " ".join(question.casefold().split()).rstrip("?.! ")
+    if normalized == "how healthy are the bronze, silver, and gold layers":
+        return "layers"
+    if normalized == "which datasets have governance or lineage gaps":
+        return "gaps"
+    return None
 
 
 def _question_route(
@@ -882,10 +942,57 @@ class OrchestrationService:
             and canonical_selection_snapshot.coverage.complete
             == page_snapshot.coverage.complete
         )
+        fabric_rows = [
+            item
+            for item in page_snapshot.evidence
+            if item.claim_type in _FABRIC_CLAIM_SOURCES
+        ]
+        layer_rows = [
+            item for item in fabric_rows if item.claim_type == "medallion_layer"
+        ]
+        manifest_rows = [
+            item for item in fabric_rows if item.claim_type == "fabric_manifest"
+        ]
+        governance_rows = [
+            item for item in fabric_rows if item.claim_type == "fabric_governance"
+        ]
+        capacity_rows = [
+            item for item in fabric_rows if item.claim_type == "fabric_capacity"
+        ]
+        exact_fabric_contract = (
+            page_snapshot.page_kind == "connections_fabric"
+            and page_snapshot.page_id == "fabric-medallion"
+            and len(layer_rows) == 3
+            and {
+                str(item.data.get("layer") or "").casefold()
+                for item in layer_rows
+            }
+            == {"bronze", "silver", "gold"}
+            and len(manifest_rows) == page_snapshot.coverage.visible_count
+            and len({item.source_key for item in manifest_rows})
+            == len(manifest_rows)
+            and len(governance_rows) <= 1
+            and len(capacity_rows) <= 1
+            and all(_valid_fabric_observation(item) for item in fabric_rows)
+        )
+        authorized_fabric_truth = (
+            exact_fabric_contract
+            and canonical_selection_snapshot is not None
+            and canonical_selection_snapshot.classification in {"ready", "empty"}
+            and canonical_selection_snapshot.coverage.visible_count
+            == page_snapshot.coverage.visible_count
+            and canonical_selection_snapshot.coverage.total_count
+            == page_snapshot.coverage.total_count
+            and canonical_selection_snapshot.coverage.complete
+            == page_snapshot.coverage.complete
+        )
+        authorized_page_truth = (
+            authorized_connections_truth or authorized_fabric_truth
+        )
         uncertainty_request = (
             request.model_copy(update={"snapshot": page_snapshot})
             if (
-                authorized_connections_truth
+                authorized_page_truth
                 or _complete_empty_page_kind(page_snapshot) is not None
             )
             else request
@@ -918,6 +1025,7 @@ class OrchestrationService:
             snapshot=page_snapshot,
             deadline=deadline,
             narrator_state=narrator_state,
+            fabric_page_truth_authorized=authorized_fabric_truth,
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
@@ -944,7 +1052,7 @@ class OrchestrationService:
             coverage=(
                 page_snapshot.coverage
                 if (
-                    authorized_connections_truth
+                    authorized_page_truth
                     or _complete_empty_page_kind(page_snapshot) is not None
                 )
                 else request.snapshot.coverage
@@ -1345,6 +1453,7 @@ class OrchestrationService:
         snapshot: EvidenceSnapshotV2 | None = None,
         deadline: float | None = None,
         narrator_state: str = "configured",
+        fabric_page_truth_authorized: bool = False,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
@@ -1368,10 +1477,19 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
-        page_claims = self._deterministic_page_claims(
-            question,
-            snapshot=snapshot,
-            retained_evidence=current_retained_evidence,
+        fabric_starter_kind = _fabric_starter_kind(question)
+        page_claims = (
+            []
+            if (
+                snapshot is not None
+                and snapshot.page_kind == "connections_fabric"
+                and fabric_starter_kind is not None
+            )
+            else self._deterministic_page_claims(
+                question,
+                snapshot=snapshot,
+                retained_evidence=current_retained_evidence,
+            )
         )
         service_status_claims = self._deterministic_service_status_claims(
             question,
@@ -1393,6 +1511,30 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        fabric_claims = self._deterministic_fabric_claims(
+            question,
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        ) if fabric_page_truth_authorized else []
+        if (
+            snapshot is not None
+            and snapshot.page_kind == "connections_fabric"
+            and fabric_starter_kind is not None
+            and not fabric_page_truth_authorized
+        ):
+            synthesis = ExecutiveSynthesis(
+                status="skipped",
+                reason="fabric_page_evidence_not_authorized",
+                domain_count=1,
+                claims=[],
+                warning=(
+                    "Fabric page evidence is incomplete or failed identity "
+                    "validation; no deterministic claim was made."
+                ),
+                used_retained_evidence=[],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         if _is_unsubmitted_predeploy_snapshot(snapshot) and page_claims:
             synthesis = ExecutiveSynthesis(
                 status="deterministic",
@@ -1400,6 +1542,25 @@ class OrchestrationService:
                 domain_count=1,
                 claims=page_claims,
                 used_retained_evidence=[],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if fabric_claims:
+            used_refs = {
+                str(reference)
+                for claim in fabric_claims
+                for reference in claim.get("evidence_refs") or []
+            }
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="deterministic_fabric_page_evidence",
+                domain_count=1,
+                claims=fabric_claims,
+                used_retained_evidence=[
+                    dict(item)
+                    for item in current_retained_evidence
+                    if str(item.get("evidence_id") or "") in used_refs
+                ],
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -1985,6 +2146,227 @@ class OrchestrationService:
                     ),
                 }
             ]
+        return []
+
+    @staticmethod
+    def _deterministic_fabric_claims(
+        question: str,
+        *,
+        snapshot: EvidenceSnapshotV2 | None,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Answer Fabric starters from exact retained page facts."""
+
+        if (
+            snapshot is None
+            or snapshot.page_kind != "connections_fabric"
+            or snapshot.page_id != "fabric-medallion"
+        ):
+            return []
+        starter_kind = _fabric_starter_kind(question)
+        layer_question = starter_kind == "layers"
+        gap_question = starter_kind == "gaps"
+        freshness_priority = {
+            "fresh": 0,
+            "partial": 1,
+            "stale": 2,
+            "unavailable": 3,
+        }
+
+        def source_freshness(source: str) -> str:
+            statuses = [
+                item.status
+                for item in snapshot.freshness
+                if item.source == source
+            ]
+            return max(
+                statuses,
+                default="unavailable",
+                key=freshness_priority.get,
+            )
+
+        def retained_rows(claim_type: str, source: str):
+            return [
+                item
+                for item in retained_evidence
+                if (
+                    item.get("claim_type") == claim_type
+                    and item.get("source")
+                    == f"page_snapshot:{snapshot.page_kind}:{source}"
+                    and item.get("evidence_id")
+                    and isinstance(item.get("data"), Mapping)
+                )
+            ]
+
+        if layer_question:
+            by_layer: dict[str, Mapping[str, Any]] = {}
+            for item in retained_rows(
+                "medallion_layer",
+                "fabric/medallion-layers",
+            ):
+                data = item["data"]
+                layer = str(data.get("layer") or "").casefold()
+                healthy = data.get("healthy")
+                total = data.get("total")
+                if (
+                    layer not in {"bronze", "silver", "gold"}
+                    or not isinstance(healthy, int)
+                    or isinstance(healthy, bool)
+                    or not isinstance(total, int)
+                    or isinstance(total, bool)
+                    or healthy < 0
+                    or total < 0
+                    or healthy > total
+                ):
+                    continue
+                if layer in by_layer:
+                    return []
+                by_layer[layer] = item
+            if set(by_layer) != {"bronze", "silver", "gold"}:
+                return []
+            claims = []
+            for layer in ("bronze", "silver", "gold"):
+                item = by_layer[layer]
+                data = item["data"]
+                healthy = data["healthy"]
+                total = data["total"]
+                summary = (
+                    f"{layer.title()} is healthy-empty with 0 healthy of 0 "
+                    "total datasets; this does not establish an outage."
+                    if total == 0
+                    else (
+                        f"{layer.title()} layer health is {healthy} of {total} "
+                        "datasets healthy."
+                    )
+                )
+                freshness = source_freshness("fabric/medallion-layers")
+                claims.append(
+                    {
+                        "finding_id": f"fabric:{layer}-layer-health",
+                        "summary": summary,
+                        "evidence_refs": [str(item["evidence_id"])],
+                        "confidence": (
+                            "high"
+                            if (
+                                item.get("status") == STATUS_OK
+                                and freshness == "fresh"
+                                and snapshot.coverage.complete
+                            )
+                            else "medium"
+                        ),
+                        "freshness": freshness,
+                        "uncertainty": (
+                            []
+                            if freshness == "fresh"
+                            else [f"Fabric {layer} evidence freshness is {freshness}"]
+                        ),
+                        "actionable": False,
+                        "next_check": (
+                            "Refresh the cited Fabric layer evidence before "
+                            "drawing a deployment or remediation conclusion."
+                        ),
+                    }
+                )
+            return claims
+
+        if gap_question:
+            governance_rows = retained_rows(
+                "fabric_governance",
+                "fabric/governance",
+            )
+            capacity_rows = retained_rows(
+                "fabric_capacity",
+                "fabric/capabilities",
+            )
+            claims = []
+            if len(governance_rows) == 1:
+                item = governance_rows[0]
+                data = item["data"]
+                values = [
+                    data.get("ownership_gap_count"),
+                    data.get("tag_gap_count"),
+                    data.get("referential_integrity_blockers"),
+                ]
+                if all(
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                    for value in values
+                ):
+                    freshness = source_freshness("fabric/governance")
+                    claims.append(
+                        {
+                            "finding_id": "fabric:governance-gaps",
+                            "summary": (
+                                f"Fabric governance reports {values[0]} ownership "
+                                f"gaps, {values[1]} tag gaps, and {values[2]} "
+                                "referential-integrity blockers. These are "
+                                "aggregate counts; the retained page evidence "
+                                "does not identify which individual datasets "
+                                "have those gaps."
+                            ),
+                            "evidence_refs": [str(item["evidence_id"])],
+                            "confidence": (
+                                "high"
+                                if (
+                                    item.get("status") == STATUS_OK
+                                    and freshness == "fresh"
+                                    and snapshot.coverage.complete
+                                )
+                                else "medium"
+                            ),
+                            "freshness": freshness,
+                            "uncertainty": [
+                                "Dataset-level governance attribution is unavailable."
+                            ],
+                            "actionable": False,
+                            "next_check": (
+                                "Inspect cited dataset-level governance evidence "
+                                "before assigning remediation."
+                            ),
+                        }
+                    )
+            if len(capacity_rows) == 1:
+                item = capacity_rows[0]
+                data = item["data"]
+                lineage_present = bool(str(data.get("lineage_ref") or "").strip())
+                freshness = source_freshness("fabric/capabilities")
+                claims.append(
+                    {
+                        "finding_id": "fabric:lineage-coverage",
+                        "summary": (
+                            "A native Fabric lineage reference is available, but "
+                            "the retained page evidence does not enumerate "
+                            "dataset-level lineage gaps."
+                            if lineage_present
+                            else (
+                                "No native Fabric lineage reference is available "
+                                "in the retained page evidence, so dataset-level "
+                                "lineage gaps cannot be identified."
+                            )
+                        ),
+                        "evidence_refs": [str(item["evidence_id"])],
+                        "confidence": (
+                            "high"
+                            if (
+                                item.get("status") == STATUS_OK
+                                and freshness == "fresh"
+                                and snapshot.coverage.complete
+                            )
+                            else "medium"
+                        ),
+                        "freshness": freshness,
+                        "uncertainty": [
+                            "Dataset-level lineage-gap evidence is unavailable."
+                        ],
+                        "actionable": False,
+                        "next_check": (
+                            "Open the cited native lineage view before drawing "
+                            "a dataset-level lineage conclusion."
+                        ),
+                    }
+                )
+            return claims
         return []
 
     @staticmethod

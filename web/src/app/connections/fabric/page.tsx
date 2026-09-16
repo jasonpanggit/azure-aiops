@@ -68,6 +68,27 @@ function FabricMedallionPageContent() {
   const manifest = useApi(() => fabricMedallionApi.manifest(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
   const governance = useApi(() => fabricMedallionApi.governance(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
   const capabilities = useApi(() => fabricMedallionApi.capabilities(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
+  const fabricSections = [
+    { source: "fabric/medallion-layers", envelope: layerSummary.data },
+    { source: "fabric/manifest", envelope: manifest.data },
+    { source: "fabric/governance", envelope: governance.data },
+    { source: "fabric/capabilities", envelope: capabilities.data },
+  ] as const;
+  const fabricEvidence = fabricSections.flatMap(({ envelope }) => envelope?.evidence ?? []);
+  const fabricSourceStatuses = fabricSections.flatMap(({ source, envelope }) => {
+    if (!envelope) {
+      return [{ source, availability: "unavailable", freshness: "unknown" }];
+    }
+    if (!envelope.evidence?.length) {
+      return [{ source, availability: "available", freshness: "unknown" }];
+    }
+    return envelope.evidence.map((item) => ({
+      source,
+      availability: "available",
+      freshness: item.freshness,
+      observedAt: item.timestamp,
+    }));
+  });
 
   const capacity = capabilities.data?.data.capacity;
   const capacityStatus = String(capacity?.status ?? "").toLowerCase();
@@ -75,16 +96,16 @@ function FabricMedallionPageContent() {
     ? ["paused", "suspended", "inactive", "deleted", "not_provisioned", "unprovisioned"].includes(capacityStatus)
     : false;
   const layerCounts = layerSummary.data?.data.layers;
-  const fabricAvailable = !layerSummary.error && Boolean(layerSummary.data);
+  const fabricAvailable = fabricSections.every(({ envelope }) => Boolean(envelope));
 
   const fabricCopilot = buildFabricMedallionCopilotContext({
     scope: fabricScope,
     subscriptionId: selectedSubscription || null,
-    layers: FABRIC_LAYER_KEYS.map((layer) => ({
+    layers: layerCounts ? FABRIC_LAYER_KEYS.map((layer) => ({
       layer,
-      healthy: layerCounts?.[layer]?.healthy ?? 0,
-      total: layerCounts?.[layer]?.total ?? 0,
-    })),
+      healthy: layerCounts[layer]?.healthy ?? 0,
+      total: layerCounts[layer]?.total ?? 0,
+    })) : [],
     manifest: (manifest.data?.data.entries ?? []).map((entry) => ({
       projection_name: entry.projection_name,
       disposition: entry.disposition,
@@ -108,14 +129,12 @@ function FabricMedallionPageContent() {
     available: fabricAvailable,
     deploymentBlocked,
     freshness: fabricAvailable ? "fresh" : "unavailable",
-    evidence: layerSummary.data?.evidence ?? [],
-    sourceStatuses: [
-      {
-        source: "fabric_medallion",
-        availability: deploymentBlocked ? "blocked" : fabricAvailable ? "available" : "unavailable",
-        freshness: fabricAvailable ? "fresh" : "unknown",
-      },
-    ],
+    evidence: fabricEvidence,
+    sourceStatuses: fabricSourceStatuses.map((status) => (
+      deploymentBlocked && status.source === "fabric/capabilities"
+        ? { ...status, availability: "blocked" }
+        : status
+    )),
   });
 
   return (
