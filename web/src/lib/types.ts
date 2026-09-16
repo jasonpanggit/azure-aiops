@@ -3251,6 +3251,7 @@ export interface CanonicalCopilotCitation {
   source: string;
   status: string;
   observed_at: string;
+  query_version?: string;
   resource_id: string;
 }
 export interface CanonicalCopilotToolResult {

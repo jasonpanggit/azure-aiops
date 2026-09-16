@@ -1307,7 +1307,11 @@ function mergeDuplicateEvidence(
  * orchestration route. It carries observations and hints, never authority.
  */
 export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput): InventoryCopilotContext {
-  assertBound("evidence rows", input.records.length, COPILOT_SNAPSHOT_LIMITS.evidenceRows);
+  assertBound(
+    "evidence rows",
+    input.records.length,
+    COPILOT_SNAPSHOT_LIMITS.evidenceRows,
+  );
   assertBound(
     "freshness records",
     input.sourceStatuses.length,
@@ -1316,6 +1320,8 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   if (!Number.isInteger(input.totalCount) || input.totalCount < 0 || input.totalCount > 1_000_000) {
     throw new Error("total count is outside the server bounds");
   }
+  const retainedRecords = input.records.slice(0, 50);
+  const omittedRecordCount = input.records.length - retainedRecords.length;
 
   const populatedFilters = Object.entries(input.filters)
     .map(([key, value]) => [key, value.trim()] as const)
@@ -1342,7 +1348,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
   };
   const evidenceById = new Map<string, InventorySnapshotEvidence>();
 
-  for (const record of input.records) {
+  for (const record of retainedRecords) {
     const source = boundedString("evidence source", record.source, 1, 128);
     const sourceKey = boundedSourceKey(record.identity);
     const observedAt = record.observedAt ?? input.observedAt ?? "";
@@ -1364,6 +1370,7 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
     const data = {
       ...record.data,
       inventory_context: inventoryContext,
+      mutation_authorized: false,
       selected: false,
     };
     assertEvidenceRowBound(data);
@@ -1497,6 +1504,13 @@ export function buildInventoryCopilotContext(input: InventoryCopilotAdapterInput
 
   const uncertainty = [
     ...(snapshot.coverage.complete ? [] : ["visible subset is incomplete"]),
+    ...(omittedRecordCount
+      ? [
+        `evidence retention omitted ${omittedRecordCount} inventory ${
+          omittedRecordCount === 1 ? "row" : "rows"
+        }`,
+      ]
+      : []),
     ...sourceObservations
       .filter((item) => item.status !== "fresh")
       .map((item) => `${item.source} freshness is ${item.status}`),
@@ -1525,7 +1539,11 @@ function buildEmptyInventoryContextEvidence(
     source,
     source_key: sourceKey,
   };
-  const data = { inventory_context: inventoryContext, selected: false };
+  const data = {
+    inventory_context: inventoryContext,
+    mutation_authorized: false,
+    selected: false,
+  };
   assertEvidenceRowBound(data);
   const stableId = canonicalEvidenceStableId({
     source,

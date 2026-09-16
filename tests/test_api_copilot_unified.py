@@ -5129,6 +5129,561 @@ def test_canonical_route_never_promotes_browser_observations_to_authority(
     }
 
 
+def _exact_inventory_os_body(question="Review visible inventory health"):
+    observed_at = "2026-09-16T14:31:15+00:00"
+
+    def row(version, machine_count, source_types, lifecycle_status):
+        source_key = f"Windows Server|{version}"
+        return {
+            "evidence_id": f"browser:windows-server-{version}",
+            "source": "inventory/os_observations",
+            "status": "ok",
+            "observed_at": observed_at,
+            "resource_id": "",
+            "source_key": source_key,
+            "entity": {
+                "type": "domain",
+                "namespace": "inventory",
+                "kind": "os_group",
+                "source_key": source_key,
+            },
+            "claim_type": "os_group",
+            "citations": [],
+            "selected": False,
+            "direct": True,
+            "actionable": False,
+            "severity": "unknown",
+            "quality": "high",
+            "data": {
+                "os_name": "Windows Server",
+                "os_version": version,
+                "machine_count": machine_count,
+                "source_types": source_types,
+                "lifecycle_status": lifecycle_status,
+                "support_end": (
+                    "2027-01-12" if version == "2016" else "2034-11-14"
+                ),
+                "days_remaining": 118 if version == "2016" else 2981,
+                "review_required": False,
+                "inventory_context": {
+                    "tab": "os",
+                    "filters": {
+                        "lifecycle": "all",
+                        "os_name": "all",
+                        "os_version": "all",
+                        "source": "all",
+                        "subscription": "all",
+                        "tab": "os",
+                    },
+                    "sort": {},
+                    "offset": 0,
+                    "limit": 2,
+                },
+                "mutation_authorized": False,
+                "selected": False,
+            },
+        }
+
+    return {
+        "contract_version": "1",
+        "question": question,
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "inventory",
+            "page_id": "inventory:os",
+            "coverage": {
+                "visible_count": 2,
+                "total_count": 2,
+                "complete": True,
+            },
+            "freshness": [
+                {
+                    "source": "inventory/os_observations",
+                    "observed_at": observed_at,
+                    "status": "fresh",
+                }
+            ],
+            "evidence": [
+                row("2025", 1, ["azure_vm"], "Supported"),
+                row("2016", 2, ["arc", "azure_vm"], "Critical"),
+            ],
+            "material_claims": [],
+        },
+        "hint": {
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "summary_fragment"),
+    [
+        (
+            "Review visible inventory health",
+            "2 OS groups representing 3 machines",
+        ),
+        (
+            "Where is inventory coverage incomplete?",
+            "complete at 2 of 2 OS groups",
+        ),
+    ],
+)
+def test_inventory_starters_preserve_exact_page_truth_and_fresh_citations(
+    tmp_path,
+    monkeypatch,
+    question,
+    summary_fragment,
+):
+    _enable_canonical_rollout(monkeypatch)
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+    authority_first_group_count = [1]
+
+    def inventory_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={
+                "resources": [
+                    {
+                        "family": "os",
+                        "resource_id": (
+                            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                            "Microsoft.Compute/virtualMachines/vm1"
+                        ),
+                        "resource_name": "vm1",
+                        "resource_type": "microsoft.compute/virtualmachines",
+                        "subscription_id": "sub-a",
+                        "resource_group": "rg",
+                        "environment": "Unknown",
+                    },
+                    {
+                        "family": "os",
+                        "resource_id": (
+                            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                            "Microsoft.Compute/virtualMachines/vm2"
+                        ),
+                        "resource_name": "vm2",
+                        "resource_type": "microsoft.compute/virtualmachines",
+                        "subscription_id": "sub-a",
+                        "resource_group": "rg",
+                        "environment": "Unknown",
+                    },
+                    {
+                        "family": "os",
+                        "resource_id": (
+                            "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                            "Microsoft.HybridCompute/machines/vm1"
+                        ),
+                        "resource_name": "vm1",
+                        "resource_type": "microsoft.hybridcompute/machines",
+                        "subscription_id": "sub-a",
+                        "resource_group": "rg",
+                        "environment": "Unknown",
+                    },
+                ],
+                "total": 3,
+                "groups": [
+                    {
+                        "key": "Windows Server|2025",
+                        "os_name": "Windows Server",
+                        "os_version": "2025",
+                        "machine_count": authority_first_group_count[0],
+                        "source_types": ["azure_vm"],
+                        "lifecycle_status": "Supported",
+                        "support_end": "2034-11-14",
+                        "days_remaining": 2981,
+                        "review_required": False,
+                    },
+                    {
+                        "key": "Windows Server|2016",
+                        "os_name": "Windows Server",
+                        "os_version": "2016",
+                        "machine_count": 2,
+                        "source_types": ["arc", "azure_vm"],
+                        "lifecycle_status": "Critical",
+                        "support_end": "2027-01-12",
+                        "days_remaining": 118,
+                        "review_required": False,
+                    },
+                ],
+                "group_total": 2,
+                "observed_at": "2026-09-16T14:31:15+00:00",
+                "query_version": "combined-subscription-connections-v1",
+            },
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/os_observations",
+                    timestamp="2026-09-16T14:31:15+00:00",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", inventory_tool)
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_exact_inventory_os_body(question),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == [INVENTORY_DATA_HEALTH_ID]
+    assert data["selected_tools"] == ["inventory_resources"]
+    assert data["tool_results"][0]["arguments"] == {"family": "os"}
+    assert data["coverage"] == {
+        "visible_count": 2,
+        "total_count": 2,
+        "complete": True,
+    }
+    assert not any("incomplete" in warning for warning in data["uncertainty"])
+    assert not any("unavailable" in warning for warning in data["uncertainty"])
+    assert data["synthesis"]["reason"] == "deterministic_inventory_page_evidence"
+    assert data["synthesis"]["claims"]
+    assert summary_fragment in data["synthesis"]["claims"][0]["summary"]
+    assert all(
+        claim["freshness"] == "fresh"
+        and claim["confidence"] == "medium"
+        and claim["evidence_refs"]
+        and claim["actionable"] is False
+        for claim in data["synthesis"]["claims"]
+    )
+    citation_ids = {
+        citation["citation_id"] for citation in data["citations"]
+    }
+    assert all(
+        reference in citation_ids
+        for claim in data["synthesis"]["claims"]
+        for reference in claim["evidence_refs"]
+    )
+    assert all(
+        citation["observed_at"] == "2026-09-16T14:31:15+00:00"
+        for citation in data["citations"]
+        if citation["citation_id"].startswith(("retained:", "tool:"))
+    )
+    assert all(
+        citation["query_version"] == "combined-subscription-connections-v1"
+        for citation in data["citations"]
+        if citation["citation_id"].startswith(("retained:", "tool:"))
+    )
+    assert data["mutation_authorized"] is False
+    assert tool_calls == [("inventory_resources", {"family": "os"})]
+
+    authority_first_group_count[0] = 2
+    mismatch = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=_exact_inventory_os_body(question),
+    )
+
+    assert mismatch.status_code == 200, mismatch.text
+    mismatch_data = mismatch.json()["data"]
+    assert mismatch_data["coverage"]["complete"] is False
+    assert mismatch_data["synthesis"]["reason"] == (
+        "inventory_page_evidence_not_authorized"
+    )
+    assert mismatch_data["synthesis"]["claims"] == []
+    assert not any(
+        citation["citation_id"].startswith("retained:")
+        for citation in mismatch_data["citations"]
+    )
+    assert mismatch_data["mutation_authorized"] is False
+    assert tool_calls == [
+        ("inventory_resources", {"family": "os"}),
+        ("inventory_resources", {"family": "os"}),
+    ]
+
+    authority_first_group_count[0] = 1
+    selected = _exact_inventory_os_body(question)
+    selected["snapshot"]["evidence"][0]["selected"] = True
+    selected["snapshot"]["evidence"][0]["data"]["selected"] = True
+    selected["snapshot"]["selected_entities"] = [
+        selected["snapshot"]["evidence"][0]["entity"]
+    ]
+    selected_response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=selected,
+    )
+
+    assert selected_response.status_code == 200, selected_response.text
+    selected_data = selected_response.json()["data"]
+    assert selected_data["coverage"]["complete"] is False
+    assert selected_data["synthesis"]["claims"] == []
+    assert any(
+        "unresolved domain page evidence was excluded" in warning
+        for warning in selected_data["uncertainty"]
+    )
+    assert selected_data["mutation_authorized"] is False
+
+    class MissingSemantic:
+        class Indexes:
+            @staticmethod
+            def resolve(_value):
+                raise LookupError("not indexed")
+
+        indexes = Indexes()
+
+    context.semantic_provider = lambda: MissingSemantic()
+    available_but_unresolved = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=selected,
+    )
+    assert available_but_unresolved.status_code == 200
+    unresolved_data = available_but_unresolved.json()["data"]
+    assert unresolved_data["coverage"]["complete"] is False
+    assert unresolved_data["synthesis"]["claims"] == []
+    assert unresolved_data["mutation_authorized"] is False
+
+
+@pytest.mark.parametrize("invalid_kind", ["numeric", "duplicate", "page_kind", "over_50"])
+def test_inventory_contract_violations_fail_before_tool_io(
+    tmp_path,
+    monkeypatch,
+    invalid_kind,
+):
+    _enable_canonical_rollout(monkeypatch)
+    calls: list[str] = []
+
+    def inventory_tool(name, arguments, **_kwargs):
+        calls.append(name)
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", inventory_tool)
+    body = _exact_inventory_os_body()
+    if invalid_kind == "numeric":
+        body["snapshot"]["evidence"][0]["data"]["machine_count"] = "1"
+    elif invalid_kind == "duplicate":
+        duplicate = json.loads(json.dumps(body["snapshot"]["evidence"][0]))
+        duplicate["evidence_id"] = "browser:duplicate"
+        body["snapshot"]["evidence"].append(duplicate)
+        body["snapshot"]["coverage"] = {
+            "visible_count": 3,
+            "total_count": 3,
+            "complete": True,
+        }
+    elif invalid_kind == "page_kind":
+        body["snapshot"]["page_kind"] = "resource_health"
+    else:
+        template = body["snapshot"]["evidence"][0]
+        body["snapshot"]["evidence"] = []
+        for index in range(51):
+            item = json.loads(json.dumps(template))
+            item["evidence_id"] = f"browser:row-{index}"
+            item["source_key"] = f"Windows Server|20{index:02d}"
+            item["entity"]["source_key"] = item["source_key"]
+            item["data"]["os_version"] = f"20{index:02d}"
+            body["snapshot"]["evidence"].append(item)
+        body["snapshot"]["coverage"] = {
+            "visible_count": 51,
+            "total_count": 51,
+            "complete": True,
+        }
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert calls == []
+
+
+def test_inventory_complete_empty_starter_keeps_authoritative_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    observed_at = "2026-09-16T14:31:15+00:00"
+    body = _exact_inventory_os_body(
+        "Where is inventory coverage incomplete?"
+    )
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    body["snapshot"]["evidence"] = [
+        {
+            "evidence_id": "browser:empty-os-page",
+            "source": "inventory/os_observations",
+            "status": "empty",
+            "observed_at": observed_at,
+            "resource_id": "",
+            "source_key": "page-context:os",
+            "entity": {
+                "type": "observation",
+                "source": "inventory/os_observations",
+                "source_key": "page-context:os",
+            },
+            "claim_type": "page_context",
+            "citations": [],
+            "selected": False,
+            "direct": False,
+            "actionable": False,
+            "severity": "unknown",
+            "quality": "unknown",
+            "data": {
+                "inventory_context": {
+                    "tab": "os",
+                    "filters": {"tab": "os"},
+                    "sort": {},
+                    "offset": 0,
+                    "limit": 0,
+                },
+                "mutation_authorized": False,
+                "selected": False,
+            },
+        }
+    ]
+
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="empty",
+            data={
+                "resources": [],
+                "total": 0,
+                "groups": [],
+                "group_total": 0,
+                "observed_at": observed_at,
+                "query_version": "combined-subscription-connections-v1",
+            },
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/os_observations",
+                    timestamp=observed_at,
+                    confidence="high",
+                ),
+            ),
+        ),
+    )
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["coverage"] == {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    assert data["synthesis"]["claims"]
+    claim = data["synthesis"]["claims"][0]
+    assert "complete at 0 of 0 OS groups" in claim["summary"]
+    assert claim["evidence_refs"]
+    citations = {
+        citation["citation_id"]: citation for citation in data["citations"]
+    }
+    assert all(
+        citations[reference]["observed_at"] == observed_at
+        and citations[reference]["query_version"]
+        == "combined-subscription-connections-v1"
+        for reference in claim["evidence_refs"]
+    )
+    assert data["mutation_authorized"] is False
+
+    filtered = json.loads(json.dumps(body))
+    filtered["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 2,
+        "complete": False,
+    }
+
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="ok",
+            data={
+                "resources": [
+                    {
+                        "family": "os",
+                        "resource_id": "/subscriptions/sub-a/vm/1",
+                    },
+                    {
+                        "family": "os",
+                        "resource_id": "/subscriptions/sub-a/vm/2",
+                    },
+                    {
+                        "family": "os",
+                        "resource_id": "/subscriptions/sub-a/vm/3",
+                    },
+                ],
+                "total": 3,
+                "groups": [
+                    {"key": "Windows Server|2016"},
+                    {"key": "Windows Server|2025"},
+                ],
+                "group_total": 2,
+                "observed_at": observed_at,
+                "query_version": "combined-subscription-connections-v1",
+            },
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/os_observations",
+                    timestamp=observed_at,
+                    confidence="high",
+                ),
+            ),
+        ),
+    )
+    filtered_response = TestClient(
+        create_app(context),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=filtered,
+    )
+
+    assert filtered_response.status_code == 200, filtered_response.text
+    filtered_data = filtered_response.json()["data"]
+    assert filtered_data["coverage"] == {
+        "visible_count": 0,
+        "total_count": 2,
+        "complete": False,
+    }
+    assert filtered_data["synthesis"]["claims"]
+    assert "partial at 0 visible of 2 OS groups" in (
+        filtered_data["synthesis"]["claims"][0]["summary"]
+    )
+    assert filtered_data["mutation_authorized"] is False
+
+
 def test_connections_starter_preserves_authorized_page_truth_without_semantic_provider(
     tmp_path,
     monkeypatch,

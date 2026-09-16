@@ -447,6 +447,11 @@ class Citation(ContractModel):
     source: str = Field(min_length=1, max_length=160)
     status: str = Field(min_length=1, max_length=32)
     observed_at: str = Field(default="", max_length=128)
+    query_version: str = Field(
+        default="",
+        max_length=160,
+        exclude_if=lambda value: not value,
+    )
     resource_id: str = Field(default="", max_length=512)
 
 

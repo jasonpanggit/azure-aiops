@@ -33,11 +33,37 @@ class InventoryReadPort:
                 for row in rows
                 if str(row.get("resource_type") or "").casefold() == wanted
             ]
+        grouped_result = (
+            self.service.collection(scope, offset=0, limit=10_000)
+            if family == "os"
+            else self.service.software_collection(scope, offset=0, limit=10_000)
+            if family == "software"
+            else self.service.paas_collection(scope, offset=0, limit=10_000)
+            if family == "paas"
+            else None
+        )
+        groups = (
+            list(grouped_result["data"]["groups"])
+            if grouped_result is not None
+            else []
+        )
+        if resource_type:
+            groups = [
+                group
+                for group in groups
+                if str(group.get("resource_type") or "").casefold() == wanted
+            ]
         rows.sort(key=lambda row: (str(row.get("family") or ""), str(row.get("resource_id") or "")))
         return {
             "resources": rows[offset : offset + limit],
             "total": len(rows),
+            "groups": groups,
+            "group_total": (
+                len(groups) if grouped_result is not None else None
+            ),
             "family_availability": result["data"]["family_availability"],
+            "observed_at": self.service.observed_at,
+            "query_version": self.service.query_version,
             "warnings": result["warnings"],
         }
 
