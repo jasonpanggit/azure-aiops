@@ -6825,6 +6825,152 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     assert response.json()["data"]["mutation_authorized"] is False
 
 
+def test_empty_situations_answer_is_direct_cited_and_freshness_honest(
+    tmp_path,
+    monkeypatch,
+):
+    """A complete empty queue remains useful when the live tool is deferred."""
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning="The incidents provider is deferred",
+        ),
+    )
+    coverage_evidence_id = "evidence:" + "a" * 32
+    body = _canonical_body()
+    body.update(
+        {
+            "question": "Which situations are highest priority?",
+            "snapshot": {
+                "version": "2",
+                "page_kind": "situations",
+                "page_id": "situations",
+                "filters": {"page": ["0"]},
+                "coverage": {
+                    "visible_count": 0,
+                    "total_count": 0,
+                    "complete": True,
+                },
+                "freshness": [
+                    {
+                        "source": "situations",
+                        "observed_at": "unknown",
+                        "status": "unavailable",
+                    }
+                ],
+                "evidence": [
+                    {
+                        "evidence_id": coverage_evidence_id,
+                        "source": "coverage",
+                        "status": "ok",
+                        "entity": {
+                            "type": "observation",
+                            "source": "page/coverage",
+                            "source_key": "situations",
+                        },
+                        "source_key": "situations",
+                        "claim_type": "coverage",
+                        "direct": True,
+                        "data": {
+                            "coverage": {
+                                "visible_count": 0,
+                                "total_count": 0,
+                                "complete": True,
+                                "truncated": False,
+                            },
+                            "actionable": False,
+                            "mutation_authorized": False,
+                        },
+                    }
+                ],
+                "material_claims": [
+                    {
+                        "claim_id": "claim:empty-situations",
+                        "evidence_refs": [coverage_evidence_id],
+                        "requires_complete_coverage": False,
+                    }
+                ],
+            },
+            "hint": {
+                "specialist_id": "incident",
+                "tool": "incidents",
+                "arguments": {},
+            },
+        }
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["coverage"] == {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+    assert data["mutation_authorized"] is False
+    assert data["synthesis"]["claims"]
+    claim = data["synthesis"]["claims"][0]
+    assert "No active situations are visible" in claim["summary"]
+    assert "does not confirm source health" in claim["summary"]
+    assert claim["evidence_refs"] == ["snapshot:coverage"]
+    assert claim["freshness"] == "unavailable"
+    assert "Situations evidence freshness is unavailable" in claim["uncertainty"]
+    assert "snapshot:coverage" in {
+        citation["citation_id"] for citation in data["citations"]
+    }
+
+
+@pytest.mark.parametrize(
+    ("page_kind", "page_id", "visible_count", "total_count", "complete"),
+    [
+        ("situations", "situations", 0, 0, False),
+        ("situations", "situations", 1, 1, True),
+        ("changes", "changes", 0, 0, True),
+    ],
+)
+def test_empty_situations_claim_does_not_overreach_adjacent_snapshot_states(
+    page_kind,
+    page_id,
+    visible_count,
+    total_count,
+    complete,
+):
+    snapshot = EvidenceSnapshotV2(
+        page_kind=page_kind,
+        page_id=page_id,
+        coverage=SnapshotCoverage(
+            visible_count=visible_count,
+            total_count=total_count,
+            complete=complete,
+        ),
+        freshness=[
+            SnapshotFreshness(
+                source=page_kind,
+                observed_at="unknown",
+                status="unavailable",
+            )
+        ],
+    )
+
+    claims = OrchestrationService._deterministic_page_claims(
+        "Which situations are highest priority?",
+        snapshot=snapshot,
+        retained_evidence=[],
+    )
+
+    assert claims == []
+
+
 def test_service_detail_keeps_risk_unavailability_out_of_foundry_narration(
     tmp_path,
     monkeypatch,
