@@ -4709,6 +4709,15 @@ function changesCoreInput(input: ChangesCopilotPageInput): CoreCopilotAdapterInp
       confirmed: false,
     },
   }));
+  const evidenceSourceStatuses: CoreCopilotSourceStatus[] = input.evidence.map(
+    (item) => ({
+      source: `${item.source_engine}/${item.source_table}`,
+      observedAt: item.timestamp,
+      status: input.available
+        ? evidenceFreshness(item.freshness)
+        : "unavailable",
+    }),
+  );
   const sourceStatuses: CoreCopilotSourceStatus[] = input.sourceStatuses?.length
     ? input.sourceStatuses.map((status) => ({
       source: status.source,
@@ -4717,6 +4726,8 @@ function changesCoreInput(input: ChangesCopilotPageInput): CoreCopilotAdapterInp
         ? "unavailable"
         : freshnessStatus(status.freshness ?? "unknown"),
     }))
+    : evidenceSourceStatuses.length
+      ? evidenceSourceStatuses
     : [{
       source: "changes",
       observedAt: input.observedAt,

@@ -834,8 +834,13 @@ class OrchestrationService:
             if budget_exhausted:
                 break
 
+        uncertainty_request = (
+            request.model_copy(update={"snapshot": page_snapshot})
+            if _complete_empty_page_kind(page_snapshot) is not None
+            else request
+        )
         uncertainty = self._uncertainty(
-            request,
+            uncertainty_request,
             tool_results,
             budget_exhausted=budget_exhausted,
         )
