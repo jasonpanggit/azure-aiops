@@ -43,6 +43,66 @@ _SUBSCRIPTION_ID = re.compile(
 )
 
 
+def sre_agent_patch_envelope_contract() -> dict[str, object]:
+    """Return the locked JSON schema for outbound SRE Agent patch payloads."""
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://azure-aiops.example/schemas/sre-agent-selected-patch-run/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version",
+            "run_id",
+            "subscription_id",
+            "target_id",
+            "target_kind",
+            "patch_ids",
+            "reboot_setting",
+            "requested_by",
+            "approved_by",
+            "operation",
+        ],
+        "properties": {
+            "schema_version": {"const": SRE_PATCH_ENVELOPE_VERSION},
+            "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_RUN_ID_LENGTH,
+            },
+            "subscription_id": {"type": "string", "format": "uuid"},
+            "target_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_RESOURCE_ID_LENGTH,
+            },
+            "target_kind": {"enum": [TARGET_KIND_AZURE_VM, TARGET_KIND_ARC_SERVER]},
+            "patch_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": _MAX_PATCH_IDS,
+                "uniqueItems": True,
+                "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": _MAX_PATCH_ID_LENGTH,
+                },
+            },
+            "reboot_setting": {"enum": ["IfRequired", "Never", "Always"]},
+            "requested_by": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_AUDIT_IDENTITY_LENGTH,
+            },
+            "approved_by": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_AUDIT_IDENTITY_LENGTH,
+            },
+            "operation": {"const": OPERATION_INSTALL_PATCHES},
+        },
+    }
+
+
 def validate_sre_agent_endpoint(endpoint: str) -> str:
     """Validate one independently configured public HTTPS agent endpoint."""
     normalized = str(endpoint or "").strip().rstrip("/")
@@ -509,6 +569,7 @@ __all__ = [
     "SRE_AGENT_TRIGGER_SCOPE",
     "SreAgentPatchExecutionAdapter",
     "sre_agent_endpoint",
+    "sre_agent_patch_envelope_contract",
     "sre_agent_trigger_identity",
     "validate_sre_agent_endpoint",
 ]

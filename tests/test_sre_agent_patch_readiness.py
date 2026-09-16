@@ -17,6 +17,8 @@ AGENT_FIXTURE = REPO_ROOT / "tests/fixtures/sre_agent_patch_resource.sanitized.j
 RBAC_FIXTURE = REPO_ROOT / "tests/fixtures/sre_agent_patch_rbac.sanitized.json"
 SECRET_FIXTURE = REPO_ROOT / "tests/fixtures/sre_agent_patch_secret.sanitized.json"
 SECRET_VERSION = "00000000000000000000000000000001"
+REAL_TRIGGER_ID = "b65d078b-a0f5-4b63-b1a9-70f18ae44ad8"
+REAL_SECRET_VERSION = "bcaf1e13b0e2481782c1c8dfdd01cd05"
 TRIGGER_ID = "trigger-selected-patch-v1"
 TRIGGER_ORIGIN = "https://sre-agent-sredemo.sre.azure.com"
 AGENT_ENDPOINT = (
@@ -42,6 +44,19 @@ def _load_module():
 
 def _fixture(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _real_live_trigger_row(module, **overrides: object) -> dict[str, object]:
+    row = {
+        "id": REAL_TRIGGER_ID,
+        "agentPrompt": module.canonical_trigger_body(_fixture(DEFINITION))["prompt"],
+        "agentMode": "autonomous",
+        "triggerEnabled": True,
+        "threadId": "",
+        "triggerUrl": f"{TRIGGER_ORIGIN}/api/v1/httptriggers/trigger/{REAL_TRIGGER_ID}",
+    }
+    row.update(overrides)
+    return row
 
 
 def _refresh_rbac_provenance(module, payload: dict[str, object]) -> None:
@@ -209,7 +224,11 @@ def _all_live_dependencies(module, *, deployed: bool = True):
     secret = _fixture(SECRET_FIXTURE)
     trigger = _fixture(TRIGGER_FIXTURE)["trigger"]
     trigger_row = {
-        **trigger,
+        "id": trigger["id"],
+        "agentPrompt": trigger["prompt"],
+        "agentMode": "autonomous",
+        "triggerEnabled": trigger["enabled"],
+        "threadId": "",
         "triggerUrl": f"{TRIGGER_ORIGIN}/api/v1/httptriggers/trigger/{TRIGGER_ID}",
     }
     app_state = {
@@ -923,6 +942,104 @@ def test_trigger_payload_schema_mismatch_is_detected() -> None:
             module.canonical_trigger_body(_fixture(DEFINITION)),
             expected_trigger_id=TRIGGER_ID,
             expected_trigger_origin=TRIGGER_ORIGIN,
+        )
+
+
+def test_real_live_trigger_shape_normalizes_and_passes_readiness() -> None:
+    module = _load_module()
+    normalized = module._normalize_live_trigger(
+        [_real_live_trigger_row(module)],
+        expected_trigger_id=REAL_TRIGGER_ID,
+        expected_trigger_origin=TRIGGER_ORIGIN,
+    )
+
+    result = module.validate_trigger_evidence(
+        normalized,
+        module.canonical_trigger_body(_fixture(DEFINITION)),
+        expected_trigger_id=REAL_TRIGGER_ID,
+        expected_trigger_origin=TRIGGER_ORIGIN,
+        definition=_fixture(DEFINITION),
+    )
+
+    assert result["status"] == "trigger-ready"
+    assert result["triggerId"] == REAL_TRIGGER_ID
+    assert result["payloadSchema"] == {
+        "status": "runtime-outbound-envelope-ready",
+        "source": "src.operations.patching.sre_agent_adapter",
+        "serverPayloadSchemaAvailable": False,
+        "serverPayloadSchemaStatus": "not-returned-by-live-api",
+        "validatedAgainst": "runtime-locked-outgoing-envelope",
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"agentPrompt": "Install available patches."}, "trigger drift detected"),
+        ({"agentMode": "review"}, "agentMode must be autonomous"),
+        ({"triggerEnabled": False}, "trigger must be enabled"),
+        ({"threadId": "shared-thread"}, "threadId must be empty"),
+        ({"id": "wrong-trigger-id"}, "exact trigger once"),
+        (
+            {
+                "triggerUrl": (
+                    "https://evil.example/api/v1/httptriggers/trigger/"
+                    f"{REAL_TRIGGER_ID}"
+                )
+            },
+            "invocation origin does not match",
+        ),
+    ],
+)
+def test_real_live_trigger_shape_drift_fails_closed(
+    overrides: dict[str, object],
+    expected: str,
+) -> None:
+    module = _load_module()
+    with pytest.raises(module.ReadinessError, match=expected):
+        normalized = module._normalize_live_trigger(
+            [_real_live_trigger_row(module, **overrides)],
+            expected_trigger_id=REAL_TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+        )
+        module.validate_trigger_evidence(
+            normalized,
+            module.canonical_trigger_body(_fixture(DEFINITION)),
+            expected_trigger_id=REAL_TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+            definition=_fixture(DEFINITION),
+        )
+
+
+def test_runtime_outbound_envelope_drift_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    import src.operations.patching.sre_agent_adapter as adapter
+
+    original = adapter.sre_agent_patch_envelope_contract
+
+    def drifted_contract() -> dict[str, object]:
+        contract = original()
+        properties = contract["properties"]
+        assert isinstance(properties, dict)
+        properties["operation"] = {"const": "assess_patches"}
+        return contract
+
+    monkeypatch.setattr(adapter, "sre_agent_patch_envelope_contract", drifted_contract)
+    normalized = module._normalize_live_trigger(
+        [_real_live_trigger_row(module)],
+        expected_trigger_id=REAL_TRIGGER_ID,
+        expected_trigger_origin=TRIGGER_ORIGIN,
+    )
+
+    with pytest.raises(module.ReadinessError, match="runtime outbound.*drift"):
+        module.validate_trigger_evidence(
+            normalized,
+            module.canonical_trigger_body(_fixture(DEFINITION)),
+            expected_trigger_id=REAL_TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+            definition=_fixture(DEFINITION),
         )
 
 
