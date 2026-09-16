@@ -433,6 +433,9 @@ reference. Only this path can emit
 with mode `0600` only after validation succeeds, contains no raw assignment
 rows or secret values, is labeled informational/non-authorizing, and cannot be
 re-imported to reproduce a live verdict.
+Azure CLI may render the unused `value` beside a valid `secretRef` as either
+`null` or an empty string; the collector normalizes only those two
+representations and still requires the exact secret reference.
 
 ### Approval, plan, and canary gates
 

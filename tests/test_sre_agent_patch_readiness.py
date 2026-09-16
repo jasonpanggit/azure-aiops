@@ -543,6 +543,36 @@ def test_live_canary_requires_same_process_deployed_aca_state() -> None:
     assert app_call[app_call.index("--name") + 1] == module.API_CONTAINER_APP_NAME
 
 
+@pytest.mark.parametrize("secret_value", [None, ""])
+def test_live_canary_accepts_azure_cli_secret_reference_value_shape(
+    secret_value: str | None,
+) -> None:
+    module = _load_module()
+    runner, requester, _calls, app_state = _all_live_dependencies(module)
+    next(
+        row
+        for row in app_state["env"]
+        if row["name"] == module.SECRET_ENVIRONMENT_VARIABLE
+    )["value"] = secret_value
+
+    report = module.collect_live_canary(
+        runner=runner,
+        http_requester=requester,
+        definition=_fixture(DEFINITION),
+        expected_trigger_id=TRIGGER_ID,
+        expected_trigger_origin=TRIGGER_ORIGIN,
+        expected_agent_endpoint=AGENT_ENDPOINT,
+        secret_version=SECRET_VERSION,
+        target_prefix=TARGET_PREFIX,
+    )
+
+    assert report["status"] == "ready-for-approved-trigger-canary"
+    assert report["checks"]["containerApp"] == {
+        "status": "container-app-ready",
+        "secretValueRead": False,
+    }
+
+
 def test_live_canary_blocks_when_deployed_aca_is_not_enabled() -> None:
     module = _load_module()
     runner, requester, _calls, _app_state = _all_live_dependencies(
