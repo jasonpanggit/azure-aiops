@@ -8679,6 +8679,11 @@ def test_investigate_page_retains_cited_evidence_when_tool_is_deferred(
     assert all(set(claim["evidence_refs"]) <= citation_ids for claim in claims)
     assert any("Payment latency" in claim["summary"] for claim in claims)
     assert any("Patch payment servers" in claim["summary"] for claim in claims)
+    assert not any(
+        "incident_projection freshness is unavailable" in warning
+        for warning in result["uncertainty"]
+    )
+    assert "investigate/remediation freshness is unknown" in result["uncertainty"]
 
 
 def test_investigate_page_rejects_mismatch_and_invalid_numeric_before_io(
@@ -8717,6 +8722,74 @@ def test_investigate_page_rejects_mismatch_and_invalid_numeric_before_io(
 
     assert mismatch_response.status_code == 400
     assert calls == []
+
+
+def test_investigate_retained_freshness_is_bounded_and_prioritizes_worst_state(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    body = _investigate_page_body()
+    body["snapshot"]["coverage"] = {
+        "visible_count": 32,
+        "total_count": 32,
+        "complete": True,
+    }
+    body["snapshot"]["freshness"] = [
+        {
+            "source": f"source-{index:02d}",
+            "observed_at": "2026-09-16T19:00:00Z",
+            "status": "stale" if index == 31 else "partial",
+        }
+        for index in range(32)
+    ]
+    body["snapshot"]["evidence"] = [
+        {
+            "evidence_id": f"investigate:source:{index:02d}",
+            "source": f"source-{index:02d}",
+            "source_key": f"row-{index:02d}",
+            "entity": {
+                "type": "observation",
+                "source": f"source-{index:02d}",
+                "source_key": f"row-{index:02d}",
+            },
+            "claim_type": "investigation_observation",
+            "status": "ok",
+            "observed_at": "2026-09-16T19:00:00Z",
+            "direct": True,
+            "actionable": False,
+            "data": {
+                "title": f"Observation {index:02d}",
+                "mutation_authorized": False,
+            },
+        }
+        for index in range(32)
+    ]
+    body["snapshot"]["material_claims"] = [
+        {
+            "claim_id": f"investigate-source-{index:02d}",
+            "evidence_refs": [f"investigate:source:{index:02d}"],
+            "requires_complete_coverage": False,
+        }
+        for index in range(32)
+    ]
+
+    response = TestClient(create_app(_context(tmp_path, None))).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    uncertainty = response.json()["data"]["uncertainty"]
+    assert len(uncertainty) <= 32
+    stale_index = uncertainty.index("source-31 freshness is stale")
+    rollup_index = next(
+        index
+        for index, warning in enumerate(uncertainty)
+        if "additional retained sources" in warning
+    )
+    assert stale_index < rollup_index
 
 
 def test_empty_situations_answer_is_direct_cited_and_freshness_honest(

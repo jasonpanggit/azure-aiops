@@ -1432,11 +1432,40 @@ class OrchestrationService:
             )
             else request
         )
+        if (
+            page_snapshot.page_kind == "investigate"
+            and canonical_selection_snapshot is not None
+        ):
+            # The planning snapshot intentionally masks browser freshness as
+            # unavailable. Keep that mask for planning, but do not expose it
+            # as observed source truth in the response.
+            uncertainty_request = uncertainty_request.model_copy(
+                update={
+                    "snapshot": uncertainty_request.snapshot.model_copy(
+                        update={"freshness": []}
+                    )
+                }
+            )
         uncertainty = self._uncertainty(
             uncertainty_request,
             tool_results,
             budget_exhausted=budget_exhausted,
         )
+        if (
+            page_snapshot.page_kind == "investigate"
+            and canonical_selection_snapshot is not None
+        ):
+            retained_uncertainty = [
+                warning
+                for warning in retained_uncertainty
+                if " freshness is " not in warning
+            ]
+            uncertainty.extend(
+                self._canonical_retained_freshness_uncertainty(
+                    canonical_selection_snapshot,
+                    current_retained_evidence,
+                )
+            )
         if candidate is None:
             uncertainty.append(
                 "No safe page tool call could be formed from validated snapshot context."
@@ -1470,6 +1499,7 @@ class OrchestrationService:
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
+        uncertainty = self._bounded_uncertainty(uncertainty)
         citations.extend(
             Citation(
                 citation_id=str(item["evidence_id"]),
@@ -1848,6 +1878,64 @@ class OrchestrationService:
                 ]
             )
         )
+
+    @staticmethod
+    def _canonical_retained_freshness_uncertainty(
+        canonical_snapshot: CanonicalEvidenceSnapshot,
+        retained_evidence: Sequence[Mapping[str, Any]],
+    ) -> list[str]:
+        """Describe only source freshness that survived canonical retention."""
+
+        retained_refs = {
+            str(item.get("original_evidence_id") or "")
+            for item in retained_evidence
+            if item.get("original_evidence_id")
+        }
+        priority = {
+            "fresh": 0,
+            "partial": 1,
+            "stale": 2,
+            "unknown": 3,
+            "unavailable": 4,
+        }
+        by_source: dict[str, str] = {}
+        for item in canonical_snapshot.evidence:
+            if not retained_refs.intersection(item.evidence_refs):
+                continue
+            current = by_source.get(item.source)
+            if current is None or priority[item.freshness] > priority[current]:
+                by_source[item.source] = item.freshness
+        messages = [
+            f"{source} freshness is {status}"
+            for source, status in sorted(
+                by_source.items(),
+                key=lambda item: (-priority[item[1]], item[0]),
+            )
+            if status != "fresh"
+        ]
+        if len(messages) <= 12:
+            return messages
+        omitted = len(messages) - 11
+        return [
+            *messages[:11],
+            (
+                f"{omitted} additional retained sources have non-fresh "
+                "evidence; review retained citations for details."
+            ),
+        ]
+
+    @staticmethod
+    def _bounded_uncertainty(values: Sequence[str]) -> list[str]:
+        """Deduplicate and cap public uncertainty within the wire contract."""
+
+        unique = list(dict.fromkeys(value for value in values if value))
+        if len(unique) <= 32:
+            return unique
+        omitted = len(unique) - 31
+        return [
+            *unique[:31],
+            f"{omitted} additional uncertainty records were omitted.",
+        ]
 
     @staticmethod
     def _bounded_page_facts(data: Mapping[str, Any]) -> dict[str, Any]:
