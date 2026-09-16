@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import time
 import uuid as _uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import (
     agent_catalog,
@@ -32,8 +33,10 @@ router = APIRouter(prefix="/api/v1/agents", tags=["multi-agent-investigation"])
 
 
 class InvestigationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     objective: str = Field(min_length=1, max_length=1024)
-    timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)
+    timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0, strict=True)
 
 
 class LedgerActionRequest(BaseModel):
@@ -85,6 +88,194 @@ def _not_found(ledger_id: str) -> ApiError:
     )
 
 
+def _project_deterministic_activation(
+    ledger: dict[str, Any],
+    *,
+    context: Any,
+) -> dict[str, Any]:
+    """Expose deterministic execution without implying Foundry agents ran."""
+
+    projected = project_legacy_ledger(ledger)
+    catalog_by_id = {
+        str(agent.get("id") or ""): agent
+        for agent in agent_catalog()
+    }
+    selected_ids = [
+        str(agent.get("id") or "")
+        for agent in projected.get("selected_agents") or []
+    ]
+    projected["selected_agents"] = [
+        catalog_by_id.get(agent_id, {"id": agent_id})
+        for agent_id in selected_ids
+    ]
+    foundry_ready = sum(
+        bool(agent.get("foundry", {}).get("configured"))
+        for agent in projected["selected_agents"]
+    )
+    activation_source = (
+        os.environ.get("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "").strip()
+        or "unconfigured"
+    )
+    version_pinning_required = (
+        os.environ.get(
+            "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED",
+            "",
+        ).strip().casefold()
+        in {"1", "true", "yes", "on"}
+    )
+    synthesis = projected.get("synthesis") or {}
+    narrator_name = str(synthesis.get("narrated_by") or "")
+    coordinator = {
+        "status": "executed" if synthesis.get("llm_calls") else "unavailable",
+        "name": narrator_name,
+        "version": "",
+    }
+    if synthesis.get("llm_calls"):
+        provider = getattr(context, "foundry_agent", None)
+        try:
+            narrator = provider() if callable(provider) else None
+        except (ApiError, ConnectionError, RuntimeError, TimeoutError, ValueError):
+            narrator = None
+        if narrator is not None:
+            coordinator["name"] = str(
+                getattr(narrator, "agent_name", "") or narrator_name
+            )
+            coordinator["version"] = str(
+                getattr(narrator, "agent_version", "") or ""
+            )
+    activation = {
+        "mode": "deterministic_degraded",
+        "source": activation_source,
+        "foundry_ready": foundry_ready,
+        "selected_specialists": len(selected_ids),
+        "version_pinning_required": version_pinning_required,
+        "coordinator": coordinator,
+    }
+    projected["activation"] = activation
+    existing_orchestration = projected.get("orchestration") or {}
+    projected["orchestration"] = {
+        **existing_orchestration,
+        "runtime": existing_orchestration.get(
+            "runtime",
+            "legacy_deterministic",
+        ),
+        "strategy": existing_orchestration.get(
+            "strategy",
+            "local_specialist_definitions",
+        ),
+        "selected_ids": existing_orchestration.get(
+            "selected_ids",
+            selected_ids,
+        ),
+        "activation_mode": activation["mode"],
+    }
+
+    citations: list[dict[str, Any]] = list(
+        projected.get("citations") or []
+    )
+    all_citation_ids: list[str] = [
+        str(citation.get("citation_id") or "")
+        for citation in citations
+        if citation.get("citation_id")
+    ]
+    canonical_citations = bool(citations)
+    for run in projected.get("agent_runs") or []:
+        agent_id = str(run.get("agent_id") or "")
+        run["activation"] = catalog_by_id.get(
+            agent_id,
+            {},
+        ).get("foundry", {"status": "unavailable", "configured": False})
+        run["execution_mode"] = "deterministic_local"
+        run["mutation_authorized"] = False
+        tool_refs: dict[str, list[str]] = {}
+        for call_index, call in enumerate(run.get("tool_calls") or []):
+            call["mutation_authorized"] = False
+            if canonical_citations:
+                refs = [
+                    citation_id
+                    for citation_id in all_citation_ids
+                    if citation_id.startswith(
+                        f"tool:{call.get('call_id', '')}:"
+                    )
+                ]
+            else:
+                evidence = (
+                    call.get("evidence")
+                    or (call.get("result") or {}).get("evidence")
+                    or []
+                )
+                refs = []
+                for evidence_index, item in enumerate(evidence):
+                    citation_id = (
+                        f"legacy:{projected['ledger_id']}:{agent_id}:"
+                        f"{call_index}:{evidence_index}"
+                    )
+                    refs.append(citation_id)
+                    citations.append(
+                        {
+                            "citation_id": citation_id,
+                            "source": (
+                                f"{item.get('source_engine', '')}:"
+                                f"{item.get('source_table', '')}"
+                            ).strip(":"),
+                            "status": call.get("status", "unknown"),
+                            "observed_at": item.get("timestamp", ""),
+                            "resource_id": item.get("resource_id", ""),
+                        }
+                    )
+            call["evidence_refs"] = refs
+            all_citation_ids.extend(refs)
+            tool_refs.setdefault(str(call.get("tool") or ""), []).extend(refs)
+        for finding in run.get("findings") or []:
+            finding_id = str(finding.get("finding_id") or "")
+            refs = next(
+                (
+                    values
+                    for tool, values in tool_refs.items()
+                    if f":{tool}:" in finding_id
+                ),
+                [],
+            )
+            finding["citation_ids"] = list(
+                finding.get("citation_ids") or refs
+            )
+            finding["mutation_authorized"] = False
+
+    for run in projected.get("agent_runs") or []:
+        if run.get("agent_id") == "executive_summary":
+            for finding in run.get("findings") or []:
+                finding["citation_ids"] = list(dict.fromkeys(all_citation_ids))
+    projected["findings"] = [
+        finding
+        for run in projected.get("agent_runs") or []
+        for finding in run.get("findings") or []
+    ]
+    projected["citations"] = citations
+    synthesis["citation_ids"] = list(dict.fromkeys(all_citation_ids))
+    synthesis["mutation_authorized"] = False
+    projected["synthesis"] = synthesis
+    evaluation = projected.get("evaluation") or {}
+    grounded_findings = sum(
+        bool(finding.get("citation_ids"))
+        for finding in projected["findings"]
+    )
+    evaluation["groundedness"] = round(
+        grounded_findings / max(1, len(projected["findings"])),
+        3,
+    )
+    evaluation["groundedness_status"] = (
+        "measured" if projected["findings"] else "unavailable"
+    )
+    evaluation["groundedness_reason"] = (
+        "Fraction of findings with retained citations."
+        if projected["findings"]
+        else "No cited findings were retained for measurement."
+    )
+    projected["evaluation"] = evaluation
+    projected["mutation_authorized"] = False
+    return projected
+
+
 @router.get("/catalog", summary="Specialized autonomous investigation agents")
 def catalog(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope({"agents": agent_catalog()}, evidence=_evidence(), scope=scope.to_dict())
@@ -134,6 +325,28 @@ def _create_investigation_canonical(
         catalog_by_id.get(specialist_id, {"id": specialist_id})
         for specialist_id in result.selected_specialists
     ]
+    foundry_ready = sum(
+        bool(agent.get("foundry", {}).get("configured"))
+        for agent in selected_agents
+    )
+    activation_source = (
+        os.environ.get("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "").strip()
+        or "unconfigured"
+    )
+    version_pinning_required = (
+        os.environ.get(
+            "AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED",
+            "",
+        ).strip().casefold()
+        in {"1", "true", "yes", "on"}
+    )
+    activation = {
+        "mode": "deterministic_degraded",
+        "source": activation_source,
+        "foundry_ready": foundry_ready,
+        "selected_specialists": len(selected_agents),
+        "version_pinning_required": version_pinning_required,
+    }
     citations = [
         citation.model_dump(mode="json")
         for citation in result.citations
@@ -150,6 +363,7 @@ def _create_investigation_canonical(
             "warning": tool_result.get("warning", ""),
             "attempts": 1,
             "operation": "delegate",
+            "mutation_authorized": False,
         }
         for tool_result in result.tool_results
     ]
@@ -178,6 +392,7 @@ def _create_investigation_canonical(
                     f"tool:{tool_result.get('call_id', '')}:"
                 )
             ],
+            "mutation_authorized": False,
         }
         for tool_result in result.tool_results
         if tool_result.get("data") is not None
@@ -232,6 +447,18 @@ def _create_investigation_canonical(
                 else "unknown"
             ),
             "hidden_reasoning_exposed": False,
+            "activation": catalog_by_id.get(
+                specialist_id,
+                {},
+            ).get("foundry", {"status": "unavailable", "configured": False}),
+            "execution_mode": (
+                "foundry"
+                if catalog_by_id.get(specialist_id, {})
+                .get("foundry", {})
+                .get("configured")
+                else "deterministic_local"
+            ),
+            "mutation_authorized": False,
         }
         for specialist_id in result.selected_specialists
     ]
@@ -268,7 +495,9 @@ def _create_investigation_canonical(
             "selected_ids": result.selected_specialists,
             "policy_status": result.policy_status,
             "fallback_reason": result.fallback_reason,
+            "activation_mode": activation["mode"],
         },
+        "activation": activation,
         "selected_agents": selected_agents,
         "agent_runs": agent_runs,
         "reconciliation": {
@@ -328,6 +557,14 @@ def _create_investigation_canonical(
                 / max(1, len(findings)),
                 3,
             ),
+            "groundedness_status": (
+                "measured" if findings else "unavailable"
+            ),
+            "groundedness_reason": (
+                ""
+                if findings
+                else "No cited findings were retained for measurement."
+            ),
             "scope_isolation": (
                 "enforced" if scope.to_dict() else "unrestricted_admin_scope"
             ),
@@ -353,7 +590,9 @@ def _create_investigation_canonical(
         "citations": citations,
         "warnings": list(result.uncertainty),
         "thread_id": result.thread_id,
+        "mutation_authorized": False,
     }
+    ledger = _project_deterministic_activation(ledger, context=context)
     ledger_store().add(ledger)
     return _respond(ledger, scope)
 
@@ -367,9 +606,11 @@ def create_investigation(
 ) -> dict[str, Any]:
     if canonical_orchestration_enabled(stable_key=principal.subject):
         return _create_investigation_canonical(
-            payload, context=context, scope=scope, principal=principal,
+            payload,
+            context=context,
+            scope=scope,
+            principal=principal,
         )
-
     ledger = run_autonomous_investigation(
         payload.objective.strip(),
         context=context,
@@ -377,6 +618,7 @@ def create_investigation(
         principal_subject=principal.subject,
         timeout_seconds=payload.timeout_seconds,
     )
+    ledger = _project_deterministic_activation(ledger, context=context)
     ledger_store().add(ledger)
     return _respond(ledger, scope)
 

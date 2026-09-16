@@ -11,7 +11,7 @@ import { useScope } from "@/lib/scope-context";
 import { multiAgentApi } from "@/lib/services";
 import type { AutonomousAgent, Envelope, MultiAgentLedger } from "@/lib/types";
 
-const DEFAULT_OBJECTIVE = "Investigate the highest-risk business service and recommend governed remediation.";
+const DEFAULT_OBJECTIVE = "Review current scoped risk and recommend a governed next decision.";
 
 /** Human-controlled multi-agent investigation command surface. */
 export default function MultiAgentInvestigationPage() {
@@ -57,22 +57,27 @@ export default function MultiAgentInvestigationPage() {
   const evidence = ledger?.data.agent_runs.flatMap((run) => run.evidence) ?? [];
   const findings = ledger?.data.agent_runs.flatMap((run) => run.findings) ?? [];
   const activeAgents = ledger?.data.agent_runs.length ?? 0;
+  const configuredAgents = catalog.filter(
+    (agent) => agent.foundry?.configured,
+  ).length;
+  const deterministicDegraded = ledger?.data.activation?.mode
+    !== "foundry";
 
   return (
     <main className="page-container agents-workspace" aria-label="Multi-Agent Autonomous Investigation">
       <PageHeader
-        eyebrow="Autonomous investigation"
+        eyebrow="Specialist investigation"
         title="What can evidence reconciliation answer?"
-        description="Coordinate specialized agents over governed tools while preserving authorization, evidence, human control, and a visible trust boundary."
+        description="Select specialist definitions and run governed local tools; Foundry activation status is shown explicitly and never inferred."
         actions={
           <button className="button button-primary" type="button" onClick={runInvestigation} disabled={loading || !objective.trim()}>
-            Run investigation
+            Run deterministic investigation
           </button>
         }
       />
 
       {error ? <StatePanel title="Investigation unavailable" message={error} tone="error" /> : null}
-      {loading ? <StatePanel title="Coordinating agents" message="Selecting agents, running governed tools, reconciling evidence, and preparing synthesis." tone="loading" /> : null}
+      {loading ? <StatePanel title="Running deterministic specialist plans" message="Selecting specialist definitions, running governed local tools, reconciling evidence, and preparing synthesis." tone="loading" /> : null}
 
       <section className="card">
         <div className="card-header">
@@ -81,6 +86,12 @@ export default function MultiAgentInvestigationPage() {
             <p>All agents inherit the current workbench scope and the caller&apos;s authorization boundary.</p>
           </div>
           <StatusBadge label="Human controlled" tone="info" />
+          <StatusBadge
+            label={configuredAgents
+              ? `${configuredAgents} Foundry ready`
+              : "Foundry unavailable · deterministic fallback"}
+            tone={configuredAgents ? "success" : "warning"}
+          />
         </div>
         <div className="card-body agents-objective">
           <label>
@@ -90,11 +101,13 @@ export default function MultiAgentInvestigationPage() {
           <div className="entity-pill-row" aria-label="Available specialized agents">
             {catalog.map((agent) => {
               const configured = agent.foundry?.configured ?? false;
+              const degradedReason = agent.foundry?.degraded_reason
+                ?? "Foundry activation is unavailable.";
               return (
-                <span key={agent.id} className="entity-pill" title={agent.role}>
+                <span key={agent.id} className="entity-pill" title={`${agent.role} ${degradedReason}`}>
                   {agent.name}
                   <StatusBadge
-                    label={configured ? "Ready" : "Unavailable"}
+                    label={configured ? "Foundry ready" : "Foundry unavailable"}
                     tone={configured ? "success" : "neutral"}
                     compact
                   />
@@ -114,16 +127,30 @@ export default function MultiAgentInvestigationPage() {
           />
 
           <section className="metric-grid" aria-label="Investigation metrics">
-            <MetricCard label="Agents" value={activeAgents} detail="Specialists coordinated" />
+            <MetricCard
+              label={deterministicDegraded ? "Specialist plans" : "Agents"}
+              value={activeAgents}
+              detail={deterministicDegraded
+                ? "Deterministic specialist plans"
+                : "Activated Foundry agents"}
+            />
             <MetricCard label="Findings" value={findings.length} detail="Evidence and unknowns recorded" />
-            <MetricCard label="Groundedness" value={`${Math.round(ledger.data.evaluation.groundedness * 100)}%`} detail="Findings with evidence" tone={ledger.data.evaluation.groundedness >= 0.5 ? "success" : "warning"} />
+            <MetricCard
+              label="Groundedness"
+              value={ledger.data.evaluation.groundedness_status === "unavailable"
+                ? "Unavailable"
+                : `${Math.round(ledger.data.evaluation.groundedness * 100)}%`}
+              detail={ledger.data.evaluation.groundedness_reason || "Findings with retained citations"}
+              tone={ledger.data.evaluation.groundedness >= 0.5 ? "success" : "warning"}
+            />
+            <MetricCard label="Citations" value={ledger.data.citations?.length ?? 0} detail="Retained evidence references" />
             <MetricCard label="Latency" value={`${Math.round(ledger.data.evaluation.latency_ms)}ms`} detail="End-to-end orchestration" />
           </section>
 
           <section className="workspace-grid">
             <section className="card">
               <div className="card-header">
-                <div><h2>Agent activity</h2><p>Tool usage and findings by specialist, without hidden chain-of-thought.</p></div>
+                <div><h2>{deterministicDegraded ? "Specialist plan activity" : "Agent activity"}</h2><p>Tool usage and findings by specialist definition, without hidden chain-of-thought.</p></div>
                 <StatusBadge label={ledger.data.status} tone={statusTone(ledger.data.status)} />
               </div>
               <div className="card-body agent-run-list">
@@ -135,6 +162,13 @@ export default function MultiAgentInvestigationPage() {
                         <p className="muted">{run.tool_calls.map((call) => call.tool).join(", ") || "Synthesis only"}</p>
                       </div>
                       <StatusBadge label={run.status} tone={statusTone(run.status)} compact />
+                      <StatusBadge
+                        label={run.execution_mode === "foundry"
+                          ? "Foundry agent"
+                          : "Deterministic local fallback"}
+                        tone={run.execution_mode === "foundry" ? "success" : "warning"}
+                        compact
+                      />
                     </div>
                     <ul>
                       {run.findings.map((finding) => (
@@ -163,7 +197,7 @@ export default function MultiAgentInvestigationPage() {
             </section>
 
             <section className="card">
-              <div className="card-header"><div><h2>Final synthesis</h2><p>Evidence-backed conclusion and recommended next plan.</p></div><StatusBadge label={ledger.data.synthesis.confidence} tone={statusTone(ledger.data.synthesis.confidence)} /></div>
+              <div className="card-header"><div><h2>{deterministicDegraded ? "Deterministic synthesis" : "Final synthesis"}</h2><p>Citation-backed conclusion and recommended next plan.</p></div><StatusBadge label={ledger.data.synthesis.confidence} tone={statusTone(ledger.data.synthesis.confidence)} /></div>
               <div className="card-body recommended-action-list">
                 {ledger.data.synthesis.narration ? (
                   <span>

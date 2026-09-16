@@ -376,6 +376,9 @@ export interface AgentDeploymentStatus {
   /** "ready" when a Foundry agent is configured for this specialist, else "unavailable". */
   status: "ready" | "unavailable" | string;
   configured: boolean;
+  activation_source?: string;
+  version_pinning_required?: boolean;
+  degraded_reason?: string;
 }
 
 export interface AutonomousAgent {
@@ -399,6 +402,8 @@ export interface AgentToolCall {
   status: "ok" | "empty" | "unavailable" | "denied" | "partial";
   warning: string;
   attempts: number;
+  evidence_refs?: string[];
+  mutation_authorized?: false;
 }
 
 export interface AgentFinding {
@@ -409,6 +414,8 @@ export interface AgentFinding {
   confidence: Confidence;
   evidence_count: number;
   unsupported?: boolean;
+  citation_ids?: string[];
+  mutation_authorized?: false;
 }
 
 export interface AgentRun {
@@ -423,6 +430,9 @@ export interface AgentRun {
   evidence: EvidenceItem[];
   confidence: Confidence;
   hidden_reasoning_exposed: boolean;
+  activation?: AgentDeploymentStatus;
+  execution_mode?: "foundry" | "deterministic_local";
+  mutation_authorized?: false;
 }
 
 export interface AgentOrchestrationDecision {
@@ -462,6 +472,8 @@ export interface HumanDecision {
 
 export interface InvestigationEvaluation {
   groundedness: number;
+  groundedness_status?: "measured" | "unavailable";
+  groundedness_reason?: string;
   scope_isolation: string;
   tool_correctness: number;
   convergence: string;
@@ -477,6 +489,18 @@ export interface MultiAgentLedger {
   created_at: string;
   updated_at: string;
   status: string;
+  activation?: {
+    mode: "foundry" | "deterministic_degraded";
+    source: string;
+    foundry_ready: number;
+    selected_specialists: number;
+    version_pinning_required: boolean;
+    coordinator?: {
+      status: "executed" | "unavailable";
+      name: string;
+      version: string;
+    };
+  };
   selected_agents: AutonomousAgent[];
   agent_runs: AgentRun[];
   reconciliation: EvidenceReconciliation;
@@ -487,6 +511,8 @@ export interface MultiAgentLedger {
   outcome: string;
   stop_reason: string;
   evaluation: InvestigationEvaluation;
+  citations?: CanonicalCopilotCitation[];
+  mutation_authorized?: false;
 }
 
 export type ErrorCode =

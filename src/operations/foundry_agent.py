@@ -1491,6 +1491,11 @@ def _extract_text(response: dict[str, Any]) -> str:
 def specialist_catalog() -> list[dict[str, Any]]:
     """Return independent release metadata without claiming unavailable agents exist."""
     endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
+    activation_source = (
+        os.environ.get("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "").strip()
+        or "unconfigured"
+    )
+    version_pinning_required = _version_pinning_required()
     entries: list[dict[str, Any]] = []
     for specialist in _SPECIALIST_MANIFEST.specialists:
         prefix = f"FOUNDRY_{specialist.id.upper()}_AGENT"
@@ -1499,7 +1504,23 @@ def specialist_catalog() -> list[dict[str, Any]]:
         if not name and specialist.id == "network":
             name = os.environ.get(ENV_AGENT_NAME, "").strip()
             version = version or os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-        configured = bool(endpoint and name and version)
+        configured = bool(
+            endpoint
+            and name
+            and (version or not version_pinning_required)
+        )
+        degraded_reason = ""
+        if not configured:
+            if not endpoint:
+                degraded_reason = "Foundry project endpoint is unavailable."
+            elif not name:
+                degraded_reason = "Foundry specialist name is unavailable."
+            elif version_pinning_required and not version:
+                degraded_reason = (
+                    "Pinned Foundry specialist version is unavailable."
+                )
+            else:
+                degraded_reason = "Foundry specialist activation is unavailable."
         entries.append(
             {
                 "id": specialist.id,
@@ -1508,6 +1529,9 @@ def specialist_catalog() -> list[dict[str, Any]]:
                 "model": specialist.foundry.model,
                 "status": "ready" if configured else "unavailable",
                 "configured": configured,
+                "activation_source": activation_source,
+                "version_pinning_required": version_pinning_required,
+                "degraded_reason": degraded_reason,
             }
         )
     return entries
