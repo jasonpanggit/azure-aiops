@@ -5129,6 +5129,219 @@ def test_canonical_route_never_promotes_browser_observations_to_authority(
     }
 
 
+def test_connections_starter_preserves_authorized_page_truth_without_semantic_provider(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def inventory_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="ok",
+            data={"resources": [], "total": 0},
+            evidence=(
+                Evidence(
+                    source_engine="intelligence.inventory.InventoryReadPort",
+                    source_table="inventory/resource_observations",
+                    timestamp="2026-09-16T07:45:00Z",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", inventory_tool)
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    body = {
+        "contract_version": "1",
+        "question": "Where is subscription coverage incomplete or blocked?",
+        "requested_scope": {"subscription": ["sub-a"]},
+        "snapshot": {
+            "version": "2",
+            "page_kind": "connections",
+            "page_id": "connections",
+            "filters": {"view": ["subscriptions"]},
+            "coverage": {
+                "visible_count": 1,
+                "total_count": 1,
+                "complete": True,
+            },
+            "freshness": [
+                {
+                    "source": "connections/registry",
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "status": "fresh",
+                }
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "connections:demo",
+                    "source": "connections/registry",
+                    "status": "ok",
+                    "observed_at": "2026-09-16T07:45:00Z",
+                    "source_key": "demo",
+                    "entity": {
+                        "type": "observation",
+                        "source": "connections/registry",
+                        "source_key": "demo",
+                    },
+                    "claim_type": "subscription_connection",
+                    "direct": True,
+                    "quality": "high",
+                    "data": {
+                        "connection_id": "demo",
+                        "name": "demo",
+                        "health_status": "healthy",
+                        "sync_status": "succeeded",
+                        "record_count": 49474,
+                        "deployment_blocked": False,
+                        "selected": False,
+                        "actionable": False,
+                        "mutation_authorized": False,
+                    },
+                }
+            ],
+            "material_claims": [
+                {
+                    "claim_id": "connections-demo",
+                    "evidence_refs": ["connections:demo"],
+                    "requires_complete_coverage": False,
+                }
+            ],
+        },
+        "hint": {
+            "specialist_id": INVENTORY_DATA_HEALTH_ID,
+            "tool": "inventory_resources",
+            "arguments": {},
+        },
+    }
+
+    response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == [INVENTORY_DATA_HEALTH_ID]
+    assert data["selected_tools"] == ["inventory_resources"]
+    assert data["coverage"] == {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": True,
+    }
+    assert "visible subset is incomplete" not in data["uncertainty"]
+    assert "connections/registry freshness is unavailable" not in data["uncertainty"]
+    assert data["synthesis"]["claims"]
+    assert "deployment blocked False" in data["synthesis"]["claims"][0]["summary"]
+    assert "record count 49474" in data["synthesis"]["claims"][0]["summary"]
+    assert data["synthesis"]["claims"][0]["freshness"] == "fresh"
+    assert data["synthesis"]["claims"][0]["evidence_refs"][0].startswith("retained:")
+    assert data["mutation_authorized"] is False
+    assert tool_calls == [("inventory_resources", {})]
+
+    mismatched = json.loads(json.dumps(body))
+    mismatched["hint"]["specialist_id"] = "remediation"
+    mismatch_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=mismatched,
+        headers=HEADERS,
+    )
+
+    assert mismatch_response.status_code == 400
+    assert mismatch_response.json()["error"]["code"] == "invalid_request"
+    assert tool_calls == [("inventory_resources", {})]
+
+    mixed = json.loads(json.dumps(body))
+    mixed["snapshot"]["coverage"] = {
+        "visible_count": 2,
+        "total_count": 2,
+        "complete": True,
+    }
+    mixed["snapshot"]["evidence"].append(
+        {
+            "evidence_id": "connections:unresolved",
+            "source": "connections/registry",
+            "status": "ok",
+            "observed_at": "2026-09-16T07:45:00Z",
+            "source_key": "unresolved",
+            "entity": {
+                "type": "domain",
+                "namespace": "connection",
+                "kind": "subscription_connection",
+                "source_key": "unresolved",
+            },
+            "claim_type": "subscription_connection",
+            "direct": True,
+            "quality": "high",
+            "data": {
+                "connection_id": "unresolved",
+                "health_status": "healthy",
+                "sync_status": "succeeded",
+                "selected": False,
+                "actionable": False,
+                "mutation_authorized": False,
+            },
+        }
+    )
+    mixed["snapshot"]["material_claims"].append(
+        {
+            "claim_id": "connections-unresolved",
+            "evidence_refs": ["connections:unresolved"],
+            "requires_complete_coverage": False,
+        }
+    )
+    mixed_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=mixed,
+        headers=HEADERS,
+    )
+
+    assert mixed_response.status_code == 200, mixed_response.text
+    mixed_data = mixed_response.json()["data"]
+    assert mixed_data["coverage"]["complete"] is False
+    assert "visible subset is incomplete" in mixed_data["uncertainty"]
+    assert any(
+        "unresolved domain page evidence was excluded" in warning
+        for warning in mixed_data["uncertainty"]
+    )
+    assert mixed_data["mutation_authorized"] is False
+
+    unbound_page = json.loads(json.dumps(body))
+    unbound_page["snapshot"]["page_id"] = "connections-preview"
+    unbound_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=unbound_page,
+        headers=HEADERS,
+    )
+
+    assert unbound_response.status_code == 200, unbound_response.text
+    assert unbound_response.json()["data"]["coverage"]["complete"] is False
+
+    mismatched_source = json.loads(json.dumps(body))
+    mismatched_source["snapshot"]["evidence"][0]["entity"]["source"] = (
+        "browser/forged-connections"
+    )
+    source_response = client.post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        json=mismatched_source,
+        headers=HEADERS,
+    )
+
+    assert source_response.status_code == 200, source_response.text
+    assert source_response.json()["data"]["coverage"]["complete"] is False
+    assert tool_calls == [
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+        ("inventory_resources", {}),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Plan 11-03 Task 2: Thin canonical compatibility adapters for legacy routes
 # ---------------------------------------------------------------------------
