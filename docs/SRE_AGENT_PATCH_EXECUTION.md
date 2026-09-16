@@ -58,6 +58,22 @@ python3 scripts/preflight_sre_agent_patch_execution.py render
 
 The prompt is not a security boundary. Before enabling the mode:
 
+- The authenticated remediation API and its recorded approval snapshot remain
+  the authorization boundary. SRE Agent may use read-only tools and knowledge
+  sources to evaluate feasibility, applicability, prerequisites, conflicts,
+  and safety for the exact target and selected patches. The approved snapshot
+  authorizes the exact change but is not proof of current state. If live state
+  materially differs, a patch is no longer applicable, or another issue is
+  found, the agent must flag it and stop without mutation. It must never select
+  an alternative target or patch, widen scope, or add another change.
+- When a separately approved authenticated connector is available, the agent
+  may use the repository-managed Operations API/MCP through APIM only as
+  read-only contract-liveness context. It may not invoke mutation through that
+  tool. The Terraform `sre_agent_pending_mcp_connectors` output remains a
+  non-secret design contract, not a provisioned connector: this source change
+  does not create the connector or grant APIM/MCP access. If contract liveness
+  is required but cannot be established, execution must stop without mutation.
+
 - Restrict the SRE Agent `managedResources` to the approved subscription and
   target resource set.
 - Grant the SRE Agent action identity only the VM/Arc patch actions required
@@ -477,9 +493,9 @@ representations and still requires the exact secret reference.
    thread origin before the separately approved canary.
 8. Run `live-canary` immediately before the canary and require
    `ready-for-approved-trigger-canary`. Then accept only HTTP 202 plus
-   `success=true` and one thread ID, terminal
-   `Complete`, and refreshed evidence that reconciles every selected patch as
-   clean. Prompt prose is never acceptance evidence.
+   `success=true` and one thread ID, terminal `Complete`, and refreshed evidence
+   that reconciles every selected patch as clean. Prompt prose is never
+   acceptance evidence.
 
 Rollback switches API traffic to a prior revision where
 `AIOPS_PATCH_EXECUTION` is absent/refusing, or applies a separately approved
