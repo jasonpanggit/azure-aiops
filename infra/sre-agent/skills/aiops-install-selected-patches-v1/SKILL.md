@@ -69,10 +69,14 @@ approval.
 
 ## Closed outcome
 
-Return only schema `1.0` structured submission data containing the immutable
-subscription, target kind and ID, exact patch list, `IfRequired`, `PT2H`,
-read-evidence observation time, upstream decision ID and snapshot hash,
-selected command operation, and whether the single provider submission is
-proven or ambiguous. Tool acceptance and model prose never prove patch
-success. Provider completion never substitutes for refreshed selected-KB
-reconciliation. Never retry a proven or ambiguous submission.
+After a write-tool acceptance, return one `provider_operation` object with
+exactly schema `1.0`, a nonempty provider `operation_id`, status `submitted`,
+`running`, `succeeded`, or `completed`, this exact skill name/version,
+operation `install_patches`, the immutable `target_id`, and the exact ordered
+`patch_ids`. No additional field is allowed. On refusal or validation failure,
+return terminal `failed_without_action` and never fabricate
+`provider_operation`. If write submission may have crossed the provider
+boundary but cannot be proven, return `submission_ambiguous` without retry.
+Tool acceptance, thread completion, and model prose never prove patch success.
+Provider completion never substitutes for refreshed selected-KB
+reconciliation.

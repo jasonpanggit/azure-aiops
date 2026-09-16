@@ -65,6 +65,10 @@ class _OperationUrlAdapter:
         )
 
 
+class _SreOperationUrlAdapter(_OperationUrlAdapter):
+    name = "sre-agent"
+
+
 class _AmbiguousAdapter:
     """Raises the exact PatchExecutionUnavailable an ambiguous transport
     failure produces -- provider_submitted True, failure_class
@@ -158,19 +162,32 @@ def _succeeded_service(
     refresher=None,
     deadline_seconds: float = VERIFICATION_DEADLINE_SECONDS,
     patch_ids=("1111111", "2222222"),
+    adapter=None,
 ) -> tuple[RemediationExecutionService, RemediationExecutionStore, str]:
     plan = _plan()
     store = RemediationExecutionStore()
     repository = _approved_repository(plan, patch_ids=patch_ids)
     patching_service = PatchingService(
-        _FakeVulnerabilityService(), adapter=_OperationUrlAdapter(), require_human_approval=False
+        _FakeVulnerabilityService(),
+        adapter=adapter or _OperationUrlAdapter(),
+        require_human_approval=False,
+    )
+    verification_evidence = (
+        {"provider_operation": {"operation_id": "provider-operation-1"}}
+        if getattr(patching_service, "adapter_name", "") == "sre-agent"
+        else {}
     )
     service = RemediationExecutionService(
         plan_repository=repository,
         patching_service=patching_service,
         execution_store=store,
         execution_verifier=_StubVerifier(
-            {"verifiable": True, "outcome": "succeeded", "verified_state": "Succeeded"}
+            {
+                "verifiable": True,
+                "outcome": "succeeded",
+                "verified_state": "Succeeded",
+                "verification_evidence": verification_evidence,
+            }
         ),
         target_evidence_refresher=refresher,
         verification_deadline_seconds=deadline_seconds,
@@ -252,6 +269,115 @@ def test_reconcile_evidence_clean_when_no_selected_kbs_remain():
         "kbs_remaining": [],
         "assessed_at": "2026-09-04T12:05:00+00:00",
     }
+
+
+@pytest.mark.parametrize(
+    "assessed_at",
+    [
+        (NOW - timedelta(seconds=1)).isoformat(),
+        NOW.isoformat(),
+        NOW.replace(tzinfo=None).isoformat(),
+        "not-a-time",
+        "",
+    ],
+)
+def test_sre_reconciliation_stays_pending_without_post_terminal_evidence(
+    assessed_at: str,
+):
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": assessed_at,
+            "target_observed": True,
+        }
+
+    service, _store, execution_id = _succeeded_service(
+        refresher=refresher,
+        adapter=_SreOperationUrlAdapter(),
+    )
+    service._now = lambda: NOW + timedelta(seconds=5)
+
+    result = service.reconcile_evidence(execution_id)
+
+    assert result["status"] == "succeeded"
+    assert result["evidence_reconciliation"]["status"] == "pending"
+    assert result["evidence_reconciliation"]["kbs_remaining"] == [
+        "1111111",
+        "2222222",
+    ]
+    assert result["retryable"] is False
+    assert result["supersedable"] is False
+
+
+def test_sre_unproven_completion_persists_ambiguity_recovery_guards():
+    plan = _plan(plan_id="RMP-SRE-UNPROVEN-COMPLETE")
+    store = RemediationExecutionStore()
+    repository = _approved_repository(plan)
+    service = RemediationExecutionService(
+        plan_repository=repository,
+        patching_service=PatchingService(
+            _FakeVulnerabilityService(),
+            adapter=_SreOperationUrlAdapter(),
+            require_human_approval=False,
+        ),
+        execution_store=store,
+        execution_verifier=_StubVerifier(
+            {
+                "verifiable": True,
+                "outcome": "failed",
+                "verified_state": "CompleteWithoutSubmissionProof",
+                "failure_class": "submission_ambiguous",
+                "failure_details": "Exact write submission was not proven.",
+                "verification_evidence": {"thread_status": "Complete"},
+            }
+        ),
+        now=lambda: NOW,
+    )
+    submitted = service.execute(
+        plan["plan_id"],
+        requested_by="operator@example.com",
+    )
+
+    result = service.poll_verification(submitted["execution_id"])
+
+    assert result["status"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert result["retryable"] is False
+    assert result["supersede_ineligibility_reason"] == "submission_ambiguous"
+
+
+def test_sre_reconciliation_accepts_evidence_after_terminal_completion():
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "target_observed": True,
+        }
+
+    service, _store, execution_id = _succeeded_service(
+        refresher=refresher,
+        adapter=_SreOperationUrlAdapter(),
+    )
+    service._now = lambda: NOW + timedelta(seconds=5)
+
+    result = service.reconcile_evidence(execution_id)
+
+    assert result["evidence_reconciliation"]["status"] == "reconciled_clean"
+
+
+def test_non_sre_reconciliation_preserves_existing_timestamp_semantics():
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": (NOW - timedelta(seconds=1)).isoformat(),
+            "target_observed": True,
+        }
+
+    service, _store, execution_id = _succeeded_service(refresher=refresher)
+
+    result = service.reconcile_evidence(execution_id)
+
+    assert result["evidence_reconciliation"]["status"] == "reconciled_clean"
 
 
 def test_reconcile_evidence_noop_for_defender_configuration_snapshot():
@@ -419,6 +545,27 @@ def test_reconcile_ambiguous_submission_stays_ambiguous_within_deadline_when_unp
     assert result["supersede_ineligibility_reason"] == "submission_ambiguous"
 
 
+def test_sre_ambiguous_submission_ignores_pre_submission_target_evidence():
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": (NOW - timedelta(seconds=1)).isoformat(),
+            "target_observed": True,
+        }
+
+    service, _store, execution_id = _ambiguous_service(
+        refresher=refresher,
+        adapter=_AmbiguousAdapter(name="sre-agent"),
+    )
+
+    result = service.reconcile_ambiguous_submission(execution_id)
+
+    assert result["status"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert result["retryable"] is False
+    assert result["supersede_ineligibility_reason"] == "submission_ambiguous"
+
+
 def test_reconcile_ambiguous_submission_reclassified_after_deadline_with_no_proof():
     service, _store, execution_id = _ambiguous_service(refresher=None, deadline_seconds=60.0)
     service._now = lambda: NOW + timedelta(seconds=120)
@@ -454,20 +601,21 @@ def test_sre_ambiguity_remains_non_retryable_after_deadline_without_proof():
         "unreconciled_manual_resolution"
     )
     assert result["retryable"] is False
-    assert result["supersede_ineligibility_reason"] == ""
+    assert result["supersede_ineligibility_reason"] == "submission_ambiguous"
     assert store.list_due_for_verification(now=NOW + timedelta(seconds=180)) == []
 
     with pytest.raises(RemediationExecutionError) as excinfo:
         service.retry(execution_id)
     assert getattr(excinfo.value, "reason", "") == "submission_ambiguous"
 
-    superseding = service.supersede(
-        execution_id,
-        requested_by="operator@example.com",
-        reason="Operator confirmed no recoverable thread handle",
-    )
-    assert superseding["execution_id"] != execution_id
-    assert store.get(execution_id)["superseded_by"] == superseding["execution_id"]
+    with pytest.raises(RemediationExecutionError) as supersede_error:
+        service.supersede(
+            execution_id,
+            requested_by="operator@example.com",
+            reason="Operator confirmed no recoverable thread handle",
+        )
+    assert getattr(supersede_error.value, "reason", "") == "submission_ambiguous"
+    assert store.get(execution_id)["superseded_by"] == ""
 
 
 def test_reconcile_ambiguous_submission_skips_refresher_for_defender_configuration():

@@ -8,13 +8,30 @@ from urllib.parse import urlsplit
 import httpx
 
 from operations.patching.azure_adapter import TokenCredential
+from operations.patching.models import OPERATION_INSTALL_PATCHES
 from operations.patching.sre_agent_adapter import (
     SRE_AGENT_PROVIDER,
     SRE_AGENT_THREAD_SCOPE,
+    SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION,
+    SRE_PATCH_WRITE_SKILL_NAME,
+    SRE_PATCH_WRITE_SKILL_VERSION,
     validate_sre_agent_endpoint,
 )
 
 from .execution_verifier import ExecutionVerificationUnavailable
+
+_PROVIDER_OPERATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "operation_id",
+        "status",
+        "skill_name",
+        "skill_version",
+        "operation",
+        "target_id",
+        "patch_ids",
+    }
+)
 
 
 def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -48,7 +65,13 @@ def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
     incident = " ".join(str(composite["incident_status"]).casefold().split())
-    if incident in {"failed", "failure", "error"}:
+    if incident in {
+        "failed",
+        "failure",
+        "error",
+        "failed_without_action",
+        "blocked_no_action",
+    }:
         return (
             "failed",
             "Failed",
@@ -68,6 +91,69 @@ def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
     if composite["last_message_complete"] is True:
         return ("succeeded", "Complete", "")
     return ("running", "In Progress", "")
+
+
+def _submitted_operation(
+    payload: dict[str, Any],
+    execution_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return exact provider-owned write-submission evidence."""
+    operation = payload.get("provider_operation")
+    snapshot = execution_record.get("execution_snapshot")
+    if (
+        not isinstance(operation, dict)
+        or set(operation) != _PROVIDER_OPERATION_FIELDS
+        or not isinstance(snapshot, dict)
+    ):
+        return None
+    operation_id = operation.get("operation_id")
+    status = operation.get("status")
+    patch_ids = operation.get("patch_ids")
+    expected_patch_ids = snapshot.get("patch_ids")
+    if (
+        operation.get("schema_version") != SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION
+        or not isinstance(operation_id, str)
+        or not operation_id.strip()
+        or not isinstance(status, str)
+        or " ".join(status.casefold().split())
+        not in {"submitted", "running", "succeeded", "completed"}
+        or operation.get("skill_name") != SRE_PATCH_WRITE_SKILL_NAME
+        or operation.get("skill_version") != SRE_PATCH_WRITE_SKILL_VERSION
+        or operation.get("operation") != OPERATION_INSTALL_PATCHES
+        or operation.get("operation") != snapshot.get("operation")
+        or operation.get("target_id") != snapshot.get("target_id")
+        or not isinstance(patch_ids, list)
+        or patch_ids != expected_patch_ids
+    ):
+        return None
+    return {
+        "schema_version": SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION,
+        "operation_id": operation_id.strip(),
+        "status": " ".join(status.casefold().split()),
+        "skill_name": SRE_PATCH_WRITE_SKILL_NAME,
+        "skill_version": SRE_PATCH_WRITE_SKILL_VERSION,
+        "operation": operation["operation"],
+        "target_id": operation["target_id"],
+        "patch_ids": list(patch_ids),
+    }
+
+
+def _completion_without_submission(
+    *,
+    verified_state: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "verifiable": True,
+        "outcome": "failed",
+        "verified_state": verified_state,
+        "failure_class": "submission_ambiguous",
+        "failure_details": (
+            "The SRE Agent thread completed without typed evidence that the "
+            "exact approved write operation was submitted."
+        ),
+        "verification_evidence": evidence,
+    }
 
 
 def _scrub_authorization(
@@ -200,9 +286,21 @@ class SreAgentExecutionVerifier:
         composite = (
             _composite_thread_status(payload) if isinstance(payload, dict) else None
         )
+        submitted_operation = (
+            _submitted_operation(payload, execution_record)
+            if isinstance(payload, dict)
+            else None
+        )
         evidence = {"thread_status": composite or raw_status or "unknown"}
+        if submitted_operation is not None:
+            evidence["provider_operation"] = submitted_operation
         if composite is not None:
             outcome, verified_state, failure_details = _composite_outcome(composite)
+            if outcome == "succeeded" and submitted_operation is None:
+                return _completion_without_submission(
+                    verified_state="CompleteWithoutSubmissionProof",
+                    evidence=evidence,
+                )
             result = {
                 "verifiable": True,
                 "outcome": outcome,
@@ -214,11 +312,40 @@ class SreAgentExecutionVerifier:
             if failure_details:
                 result["failure_details"] = failure_details
             return result
-        if normalized == "complete":
+        if normalized in {"complete", "success", "succeeded"}:
+            if submitted_operation is None:
+                return _completion_without_submission(
+                    verified_state=raw_status,
+                    evidence=evidence,
+                )
             return {
                 "verifiable": True,
                 "outcome": "succeeded",
                 "verified_state": raw_status,
+                "verification_evidence": evidence,
+            }
+        if normalized in {"failed_without_action", "blocked_no_action"}:
+            return {
+                "verifiable": True,
+                "outcome": "failed",
+                "verified_state": raw_status,
+                "failure_class": "provider_rejected",
+                "failure_details": (
+                    "Azure SRE Agent completed without submitting the approved "
+                    "patch operation."
+                ),
+                "verification_evidence": evidence,
+            }
+        if normalized == "submission_ambiguous":
+            return {
+                "verifiable": True,
+                "outcome": "failed",
+                "verified_state": raw_status,
+                "failure_class": "submission_ambiguous",
+                "failure_details": (
+                    "Azure SRE Agent could not prove whether the exact approved "
+                    "patch operation crossed the provider boundary."
+                ),
                 "verification_evidence": evidence,
             }
         if normalized == "pending user input":

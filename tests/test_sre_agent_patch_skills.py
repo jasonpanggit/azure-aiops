@@ -47,10 +47,23 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert text.count("az graph query --graph-query") == 1
     assert "--first 257" in text
     assert "patchassessmentresources" in text
+    assert "where tolower(id) endswith '/patchassessmentresults/latest'" in text
+    assert "where name =~ 'latest'" not in text
     assert "maximum_age_seconds = 86400" in text
-    assert "child_activity_id == assessment_activity_id" in text
+    assert "child_activity_id != assessment_activity_id" in text
     assert "child_last_modified_at != assessment_last_modified_at" in text
-    assert "set_has_element(approved_patch_ids, approved_patch_id)" in text
+    assert "approved_patch_id in~ ({{approved_patch_ids_kql}})" in text
+    assert "{{target_resource_type}}" in text
+    assert "\nlet " not in text
+    assert "materialize(" not in text
+    assert "\nprint " not in text
+    assert "$left" not in text
+    assert "$right" not in text
+    assert "target_join_id = tolower" in text
+    assert "child_activity_count > 1 or isnotempty(child_activity_id)" in text
+    assert "`skip_token` to be null or empty" in text
+    assert "zero count" in text
+    assert "`blocked_patch_not_applicable`" in text
     assert "properties.extended.instanceView.powerState.code" in text
     assert "blocked_target_not_running" in text
     assert "reboot_pending = tobool(properties.rebootPending)" in text
@@ -108,6 +121,48 @@ def test_envelope_accepts_both_exact_target_kinds_and_binds_review_contract() ->
     definition = json.loads(TRIGGER.read_text(encoding="utf-8"))
     assert definition["runMode"] == "Review"
     assert definition["payloadSchema"] == contract
+
+
+@pytest.mark.parametrize(
+    ("artifact", "old", "new", "hash_attribute"),
+    [
+        (
+            READ_SKILL,
+            "Require schema version `1.1`, operation `install_patches`",
+            "Require schema version `1.4`, operation `applicability_check`",
+            "PATCH_READ_SKILL_SHA256",
+        ),
+        (
+            WRITE_SKILL,
+            "Require schema version `1.1`, operation `install_patches`",
+            "Require schema version `1.0`, operation `install_selected_patches`",
+            "PATCH_WRITE_SKILL_SHA256",
+        ),
+    ],
+)
+def test_skill_input_contract_drift_fails_even_when_artifact_is_rehashed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: Path,
+    old: str,
+    new: str,
+    hash_attribute: str,
+) -> None:
+    drifted_dir = tmp_path / artifact.parent.name
+    drifted_dir.mkdir()
+    drifted = drifted_dir / "SKILL.md"
+    drifted.write_text(
+        artifact.read_text(encoding="utf-8").replace(old, new, 1),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        preflight,
+        hash_attribute,
+        hashlib.sha256(drifted.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(preflight.ReadinessError, match="input contract"):
+        preflight.canonical_skill_builder_artifact(drifted)
 
 
 @pytest.mark.parametrize(

@@ -38,8 +38,12 @@ Require:
   `^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$`.
 
 An empty filter, classification filter, alternative target or patch, or
-cross-kind target is forbidden. Serialize the exact patch list as a compact
-JSON array for `approved_patch_ids_json`.
+cross-kind target is forbidden. Derive `target_resource_type` as exactly
+`microsoft.compute/virtualmachines` for `Azure VM` or
+`microsoft.hybridcompute/machines` for `Arc-enabled server`. Serialize every
+exact patch ID as a single-quoted, comma-separated KQL literal list for
+`approved_patch_ids_kql`; the patch-ID validation above makes quotes
+impossible. Never accept either substitution from the caller.
 
 ## Fixed bounded query
 
@@ -52,50 +56,38 @@ az graph query --graph-query "<fixed-kql-below>" --subscriptions <subscription_i
 `<fixed-kql-below>` is exactly:
 
 ```kusto
-let expected_subscription_id = '{{subscription_id}}';
-let expected_target_id = '{{target_id}}';
-let expected_target_kind = '{{target_kind}}';
-let approved_patch_ids = dynamic({{approved_patch_ids_json}});
-let observed_at = now();
-let target_summary = resources
-    | where subscriptionId =~ expected_subscription_id
-    | where id =~ expected_target_id
-    | where type =~ iff(expected_target_kind == 'Azure VM', 'microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines')
-    | extend vm_power_state = tostring(properties.extended.instanceView.powerState.code)
-    | summarize target_row_count = count(), target_resource_id = take_any(id), target_resource_type = take_any(type), vm_power_state = take_any(vm_power_state)
-    | extend join_key = 1;
-let assessment_rows = materialize(
-    patchassessmentresources
-    | where subscriptionId =~ expected_subscription_id
-    | where type endswith '/patchassessmentresults'
-    | where name =~ 'latest'
-    | extend assessment_parent_offset = indexof(tolower(id), '/patchassessmentresults/')
-    | extend target_id = iff(assessment_parent_offset > 0, substring(id, 0, assessment_parent_offset), ''), assessment_activity_id = tostring(properties.assessmentActivityId), assessment_last_modified_at = todatetime(properties.lastModifiedDateTime), reboot_pending = tobool(properties.rebootPending)
-    | where target_id =~ expected_target_id
-    | project assessment_row_id = id, target_id, assessment_activity_id, assessment_last_modified_at, reboot_pending
-);
-let assessment_summary = assessment_rows
-    | summarize assessment_row_count = count(), assessment_row_id = take_any(assessment_row_id), assessment_activity_id = take_any(assessment_activity_id), assessment_last_modified_at = take_any(assessment_last_modified_at), reboot_pending = take_any(reboot_pending)
-    | extend join_key = 1;
-let patch_summary = patchassessmentresources
-    | where subscriptionId =~ expected_subscription_id
-    | where type endswith '/patchassessmentresults/softwarepatches'
-    | extend approved_patch_id = tostring(properties.kbId), child_activity_id = tostring(properties.assessmentActivityId), child_last_modified_at = todatetime(properties.lastModifiedDateTime)
-    | where set_has_element(approved_patch_ids, approved_patch_id)
-    | extend join_key = 1
-    | join kind=inner (assessment_rows | extend join_key = 1) on join_key
-    | where tolower(id) startswith strcat(tolower(assessment_row_id), '/')
-    | where child_activity_id == assessment_activity_id
-    | summarize child_row_count = count(), child_row_id = take_any(id), child_activity_id = take_any(child_activity_id), child_last_modified_at = take_any(child_last_modified_at) by approved_patch_id;
-print approved_patch_ids
-| mv-expand approved_patch_id = approved_patch_ids to typeof(string)
+patchassessmentresources
+| where subscriptionId =~ '{{subscription_id}}'
+| where type endswith '/patchassessmentresults'
+| where tolower(id) endswith '/patchassessmentresults/latest'
+| extend assessment_parent_offset = indexof(tolower(id), '/patchassessmentresults/')
+| extend target_id = iff(assessment_parent_offset > 0, substring(id, 0, assessment_parent_offset), ''), assessment_activity_id = tostring(properties.assessmentActivityId), assessment_last_modified_at = todatetime(properties.lastModifiedDateTime), reboot_pending = tobool(properties.rebootPending)
+| where target_id =~ '{{target_id}}'
+| summarize assessment_row_count = count(), assessment_row_id = take_any(id), assessment_activity_id = take_any(assessment_activity_id), assessment_last_modified_at = take_any(assessment_last_modified_at), reboot_pending = take_any(reboot_pending) by target_id
+| extend target_join_id = tolower(target_id)
+| join kind=inner (
+    resources
+    | where subscriptionId =~ '{{subscription_id}}'
+    | where id =~ '{{target_id}}'
+    | where type =~ '{{target_resource_type}}'
+    | extend target_join_id = tolower(id), vm_power_state = tostring(properties.extended.instanceView.powerState.code)
+    | summarize target_row_count = count(), target_resource_id = take_any(id), target_resource_type = take_any(type), vm_power_state = take_any(vm_power_state) by target_join_id
+) on target_join_id
 | extend join_key = 1
-| join kind=inner target_summary on join_key
-| join kind=inner assessment_summary on join_key
-| join kind=leftouter patch_summary on approved_patch_id
-| extend child_row_count = coalesce(child_row_count, 0), maximum_age_seconds = 86400, age_seconds = datetime_diff('second', observed_at, assessment_last_modified_at)
-| extend outcome = case(target_row_count != 1, 'blocked_target_ambiguous', expected_target_kind == 'Azure VM' and vm_power_state !~ 'PowerState/running', 'blocked_target_not_running', assessment_row_count != 1, 'blocked_parent_ambiguous', isempty(assessment_activity_id), 'blocked_activity_missing', isnull(assessment_last_modified_at), 'blocked_assessment_timestamp', isnull(reboot_pending), 'blocked_reboot_pending_unknown', reboot_pending, 'blocked_reboot_pending', age_seconds < 0 or age_seconds > maximum_age_seconds, 'blocked_stale', child_row_count == 0, 'blocked_patch_not_applicable', child_row_count != 1, 'blocked_patch_ambiguous', child_activity_id != assessment_activity_id, 'blocked_patch_activity', isnull(child_last_modified_at) or child_last_modified_at != assessment_last_modified_at, 'blocked_patch_generation', 'applicable')
-| project schema_version = '1.0', source = 'azure_resource_graph', table = 'PatchAssessmentResources', subscription_id = expected_subscription_id, target_kind = expected_target_kind, target_id = expected_target_id, target_row_count, target_resource_id, target_resource_type, vm_power_state, reboot_pending, approved_patch_id, assessment_row_count, assessment_row_id, assessment_activity_id, assessment_last_modified_at, child_row_count, child_row_id, child_activity_id, child_last_modified_at, observed_at, age_seconds, maximum_age_seconds, outcome
+| join kind=inner (
+    patchassessmentresources
+    | where subscriptionId =~ '{{subscription_id}}'
+    | where type endswith '/patchassessmentresults/softwarepatches'
+    | where tolower(id) startswith strcat(tolower('{{target_id}}'), '/patchassessmentresults/latest/')
+    | extend approved_patch_id = tostring(properties.kbId), assessment_activity_id = tostring(properties.assessmentActivityId), child_activity_id = tostring(properties.assessmentActivityId), child_last_modified_at = todatetime(properties.lastModifiedDateTime)
+    | where approved_patch_id in~ ({{approved_patch_ids_kql}})
+    | summarize child_row_count = count(), child_row_id = take_any(id), child_activity_id = take_any(child_activity_id), child_activity_count = dcount(child_activity_id), child_last_modified_at = take_any(child_last_modified_at), child_last_modified_count = dcount(child_last_modified_at) by approved_patch_id, assessment_activity_id
+    | extend join_key = 1
+) on join_key
+| extend observed_at = now(), maximum_age_seconds = 86400
+| extend age_seconds = datetime_diff('second', observed_at, assessment_last_modified_at)
+| extend outcome = case(target_row_count != 1, 'blocked_target_ambiguous', '{{target_kind}}' == 'Azure VM' and vm_power_state !~ 'PowerState/running', 'blocked_target_not_running', assessment_row_count != 1, 'blocked_parent_ambiguous', isempty(assessment_activity_id), 'blocked_activity_missing', isnull(assessment_last_modified_at), 'blocked_assessment_timestamp', isnull(reboot_pending), 'blocked_reboot_pending_unknown', reboot_pending, 'blocked_reboot_pending', age_seconds < 0 or age_seconds > maximum_age_seconds, 'blocked_stale', child_row_count != 1, 'blocked_patch_ambiguous', child_activity_count > 1 or isnotempty(child_activity_id) and child_activity_id != assessment_activity_id, 'blocked_patch_activity', child_last_modified_count != 1 or isnull(child_last_modified_at) or child_last_modified_at != assessment_last_modified_at, 'blocked_patch_generation', 'applicable')
+| project schema_version = '1.0', source = 'azure_resource_graph', table = 'PatchAssessmentResources', subscription_id = '{{subscription_id}}', target_kind = '{{target_kind}}', target_id, target_row_count, target_resource_id, target_resource_type, vm_power_state, reboot_pending, approved_patch_id, assessment_row_count, assessment_row_id, assessment_activity_id, assessment_last_modified_at, child_row_count, child_row_id, child_activity_id, child_last_modified_at, observed_at, age_seconds, maximum_age_seconds, outcome
 | order by approved_patch_id asc
 ```
 
@@ -103,9 +95,14 @@ Do not edit, extend, regenerate, or replace the query.
 
 ## Closed evidence
 
-Accept only an Azure CLI JSON envelope containing exactly `count`, `data`, and
-`total_records`. Require count and total records to equal the immutable patch
-count and be at most 256. Require every and only selected patch exactly once.
+Accept only an Azure CLI JSON envelope containing exactly `count`, `data`,
+`skip_token`, and `total_records`. Require `skip_token` to be null or empty,
+count to equal total records, and both to be at most 256. A zero count for a
+nonempty approved patch selection is valid negative evidence: return
+`blocked_patch_not_applicable` with the exact selected patch IDs and no write
+handoff. Any nonzero count that differs from the immutable patch count is also
+blocked as incomplete applicability evidence. Only an exact count may proceed.
+Require every and only selected patch exactly once.
 Every row must preserve the exact subscription, target, parent ID, activity
 ID, parent/child timestamp, and patch ID; have both row counts equal to one;
 prove exactly one matching target resource; for an Azure VM have

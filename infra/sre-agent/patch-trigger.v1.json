@@ -17,7 +17,7 @@
       "name": "aiops-read-patch-applicability-v1",
       "version": "1.0",
       "artifact": "SKILL.md",
-      "raw_sha256": "f037dc85c779e8858160aee766b51e4ca9d59e286b775f64dcbb90adcd07a080",
+      "raw_sha256": "1762f4a875fb15164d83db44f64503a088f78962761a818b83aa8f7a5995fa25",
       "tools": [
         "RunAzCliReadCommands"
       ],
@@ -30,7 +30,7 @@
       "name": "aiops-install-selected-patches-v1",
       "version": "1.0",
       "artifact": "SKILL.md",
-      "raw_sha256": "f472851acf2e098d4fee1c059e5271b7fabfe28125c2a68ac9ce3719054bb443",
+      "raw_sha256": "067f8940acb89797b67cb26c106a7766c0c867286709ada20c0cc5bec6b4936a",
       "tools": [
         "RunAzCliWriteCommands"
       ],
@@ -40,7 +40,7 @@
       "review_command_count": 1
     }
   },
-  "prompt": "Process only one immutable approved install_patches payload with schema_version 1.1, reboot_setting IfRequired, and maximum_duration PT2H. Validate the exact current upstream approval and equality of subscription_id, target_id, target_kind, patch_ids, operation, approver, and snapshot hash before any tool. The target must be one canonical top-level Microsoft.Compute/virtualMachines or Microsoft.HybridCompute/machines ID matching target_kind and the supplied subscription. Invoke the bound read skill first using only RunAzCliReadCommands and its fixed bounded PatchAssessmentResources query. Require no more than 257 rows, PT24H freshness, exactly one latest assessment parent with a nonempty activity ID, exact parent/activity/timestamp generation correlation, and every and only selected KB. Require direct same-run structured evidence with outcome applicable, blockers empty, exact subscription/target/KB membership, and observed_at no more than PT5M old and not future. On any invalid, unavailable, stale, ambiguous, partial, extra, cross-kind, or mismatched input or evidence, stop blocked_no_action. Then invoke the bound write skill using only RunAzCliWriteCommands. In Review mode present exactly one target-kind-specific command and wait for explicit approval before one submission. For Azure VM use exactly az vm install-patches --ids <target_id> --kb-numbers-to-include <exact IDs> --maximum-duration PT2H --reboot-setting IfRequired --no-wait. For Arc use exactly az connectedmachine install-patches --ids <target_id> --windows-parameters '{\"kbNumbersToInclude\":[...]}' --maximum-duration PT2H --reboot-setting IfRequired --no-wait true. Forbid empty filters, classifications, discovery, alternate targets or patches, shell use, another argument, a second command, fallback, and retry. Never parse free-form prose as patch-success evidence. Provider completion never substitutes for refreshed selected-KB reconciliation.",
+  "prompt": "Process only one immutable approved install_patches payload with schema_version 1.1, reboot_setting IfRequired, and maximum_duration PT2H. Validate the exact current upstream approval and equality of subscription_id, target_id, target_kind, patch_ids, operation, approver, and snapshot hash before any tool. The target must be one canonical top-level Microsoft.Compute/virtualMachines or Microsoft.HybridCompute/machines ID matching target_kind and the supplied subscription. Invoke the bound read skill first using only RunAzCliReadCommands and its fixed bounded PatchAssessmentResources query. Require no more than 257 rows, PT24H freshness, exactly one latest assessment parent with a nonempty activity ID, exact parent/activity/timestamp generation correlation, and every and only selected KB. Require direct same-run structured evidence with outcome applicable, blockers empty, exact subscription/target/KB membership, and observed_at no more than PT5M old and not future. On any invalid, unavailable, stale, ambiguous, partial, extra, cross-kind, or mismatched input or evidence, stop blocked_no_action. Then invoke the bound write skill using only RunAzCliWriteCommands. In Review mode present exactly one target-kind-specific command and wait for explicit approval before one submission. For Azure VM use exactly az vm install-patches --ids <target_id> --kb-numbers-to-include <exact IDs> --maximum-duration PT2H --reboot-setting IfRequired --no-wait. For Arc use exactly az connectedmachine install-patches --ids <target_id> --windows-parameters '{\"kbNumbersToInclude\":[...]}' --maximum-duration PT2H --reboot-setting IfRequired --no-wait true. Forbid empty filters, classifications, discovery, alternate targets or patches, shell use, another argument, a second command, fallback, and retry. A completed thread proves submission only with the write skill's exact typed provider_operation; refusal terminates failed_without_action and ambiguous submission terminates submission_ambiguous without retry. Never parse free-form prose as patch-success evidence. Provider completion never substitutes for refreshed selected-KB reconciliation.",
   "payloadSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://azure-aiops.example/schemas/sre-agent-selected-patch-run/1.1",
@@ -192,7 +192,7 @@
             "name": "aiops-read-patch-applicability-v1",
             "version": "1.0",
             "artifact": "SKILL.md",
-            "raw_sha256": "f037dc85c779e8858160aee766b51e4ca9d59e286b775f64dcbb90adcd07a080",
+            "raw_sha256": "1762f4a875fb15164d83db44f64503a088f78962761a818b83aa8f7a5995fa25",
             "tools": [
               "RunAzCliReadCommands"
             ],
@@ -205,7 +205,7 @@
             "name": "aiops-install-selected-patches-v1",
             "version": "1.0",
             "artifact": "SKILL.md",
-            "raw_sha256": "f472851acf2e098d4fee1c059e5271b7fabfe28125c2a68ac9ce3719054bb443",
+            "raw_sha256": "067f8940acb89797b67cb26c106a7766c0c867286709ada20c0cc5bec6b4936a",
             "tools": [
               "RunAzCliWriteCommands"
             ],

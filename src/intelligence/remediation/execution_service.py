@@ -36,7 +36,6 @@ from .execution_store import (
     ExecutionClaimConflict,
     _is_patch_evidence_candidate,
     execution_scope_attributes,
-    is_manual_resolution_required,
     is_submission_ambiguous,
     submitted_attempt_count,
 )
@@ -1334,7 +1333,7 @@ class RemediationExecutionService:
                     or "Provider reported a terminal outcome with no additional detail."
                 ),
                 outcome="failed",
-                failure_class="provider_rejected",
+                failure_class=outcome.get("failure_class") or "provider_rejected",
                 verification_evidence=outcome.get("verification_evidence") or {},
                 verification_attempts=next_attempts,
             )
@@ -1423,7 +1422,11 @@ class RemediationExecutionService:
 
         selected = set(record["execution_snapshot"].get("patch_ids") or [])
         result = self._refresh_target_evidence(record)
-        if result is not None and _target_evidence_confirmed(result):
+        if (
+            result is not None
+            and _target_evidence_usable(result, record)
+            and _submission_proof_allows_ambiguity_resolution(record)
+        ):
             missing_now = set(result.get("missing_kbs") or [])
             kbs_remaining = sorted(selected & missing_now)
             kbs_cleared = sorted(selected - missing_now)
@@ -1519,7 +1522,11 @@ class RemediationExecutionService:
             if _is_patch_evidence_candidate(record)
             else None
         )
-        if result is not None and _target_evidence_confirmed(result):
+        if (
+            result is not None
+            and _target_evidence_usable(result, record)
+            and _submission_proof_allows_ambiguity_resolution(record)
+        ):
             missing_now = set(result.get("missing_kbs") or [])
             kbs_remaining = sorted(selected & missing_now)
             if selected and not kbs_remaining:
@@ -1839,6 +1846,73 @@ def _target_evidence_confirmed(result: dict[str, Any]) -> bool:
     return bool(result.get("target_observed", True))
 
 
+def _reconciliation_boundary_at(record: dict[str, Any]) -> str:
+    """Return the latest valid submission/first-terminal timestamp."""
+    attempts = record.get("attempts") or []
+    current = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}
+    transitions = current.get("transitions") or []
+    candidates: list[tuple[str, datetime]] = []
+    terminal_recorded = False
+    for transition in transitions:
+        if not isinstance(transition, dict):
+            continue
+        status = str(transition.get("status") or "")
+        is_submission = bool(str(transition.get("provider_job_id") or "").strip())
+        is_first_terminal = (
+            not terminal_recorded and status in {"succeeded", "failed", "cancelled"}
+        )
+        if is_first_terminal:
+            terminal_recorded = True
+        if not is_submission and not is_first_terminal:
+            continue
+        timestamp = str(transition.get("timestamp") or "").strip()
+        parsed = _parse_timestamp_for_ordering(timestamp)
+        if parsed is None:
+            return ""
+        candidates.append((timestamp, parsed))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda candidate: candidate[1])[0]
+
+
+def _parse_timestamp_for_ordering(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _target_evidence_usable(
+    result: dict[str, Any],
+    record: dict[str, Any],
+) -> bool:
+    if not _target_evidence_confirmed(result):
+        return False
+    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
+        return True
+    assessed_at = str(result.get("assessed_at") or "").strip()
+    boundary_at = _reconciliation_boundary_at(record)
+    if not assessed_at or not boundary_at:
+        return False
+    assessed = _parse_timestamp_for_ordering(assessed_at)
+    boundary = _parse_timestamp_for_ordering(boundary_at)
+    if assessed is None or boundary is None:
+        return False
+    return assessed > boundary
+
+
+def _submission_proof_allows_ambiguity_resolution(
+    record: dict[str, Any],
+) -> bool:
+    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
+        return True
+    evidence = record.get("verification_evidence")
+    return isinstance(evidence, dict) and isinstance(
+        evidence.get("provider_operation"), dict
+    )
+
+
 # Evidence-reconciliation status values that mean "nothing left to do" --
 # mirrors execution_store's own private terminal-status set so store and
 # service can never disagree on when reconciliation has finished.
@@ -1866,19 +1940,16 @@ def _supersede_eligibility(record: dict[str, Any]) -> str:
     .supersede` (the write-side guard) and :meth:`execution_view` (the
     read-side projection) so the two can never disagree (CONTEXT.md's
     Supersession decision): refused for anything still active, anything
-    already superseded, or a submission-ambiguous latest attempt that may
-    still be running against the provider. An SRE ambiguity that exhausted
-    its reconciliation deadline is the narrow exception: retry remains
-    prohibited, but explicit supersession becomes the required manual
-    recovery path. Returns ``""`` when eligible, else the specific
-    ineligibility reason.
+    already superseded, or any submission-ambiguous latest attempt that may
+    still be running against the provider. Returns ``""`` when eligible,
+    else the specific ineligibility reason.
     """
     status = str(record.get("status") or "")
     if status not in {"failed", "cancelled"}:
         return "execution_active"
     if record.get("superseded_by"):
         return "already_superseded"
-    if is_submission_ambiguous(record) and not is_manual_resolution_required(record):
+    if is_submission_ambiguous(record):
         return "submission_ambiguous"
     return ""
 
