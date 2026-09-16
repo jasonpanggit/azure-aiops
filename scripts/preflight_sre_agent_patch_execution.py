@@ -93,6 +93,25 @@ LIVE_TRIGGER_OPTIONAL_FIELDS = DEFINITION_FIELDS - {
     "runMode",
     "threadGrouping",
 }
+RAW_LIVE_TRIGGER_FIELDS = frozenset(
+    {
+        "agent",
+        "agentMode",
+        "agentPrompt",
+        "createdAt",
+        "createdBy",
+        "description",
+        "executionCount",
+        "id",
+        "lastExecutionTime",
+        "modelTier",
+        "name",
+        "threadId",
+        "triggerEnabled",
+        "triggerLastCalledAt",
+        "triggerUrl",
+    }
+)
 SECRET_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 
 
@@ -206,9 +225,7 @@ def _validate_runtime_outbound_envelope(
         "runtime SRE Agent patch envelope contract",
     )
     if runtime_schema != expected_schema:
-        raise ReadinessError(
-            "runtime outbound SRE Agent patch envelope drift detected"
-        )
+        raise ReadinessError("runtime outbound SRE Agent patch envelope drift detected")
     return {
         "status": "runtime-outbound-envelope-ready",
         "source": "src.operations.patching.sre_agent_adapter",
@@ -282,9 +299,7 @@ def validate_trigger_evidence(
     _exact_fields(canonical_body, DEFINITION_FIELDS, "canonical trigger body")
     expected_body = dict(canonical_body)
     drift = sorted(
-        field
-        for field in actual_body
-        if actual_body[field] != expected_body[field]
+        field for field in actual_body if actual_body[field] != expected_body[field]
     )
     if (
         "payloadSchema" in trigger
@@ -1487,12 +1502,13 @@ def _normalize_live_trigger(
     if len(matches) != 1:
         raise ReadinessError("live trigger list must contain the exact trigger once")
     raw = matches[0]
-    invocation_url = raw.get("triggerUrl") or raw.get("url")
+    _exact_fields(raw, RAW_LIVE_TRIGGER_FIELDS, "live trigger row")
+    invocation_url = raw.get("triggerUrl")
     if not isinstance(invocation_url, str):
         raise ReadinessError("live trigger row is missing its invocation URL")
     marker = "/api/v1/httptriggers/trigger/"
     parsed = urlsplit(invocation_url)
-    if marker not in parsed.path:
+    if marker not in parsed.path or parsed.query or parsed.fragment:
         raise ReadinessError("live trigger invocation URL is invalid")
     prefix, observed_id = parsed.path.split(marker, 1)
     observed_origin = _https_origin(
@@ -1506,24 +1522,24 @@ def _normalize_live_trigger(
         "expected trigger origin",
     ):
         raise ReadinessError("live trigger invocation origin does not match")
-    raw_run_mode = raw.get("runMode", raw.get("agentMode"))
-    if not isinstance(raw_run_mode, str):
-        raise ReadinessError("live trigger row is missing its agent mode")
-    if raw_run_mode.casefold() != "autonomous":
+    exact_url = f"{observed_origin}{marker}{trigger_id}"
+    if invocation_url != exact_url:
+        raise ReadinessError("live trigger invocation URL is not exact")
+    if raw.get("agent") is not None:
+        raise ReadinessError("live trigger response agent must remain the default")
+    if raw.get("agentMode") != "autonomous":
         raise ReadinessError("live trigger agentMode must be autonomous")
-    raw_thread_id = raw.get("threadId", None)
+    raw_thread_id = raw.get("threadId")
     if raw_thread_id not in ("", None):
         raise ReadinessError("live trigger threadId must be empty for NewThreadPerRun")
     trigger = {
         "id": trigger_id,
-        "enabled": raw.get("enabled", raw.get("triggerEnabled")),
-        "prompt": raw.get("prompt", raw.get("agentPrompt")),
+        "enabled": raw.get("triggerEnabled"),
+        "prompt": raw.get("agentPrompt"),
         "runMode": "Autonomous",
-        "threadGrouping": raw.get("threadGrouping", "NewThreadPerRun"),
+        "threadGrouping": "NewThreadPerRun",
+        "name": raw.get("name"),
     }
-    for field in ("artifactVersion", "name", "payloadSchema"):
-        if field in raw:
-            trigger[field] = raw.get(field)
     raw_description = raw.get("description")
     if raw_description not in (None, ""):
         trigger["description"] = raw_description

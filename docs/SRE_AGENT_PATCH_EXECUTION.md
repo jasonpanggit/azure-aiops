@@ -253,11 +253,19 @@ raw role definition one-for-one, and rejects omitted/extra/misattributed rows,
 unknown roles, outside/inherited scopes, and Owner/Contributor/custom wildcard
 fallbacks that cover guarded writes.
 
-Trigger list/read uses the SRE data-plane audience. The current official
-documentation does not define a stable response schema, so retain the raw
-response only in the private temporary directory, compare it manually with
-the portal and canonical render, then normalize the reviewed fields into the
-shape in `tests/fixtures/sre_agent_patch_trigger.sanitized.json`.
+Trigger list/read uses the SRE data-plane audience. The collector accepts only
+the exact observed production row keys: `agent`, `agentMode`, `agentPrompt`,
+`createdAt`, `createdBy`, `description`, `executionCount`, `id`,
+`lastExecutionTime`, `modelTier`, `name`, `threadId`, `triggerEnabled`,
+`triggerLastCalledAt`, and `triggerUrl`. It requires the default response agent
+(`agent: null`), lowercase `autonomous`, enabled state, empty/null `threadId`,
+exact canonical name/prompt, and exact trigger URL/ID/origin with no query,
+fragment, alias, or extra path. Missing or additional fields preserve HOLD.
+
+The portal has no payload-schema field. The local `payloadSchema` is validated
+against the runtime adapter's exact outgoing envelope contract and remains
+bound to the canonical artifact hash; it is never fabricated from the live
+trigger row.
 
 ```sh
 AGENT_ENDPOINT="$(
