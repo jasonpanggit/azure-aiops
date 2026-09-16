@@ -7040,6 +7040,179 @@ def test_empty_changes_answer_is_direct_cited_and_correlation_safe(
 
 
 @pytest.mark.parametrize(
+    ("specialist_id", "tool", "question"),
+    [
+        (
+            "incident",
+            "incidents",
+            "Explain the predicted risk of this change.",
+        ),
+        (
+            "vulnerability",
+            "cve_exposure",
+            "Which impacted services carry vulnerability exposure?",
+        ),
+        (
+            "remediation",
+            "remediation_opportunities",
+            "What governed remediation would this change require?",
+        ),
+    ],
+)
+def test_unsubmitted_predeploy_starters_return_direct_cited_degradation(
+    tmp_path,
+    monkeypatch,
+    specialist_id,
+    tool,
+    question,
+):
+    """Every advertised starter answers the real no-assessment page state."""
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: ToolResult(
+            status="unavailable",
+            warning=f"The {tool} provider is deferred",
+        ),
+    )
+    body = _canonical_body()
+    body.update(
+        {
+            "question": question,
+            "snapshot": {
+                "version": "2",
+                "page_kind": "changes_predeploy",
+                "page_id": "predeploy",
+                "filters": {"view": ["predeploy"]},
+                "coverage": {
+                    "visible_count": 0,
+                    "total_count": 0,
+                    "complete": False,
+                },
+                "freshness": [
+                    {
+                        "source": "assessment",
+                        "observed_at": "unknown",
+                        "status": "unavailable",
+                    }
+                ],
+                "evidence": [
+                    {
+                        "evidence_id": "evidence:" + "c" * 32,
+                        "source": "coverage",
+                        "status": "unavailable",
+                        "entity": {
+                            "type": "observation",
+                            "source": "page/coverage",
+                            "source_key": "impacted_resources",
+                        },
+                        "source_key": "impacted_resources",
+                        "claim_type": "coverage",
+                        "direct": True,
+                        "data": {
+                            "coverage": {
+                                "visible_count": 0,
+                                "total_count": 0,
+                                "complete": False,
+                                "truncated": False,
+                            },
+                            "actionable": False,
+                            "mutation_authorized": False,
+                        },
+                    }
+                ],
+                "material_claims": [],
+            },
+            "hint": {
+                "specialist_id": specialist_id,
+                "tool": tool,
+                "arguments": {},
+            },
+        }
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, None)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["selected_specialists"] == [specialist_id]
+    assert data["selected_tools"] == [tool]
+    assert data["coverage"] == {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": False,
+    }
+    assert data["mutation_authorized"] is False
+    claim = data["synthesis"]["claims"][0]
+    assert "No pre-deployment assessment is loaded or submitted" in claim["summary"]
+    assert "cannot be determined" in claim["summary"]
+    assert claim["evidence_refs"] == ["snapshot:coverage"]
+    assert claim["freshness"] == "unavailable"
+    assert claim["actionable"] is False
+    assert "snapshot:coverage" in {
+        citation["citation_id"] for citation in data["citations"]
+    }
+
+
+@pytest.mark.parametrize(
+    "snapshot_update",
+    [
+        {"page_id": "predeploy-other"},
+        {"coverage": SnapshotCoverage(visible_count=0, total_count=0, complete=True)},
+        {
+            "freshness": [
+                SnapshotFreshness(
+                    source="assessment",
+                    observed_at="2026-09-16T00:00:00Z",
+                    status="fresh",
+                )
+            ]
+        },
+        {
+            "selected_entities": [
+                {
+                    "type": "domain",
+                    "namespace": "change",
+                    "kind": "proposed_change",
+                    "source_key": "change-1",
+                }
+            ]
+        },
+    ],
+)
+def test_unsubmitted_predeploy_claim_does_not_overreach_adjacent_states(
+    snapshot_update,
+):
+    snapshot = EvidenceSnapshotV2(
+        page_kind="changes_predeploy",
+        page_id="predeploy",
+        coverage=SnapshotCoverage(visible_count=0, total_count=0, complete=False),
+        freshness=[
+            SnapshotFreshness(
+                source="assessment",
+                observed_at="unknown",
+                status="unavailable",
+            )
+        ],
+    ).model_copy(update=snapshot_update)
+
+    claims = OrchestrationService._deterministic_page_claims(
+        "Explain the predicted risk of this change.",
+        snapshot=snapshot,
+        retained_evidence=[],
+    )
+
+    assert claims == []
+
+
+@pytest.mark.parametrize(
     ("page_kind", "page_id", "visible_count", "total_count", "complete"),
     [
         ("situations", "situations", 0, 0, False),
