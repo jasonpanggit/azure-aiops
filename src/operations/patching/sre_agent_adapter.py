@@ -8,6 +8,7 @@ accept an operator credential.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from ipaddress import ip_address
 from urllib.parse import quote, urlsplit
 
@@ -101,6 +102,88 @@ def sre_agent_patch_envelope_contract() -> dict[str, object]:
             "operation": {"const": OPERATION_INSTALL_PATCHES},
         },
     }
+
+
+def _build_sre_agent_patch_envelope(
+    *,
+    run: PatchRun,
+    target: PatchTarget,
+    subscription_id: str,
+    patch_ids: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "schema_version": SRE_PATCH_ENVELOPE_VERSION,
+        "run_id": run.run_id,
+        "subscription_id": subscription_id,
+        "target_id": target.target_id,
+        "target_kind": target.inventory_kind,
+        "patch_ids": list(patch_ids),
+        "reboot_setting": run.reboot_setting,
+        "requested_by": run.requested_by,
+        "approved_by": run.approved_by,
+        "operation": run.operation,
+    }
+
+
+def _raise_envelope_drift() -> None:
+    raise PatchExecutionUnavailable(
+        "The SRE Agent outbound patch envelope drifted from its locked contract.",
+        capability="sre_agent_patch_execution",
+        provider_submitted=False,
+        failure_class="internal_validation",
+    )
+
+
+def _validate_sre_agent_patch_envelope(payload: Mapping[str, object]) -> None:
+    contract = sre_agent_patch_envelope_contract()
+    required = contract.get("required")
+    properties = contract.get("properties")
+    if not isinstance(required, list) or not isinstance(properties, dict):
+        _raise_envelope_drift()
+    if set(payload) != set(required):
+        _raise_envelope_drift()
+    for field, raw_schema in properties.items():
+        if not isinstance(raw_schema, Mapping):
+            _raise_envelope_drift()
+        value = payload.get(field)
+        if "const" in raw_schema and value != raw_schema["const"]:
+            _raise_envelope_drift()
+        enum = raw_schema.get("enum")
+        if isinstance(enum, list) and value not in enum:
+            _raise_envelope_drift()
+        schema_type = raw_schema.get("type")
+        if schema_type == "string":
+            if not isinstance(value, str):
+                _raise_envelope_drift()
+            min_length = raw_schema.get("minLength")
+            max_length = raw_schema.get("maxLength")
+            if isinstance(min_length, int) and len(value) < min_length:
+                _raise_envelope_drift()
+            if isinstance(max_length, int) and len(value) > max_length:
+                _raise_envelope_drift()
+        elif schema_type == "array":
+            if not isinstance(value, list):
+                _raise_envelope_drift()
+            min_items = raw_schema.get("minItems")
+            max_items = raw_schema.get("maxItems")
+            if isinstance(min_items, int) and len(value) < min_items:
+                _raise_envelope_drift()
+            if isinstance(max_items, int) and len(value) > max_items:
+                _raise_envelope_drift()
+            if raw_schema.get("uniqueItems") is True and len(set(value)) != len(value):
+                _raise_envelope_drift()
+            items = raw_schema.get("items")
+            if not isinstance(items, Mapping):
+                _raise_envelope_drift()
+            item_min = items.get("minLength")
+            item_max = items.get("maxLength")
+            for item in value:
+                if not isinstance(item, str):
+                    _raise_envelope_drift()
+                if isinstance(item_min, int) and len(item) < item_min:
+                    _raise_envelope_drift()
+                if isinstance(item_max, int) and len(item) > item_max:
+                    _raise_envelope_drift()
 
 
 def validate_sre_agent_endpoint(endpoint: str) -> str:
@@ -308,18 +391,13 @@ class SreAgentPatchExecutionAdapter:
     def submit(self, run: PatchRun, target: PatchTarget) -> PatchExecutionResult:
         """Submit the exact validated selection to the configured HTTP trigger."""
         patch_ids = self._validate_submission(run, target)
-        payload = {
-            "schema_version": SRE_PATCH_ENVELOPE_VERSION,
-            "run_id": run.run_id,
-            "subscription_id": self._subscription_id,
-            "target_id": target.target_id,
-            "target_kind": target.inventory_kind,
-            "patch_ids": patch_ids,
-            "reboot_setting": run.reboot_setting,
-            "requested_by": run.requested_by,
-            "approved_by": run.approved_by,
-            "operation": run.operation,
-        }
+        payload = _build_sre_agent_patch_envelope(
+            run=run,
+            target=target,
+            subscription_id=self._subscription_id,
+            patch_ids=patch_ids,
+        )
+        _validate_sre_agent_patch_envelope(payload)
         access_token = self._token()
         headers = {
             "Authorization": "Bearer " + access_token,
