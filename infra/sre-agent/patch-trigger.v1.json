@@ -17,7 +17,7 @@
       "name": "aiops-read-patch-applicability-v1",
       "version": "1.0",
       "artifact": "SKILL.md",
-      "raw_sha256": "7fa6f42a30d2ba8acb4734068ecb0484a4b4b06b7f16c1ddcb072eb386d7a8c2",
+      "raw_sha256": "1762f4a875fb15164d83db44f64503a088f78962761a818b83aa8f7a5995fa25",
       "tools": [
         "RunAzCliReadCommands"
       ],
@@ -192,7 +192,7 @@
             "name": "aiops-read-patch-applicability-v1",
             "version": "1.0",
             "artifact": "SKILL.md",
-            "raw_sha256": "7fa6f42a30d2ba8acb4734068ecb0484a4b4b06b7f16c1ddcb072eb386d7a8c2",
+            "raw_sha256": "1762f4a875fb15164d83db44f64503a088f78962761a818b83aa8f7a5995fa25",
             "tools": [
               "RunAzCliReadCommands"
             ],

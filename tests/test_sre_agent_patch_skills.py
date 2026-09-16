@@ -47,6 +47,8 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert text.count("az graph query --graph-query") == 1
     assert "--first 257" in text
     assert "patchassessmentresources" in text
+    assert "where tolower(id) endswith '/patchassessmentresults/latest'" in text
+    assert "where name =~ 'latest'" not in text
     assert "maximum_age_seconds = 86400" in text
     assert "child_activity_id != assessment_activity_id" in text
     assert "child_last_modified_at != assessment_last_modified_at" in text
@@ -57,6 +59,8 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert "\nprint " not in text
     assert "$left" not in text
     assert "$right" not in text
+    assert "target_join_id = tolower" in text
+    assert "child_activity_count > 1 or isnotempty(child_activity_id)" in text
     assert "`skip_token` to be null or empty" in text
     assert "zero count" in text
     assert "`blocked_patch_not_applicable`" in text

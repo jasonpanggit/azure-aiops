@@ -59,19 +59,21 @@ az graph query --graph-query "<fixed-kql-below>" --subscriptions <subscription_i
 patchassessmentresources
 | where subscriptionId =~ '{{subscription_id}}'
 | where type endswith '/patchassessmentresults'
-| where name =~ 'latest'
+| where tolower(id) endswith '/patchassessmentresults/latest'
 | extend assessment_parent_offset = indexof(tolower(id), '/patchassessmentresults/')
 | extend target_id = iff(assessment_parent_offset > 0, substring(id, 0, assessment_parent_offset), ''), assessment_activity_id = tostring(properties.assessmentActivityId), assessment_last_modified_at = todatetime(properties.lastModifiedDateTime), reboot_pending = tobool(properties.rebootPending)
 | where target_id =~ '{{target_id}}'
 | summarize assessment_row_count = count(), assessment_row_id = take_any(id), assessment_activity_id = take_any(assessment_activity_id), assessment_last_modified_at = take_any(assessment_last_modified_at), reboot_pending = take_any(reboot_pending) by target_id
+| extend target_join_id = tolower(target_id)
 | join kind=inner (
     resources
     | where subscriptionId =~ '{{subscription_id}}'
     | where id =~ '{{target_id}}'
     | where type =~ '{{target_resource_type}}'
-    | extend target_id = id, vm_power_state = tostring(properties.extended.instanceView.powerState.code)
-    | summarize target_row_count = count(), target_resource_id = take_any(id), target_resource_type = take_any(type), vm_power_state = take_any(vm_power_state) by target_id
-) on target_id
+    | extend target_join_id = tolower(id), vm_power_state = tostring(properties.extended.instanceView.powerState.code)
+    | summarize target_row_count = count(), target_resource_id = take_any(id), target_resource_type = take_any(type), vm_power_state = take_any(vm_power_state) by target_join_id
+) on target_join_id
+| extend join_key = 1
 | join kind=inner (
     patchassessmentresources
     | where subscriptionId =~ '{{subscription_id}}'
@@ -80,10 +82,11 @@ patchassessmentresources
     | extend approved_patch_id = tostring(properties.kbId), assessment_activity_id = tostring(properties.assessmentActivityId), child_activity_id = tostring(properties.assessmentActivityId), child_last_modified_at = todatetime(properties.lastModifiedDateTime)
     | where approved_patch_id in~ ({{approved_patch_ids_kql}})
     | summarize child_row_count = count(), child_row_id = take_any(id), child_activity_id = take_any(child_activity_id), child_activity_count = dcount(child_activity_id), child_last_modified_at = take_any(child_last_modified_at), child_last_modified_count = dcount(child_last_modified_at) by approved_patch_id, assessment_activity_id
-) on assessment_activity_id
+    | extend join_key = 1
+) on join_key
 | extend observed_at = now(), maximum_age_seconds = 86400
 | extend age_seconds = datetime_diff('second', observed_at, assessment_last_modified_at)
-| extend outcome = case(target_row_count != 1, 'blocked_target_ambiguous', '{{target_kind}}' == 'Azure VM' and vm_power_state !~ 'PowerState/running', 'blocked_target_not_running', assessment_row_count != 1, 'blocked_parent_ambiguous', isempty(assessment_activity_id), 'blocked_activity_missing', isnull(assessment_last_modified_at), 'blocked_assessment_timestamp', isnull(reboot_pending), 'blocked_reboot_pending_unknown', reboot_pending, 'blocked_reboot_pending', age_seconds < 0 or age_seconds > maximum_age_seconds, 'blocked_stale', child_row_count != 1, 'blocked_patch_ambiguous', child_activity_count != 1 or child_activity_id != assessment_activity_id, 'blocked_patch_activity', child_last_modified_count != 1 or isnull(child_last_modified_at) or child_last_modified_at != assessment_last_modified_at, 'blocked_patch_generation', 'applicable')
+| extend outcome = case(target_row_count != 1, 'blocked_target_ambiguous', '{{target_kind}}' == 'Azure VM' and vm_power_state !~ 'PowerState/running', 'blocked_target_not_running', assessment_row_count != 1, 'blocked_parent_ambiguous', isempty(assessment_activity_id), 'blocked_activity_missing', isnull(assessment_last_modified_at), 'blocked_assessment_timestamp', isnull(reboot_pending), 'blocked_reboot_pending_unknown', reboot_pending, 'blocked_reboot_pending', age_seconds < 0 or age_seconds > maximum_age_seconds, 'blocked_stale', child_row_count != 1, 'blocked_patch_ambiguous', child_activity_count > 1 or isnotempty(child_activity_id) and child_activity_id != assessment_activity_id, 'blocked_patch_activity', child_last_modified_count != 1 or isnull(child_last_modified_at) or child_last_modified_at != assessment_last_modified_at, 'blocked_patch_generation', 'applicable')
 | project schema_version = '1.0', source = 'azure_resource_graph', table = 'PatchAssessmentResources', subscription_id = '{{subscription_id}}', target_kind = '{{target_kind}}', target_id, target_row_count, target_resource_id, target_resource_type, vm_power_state, reboot_pending, approved_patch_id, assessment_row_count, assessment_row_id, assessment_activity_id, assessment_last_modified_at, child_row_count, child_row_id, child_activity_id, child_last_modified_at, observed_at, age_seconds, maximum_age_seconds, outcome
 | order by approved_patch_id asc
 ```
