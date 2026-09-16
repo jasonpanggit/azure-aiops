@@ -60,7 +60,10 @@ def _composite_outcome(composite: dict[str, Any]) -> tuple[str, str, str]:
             "Cancelled",
             "Azure SRE Agent reported a terminal cancelled incident status.",
         )
-    if composite["has_critical_actions"] is True:
+    if (
+        composite["has_critical_actions"] is True
+        or composite["has_warning_actions"] is True
+    ):
         return ("running", "Pending Review", "")
     if composite["last_message_complete"] is True:
         return ("succeeded", "Complete", "")
