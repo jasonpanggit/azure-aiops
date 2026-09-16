@@ -746,15 +746,30 @@ export interface CanonicalInvestigationView {
  * evidence (D-09): `toolCalls` are preserved and `degradationNote` explains the
  * fallback instead of fabricating text.
  */
-export function toCanonicalInvestigationView(data: CopilotInvestigation): CanonicalInvestigationView {
+export function toCanonicalInvestigationView(
+  data: CopilotInvestigation | CanonicalCopilotResult,
+): CanonicalInvestigationView {
+  const canonical = "tool_results" in data;
   const synthesis = data.synthesis ?? null;
-  const synthesized = synthesis?.status === "synthesized";
-  const narrationText = synthesized
+  const hasCitedClaims = Boolean(synthesis?.claims.length);
+  const narrationText = hasCitedClaims
     ? synthesis!.claims.map((claim) => claim.summary.trim()).filter(Boolean).join(" ")
     : "";
-  const narration: CopilotAnswer | null = data.answer
+  const compatibilityAnswer = canonical ? null : data.answer;
+  const narration: CopilotAnswer | null = compatibilityAnswer
     ?? (narrationText
-      ? { text: narrationText, agent_name: "Executive synthesis", model: "Canonical", grounded: true }
+      ? {
+          text: narrationText,
+          agent_name: synthesis?.status === "synthesized"
+            ? synthesis.coordinator?.name ?? "Executive synthesis"
+            : "Deterministic page evidence",
+          model: synthesis?.status === "synthesized"
+            ? synthesis.coordinator?.version
+              ? `Foundry · v${synthesis.coordinator.version}`
+              : "Canonical"
+            : "Deterministic",
+          grounded: true,
+        }
       : null);
   const policyStatus = data.policy_status ?? "accepted";
   const fallbackReason = data.fallback_reason ?? "";
@@ -764,14 +779,25 @@ export function toCanonicalInvestigationView(data: CopilotInvestigation): Canoni
       ? "Deterministic specialist evidence is shown; Foundry narration was not produced."
       : "");
   return {
-    toolCalls: data.tool_calls ?? [],
+    toolCalls: canonical
+      ? data.tool_results.map((call) => ({
+          tool: call.tool,
+          arguments: {},
+          status: call.status === "partial" ? "unavailable" : call.status,
+          data: call.data,
+          evidence: [],
+          warning: call.warning,
+        }))
+      : data.tool_calls ?? [],
     narration,
     policyStatus,
     fallbackReason,
     degraded,
     degradationNote,
     citations: data.citations ?? [],
-    uncertainty: data.warnings ?? [],
+    uncertainty: Array.from(new Set(
+      canonical ? data.uncertainty : data.warnings ?? [],
+    )),
     coverage: data.coverage,
     synthesis,
     threadId: data.thread_id,

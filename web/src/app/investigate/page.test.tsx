@@ -16,7 +16,7 @@ const {
   exposures,
   cve,
   attackPath,
-  askCanonicalInvestigation,
+  investigateCanonical,
 } = vi.hoisted(() => ({
   businessService: vi.fn(),
   risk: vi.fn(),
@@ -31,7 +31,7 @@ const {
   exposures: vi.fn(),
   cve: vi.fn(),
   attackPath: vi.fn(),
-  askCanonicalInvestigation: vi.fn(),
+  investigateCanonical: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -47,8 +47,8 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
   ),
 }));
 
-// Keep the real presentation converter and root-session constant so this test
-// exercises the shared canonical semantics, overriding only the network calls.
+// Keep the real presentation converter so this test exercises the shared
+// canonical semantics, overriding only provider calls.
 vi.mock("@/lib/services", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/services")>();
   return {
@@ -57,11 +57,13 @@ vi.mock("@/lib/services", async (importOriginal) => {
     operationsApi: { incidents, incident, remediationPlans },
     networkApi: { topology, gaps, ruleFindings },
     vulnerabilityApi: { summary, exposures, cve, attackPath },
-    askCanonicalInvestigation,
   };
 });
 
-import { ROOT_COPILOT_SESSION } from "@/lib/services";
+vi.mock("@/lib/copilot/page-adapters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/page-adapters")>();
+  return { ...actual, investigateCanonical };
+});
 
 import InvestigationWorkspacePage from "./page";
 
@@ -116,7 +118,10 @@ describe("Executive Investigation Workspace", () => {
         incident: { incident_id: "INC-1", title: "Payment latency", severity: "high", status: "active", started_at: "2026-01-01T09:00:00Z" },
         root_cause_analysis: { timeline: [], probable_causes: [], contributing_factors: [], confidence: 0.7, evidence: [], impacted_systems: [], reasoning_chain: [], contradicting_evidence: [], unknowns: [], next_steps: [], confirmed_cause: false, conclusion: "Investigating" },
         blast_radius: { applications: ["Checkout"], services: [], business_services: ["Payments"], owners: ["Payments SRE"], support_teams: [], subscriptions: ["sub-1"], network_paths: [], hub_dependencies: [], firewall_impact: [], nsg_impact: [], downstream_services: [], application_count: 1, service_count: 0, business_service_count: 1 },
-        timeline: [{ event_id: "evt-1", event_type: "Alert", timestamp: "2026-01-01T10:00:00Z", summary: "Latency breach", source: "Monitor", evidence: ["ARG"] }],
+        timeline: [
+          { event_id: "evt-1", event_type: "Alert", timestamp: "2026-01-01T10:00:00Z", summary: "Latency breach", source: "Monitor", evidence: ["ARG"] },
+          { event_id: "evt-1", event_type: "Alert", timestamp: "2026-01-01T09:59:00Z", summary: "Repeated signal", source: "Monitor", evidence: ["ARG"] },
+        ],
         business_impact: { applications: ["Checkout"], services: [], business_services: ["Payments"], owners: ["Payments SRE"], support_teams: [] },
       }],
       operational_patterns: [],
@@ -170,25 +175,28 @@ describe("Executive Investigation Workspace", () => {
     incident.mockResolvedValue(envelope({ finding: {}, read_only: true, freshness: "2026-01-01T10:00:00Z" }));
     cve.mockResolvedValue(envelope({}));
     attackPath.mockResolvedValue(envelope({ cve_id: "CVE-2026-0001", nodes: [], edges: [], reachable_server_count: 1, internet_exposed: true }));
-    askCanonicalInvestigation.mockResolvedValue(envelope({
-      question: "why",
-      tool_calls: [
-        { tool: "vulnerability_exposure", arguments: {}, status: "ok", data: { cve_id: "CVE-2026-0001" }, evidence: [], warning: "" },
+    investigateCanonical.mockResolvedValue(envelope({
+      status: "ok",
+      selected_specialists: ["incident", "vulnerability"],
+      selected_tools: ["incidents", "cve_exposure"],
+      tool_results: [
+        { call_id: "call-1", specialist_id: "vulnerability", tool: "cve_exposure", status: "ok", data: { cve_id: "CVE-2026-0001" }, evidence: [], warning: "" },
       ],
-      answer: null,
-      fact_status: "ok",
-      warnings: ["Visible subset is incomplete; widen scope for full coverage."],
       contract_version: "1",
       thread_id: `thr-${"a".repeat(32)}`,
       thread_revision: 1,
       policy_status: "fallback",
       fallback_reason: "planner_unavailable",
       coverage: { visible_count: 1, total_count: 2, complete: false },
+      uncertainty: [
+        "Visible subset is incomplete; widen scope for full coverage.",
+        "Visible subset is incomplete; widen scope for full coverage.",
+      ],
       citations: [
         { citation_id: "tool:0:vulnerability:1", source: "azure-resource-graph", status: "ok", observed_at: "2026-01-01T10:00:00Z", resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1" },
       ],
       synthesis: {
-        status: "synthesized",
+        status: "degraded",
         reason: "multi_domain",
         domain_count: 2,
         claims: [
@@ -196,10 +204,12 @@ describe("Executive Investigation Workspace", () => {
         ],
         warning: "",
       },
+      mutation_authorized: false,
     }));
   });
 
   it("connects service risk, topology, vulnerability, evidence, Copilot conclusion, and remediation in one flow", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     renderWorkspace();
 
     expect(await screen.findByRole("heading", { name: "Business impact and dependency context" })).toBeInTheDocument();
@@ -214,13 +224,25 @@ describe("Executive Investigation Workspace", () => {
     // Canonical synthesis narration is rendered as the conclusion.
     expect(await screen.findByText(/approve patch plan-1/i)).toBeInTheDocument();
 
-    // The shared canonical helper is used with the root thread session so every
-    // dedicated surface shares one authorized, principal-scoped thread.
-    expect(askCanonicalInvestigation).toHaveBeenCalledWith(
-      expect.stringContaining("Summarize the investigation"),
+    expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: expect.stringContaining("Summarize the investigation"),
+        requested_scope: expect.anything(),
+        snapshot: expect.objectContaining({
+          version: "2",
+          page_kind: "investigate",
+          page_id: "investigate",
+          coverage: expect.objectContaining({ complete: true }),
+          evidence: expect.arrayContaining([
+            expect.objectContaining({ source: "investigate/incidents" }),
+            expect.objectContaining({ source: "investigate/vulnerabilities" }),
+            expect.objectContaining({ source: "investigate/remediation" }),
+          ]),
+        }),
+      }),
       expect.anything(),
-      expect.objectContaining({ sessionId: ROOT_COPILOT_SESSION }),
     );
+    expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("mutation_authorized");
 
     // Canonical degradation, citations, and uncertainty render consistently.
     expect(screen.getByLabelText("Investigation degradation")).toHaveTextContent(/deterministic|narration was not produced/i);
@@ -229,5 +251,10 @@ describe("Executive Investigation Workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save view locally" }));
     await waitFor(() => expect(window.localStorage.getItem("aiops.investigations.v1")).toContain("BusinessService: Payments"));
+    expect(
+      consoleError.mock.calls.some((call) =>
+        call.some((value) => String(value).includes("same key"))),
+    ).toBe(false);
+    consoleError.mockRestore();
   });
 });

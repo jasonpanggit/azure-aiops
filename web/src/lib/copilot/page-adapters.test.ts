@@ -16,6 +16,7 @@ import {
   buildGovernanceCopilotContext,
   buildIdentityCopilotContext,
   buildInventoryCopilotContext,
+  buildInvestigationCopilotContext,
   buildKbDetailCopilotContext,
   buildNetworkCopilotContext,
   buildOverviewCopilotContext,
@@ -259,6 +260,49 @@ raise SystemExit(1 if errors else 0)
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([]);
+  });
+});
+
+describe("investigation Copilot adapter", () => {
+  it("retains bounded observations and marks over-50 source coverage partial", () => {
+    const context = buildInvestigationCopilotContext({
+      scope: { subscription: ["sub-a"] },
+      filters: { entry_type: ["BusinessService"], subject: ["Payments"] },
+      records: Array.from({ length: 51 }, (_, index) => ({
+        identity: `incident-${index}`,
+        namespace: "operations",
+        kind: "incident",
+        source: "investigate/incidents",
+        evidenceIdentity: "observation" as const,
+        data: { title: `Incident ${index}`, severity: "high" },
+      })),
+      evidence: [],
+      coverage: [{
+        key: "incidents",
+        visibleCount: 50,
+        totalCount: 51,
+        truncated: true,
+        available: true,
+      }],
+      sourceStatuses: [{
+        source: "incidents",
+        observedAt: "2026-01-01T10:00:00Z",
+        status: "fresh",
+      }],
+    });
+    const snapshot = normalizeCopilotSnapshotV2(context.snapshot);
+
+    expect(snapshot).toMatchObject({
+      page_kind: "investigate",
+      page_id: "investigate",
+      coverage: { visible_count: 50, total_count: 51, complete: false },
+    });
+    expect(snapshot.selected_entities).toEqual([]);
+    expect(snapshot.evidence.every((row) => row.actionable === false)).toBe(true);
+    expect(snapshot.evidence.filter(
+      (row) => row.source === "investigate/incidents",
+    )).toHaveLength(50);
+    expect(context.uncertainty).toContain("incidents coverage is truncated");
   });
 });
 
