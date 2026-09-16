@@ -47,6 +47,7 @@ function expectCanonicalEndpointAccepts(
     requested_scope: Record<string, string[]>;
     snapshot: ReturnType<typeof normalizeCopilotSnapshotV2>;
     semantic_available: boolean;
+    expected_claim_types?: string[];
   }>,
 ) {
   const validator = `
@@ -112,6 +113,8 @@ def execute(_self, request, **kwargs):
         for claim in selection.material_claims
         for ref in claim.evidence_refs
     } <= retained_refs
+    retained_claim_types = {row.claim_type for row in canonical.evidence}
+    assert set(item.get("expected_claim_types") or []) <= retained_claim_types
     return OrchestrationResult(
         status="ok",
         policy_status="accepted",
@@ -3679,6 +3682,12 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       requested_scope: context.requestedScope,
       snapshot: normalizeCopilotSnapshotV2(context.snapshot),
       semantic_available: false,
+      expected_claim_types: [
+        "identity_principal",
+        "subscription_owner",
+        "stale_access",
+        "spn_credential",
+      ],
     }]);
   });
 
@@ -3810,6 +3819,11 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     // Cost summary carries currency and observation window.
     const summary = rowByClaim(context, "finops_summary")[0]?.data;
     expect(summary).toMatchObject({
+      entity: {
+        type: "observation",
+        source: "finops/summary",
+        source_key: "finops-summary",
+      },
       currency: "USD",
       actual_spend_period_start: "2026-08-01",
       actual_spend_period_end: "2026-08-31",
@@ -3830,7 +3844,15 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       (row) => row.data.recommendation_id === "rec-2",
     );
     expect(unquantified?.data.annual_savings).toBeNull();
-    expect(rowByClaim(context, "cost_attribution").length).toBe(1);
+    expect(unquantified?.data.entity).toMatchObject({
+      type: "observation",
+      source: "finops/opportunities",
+    });
+    expect(rowByClaim(context, "cost_attribution")).toHaveLength(1);
+    expect(rowByClaim(context, "cost_attribution")[0]?.data.entity).toMatchObject({
+      type: "observation",
+      source: "finops/attribution",
+    });
     expect(rowByClaim(context, "waste_item").length).toBe(1);
     expect(context.coverage.opportunities).toMatchObject({
       visible_count: 2,
@@ -3848,6 +3870,18 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         || ["business_service_context", "application_context", "risk_context", "search"].includes(starter.tool)
       )
       && !/write|update|delete|execute|remediate|approve|run|deploy/i.test(starter.tool ?? ""))).toBe(true);
+    expectCanonicalEndpointAccepts([{
+      name: "FinOps without semantic resolution",
+      requested_scope: context.requestedScope,
+      snapshot: normalizeCopilotSnapshotV2(context.snapshot),
+      semantic_available: false,
+      expected_claim_types: [
+        "finops_summary",
+        "cost_attribution",
+        "savings_opportunity",
+        "waste_item",
+      ],
+    }]);
   });
 
   const healthInput = {

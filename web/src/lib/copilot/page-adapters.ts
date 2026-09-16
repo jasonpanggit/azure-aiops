@@ -5290,7 +5290,7 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
         business_service: waste.business_service,
       },
     })),
-  ];
+  ].map((record) => ({ ...record, evidenceIdentity: "observation" }));
   return {
     scope: input.scope,
     filters: input.filters ?? { view: ["finops"], dimension: [input.dimension] },
