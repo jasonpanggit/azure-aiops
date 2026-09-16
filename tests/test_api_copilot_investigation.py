@@ -140,7 +140,7 @@ def test_compatibility_projection_cites_tool_status_without_provider_evidence(
     assert "No provider-backed records were returned" in body["answer"]["text"]
     assert "search" not in body["answer"]["text"]
     assert "The semantic provider is deferred" not in body["answer"]["text"]
-    assert "Required provider data is unavailable" in body["answer"]["text"]
+    assert "could not access required provider data" in body["answer"]["text"]
 
 
 @pytest.mark.parametrize(
@@ -149,12 +149,12 @@ def test_compatibility_projection_cites_tool_status_without_provider_evidence(
         (
             "empty",
             "application_context returned empty",
-            "no matching records",
+            "found no matching records",
         ),
         (
             "unavailable",
             "inventory_resources failed to answer",
-            "provider data is unavailable",
+            "could not access required provider data",
         ),
         (
             "denied",

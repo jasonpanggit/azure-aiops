@@ -545,27 +545,23 @@ def _status_only_answer(
     ):
         return None
     status_counts = Counter(call.result.status for call in calls)
-    statuses = [
-        (
-            f"{count} governed lookup{'' if count == 1 else 's'} "
-            f"returned {status}"
-        )
-        for status, count in sorted(status_counts.items())
-    ]
-    degradation = []
-    if STATUS_EMPTY in status_counts:
-        degradation.append(
-            "The available governed lookups returned no matching records."
-        )
-    if STATUS_UNAVAILABLE in status_counts:
-        degradation.append("Required provider data is unavailable.")
-    if STATUS_DENIED in status_counts:
-        degradation.append(
-            "Some governed lookups were not permitted for the current scope."
-        )
+    statuses = []
+    for status, count in sorted(status_counts.items()):
+        lookup = f"{count} governed lookup{'' if count == 1 else 's'}"
+        if status == STATUS_EMPTY:
+            statuses.append(f"{lookup} found no matching records")
+        elif status == STATUS_UNAVAILABLE:
+            statuses.append(
+                f"{lookup} could not access required provider data"
+            )
+        else:
+            statuses.append(
+                f"{lookup} {'was' if count == 1 else 'were'} not permitted "
+                "for the current scope"
+            )
     return {
         "text": (
-            f"{'; '.join(statuses)}. {' '.join(degradation)} "
+            f"{'; '.join(statuses)}. "
             "No provider-backed records were returned, "
             "so the requested operational facts cannot be determined."
         ),
