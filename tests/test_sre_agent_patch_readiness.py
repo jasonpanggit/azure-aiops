@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -323,7 +324,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "d057c70919a93e6d43cf5d55c833333cfe12b64ab4b5f08cd78195ce8ae06221"
+        == "8a5d5bbe29833d94a19553458c30a5ded68e3619f6400a496660a6839ee4c3e0"
     )
 
 
@@ -1016,6 +1017,65 @@ def test_maximum_duration_prompt_guard_cannot_drift(mutation: str) -> None:
 
     with pytest.raises(module.ReadinessError, match="canonical contract"):
         module.canonical_trigger_body(definition)
+
+
+def test_safety_discovery_prompt_requires_stale_snapshot_guard() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["prompt"] = definition["prompt"].replace(
+        "Treat the approved snapshot as authorization, not proof of current state. ",
+        "",
+    ).replace(
+        "If live state differs materially from the snapshot, a selected patch is no longer applicable, or discovery identifies any other issue, flag it and stop without submitting a patch operation. ",
+        "",
+    )
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.canonical_trigger_body(definition)
+
+
+def test_safety_discovery_prompt_requires_read_only_contract_liveness_tooling() -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["prompt"] = definition["prompt"].replace(
+        "When available, use the repository-managed Operations API or MCP through APIM only for read-only contract-liveness context; never invoke a mutating operation through it. ",
+        "",
+    )
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.canonical_trigger_body(definition)
+
+
+@pytest.mark.parametrize(
+    "unsafe_instruction",
+    [
+        " If the snapshot is stale, update the approved target or patch list.",
+        " If a selected patch is unavailable, install another applicable patch.",
+        " Use write tools during discovery to satisfy missing prerequisites.",
+    ],
+)
+def test_safety_discovery_prompt_cannot_expand_mutation_before_live_collection(
+    unsafe_instruction: str,
+) -> None:
+    module = _load_module()
+    definition = _fixture(DEFINITION)
+    definition["prompt"] += unsafe_instruction
+
+    with pytest.raises(module.ReadinessError, match="canonical contract"):
+        module.collect_live_predeploy(
+            runner=lambda _argv: (_ for _ in ()).throw(
+                AssertionError("Azure CLI must not run")
+            ),
+            http_requester=lambda _url, _token: (_ for _ in ()).throw(
+                AssertionError("HTTP must not run")
+            ),
+            definition=definition,
+            expected_trigger_id=TRIGGER_ID,
+            expected_trigger_origin=TRIGGER_ORIGIN,
+            expected_agent_endpoint=AGENT_ENDPOINT,
+            secret_version=SECRET_VERSION,
+            target_prefix=TARGET_PREFIX,
+        )
 
 
 def test_invalid_duration_contract_fails_before_live_collection() -> None:
@@ -2050,6 +2110,27 @@ def test_offline_modes_never_invoke_live_runner(
             ]
         )
         == 2
+    )
+
+
+def test_render_cli_loads_runtime_contract_outside_repository(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts/preflight_sre_agent_patch_execution.py"),
+            "render",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["canonicalHash"] == (
+        "8a5d5bbe29833d94a19553458c30a5ded68e3619f6400a496660a6839ee4c3e0"
     )
 
 

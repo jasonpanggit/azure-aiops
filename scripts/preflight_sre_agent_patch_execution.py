@@ -21,6 +21,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 DEFAULT_DEFINITION = REPO_ROOT / "infra/sre-agent/patch-trigger.v1.json"
 SUBSCRIPTION_ID = "a87a8e64-a52a-4aa8-a760-5e8919d23cd1"
 TENANT_ID = "ffc83107-fcc0-4d2e-8798-d582da36505e"
@@ -71,7 +74,7 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "a722b0dd17fd09557846d46c06a183cd0051c984e072da91b3ec0818cab389f6"
+    "5af9fc622b3ea870ae6a024e2bd8db70179aa6e4d51d47fc14f404cc9209d13f"
 )
 TRIGGER_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 SUBSCRIPTION_ID_PATTERN = re.compile(
@@ -172,7 +175,13 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "maximum_duration to equal PT2H",
         "reboot_setting, maximum_duration, requested_by, and approved_by as immutable",
         "exact reboot_setting and maximum_duration",
-        "Do not discover",
+        "available read-only tools and knowledge sources",
+        "Operations API or MCP through APIM only for read-only contract-liveness",
+        "never invoke a mutating operation through it",
+        "approved snapshot as authorization, not proof of current state",
+        "live state differs materially from the snapshot",
+        "contract liveness cannot be established",
+        "Do not discover or select alternative targets or patches",
         "fall back to all available patches",
         "stop without fallback",
     )

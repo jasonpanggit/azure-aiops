@@ -57,10 +57,16 @@ production action.
   contract. No mutation mode is implemented; trigger creation/update is a
   portal-only human gate.
 - Live trigger readiness accepts only the exact observed production GET row,
-  validates `agentPrompt`, lowercase `agentMode`, `triggerEnabled`, default
+  validates `agentPrompt`, lowercase `agentMode=autonomous`, `triggerEnabled`,
+  default
   response agent, empty thread ID, and exact URL/ID/origin, and rejects aliases
   or unknown fields. The absent service payload schema remains enforced
   against the runtime's locked outgoing envelope and canonical hash.
+- The canonical prompt may use the repository-managed Operations API/MCP
+  through APIM only for read-only contract-liveness context when a separately
+  approved authenticated connector exists. The current
+  `sre_agent_pending_mcp_connectors` output does not provision that access, and
+  this rollout must not invent or silently create a connector.
 - The non-secret reviewed trigger ID is required independently from the secret
   URL. Runtime, normalized trigger evidence, and Key Vault metadata
   attestation must all bind the same exact ID.
