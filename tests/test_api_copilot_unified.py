@@ -8679,6 +8679,10 @@ def test_investigate_page_retains_cited_evidence_when_tool_is_deferred(
     assert all(set(claim["evidence_refs"]) <= citation_ids for claim in claims)
     assert any("Payment latency" in claim["summary"] for claim in claims)
     assert any("Patch payment servers" in claim["summary"] for claim in claims)
+    assert not any(
+        "incident_projection freshness is unavailable" in warning
+        for warning in result["uncertainty"]
+    )
 
 
 def test_investigate_page_rejects_mismatch_and_invalid_numeric_before_io(
