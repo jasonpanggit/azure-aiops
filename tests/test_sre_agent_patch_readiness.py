@@ -324,7 +324,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "4b704ef7adcb1bd04ccfb88472f94913b3fb89a6ce68c584f262c57c3ab82e3b"
+        == "1b16195089a2637cbda53ea549b997e6da66ed4dd078bb69b648f035f95d424e"
     )
 
 
@@ -1026,7 +1026,7 @@ def test_safety_discovery_prompt_requires_stale_snapshot_guard() -> None:
     module = _load_module()
     definition = _fixture(DEFINITION)
     definition["prompt"] = definition["prompt"].replace(
-        "Validate the exact current upstream approval and equality of subscription_id, target_id, target_kind, patch_ids, operation, approver, and snapshot hash before any tool. ",
+        "API has authoritatively validated approval time at dispatch; treat approval.decision=approved in the accepted immutable envelope as current and do not independently infer current time or expiry. ",
         "",
     )
 
@@ -2160,7 +2160,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "4b704ef7adcb1bd04ccfb88472f94913b3fb89a6ce68c584f262c57c3ab82e3b"
+        "1b16195089a2637cbda53ea549b997e6da66ed4dd078bb69b648f035f95d424e"
     )
 
 

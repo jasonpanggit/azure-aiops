@@ -21,9 +21,13 @@ target, patch, KQL, or command values from a user or model.
 
 ## Immutable input checks
 
-Require schema version `1.1`, operation `install_patches`, and an unexpired
-upstream `approval.decision=approved`. Require the top-level target and patch
-fields to exactly equal the approved snapshot and the applicability inputs.
+Require schema version `1.1`, operation `install_patches`. The dispatching
+API has authoritatively checked the approval decision and timestamps immediately
+before creating this immutable payload. Treat its `approval.decision=approved`
+as current; do not independently infer the current time or reject from a
+self-calculated expiry. Still reject a missing, non-approved, or mismatched
+approval field. Require the top-level target and patch fields to exactly equal
+the approved snapshot and the applicability inputs.
 Require:
 
 - one UUID `subscription_id`;

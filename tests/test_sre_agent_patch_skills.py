@@ -166,6 +166,40 @@ def test_envelope_accepts_both_exact_target_kinds_and_binds_review_contract() ->
 
 
 @pytest.mark.parametrize(
+    ("artifact", "hash_attribute"),
+    [
+        (READ_SKILL, "PATCH_READ_SKILL_SHA256"),
+        (WRITE_SKILL, "PATCH_WRITE_SKILL_SHA256"),
+    ],
+)
+def test_skill_requires_server_authoritative_approval_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: Path,
+    hash_attribute: str,
+) -> None:
+    text = artifact.read_text(encoding="utf-8")
+    assert "authoritatively checked the approval decision" in text
+    assert "do not independently infer the" in text
+
+    drifted_dir = tmp_path / artifact.parent.name
+    drifted_dir.mkdir()
+    drifted = drifted_dir / "SKILL.md"
+    drifted.write_text(
+        text.replace("authoritatively checked the approval decision", "checked approval"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        preflight,
+        hash_attribute,
+        hashlib.sha256(drifted.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(preflight.ReadinessError, match="instruction contract"):
+        preflight.canonical_skill_builder_artifact(drifted)
+
+
+@pytest.mark.parametrize(
     ("artifact", "old", "new", "hash_attribute"),
     [
         (
