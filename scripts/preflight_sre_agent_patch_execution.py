@@ -87,12 +87,12 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "179ea677da0b26b2e680836e78b1da52d79241fd152a651bd1bda21e6cbfe67d"
+    "4d55e26657974cbf1a1c8d50009095a4c4f14a37e5c5dfabfb15f6b1d4049218"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
 PATCH_READ_SKILL_SHA256 = (
-    "a74ad50f7ff75da3d68c75e9b0c1c3197041f0b77e7c4a0c66af03d12bdf192c"
+    "890a41d4877c337cc6fa9f108c2224d66f2ef08c6a8c398decfa723824181070"
 )
 PATCH_READ_SKILL_TOOLS = ("RunAzCliReadCommands",)
 PATCH_READ_SKILL_OPERATION = "read_patch_applicability"
@@ -100,7 +100,7 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "067f8940acb89797b67cb26c106a7766c0c867286709ada20c0cc5bec6b4936a"
+    "dfd60a3be367e505d7714baa3f7756f9c9597ad2c169d3a36c8d0b84f3203853"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
@@ -193,6 +193,8 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
                 "maximum_age_seconds = 86400",
                 "assessment_activity_id",
                 "blockers = iff(outcome == 'applicable', dynamic([]), pack_array(outcome))",
+                "authoritatively checked the approval decision",
+                "self-calculated expiry",
                 "blocked_no_action",
             ),
         },
@@ -208,6 +210,8 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
                 "az connectedmachine install-patches --ids",
                 "Present exactly one command in Review mode",
                 "no more than 300 seconds",
+                "authoritatively checked the approval decision",
+                "self-calculated expiry",
                 "blocked_no_action",
             ),
         },
@@ -304,6 +308,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         raise ReadinessError("trigger prompt does not match the canonical contract")
     required_prompt_terms = (
         "schema_version 1.1",
+        "API has authoritatively validated approval time at dispatch",
         "Microsoft.Compute/virtualMachines",
         "Microsoft.HybridCompute/machines",
         "RunAzCliReadCommands",
