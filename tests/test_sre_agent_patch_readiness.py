@@ -324,7 +324,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "b2a283bfa757ced8b1966ff602c4da151c5844fdac1bbd777aa8c172c9f6f2cc"
+        == "4b704ef7adcb1bd04ccfb88472f94913b3fb89a6ce68c584f262c57c3ab82e3b"
     )
 
 
@@ -2160,7 +2160,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "b2a283bfa757ced8b1966ff602c4da151c5844fdac1bbd777aa8c172c9f6f2cc"
+        "4b704ef7adcb1bd04ccfb88472f94913b3fb89a6ce68c584f262c57c3ab82e3b"
     )
 
 

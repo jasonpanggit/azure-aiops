@@ -92,7 +92,7 @@ CANONICAL_TRIGGER_PROMPT_SHA256 = (
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
 PATCH_READ_SKILL_SHA256 = (
-    "cdc0e860b96742d1f355420279b42132e8c1359fc5526cfceaacdc7220af41c8"
+    "a74ad50f7ff75da3d68c75e9b0c1c3197041f0b77e7c4a0c66af03d12bdf192c"
 )
 PATCH_READ_SKILL_TOOLS = ("RunAzCliReadCommands",)
 PATCH_READ_SKILL_OPERATION = "read_patch_applicability"
@@ -192,6 +192,7 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
                 "--first 257",
                 "maximum_age_seconds = 86400",
                 "assessment_activity_id",
+                "blockers = iff(outcome == 'applicable', dynamic([]), pack_array(outcome))",
                 "blocked_no_action",
             ),
         },
