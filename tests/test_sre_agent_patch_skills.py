@@ -69,6 +69,18 @@ def test_read_skill_is_one_fixed_bounded_arg_query() -> None:
     assert "reboot_pending = tobool(properties.rebootPending)" in text
     assert "blocked_reboot_pending" in text
     assert "blocked_patch_not_applicable" in text
+    blockers_expression = (
+        "| extend blockers = iff(outcome == 'applicable', "
+        "dynamic([]), pack_array(outcome))"
+    )
+    assert text.count(blockers_expression) == 1
+    assert (
+        "maximum_age_seconds, outcome, blockers\n| order by approved_patch_id asc"
+    ) in text
+    assert text.index("| extend outcome = case(") < text.index(blockers_expression)
+    assert text.index(blockers_expression) < text.index(
+        "| project schema_version = '1.0'"
+    )
     assert "RunAzCliWriteCommands" in text
     assert "Do not use `RunAzCliWriteCommands`" in text
 
@@ -94,6 +106,7 @@ def test_read_skill_accepts_query_applicable_with_empty_child_activity_id() -> N
 
 def test_read_skill_rejects_query_computed_non_applicable_outcome() -> None:
     text = READ_SKILL.read_text(encoding="utf-8")
+    assert "pack_array(outcome)" in text
     assert (
         "Any query-computed\n"
         "`outcome` other than `applicable`, including `blocked_patch_activity`, is\n"
