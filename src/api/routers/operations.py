@@ -57,7 +57,8 @@ def _require(context: Context, attribute: str, capability: str, scope: Scope) ->
                 capability in {"incidents", "remediation"} and scope.is_unrestricted()
             ),
         )
-        return hybrid_provider(subscription_ids)
+        if subscription_ids:
+            return hybrid_provider(subscription_ids)
     return context.resolve_provider(capability)
 
 
