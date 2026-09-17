@@ -26,14 +26,15 @@ def _service(context: Context, scope: Scope) -> Any:
     the caller pinned explicit subscriptions, otherwise the snapshot-backed
     provider is used.
     """
-    subscription_ids = live_subscription_ids(
-        context,
-        scope,
-        default_all=scope.is_unrestricted(),
-    )
     hybrid = getattr(context, "hybrid_patching_provider", None)
-    if callable(hybrid) and subscription_ids:
-        return hybrid(subscription_ids)
+    if callable(hybrid):
+        subscription_ids = live_subscription_ids(
+            context,
+            scope,
+            default_all=scope.is_unrestricted(),
+        )
+        if subscription_ids:
+            return hybrid(subscription_ids)
     return context.resolve_provider("patching")
 
 

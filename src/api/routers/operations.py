@@ -44,21 +44,21 @@ router = APIRouter(prefix="/api/v1", tags=["operations"])
 
 
 def _require(context: Context, attribute: str, capability: str, scope: Scope) -> Any:
-    subscription_ids = live_subscription_ids(
-        context,
-        scope,
-        default_all=(
-            capability in {"incidents", "remediation"} and scope.is_unrestricted()
-        ),
-    )
-    if subscription_ids:
-        if capability == "incidents" and context.hybrid_incident_provider is not None:
-            return context.hybrid_incident_provider(subscription_ids)
-        if (
-            capability == "remediation"
-            and context.hybrid_remediation_provider is not None
-        ):
-            return context.hybrid_remediation_provider(subscription_ids)
+    hybrid_provider = None
+    if capability == "incidents":
+        hybrid_provider = getattr(context, "hybrid_incident_provider", None)
+    if capability == "remediation":
+        hybrid_provider = getattr(context, "hybrid_remediation_provider", None)
+    if hybrid_provider is not None:
+        subscription_ids = live_subscription_ids(
+            context,
+            scope,
+            default_all=(
+                capability in {"incidents", "remediation"} and scope.is_unrestricted()
+            ),
+        )
+        if subscription_ids:
+            return hybrid_provider(subscription_ids)
     return context.resolve_provider(capability)
 
 
