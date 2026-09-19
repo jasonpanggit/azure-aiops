@@ -139,6 +139,8 @@ def test_normalizer_preserves_defender_threat_path_and_score_semantics() -> None
             "subscriptionId": "sub-1",
             "properties": {
                 "displayName": "Internet to production VM",
+                "cveIds": ["CVE-2026-0001"],
+                "description": "Informational context for CVE-2026-9999",
                 "entryPointEntityInternalID": "internet",
                 "targetEntityInternalID": "vm",
                 "assessments": [{"id": "va-machines"}],
@@ -200,6 +202,7 @@ def test_normalizer_preserves_defender_threat_path_and_score_semantics() -> None
 
     assert len(graph.entities["SecurityAlert"]) == 1
     assert len(graph.entities["AttackPath"]) == 1
+    assert graph.entities["AttackPath"][0]["cveIds"] == ["CVE-2026-0001"]
     assert len(graph.entities["AttackPathNode"]) == 2
     assert graph.entities["AttackPathNode"][0]["resolved"] is False
     assert len(graph.entities["AttackPathConnection"]) == 1

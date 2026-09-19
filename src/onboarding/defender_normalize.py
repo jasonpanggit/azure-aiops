@@ -698,6 +698,7 @@ def normalize_attack_path(
         "entryPointNodeId": internal_to_node.get(entry_internal.casefold(), ""),
         "targetNodeId": internal_to_node.get(target_internal.casefold(), ""),
         "resourceIds": list(resource_ids),
+        "cveIds": list(_attack_path_cve_ids(properties)),
         "assessmentIds": _assessment_ids(
             properties.get("assessments"), _text(row.get("subscriptionId"))
         ),
@@ -849,6 +850,36 @@ def _cve_ids(properties: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _attack_path_cve_ids(properties: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read CVEs only from explicit attack-path linkage fields."""
+    linkage_keys = {
+        "cve",
+        "cveid",
+        "cveids",
+        "cves",
+        "vulnerabilityid",
+        "vulnerabilityids",
+    }
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if str(key).casefold() in linkage_keys:
+                    found.update(
+                        match.upper()
+                        for match in _CVE_PATTERN.findall(_text(nested))
+                    )
+                elif isinstance(nested, (Mapping, list, tuple)):
+                    visit(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                visit(nested)
+
+    visit(properties)
+    return tuple(sorted(found))
+
+
 def _cve_ids_from_details(additional: Mapping[str, Any]) -> set[str]:
     """CVE ids from a container image assessment's ``additionalData``.
 
@@ -930,16 +961,20 @@ def _image_cve_details(
 
 
 def _image_details(properties: Mapping[str, Any]) -> dict[str, Any]:
-    """Parse the ``resourceAdditionalData`` JSON blob on image assessments."""
-    raw = _first_text(
-        properties.get("resourceAdditionalData"),
-        properties.get("ResourceAdditionalData"),
+    """Parse dynamic or JSON ``resourceAdditionalData`` image evidence."""
+    raw = (
+        properties.get("resourceAdditionalData")
+        if properties.get("resourceAdditionalData") is not None
+        else properties.get("ResourceAdditionalData")
     )
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
+    if isinstance(raw, Mapping):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    else:
         return {}
     if not isinstance(parsed, Mapping):
         return {}
