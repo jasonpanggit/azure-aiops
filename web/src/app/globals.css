@@ -838,6 +838,18 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+.twin-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.twin-header-actions .button {
+  white-space: nowrap;
+}
+
 .page-header-metadata {
   display: flex;
   flex-wrap: wrap;
@@ -5616,6 +5628,10 @@ body.topology-fullscreen-open {
 
   .page-header-actions {
     width: 100%;
+  }
+
+  .twin-header-actions {
+    justify-content: flex-start;
   }
 
   .queue-toolbar {
