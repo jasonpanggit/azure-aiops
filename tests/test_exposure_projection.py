@@ -115,6 +115,7 @@ def _datasets() -> dict[str, list[dict]]:
                 {
                     "severity": "Critical",
                     "recommendation": "Install KB600001",
+                    "title": "2026-09 Cumulative Update for Windows Server 2022 (KB600001)",
                     "evidence_url": "/evidence/aum/observation-aum",
                 }
             ),
@@ -285,6 +286,7 @@ def test_gold_contracts_are_registered_additively_and_keep_role_identity() -> No
         "sla_age_seconds",
         "sla_target_seconds",
         "recommendation",
+        "finding_title",
         "deployment_state",
         "represented_workload_count",
         "total_workload_count",
@@ -376,6 +378,9 @@ def test_projection_builds_generation_pinned_scoped_facts_facets_and_summaries()
     assert {
         row["recommendation"] for row in server_facts
     } == {"Install KB600001", "Upgrade the vulnerable package"}
+    assert {
+        row["finding_title"] for row in server_facts
+    } == {"2026-09 Cumulative Update for Windows Server 2022 (KB600001)", ""}
     assert all(
         row["detail_path"] == "/exposure/cves/CVE-2026-1001"
         for row in server_facts
@@ -390,6 +395,7 @@ def test_projection_builds_generation_pinned_scoped_facts_facets_and_summaries()
     assert image["total_workload_count"] == 5
     assert image["unknown_workload_count"] == 3
     assert image["recommendation"] == ""
+    assert image["finding_title"] == ""
     assert image["sla_age_seconds"] is None
 
     target_kind_facets = {

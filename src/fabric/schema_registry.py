@@ -512,6 +512,7 @@ SCHEMAS: dict[str, pa.Schema] = {
             pa.field("sla_due_at", pa.string(), nullable=True),
             pa.field("sla_overdue", pa.bool_(), nullable=True),
             pa.field("recommendation", pa.string(), nullable=False),
+            pa.field("finding_title", pa.string(), nullable=False),
             pa.field("registry_id", pa.string(), nullable=False),
             pa.field("logical_image_id", pa.string(), nullable=False),
             pa.field("image_digest_id", pa.string(), nullable=False),
