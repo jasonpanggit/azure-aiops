@@ -63,6 +63,7 @@ export interface PatchExposureFinding extends ExposureFinding {
   severity?: string;
   priority_score?: number | null;
   recommendation?: string;
+  finding_title?: string;
   sla_state?: string;
   sla_age_seconds?: number | null;
   sla_target_seconds?: number | null;
@@ -80,6 +81,87 @@ const TARGET_KIND_OPTIONS = [
   { value: "server", label: "Servers" },
   { value: "container_image", label: "Container images" },
 ];
+
+type PatchPriorityView = "patch" | "vm" | "container";
+
+const PATCH_PRIORITY_VIEWS: Array<{
+  id: PatchPriorityView;
+  label: string;
+}> = [
+  { id: "patch", label: "By patch" },
+  { id: "vm", label: "By VM" },
+  { id: "container", label: "By container image" },
+];
+
+const PATCH_PRIORITY_VIEW_COPY: Record<
+  PatchPriorityView,
+  {
+    heading: string;
+    description: string;
+    searchLabel: string;
+    caption: string;
+    regionLabel: string;
+  }
+> = {
+  patch: {
+    heading: "Patch and vulnerability priorities",
+    description:
+      "Priority-ranked findings across represented servers and container images.",
+    searchLabel: "Search patches and vulnerabilities",
+    caption: "Scoped patch and vulnerability priorities",
+    regionLabel: "Patch priorities table",
+  },
+  vm: {
+    heading: "Patch priorities by VM",
+    description:
+      "Server findings sorted by VM so operators can review each machine's patch workload.",
+    searchLabel: "Search VMs or patches",
+    caption: "VM-organized patch priorities",
+    regionLabel: "VM patch priorities table",
+  },
+  container: {
+    heading: "Vulnerability priorities by container image",
+    description:
+      "Container findings sorted by immutable image target for governed review.",
+    searchLabel: "Search container images or vulnerabilities",
+    caption: "Container image vulnerability priorities",
+    regionLabel: "Container image priorities table",
+  },
+};
+
+function requestedPatchPriorityView(
+  params: URLSearchParams,
+  state: ExposureQueryState,
+): PatchPriorityView {
+  const requested = params.get("view");
+  if (requested === "patch" || requested === "vm" || requested === "container") {
+    return requested;
+  }
+  if (state.sort.field === "target_id") {
+    if (state.filters.target_kind === "server") return "vm";
+    if (state.filters.target_kind === "container_image") return "container";
+  }
+  return "patch";
+}
+
+function queryStateForView(
+  state: ExposureQueryState,
+  view: PatchPriorityView,
+): ExposureQueryState {
+  if (view === "patch") {
+    return updateExposureQueryState(state, {
+      filters: { ...state.filters, target_kind: undefined },
+      sort: { field: "priority_score", direction: "desc" },
+    });
+  }
+  return updateExposureQueryState(state, {
+    filters: {
+      ...state.filters,
+      target_kind: view === "vm" ? "server" : "container_image",
+    },
+    sort: { field: "target_id", direction: "asc" },
+  });
+}
 
 function displayDate(value: string | null | undefined): string {
   if (!value) return "Due date unknown";
@@ -113,6 +195,14 @@ function priorityCopy(value: number | null | undefined): string {
 
 function targetKindCopy(value: PatchExposureFinding["target_kind"]): string {
   return value === "container_image" ? "Container image" : "Server";
+}
+
+function targetName(value: string): string {
+  if (value.startsWith("sha256:") && value.length > 31) {
+    return `${value.slice(0, 20)}…${value.slice(-8)}`;
+  }
+  const segments = value.split("/").filter(Boolean);
+  return segments.at(-1) || value;
 }
 
 function itemDetailHref(
@@ -158,8 +248,14 @@ function headerCompleteness(
   };
 }
 
-function canonicalPath(pathname: string, state: ExposureQueryState): string {
-  const encoded = encodeExposureQueryState(state).toString();
+function canonicalPath(
+  pathname: string,
+  state: ExposureQueryState,
+  view: PatchPriorityView = "patch",
+): string {
+  const params = encodeExposureQueryState(state);
+  if (view !== "patch") params.set("view", view);
+  const encoded = params.toString();
   return encoded ? `${pathname}?${encoded}` : pathname;
 }
 
@@ -167,6 +263,7 @@ function remediationHref(
   item: PatchExposureFinding,
   pathname: string,
   state: ExposureQueryState,
+  view: PatchPriorityView,
 ): string {
   const boundState = {
     ...state,
@@ -176,7 +273,7 @@ function remediationHref(
   const params = new URLSearchParams();
   params.set("resource_key", item.target_id);
   params.set("generation", boundState.generation);
-  params.set("return_to", canonicalPath(pathname, boundState));
+  params.set("return_to", canonicalPath(pathname, boundState, view));
   params.set("return_focus", item.exposure_id);
   if (item.subscription_id) params.append("subscription", item.subscription_id);
   if (item.weakness_kind === "kb") {
@@ -192,6 +289,7 @@ function containerReviewHref(
   handoff: ExposureRemediationCase,
   pathname: string,
   state: ExposureQueryState,
+  view: PatchPriorityView,
 ): string {
   const boundState = {
     ...state,
@@ -201,7 +299,7 @@ function containerReviewHref(
   const params = new URLSearchParams();
   params.set("handoff", handoff.handoff_id || handoff.exposure_id);
   params.set("generation", boundState.generation);
-  params.set("return_to", canonicalPath(pathname, boundState));
+  params.set("return_to", canonicalPath(pathname, boundState, view));
   params.set("return_focus", item.exposure_id);
   return `/remediation?${params.toString()}`;
 }
@@ -241,13 +339,29 @@ export default function PatchPrioritiesPage() {
     () => parseExposureDetailContext(new URLSearchParams(searchParams.toString())),
     [searchParams],
   );
-  const queryState = useMemo(
+  const parsedQueryState = useMemo(
     () =>
       parseExposureQueryState(new URLSearchParams(searchParams.toString()), {
         authorizedScope: scope,
       }),
     [scope, searchParams],
   );
+  const view = useMemo(
+    () =>
+      requestedPatchPriorityView(
+        new URLSearchParams(searchParams.toString()),
+        parsedQueryState,
+      ),
+    [parsedQueryState, searchParams],
+  );
+  const queryState = useMemo(
+    () =>
+      view === "patch"
+        ? parsedQueryState
+        : queryStateForView(parsedQueryState, view),
+    [parsedQueryState, view],
+  );
+  const viewCopy = PATCH_PRIORITY_VIEW_COPY[view];
   const [searchDraft, setSearchDraft] = useState(
     queryState.filters.search ?? "",
   );
@@ -255,10 +369,10 @@ export default function PatchPrioritiesPage() {
   searchStateRef.current = queryState;
 
   const commitQuery = useCallback(
-    (next: ExposureQueryState) => {
-      router.replace(canonicalPath(pathname, next), { scroll: false });
+    (next: ExposureQueryState, nextView: PatchPriorityView = view) => {
+      router.replace(canonicalPath(pathname, next, nextView), { scroll: false });
     },
-    [pathname, router],
+    [pathname, router, view],
   );
   const commitQueryRef = useRef(commitQuery);
   commitQueryRef.current = commitQuery;
@@ -375,6 +489,7 @@ export default function PatchPrioritiesPage() {
     observedAt: section.metadata.observedAt,
     filters: {
       target_kind: [targetKind],
+      view: [view],
       page: [String(queryState.page)],
     },
     sort: queryState.sort
@@ -400,6 +515,13 @@ export default function PatchPrioritiesPage() {
           },
         }),
       );
+    },
+    [commitQuery, queryState],
+  );
+
+  const selectView = useCallback(
+    (nextView: PatchPriorityView) => {
+      commitQuery(queryStateForView(queryState, nextView), nextView);
     },
     [commitQuery, queryState],
   );
@@ -472,7 +594,7 @@ export default function PatchPrioritiesPage() {
       <PageHeader
         eyebrow="Exposure management"
         title="Patch priorities"
-        description="Review server-backed patch and vulnerability evidence, SLA state, and governed next actions."
+        description="Review patch and vulnerability evidence by priority, VM, or container image with governed next actions."
         completeness={headerCompleteness(page)}
         actions={
           <CopilotDrawerButton
@@ -506,18 +628,39 @@ export default function PatchPrioritiesPage() {
         <section className="card queue-card" aria-labelledby="patch-priority-heading">
           <div className="card-header">
             <div>
-              <h2 id="patch-priority-heading">Patch and vulnerability priorities</h2>
+              <h2 id="patch-priority-heading">{viewCopy.heading}</h2>
               <p>
                 {represented.toLocaleString("en-US")} represented findings ·{" "}
                 {total.toLocaleString("en-US")} total findings ·{" "}
                 {excluded.toLocaleString("en-US")} excluded findings
               </p>
+              <p>{viewCopy.description}</p>
             </div>
           </div>
 
-          <div className="card-body">
+          <div className="card-body patch-priority-view-controls">
+            <div className="form-field">
+              <span id="patch-priority-view-label">Organize findings</span>
+              <div
+                className="segmented-control"
+                role="group"
+                aria-labelledby="patch-priority-view-label"
+              >
+                {PATCH_PRIORITY_VIEWS.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    className={view === candidate.id ? "segmented-active" : ""}
+                    aria-pressed={view === candidate.id}
+                    onClick={() => selectView(candidate.id)}
+                  >
+                    {candidate.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="form-field" htmlFor="patch-exposure-search">
-              <span>Search exposure</span>
+              <span>{viewCopy.searchLabel}</span>
               <input
                 id="patch-exposure-search"
                 type="search"
@@ -535,36 +678,47 @@ export default function PatchPrioritiesPage() {
             </label>
           </div>
 
-          <TableColumnFilters
-            filters={[
-              {
-                id: "target_kind",
-                label: "Target kind",
-                value: targetKind,
-                options: TARGET_KIND_OPTIONS,
-                onChange: (value) => updateFilter("target_kind", value),
-              },
-            ]}
-            resultCount={rows.length}
-            totalCount={page?.total_count ?? 0}
-            onReset={() => updateFilter("target_kind", "all")}
-          />
+          {view === "patch" && (
+            <TableColumnFilters
+              filters={[
+                {
+                  id: "target_kind",
+                  label: "Target kind",
+                  value: targetKind,
+                  options: TARGET_KIND_OPTIONS,
+                  onChange: (value) => updateFilter("target_kind", value),
+                },
+              ]}
+              resultCount={rows.length}
+              totalCount={page?.total_count ?? 0}
+              onReset={() => updateFilter("target_kind", "all")}
+            />
+          )}
 
           {rows.length > 0 && (
             <div
               className="table-scroll exposure-responsive-table"
               role="region"
-              aria-label="Patch priorities table"
+              aria-label={viewCopy.regionLabel}
               tabIndex={0}
             >
               <p className="table-scroll-hint">Scroll horizontally to see all columns</p>
               <table className="operations-table exposure-table">
-                <caption>Scoped patch and vulnerability priorities</caption>
+                <caption>{viewCopy.caption}</caption>
                 <thead>
                   <tr>
                     <th>Rank</th>
-                    <th>Finding</th>
-                    <th>Target</th>
+                    {view === "patch" ? (
+                      <>
+                        <th>Finding</th>
+                        <th>Target</th>
+                      </>
+                    ) : (
+                      <>
+                        <th>{view === "vm" ? "VM" : "Container image"}</th>
+                        <th>{view === "vm" ? "Missing patch" : "Vulnerability"}</th>
+                      </>
+                    )}
                     <th>Evidence</th>
                     <th>SLA</th>
                     <th
@@ -605,42 +759,88 @@ export default function PatchPrioritiesPage() {
                       isServer === false &&
                       containerHandoff?.outcome === "review_handoff" &&
                       containerHandoff.direct_execution_supported === false;
+                    const findingCell = (
+                      <td
+                        data-label={
+                          view === "vm"
+                            ? "Missing patch"
+                            : view === "container"
+                              ? "Vulnerability"
+                              : "Finding"
+                        }
+                      >
+                        <Link
+                          className="table-primary-link"
+                          href={itemDetailHref(item, queryState, 0)}
+                          onClick={(event) => {
+                            if (
+                              event.button === 0 &&
+                              !event.metaKey &&
+                              !event.ctrlKey &&
+                              !event.shiftKey &&
+                              !event.altKey
+                            ) {
+                              event.preventDefault();
+                              router.push(
+                                itemDetailHref(
+                                  item,
+                                  queryState,
+                                  Math.max(0, Math.round(window.scrollY)),
+                                ),
+                              );
+                            }
+                          }}
+                        >
+                          {item.weakness_id}
+                        </Link>
+                        {item.finding_title ? (
+                          <div className="table-secondary exposure-long-value">
+                            {item.finding_title}
+                          </div>
+                        ) : null}
+                        <div className="table-secondary">
+                          {item.recommendation || "Recommendation unavailable"}
+                        </div>
+                      </td>
+                    );
+                    const targetCell = (
+                      <td
+                        data-label={
+                          view === "vm"
+                            ? "VM"
+                            : view === "container"
+                              ? "Container image"
+                              : "Target"
+                        }
+                      >
+                        <strong className="exposure-long-value">
+                          {targetName(item.target_id)}
+                        </strong>
+                        <div>
+                          <StatusBadge
+                            label={targetKindCopy(item.target_kind)}
+                            tone="neutral"
+                          />
+                        </div>
+                        <div className="table-secondary exposure-long-value">
+                          {item.target_id}
+                        </div>
+                      </td>
+                    );
                     return (
                       <tr key={item.exposure_id} id={item.exposure_id} tabIndex={-1}>
                         <td data-label="Rank">Rank {rank.toLocaleString("en-US")}</td>
-                        <td data-label="Finding">
-                          <Link
-                            className="table-primary-link"
-                            href={itemDetailHref(item, queryState, 0)}
-                            onClick={(event) => {
-                              if (
-                                event.button === 0 &&
-                                !event.metaKey &&
-                                !event.ctrlKey &&
-                                !event.shiftKey &&
-                                !event.altKey
-                              ) {
-                                event.preventDefault();
-                                router.push(
-                                  itemDetailHref(
-                                    item,
-                                    queryState,
-                                    Math.max(0, Math.round(window.scrollY)),
-                                  ),
-                                );
-                              }
-                            }}
-                          >
-                            {item.weakness_id}
-                          </Link>
-                          <div className="table-secondary">
-                            {item.recommendation || "Recommendation unavailable"}
-                          </div>
-                        </td>
-                        <td data-label="Target">
-                          <StatusBadge label={targetKindCopy(item.target_kind)} tone="neutral" />
-                          <div className="table-secondary exposure-long-value">{item.target_id}</div>
-                        </td>
+                        {view === "patch" ? (
+                          <>
+                            {findingCell}
+                            {targetCell}
+                          </>
+                        ) : (
+                          <>
+                            {targetCell}
+                            {findingCell}
+                          </>
+                        )}
                         <td data-label="Evidence">
                           <strong>
                             {(item.source_families ?? [item.source_family].filter(Boolean)).join(", ") ||
@@ -667,7 +867,7 @@ export default function PatchPrioritiesPage() {
                           {isServer && item.execution_eligible ? (
                             <Link
                               className="button button-primary"
-                              href={remediationHref(item, pathname, queryState)}
+                              href={remediationHref(item, pathname, queryState, view)}
                             >
                               Open governed remediation for {item.weakness_id}
                             </Link>
@@ -680,6 +880,7 @@ export default function PatchPrioritiesPage() {
                                   containerHandoff,
                                   pathname,
                                   queryState,
+                                  view,
                                 )}
                               >
                                 Open governed container review for {item.weakness_id}

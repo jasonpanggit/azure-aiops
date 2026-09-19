@@ -52,6 +52,7 @@ REQUIRED_EXPOSURE_SCHEMA: dict[str, frozenset[str]] = {
             "image_digest_id",
             "logical_image_id",
             "recommendation",
+            "finding_title",
             "registry_id",
             "severity",
             "sla_age_seconds",

@@ -119,6 +119,8 @@ function exposureEnvelope() {
           severity: "Critical",
           priority_score: 91,
           recommendation: "Install KB600001",
+          finding_title:
+            "2026-09 Cumulative Update for Windows Server 2022 (KB600001)",
           current_state: "missing",
           sla_state: "overdue",
           sla_age_seconds: 172800,
@@ -200,6 +202,11 @@ describe("Patch priorities", () => {
     render(<PatchPrioritiesPage />);
 
     expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "2026-09 Cumulative Update for Windows Server 2022 (KB600001)",
+      ),
+    ).toBeInTheDocument();
     expect(api.exposureItems).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: { subscription: ["sub-1"] },
@@ -267,6 +274,68 @@ describe("Patch priorities", () => {
     );
   });
 
+  it("switches to truthful server-backed VM and container image views", async () => {
+    const user = userEvent.setup();
+    render(<PatchPrioritiesPage />);
+    await screen.findByText("KB600001");
+
+    await user.click(screen.getByRole("button", { name: "By VM" }));
+    const vmUrl = new URL(
+      String(navigation.replace.mock.lastCall?.[0]),
+      "https://example.test",
+    );
+    expect(vmUrl.pathname).toBe("/exposure/patch-priorities");
+    expect(vmUrl.searchParams.get("view")).toBe("vm");
+    expect(vmUrl.searchParams.get("target_kind")).toBe("server");
+    expect(vmUrl.searchParams.get("sort_by")).toBe("target_id");
+    expect(vmUrl.searchParams.get("sort_direction")).toBe("asc");
+    expect(vmUrl.searchParams.has("cursor")).toBe(false);
+
+    await user.click(
+      screen.getByRole("button", { name: "By container image" }),
+    );
+    const containerUrl = new URL(
+      String(navigation.replace.mock.lastCall?.[0]),
+      "https://example.test",
+    );
+    expect(containerUrl.searchParams.get("view")).toBe("container");
+    expect(containerUrl.searchParams.get("target_kind")).toBe(
+      "container_image",
+    );
+    expect(containerUrl.searchParams.get("sort_by")).toBe("target_id");
+  });
+
+  it("loads a direct VM view with VM-first presentation and canonical query semantics", async () => {
+    navigation.params = new URLSearchParams(
+      "subscription=sub-1&view=vm&page_size=25",
+    );
+    render(<PatchPrioritiesPage />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Patch priorities by VM" }),
+    ).toBeInTheDocument();
+    expect(api.exposureItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({ target_kind: "server" }),
+        sort: { field: "target_id", direction: "asc" },
+        pageSize: 25,
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(
+      screen.getByRole("region", { name: "VM patch priorities table" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "VM-organized patch priorities" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "VM" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Missing patch" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Filter by Target kind" }))
+      .not.toBeInTheDocument();
+  });
+
   it("preserves canonical Exposure state in the governed remediation return context", async () => {
     render(<PatchPrioritiesPage />);
 
@@ -304,7 +373,9 @@ describe("Patch priorities", () => {
     await screen.findByText("KB600001");
 
     fireEvent.change(
-      screen.getByRole("searchbox", { name: "Search exposure" }),
+      screen.getByRole("searchbox", {
+        name: "Search patches and vulnerabilities",
+      }),
       { target: { value: "openssl" } },
     );
 
@@ -368,8 +439,20 @@ describe("Patch priorities", () => {
       }),
     ).toBeInTheDocument();
 
-    screen.getByRole("searchbox", { name: "Search exposure" }).focus();
-    expect(screen.getByRole("searchbox", { name: "Search exposure" })).toHaveFocus();
+    screen.getByRole("button", { name: "By patch" }).focus();
+    expect(screen.getByRole("button", { name: "By patch" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "By VM" })).toHaveFocus();
+    await user.tab();
+    expect(
+      screen.getByRole("button", { name: "By container image" }),
+    ).toHaveFocus();
+    await user.tab();
+    expect(
+      screen.getByRole("searchbox", {
+        name: "Search patches and vulnerabilities",
+      }),
+    ).toHaveFocus();
     await user.tab();
     expect(
       screen.getByRole("combobox", { name: "Filter by Target kind" }),
