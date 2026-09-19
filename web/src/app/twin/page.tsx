@@ -182,12 +182,13 @@ export default function OperationalTwinPage() {
         title="Current and historical model of operational reality"
         description="A request-time twin that connects semantic relationships with live topology, vulnerabilities, incidents, and governed remediation outcomes."
         actions={
-          <div className="mode-toggle" aria-label="Twin actions">
+          <div className="twin-header-actions" aria-label="Twin actions">
             <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about the twin" />
-            <button type="button" onClick={() => void twinApi.graph(scope).then(setSnapshot)}>
+            <button className="button" type="button" onClick={() => void twinApi.graph(scope).then(setSnapshot)}>
               Refresh current state
             </button>
             <button
+              className="button"
               type="button"
               onClick={() => {
                 const payload = JSON.stringify(exported?.data ?? snapshot?.data ?? {}, null, 2);
