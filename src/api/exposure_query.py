@@ -120,6 +120,7 @@ _PAGE_COLUMNS = (
     "sla_due_at",
     "sla_overdue",
     "recommendation",
+    "finding_title",
     "registry_id",
     "logical_image_id",
     "image_digest_id",
@@ -2292,7 +2293,8 @@ def _append_filter_predicates(
             predicates.append(
                 "(LOWER([target_id]) LIKE ? ESCAPE '\\' "
                 "OR LOWER([weakness_id]) LIKE ? ESCAPE '\\' "
-                "OR LOWER([recommendation]) LIKE ? ESCAPE '\\')"
+                "OR LOWER([recommendation]) LIKE ? ESCAPE '\\' "
+                "OR LOWER([finding_title]) LIKE ? ESCAPE '\\')"
             )
             escaped = (
                 value.casefold()
@@ -2300,7 +2302,7 @@ def _append_filter_predicates(
                 .replace("%", "\\%")
                 .replace("_", "\\_")
             )
-            parameters.extend((f"%{escaped}%",) * 3)
+            parameters.extend((f"%{escaped}%",) * 4)
             continue
         column = _FILTER_FIELDS[field]
         if operator == "in":

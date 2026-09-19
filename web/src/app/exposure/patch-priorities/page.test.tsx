@@ -125,6 +125,8 @@ function exposureEnvelope(refresh?: ExposureRefreshState) {
           severity: "Critical",
           priority_score: 91,
           recommendation: "Install KB600001",
+          finding_title:
+            "2026-09 Cumulative Update for Windows Server 2022 (KB600001)",
           current_state: "missing",
           sla_state: "overdue",
           sla_age_seconds: 172800,
@@ -206,6 +208,11 @@ describe("Patch priorities", () => {
     render(<PatchPrioritiesPage />);
 
     expect(await screen.findByText("KB600001")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "2026-09 Cumulative Update for Windows Server 2022 (KB600001)",
+      ),
+    ).toBeInTheDocument();
     expect(api.exposureItems).toHaveBeenCalledTimes(1);
     expect(api.exposureHandoffs).not.toHaveBeenCalled();
     expect(api.riskExceptions).not.toHaveBeenCalled();

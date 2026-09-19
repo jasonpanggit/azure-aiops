@@ -50,6 +50,7 @@ export interface PatchExposureFinding extends ExposureFinding {
   severity?: string;
   priority_score?: number | null;
   recommendation?: string;
+  finding_title?: string;
   sla_state?: string;
   sla_age_seconds?: number | null;
   sla_target_seconds?: number | null;
@@ -747,6 +748,11 @@ export default function PatchPrioritiesPage() {
                         >
                           {item.weakness_id}
                         </Link>
+                        {item.finding_title ? (
+                          <div className="table-secondary exposure-long-value">
+                            {item.finding_title}
+                          </div>
+                        ) : null}
                         <div className="table-secondary">
                           {item.recommendation || "Recommendation unavailable"}
                         </div>
