@@ -42,6 +42,7 @@ import {
   updateExposureQueryState,
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
+import type { ScopeSelection } from "@/lib/scope";
 import {
   useExposureSection,
   type ExposureSectionPresentation,
@@ -148,6 +149,26 @@ function cursorEnvelope<T>(
   promise: Promise<Envelope<T>>,
 ): Promise<Envelope<T, ExposureCursorPagination>> {
   return promise as unknown as Promise<Envelope<T, ExposureCursorPagination>>;
+}
+
+const ATTACK_PATH_TIMEOUT_MS = 15_000;
+
+function boundedAttackPathRequest(
+  cveId: string,
+  scope: ScopeSelection,
+  signal: AbortSignal,
+): Promise<Envelope<AttackPathGraph>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTACK_PATH_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  signal.addEventListener("abort", abort, { once: true });
+
+  return vulnerabilityApi
+    .attackPath(cveId, scope, { signal: controller.signal })
+    .finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    });
 }
 
 function catalogSource(
@@ -507,8 +528,11 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             },
           })
         : cursorEnvelope(
-            vulnerabilityApi.attackPath(cveId, findingState.scope, { signal }),
+            boundedAttackPathRequest(cveId, findingState.scope, signal),
           ),
+        boundedAttackPathRequest(cveId, findingState.scope, signal),
+      ),
+>>>>>>> d27f23b45 (feat(exposure): use Defender attack paths for CVEs)
     isEmpty: (graph) => graph.edges.length === 0,
   });
 
