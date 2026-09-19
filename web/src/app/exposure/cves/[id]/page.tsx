@@ -530,9 +530,6 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         : cursorEnvelope(
             boundedAttackPathRequest(cveId, findingState.scope, signal),
           ),
-        boundedAttackPathRequest(cveId, findingState.scope, signal),
-      ),
->>>>>>> d27f23b45 (feat(exposure): use Defender attack paths for CVEs)
     isEmpty: (graph) => graph.edges.length === 0,
   });
 
