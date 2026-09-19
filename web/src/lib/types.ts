@@ -1167,6 +1167,8 @@ export interface AttackPathGraph {
   edges: AttackPathEdge[];
   reachable_server_count: number;
   internet_exposed: boolean;
+  source?: "aum_network_correlation" | "defender_attack_paths";
+  path_count?: number;
 }
 
 export interface RiskException {

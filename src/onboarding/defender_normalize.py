@@ -707,6 +707,7 @@ def normalize_attack_path(
         "entryPointNodeId": internal_to_node.get(entry_internal.casefold(), ""),
         "targetNodeId": internal_to_node.get(target_internal.casefold(), ""),
         "resourceIds": list(resource_ids),
+        "cveIds": list(_attack_path_cve_ids(properties)),
         "assessmentIds": _assessment_ids(
             properties.get("assessments"), _text(row.get("subscriptionId"))
         ),
@@ -855,6 +856,36 @@ def _cve_ids(properties: Mapping[str, Any]) -> tuple[str, ...]:
                 else _text(item)
             )
             found.update(match.upper() for match in _CVE_PATTERN.findall(candidate))
+    return tuple(sorted(found))
+
+
+def _attack_path_cve_ids(properties: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read CVEs only from explicit attack-path linkage fields."""
+    linkage_keys = {
+        "cve",
+        "cveid",
+        "cveids",
+        "cves",
+        "vulnerabilityid",
+        "vulnerabilityids",
+    }
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if str(key).casefold() in linkage_keys:
+                    found.update(
+                        match.upper()
+                        for match in _CVE_PATTERN.findall(_text(nested))
+                    )
+                elif isinstance(nested, (Mapping, list, tuple)):
+                    visit(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                visit(nested)
+
+    visit(properties)
     return tuple(sorted(found))
 
 
