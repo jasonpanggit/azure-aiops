@@ -422,12 +422,12 @@ def test_failed_sync_preserves_last_successful_sync(tmp_path: Path) -> None:
 
     clock.advance(hours=1)
     failing = build_service(
-        tmp_path, ingestion=FakeIngestion(error="ARG throttled"), clock=clock
+        tmp_path, ingestion=FakeIngestion(error="ARG request rejected"), clock=clock
     )
     result = failing.sync("prod-core", mode="scheduled")
 
     assert result["status"] == "failed"
-    assert result["message"] == "ARG throttled"
+    assert result["message"] == "ARG request rejected"
     assert result["sync_state"]["last_successful_sync_at"] == good
     assert result["sync_state"]["attempts"] == 2
     assert result["health"]["healthy"] is False
@@ -1015,6 +1015,143 @@ def test_sync_coordinator_surfaces_publish_failure_as_failed_sync(tmp_path: Path
     assert result.record_count == 7
 
 
+class FlakyIngestion:
+    """Fails with a given error for the first ``fail_times`` calls, then
+    succeeds -- stands in for a Fabric capacity resume window clearing up
+    partway through a bounded retry loop."""
+
+    def __init__(self, error: str, fail_times: int) -> None:
+        self.error = error
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise RuntimeError(self.error)
+        return {"queryVersion": "1.0.0", "datasets": {"entities/resource": {"rowCount": 7}}}
+
+
+def test_sync_coordinator_retries_transient_discovery_failure_and_succeeds(
+    tmp_path: Path,
+) -> None:
+    """A Fabric capacity blip ("... is currently not available") during
+    discovery must not surface as a failed patch-priorities refresh if the
+    capacity recovers within the bounded retry window."""
+    ingestion = FlakyIngestion(
+        "Unable to complete the action because this Fabric capacity "
+        "6616292a-d806-4f20-91c0-5e035fa3c1b4 is currently not available.",
+        fail_times=2,
+    )
+    sleeps: list[float] = []
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: ingestion,
+        transient_retry_attempts=3,
+        transient_retry_base_seconds=0.01,
+        sleep=sleeps.append,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    result, state = coordinator.run(connection, mode="manual")
+
+    assert result.status == "succeeded"
+    assert state.stage == "succeeded"
+    assert ingestion.calls == 3
+    assert len(sleeps) == 2
+
+
+def test_sync_coordinator_stops_retrying_after_exhausting_attempts(
+    tmp_path: Path,
+) -> None:
+    ingestion = FlakyIngestion("Fabric capacity is currently not available.", fail_times=99)
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: ingestion,
+        transient_retry_attempts=2,
+        transient_retry_base_seconds=0.01,
+        sleep=lambda _seconds: None,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    result, state = coordinator.run(connection, mode="manual")
+
+    assert result.status == "failed"
+    assert state.stage == "failed"
+    assert ingestion.calls == 2
+
+
+def test_sync_coordinator_does_not_retry_non_transient_discovery_failure(
+    tmp_path: Path,
+) -> None:
+    """A genuine, actionable error (e.g. bad credentials) must fail fast --
+    retrying it would only delay the user seeing a real problem."""
+    ingestion = FlakyIngestion("AuthorizationFailed for arg_read", fail_times=99)
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: ingestion,
+        transient_retry_attempts=3,
+        transient_retry_base_seconds=0.01,
+        sleep=lambda _seconds: None,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    result, _state = coordinator.run(connection, mode="manual")
+
+    assert result.status == "failed"
+    assert ingestion.calls == 1
+
+
+def test_sync_coordinator_retries_transient_publish_failure_and_succeeds(
+    tmp_path: Path,
+) -> None:
+    publisher = FakePublisher()
+    original_run = publisher.run
+    calls = {"count": 0}
+
+    def _flaky_run(progress_callback=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("Fabric capacity is currently not available.")
+        return original_run(progress_callback)
+
+    publisher.run = _flaky_run
+    coordinator = ConnectionSyncCoordinator(
+        tmp_path,
+        ingestion_factory=lambda connection: FakeIngestion(),
+        publish_factory=lambda connection: publisher,
+        transient_retry_attempts=3,
+        transient_retry_base_seconds=0.01,
+        sleep=lambda _seconds: None,
+    )
+    service = build_service(tmp_path)
+    service.sync_coordinator = coordinator
+    onboard(service)
+    connection = service.registry.get("prod-core")
+
+    result, state = coordinator.run(connection, mode="manual")
+
+    assert result.status == "succeeded"
+    assert state.stage == "succeeded"
+    assert calls["count"] == 2
+
+
+def test_sync_coordinator_rejects_a_non_positive_transient_retry_attempts(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="transient_retry_attempts must be positive"):
+        ConnectionSyncCoordinator(tmp_path, transient_retry_attempts=0)
+
+
 def test_sync_coordinator_times_out_a_hung_publish_instead_of_stalling_forever(
     tmp_path: Path,
 ) -> None:
@@ -1186,7 +1323,7 @@ def test_enqueue_full_sync_does_not_double_start_a_live_inventory_sync(
 
 
 def test_sync_async_persists_failure_from_background_job(tmp_path: Path) -> None:
-    service = build_service(tmp_path, ingestion=FakeIngestion(error="ARG throttled"))
+    service = build_service(tmp_path, ingestion=FakeIngestion(error="ARG request rejected"))
     onboard(service)
 
     service.sync_async("prod-core", mode="manual")
