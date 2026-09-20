@@ -978,6 +978,9 @@ CREATE_AGENT_SCRIPT = REPO_ROOT / "infra" / "scripts" / "create-foundry-agent.sh
 
 _CURL_STUB = """#!/usr/bin/env bash
 set -eu
+if [ -n "${STUB_CURL_ARGS:-}" ]; then
+  printf '%s\\n' "$@" >>"$STUB_CURL_ARGS"
+fi
 for arg in "$@"; do
   case "$arg" in
     *login.microsoftonline.com*)
@@ -998,6 +1001,14 @@ if [ -n "$out" ]; then
   sed "s/__N__/${n}/g" "$STUB_RESPONSE_FILE" >"$out"
 fi
 printf '%s' "${STUB_HTTP_STATUS:-201}"
+"""
+
+_AZ_STUB = """#!/usr/bin/env bash
+set -eu
+if [ -n "${STUB_AZ_ARGS:-}" ]; then
+  printf '%s\\n' "$@" >>"$STUB_AZ_ARGS"
+fi
+printf '%s' "${STUB_AZ_TOKEN-stub-token}"
 """
 
 _VALIDATOR_STUB = """import json, os, sys
@@ -1027,6 +1038,9 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
     curl = bin_dir / "curl"
     curl.write_text(_CURL_STUB, encoding="utf-8")
     curl.chmod(0o755)
+    az = bin_dir / "az"
+    az.write_text(_AZ_STUB, encoding="utf-8")
+    az.chmod(0o755)
 
     response_file = tmp_path / "response.json"
     response_file.write_text(json.dumps(response), encoding="utf-8")
@@ -1045,6 +1059,8 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
         "AZURE_CLIENT_ID": "client",
         "AZURE_CLIENT_SECRET": "secret",
         "STUB_CREATE_LOG": str(tmp_path / "create.log"),
+        "STUB_CURL_ARGS": str(tmp_path / "curl-args.log"),
+        "STUB_AZ_ARGS": str(tmp_path / "az-args.log"),
         "STUB_RESPONSE_FILE": str(response_file),
         "STUB_LIVE_LOG": str(tmp_path / "live.json"),
         "FOUNDRY_PARITY_VALIDATOR": str(validator),
@@ -1059,6 +1075,8 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
         ),
     }
     (tmp_path / "create.log").write_text("", encoding="utf-8")
+    (tmp_path / "curl-args.log").write_text("", encoding="utf-8")
+    (tmp_path / "az-args.log").write_text("", encoding="utf-8")
 
     if specialists is not None:
         env["FOUNDRY_SPECIALISTS_JSON"] = json.dumps(specialists)
@@ -1088,6 +1106,77 @@ def _twelve_specialists():
         }
         for specialist in manifest.specialists
     }
+
+
+def test_create_agent_supports_explicit_azure_cli_auth_without_client_secret(
+    tmp_path,
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["FOUNDRY_AUTH_MODE"] = "azure_cli"
+    env.pop("AZURE_TENANT_ID")
+    env.pop("AZURE_CLIENT_ID")
+    env.pop("AZURE_CLIENT_SECRET")
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    az_args = (tmp_path / "az-args.log").read_text(encoding="utf-8")
+    assert "get-access-token" in az_args
+    assert "https://ai.azure.com" in az_args
+    curl_args = (tmp_path / "curl-args.log").read_text(encoding="utf-8")
+    assert "stub-token" not in curl_args
+    assert "secret" not in curl_args
+
+
+def test_create_agent_rejects_unknown_auth_mode_before_provider_io(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["FOUNDRY_AUTH_MODE"] = "unknown"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "unsupported foundry_auth_mode" in result.stderr.casefold()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "az-args.log").read_text(encoding="utf-8") == ""
+
+
+def test_create_agent_rejects_empty_azure_cli_token_before_provider_io(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["FOUNDRY_AUTH_MODE"] = "azure_cli"
+    env["STUB_AZ_TOKEN"] = ""
+    env.pop("AZURE_TENANT_ID")
+    env.pop("AZURE_CLIENT_ID")
+    env.pop("AZURE_CLIENT_SECRET")
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "empty access token" in result.stderr.casefold()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+
+
+def test_create_agent_keeps_client_secret_and_token_out_of_curl_arguments(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["AZURE_CLIENT_SECRET"] = "s3cr3t-value-123"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    curl_args = (tmp_path / "curl-args.log").read_text(encoding="utf-8")
+    assert env["AZURE_CLIENT_SECRET"] not in curl_args
+    assert "stub-token" not in curl_args
 
 
 def test_create_agent_records_the_actual_provider_version_id(tmp_path):
