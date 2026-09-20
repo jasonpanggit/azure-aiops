@@ -483,6 +483,14 @@ resource "azurerm_container_app" "api" {
       dynamic "env" {
         for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
         content {
+          name  = "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST"
+          value = var.foundry_specialist_candidate_binding_sha256
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
           name  = "AIOPS_FOUNDRY_CANDIDATE_EXPECTED_NAMES"
           value = jsonencode(local.foundry_specialist_agent_names)
         }
@@ -631,16 +639,6 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256"
         value = local.copilot_canary_authorization.candidate_binding.manifest_sha256
-      }
-
-      env {
-        name  = "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256"
-        value = local.copilot_canary_authorization.candidate_binding.strict_candidate_sha256
-      }
-
-      env {
-        name  = "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256"
-        value = local.copilot_canary_authorization.candidate_binding.runtime_sha256
       }
 
       env {
@@ -848,11 +846,13 @@ resource "azurerm_container_app" "api" {
           lower(var.agent_orchestration_mode) == "maf" &&
           local.foundry_specialist_activation_source == "validated_promotion" &&
           local.foundry_candidate_catalog_artifact_present &&
-          local.foundry_candidate_catalog_artifact_digest == local.copilot_canary_authorization.candidate_binding.strict_candidate_sha256 &&
+          local.foundry_candidate_catalog_artifact_digest == var.foundry_specialist_candidate_catalog_artifact_sha256 &&
+          var.foundry_specialist_candidate_binding_sha256 == local.copilot_canary_authorization.candidate_binding.semantic_sha256 &&
+          local.copilot_canary_authorization.candidate_binding.semantic_algorithm == "sha256-canonical-json-candidate-v1" &&
           local.specialist_manifest_digest == local.copilot_canary_authorization.candidate_binding.manifest_sha256
         )
       )
-      error_message = "Canary requires 1-10%, immutable API image/source/candidate/manifest digests, MAF orchestration, and a validated promoted provider mapping."
+      error_message = "Canary requires 1-10%, immutable API image/source, raw candidate transport integrity, the reviewed semantic candidate binding, the manifest digest, MAF orchestration, and a validated promoted provider mapping."
     }
 
     precondition {

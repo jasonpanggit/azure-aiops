@@ -48,6 +48,8 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "AIOPS_COPILOT_CANARY_PERCENTAGE": "10",
                 "AIOPS_COPILOT_ROLLBACK_MODE": "compatibility",
                 "AIOPS_SOURCE_REVISION": "a" * 40,
+                "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": "d" * 64,
+                "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": "e" * 64,
                 "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": "b" * 64,
                 "AIOPS_API_IMAGE_DIGEST": f"sha256:{'c' * 64}",
             },
@@ -137,6 +139,8 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "101"),
         ("AIOPS_COPILOT_ROLLBACK_MODE", "default"),
         ("AIOPS_SOURCE_REVISION", "main"),
+        ("AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST", "sha256:bad"),
+        ("AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST", "sha256:bad"),
         ("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
         ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
     ],
@@ -189,6 +193,14 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert f"export FOUNDRY_CANDIDATE_MAPPING={candidate}" in rendered
     assert "export AIOPS_COPILOT_ROLLOUT_MODE=canary" in rendered
     assert f"export AIOPS_SOURCE_REVISION={'a' * 40}" in rendered
+    assert (
+        f"export AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST={'d' * 64}"
+        in rendered
+    )
+    assert (
+        f"export AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST={'e' * 64}"
+        in rendered
+    )
     assert (
         f"export AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256={'b' * 64}"
         in rendered
@@ -273,6 +285,8 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "AIOPS_COPILOT_CANARY_PERCENTAGE",
         "AIOPS_COPILOT_ROLLBACK_MODE",
         "AIOPS_SOURCE_REVISION",
+        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST",
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
         "AIOPS_API_IMAGE_DIGEST",
     ):
