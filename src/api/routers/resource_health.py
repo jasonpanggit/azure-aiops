@@ -32,6 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
+from intelligence.health.service import SUPPORTED_RESOURCE_TYPES
 from onboarding.runtime import connection_cache_identity
 
 from ..dependencies import Context, ReadScope, live_subscription_ids
@@ -49,6 +50,10 @@ SOURCE_TABLE = "azure_monitor_metrics"
 _RESOURCE_HEALTH_CACHE_TTL_SECONDS = 120
 _resource_health_cache: dict[
     tuple[tuple[str, ...], tuple[tuple[str, ...], ...]],
+    tuple[float, Any],
+] = {}
+_resource_health_detail_cache: dict[
+    tuple[tuple[str, ...], tuple[tuple[str, ...], ...], str],
     tuple[float, Any],
 ] = {}
 
@@ -114,3 +119,102 @@ def resource_health(
         scope=scope.to_dict(),
         warnings=snapshot.warnings,
     )
+
+
+@router.get(
+    "/resource",
+    summary="Live CPU/disk/network utilization for one authorized compute resource",
+)
+def resource_health_resource(
+    context: Context,
+    scope: ReadScope,
+    resource_id: str = Query(..., min_length=1),
+    force_refresh: bool = Query(
+        False,
+        description=(
+            "Bypass the per-resource health cache and re-query Azure Monitor "
+            "even when the current reading is still within its TTL."
+        ),
+    ),
+) -> dict[str, Any]:
+    """Return one inventory-authorized resource's live health snapshot."""
+    identity = context.inventory_read_port().get_resource(scope, resource_id)
+    if (
+        identity is None
+        or str(identity.get("resource_type") or "").casefold()
+        not in SUPPORTED_RESOURCE_TYPES
+    ):
+        raise _resource_not_found()
+
+    canonical_resource_id = str(identity.get("resource_id") or "")
+    subscription_id = str(identity.get("subscription_id") or "")
+    if not canonical_resource_id or not subscription_id:
+        raise _resource_not_found()
+
+    # Authorization above is deliberately performed before cache or provider
+    # access on every request. Unrestricted administrators still resolve the
+    # provider for only the authorized identity's subscription.
+    effective_scope = tuple(
+        sorted(
+            value.casefold()
+            for value in (scope.values("subscription") or {subscription_id})
+        )
+    )
+    requested = {subscription_id.casefold()}
+    connection_identities = tuple(
+        sorted(
+            connection_cache_identity(connection)
+            for connection in context.onboarding.registry.list(include_disabled=False)
+            if str(connection.subscription_id).casefold() in requested
+        )
+    )
+    cache_key = (
+        effective_scope,
+        connection_identities,
+        canonical_resource_id.casefold(),
+    )
+    now = time.monotonic()
+    cached = _resource_health_detail_cache.get(cache_key)
+    is_cached = False
+    if (
+        not force_refresh
+        and cached is not None
+        and now - cached[0] < _RESOURCE_HEALTH_CACHE_TTL_SECONDS
+    ):
+        snapshot = cached[1]
+        is_cached = True
+    else:
+        if context.hybrid_resource_health_provider is None:
+            raise ApiError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Resource health is unavailable because no provider is configured",
+                {"capability": "resource_health", "provider_state": "unavailable"},
+            )
+        service = context.hybrid_resource_health_provider([subscription_id])
+        try:
+            snapshot = service.snapshot_resource(
+                identity,
+                subscription_ids=[subscription_id],
+            )
+        except LookupError as exc:
+            raise _resource_not_found() from exc
+        _resource_health_detail_cache[cache_key] = (now, snapshot)
+
+    payload = snapshot.to_dict()
+    payload["cached"] = is_cached
+    payload["cache_ttl_seconds"] = _RESOURCE_HEALTH_CACHE_TTL_SECONDS
+    return envelope(
+        payload,
+        evidence=Evidence(
+            source_engine=SOURCE_ENGINE,
+            source_table=SOURCE_TABLE,
+            timestamp=snapshot.observed_at,
+            confidence=CONFIDENCE_HIGH,
+        ),
+        scope=scope.to_dict(),
+        warnings=snapshot.warnings,
+    )
+
+
+def _resource_not_found() -> ApiError:
+    return ApiError(ErrorCode.NOT_FOUND, "Resource health was not found")

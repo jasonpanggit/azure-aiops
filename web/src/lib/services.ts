@@ -1721,14 +1721,31 @@ export const healthApi = {
 };
 
 export const resourceHealthApi = {
-  /** Live CPU/network/disk utilization for in-scope compute resources.
-   * Requires an explicit subscription scope -- unlike most routes there is
-   * no snapshot fallback, since a stale utilization reading would actively
-   * mislead an operator. */
+  /** Live CPU/network/disk utilization for in-scope compute resources. */
   snapshot: (scope: ScopeSelection = {}, forceRefresh = false) => {
     const query = scopeToSearchParams(scope);
     if (forceRefresh) query.set("force_refresh", "true");
     return apiRequest<ResourceHealthSnapshot>("/resource-health", { query });
+  },
+  /**
+   * Fetch live utilization for one inventory-authorized resource.
+   *
+   * The caller may abort an obsolete card request without affecting sibling
+   * cards. Scope and resource identity are still re-authorized by the server.
+   */
+  resource: (
+    resourceId: string,
+    scope: ScopeSelection = {},
+    forceRefresh = false,
+    options: { signal?: AbortSignal } = {},
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    if (forceRefresh) query.set("force_refresh", "true");
+    return apiRequest<ResourceHealthSnapshot>("/resource-health/resource", {
+      query,
+      signal: options.signal,
+    });
   },
 };
 
