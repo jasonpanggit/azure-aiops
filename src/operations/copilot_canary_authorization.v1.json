@@ -11,7 +11,7 @@
   },
   "review_provenance": {
     "repository": "https://github.com/jasonpanggit/azure-aiops",
-    "evidence_commit": "10af2ff5a8f4e2eb928072e22929d170aa37aada"
+    "evidence_commit": "792c6dbdf391790027d49f7f37ef99e53d4411fe"
   },
   "reviewed_tree": {
     "algorithm": "sha256-path-length-content-v1",
@@ -39,7 +39,7 @@
     "exclude_paths": [
       "src/operations/copilot_canary_authorization.v1.json"
     ],
-    "sha256": "eccfb19173879a03fec2c73cc382184f170b77021e0e509235f6231d7ff6cbb5"
+    "sha256": "e478182e5012604e05639460d912dbac423d2c8dafad0f9e646c8f0c1ce39c99"
   },
   "authorization_scope": {
     "allowed_modes": [
