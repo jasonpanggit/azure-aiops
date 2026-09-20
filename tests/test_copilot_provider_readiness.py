@@ -192,7 +192,7 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
 
 
-def test_provider_env_export_accepts_disabled_optional_ai_search(
+def test_provider_env_export_blocks_disabled_ai_search(
     tmp_path: Path,
 ) -> None:
     candidate = tmp_path / "candidate.json"
@@ -204,11 +204,13 @@ def test_provider_env_export_accepts_disabled_optional_ai_search(
 
     result, destination = _run_exporter(tmp_path, payload)
 
-    assert result.returncode == 0, result.stderr
-    assert destination.exists()
+    assert result.returncode == 3
+    assert "FOUNDRY_AI_SEARCH_CONNECTION_ID" in result.stderr
+    assert "FOUNDRY_AI_SEARCH_INDEX_NAME" in result.stderr
+    assert not destination.exists()
 
 
-def test_provider_env_export_rejects_partial_ai_search_configuration(
+def test_provider_env_export_blocks_partial_ai_search_configuration(
     tmp_path: Path,
 ) -> None:
     candidate = tmp_path / "candidate.json"
@@ -217,6 +219,27 @@ def test_provider_env_export_rejects_partial_ai_search_configuration(
     payload["copilot_provider_environment"]["value"][  # type: ignore[index]
         "FOUNDRY_AI_SEARCH_INDEX_NAME"
     ] = ""
+
+    result, destination = _run_exporter(tmp_path, payload)
+
+    assert result.returncode == 3
+    assert "FOUNDRY_AI_SEARCH_INDEX_NAME" in result.stderr
+    assert not destination.exists()
+
+
+def test_provider_env_export_rejects_cross_project_ai_search_connection(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    _candidate_mapping(candidate)
+    payload = _terraform_output(candidate)
+    payload["copilot_provider_environment"]["value"][  # type: ignore[index]
+        "FOUNDRY_AI_SEARCH_CONNECTION_ID"
+    ] = (
+        "/subscriptions/other/resourceGroups/rg/providers/"
+        "Microsoft.CognitiveServices/accounts/account/projects/other/"
+        "connections/ai-search"
+    )
 
     result, destination = _run_exporter(tmp_path, payload)
 
