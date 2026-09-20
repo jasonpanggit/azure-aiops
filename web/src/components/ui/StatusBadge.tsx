@@ -28,3 +28,23 @@ export function statusTone(value?: string | null): StatusTone {
   if (["retired", "cancelled", "rolled back", "superseded", "shadow mode", "dormant"].includes(normalized)) return "neutral";
   return "neutral";
 }
+
+/** Maps a status tone to the matching CSS custom property, for chart series
+ * (donut segments, bars) that need to stay visually consistent with
+ * StatusBadge colors used elsewhere on the same page. */
+export function toneColor(tone: StatusTone): string {
+  switch (tone) {
+    case "critical":
+      return "var(--color-critical)";
+    case "high":
+      return "var(--color-high)";
+    case "warning":
+      return "var(--color-warning)";
+    case "success":
+      return "var(--color-success)";
+    case "info":
+      return "var(--color-info)";
+    default:
+      return "var(--color-text-muted)";
+  }
+}

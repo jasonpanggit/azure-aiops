@@ -7,11 +7,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
-import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { StatusBadge, statusTone, toneColor } from "@/components/ui/StatusBadge";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useExposureSection } from "@/hooks/useExposureSection";
 import {
@@ -127,10 +128,25 @@ export default function DefenderPosturePage() {
   });
 
   const page = section.data;
-  const rows = page?.items ?? [];
+  const rows = useMemo(() => page?.items ?? [], [page?.items]);
   const criticalCount = rows.filter(
     (item) => item.severity?.toLocaleLowerCase("en-US") === "critical",
   ).length;
+  const severityBreakdown = useMemo(() => {
+    const order = ["critical", "high", "medium", "low"];
+    const counts = new Map<string, number>();
+    for (const item of rows) {
+      const key = (item.severity || "unknown").toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const keys = [...order.filter((key) => counts.has(key)), ...Array.from(counts.keys()).filter((key) => !order.includes(key))];
+    return keys.map((key) => ({
+      label: key.charAt(0).toUpperCase() + key.slice(1),
+      value: counts.get(key) ?? 0,
+      color: toneColor(statusTone(key)),
+    }));
+  }, [rows]);
+
   const first = rows.length ? (queryState.page - 1) * queryState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
   const sourceStatus = section.status === "current" || section.status === "healthy-empty"
@@ -261,6 +277,19 @@ export default function DefenderPosturePage() {
                 completeness={section.status === "current" ? "complete" : "partial"}
               />
             </div>
+
+            {rows.length > 0 && (
+              <div className="dashboard-charts-row">
+                <div className="chart-card">
+                  <h3 className="chart-card-title">Severity mix (loaded rows only)</h3>
+                  <DonutChart
+                    segments={severityBreakdown}
+                    centerValue={rows.length}
+                    centerLabel="on this page"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="exposure-finding-list" aria-label="Defender image finding list">
               {rows.map((item) => (

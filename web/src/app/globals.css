@@ -3088,6 +3088,175 @@ textarea:focus-visible {
   color: var(--color-text-muted);
 }
 
+/* Shared dashboard chart row: place a DonutChart, CountBarChart, and/or
+   RiskGauge above a table or metric grid for an at-a-glance summary. Used
+   consistently across Exposure and any other page adopting the same
+   dashboard-style chart cards. */
+.dashboard-charts-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.chart-card {
+  min-width: 0;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+.chart-card-title {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.donut-chart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.donut-chart-svg {
+  width: 92px;
+  height: 92px;
+  flex-shrink: 0;
+}
+
+.donut-chart-svg circle {
+  transition: stroke-dasharray 400ms ease;
+}
+
+.donut-chart-center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-left: -78px;
+  width: 64px;
+  pointer-events: none;
+}
+
+.donut-chart-center-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.donut-chart-center-label {
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.donut-chart-legend {
+  display: flex;
+  flex: 1;
+  min-width: 120px;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.donut-chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.donut-chart-swatch {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.donut-chart-legend-label {
+  color: var(--color-text-secondary);
+}
+
+.donut-chart-legend-value {
+  margin-left: auto;
+  font-weight: 700;
+}
+
+.count-bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.count-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.count-bar-label {
+  width: 108px;
+  flex-shrink: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.count-bar-track {
+  flex: 1;
+  height: 10px;
+  overflow: hidden;
+  background: var(--color-surface-muted);
+  border-radius: 6px;
+}
+
+.count-bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-brand), #3ea3e0);
+  border-radius: 6px;
+  transition: width 400ms ease;
+}
+
+.count-bar-value {
+  width: 28px;
+  flex-shrink: 0;
+  font-weight: 700;
+  text-align: right;
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  background: var(--color-brand-subtle);
+  color: var(--color-brand-hover);
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+}
+
 .predeploy-summary {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
@@ -4995,6 +5164,8 @@ body.topology-fullscreen-open {
 
 .patch-priority-status-toggle {
   flex-direction: row;
+  padding: 0 19px 16px;
+  margin-top: -4px;
 }
 
 .patch-priority-status-toggle label {
