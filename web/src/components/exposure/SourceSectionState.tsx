@@ -50,6 +50,11 @@ export interface SourceSectionStateProps {
   itemLabel: string;
   state: ExposureSectionPresentation;
   children?: ReactNode;
+  /** Overrides the default healthy-empty message when the generic
+   * "completed successfully and returned no items" copy would be
+   * misleading (e.g. a feature that depends on an upstream Defender
+   * capability that has not yet generated any findings). */
+  emptyMessage?: string;
 }
 
 function observedCopy(value: string): string {
@@ -118,6 +123,7 @@ export function SourceSectionState({
   itemLabel,
   state,
   children,
+  emptyMessage,
 }: SourceSectionStateProps) {
   const retry = <RetryButton sourceName={sourceName} state={state} />;
 
@@ -138,7 +144,10 @@ export function SourceSectionState({
     return (
       <StatePanel
         title={`No ${itemLabel} reported by ${sourceName}`}
-        message={`${sourceName} completed successfully and returned no ${itemLabel} for this authorized scope as of ${observedCopy(state.metadata.observedAt)}. Other source states are shown separately.`}
+        message={
+          emptyMessage ??
+          `${sourceName} completed successfully and returned no ${itemLabel} for this authorized scope as of ${observedCopy(state.metadata.observedAt)}. Other source states are shown separately.`
+        }
         tone="empty"
         action={retry}
         live="polite"

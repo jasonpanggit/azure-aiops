@@ -417,12 +417,14 @@ function Section({
   sourceName,
   itemLabel,
   state,
+  emptyMessage,
   children,
 }: {
   label: string;
   sourceName: string;
   itemLabel: string;
   state: ExposureSectionPresentation;
+  emptyMessage?: string;
   children?: React.ReactNode;
 }) {  return (
     <section role="region" aria-label={`${label} section`}>
@@ -433,6 +435,7 @@ function Section({
         sourceName={sourceName}
         itemLabel={itemLabel}
         state={state}
+        emptyMessage={emptyMessage}
       >
         {children}
       </SourceSectionState>
@@ -997,6 +1000,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                   sourceName="Attack path"
                   itemLabel="supported paths"
                   state={attackState}
+                  emptyMessage="No reachable attack path was found for this CVE. This can mean the affected resource is not internet-exposed or reachable from an entry point, or Defender for Cloud has not yet completed a vulnerability scan or attack path analysis for this resource. It does not necessarily indicate missing data."
                 >
                   {attack.data && <AttackPathGraphView graph={attack.data} />}
                 </Section>
