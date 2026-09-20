@@ -13,7 +13,7 @@ def test_catalog_has_bounded_json_schemas():
     assert all(item["inputSchema"]["additionalProperties"] is False for item in tool_definitions())
 
 
-def test_inventory_tool_is_an_exact_specialist_bound_reviewed_grant():
+def test_inventory_tool_is_an_exact_specialist_and_generic_reviewed_grant():
     assert reviewed_tools_for_specialist(INVENTORY_DATA_HEALTH_ID) == (
         "inventory_resources",
     )
@@ -41,7 +41,7 @@ def test_inventory_tool_is_an_exact_specialist_bound_reviewed_grant():
     assert allowed["result"]["isError"] is False
     assert allowed["result"]["structuredContent"]["status"] == "unavailable"
 
-    legacy_denied = MCPServer().handle(
+    generic_allowed = MCPServer().handle(
         {
             "jsonrpc": "2.0",
             "id": "x",
@@ -53,7 +53,8 @@ def test_inventory_tool_is_an_exact_specialist_bound_reviewed_grant():
         scope=__import__("api.scope", fromlist=["Scope"]).Scope.unrestricted(),
         correlation_id="corr",
     )
-    assert legacy_denied["result"]["isError"] is True
+    assert generic_allowed["result"]["isError"] is False
+    assert generic_allowed["result"]["structuredContent"]["status"] == "unavailable"
 
     cross_specialist_denied = MCPServer().handle(
         {
