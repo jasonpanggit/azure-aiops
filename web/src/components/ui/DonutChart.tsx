@@ -28,45 +28,47 @@ export function DonutChart({ segments, centerValue, centerLabel }: DonutChartPro
 
   return (
     <div className="donut-chart">
-      <svg
-        viewBox="0 0 96 96"
-        className="donut-chart-svg"
-        role="img"
-        aria-label={`Distribution: ${ariaSummary || "no data"}`}
-      >
-        {total === 0 ? (
-          <circle cx={cx} cy={cy} r={radius} fill="none" stroke="var(--color-border)" strokeWidth={14} />
-        ) : (
-          segments
-            .filter((segment) => segment.value > 0)
-            .map((segment) => {
-              const fraction = segment.value / total;
-              const dash = fraction * circumference;
-              const dashArray = `${dash} ${circumference - dash}`;
-              const rotation = (offset / total) * 360 - 90;
-              offset += segment.value;
-              return (
-                <circle
-                  key={segment.label}
-                  cx={cx}
-                  cy={cy}
-                  r={radius}
-                  fill="none"
-                  stroke={segment.color}
-                  strokeWidth={14}
-                  strokeDasharray={dashArray}
-                  transform={`rotate(${rotation} ${cx} ${cy})`}
-                />
-              );
-            })
+      <div className="donut-chart-visual">
+        <svg
+          viewBox="0 0 96 96"
+          className="donut-chart-svg"
+          role="img"
+          aria-label={`Distribution: ${ariaSummary || "no data"}`}
+        >
+          {total === 0 ? (
+            <circle cx={cx} cy={cy} r={radius} fill="none" stroke="var(--color-border)" strokeWidth={14} />
+          ) : (
+            segments
+              .filter((segment) => segment.value > 0)
+              .map((segment) => {
+                const fraction = segment.value / total;
+                const dash = fraction * circumference;
+                const dashArray = `${dash} ${circumference - dash}`;
+                const rotation = (offset / total) * 360 - 90;
+                offset += segment.value;
+                return (
+                  <circle
+                    key={segment.label}
+                    cx={cx}
+                    cy={cy}
+                    r={radius}
+                    fill="none"
+                    stroke={segment.color}
+                    strokeWidth={14}
+                    strokeDasharray={dashArray}
+                    transform={`rotate(${rotation} ${cx} ${cy})`}
+                  />
+                );
+              })
+          )}
+        </svg>
+        {(centerValue !== undefined || centerLabel) && (
+          <div className="donut-chart-center">
+            {centerValue !== undefined && <span className="donut-chart-center-value">{centerValue}</span>}
+            {centerLabel && <span className="donut-chart-center-label">{centerLabel}</span>}
+          </div>
         )}
-      </svg>
-      {(centerValue !== undefined || centerLabel) && (
-        <div className="donut-chart-center">
-          {centerValue !== undefined && <span className="donut-chart-center-value">{centerValue}</span>}
-          {centerLabel && <span className="donut-chart-center-label">{centerLabel}</span>}
-        </div>
-      )}
+      </div>
       <ul className="donut-chart-legend">
         {segments.map((segment) => (
           <li key={segment.label}>

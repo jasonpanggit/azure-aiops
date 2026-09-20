@@ -3124,10 +3124,17 @@ textarea:focus-visible {
   gap: 16px;
 }
 
-.donut-chart-svg {
+.donut-chart-visual {
+  position: relative;
   width: 92px;
   height: 92px;
   flex-shrink: 0;
+}
+
+.donut-chart-svg {
+  display: block;
+  width: 92px;
+  height: 92px;
 }
 
 .donut-chart-svg circle {
@@ -3135,13 +3142,13 @@ textarea:focus-visible {
 }
 
 .donut-chart-center {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  margin-left: -78px;
-  width: 64px;
+  text-align: center;
   pointer-events: none;
 }
 
