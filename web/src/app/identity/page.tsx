@@ -263,7 +263,7 @@ export default function IdentityPage() {
                               {row.assignment_count === 1 ? "" : "s"}
                             </div>
                           </td>
-                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td className="cell-nowrap">{titleize(row.principal_type || "unknown")}</td>
                           <td>
                             <div className="table-wrap">
                               {(row.roles?.length ?? 0) > 0 ? row.roles.join(", ") : "Unresolved"}
@@ -349,7 +349,7 @@ export default function IdentityPage() {
                               <span className="table-wrap resource-id-cell">{row.principal_id}</span>
                             </Link>
                           </td>
-                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td className="cell-nowrap">{titleize(row.principal_type || "unknown")}</td>
                           <td>
                             <Link
                               className="table-primary-link"
@@ -431,7 +431,7 @@ export default function IdentityPage() {
                               <span className="table-wrap resource-id-cell">{row.principal_id}</span>
                             </Link>
                           </td>
-                          <td>{row.role || "Unresolved"}</td>
+                          <td className="cell-nowrap">{row.role || "Unresolved"}</td>
                           <td>
                             <Link
                               className="table-primary-link"
@@ -513,7 +513,7 @@ export default function IdentityPage() {
                               </div>
                             )}
                           </td>
-                          <td>{titleize(row.principal_type || "unknown")}</td>
+                          <td className="cell-nowrap">{titleize(row.principal_type || "unknown")}</td>
                           <td>{row.assignment_count ?? "Unresolved"}</td>
                         </tr>
                       ))}

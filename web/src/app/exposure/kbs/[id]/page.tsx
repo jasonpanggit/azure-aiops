@@ -823,10 +823,10 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                                   {finding.server_id || finding.target_id}
                                 </strong>
                               </td>
-                              <td data-label="CVE">{cveId ? <Link className="table-primary-link" href={cveHref(cveId)}>{cveId}</Link> : "—"}</td>
-                              <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
-                              <td data-label="Service">{finding.business_service || "Unmapped service"}</td>
-                              <td data-label="Severity">{finding.severity || data?.severity || "Unknown"}</td>
+                              <td data-label="CVE" className="cell-nowrap">{cveId ? <Link className="table-primary-link" href={cveHref(cveId)}>{cveId}</Link> : "—"}</td>
+                              <td data-label="Kind" className="cell-nowrap">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
+                              <td data-label="Service" className="cell-nowrap">{finding.business_service || "Unmapped service"}</td>
+                              <td data-label="Severity" className="cell-nowrap">{finding.severity || data?.severity || "Unknown"}</td>
                             </tr>
                           );
                         })}

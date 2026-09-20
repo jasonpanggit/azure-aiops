@@ -1670,6 +1670,10 @@ textarea:focus-visible {
 .table-scroll {
   max-width: 100%;
   overflow-x: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
 }
 
 .operations-table {
@@ -1680,8 +1684,8 @@ textarea:focus-visible {
 }
 
 .operations-table th {
-  padding: 10px 13px;
-  font-size: 10px;
+  padding: 12px 20px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--color-text-muted);
@@ -1692,11 +1696,12 @@ textarea:focus-visible {
 
 .operations-table td {
   max-width: 300px;
-  padding: 13px;
+  padding: 14px 20px;
   vertical-align: top;
   overflow-wrap: anywhere;
   word-break: break-word;
   border-bottom: 1px solid var(--color-border);
+  transition: background-color 120ms ease;
 }
 
 .operations-table tbody tr:last-child td {
@@ -1704,7 +1709,11 @@ textarea:focus-visible {
 }
 
 .operations-table tbody tr:hover td {
-  background: #fbfdff;
+  background: var(--color-brand-subtle);
+}
+
+.cell-nowrap {
+  white-space: nowrap;
 }
 
 .table-primary-link {
@@ -6803,13 +6812,13 @@ body.topology-fullscreen-open {
   align-items: center;
 }
 
-.data-table-wrap,
-.table-scroll {
+.data-table-wrap {
   max-width: 100%;
   overflow-x: auto;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
 }
 
 .data-table {
@@ -6821,7 +6830,7 @@ body.topology-fullscreen-open {
 
 .data-table th,
 .data-table td {
-  padding: 12px 14px;
+  padding: 14px 20px;
   vertical-align: top;
   border-bottom: 1px solid var(--color-border);
 }
@@ -6829,7 +6838,8 @@ body.topology-fullscreen-open {
 .data-table th {
   color: var(--color-text-muted);
   font-size: 11px;
-  letter-spacing: .04em;
+  font-weight: 700;
+  letter-spacing: .06em;
   text-transform: uppercase;
   background: var(--color-surface-subtle);
 }
