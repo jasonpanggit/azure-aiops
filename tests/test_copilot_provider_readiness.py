@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from operations import maf_orchestrator
+from operations.copilot_canary_authorization import CanaryAuthorizationError
+from tests.copilot_authorization_fixtures import enable_authorized_canary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_copilot_provider_env.py"
@@ -45,6 +47,9 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "AIOPS_COPILOT_ROLLOUT_MODE": "canary",
                 "AIOPS_COPILOT_CANARY_PERCENTAGE": "10",
                 "AIOPS_COPILOT_ROLLBACK_MODE": "compatibility",
+                "AIOPS_SOURCE_REVISION": "a" * 40,
+                "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": "b" * 64,
+                "AIOPS_API_IMAGE_DIGEST": f"sha256:{'c' * 64}",
             },
         },
         "unrelated_sensitive_output": {
@@ -126,8 +131,14 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("FOUNDRY_AI_SEARCH_CONNECTION_ID", "ai-search"),
         ("FOUNDRY_AI_SEARCH_INDEX_NAME", "invalid index name"),
         ("AIOPS_COPILOT_ROLLOUT_MODE", "enabled"),
+        ("AIOPS_COPILOT_ROLLOUT_MODE", "default"),
+        ("AIOPS_COPILOT_CANARY_PERCENTAGE", "0"),
+        ("AIOPS_COPILOT_CANARY_PERCENTAGE", "11"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "101"),
         ("AIOPS_COPILOT_ROLLBACK_MODE", "default"),
+        ("AIOPS_SOURCE_REVISION", "main"),
+        ("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
+        ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
     ],
 )
 def test_provider_env_export_rejects_malformed_values(
@@ -177,6 +188,12 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert "export FOUNDRY_PROJECT_ENDPOINT=" in rendered
     assert f"export FOUNDRY_CANDIDATE_MAPPING={candidate}" in rendered
     assert "export AIOPS_COPILOT_ROLLOUT_MODE=canary" in rendered
+    assert f"export AIOPS_SOURCE_REVISION={'a' * 40}" in rendered
+    assert (
+        f"export AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256={'b' * 64}"
+        in rendered
+    )
+    assert f"export AIOPS_API_IMAGE_DIGEST=sha256:{'c' * 64}" in rendered
     assert "must-not-leak" not in rendered
     assert "AZURE_CLIENT_SECRET" not in rendered
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
@@ -255,13 +272,16 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "AIOPS_COPILOT_ROLLOUT_MODE",
         "AIOPS_COPILOT_CANARY_PERCENTAGE",
         "AIOPS_COPILOT_ROLLBACK_MODE",
+        "AIOPS_SOURCE_REVISION",
+        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        "AIOPS_API_IMAGE_DIGEST",
     ):
         assert key in outputs
     foundry = (REPO_ROOT / "infra" / "terraform" / "foundry.tf").read_text(
         encoding="utf-8"
     )
     assert "FOUNDRY_CANDIDATE_RECORD           = local.foundry_candidate_artifact_path" in foundry
-    assert "FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path" in outputs
+    assert "local.foundry_candidate_artifact_path" in outputs
 
 
 def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
@@ -289,12 +309,8 @@ def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
     assert compatibility.reason == "compatibility_selected"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    explicit_default = maf_orchestrator.copilot_rollout_decision(
-        stable_key="operator-a"
-    )
-    assert explicit_default.mode == "default"
-    assert explicit_default.canonical_enabled is True
-    assert explicit_default.reason == "default_selected"
+    with pytest.raises(CanaryAuthorizationError, match="only canary"):
+        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "enabled")
     invalid = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
@@ -320,29 +336,21 @@ def test_missing_rollout_keeps_explicit_legacy_canonical_switch_compatible(
     )
 
 
-def test_deterministic_override_disables_default_canonical_rollout(
+def test_default_is_denied_even_with_deterministic_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
 
-    decision = maf_orchestrator.copilot_rollout_decision(
-        stable_key="operator-a"
-    )
-
-    assert decision.mode == "compatibility"
-    assert decision.canonical_enabled is False
-    assert decision.shadow_enabled is False
-    assert decision.reason == "deterministic_override"
-    assert (
+    with pytest.raises(CanaryAuthorizationError, match="only canary"):
+        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    with pytest.raises(CanaryAuthorizationError, match="only canary"):
         maf_orchestrator.canonical_orchestration_enabled(
             stable_key="operator-a"
         )
-        is False
-    )
 
 
-def test_rollout_modes_preserve_compatibility_shadow_canary_and_default(
+def test_rollout_modes_preserve_compatibility_shadow_and_authorized_canary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
@@ -357,22 +365,16 @@ def test_rollout_modes_preserve_compatibility_shadow_canary_and_default(
     assert shadow.canonical_enabled is False
     assert shadow.shadow_enabled is True
 
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "canary")
-    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "0")
-    canary_zero = maf_orchestrator.copilot_rollout_decision(
+    enable_authorized_canary(monkeypatch)
+    canary = maf_orchestrator.copilot_rollout_decision(
         stable_key="operator-a"
     )
-    assert canary_zero.canonical_enabled is False
-    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
-    canary_hundred = maf_orchestrator.copilot_rollout_decision(
-        stable_key="operator-a"
-    )
-    assert canary_hundred.canonical_enabled is True
+    assert canary.canonical_enabled is True
+    assert canary.authorization_id == "test-reviewed-canary"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    default = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-    assert default.canonical_enabled is True
-    assert default.shadow_enabled is False
+    with pytest.raises(CanaryAuthorizationError, match="not authorized"):
+        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
 
 @pytest.mark.parametrize("percentage", ["", "-1", "101", "ten", "10.5"])
@@ -386,34 +388,28 @@ def test_canary_invalid_or_missing_percentage_fails_closed(
     else:
         monkeypatch.delenv("AIOPS_COPILOT_CANARY_PERCENTAGE", raising=False)
 
-    decision = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-
-    assert decision.mode == "compatibility"
-    assert decision.canonical_enabled is False
-    assert decision.reason == "canary_percentage_invalid"
+    with pytest.raises(CanaryAuthorizationError):
+        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
 
 def test_canary_assignment_is_stable_and_requires_a_stable_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "canary")
-    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "50")
+    enable_authorized_canary(monkeypatch)
 
     first = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
     second = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-    no_key = maf_orchestrator.copilot_rollout_decision(stable_key="")
+    with pytest.raises(CanaryAuthorizationError, match="stable key"):
+        maf_orchestrator.copilot_rollout_decision(stable_key="")
 
     assert first == second
     assert 0 <= first.canary_bucket < 100
-    assert no_key.mode == "compatibility"
-    assert no_key.canonical_enabled is False
-    assert no_key.reason == "canary_stable_key_missing"
 
 
 def test_rollout_rollback_mode_is_fixed_to_compatibility(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
     monkeypatch.setenv("AIOPS_COPILOT_ROLLBACK_MODE", "canonical")
 
     decision = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")

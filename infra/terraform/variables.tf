@@ -772,8 +772,8 @@ variable "deployment_source_revision" {
   default     = ""
 
   validation {
-    condition     = var.deployment_source_revision == "" || can(regex("^[0-9a-f]{7,64}$", var.deployment_source_revision))
-    error_message = "deployment_source_revision must be empty or a 7-64 character lowercase hexadecimal revision."
+    condition     = var.deployment_source_revision == "" || can(regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$", var.deployment_source_revision))
+    error_message = "deployment_source_revision must be empty or an exact 40- or 64-character lowercase hexadecimal revision."
   }
 }
 

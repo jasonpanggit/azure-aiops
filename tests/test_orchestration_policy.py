@@ -28,6 +28,15 @@ from operations.specialist_manifest import (
     load_specialist_manifest,
 )
 from operations.tools import ToolResult
+from tests.copilot_authorization_fixtures import (
+    install_valid_canary_evidence,
+    route_authority_for_test,
+)
+
+
+@pytest.fixture(autouse=True)
+def _install_canary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_valid_canary_evidence(monkeypatch)
 
 
 def _request(*, scope: dict[str, list[str]] | None = None) -> InvestigationRequest:
@@ -581,6 +590,7 @@ def test_no_hint_fallback_is_safe_for_every_exact_v2_page_kind(page_kind):
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
     )
 
     if calls:

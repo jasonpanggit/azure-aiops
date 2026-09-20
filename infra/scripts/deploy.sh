@@ -104,6 +104,127 @@ fi
 
 command="${1:-plan}"
 shift || true
+api_authorization_release="${AIOPS_API_AUTHORIZATION_RELEASE:-0}"
+
+validate_api_authorization_environment() {
+  local name
+
+  while IFS= read -r name; do
+    case "${name}" in
+      TF_CLI_ARGS|TF_CLI_ARGS_*)
+        if [[ -n "${!name:-}" ]]; then
+          echo "deploy: API authorization release rejects non-empty ${name}." >&2
+          return 1
+        fi
+        ;;
+    esac
+  done < <(compgen -e)
+}
+
+validate_api_authorization_target() {
+  local args=("$@")
+  local target="" target_count=0 i
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -target|--target)
+        target="${args[i + 1]:-}"
+        if [[ -z "${target}" ]]; then
+          echo "deploy: ${args[i]} requires a resource address." >&2
+          return 1
+        fi
+        target_count=$((target_count + 1))
+        i=$((i + 1))
+        ;;
+      -target=*|--target=*)
+        target="${args[i]#*=}"
+        if [[ -z "${target}" ]]; then
+          echo "deploy: ${args[i]%%=*} requires a resource address." >&2
+          return 1
+        fi
+        target_count=$((target_count + 1))
+        ;;
+    esac
+  done
+
+  if [[ "${target_count}" -ne 1 || "${target}" != "azurerm_container_app.api" ]]; then
+    echo "deploy: API authorization release requires exactly one Terraform target: azurerm_container_app.api." >&2
+    return 1
+  fi
+}
+
+api_compatibility_args() {
+  local args=("$@")
+  local i
+
+  API_COMPATIBILITY_ARGS=()
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -var)
+        if [[ "${args[i + 1]:-}" == copilot_rollout_mode=* ]]; then
+          i=$((i + 1))
+          continue
+        fi
+        API_COMPATIBILITY_ARGS+=("${args[i]}")
+        if [[ -n "${args[i + 1]:-}" ]]; then
+          API_COMPATIBILITY_ARGS+=("${args[i + 1]}")
+          i=$((i + 1))
+        fi
+        ;;
+      -var=copilot_rollout_mode=*)
+        ;;
+      *)
+        API_COMPATIBILITY_ARGS+=("${args[i]}")
+        ;;
+    esac
+  done
+  API_COMPATIBILITY_ARGS+=("-var=copilot_rollout_mode=compatibility")
+}
+
+api_digest_args() {
+  local digest="$1"
+  shift
+  local args=("$@")
+  local i
+
+  API_DIGEST_ARGS=()
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -var)
+        if [[ "${args[i + 1]:-}" == api_image_digest=* ]]; then
+          i=$((i + 1))
+          continue
+        fi
+        API_DIGEST_ARGS+=("${args[i]}")
+        if [[ -n "${args[i + 1]:-}" ]]; then
+          API_DIGEST_ARGS+=("${args[i + 1]}")
+          i=$((i + 1))
+        fi
+        ;;
+      -var=api_image_digest=*)
+        ;;
+      *)
+        API_DIGEST_ARGS+=("${args[i]}")
+        ;;
+    esac
+  done
+  API_DIGEST_ARGS+=("-var=api_image_digest=${digest}")
+}
+
+apply_api_compatibility_hold() {
+  api_compatibility_args "$@"
+  terraform apply -input=false "${API_COMPATIBILITY_ARGS[@]}"
+}
+
+restore_and_verify_api_compatibility() {
+  local expected_image="$1"
+  shift
+  if ! apply_api_compatibility_hold "$@" ||
+    ! validate_running_api_revision compatibility 0 "${expected_image}"; then
+    echo "deploy: automatic compatibility hold could not be verified; keep promotion blocked and intervene immediately." >&2
+    return 1
+  fi
+}
 
 # Pointing Container Apps at a tag that was never pushed produces a revision
 # stuck in ActivationFailed with MANIFEST_UNKNOWN, so verify the images exist
@@ -111,6 +232,19 @@ shift || true
 verify_images_exist() {
   local args=("$@")
   local deploy_images="" image_tag="" i
+
+  if [[ "${api_authorization_release}" == "1" ]]; then
+    local api_digest
+    api_digest="$(
+      awk -F'=' '/^[ \t]*api_image_digest[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' \
+        "${tf_dir}/terraform.tfvars" | tail -1
+    )"
+    if [[ ! "${api_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "deploy: API authorization release requires an immutable api_image_digest." >&2
+      exit 1
+    fi
+    return 0
+  fi
 
   for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[i]}" in
@@ -157,6 +291,13 @@ verify_images_exist() {
     exit 1
   fi
 }
+
+if [[ "${api_authorization_release}" == "1" ]]; then
+  validate_api_authorization_environment
+  case "${command}" in
+    plan|apply) validate_api_authorization_target "$@" ;;
+  esac
+fi
 
 cd "${tf_dir}"
 
@@ -233,6 +374,190 @@ report_running_images() {
   echo "deploy: all apps serving ${expected}."
 }
 
+validate_running_api_revision() {
+  command -v az >/dev/null 2>&1 || return 1
+  local expected_mode="$1" expected_percentage="$2" expected="${3:-}"
+  local rg app attempt actual_image="" actual_mode="" actual_percentage=""
+  local authorization_manifest authorized_target authorized_subscription
+  local authorized_rg authorized_app expected_resource_id actual_resource_id
+  local normalized_arm_subscription normalized_authorized_subscription
+  local normalized_expected_resource_id normalized_actual_resource_id
+  if [[ -z "${expected}" ]]; then
+    expected="$(terraform output -raw api_image 2>/dev/null || true)"
+  fi
+  rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
+  app="$(terraform output -raw api_app_name 2>/dev/null || true)"
+  if [[ ! "${expected}" =~ @sha256:[0-9a-f]{64}$ ]] ||
+    [[ -z "${rg}" || -z "${app}" ]]; then
+    echo "deploy: external API digest validation lacks immutable expected image or target." >&2
+    return 1
+  fi
+
+  authorization_manifest="${repo_root}/src/operations/copilot_canary_authorization.v1.json"
+  authorized_target="$(
+    python3 - "${authorization_manifest}" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    target = json.load(manifest_file)["deployment_target"]
+print(
+    target["subscription_id"],
+    target["resource_group"],
+    target["app"],
+    sep="\t",
+)
+PY
+  )" || true
+  IFS=$'\t' read -r authorized_subscription authorized_rg authorized_app \
+    <<<"${authorized_target}"
+  normalized_arm_subscription="$(
+    printf '%s' "${ARM_SUBSCRIPTION_ID}" | tr '[:upper:]' '[:lower:]'
+  )"
+  normalized_authorized_subscription="$(
+    printf '%s' "${authorized_subscription}" | tr '[:upper:]' '[:lower:]'
+  )"
+  if [[ -z "${authorized_subscription}" ]] ||
+    [[ -z "${authorized_rg}" ]] ||
+    [[ -z "${authorized_app}" ]] ||
+    [[ "${normalized_arm_subscription}" != "${normalized_authorized_subscription}" ]]; then
+    echo "deploy: platform admission denied; authorized API target could not be bound to ARM_SUBSCRIPTION_ID." >&2
+    return 1
+  fi
+
+  expected_resource_id="/subscriptions/${authorized_subscription}/resourceGroups/${authorized_rg}/providers/Microsoft.App/containerApps/${authorized_app}"
+  actual_resource_id="$(
+    az containerapp show --subscription "${ARM_SUBSCRIPTION_ID}" \
+      --resource-group "${rg}" --name "${app}" --query id --output tsv \
+      2>/dev/null || true
+  )"
+  normalized_expected_resource_id="$(
+    printf '%s' "${expected_resource_id}" | tr '[:upper:]' '[:lower:]'
+  )"
+  normalized_actual_resource_id="$(
+    printf '%s' "${actual_resource_id}" | tr '[:upper:]' '[:lower:]'
+  )"
+  if [[ -z "${actual_resource_id}" ]] ||
+    [[ "${normalized_actual_resource_id}" != "${normalized_expected_resource_id}" ]]; then
+    echo "deploy: platform admission denied; resolved API resource ID does not match the authorized subscription, resource group, and app." >&2
+    return 1
+  fi
+
+  for attempt in $(seq 1 20); do
+    actual_image=""
+    actual_mode=""
+    actual_percentage=""
+    read -r actual_image actual_mode actual_percentage < <(
+      az containerapp revision list --subscription "${ARM_SUBSCRIPTION_ID}" \
+        --resource-group "${rg}" --name "${app}" --output json 2>/dev/null |
+        python3 -c '
+import json
+import sys
+
+revisions = json.load(sys.stdin)
+active = next(
+    (
+        revision
+        for revision in revisions
+        if revision.get("properties", {}).get("active")
+        and revision.get("properties", {}).get("healthState") == "Healthy"
+    ),
+    {},
+)
+container = (
+    active.get("properties", {})
+    .get("template", {})
+    .get("containers", [{}])[0]
+)
+environment = {
+    item.get("name"): item.get("value", "")
+    for item in container.get("env", [])
+}
+print(
+    container.get("image", ""),
+    environment.get("AIOPS_COPILOT_ROLLOUT_MODE", ""),
+    environment.get("AIOPS_COPILOT_CANARY_PERCENTAGE", ""),
+    sep="\t",
+)
+' 2>/dev/null || true
+    ) || true
+    if [[ "${actual_image}" == "${expected}" ]] &&
+      [[ "${actual_mode}" == "${expected_mode}" ]] &&
+      [[ "${actual_percentage}" == "${expected_percentage}" ]]; then
+      break
+    fi
+    sleep 15
+  done
+  if [[ "${actual_image}" != "${expected}" ]] ||
+    [[ "${actual_mode}" != "${expected_mode}" ]] ||
+    [[ "${actual_percentage}" != "${expected_percentage}" ]]; then
+    echo "deploy: platform admission denied; active healthy API revision does not match ${expected}, mode ${expected_mode}, percentage ${expected_percentage}." >&2
+    return 1
+  fi
+  echo "deploy: platform admission confirmed active API image ${expected}, mode ${expected_mode}, percentage ${expected_percentage}."
+}
+
+apply_api_authorization_release() {
+  local args=("$@")
+  local rollout_json requested_mode requested_percentage applied_api_image
+  local captured_api_image captured_api_digest applied_api_digest
+  local bound_args=()
+
+  echo "deploy: staging immutable API digest in compatibility mode (zero canonical canary)..."
+  if ! apply_api_compatibility_hold "${args[@]}"; then
+    echo "deploy: compatibility staging failed; restoring the compatibility hold." >&2
+    restore_and_verify_api_compatibility "" "${args[@]}" || true
+    return 1
+  fi
+  captured_api_image="$(terraform output -raw api_image 2>/dev/null || true)"
+  captured_api_digest="${captured_api_image##*@}"
+  if [[ "${captured_api_image}" != *"@${captured_api_digest}" ]] ||
+    [[ ! "${captured_api_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "deploy: compatibility staging did not expose an immutable API digest; holding compatibility." >&2
+    restore_and_verify_api_compatibility "" "${args[@]}" || true
+    return 1
+  fi
+  api_digest_args "${captured_api_digest}" "${args[@]}"
+  bound_args=("${API_DIGEST_ARGS[@]}")
+  if ! validate_running_api_revision compatibility 0 "${captured_api_image}"; then
+    echo "deploy: staged digest validation failed; holding compatibility." >&2
+    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    return 1
+  fi
+
+  echo "deploy: staged digest ${captured_api_digest} admitted; applying the requested API canary..."
+  if ! terraform apply -input=false "${bound_args[@]}"; then
+    echo "deploy: canary apply failed; restoring compatibility hold." >&2
+    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    return 1
+  fi
+
+  applied_api_image="$(terraform output -raw api_image 2>/dev/null || true)"
+  rollout_json="$(terraform output -json copilot_provider_environment 2>/dev/null || true)"
+  requested_mode="$(
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("AIOPS_COPILOT_ROLLOUT_MODE", ""))' \
+      <<<"${rollout_json}" 2>/dev/null || true
+  )"
+  requested_percentage="$(
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("AIOPS_COPILOT_CANARY_PERCENTAGE", ""))' \
+      <<<"${rollout_json}" 2>/dev/null || true
+  )"
+  applied_api_digest="$(
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("AIOPS_API_IMAGE_DIGEST", ""))' \
+      <<<"${rollout_json}" 2>/dev/null || true
+  )"
+  if [[ "${requested_mode}" != "canary" ]] ||
+    [[ ! "${requested_percentage}" =~ ^([1-9]|10)$ ]] ||
+    [[ "${applied_api_image}" != "${captured_api_image}" ]] ||
+    [[ "${applied_api_digest}" != "${captured_api_digest}" ]] ||
+    ! validate_running_api_revision \
+      "${requested_mode}" "${requested_percentage}" "${captured_api_image}"; then
+    echo "deploy: canary activation validation failed; restoring compatibility hold." >&2
+    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    return 1
+  fi
+}
+
 publish_governed_remediation_catalog() {
   local python="${AIOPS_PYTHON:-${repo_root}/.venv/bin/python}"
   local fabric_config="${AIOPS_FABRIC_CONFIG:-${repo_root}/fabric.config.yaml}"
@@ -268,10 +593,16 @@ case "${command}" in
     ;;
   apply)
     verify_images_exist "$@"
-    capture_apim_snapshot
-    terraform apply -input=false "$@"
-    publish_governed_remediation_catalog
-    report_running_images
+    if [[ "${api_authorization_release}" != "1" ]]; then
+      capture_apim_snapshot
+    fi
+    if [[ "${api_authorization_release}" == "1" ]]; then
+      apply_api_authorization_release "$@"
+    else
+      terraform apply -input=false "$@"
+      publish_governed_remediation_catalog
+      report_running_images
+    fi
     ;;
   destroy)
     terraform destroy -input=false "$@"

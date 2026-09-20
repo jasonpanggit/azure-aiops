@@ -12,11 +12,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Protocol
+
+from operations.copilot_canary_authorization import (
+    CanaryAuthorizationError,
+    require_canary_authorization_if_requested,
+)
 
 ENV_AGENT_ORCHESTRATION_MODE = "AIOPS_AGENT_ORCHESTRATION_MODE"
 MODE_DETERMINISTIC = "deterministic"
@@ -103,8 +110,6 @@ _EXECUTIVE_INTENT_MARKERS = (
     "roll up",
     "brief",
 )
-
-
 @dataclass(frozen=True)
 class OrchestrationDecision:
     """Specialist selection made for one Operations Copilot turn."""
@@ -132,6 +137,108 @@ class CopilotRolloutDecision:
     shadow_enabled: bool
     reason: str
     canary_bucket: int | None = None
+    authorization_id: str = ""
+    authorization_manifest_sha256: str = ""
+    reviewed_tree_sha256: str = ""
+    stable_key_sha256: str = ""
+    authorization_expires_at: datetime | None = None
+
+
+class CanonicalExecutionAuthorizer(Protocol):
+    """Server-held validator invoked with the exact canonical execution inputs."""
+
+    def __call__(
+        self,
+        *,
+        request: Any,
+        principal_subject: str,
+        stable_key: str,
+        selection_snapshot: Any = None,
+        canonical_selection_snapshot: Any = None,
+    ) -> None: ...
+
+
+def _identity_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def canonical_execution_sha256(
+    request: Any,
+    *,
+    selection_snapshot: Any = None,
+    canonical_selection_snapshot: Any = None,
+) -> str:
+    """Return a deterministic digest of every canonical execution input."""
+
+    def _json_value(value: Any) -> Any:
+        if value is None:
+            return None
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            return model_dump(mode="json")
+        return value
+
+    payload = {
+        "request": _json_value(request),
+        "selection_snapshot": _json_value(selection_snapshot),
+        "canonical_selection_snapshot": _json_value(
+            canonical_selection_snapshot
+        ),
+    }
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def authorize_canonical_execution(
+    *,
+    request: Any,
+    principal_subject: str,
+    stable_key: str,
+    selection_snapshot: Any = None,
+    canonical_selection_snapshot: Any = None,
+) -> None:
+    """Revalidate server-held canary state for one exact canonical execution.
+
+    No caller-provided decision or capability is accepted. The production
+    execution boundary reloads the packaged authorization and binds the current
+    principal, stable key, request, and snapshots immediately before any
+    provider or tool I/O.
+    """
+
+    if not principal_subject or stable_key != principal_subject:
+        raise CanaryAuthorizationError(
+            "canonical route was not selected by validated canary authority"
+        )
+    decision = copilot_rollout_decision(stable_key=stable_key)
+    execution_sha256 = canonical_execution_sha256(
+        request,
+        selection_snapshot=selection_snapshot,
+        canonical_selection_snapshot=canonical_selection_snapshot,
+    )
+    if (
+        not execution_sha256
+        or decision.mode != ROLLOUT_CANARY
+        or not decision.canonical_enabled
+        or decision.canary_bucket is None
+        or decision.stable_key_sha256 != _identity_sha256(stable_key)
+        or not decision.authorization_id
+        or not decision.authorization_manifest_sha256
+        or not decision.reviewed_tree_sha256
+        or decision.authorization_expires_at is None
+        or _utc_now() >= decision.authorization_expires_at
+    ):
+        raise CanaryAuthorizationError(
+            "canonical execution route authority is absent or mismatched"
+        )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def maf_mode_enabled() -> bool:
@@ -140,14 +247,24 @@ def maf_mode_enabled() -> bool:
     return os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold() != MODE_DETERMINISTIC
 
 
+def _canary_bucket(stable_key: str) -> int:
+    digest = hashlib.sha256(
+        f"copilot-rollout-v1\0{stable_key}".encode()
+    ).digest()
+    return int.from_bytes(digest[:8], "big") % 100
+
+
 def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     """Resolve compatibility → shadow → canary → default without widening.
 
-    An unspecified, blank, or malformed deployment value selects compatibility.
-    Canary assignment is stable for one principal and cannot fall back to
-    random or process-local state. The retained rollback mode is intentionally
-    fixed to compatibility; an unexpected value also fails closed.
+    An unspecified, blank, or malformed non-canary deployment value selects
+    compatibility. Canary misconfiguration raises before external execution,
+    and default mode is not authorized. Canary assignment is stable for one
+    principal and cannot fall back to random or process-local state. The
+    retained rollback mode is fixed to compatibility.
     """
+
+    authority = require_canary_authorization_if_requested()
 
     if (
         os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
@@ -201,47 +318,33 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
         return CopilotRolloutDecision(mode, False, True, "shadow_selected")
 
     if mode == ROLLOUT_CANARY:
-        percentage_text = os.environ.get(
-            ENV_COPILOT_CANARY_PERCENTAGE, ""
-        ).strip()
-        if not percentage_text.isdecimal():
-            return CopilotRolloutDecision(
-                ROLLOUT_COMPATIBILITY,
-                False,
-                False,
-                "canary_percentage_invalid",
-            )
-        percentage = int(percentage_text)
-        if not 0 <= percentage <= 100:
-            return CopilotRolloutDecision(
-                ROLLOUT_COMPATIBILITY,
-                False,
-                False,
-                "canary_percentage_invalid",
-            )
+        if authority is None:
+            raise CanaryAuthorizationError("validated route authority is missing")
+        percentage = authority.percentage
         if not stable_key:
-            return CopilotRolloutDecision(
-                ROLLOUT_COMPATIBILITY,
-                False,
-                False,
-                "canary_stable_key_missing",
-            )
-        digest = hashlib.sha256(
-            f"copilot-rollout-v1\0{stable_key}".encode()
-        ).digest()
-        bucket = int.from_bytes(digest[:8], "big") % 100
+            raise CanaryAuthorizationError("canary stable key is missing")
+        bucket = _canary_bucket(stable_key)
         return CopilotRolloutDecision(
             mode,
             bucket < percentage,
             False,
             "canary_selected",
             canary_bucket=bucket,
+            authorization_id=authority.authorization_id,
+            authorization_manifest_sha256=authority.manifest_sha256,
+            reviewed_tree_sha256=authority.reviewed_tree_sha256,
+            stable_key_sha256=_identity_sha256(stable_key),
+            authorization_expires_at=authority.expires_at,
         )
 
-    return CopilotRolloutDecision(mode, True, False, "default_selected")
+    raise CanaryAuthorizationError("default rollout mode is not authorized")
 
 
-def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
+def canonical_orchestration_enabled(
+    *,
+    stable_key: str = "",
+    decision: CopilotRolloutDecision | None = None,
+) -> bool:
     """Return whether a legacy endpoint opts into the canonical service.
 
     The rollout decision governs the canonical ``/copilot/investigations``
@@ -250,10 +353,10 @@ def canonical_orchestration_enabled(*, stable_key: str = "") -> bool:
     ``AIOPS_AGENT_ORCHESTRATION_MODE=canonical`` switch is explicit.
     """
 
-    decision = copilot_rollout_decision(stable_key=stable_key)
-    legacy_mode = (
-        os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
-    )
+    decision = decision or copilot_rollout_decision(stable_key=stable_key)
+    if decision.mode == ROLLOUT_CANARY and decision.authorization_id:
+        return decision.canonical_enabled
+    legacy_mode = os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
     return legacy_mode == MODE_CANONICAL and decision.canonical_enabled
 
 
@@ -284,13 +387,9 @@ def reviewed_specialists_for_page(
         if specialist_id != "executive_summary":
             _append_unique(reviewed, specialist_id, limit=64)
     grant_page_kind = (
-        page_kind.removesuffix("_page")
-        if page_kind.endswith("_page")
-        else page_kind
+        page_kind.removesuffix("_page") if page_kind.endswith("_page") else page_kind
     )
-    for specialist_id, _ in _REVIEWED_CROSS_DOMAIN_GRANTS.get(
-        grant_page_kind, ()
-    ):
+    for specialist_id, _ in _REVIEWED_CROSS_DOMAIN_GRANTS.get(grant_page_kind, ()):
         _append_unique(reviewed, specialist_id, limit=64)
     return tuple(reviewed)
 
@@ -321,9 +420,7 @@ def select_specialists_for_turn(
     if page_kind == "overview" and "executive_summary" in page_owners:
         page_owners = _OVERVIEW_DOMAIN_SPECIALISTS
     allowed = tuple(
-        agent_id
-        for agent_id in page_owners
-        if agent_id != "executive_summary"
+        agent_id for agent_id in page_owners if agent_id != "executive_summary"
     )
     if not allowed:
         return OrchestrationDecision(
@@ -334,17 +431,13 @@ def select_specialists_for_turn(
         )
 
     catalog_by_id = {
-        getattr(agent, "id", ""): agent
-        for agent in catalog
-        if getattr(agent, "id", "")
+        getattr(agent, "id", ""): agent for agent in catalog if getattr(agent, "id", "")
     }
     lowered = question.casefold()
     selected: list[str] = []
 
     grant_page_kind = (
-        page_kind.removesuffix("_page")
-        if page_kind.endswith("_page")
-        else page_kind
+        page_kind.removesuffix("_page") if page_kind.endswith("_page") else page_kind
     )
     matched_cross_domain = [
         specialist_id
@@ -376,9 +469,7 @@ def select_specialists_for_turn(
         if (
             page_kind == "overview"
             and len(selected) < min(2, limit)
-            and any(
-            marker in lowered for marker in _EXECUTIVE_INTENT_MARKERS
-            )
+            and any(marker in lowered for marker in _EXECUTIVE_INTENT_MARKERS)
         ):
             for specialist_id in _OVERVIEW_SYNTHESIS_FALLBACK:
                 _append_unique(selected, specialist_id, limit=limit)
@@ -405,6 +496,7 @@ def select_specialists_for_turn(
 # ---------------------------------------------------------------------------
 # Deterministic keyword fallback for the canonical OrchestrationService
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _ManifestCatalogEntry:
@@ -491,12 +583,9 @@ def build_deterministic_fallback(
         if page_kind == "kb_detail" and "kb_detail" in tools:
             tools.remove("kb_detail")
             tools.insert(0, "kb_detail")
-        if (
-            "firewall_nsg_gaps" in tools
-            and any(
-                marker in lowered_question
-                for marker in ("bypass", "inspection", "firewall gap", "nsg gap")
-            )
+        if "firewall_nsg_gaps" in tools and any(
+            marker in lowered_question
+            for marker in ("bypass", "inspection", "firewall gap", "nsg gap")
         ):
             tools.remove("firewall_nsg_gaps")
             tools.insert(0, "firewall_nsg_gaps")
@@ -533,10 +622,7 @@ def build_deterministic_fallback(
                     elif field == "kb_id":
                         match = re.search(
                             r"\bKB\d{4,}\b",
-                            (
-                                f"{request.snapshot.page_id} "
-                                f"{request.question}"
-                            ),
+                            (f"{request.snapshot.page_id} {request.question}"),
                             flags=re.IGNORECASE,
                         )
                         if not match:

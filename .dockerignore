@@ -25,8 +25,18 @@ fabric.local.yaml
 *.env
 .env*
 
-# Docs and infrastructure are not runtime inputs.
+# Docs and unrelated infrastructure are not runtime inputs.
 docs
-infra
+infra/*
+!infra/scripts/
+!infra/terraform/
+infra/scripts/*
+!infra/scripts/build-and-push.sh
+!infra/scripts/deploy.sh
+infra/terraform/*
+!infra/terraform/container_apps.tf
+!infra/terraform/outputs.tf
+!infra/terraform/variables.tf
 tests
 *.md
+!skills/**/SKILL.md

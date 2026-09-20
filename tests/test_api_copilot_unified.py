@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -47,11 +48,21 @@ from operations.specialist_manifest import (
     load_specialist_manifest,
 )
 from operations.tools import STATUS_OK, ToolResult
+from tests.copilot_authorization_fixtures import (
+    enable_authorized_canary,
+    install_valid_canary_evidence,
+    rollout_decision_for_test,
+    route_authority_for_test,
+)
+
+
+@pytest.fixture(autouse=True)
+def _install_canary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_valid_canary_evidence(monkeypatch)
 
 
 def _enable_canonical_rollout(monkeypatch) -> None:
-    monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "canonical")
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
 
 def _request(*, thread_id: str | None = None) -> InvestigationRequest:
@@ -140,6 +151,7 @@ def test_canonical_inventory_tracer_returns_citations_uncertainty_and_thread():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
 
     assert result.policy_status == "accepted"
@@ -200,6 +212,7 @@ def test_default_executor_uses_scoped_governed_inventory_read_port():
         context=Context(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
 
     assert observed == [{"subscription": ["sub-a"]}]
@@ -237,6 +250,7 @@ def test_planner_failure_uses_validated_deterministic_fallback(planner, reason):
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
 
     assert result.policy_status == "fallback"
@@ -280,6 +294,7 @@ def test_rejected_candidate_executes_only_the_validated_fallback():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
 
     assert result.fallback_reason == "candidate_rejected:mutation_forbidden"
@@ -300,6 +315,7 @@ def test_foreign_principal_cannot_continue_thread_and_causes_zero_calls():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
     calls.clear()
 
@@ -309,6 +325,10 @@ def test_foreign_principal_cannot_continue_thread_and_causes_zero_calls():
             context=object(),
             principal_subject="operator-b",
             effective_scope=Scope({"subscription": ["sub-a"]}),
+            route_authority=route_authority_for_test(
+                _request(thread_id=first.thread_id),
+                principal_subject="operator-b",
+            ),
         )
 
     assert calls == []
@@ -332,6 +352,7 @@ def test_expected_thread_revision_rejects_stale_turn_before_tool_io():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
     second_payload = _request(thread_id=first.thread_id).model_dump(mode="json")
     second_payload["expected_thread_revision"] = first.thread_revision
@@ -340,6 +361,9 @@ def test_expected_thread_revision_rejects_stale_turn_before_tool_io():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            InvestigationRequest.model_validate(second_payload)
+        ),
     )
     assert second.thread_revision == 2
 
@@ -352,6 +376,9 @@ def test_expected_thread_revision_rejects_stale_turn_before_tool_io():
             context=object(),
             principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
+            route_authority=route_authority_for_test(
+                InvestigationRequest.model_validate(stale_payload)
+            ),
         )
 
     assert conflict.value.current_revision == 2
@@ -426,6 +453,7 @@ def test_empty_snapshot_fallback_uses_canonical_coverage_citation():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
     )
 
     assert result.policy_status == "fallback"
@@ -464,6 +492,7 @@ def test_repeated_tool_calls_retain_distinct_citations():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
     )
 
     tool_citations = [
@@ -495,6 +524,7 @@ def test_wall_clock_budget_stops_before_tool_io():
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(_request()),
         max_wall_seconds=0,
     )
 
@@ -605,6 +635,7 @@ def test_highest_risk_fallback_preserves_tool_budget_after_coordinator_correctio
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
     )
 
     assert result.policy_status == "fallback"
@@ -787,6 +818,10 @@ def test_highest_risk_compliance_rejects_synthesis_that_ignores_page_findings():
             )
 
     coordinator = Coordinator()
+    canonical_page_snapshot = canonicalize_snapshot_v2(
+        page_snapshot,
+        effective_scope=scope,
+    )
     result = OrchestrationService(
         planner=lambda _request: invalid_candidate,
         fallback_planner=lambda _request: fallback,
@@ -798,11 +833,13 @@ def test_highest_risk_compliance_rejects_synthesis_that_ignores_page_findings():
         context=object(),
         principal_subject="operator-a",
         effective_scope=scope,
-        selection_snapshot=page_snapshot,
-        canonical_selection_snapshot=canonicalize_snapshot_v2(
-            page_snapshot,
-            effective_scope=scope,
+        route_authority=route_authority_for_test(
+            request,
+            selection_snapshot=page_snapshot,
+            canonical_selection_snapshot=canonical_page_snapshot,
         ),
+        selection_snapshot=page_snapshot,
+        canonical_selection_snapshot=canonical_page_snapshot,
     )
 
     summaries = [claim["summary"] for claim in result.synthesis["claims"]]
@@ -1759,6 +1796,7 @@ def test_widened_request_scope_causes_zero_calls():
             context=object(),
             principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
+            route_authority=route_authority_for_test(request),
         )
 
     assert calls == []
@@ -2471,7 +2509,7 @@ def test_canonical_cve_fallback_narrates_exact_durable_and_scoped_evidence(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     cve_id = "CVE-2026-13221"
     findings = [
         {
@@ -2804,7 +2842,7 @@ def test_operations_copilot_coordinates_plan_and_final_network_answer(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -2927,7 +2965,7 @@ def test_operations_copilot_corrects_highest_risk_compliance_coverage(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3060,7 +3098,7 @@ def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3170,7 +3208,7 @@ def test_highest_risk_endpoint_retains_ranked_claims_after_conflict_exclusion(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3399,7 +3437,7 @@ def test_coordinator_failure_preserves_exact_validated_page_hint(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class FailingCoordinator:
         agent_name = "operations-copilot"
@@ -3643,7 +3681,7 @@ def test_canonical_cve_uses_durable_tool_when_semantic_provider_is_deferred(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     cve_id = "CVE-2026-8376"
     body = _cve_canonical_body(cve_id)
     body["snapshot"]["selected_entities"] = [
@@ -3763,7 +3801,7 @@ def test_canonical_page_degrades_when_domain_resolution_is_deferred(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     body = _canonical_body()
     body.pop("hint")
     body["question"] = "Summarize the visible governance context."
@@ -3857,9 +3895,7 @@ def test_canonical_page_degrades_when_domain_resolution_is_deferred(
     [
         ("compatibility", "0"),
         ("shadow", "0"),
-        ("canary", "0"),
-        ("canary", "100"),
-        ("default", "0"),
+        ("canary", "10"),
     ],
 )
 def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
@@ -3870,6 +3906,8 @@ def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", canary_percentage)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     vnet_id = body["hint"]["arguments"]["vnet_id"]
     tool_calls: list[tuple[str, dict[str, object]]] = []
@@ -3938,13 +3976,15 @@ def test_bound_network_hub_uses_network_tool_when_semantic_provider_is_deferred(
     assert "semantic provider is deferred" not in response.text.casefold()
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "canary"])
 def test_network_dependency_question_without_hint_binds_selected_vnet(
     tmp_path,
     monkeypatch,
     rollout_mode,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     body.pop("hint")
     body["requested_scope"] = {}
@@ -4017,7 +4057,7 @@ def test_network_dependency_question_without_hint_binds_selected_vnet(
         assert rollout["comparison"]["divergent_fields"] == []
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "canary"])
 @pytest.mark.parametrize(
     "unsafe_variant",
     ["no_selected_vnet", "ambiguous_vnets", "non_vnet", "mismatched_subject"],
@@ -4029,6 +4069,8 @@ def test_network_no_hint_derivation_does_not_widen_tool_authority(
     rollout_mode,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     body.pop("hint")
     if unsafe_variant == "no_selected_vnet":
@@ -4095,13 +4137,15 @@ def test_network_no_hint_derivation_does_not_widen_tool_authority(
     assert tool_calls == []
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "canary"])
 def test_explicit_network_hint_selects_one_vnet_from_multi_hub_context(
     tmp_path,
     monkeypatch,
     rollout_mode,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     vnet_id = body["hint"]["arguments"]["vnet_id"]
     body["snapshot"]["selected_entities"].append(
@@ -4232,8 +4276,7 @@ def test_shadow_endpoint_accepts_matching_plans_without_duplicate_tool_io(
     [
         ("compatibility", "0", False),
         ("shadow", "0", False),
-        ("canary", "100", True),
-        ("default", "0", True),
+        ("canary", "10", True),
     ],
 )
 def test_rollout_alone_authorizes_coordinator_execution(
@@ -4247,6 +4290,8 @@ def test_rollout_alone_authorizes_coordinator_execution(
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
     monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", canary_percentage)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -4630,7 +4675,7 @@ def test_missing_rollout_keeps_legacy_investigate_on_compatibility(
     assert legacy_calls == ["Show inventory resources"]
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "canary"])
 @pytest.mark.parametrize(
     "binding_variant",
     [
@@ -4647,6 +4692,8 @@ def test_explicit_network_hint_must_match_exactly_one_selected_vnet(
     binding_variant,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     if binding_variant == "mismatched_hint":
         body["hint"]["arguments"]["vnet_id"] = (
@@ -4705,7 +4752,7 @@ def test_explicit_network_hint_must_match_exactly_one_selected_vnet(
     assert tool_calls == []
 
 
-@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "default"])
+@pytest.mark.parametrize("rollout_mode", ["compatibility", "shadow", "canary"])
 @pytest.mark.parametrize("include_hint", [False, True])
 def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
     tmp_path,
@@ -4714,6 +4761,8 @@ def test_deferred_semantic_network_fallback_still_rejects_widened_azure_entity(
     include_hint,
 ):
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    if rollout_mode == "canary":
+        enable_authorized_canary(monkeypatch)
     body = _network_hub_canonical_body()
     widened_vnet_id = (
         "/subscriptions/sub-b/resourceGroups/demo-rg/providers/"
@@ -4761,7 +4810,7 @@ def test_deferred_semantic_cve_fallback_rejects_conflicting_selected_cve(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     body = _cve_canonical_body("CVE-2026-8376")
     body["snapshot"]["selected_entities"] = [
         {
@@ -4803,7 +4852,7 @@ def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     body = _cve_canonical_body("CVE-2026-13221")
     body["question"] = "Explain CVE-2026-99999"
     body["hint"]["arguments"]["cve_id"] = "CVE-2026-99999"
@@ -4857,7 +4906,7 @@ def test_authenticated_canonical_route_preserves_governed_result(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     observed_calls: list[tuple[dict[str, list[str]], str | None, str | None]] = []
 
     class InventoryPort:
@@ -4917,7 +4966,7 @@ def test_canonical_route_uses_snapshot_selectors_for_governed_reads(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     observed_calls: list[tuple[str | None, str | None]] = []
 
     class InventoryPort:
@@ -4982,7 +5031,7 @@ def test_canonical_route_resolves_selected_software_through_scoped_service(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     observed: list[tuple[str, str, dict[str, list[str]], int]] = []
 
     class InventoryService:
@@ -5069,7 +5118,7 @@ def test_canonical_route_bounds_large_selected_paas_evidence(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     evidence_count = 300
 
     class InventoryService:
@@ -5138,7 +5187,7 @@ def test_canonical_route_rejects_conflicting_inventory_context_before_io(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     calls: list[object] = []
 
     class InventoryPort:
@@ -5168,7 +5217,7 @@ def test_canonical_route_validates_hints_and_scope_before_tool_io(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     calls: list[dict[str, list[str]]] = []
 
     class InventoryPort:
@@ -5234,7 +5283,7 @@ def test_canonical_route_rejects_browser_authority_assertions(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
     body = _canonical_body()
@@ -5253,7 +5302,7 @@ def test_canonical_route_never_promotes_browser_observations_to_authority(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     class InventoryPort:
         def list_resources(self, scope, *, family, resource_type, limit):
             return {"resources": [], "total": 0}
@@ -7650,6 +7699,9 @@ def test_context_canonical_supported_page_translates_evidence_and_kind(
         scope=scope,
         principal=SimpleNamespace(subject="test@example.com"),
         principal_subject="test@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="test@example.com"
+        ),
     )
 
     # --- Canonical request must carry the ACTUAL page kind ---
@@ -7961,6 +8013,9 @@ def test_execute_from_question_routes_domain_intent(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
     )
 
     assert captured[0].snapshot.page_kind == expected_page_kind
@@ -8079,7 +8134,7 @@ def test_canonical_history_projects_binding_contention_as_conflict(
 def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     context = _context(tmp_path, None)
     monkeypatch.setattr(
         OrchestrationService,
@@ -8101,7 +8156,7 @@ def test_canonical_endpoint_projects_thread_storage_outage_as_unavailable(
 def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     monkeypatch.setattr(
         OrchestrationService,
         "execute",
@@ -8124,7 +8179,7 @@ def test_canonical_endpoint_projects_sustained_thread_contention_as_conflict(
 def test_canonical_endpoint_preserves_used_retained_citations(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     from operations.orchestration_contract import Citation, OrchestrationResult
 
     retained_id = f"retained:thr-{'a' * 32}:rev-1:citation-0"
@@ -8218,6 +8273,9 @@ def test_legacy_adapter_does_not_reset_thread_on_storage_outage(monkeypatch):
             scope=Scope({"subscription": ["sub-a"]}),
             context=object(),
             principal_subject="operator@example.com",
+            rollout_decision=rollout_decision_for_test(
+                principal_subject="operator@example.com"
+            ),
             session_id="outage-session",
         )
 
@@ -8585,6 +8643,9 @@ def test_question_route_handles_stable_aliases(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
     )
 
     assert captured[0].snapshot.page_kind == expected_page_kind
@@ -8607,6 +8668,9 @@ def test_unmatched_question_returns_explicit_unsupported_without_tool_io(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
     )
 
     assert result.status == "unavailable"
@@ -8632,6 +8696,9 @@ def test_ownership_question_without_subject_is_explicitly_unavailable(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
     )
 
     assert result.status == "unavailable"
@@ -8658,6 +8725,9 @@ def test_empty_required_argument_hint_is_unavailable_without_fallback_io(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
         hint_tool="business_service_context",
         hint_arguments={},
     )
@@ -8695,6 +8765,9 @@ def test_incident_terms_take_precedence_over_embedded_network_markers(
         scope=Scope({"subscription": ["sub-a"]}),
         context=object(),
         principal_subject="operator@example.com",
+        rollout_decision=rollout_decision_for_test(
+            principal_subject="operator@example.com"
+        ),
     )
 
     assert captured[0].snapshot.page_kind == "incident"
@@ -8705,7 +8778,7 @@ def test_canonical_endpoint_accepts_non_inventory_manifest_snapshot(
     monkeypatch,
 ):
     """The shared canonical route accepts every manifest-backed page kind."""
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     body = _canonical_body()
     body["snapshot"]["page_kind"] = "network"
     body["snapshot"]["page_id"] = "network"
@@ -8963,7 +9036,7 @@ def test_empty_situations_answer_is_direct_cited_and_freshness_honest(
     monkeypatch,
 ):
     """A complete empty queue remains useful when the live tool is deferred."""
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.call_tool",
         lambda *_args, **_kwargs: ToolResult(
@@ -9068,7 +9141,7 @@ def test_empty_changes_answer_is_direct_cited_and_correlation_safe(
     monkeypatch,
 ):
     """A fresh empty correlation page answers without claiming no changes occurred."""
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.call_tool",
         lambda *_args, **_kwargs: ToolResult(
@@ -9200,7 +9273,7 @@ def test_unsubmitted_predeploy_starters_return_direct_cited_degradation(
     question,
 ):
     """Every advertised starter answers the real no-assessment page state."""
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     monkeypatch.setattr(
         "api.routers.copilot.call_tool",
         lambda *_args, **_kwargs: ToolResult(
@@ -9390,7 +9463,7 @@ def test_service_detail_keeps_risk_unavailability_out_of_foundry_narration(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     class Coordinator:
         agent_name = "operations-copilot"
         agent_version = "5"
@@ -9577,7 +9650,7 @@ def test_twin_status_truth_bypasses_optional_narrator(
     detail_field,
     expected_summary,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -9762,7 +9835,7 @@ def test_unhinted_typed_questions_use_governed_page_context(
     question,
     expected_specialists,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     calls: list[tuple[str, dict[str, object]]] = []
     resource_id = (
         "/subscriptions/sub-a/resourceGroups/rg/providers/"
@@ -9836,7 +9909,7 @@ def test_canonical_endpoint_returns_409_for_stale_revision_before_tool_io(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     calls: list[str] = []
 
     def execute(name, arguments, *, context, scope):
@@ -9928,6 +10001,9 @@ def test_concurrent_first_legacy_session_turns_share_one_thread(monkeypatch):
             scope=Scope({"subscription": ["sub-a"]}),
             context=object(),
             principal_subject="operator@example.com",
+            rollout_decision=rollout_decision_for_test(
+                principal_subject="operator@example.com"
+            ),
             session_id=session_id,
         )
 
@@ -10163,6 +10239,10 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
     carries an explicit deployment status, so the UI renders configured/
     unavailable from the API instead of a local, drift-prone card list."""
     _enable_canonical_rollout(monkeypatch)
+    for name in tuple(os.environ):
+        if name.startswith("FOUNDRY_"):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", raising=False)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 

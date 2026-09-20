@@ -7,6 +7,7 @@
 #   ./infra/scripts/build-and-push.sh                 # auto tag, build + push
 #   ./infra/scripts/build-and-push.sh my-fix          # explicit tag
 #   ./infra/scripts/build-and-push.sh my-fix --deploy # build, push, apply
+#   ./infra/scripts/build-and-push.sh my-fix --api-authorization-release
 #
 # The registry name is read from Terraform state, so this must run after a
 # successful apply.
@@ -58,10 +59,12 @@ if [[ -f "${env_file}" ]]; then
 fi
 
 deploy_after=0
+authorization_release=0
 tag=""
 for arg in "$@"; do
   case "${arg}" in
     --deploy) deploy_after=1 ;;
+    --api-authorization-release) authorization_release=1 ;;
     -*) echo "build-and-push: unknown flag ${arg}" >&2; exit 2 ;;
     *) if [[ -z "${tag}" ]]; then tag="${arg}"; else
          echo "build-and-push: unexpected argument ${arg}" >&2; exit 2
@@ -80,6 +83,10 @@ if [[ -z "${tag}" ]]; then
   slug="$(printf '%s' "${slug}" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-40)"
   tag="${slug}-$(date -u +%Y%m%d-%H%M%S)"
 fi
+if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  echo "build-and-push: invalid image tag ${tag}" >&2
+  exit 2
+fi
 
 registry="$(cd "${tf_dir}" && terraform output -raw container_registry 2>/dev/null || true)"
 if [[ -z "${registry}" ]]; then
@@ -89,6 +96,16 @@ if [[ -z "${registry}" ]]; then
 fi
 
 registry_name="${registry%%.*}"
+
+# API tags are immutable release identities. Never resume or overwrite a prior
+# API build, because recording that tag would bind its old digest to this
+# invocation's source revision.
+if [[ "${authorization_release}" -eq 1 ]] && az acr repository show \
+  --name "${registry_name}" \
+  --image "aiops-api:${tag}" >/dev/null 2>&1; then
+  echo "build-and-push: refusing to reuse existing API tag aiops-api:${tag}." >&2
+  exit 1
+fi
 
 # Container Apps runs linux/amd64. On an Apple Silicon machine a local build
 # must cross-build; without Rosetta that falls back to QEMU emulation, which
@@ -104,6 +121,7 @@ registry_name="${registry%%.*}"
 platform="linux/amd64"
 build_mode="${AIOPS_BUILD_MODE:-acr}"
 acr_context=""
+source_revision="$(git -C "${repo_root}" rev-parse HEAD)"
 
 prepare_acr_context() {
   [[ "${build_mode}" == "acr" ]] || return 0
@@ -121,16 +139,31 @@ build_image() {
   local image="$1" dockerfile="$2" context="$3"
   local -a build_args=()
 
-  # A failed multi-image run may already have pushed earlier images. Tags are
-  # immutable by convention, so resume instead of rebuilding successful work.
-  if [[ "${AIOPS_FORCE_REBUILD:-0}" != "1" ]] && az acr repository show \
+  # Recheck API immutability at the build boundary to close races after the
+  # early fail-fast check. Force rebuild never permits overwriting an API tag.
+  if az acr repository show \
     --name "${registry_name}" \
     --image "${image}:${tag}" >/dev/null 2>&1; then
-    echo "build-and-push: reusing ${registry}/${image}:${tag}"
-    return 0
+    if [[ "${image}" == "aiops-api" ]]; then
+      echo "build-and-push: refusing to reuse existing API tag aiops-api:${tag}." >&2
+      return 1
+    fi
+    if [[ "${AIOPS_FORCE_REBUILD:-0}" != "1" ]]; then
+      echo "build-and-push: reusing ${registry}/${image}:${tag}"
+      return 0
+    fi
   fi
 
-  if [[ "${image}" == "aiops-web" ]]; then
+  if [[ "${image}" == "aiops-api" ]]; then
+    if [[ "${build_mode}" == "local" ]] &&
+      [[ -n "$(git -C "${repo_root}" status --porcelain --untracked-files=all)" ]]; then
+      echo "build-and-push: local API builds require a clean worktree so baked source revision is exact." >&2
+      return 1
+    fi
+    build_args=(
+      --build-arg "AIOPS_SOURCE_REVISION=${source_revision}"
+    )
+  elif [[ "${image}" == "aiops-web" ]]; then
     : "${NEXT_PUBLIC_ENTRA_CLIENT_ID:?Set NEXT_PUBLIC_ENTRA_CLIENT_ID}"
     : "${NEXT_PUBLIC_ENTRA_TENANT_ID:?Set NEXT_PUBLIC_ENTRA_TENANT_ID}"
     : "${NEXT_PUBLIC_ENTRA_API_SCOPE:?Set NEXT_PUBLIC_ENTRA_API_SCOPE}"
@@ -184,7 +217,7 @@ build_image() {
 # ActivationFailed with MANIFEST_UNKNOWN, so confirm all images landed.
 verify_pushed() {
   local image missing=()
-  for image in aiops-api aiops-web mcp-server azure-mcp; do
+  for image in "$@"; do
     if ! az acr repository show \
       --name "${registry_name}" \
       --image "${image}:${tag}" >/dev/null 2>&1; then
@@ -201,20 +234,75 @@ verify_pushed() {
 # terraform.tfvars is the source of truth Terraform reads on a plain apply.
 # Writing it here is what stops the deployed revision from drifting behind
 # the newest pushed tag.
-record_tag() {
+resolve_api_digest() {
+  local resolved_tag resolved_digest
+  IFS=$'\t' read -r resolved_tag resolved_digest < <(
+    az acr repository show-tags \
+      --name "${registry_name}" \
+      --repository "aiops-api" \
+      --detail \
+      --query "[?name=='${tag}'] | [0].[name,digest]" \
+      --output tsv
+  )
+  if [[ "${resolved_tag}" != "${tag}" ]]; then
+    echo "build-and-push: resolved API manifest does not correspond to aiops-api:${tag}." >&2
+    exit 1
+  fi
+  if [[ ! "${resolved_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "build-and-push: resolved API manifest digest is malformed." >&2
+    exit 1
+  fi
+  printf '%s\n' "${resolved_digest}"
+}
+
+record_authorization_release() {
+  local api_digest="$1"
   if [[ ! -f "${tfvars}" ]]; then
-    echo "build-and-push: ${tfvars} not found; skipping tag record." >&2
+    echo "build-and-push: ${tfvars} not found; cannot record immutable release." >&2
+    if [[ "${deploy_after}" -eq 1 ]]; then
+      exit 1
+    fi
     return 0
   fi
-  local tmp
-  tmp="$(mktemp)"
-  awk -v tag="${tag}" '
+  local tmp="${tfvars}.tmp.$$"
+  if ! awk -v digest="${api_digest}" -v revision="${source_revision}" '
+    /^[ \t]*api_image_digest[ \t]*=/ { print "api_image_digest = \"" digest "\""; seen_digest = 1; next }
+    /^[ \t]*deployment_source_revision[ \t]*=/ { print "deployment_source_revision = \"" revision "\""; seen_revision = 1; next }
+    { print }
+    END { if (!seen_digest) print "api_image_digest = \"" digest "\"" }
+    END { if (!seen_revision) print "deployment_source_revision = \"" revision "\"" }
+  ' "${tfvars}" >"${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  mv "${tmp}" "${tfvars}"
+  echo "build-and-push: atomically recorded API digest=${api_digest} and deployment_source_revision=${source_revision}"
+}
+
+record_application_release() {
+  local api_digest="$1"
+  if [[ ! -f "${tfvars}" ]]; then
+    echo "build-and-push: ${tfvars} not found; cannot record application release." >&2
+    if [[ "${deploy_after}" -eq 1 ]]; then
+      exit 1
+    fi
+    return 0
+  fi
+  local tmp="${tfvars}.tmp.$$"
+  if ! awk -v tag="${tag}" -v digest="${api_digest}" -v revision="${source_revision}" '
     /^[ \t]*image_tag[ \t]*=/ { print "image_tag     = \"" tag "\""; seen = 1; next }
+    /^[ \t]*api_image_digest[ \t]*=/ { print "api_image_digest = \"" digest "\""; seen_digest = 1; next }
+    /^[ \t]*deployment_source_revision[ \t]*=/ { print "deployment_source_revision = \"" revision "\""; seen_revision = 1; next }
     { print }
     END { if (!seen) print "image_tag     = \"" tag "\"" }
-  ' "${tfvars}" >"${tmp}"
+    END { if (!seen_digest) print "api_image_digest = \"" digest "\"" }
+    END { if (!seen_revision) print "deployment_source_revision = \"" revision "\"" }
+  ' "${tfvars}" >"${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
   mv "${tmp}" "${tfvars}"
-  echo "build-and-push: recorded image_tag = \"${tag}\" in terraform.tfvars"
+  echo "build-and-push: atomically recorded image_tag=${tag}, API digest=${api_digest}, and deployment_source_revision=${source_revision}"
 }
 
 if [[ "${build_mode}" == "local" ]]; then
@@ -224,22 +312,52 @@ fi
 
 prepare_acr_context
 
-build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
-build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
-build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
-build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
-
-verify_pushed
-record_tag
-
-echo
-echo "build-and-push: pushed both images with tag '${tag}'."
+if [[ "${authorization_release}" -eq 1 ]]; then
+  # This release gate authorizes API code only. Existing Operations MCP
+  # endpoint/catalog/connection identity may be consumed by the API, but MCP
+  # container images are neither built nor validated nor changed by this path.
+  reviewed_root="${repo_root}"
+  if [[ "${build_mode}" == "acr" ]]; then
+    reviewed_root="${acr_context}"
+  fi
+  PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
+    --root "${reviewed_root}" \
+    --manifest "${reviewed_root}/src/operations/copilot_canary_authorization.v1.json" \
+    >/dev/null
+  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+  verify_pushed aiops-api
+  api_digest="$(resolve_api_digest)"
+  record_authorization_release "${api_digest}"
+  echo
+  echo "build-and-push: pushed API authorization release '${tag}'."
+else
+  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+  build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
+  build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
+  build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
+  verify_pushed aiops-api aiops-web mcp-server azure-mcp
+  api_digest="$(resolve_api_digest)"
+  record_application_release "${api_digest}"
+  echo
+  echo "build-and-push: pushed application images with tag '${tag}'."
+fi
 
 if [[ "${deploy_after}" -eq 1 ]]; then
   echo "build-and-push: deploying..."
+  if [[ "${authorization_release}" -eq 1 ]]; then
+    export AIOPS_API_AUTHORIZATION_RELEASE=1
+    exec "${repo_root}/infra/scripts/deploy.sh" apply \
+      -target=azurerm_container_app.api \
+      -auto-approve
+  fi
   exec "${repo_root}/infra/scripts/deploy.sh" apply -auto-approve
 else
   echo "Deploy them with:"
-  echo "  ./infra/scripts/deploy.sh apply"
-  echo "(terraform.tfvars already carries deploy_images and the new image_tag)"
+  if [[ "${authorization_release}" -eq 1 ]]; then
+    echo "  AIOPS_API_AUTHORIZATION_RELEASE=1 ./infra/scripts/deploy.sh apply -target=azurerm_container_app.api"
+    echo "(terraform.tfvars carries only the immutable API digest and source revision)"
+  else
+    echo "  ./infra/scripts/deploy.sh apply"
+    echo "(terraform.tfvars carries deploy_images, the new image_tag, immutable API digest, and source revision)"
+  fi
 fi

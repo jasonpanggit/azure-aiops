@@ -64,28 +64,39 @@ RUN apt-get update \
 WORKDIR /app
 
 ARG SOURCE_CACHE_BUST=0
+ARG AIOPS_SOURCE_REVISION
 LABEL source_cache_bust="${SOURCE_CACHE_BUST}"
 
 COPY --from=builder /app/.venv /app/.venv
+COPY .dockerignore pyproject.toml uv.lock Dockerfile /app/
+COPY infra/scripts/build-and-push.sh infra/scripts/deploy.sh /app/infra/scripts/
+COPY infra/terraform/container_apps.tf infra/terraform/outputs.tf infra/terraform/variables.tf /app/infra/terraform/
 COPY src/ /app/src/
 COPY skills/ /app/skills/
+COPY scripts/export_copilot_provider_env.py /app/scripts/export_copilot_provider_env.py
 COPY scripts/benchmark_exposure_read_model.py /app/scripts/benchmark_exposure_read_model.py
 COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrichment.py
 COPY scripts/validate_exposure_live.py /app/scripts/validate_exposure_live.py
 COPY scripts/validate_ontology_publisher_rbac.py /app/scripts/validate_ontology_publisher_rbac.py
 COPY scripts/collect_ontology_evidence.py /app/scripts/collect_ontology_evidence.py
+COPY arg.config.deploy.yaml fabric.config.deploy.yaml /app/
 
 # The specialist contract is the deployment's single source of truth for agent
 # identity, grants, and versions. Fail the image build -- not a production
 # request -- if it is missing or unparseable at the loader's stable path.
 RUN python -c "import json, pathlib; json.loads(pathlib.Path('/app/src/operations/specialists.v1.json').read_text(encoding='utf-8'))"
+RUN PYTHONPATH=/app/src python -m operations.reviewed_tree \
+        --root /app \
+        --manifest /app/src/operations/copilot_canary_authorization.v1.json \
+        > /app/reviewed-tree.sha256 \
+    && python -c 'import hashlib,json,pathlib,re,sys; source=sys.argv[1]; manifest=pathlib.Path("/app/src/operations/copilot_canary_authorization.v1.json").read_bytes(); manifest_digest=hashlib.sha256(manifest).hexdigest(); tree_digest=pathlib.Path("/app/reviewed-tree.sha256").read_text(encoding="utf-8").strip(); assert re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?",source), "AIOPS_SOURCE_REVISION must be an exact Git revision"; assert re.fullmatch(r"[0-9a-f]{64}",tree_digest), "reviewed tree digest is invalid"; pathlib.Path("/app/build-metadata.json").write_text(json.dumps({"schema_version":"copilot-build-metadata.v1","source_revision":source,"canary_authorization_manifest_sha256":manifest_digest,"reviewed_tree_sha256":tree_digest},sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")' "${AIOPS_SOURCE_REVISION}"
 # Baked-in default connector configs so the inventory-refresh trigger endpoint
 # (POST /api/v1/inventory/refresh, called by the Fabric Data Pipeline Web
 # activity) has a config to load without needing a mounted volume. Neither
 # file contains secrets -- the ARG service-principal secret is supplied via
-# AZURE_CLIENT_SECRET at runtime, not stored in these YAML files.
-COPY arg.config.deploy.yaml /app/config.yaml
-COPY fabric.config.deploy.yaml /app/fabric.config.yaml
+# AZURE_CLIENT_SECRET at runtime, not stored in these YAML files. Production
+# points directly at these reviewed paths so runtime behavior remains covered
+# by the packaged-tree recomputation.
 
 # The API writes connection registries and synced datasets under AIOPS_HOME.
 RUN useradd --create-home --uid 10001 aiops \

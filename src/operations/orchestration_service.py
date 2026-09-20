@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from api.errors import ApiError
 from api.scope import Scope
+from operations import maf_orchestrator
+from operations.copilot_canary_authorization import CanaryAuthorizationError
 from operations.cve_response import (
     canonical_cve_id,
     deterministic_cve_narrative,
@@ -41,6 +43,7 @@ from operations.investigation_thread_store import (
     scope_within,
 )
 from operations.maf_orchestrator import (
+    CopilotRolloutDecision,
     build_deterministic_fallback,
     select_specialists_for_turn,
 )
@@ -1087,6 +1090,8 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        stable_key: str | None = None,
+        route_authority: object | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
@@ -1098,6 +1103,8 @@ class OrchestrationService:
             context=context,
             principal_subject=principal_subject,
             effective_scope=effective_scope,
+            stable_key=stable_key,
+            route_authority=route_authority,
             max_wall_seconds=max_wall_seconds,
             selection_snapshot=selection_snapshot,
             canonical_selection_snapshot=canonical_selection_snapshot,
@@ -1110,12 +1117,25 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        stable_key: str | None = None,
+        route_authority: object | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
+        if route_authority is not None:
+            raise CanaryAuthorizationError(
+                "caller-supplied canonical route authority is not accepted"
+            )
+        maf_orchestrator.authorize_canonical_execution(
+            request=request,
+            principal_subject=principal_subject,
+            stable_key=stable_key or principal_subject,
+            selection_snapshot=selection_snapshot,
+            canonical_selection_snapshot=canonical_selection_snapshot,
+        )
         if self.telemetry is None:
             api_telemetry = getattr(context, "telemetry", None)
             self.telemetry = getattr(api_telemetry, "orchestration", None)
@@ -4603,6 +4623,7 @@ def execute_from_question(
     scope: Scope,
     context: Any,
     principal_subject: str,
+    rollout_decision: CopilotRolloutDecision,
     session_id: str = "",
     hint_tool: str = "",
     hint_arguments: Mapping[str, Any] | None = None,
@@ -4733,6 +4754,7 @@ def execute_from_question(
             context=context,
             principal_subject=principal_subject,
             effective_scope=scope,
+            stable_key=principal_subject,
             max_wall_seconds=max_wall_seconds,
         )
 
