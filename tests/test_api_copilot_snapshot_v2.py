@@ -139,7 +139,13 @@ def test_snapshot_v2_api_never_retains_untrusted_browser_citations(tmp_path):
     assert "inventory:os:windows-2022" not in {
         citation["citation_id"] for citation in citations
     }
-    assert citations == []
+    assert len(citations) == 1
+    assert citations[0]["citation_id"].startswith("tool:")
+    assert citations[0]["source"] == (
+        "intelligence.inventory.InventoryReadPort:"
+        "inventory/os_observations"
+    )
+    assert citations[0]["status"] == "empty"
 
 
 def test_production_boundary_invokes_canonical_snapshot_normalization(

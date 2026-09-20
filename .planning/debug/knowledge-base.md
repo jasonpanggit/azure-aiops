@@ -133,3 +133,13 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Why not caught:** No end-to-end regression covered execution identity across a second approval, and the initial recovery test covered only reconciled-incomplete success rather than failed/cancelled terminals plus submission-ambiguity negatives.
 - **Recurrence guard:** `tests/test_remediation_execution_service.py::{test_same_approval_execution_identity_is_idempotent_after_every_status,test_fresh_approval_creates_execution_after_terminal_non_ambiguous_status,test_fresh_approval_is_blocked_by_related_active_execution,test_fresh_approval_is_blocked_by_any_related_submission_ambiguity}`, `tests/test_api_remediation_execution.py::test_execute_same_approval_is_idempotent_but_fresh_terminal_approval_resubmits`, and the `Start a new run` cases in `web/src/app/remediation/page.test.tsx`.
 ---
+
+## shadow-rollout-authority — Coordinator availability bypassed compatibility and shadow rollout authority
+- **Date:** 2026-09-20
+- **Error patterns:** canonical_enabled=false, shadow_enabled=true, coordinator v6, canonical execution during shadow, compatibility result replaced, OrchestrationService
+- **Root cause(s):** Coordinator availability was used as execution authority in `investigate_canonical`: coordinator wrapping, the `rollout.canonical_enabled or coordinator_enabled` execution branch, and coordinator metadata were not gated by `rollout.canonical_enabled`, so a configured coordinator bypassed compatibility/shadow rollout authority.
+- **Fix:** Gated coordinator planner/synthesis wrapping, canonical `OrchestrationService` execution, and coordinator execution metadata on `rollout.canonical_enabled`; shadow now previews with the deterministic local planner only.
+- **Files changed:** src/api/routers/copilot.py, tests/test_api_copilot_unified.py, tests/test_copilot_drawer_rollout.py
+- **Why not caught:** The route test gate did not cover coordinator-enabled compatibility/shadow modes, and five coordinator fixtures incorrectly used compatibility mode while expecting canonical execution.
+- **Recurrence guard:** `tests/test_api_copilot_unified.py::test_rollout_alone_authorizes_coordinator_execution` locks compatibility, shadow, canary-100, and default authority with separate I/O counters; `tests/test_api_copilot_unified.py::test_coordinator_enabled_invalid_hint_rejects_before_any_io` locks pre-I/O validation; `tests/test_copilot_drawer_rollout.py::test_shadow_reports_deterministic_plan_comparison_without_canonical_io` locks no-I/O shadow preview.
+---

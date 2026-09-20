@@ -881,6 +881,7 @@ def _execute_retained_compatibility(
     context: Any,
     scope: Scope,
     principal: Any,
+    planned_candidate: CandidatePlan | None = None,
 ) -> OrchestrationResult:
     """Serve the retained deterministic investigation path on the v2 wire."""
 
@@ -904,7 +905,7 @@ def _execute_retained_compatibility(
     planned_calls: list[tuple[str, dict[str, Any]]] | None = None
     planned_specialists: list[str] = []
     if payload.hint is None:
-        candidate = build_deterministic_fallback(
+        candidate = planned_candidate or build_deterministic_fallback(
             request,
             load_specialist_manifest(),
         )
@@ -2140,7 +2141,7 @@ def investigate_canonical(
     )
     coordinator_synthesis = None
     required_candidate = hint_candidate
-    if coordinator_enabled:
+    if rollout.canonical_enabled and coordinator_enabled:
         required_hint = None
         if required_candidate is not None:
             required_step = required_candidate.steps[0]
@@ -2163,7 +2164,7 @@ def investigate_canonical(
                 candidate=hint_candidate,
                 effective_scope=scope,
             )
-        if rollout.canonical_enabled or coordinator_enabled:
+        if rollout.canonical_enabled:
             result = OrchestrationService(
                 planner=planner,
                 fallback_planner=(
@@ -2194,6 +2195,7 @@ def investigate_canonical(
                 context=context,
                 scope=scope,
                 principal=principal,
+                planned_candidate=required_candidate,
             )
     except PolicyViolation as exc:
         raise ApiError(
@@ -2231,7 +2233,7 @@ def investigate_canonical(
             }
         )
 
-    if coordinator_enabled:
+    if rollout.canonical_enabled and coordinator_enabled:
         result = result.model_copy(
             update={
                 "synthesis": {

@@ -2804,7 +2804,7 @@ def test_operations_copilot_coordinates_plan_and_final_network_answer(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -2927,7 +2927,7 @@ def test_operations_copilot_corrects_highest_risk_compliance_coverage(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3060,7 +3060,7 @@ def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3170,7 +3170,7 @@ def test_highest_risk_endpoint_retains_ranked_claims_after_conflict_exclusion(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
 
     class Coordinator:
         agent_name = "operations-copilot"
@@ -3399,7 +3399,7 @@ def test_coordinator_failure_preserves_exact_validated_page_hint(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
 
     class FailingCoordinator:
         agent_name = "operations-copilot"
@@ -4225,6 +4225,170 @@ def test_shadow_endpoint_accepts_matching_plans_without_duplicate_tool_io(
     assert rollout["comparison"]["divergent_fields"] == []
     assert rollout["comparison"]["matches"]["plan_outcome"] is True
     assert rollout["comparison"]["matches"]["selected_tools"] is True
+
+
+@pytest.mark.parametrize(
+    ("rollout_mode", "canary_percentage", "canonical_expected"),
+    [
+        ("compatibility", "0", False),
+        ("shadow", "0", False),
+        ("canary", "100", True),
+        ("default", "0", True),
+    ],
+)
+def test_rollout_alone_authorizes_coordinator_execution(
+    tmp_path,
+    monkeypatch,
+    rollout_mode,
+    canary_percentage,
+    canonical_expected,
+):
+    """A configured coordinator is capability, never rollout authority."""
+
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", rollout_mode)
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", canary_percentage)
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "6"
+
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls.append({"question": question, "context": context})
+            return AgentAnswer(
+                text=json.dumps({
+                    "steps": [{
+                        "specialist_id": "network",
+                        "tool_calls": [{
+                            "tool": "hub_dependents",
+                            "arguments": {
+                                "vnet_id": body["hint"]["arguments"]["vnet_id"],
+                            },
+                            "citation_ids": ["snapshot:coverage"],
+                            "mutation": False,
+                        }],
+                        "depends_on": [],
+                    }],
+                    "estimated_tokens": 0,
+                    "max_wall_seconds": 5,
+                    "mutation_intent": False,
+                }),
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    body = _network_hub_canonical_body()
+    body["snapshot"]["evidence"] = body["snapshot"]["evidence"][1:]
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": True,
+    }
+    compatibility_calls = []
+    canonical_calls = []
+
+    def compatibility_tool(name, arguments, **_kwargs):
+        compatibility_calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    def canonical_tool(name, arguments, **_kwargs):
+        canonical_calls.append((name, dict(arguments)))
+        return ToolResult(status="empty")
+
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        compatibility_tool,
+    )
+    monkeypatch.setattr("api.routers.copilot.call_tool", canonical_tool)
+    coordinator = Coordinator()
+
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["rollout"]["canonical_enabled"] is canonical_expected
+    assert data["mutation_authorized"] is False
+    if canonical_expected:
+        assert compatibility_calls == []
+        assert canonical_calls == [
+            ("hub_dependents", body["hint"]["arguments"])
+        ]
+        assert len(coordinator.calls) >= 1
+        assert data["synthesis"]["coordinator"]["version"] == "6"
+    else:
+        assert compatibility_calls == [
+            ("hub_dependents", body["hint"]["arguments"])
+        ]
+        assert canonical_calls == []
+        assert coordinator.calls == []
+        assert data["fallback_reason"] == "compatibility_rollout"
+        assert data["synthesis"]["reason"] == "retained_compatibility"
+        assert "coordinator" not in data["synthesis"]
+        if rollout_mode == "shadow":
+            assert data["rollout"]["shadow_enabled"] is True
+            assert data["rollout"]["comparison"]["canonical"][
+                "plan_outcome"
+            ] == "planned"
+
+
+def test_coordinator_enabled_invalid_hint_rejects_before_any_io(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "6"
+
+        def answer(self, **_kwargs):
+            pytest.fail("invalid hint reached coordinator model I/O")
+
+    body = _network_hub_canonical_body()
+    body["snapshot"]["evidence"] = body["snapshot"]["evidence"][1:]
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 1,
+        "total_count": 1,
+        "complete": True,
+    }
+    body["hint"]["specialist_id"] = "vulnerability"
+    monkeypatch.setattr(
+        "operations.investigation.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid hint reached compatibility tool I/O"
+        ),
+    )
+    monkeypatch.setattr(
+        "api.routers.copilot.call_tool",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid hint reached canonical tool I/O"
+        ),
+    )
+
+    response = TestClient(
+        create_app(_context(tmp_path, Coordinator())),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == (
+        "hint.arguments.vnet_id"
+    )
 
 
 def test_shadow_endpoint_rejects_mismatched_hint_without_tool_io(
