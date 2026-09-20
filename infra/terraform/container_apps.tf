@@ -565,7 +565,7 @@ resource "azurerm_container_app" "api" {
         value = local.copilot_rollback_mode
       }
 
-      # The canary gate independently validates these deployment facts
+      # The canary gate validates the code-bound deployment facts below
       # against the packaged, build-hashed authorization record before any
       # Foundry provider is activated or any canonical external I/O can run.
       env {

@@ -29,6 +29,9 @@ ENV_KEYS = (
     "AIOPS_COPILOT_ROLLOUT_MODE",
     "AIOPS_COPILOT_CANARY_PERCENTAGE",
     "AIOPS_COPILOT_ROLLBACK_MODE",
+    "AIOPS_SOURCE_REVISION",
+    "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+    "AIOPS_API_IMAGE_DIGEST",
 )
 ROLLOUT_MODES = frozenset({"compatibility", "shadow", "canary", "default"})
 CONNECTION_LABELS = ("operations-mcp",)
@@ -38,6 +41,9 @@ CONNECTION_ID_PATTERN = re.compile(
     r"connections/[^/]+$",
     re.IGNORECASE,
 )
+SOURCE_REVISION_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class BlockedConfiguration(ValueError):
@@ -219,6 +225,14 @@ def load_environment(
         raise ValueError("AIOPS_COPILOT_CANARY_PERCENTAGE")
     if values["AIOPS_COPILOT_ROLLBACK_MODE"].casefold() != "compatibility":
         raise ValueError("AIOPS_COPILOT_ROLLBACK_MODE")
+    if not SOURCE_REVISION_PATTERN.fullmatch(values["AIOPS_SOURCE_REVISION"]):
+        raise ValueError("AIOPS_SOURCE_REVISION")
+    if not SHA256_PATTERN.fullmatch(
+        values["AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256"]
+    ):
+        raise ValueError("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256")
+    if not IMAGE_DIGEST_PATTERN.fullmatch(values["AIOPS_API_IMAGE_DIGEST"]):
+        raise ValueError("AIOPS_API_IMAGE_DIGEST")
 
     operation_connection = _normalize_connection_id(
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",

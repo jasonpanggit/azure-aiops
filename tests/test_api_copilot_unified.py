@@ -48,10 +48,25 @@ from operations.specialist_manifest import (
 )
 from operations.tools import STATUS_OK, ToolResult
 from tests.copilot_authorization_fixtures import (
+    canonical_authorizer_for_test,
     enable_authorized_canary,
     rollout_decision_for_test,
     route_authority_for_test,
 )
+
+
+@pytest.fixture(autouse=True)
+def _inject_canonical_authorizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_init = OrchestrationService.__init__
+
+    def authorized_init(self, **kwargs):
+        kwargs.setdefault(
+            "canonical_authorizer",
+            canonical_authorizer_for_test(),
+        )
+        original_init(self, **kwargs)
+
+    monkeypatch.setattr(OrchestrationService, "__init__", authorized_init)
 
 
 def _enable_canonical_rollout(monkeypatch) -> None:

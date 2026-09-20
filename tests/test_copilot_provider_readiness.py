@@ -47,6 +47,9 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "AIOPS_COPILOT_ROLLOUT_MODE": "canary",
                 "AIOPS_COPILOT_CANARY_PERCENTAGE": "10",
                 "AIOPS_COPILOT_ROLLBACK_MODE": "compatibility",
+                "AIOPS_SOURCE_REVISION": "a" * 40,
+                "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": "b" * 64,
+                "AIOPS_API_IMAGE_DIGEST": f"sha256:{'c' * 64}",
             },
         },
         "unrelated_sensitive_output": {
@@ -133,6 +136,9 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "11"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "101"),
         ("AIOPS_COPILOT_ROLLBACK_MODE", "default"),
+        ("AIOPS_SOURCE_REVISION", "main"),
+        ("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
+        ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
     ],
 )
 def test_provider_env_export_rejects_malformed_values(
@@ -182,6 +188,12 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert "export FOUNDRY_PROJECT_ENDPOINT=" in rendered
     assert f"export FOUNDRY_CANDIDATE_MAPPING={candidate}" in rendered
     assert "export AIOPS_COPILOT_ROLLOUT_MODE=canary" in rendered
+    assert f"export AIOPS_SOURCE_REVISION={'a' * 40}" in rendered
+    assert (
+        f"export AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256={'b' * 64}"
+        in rendered
+    )
+    assert f"export AIOPS_API_IMAGE_DIGEST=sha256:{'c' * 64}" in rendered
     assert "must-not-leak" not in rendered
     assert "AZURE_CLIENT_SECRET" not in rendered
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
@@ -260,6 +272,9 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "AIOPS_COPILOT_ROLLOUT_MODE",
         "AIOPS_COPILOT_CANARY_PERCENTAGE",
         "AIOPS_COPILOT_ROLLBACK_MODE",
+        "AIOPS_SOURCE_REVISION",
+        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        "AIOPS_API_IMAGE_DIGEST",
     ):
         assert key in outputs
     foundry = (REPO_ROOT / "infra" / "terraform" / "foundry.tf").read_text(

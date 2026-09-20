@@ -374,7 +374,7 @@ class BuildMetadata(_StrictModel):
 
 @dataclass(frozen=True)
 class ValidatedCanaryAuthorization:
-    """Immutable route authority returned only after all checks pass."""
+    """Immutable server-held authorization state returned after code checks."""
 
     authorization_id: str
     manifest_sha256: str
@@ -493,13 +493,6 @@ def validate_canary_authorization(
         != manifest.candidate_binding.strict_candidate_sha256
     ):
         raise CanaryAuthorizationError("runtime candidate artifact mismatch")
-    image_digest = values.get("AIOPS_API_IMAGE_DIGEST", "").strip()
-    if (
-        len(image_digest) != 71
-        or not image_digest.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in image_digest[7:])
-    ):
-        raise CanaryAuthorizationError("API deployment must use an immutable digest")
     for specialist_id, (agent_name, provider_version) in _EXPECTED_AGENTS.items():
         prefix = f"FOUNDRY_{specialist_id.upper()}_AGENT"
         if (

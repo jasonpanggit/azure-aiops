@@ -104,6 +104,7 @@ fi
 
 command="${1:-plan}"
 shift || true
+api_authorization_release="${AIOPS_API_AUTHORIZATION_RELEASE:-0}"
 
 # Pointing Container Apps at a tag that was never pushed produces a revision
 # stuck in ActivationFailed with MANIFEST_UNKNOWN, so verify the images exist
@@ -111,6 +112,19 @@ shift || true
 verify_images_exist() {
   local args=("$@")
   local deploy_images="" image_tag="" i
+
+  if [[ "${api_authorization_release}" == "1" ]]; then
+    local api_digest
+    api_digest="$(
+      awk -F'=' '/^[ \t]*api_image_digest[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' \
+        "${tf_dir}/terraform.tfvars" | tail -1
+    )"
+    if [[ ! "${api_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "deploy: API authorization release requires an immutable api_image_digest." >&2
+      exit 1
+    fi
+    return 0
+  fi
 
   for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[i]}" in
@@ -233,6 +247,34 @@ report_running_images() {
   echo "deploy: all apps serving ${expected}."
 }
 
+validate_running_api_digest() {
+  command -v az >/dev/null 2>&1 || return 1
+  local expected rg app attempt actual=""
+  expected="$(terraform output -raw api_image 2>/dev/null || true)"
+  rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
+  app="$(terraform output -raw api_app_name 2>/dev/null || true)"
+  if [[ ! "${expected}" =~ @sha256:[0-9a-f]{64}$ ]] ||
+    [[ -z "${rg}" || -z "${app}" ]]; then
+    echo "deploy: external API digest validation lacks immutable expected image or target." >&2
+    return 1
+  fi
+
+  for attempt in $(seq 1 20); do
+    actual="$(
+      az containerapp revision list --resource-group "${rg}" --name "${app}" \
+        --query "[?properties.active && properties.healthState=='Healthy'] | [0].properties.template.containers[0].image" \
+        --output tsv 2>/dev/null || true
+    )"
+    [[ "${actual}" == "${expected}" ]] && break
+    sleep 15
+  done
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "deploy: platform admission denied; active healthy API revision is not ${expected}." >&2
+    return 1
+  fi
+  echo "deploy: platform admission confirmed active API image ${expected}."
+}
+
 publish_governed_remediation_catalog() {
   local python="${AIOPS_PYTHON:-${repo_root}/.venv/bin/python}"
   local fabric_config="${AIOPS_FABRIC_CONFIG:-${repo_root}/fabric.config.yaml}"
@@ -268,10 +310,16 @@ case "${command}" in
     ;;
   apply)
     verify_images_exist "$@"
-    capture_apim_snapshot
+    if [[ "${api_authorization_release}" != "1" ]]; then
+      capture_apim_snapshot
+    fi
     terraform apply -input=false "$@"
-    publish_governed_remediation_catalog
-    report_running_images
+    if [[ "${api_authorization_release}" == "1" ]]; then
+      validate_running_api_digest
+    else
+      publish_governed_remediation_catalog
+      report_running_images
+    fi
     ;;
   destroy)
     terraform destroy -input=false "$@"

@@ -49,7 +49,6 @@ from operations.maf_orchestrator import (
     CopilotRolloutDecision,
     build_deterministic_fallback,
     canonical_orchestration_enabled,
-    canonical_route_authority,
     copilot_rollout_decision,
 )
 from operations.mcp_server import validate_tool_arguments
@@ -1600,12 +1599,7 @@ def _run_context_via_canonical(
         context=context,
         principal_subject=principal_subject,
         effective_scope=scope,
-        route_authority=canonical_route_authority(
-            rollout_decision,
-            request=request,
-            principal_subject=principal_subject,
-            stable_key=principal_subject,
-        ),
+        stable_key=principal_subject,
     )
 
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -2209,14 +2203,7 @@ def investigate_canonical(
                 context=context,
                 principal_subject=principal.subject,
                 effective_scope=scope,
-                route_authority=canonical_route_authority(
-                    rollout,
-                    request=request,
-                    principal_subject=principal.subject,
-                    stable_key=principal.subject,
-                    selection_snapshot=selection_snapshot,
-                    canonical_selection_snapshot=canonical_browser_snapshot,
-                ),
+                stable_key=principal.subject,
                 selection_snapshot=selection_snapshot,
                 canonical_selection_snapshot=canonical_browser_snapshot,
             )

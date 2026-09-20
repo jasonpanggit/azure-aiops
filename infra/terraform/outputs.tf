@@ -13,6 +13,11 @@ output "api_url" {
   value       = "https://${azurerm_container_app.api.ingress[0].fqdn}"
 }
 
+output "api_app_name" {
+  description = "Operations API Container App name used by external digest admission."
+  value       = azurerm_container_app.api.name
+}
+
 output "container_registry" {
   description = "Registry login server, used by infra/scripts/build-and-push.sh."
   value       = azurerm_container_registry.main.login_server
@@ -34,7 +39,7 @@ output "foundry_project_endpoint" {
 }
 
 output "copilot_provider_environment" {
-  description = "Non-secret sourceable Operations Copilot provider and rollout environment. Empty provider values mean the corresponding live gate remains BLOCKED."
+  description = "Non-secret sourceable Operations Copilot provider and rollout environment. The API image digest is deployment observability for external admission, not runtime proof. Empty provider values mean the corresponding live gate remains BLOCKED."
   value = {
     FOUNDRY_PROJECT_ENDPOINT                   = local.foundry_project_endpoint
     OPERATIONS_MCP_SERVER_URL                  = var.enable_apim ? local.foundry_mcp_server_url : ""

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Any
 
 from operations import copilot_canary_authorization, maf_orchestrator
 from operations.copilot_canary_authorization import ValidatedCanaryAuthorization
-from operations.maf_orchestrator import (
-    CopilotRolloutDecision,
-    canonical_route_authority,
-)
+from operations.maf_orchestrator import CopilotRolloutDecision
+from operations.orchestration_service import OrchestrationService
 
 
 def enable_authorized_canary(
@@ -55,9 +54,6 @@ def rollout_decision_for_test(
 ) -> CopilotRolloutDecision:
     """Create a canonical canary decision for route-bound unit tests."""
 
-    stable_key_sha256 = hashlib.sha256(
-        principal_subject.encode("utf-8")
-    ).hexdigest()
     return CopilotRolloutDecision(
         mode="canary",
         canonical_enabled=True,
@@ -67,10 +63,44 @@ def rollout_decision_for_test(
         authorization_id="test-reviewed-canary",
         authorization_manifest_sha256="a" * 64,
         reviewed_tree_sha256="c" * 64,
-        stable_key_sha256=stable_key_sha256,
+        stable_key_sha256=hashlib.sha256(
+            principal_subject.encode("utf-8")
+        ).hexdigest(),
         authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-        _proof=maf_orchestrator._ROLLOUT_DECISION_PROOF,
     )
+
+
+def canonical_authorizer_for_test(
+    *,
+    expected_principal: str | None = None,
+):
+    """Return a test-only validator injected at service construction."""
+
+    def authorize(
+        *,
+        request: Any,
+        principal_subject: str,
+        stable_key: str,
+        selection_snapshot: Any = None,
+        canonical_selection_snapshot: Any = None,
+    ) -> None:
+        assert request is not None
+        assert stable_key == principal_subject
+        if expected_principal is not None:
+            assert principal_subject == expected_principal
+
+    return authorize
+
+
+class AuthorizedOrchestrationService(OrchestrationService):
+    """Test service with an explicitly injected canonical authorizer."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault(
+            "canonical_authorizer",
+            canonical_authorizer_for_test(),
+        )
+        super().__init__(**kwargs)
 
 
 def route_authority_for_test(
@@ -80,13 +110,6 @@ def route_authority_for_test(
     selection_snapshot=None,
     canonical_selection_snapshot=None,
 ):
-    """Create a frozen request-bound authority for direct service unit tests."""
+    """Return no caller capability; authorization is injected into the service."""
 
-    return canonical_route_authority(
-        rollout_decision_for_test(principal_subject=principal_subject),
-        request=request,
-        principal_subject=principal_subject,
-        stable_key=principal_subject,
-        selection_snapshot=selection_snapshot,
-        canonical_selection_snapshot=canonical_selection_snapshot,
-    )
+    return

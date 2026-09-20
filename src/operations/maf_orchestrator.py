@@ -16,9 +16,9 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from operations.copilot_canary_authorization import (
     CanaryAuthorizationError,
@@ -110,10 +110,6 @@ _EXECUTIVE_INTENT_MARKERS = (
     "roll up",
     "brief",
 )
-_ROLLOUT_DECISION_PROOF = object()
-_CANONICAL_ROUTE_PROOF = object()
-
-
 @dataclass(frozen=True)
 class OrchestrationDecision:
     """Specialist selection made for one Operations Copilot turn."""
@@ -146,23 +142,20 @@ class CopilotRolloutDecision:
     reviewed_tree_sha256: str = ""
     stable_key_sha256: str = ""
     authorization_expires_at: datetime | None = None
-    _proof: object | None = field(default=None, repr=False, compare=False)
 
 
-@dataclass(frozen=True)
-class CanonicalRouteAuthority:
-    """Request-bound capability permitting one canonical execution."""
+class CanonicalExecutionAuthorizer(Protocol):
+    """Server-held validator invoked with the exact canonical execution inputs."""
 
-    mode: str
-    principal_sha256: str
-    stable_key_sha256: str
-    execution_sha256: str
-    authorization_id: str
-    authorization_manifest_sha256: str
-    reviewed_tree_sha256: str
-    canary_bucket: int
-    expires_at: datetime
-    _proof: object = field(repr=False, compare=False)
+    def __call__(
+        self,
+        *,
+        request: Any,
+        principal_subject: str,
+        stable_key: str,
+        selection_snapshot: Any = None,
+        canonical_selection_snapshot: Any = None,
+    ) -> None: ...
 
 
 def _identity_sha256(value: str) -> str:
@@ -201,84 +194,43 @@ def canonical_execution_sha256(
     return hashlib.sha256(serialized).hexdigest()
 
 
-def canonical_route_authority(
-    decision: CopilotRolloutDecision,
+def authorize_canonical_execution(
     *,
     request: Any,
     principal_subject: str,
     stable_key: str,
     selection_snapshot: Any = None,
     canonical_selection_snapshot: Any = None,
-) -> CanonicalRouteAuthority:
-    """Bind one validated canonical rollout decision to one execution."""
+) -> None:
+    """Revalidate server-held canary state for one exact canonical execution.
 
-    stable_key_sha256 = _identity_sha256(stable_key)
-    if (
-        decision._proof is not _ROLLOUT_DECISION_PROOF
-        or decision.mode != ROLLOUT_CANARY
-        or not decision.canonical_enabled
-        or decision.canary_bucket is None
-        or not principal_subject
-        or stable_key != principal_subject
-        or decision.stable_key_sha256 != stable_key_sha256
-        or not decision.authorization_id
-        or not decision.authorization_manifest_sha256
-        or not decision.reviewed_tree_sha256
-        or decision.authorization_expires_at is None
-    ):
+    No caller-provided decision or capability is accepted. The production
+    execution boundary reloads the packaged authorization and binds the current
+    principal, stable key, request, and snapshots immediately before any
+    provider or tool I/O.
+    """
+
+    if not principal_subject or stable_key != principal_subject:
         raise CanaryAuthorizationError(
             "canonical route was not selected by validated canary authority"
         )
-    return CanonicalRouteAuthority(
-        mode=decision.mode,
-        principal_sha256=_identity_sha256(principal_subject),
-        stable_key_sha256=stable_key_sha256,
-        execution_sha256=canonical_execution_sha256(
-            request,
-            selection_snapshot=selection_snapshot,
-            canonical_selection_snapshot=canonical_selection_snapshot,
-        ),
-        authorization_id=decision.authorization_id,
-        authorization_manifest_sha256=(
-            decision.authorization_manifest_sha256
-        ),
-        reviewed_tree_sha256=decision.reviewed_tree_sha256,
-        canary_bucket=decision.canary_bucket,
-        expires_at=decision.authorization_expires_at,
-        _proof=_CANONICAL_ROUTE_PROOF,
-    )
-
-
-def validate_canonical_route_authority(
-    authority: CanonicalRouteAuthority | None,
-    *,
-    request: Any,
-    principal_subject: str,
-    selection_snapshot: Any = None,
-    canonical_selection_snapshot: Any = None,
-) -> None:
-    """Refuse absent, stale, mismatched, or forged canonical authority."""
-
-    if authority is None or authority._proof is not _CANONICAL_ROUTE_PROOF:
-        raise CanaryAuthorizationError(
-            "canonical execution route authority is absent or mismatched"
-        )
-    identity_sha256 = _identity_sha256(principal_subject)
-    expected_execution_sha256 = canonical_execution_sha256(
+    decision = copilot_rollout_decision(stable_key=stable_key)
+    execution_sha256 = canonical_execution_sha256(
         request,
         selection_snapshot=selection_snapshot,
         canonical_selection_snapshot=canonical_selection_snapshot,
     )
     if (
-        authority.mode != ROLLOUT_CANARY
-        or authority.principal_sha256 != identity_sha256
-        or authority.stable_key_sha256 != identity_sha256
-        or authority.execution_sha256 != expected_execution_sha256
-        or not authority.authorization_id
-        or not authority.authorization_manifest_sha256
-        or not authority.reviewed_tree_sha256
-        or not 0 <= authority.canary_bucket < 100
-        or datetime.now(UTC) >= authority.expires_at
+        not execution_sha256
+        or decision.mode != ROLLOUT_CANARY
+        or not decision.canonical_enabled
+        or decision.canary_bucket is None
+        or decision.stable_key_sha256 != _identity_sha256(stable_key)
+        or not decision.authorization_id
+        or not decision.authorization_manifest_sha256
+        or not decision.reviewed_tree_sha256
+        or decision.authorization_expires_at is None
+        or datetime.now(UTC) >= decision.authorization_expires_at
     ):
         raise CanaryAuthorizationError(
             "canonical execution route authority is absent or mismatched"
@@ -379,7 +331,6 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
             reviewed_tree_sha256=authority.reviewed_tree_sha256,
             stable_key_sha256=_identity_sha256(stable_key),
             authorization_expires_at=authority.expires_at,
-            _proof=_ROLLOUT_DECISION_PROOF,
         )
 
     raise CanaryAuthorizationError("default rollout mode is not authorized")

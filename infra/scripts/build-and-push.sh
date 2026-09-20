@@ -7,6 +7,7 @@
 #   ./infra/scripts/build-and-push.sh                 # auto tag, build + push
 #   ./infra/scripts/build-and-push.sh my-fix          # explicit tag
 #   ./infra/scripts/build-and-push.sh my-fix --deploy # build, push, apply
+#   ./infra/scripts/build-and-push.sh my-fix --api-authorization-release
 #
 # The registry name is read from Terraform state, so this must run after a
 # successful apply.
@@ -58,10 +59,12 @@ if [[ -f "${env_file}" ]]; then
 fi
 
 deploy_after=0
+authorization_release=0
 tag=""
 for arg in "$@"; do
   case "${arg}" in
     --deploy) deploy_after=1 ;;
+    --api-authorization-release) authorization_release=1 ;;
     -*) echo "build-and-push: unknown flag ${arg}" >&2; exit 2 ;;
     *) if [[ -z "${tag}" ]]; then tag="${arg}"; else
          echo "build-and-push: unexpected argument ${arg}" >&2; exit 2
@@ -97,7 +100,7 @@ registry_name="${registry%%.*}"
 # API tags are immutable release identities. Never resume or overwrite a prior
 # API build, because recording that tag would bind its old digest to this
 # invocation's source revision.
-if az acr repository show \
+if [[ "${authorization_release}" -eq 1 ]] && az acr repository show \
   --name "${registry_name}" \
   --image "aiops-api:${tag}" >/dev/null 2>&1; then
   echo "build-and-push: refusing to reuse existing API tag aiops-api:${tag}." >&2
@@ -214,7 +217,7 @@ build_image() {
 # ActivationFailed with MANIFEST_UNKNOWN, so confirm all images landed.
 verify_pushed() {
   local image missing=()
-  for image in aiops-api aiops-web mcp-server azure-mcp; do
+  for image in "$@"; do
     if ! az acr repository show \
       --name "${registry_name}" \
       --image "${image}:${tag}" >/dev/null 2>&1; then
@@ -252,10 +255,34 @@ resolve_api_digest() {
   printf '%s\n' "${resolved_digest}"
 }
 
-record_release() {
+record_authorization_release() {
   local api_digest="$1"
   if [[ ! -f "${tfvars}" ]]; then
     echo "build-and-push: ${tfvars} not found; cannot record immutable release." >&2
+    if [[ "${deploy_after}" -eq 1 ]]; then
+      exit 1
+    fi
+    return 0
+  fi
+  local tmp="${tfvars}.tmp.$$"
+  if ! awk -v digest="${api_digest}" -v revision="${source_revision}" '
+    /^[ \t]*api_image_digest[ \t]*=/ { print "api_image_digest = \"" digest "\""; seen_digest = 1; next }
+    /^[ \t]*deployment_source_revision[ \t]*=/ { print "deployment_source_revision = \"" revision "\""; seen_revision = 1; next }
+    { print }
+    END { if (!seen_digest) print "api_image_digest = \"" digest "\"" }
+    END { if (!seen_revision) print "deployment_source_revision = \"" revision "\"" }
+  ' "${tfvars}" >"${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  mv "${tmp}" "${tfvars}"
+  echo "build-and-push: atomically recorded API digest=${api_digest} and deployment_source_revision=${source_revision}"
+}
+
+record_application_release() {
+  local api_digest="$1"
+  if [[ ! -f "${tfvars}" ]]; then
+    echo "build-and-push: ${tfvars} not found; cannot record application release." >&2
     if [[ "${deploy_after}" -eq 1 ]]; then
       exit 1
     fi
@@ -275,7 +302,7 @@ record_release() {
     return 1
   fi
   mv "${tmp}" "${tfvars}"
-  echo "build-and-push: atomically recorded image_tag, api_image_digest=${api_digest}, and deployment_source_revision=${source_revision}"
+  echo "build-and-push: atomically recorded image_tag=${tag}, API digest=${api_digest}, and deployment_source_revision=${source_revision}"
 }
 
 if [[ "${build_mode}" == "local" ]]; then
@@ -285,32 +312,52 @@ fi
 
 prepare_acr_context
 
-reviewed_root="${repo_root}"
-if [[ "${build_mode}" == "acr" ]]; then
-  reviewed_root="${acr_context}"
+if [[ "${authorization_release}" -eq 1 ]]; then
+  # This release gate authorizes API code only. Existing Operations MCP
+  # endpoint/catalog/connection identity may be consumed by the API, but MCP
+  # container images are neither built nor validated nor changed by this path.
+  reviewed_root="${repo_root}"
+  if [[ "${build_mode}" == "acr" ]]; then
+    reviewed_root="${acr_context}"
+  fi
+  PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
+    --root "${reviewed_root}" \
+    --manifest "${reviewed_root}/src/operations/copilot_canary_authorization.v1.json" \
+    >/dev/null
+  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+  verify_pushed aiops-api
+  api_digest="$(resolve_api_digest)"
+  record_authorization_release "${api_digest}"
+  echo
+  echo "build-and-push: pushed API authorization release '${tag}'."
+else
+  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+  build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
+  build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
+  build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
+  verify_pushed aiops-api aiops-web mcp-server azure-mcp
+  api_digest="$(resolve_api_digest)"
+  record_application_release "${api_digest}"
+  echo
+  echo "build-and-push: pushed application images with tag '${tag}'."
 fi
-PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
-  --root "${reviewed_root}" \
-  --manifest "${reviewed_root}/src/operations/copilot_canary_authorization.v1.json" \
-  >/dev/null
-
-build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
-build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
-build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
-build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
-
-verify_pushed
-api_digest="$(resolve_api_digest)"
-record_release "${api_digest}"
-
-echo
-echo "build-and-push: pushed both images with tag '${tag}'."
 
 if [[ "${deploy_after}" -eq 1 ]]; then
   echo "build-and-push: deploying..."
+  if [[ "${authorization_release}" -eq 1 ]]; then
+    export AIOPS_API_AUTHORIZATION_RELEASE=1
+    exec "${repo_root}/infra/scripts/deploy.sh" apply \
+      -target=azurerm_container_app.api \
+      -auto-approve
+  fi
   exec "${repo_root}/infra/scripts/deploy.sh" apply -auto-approve
 else
   echo "Deploy them with:"
-  echo "  ./infra/scripts/deploy.sh apply"
-  echo "(terraform.tfvars already carries deploy_images and the new image_tag)"
+  if [[ "${authorization_release}" -eq 1 ]]; then
+    echo "  AIOPS_API_AUTHORIZATION_RELEASE=1 ./infra/scripts/deploy.sh apply -target=azurerm_container_app.api"
+    echo "(terraform.tfvars carries only the immutable API digest and source revision)"
+  else
+    echo "  ./infra/scripts/deploy.sh apply"
+    echo "(terraform.tfvars carries deploy_images, the new image_tag, immutable API digest, and source revision)"
+  fi
 fi

@@ -19,8 +19,7 @@ from api.scope import Scope
 from operations import copilot_canary_authorization as authorization
 from operations.copilot_canary_authorization import CanaryAuthorizationError
 from operations.maf_orchestrator import (
-    CopilotRolloutDecision,
-    canonical_route_authority,
+    authorize_canonical_execution,
     copilot_rollout_decision,
 )
 from operations.orchestration_contract import (
@@ -235,7 +234,6 @@ def test_reviewed_authorization_accepts_only_bounded_canary(
         "shadow_misuse",
         "default_misuse",
         "env_only_substitution",
-        "mutable_tag",
         "wrong_release",
         "extra_manifest_key",
     ),
@@ -269,13 +267,25 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
     elif case == "inactive":
         payload["status"] = "REVOKED"
     elif case == "expired":
-        payload["issued_at"] = (now - timedelta(hours=3)).isoformat()
-        payload["not_before"] = (now - timedelta(hours=2)).isoformat()
-        payload["expires_at"] = (now - timedelta(hours=1)).isoformat()
+        payload["issued_at"] = (now - timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["not_before"] = (now - timedelta(hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["expires_at"] = (now - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     elif case == "not_yet_valid":
-        payload["issued_at"] = (now + timedelta(hours=1)).isoformat()
-        payload["not_before"] = (now + timedelta(hours=2)).isoformat()
-        payload["expires_at"] = (now + timedelta(hours=3)).isoformat()
+        payload["issued_at"] = (now + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["not_before"] = (now + timedelta(hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["expires_at"] = (now + timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     elif case == "malformed":
         raw = b"{not-json"
     elif case == "extra_manifest_key":
@@ -316,7 +326,6 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
         "wrong_rollback": ("AIOPS_COPILOT_ROLLBACK_MODE", "canonical"),
         "shadow_misuse": ("AIOPS_COPILOT_ROLLOUT_MODE", "shadow"),
         "default_misuse": ("AIOPS_COPILOT_ROLLOUT_MODE", "default"),
-        "mutable_tag": ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
         "wrong_release": ("AIOPS_COPILOT_CANDIDATE_RELEASE", "mutable"),
     }
     if case in wrong_environment:
@@ -339,6 +348,10 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
 
     health = authorization.canary_authorization_health()
     assert health["status"] == "denied"
+    if case == "expired":
+        assert health["reason"] == "authorization has expired"
+    elif case == "not_yet_valid":
+        assert health["reason"] == "authorization is not yet valid"
     assert (
         TestClient(create_app(_context(tmp_path, None))).get("/ready").status_code
         == 503
@@ -454,7 +467,7 @@ def test_modified_reviewed_source_and_arbitrary_revision_cannot_authorize(
         )
 
 
-def test_direct_canonical_service_refuses_missing_or_mismatched_route_authority(
+def test_direct_canonical_service_revalidates_server_authority_and_rejects_forgery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -482,46 +495,43 @@ def test_direct_canonical_service_refuses_missing_or_mismatched_route_authority(
         raise AssertionError("route authority failure reached external I/O")
 
     service = OrchestrationService(executor=external_executor)
-    with pytest.raises(CanaryAuthorizationError, match="route authority"):
+    monkeypatch.setenv(
+        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        "c" * 64,
+    )
+    with pytest.raises(CanaryAuthorizationError, match="authorization digest"):
         service.execute(
             request,
             context=object(),
             principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
         )
-    decision = copilot_rollout_decision(stable_key="operator-a")
-    authority = canonical_route_authority(
-        decision,
-        request=request,
-        principal_subject="operator-a",
-        stable_key="operator-a",
+    monkeypatch.setenv(
+        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
     )
-    with pytest.raises(CanaryAuthorizationError, match="route authority"):
+    with pytest.raises(CanaryAuthorizationError, match="caller-supplied"):
         service.execute(
-            request.model_copy(update={"question": "Different request"}),
+            request,
             context=object(),
-            principal_subject="operator-b",
+            principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
-            route_authority=authority,
+            route_authority=object(),
         )
     assert external_calls == 0
 
 
 @pytest.mark.parametrize("mode", ("compatibility", "shadow", "default"))
-def test_noncanonical_rollout_decisions_cannot_issue_route_authority(
+def test_noncanonical_runtime_cannot_authorize_direct_service(
+    monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
     request = {"question": "Show inventory health"}
-    decision = CopilotRolloutDecision(
-        mode=mode,
-        canonical_enabled=False,
-        shadow_enabled=mode == "shadow",
-        reason=f"{mode}_selected",
-    )
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", mode)
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "0")
 
-    with pytest.raises(CanaryAuthorizationError, match="not selected"):
-        canonical_route_authority(
-            decision,
+    with pytest.raises(CanaryAuthorizationError):
+        authorize_canonical_execution(
             request=request,
             principal_subject="operator-a",
             stable_key="operator-a",
@@ -535,18 +545,16 @@ def test_route_authority_rejects_mismatched_principal_stable_key(
     manifest_path, metadata_path, environment = _write_authorization(tmp_path)
     _install_runtime_case(monkeypatch, manifest_path, metadata_path, environment)
     monkeypatch.setattr("operations.maf_orchestrator._canary_bucket", lambda _key: 0)
-    decision = copilot_rollout_decision(stable_key="operator-a")
 
     with pytest.raises(CanaryAuthorizationError, match="not selected"):
-        canonical_route_authority(
-            decision,
+        authorize_canonical_execution(
             request={"question": "Show inventory health"},
             principal_subject="operator-b",
             stable_key="operator-a",
         )
 
 
-def test_forged_rollout_decision_cannot_authorize_external_execution() -> None:
+def test_forged_object_cannot_authorize_external_execution() -> None:
     request = InvestigationRequest(
         question="Show inventory health",
         requested_scope={"subscription": ["sub-a"]},
@@ -560,30 +568,6 @@ def test_forged_rollout_decision_cannot_authorize_external_execution() -> None:
             ),
         ),
     )
-    stable_key = "operator-a"
-    forged = CopilotRolloutDecision(
-        mode="canary",
-        canonical_enabled=True,
-        shadow_enabled=False,
-        reason="canary_selected",
-        canary_bucket=0,
-        authorization_id="forged-authorization",
-        authorization_manifest_sha256="a" * 64,
-        reviewed_tree_sha256="b" * 64,
-        stable_key_sha256=hashlib.sha256(stable_key.encode()).hexdigest(),
-        authorization_expires_at=datetime(2999, 1, 1, tzinfo=UTC),
-        _proof=object(),
-    )
-    route_authority = None
-
-    with pytest.raises(CanaryAuthorizationError, match="not selected"):
-        route_authority = canonical_route_authority(
-            forged,
-            request=request,
-            principal_subject=stable_key,
-            stable_key=stable_key,
-        )
-
     external_calls = 0
 
     def external_executor(*_args, **_kwargs):
@@ -591,20 +575,68 @@ def test_forged_rollout_decision_cannot_authorize_external_execution() -> None:
         external_calls += 1
         raise AssertionError("forged rollout decision reached external I/O")
 
-    with pytest.raises(CanaryAuthorizationError, match="route authority"):
+    with pytest.raises(CanaryAuthorizationError, match="caller-supplied"):
         OrchestrationService(executor=external_executor).execute(
             request,
             context=object(),
-            principal_subject=stable_key,
+            principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
-            route_authority=route_authority,
+            route_authority=object(),
         )
+    assert external_calls == 0
+
+
+def test_injected_authorizer_receives_exact_direct_execution_inputs() -> None:
+    request = InvestigationRequest(
+        question="Show inventory health",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="inventory",
+            page_id="inventory",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=False,
+            ),
+        ),
+    )
+    observed: dict[str, object] = {}
+    external_calls = 0
+
+    def authorizer(**kwargs: object) -> None:
+        observed.update(kwargs)
+        raise CanaryAuthorizationError("test authority denied")
+
+    def external_executor(*_args, **_kwargs):
+        nonlocal external_calls
+        external_calls += 1
+        raise AssertionError("denied request reached external I/O")
+
+    with pytest.raises(CanaryAuthorizationError, match="test authority denied"):
+        OrchestrationService(
+            executor=external_executor,
+            canonical_authorizer=authorizer,
+        ).execute(
+            request,
+            context=object(),
+            principal_subject="operator-a",
+            stable_key="operator-a",
+            effective_scope=Scope({"subscription": ["sub-a"]}),
+        )
+
+    assert observed["request"] is request
+    assert observed["principal_subject"] == "operator-a"
+    assert observed["stable_key"] == "operator-a"
     assert external_calls == 0
 
 
 def test_build_and_terraform_wiring_is_fail_closed() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
     build_script = (REPO_ROOT / "infra" / "scripts" / "build-and-push.sh").read_text(
+        encoding="utf-8"
+    )
+    deploy_script = (REPO_ROOT / "infra" / "scripts" / "deploy.sh").read_text(
         encoding="utf-8"
     )
     terraform = (REPO_ROOT / "infra" / "terraform" / "container_apps.tf").read_text(
@@ -630,8 +662,29 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "prepare_acr_context"
     )
     assert "resolve_api_digest()" in build_script
+    assert "--api-authorization-release" in build_script
+    authorization_release = build_script.split(
+        "# This release gate authorizes API code only.",
+        maxsplit=1,
+    )[1].split("\nelse\n  build_image", maxsplit=1)[0]
+    assert "build_image aiops-api" in authorization_release
+    assert "verify_pushed aiops-api" in authorization_release
+    assert "mcp-server" not in authorization_release
+    assert "azure-mcp" not in authorization_release
+    assert "aiops-web" not in authorization_release
+    assert "-target=azurerm_container_app.api" in build_script
+    assert "validate_running_api_digest" in deploy_script
+    assert "properties.active && properties.healthState=='Healthy'" in deploy_script
+    assert 'api_authorization_release}" != "1"' in deploy_script
     assert 'api_image_digest = \\"" digest "\\""' in build_script
     assert 'deployment_source_revision = \\"" revision "\\""' in build_script
+    assert "record_application_release" in build_script
+    assert 'api_digest="$(resolve_api_digest)"' in build_script
+    assert (
+        "AIOPS_API_AUTHORIZATION_RELEASE=1 "
+        "./infra/scripts/deploy.sh apply "
+        "-target=azurerm_container_app.api"
+    ) in build_script
     assert 'var.copilot_rollout_mode != "default"' in terraform
     assert 'var.api_image_digest != ""' in terraform
     assert "local.copilot_canary_percentage <= 10" in terraform
@@ -646,4 +699,28 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert 'value = "/app/fabric.config.deploy.yaml"' in terraform
     assert "arg.config.deploy.yaml" in REVIEWED_TREE_ROOTS
     assert "fabric.config.deploy.yaml" in REVIEWED_TREE_ROOTS
+    required_skill = "skills/operational-context-graph/SKILL.md"
+    assert "!skills/**/SKILL.md" in dockerignore.splitlines()
+    assert required_skill in reviewed_tree_paths(
+        REPO_ROOT,
+        REVIEWED_TREE_ROOTS,
+        REVIEWED_TREE_EXCLUDED_PATHS,
+    )
     assert '"src/operations/copilot_canary_authorization.v1.json"' in packaging
+
+
+def test_observable_api_image_digest_is_not_runtime_authority(
+    tmp_path: Path,
+) -> None:
+    manifest_path, metadata_path, environment = _write_authorization(tmp_path)
+    environment.pop("AIOPS_API_IMAGE_DIGEST")
+
+    authority = authorization.validate_canary_authorization(
+        environment=environment,
+        manifest_path=manifest_path,
+        build_metadata_path=metadata_path,
+        reviewed_tree_root=REPO_ROOT,
+        now=datetime(2026, 9, 21, tzinfo=UTC),
+    )
+
+    assert authority.authorization_id == "p11-canary-authorization-20260920"

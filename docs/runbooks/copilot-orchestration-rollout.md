@@ -85,12 +85,21 @@ providers, reporting ready, or permitting canonical external I/O:
    SHA-256;
 3. `AIOPS_SOURCE_REVISION` exactly matches the independently baked source
    revision (a revision value alone cannot authorize different bytes);
-4. the API image is deployed by an immutable `sha256:` digest;
-5. rollout mode is exactly `canary`, percentage is 1–10, orchestration is
+4. rollout mode is exactly `canary`, percentage is 1–10, orchestration is
    `maf`, activation source is `validated_promotion`, and rollback remains
    `compatibility`;
-6. target, project, candidate/proof/shadow digests, all twelve provider
+5. target, project, candidate/proof/shadow digests, all twelve provider
    identities, and coordinator identity exactly match the reviewed record.
+
+Terraform and `build-and-push.sh --api-authorization-release` still require and
+deploy the API by an immutable `sha256:` digest. The projected
+`AIOPS_API_IMAGE_DIGEST` is observability for deployment and external
+validation only: a container environment variable is self-attested and is
+therefore never a runtime authorization predicate or proof of the image that
+the platform is actually running. The post-deploy external validator/platform
+admission check that resolves the Container Apps revision to its registry
+digest is the image root of trust. Live canary promotion remains held until
+that external check passes.
 
 Raw environment flags cannot create route authority. Any missing, malformed,
 expired, premature, inactive, mutable, or mismatched value makes `/ready`
@@ -101,20 +110,22 @@ percentage is zero. Manifest timestamps must be exact
 lowercase separators, and surrounding whitespace are rejected before datetime
 parsing.
 
-At the routing boundary, the validated `CopilotRolloutDecision` is converted
-to a frozen authority bound to the principal-derived stable key and a
-deterministic digest of the exact request plus selection snapshots.
-`OrchestrationService.execute` and `execute_turn` reject absent, compatibility,
-shadow, non-selected canary, expired, principal-mismatched, or request-mismatched
-authority before resolving a provider or invoking a tool. They never reread
-ambient rollout configuration to authorize execution.
+At the execution boundary, `OrchestrationService.execute` and `execute_turn`
+invoke a server-held authorizer with the exact request, selection snapshots,
+principal, and principal-derived stable key. Production revalidates the
+packaged immutable `ValidatedCanaryAuthorization` and recomputes canary
+selection immediately before resolving a provider or invoking a tool.
+Caller-constructed decisions or proof objects are not accepted, preventing
+direct-call, replay, and routing-to-execution TOCTOU bypasses. Tests inject a
+bounded validator into the service rather than importing a production token.
 
 ## Source the non-secret provider environment
 
 Terraform output `copilot_provider_environment` is the authority for the
-Foundry endpoint, both exact APIM MCP URLs, APIM audience, candidate mapping
-path, both Foundry project-connection resource IDs, and all three rollout
-settings. Generate a local source file without copying values by hand:
+Foundry endpoint, existing Operations MCP endpoint/audience/connection
+contract, candidate mapping path, AI Search connection, all three rollout
+settings, source revision, authorization-manifest digest, and observable API
+image digest. Generate a local source file without copying values by hand:
 
 ```sh
 python3 scripts/export_copilot_provider_env.py \
@@ -131,11 +142,12 @@ or connection IDs fail. Credentials must still come from the approved secret
 mechanism.
 
 The candidate artifact binds all twelve specialist agent names and immutable
-provider version IDs to two **distinct full Foundry project-connection resource
-IDs** (`operations-mcp` and `azure-mcp`). Live parity lists the project's actual
-connections read-only, requires both IDs to exist, and checks that every pinned
-agent version uses those exact IDs. A connection display name is not accepted
-as an ID.
+provider version IDs to the existing full `operations-mcp` Foundry
+project-connection resource ID. Live parity lists the project's actual
+connections read-only and checks that every pinned agent version uses that
+exact ID. A connection display name is not accepted as an ID. This gate does
+not authorize, build, validate, or deploy either the `mcp-server` or
+`azure-mcp` container image.
 
 ### Candidate catalog integrity and authenticity boundary
 
@@ -163,14 +175,11 @@ Foundry project:
    `operations-mcp` project connection, with target equal to the exact exported
    `OPERATIONS_MCP_SERVER_URL` and audience equal to exported
    `MCP_APIM_AUDIENCE`.
-2. Full, distinct resource ID and read-only connection payload for the
-   Terraform-created `azure-mcp` project connection, with target equal to the
-   exact exported `AZURE_MCP_SERVER_URL` and the same governed audience.
-3. A candidate artifact created by `create-foundry-agent.sh` containing the
-   exact two connection IDs plus all twelve agent identities and the shared
+2. A candidate artifact created by `create-foundry-agent.sh` containing the
+   exact Operations MCP connection ID plus all twelve agent identities and the shared
    coordinator's service-returned immutable provider version IDs.
-4. A read-only `validate_specialist_parity.py --live` result proving those
-   connections exist and every pinned version binds to the expected connection
+3. A read-only `validate_specialist_parity.py --live` result proving that
+   connection exists and every pinned version binds to the expected connection
    ID and exact read-only grants.
 
 Do not invent a second connection, rewrite `demo`, synthesize provider IDs, or
@@ -220,11 +229,16 @@ so a rollback is a revision/mode switch, never a rebuild.
   source revision, supply the reviewed candidate/promotion artifacts, and set
   `api_image_digest` to the pushed immutable digest. A mutable tag, absent
   digest, wrong release, unpinned identity, or mismatched build revision fails
-  the Terraform precondition and runtime gate. With `build-and-push.sh
-  --deploy`, the script resolves `aiops-api:<tag>` back to its ACR manifest,
+  the Terraform precondition or code-bound runtime gate. Use
+  `build-and-push.sh <tag> --api-authorization-release --deploy`; this path
+  builds, verifies, records, and deploys only the API image. It never builds,
+  pushes, verifies, or changes `mcp-server`, `azure-mcp`, or web image
+  references. The script resolves `aiops-api:<tag>` back to its ACR manifest,
   verifies the returned repository, tag, and lowercase `sha256:` digest, then
-  atomically records `image_tag`, `api_image_digest`, and
+  atomically records only `api_image_digest` and
   `deployment_source_revision` in `terraform.tfvars` before Terraform apply.
+  After apply, independently resolve the running Container Apps revision and
+  admit it only when its platform-reported digest equals the release digest.
 - **Automatic hold:** if any applicable predetermined threshold fails
   (`scripts/evaluate_agents.py … evaluate_gates`), the canary **holds
   automatically** — a deterministic safety or citation-integrity failure HOLDs the

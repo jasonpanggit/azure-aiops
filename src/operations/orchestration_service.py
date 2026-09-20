@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from api.errors import ApiError
 from api.scope import Scope
+from operations.copilot_canary_authorization import CanaryAuthorizationError
 from operations.cve_response import (
     canonical_cve_id,
     deterministic_cve_narrative,
@@ -41,12 +42,11 @@ from operations.investigation_thread_store import (
     scope_within,
 )
 from operations.maf_orchestrator import (
-    CanonicalRouteAuthority,
+    CanonicalExecutionAuthorizer,
     CopilotRolloutDecision,
+    authorize_canonical_execution,
     build_deterministic_fallback,
-    canonical_route_authority,
     select_specialists_for_turn,
-    validate_canonical_route_authority,
 )
 from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
@@ -1073,6 +1073,9 @@ class OrchestrationService:
         executive_agent: Any = None,
         telemetry: Any = None,
         always_synthesize: bool = False,
+        canonical_authorizer: CanonicalExecutionAuthorizer = (
+            authorize_canonical_execution
+        ),
     ) -> None:
         self.planner = planner
         self.fallback_planner = fallback_planner
@@ -1083,6 +1086,7 @@ class OrchestrationService:
         self.executive_agent = executive_agent
         self.telemetry = telemetry
         self.always_synthesize = always_synthesize
+        self.canonical_authorizer = canonical_authorizer
 
     def execute(
         self,
@@ -1091,7 +1095,8 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
-        route_authority: CanonicalRouteAuthority | None = None,
+        stable_key: str | None = None,
+        route_authority: object | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
@@ -1103,6 +1108,7 @@ class OrchestrationService:
             context=context,
             principal_subject=principal_subject,
             effective_scope=effective_scope,
+            stable_key=stable_key,
             route_authority=route_authority,
             max_wall_seconds=max_wall_seconds,
             selection_snapshot=selection_snapshot,
@@ -1116,17 +1122,22 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
-        route_authority: CanonicalRouteAuthority | None = None,
+        stable_key: str | None = None,
+        route_authority: object | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
-        validate_canonical_route_authority(
-            route_authority,
+        if route_authority is not None:
+            raise CanaryAuthorizationError(
+                "caller-supplied canonical route authority is not accepted"
+            )
+        self.canonical_authorizer(
             request=request,
             principal_subject=principal_subject,
+            stable_key=stable_key or principal_subject,
             selection_snapshot=selection_snapshot,
             canonical_selection_snapshot=canonical_selection_snapshot,
         )
@@ -4748,12 +4759,7 @@ def execute_from_question(
             context=context,
             principal_subject=principal_subject,
             effective_scope=scope,
-            route_authority=canonical_route_authority(
-                rollout_decision,
-                request=active_request,
-                principal_subject=principal_subject,
-                stable_key=principal_subject,
-            ),
+            stable_key=principal_subject,
             max_wall_seconds=max_wall_seconds,
         )
 

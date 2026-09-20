@@ -39,3 +39,4 @@ infra/terraform/*
 !infra/terraform/variables.tf
 tests
 *.md
+!skills/**/SKILL.md
