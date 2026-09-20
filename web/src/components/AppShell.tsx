@@ -23,7 +23,7 @@ const PRIMARY_NAV = [
   { href: "/remediation", label: "Remediation", short: "R" },
   { href: "/finops", label: "FinOps", short: "F" },
   { href: "/identity", label: "Identity", short: "ID" },
-  { href: "/resource-health", label: "Resource Health", short: "RH" },
+  { href: "/resource-health", label: "Health", short: "RH" },
 ] as const;
 
 const WORKBENCH_NAV = [
