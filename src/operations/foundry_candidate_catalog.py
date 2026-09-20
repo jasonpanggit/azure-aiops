@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -50,6 +51,19 @@ REQUIRED_CHECKS = (
     "fallback",
 )
 _MAX_CLOCK_SKEW = timedelta(minutes=5)
+_PROVIDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_CREDENTIAL_MARKERS = (
+    "accesstoken",
+    "apikey",
+    "clientsecret",
+    "connectionstring",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+    "bearer",
+    "token",
+)
 
 
 class _StrictModel(BaseModel):
@@ -117,12 +131,29 @@ class _CandidateValidation(_StrictModel):
     checks: _ValidationChecks
 
 
-class _CandidateAgent(_StrictModel):
+class _ProviderIdentity(_StrictModel):
     agent_name: str = Field(min_length=1, max_length=160)
-    provider_version_id: str = Field(
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
-    )
+    provider_version_id: str = Field(min_length=1, max_length=256)
     candidate_version: str = Field(min_length=1, max_length=128)
+
+    @field_validator("provider_version_id", mode="before")
+    @classmethod
+    def reject_provider_id_whitespace(cls, value: Any) -> Any:
+        if isinstance(value, str) and value != value.strip():
+            raise ValueError("provider_version_id must not contain outer whitespace")
+        return value
+
+    @model_validator(mode="after")
+    def validate_immutable_identity(self) -> _ProviderIdentity:
+        _validate_provider_identity(
+            self.provider_version_id,
+            agent_name=self.agent_name,
+            candidate_version=self.candidate_version,
+        )
+        return self
+
+
+class _CandidateAgent(_ProviderIdentity):
     model_deployment: str = Field(min_length=1, max_length=160)
     contract_model: str = Field(min_length=1, max_length=160)
     contract_version: str = Field(min_length=1, max_length=64)
@@ -137,18 +168,8 @@ class _CandidateAgent(_StrictModel):
     publication_status: Literal["published"]
     validation: _CandidateValidation
 
-    @field_validator("provider_version_id", mode="before")
-    @classmethod
-    def reject_provider_id_whitespace(cls, value: Any) -> Any:
-        if isinstance(value, str) and value != value.strip():
-            raise ValueError("provider_version_id must not contain outer whitespace")
-        return value
-
     @model_validator(mode="after")
-    def validate_immutable_identity(self) -> _CandidateAgent:
-        provider_id = self.provider_version_id.casefold()
-        if provider_id == "latest" or provider_id == self.candidate_version.casefold():
-            raise ValueError("provider_version_id must be immutable provider identity")
+    def validate_candidate_contract(self) -> _CandidateAgent:
         if len(self.tools.operations_mcp) != len(set(self.tools.operations_mcp)):
             raise ValueError("Operations MCP grants must be unique")
         if self.read_only is not True or self.mutation_authorized is not False:
@@ -161,21 +182,9 @@ class _CoordinatorValidation(_StrictModel):
     validated_at: datetime
 
 
-class _Coordinator(_StrictModel):
-    agent_name: str = Field(min_length=1, max_length=160)
-    provider_version_id: str = Field(
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
-    )
-    candidate_version: str = Field(min_length=1, max_length=128)
+class _Coordinator(_ProviderIdentity):
     publication_status: Literal["published"]
     validation: _CoordinatorValidation
-
-    @field_validator("provider_version_id", mode="before")
-    @classmethod
-    def reject_provider_id_whitespace(cls, value: Any) -> Any:
-        if isinstance(value, str) and value != value.strip():
-            raise ValueError("provider_version_id must not contain outer whitespace")
-        return value
 
 
 class _CandidateArtifact(_StrictModel):
@@ -198,6 +207,32 @@ class _CandidateArtifact(_StrictModel):
         if self.rollback_target or self.rollback_coordinator:
             raise ValueError("held candidate catalog artifact must not select rollback")
         return self
+
+
+def _validate_provider_identity(
+    provider_version_id: str,
+    *,
+    agent_name: str,
+    candidate_version: str,
+) -> None:
+    normalized = _validated_provider_id(provider_version_id).casefold()
+    if normalized in {
+        "latest",
+        agent_name.casefold(),
+        candidate_version.casefold(),
+    }:
+        raise ValueError("provider_version_id must be immutable provider identity")
+
+
+def _validated_provider_id(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise ValueError("provider_version_id must not contain outer whitespace")
+    if _PROVIDER_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError("provider_version_id syntax is invalid")
+    compact = re.sub(r"[._:-]+", "", value.casefold())
+    if any(marker in compact for marker in _CREDENTIAL_MARKERS):
+        raise ValueError("provider_version_id must not contain credential markers")
+    return value
 
 
 def _expected_names() -> dict[str, str] | None:
@@ -315,9 +350,8 @@ def validated_candidate_catalog(
         coordinator_validated_at.tzinfo is None
         or coordinator_validated_at < generated_at
         or coordinator_validated_at > moment + _MAX_CLOCK_SKEW
-        or artifact.coordinator.provider_version_id.casefold() == "latest"
-        or artifact.coordinator.provider_version_id
-        == artifact.coordinator.candidate_version
+        or artifact.coordinator.candidate_version
+        != f"{artifact.release}.coordinator"
     ):
         return {}
     if artifact.manifest_digest != specialist_manifest_digest():
@@ -335,13 +369,44 @@ def validated_candidate_catalog(
     if set(expected_prompt_digests) != set(manifest.specialist_ids):
         return {}
 
-    validated_agents: dict[str, _CandidateAgent] = {}
+    declared_provider_ids: dict[str, str] = {}
+    for specialist in manifest.specialists:
+        raw_candidate = artifact.agents[specialist.id]
+        if not isinstance(raw_candidate, dict):
+            continue
+        try:
+            declared_provider_ids[specialist.id] = _validated_provider_id(
+                raw_candidate.get("provider_version_id")
+            )
+        except ValueError:
+            continue
+
+    provider_id_counts = Counter(
+        provider_id.casefold()
+        for provider_id in declared_provider_ids.values()
+    )
+    duplicate_provider_ids = {
+        provider_id
+        for provider_id, count in provider_id_counts.items()
+        if provider_id and count > 1
+    }
+    if artifact.coordinator.provider_version_id.casefold() in provider_id_counts:
+        return {}
+
+    parsed_agents: dict[str, _CandidateAgent] = {}
     for specialist in manifest.specialists:
         try:
             candidate = _CandidateAgent.model_validate(
                 artifact.agents[specialist.id]
             )
         except ValidationError:
+            continue
+        parsed_agents[specialist.id] = candidate
+
+    validated_agents: dict[str, _CandidateAgent] = {}
+    for specialist in manifest.specialists:
+        candidate = parsed_agents.get(specialist.id)
+        if candidate is None:
             continue
         if _agent_matches_manifest(
             candidate,
@@ -357,21 +422,12 @@ def validated_candidate_catalog(
         ):
             validated_agents[specialist.id] = candidate
 
-    provider_id_counts = Counter(
-        candidate.provider_version_id
-        for candidate in validated_agents.values()
-    )
-    duplicate_provider_ids = {
-        provider_id
-        for provider_id, count in provider_id_counts.items()
-        if provider_id and count > 1
-    }
     rows: dict[str, dict[str, Any]] = {}
     for specialist in manifest.specialists:
         candidate = validated_agents.get(specialist.id)
         if candidate is None:
             continue
-        if candidate.provider_version_id in duplicate_provider_ids:
+        if candidate.provider_version_id.casefold() in duplicate_provider_ids:
             continue
         rows[specialist.id] = {
             "name": candidate.agent_name,

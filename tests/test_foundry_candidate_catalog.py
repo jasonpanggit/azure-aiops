@@ -103,7 +103,7 @@ def _candidate_artifact() -> dict:
         "coordinator": {
             "agent_name": "operations-copilot",
             "provider_version_id": "provider-coordinator",
-            "candidate_version": "2026.09.1",
+            "candidate_version": "2026.09.coordinator",
             "publication_status": "published",
             "validation": {
                 "status": "pass",
@@ -243,7 +243,7 @@ def test_current_model_prompt_and_artifact_digest_mismatches_fail_closed(
 def test_duplicate_provider_identity_fails_each_affected_row(monkeypatch):
     artifact = _candidate_artifact()
     duplicate = artifact["agents"]["network"]["provider_version_id"]
-    artifact["agents"]["vulnerability"]["provider_version_id"] = duplicate
+    artifact["agents"]["vulnerability"]["provider_version_id"] = duplicate.upper()
 
     rows = _rows(monkeypatch, artifact)
 
@@ -259,6 +259,15 @@ def test_duplicate_provider_identity_fails_each_affected_row(monkeypatch):
         "provider-1 ",
         "provider/id",
         "client_secret=supersecret",
+        "client_secret-supersecret",
+        "token-abc",
+        "apiKey-deadbeef",
+        "privateKey-deadbeef",
+        "connection_string-value",
+        "api--key-deadbeef",
+        "private..key-deadbeef",
+        "connection:-string-value",
+        "latest",
         "provider id",
         "",
     ],
@@ -276,6 +285,22 @@ def test_malformed_specialist_provider_id_fails_only_that_row(
     assert len(rows) == 11
 
 
+@pytest.mark.parametrize("identity_source", ["agent_name", "candidate_version"])
+def test_specialist_provider_id_rejects_non_provider_identity(
+    monkeypatch,
+    identity_source,
+):
+    artifact = _candidate_artifact()
+    artifact["agents"]["network"]["provider_version_id"] = artifact["agents"][
+        "network"
+    ][identity_source]
+
+    rows = _rows(monkeypatch, artifact)
+
+    assert "network" not in rows
+    assert len(rows) == 11
+
+
 @pytest.mark.parametrize(
     "provider_version_id",
     [
@@ -283,6 +308,14 @@ def test_malformed_specialist_provider_id_fails_only_that_row(
         "coordinator-1 ",
         "coordinator/id",
         "client_secret=supersecret",
+        "client_secret-supersecret",
+        "token-abc",
+        "apiKey-deadbeef",
+        "privateKey-deadbeef",
+        "connection_string-value",
+        "api--key-deadbeef",
+        "private..key-deadbeef",
+        "connection:-string-value",
         "",
         "latest",
     ],
@@ -295,6 +328,81 @@ def test_malformed_coordinator_provider_id_fails_whole_artifact(
     artifact["coordinator"]["provider_version_id"] = provider_version_id
 
     assert _rows(monkeypatch, artifact) == {}
+
+
+@pytest.mark.parametrize("identity_source", ["agent_name", "candidate_version"])
+def test_coordinator_provider_id_rejects_non_provider_identity(
+    monkeypatch,
+    identity_source,
+):
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["provider_version_id"] = artifact["coordinator"][
+        identity_source
+    ]
+
+    assert _rows(monkeypatch, artifact) == {}
+
+
+def test_coordinator_provider_id_must_be_unique_across_all_thirteen(monkeypatch):
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["provider_version_id"] = artifact["agents"]["network"][
+        "provider_version_id"
+    ].upper()
+
+    assert _rows(monkeypatch, artifact) == {}
+
+
+def test_coordinator_collision_invalidates_artifact_when_specialist_row_fails(
+    monkeypatch,
+):
+    artifact = _candidate_artifact()
+    artifact["agents"]["network"]["provider_version_id"] = artifact["coordinator"][
+        "provider_version_id"
+    ]
+    artifact["agents"]["network"]["validation"]["checks"]["scope"] = "fail"
+
+    assert _rows(monkeypatch, artifact) == {}
+
+
+def test_raw_provider_collision_survives_malformed_specialist_identity_fields(
+    monkeypatch,
+):
+    artifact = _candidate_artifact()
+    artifact["agents"]["network"]["provider_version_id"] = artifact["coordinator"][
+        "provider_version_id"
+    ]
+    artifact["agents"]["network"]["agent_name"] = ""
+
+    assert _rows(monkeypatch, artifact) == {}
+
+    artifact = _candidate_artifact()
+    duplicate = artifact["agents"]["vulnerability"]["provider_version_id"]
+    artifact["agents"]["network"]["provider_version_id"] = duplicate.upper()
+    artifact["agents"]["network"]["agent_name"] = ""
+
+    rows = _rows(monkeypatch, artifact)
+    assert "network" not in rows
+    assert "vulnerability" not in rows
+    assert len(rows) == 10
+
+
+def test_tampered_coordinator_stamp_cannot_hide_synthetic_provider_id(monkeypatch):
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["provider_version_id"] = "2026.09.coordinator"
+    artifact["coordinator"]["candidate_version"] = "not-the-synthetic-stamp"
+
+    assert _rows(monkeypatch, artifact) == {}
+
+
+def test_numeric_provider_ids_are_valid(monkeypatch):
+    artifact = _candidate_artifact()
+    artifact["agents"]["network"]["provider_version_id"] = "123"
+    artifact["coordinator"]["provider_version_id"] = "456"
+
+    rows = _rows(monkeypatch, artifact)
+
+    assert len(rows) == 12
+    assert rows["network"]["provider_version_id"] == "123"
 
 
 def test_stale_or_partial_artifact_fails_as_a_whole(monkeypatch):
