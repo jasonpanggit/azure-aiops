@@ -845,7 +845,8 @@ def test_specialist_candidate_payload_is_operations_mcp_plus_search_only():
     assert "local.foundry_ai_search_tool_config" in payload_projection
     assert "foundry_azure_mcp_tool_config" not in payload_projection
     assert 'server_label          = "azure-mcp"' not in foundry
-    assert '"azure-mcp"' not in publisher
+    assert '"azure-mcp": {' not in publisher
+    assert 'server_label": "azure-mcp"' not in publisher
     assert "AZURE_MCP_SERVER_URL" not in outputs
     assert "FOUNDRY_AZURE_MCP_CONNECTION_ID" not in outputs
     assert "AZURE_MCP_SERVER_URL" not in exporter
@@ -1069,8 +1070,17 @@ if log:
     payload = {"argv": sys.argv[1:], "mapping_path": mapping_path}
     if mapping_path and os.path.exists(mapping_path):
         payload["mapping"] = json.load(open(mapping_path, encoding="utf-8"))
+        payload["mapping_mode"] = oct(os.stat(mapping_path).st_mode & 0o777)
     with open(log, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
+mutation_path = os.environ.get("STUB_MUTATE_CANDIDATE_PATH")
+if mutation_path:
+    with open(mutation_path, "a", encoding="utf-8") as handle:
+        handle.write(" ")
+if os.environ.get("STUB_MUTATE_SNAPSHOT") == "1" and mapping_path:
+    os.chmod(mapping_path, 0o600)
+    with open(mapping_path, "a", encoding="utf-8") as handle:
+        handle.write(" ")
 sys.exit(int(os.environ.get("STUB_LIVE_EXIT", "0")))
 """
 
@@ -1096,6 +1106,7 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME": str(tmp_path),
+        "TMPDIR": str(tmp_path),
         "FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/ops",
         "FOUNDRY_AGENT_NAME": "operations-copilot",
         "FOUNDRY_AGENT_MODEL": "gpt-5-4-mini",
@@ -1378,6 +1389,94 @@ def test_create_agent_normalizes_a_path_shaped_version_field(tmp_path):
     assert record.read_text(encoding="utf-8").strip().split("\t")[2] == "prov-1"
 
 
+def test_create_agent_captures_nested_first_create_version(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={
+            "id": "aiops-new-agent",
+            "name": "aiops-new-agent",
+            "versions": {
+                "latest": {
+                    "version": "1",
+                }
+            },
+        },
+    )
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-new-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "inventory_data_health",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").strip().split("\t")[2] == "1"
+
+
+def test_create_agent_captures_nested_first_create_version_resource_id(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={
+            "id": "aiops-new-agent",
+            "name": "aiops-new-agent",
+            "versions": {
+                "latest": {
+                    "id": "/agents/aiops-new-agent/versions/1",
+                }
+            },
+        },
+    )
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-new-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "inventory_data_health",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").strip().split("\t")[2] == "1"
+
+
+def test_create_agent_rejects_nested_version_id_for_a_different_agent(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={
+            "id": "aiops-new-agent",
+            "name": "aiops-new-agent",
+            "versions": {
+                "latest": {
+                    "id": "/agents/wrong-agent/versions/1",
+                }
+            },
+        },
+    )
+    record = tmp_path / "versions.tsv"
+    env.update(
+        {
+            "FOUNDRY_AGENT_NAME": "aiops-new-agent",
+            "FOUNDRY_AGENT_SPECIALIST_ID": "inventory_data_health",
+            "FOUNDRY_AGENT_VERSION": "2026.09.1",
+            "FOUNDRY_AGENT_VERSION_RECORD": str(record),
+        }
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "provider version id" in result.stderr.casefold()
+    assert not record.exists()
+
+
 @pytest.mark.parametrize(
     "response",
     [
@@ -1524,6 +1623,202 @@ def test_rollout_validates_and_promotes_only_actual_provider_ids(tmp_path):
     assert record["rollback_target"] == previous
     assert record["rollback_coordinator"]["provider_version_id"] == "old-coordinator"
     assert record["rollback_manifest_digest"] == "digest-old"
+
+
+def test_rollout_resumes_exact_candidate_without_provider_posts(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+
+    published = _run_rollout(env, tmp_path)
+
+    assert published.returncode == 0, published.stderr
+    assert len(
+        (tmp_path / "create.log").read_text(encoding="utf-8").splitlines()
+    ) == 13
+    promotion.unlink()
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+
+    resumed = _run_rollout(env, tmp_path)
+
+    assert resumed.returncode == 0, resumed.stderr
+    assert "without provider writes" in resumed.stdout
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    record = json.loads(promotion.read_text(encoding="utf-8"))
+    assert record["status"] == "validated"
+    assert record["parity"] == {"offline": "pass", "live": "pass"}
+    live = json.loads((tmp_path / "live.json").read_text(encoding="utf-8"))
+    assert live["mapping_mode"] == "0o600"
+    script = _read("infra/scripts/create-foundry-agent.sh")
+    assert script.count('CANDIDATE_RECORD="${candidate_snapshot}"') == 1
+    assert 'FOUNDRY_CANDIDATE_MAPPING="${candidate_snapshot}"' in script
+    assert list(tmp_path.glob("foundry-candidate-snapshot.*")) == []
+
+
+@pytest.mark.parametrize(
+    "provider_version_id",
+    [
+        " prov-1",
+        "aiops-network-agent",
+        "latest",
+        "2026.09.1",
+        "client_secret",
+        "has space",
+        "/agents/aiops-network-agent",
+        "/agents/wrong-agent/versions/prov-1",
+        "/garbage/versions/prov-1",
+    ],
+)
+def test_resume_rejects_nonimmutable_specialist_provider_ids(
+    tmp_path, provider_version_id
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+    assert _run_rollout(env, tmp_path).returncode == 0
+    promotion.unlink()
+    record = json.loads(candidate.read_text(encoding="utf-8"))
+    record["agents"]["network"]["provider_version_id"] = provider_version_id
+    candidate.write_text(json.dumps(record), encoding="utf-8")
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert not promotion.exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    assert list(tmp_path.glob("foundry-candidate-snapshot.*")) == []
+
+
+@pytest.mark.parametrize(
+    "provider_version_id",
+    [
+        "operations-copilot",
+        "latest",
+        "2026.09.coordinator",
+        "2026.09.1",
+        "access_token",
+        "/agents/wrong-agent/versions/prov-1",
+        "/garbage/versions/prov-1",
+    ],
+)
+def test_resume_rejects_nonimmutable_coordinator_provider_ids(
+    tmp_path, provider_version_id
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+    assert _run_rollout(env, tmp_path).returncode == 0
+    promotion.unlink()
+    record = json.loads(candidate.read_text(encoding="utf-8"))
+    record["coordinator"]["provider_version_id"] = provider_version_id
+    candidate.write_text(json.dumps(record), encoding="utf-8")
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert not promotion.exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    assert list(tmp_path.glob("foundry-candidate-snapshot.*")) == []
+
+
+def test_resume_uses_snapshot_and_rejects_original_mutation(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+    assert _run_rollout(env, tmp_path).returncode == 0
+    promotion.unlink()
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+    env["STUB_MUTATE_CANDIDATE_PATH"] = str(candidate)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "candidate changed during live parity" in result.stderr
+    assert not promotion.exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    assert list(tmp_path.glob("foundry-candidate-snapshot.*")) == []
+
+
+def test_resume_rejects_snapshot_mutation_after_live_parity(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+    assert _run_rollout(env, tmp_path).returncode == 0
+    promotion.unlink()
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+    env["STUB_MUTATE_SNAPSHOT"] = "1"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "candidate changed during live parity" in result.stderr
+    assert not promotion.exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+    assert list(tmp_path.glob("foundry-candidate-snapshot.*")) == []
+
+
+def test_resume_allows_same_version_number_scoped_to_distinct_agents(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=_twelve_specialists(),
+    )
+    promotion = tmp_path / "promotion.json"
+    candidate = tmp_path / "candidate.json"
+    env["FOUNDRY_PROMOTION_RECORD"] = str(promotion)
+    env["FOUNDRY_CANDIDATE_RECORD"] = str(candidate)
+    assert _run_rollout(env, tmp_path).returncode == 0
+    promotion.unlink()
+    record = json.loads(candidate.read_text(encoding="utf-8"))
+    for entry in record["agents"].values():
+        entry["provider_version_id"] = "1"
+    record["coordinator"]["provider_version_id"] = "1"
+    candidate.write_text(json.dumps(record), encoding="utf-8")
+    (tmp_path / "create.log").write_text("", encoding="utf-8")
+    env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert promotion.exists()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
 def test_later_publications_do_not_advance_rollback_without_explicit_rotation(
@@ -2289,12 +2584,32 @@ def test_live_provider_version_normalization_matches_rollout_capture():
     assert module._entry_provider_version_id({"id": "/agents/network"}) == ""
 
 
-@pytest.mark.parametrize("payload", [None, [], {"value": {}}, {"value": [None]}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"value": {}},
+        {"data": {}},
+        {"value": [None]},
+        {"data": [None]},
+        {"value": [], "data": []},
+    ],
+)
 def test_live_version_entries_reject_malformed_envelopes(payload):
     module = _parity_module()
 
     with pytest.raises((TypeError, ValueError)):
         module._version_entries(payload)
+
+
+@pytest.mark.parametrize("key", ["value", "data"])
+def test_live_version_entries_accepts_one_controlled_list_envelope(key):
+    module = _parity_module()
+    entry = {"version": "1", "definition": {}}
+
+    assert module._version_entries({key: [entry]}) == [entry]
 
 
 @pytest.mark.parametrize(
