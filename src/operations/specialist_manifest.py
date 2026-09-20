@@ -49,7 +49,7 @@ _MUTATION_MARKERS = (
     "update",
     "write",
 )
-_LOCKED_POLICY_DIGEST = "c26420d4d7ab517b51622fe26a6908853fd90a007fd05a78d9ddba66916883f1"
+_LOCKED_POLICY_DIGEST = "8b09bb2074fcda658b7af6e33e6e275434afcd891dab7185da5b20321539b44d"
 
 PageMapping = Literal[
     "overview",

@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -8,6 +9,7 @@ from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
+from operations.specialist_manifest import load_specialist_manifest
 
 TOKEN = "mcp-test-token-0123456789"
 SUB = "11111111-1111-1111-1111-111111111111"
@@ -52,7 +54,60 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
         "defender_alerts", "defender_attack_paths", "defender_secure_score",
         "incidents", "defender_remediation_cases", "remediation_business_decision",
         "remediation_plans", "remediation_opportunities",
+        "inventory_resources", "kb_detail", "patch_priorities", "risk_context", "search",
     ]
+    manifest = load_specialist_manifest()
+    specialist_union = {
+        tool
+        for grants in manifest.operations_mcp_grants().values()
+        for tool in grants
+    }
+    assert {tool["name"] for tool in listed} == specialist_union
+    assert all("azure_mcp" not in json.dumps(tool).casefold() for tool in listed)
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("inventory_resources", {}),
+        ("kb_detail", {"kb_id": "KB5123099"}),
+        ("patch_priorities", {}),
+        ("risk_context", {"subject": "/subscriptions/example/resourceGroups/rg"}),
+        ("search", {"query": "recent configuration changes"}),
+    ],
+)
+def test_generic_catalog_accepts_reviewed_read_only_calls(tmp_path, tool, arguments):
+    response = client(tmp_path).post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": tool,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        },
+        headers=auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is False
+
+
+def test_specialist_catalogs_remain_exactly_bounded(tmp_path):
+    manifest = load_specialist_manifest()
+
+    for specialist in manifest.specialists:
+        listed = client(
+            tmp_path,
+            subject=f"{specialist.id}-subject",
+            specialist_id=specialist.id,
+        ).post(
+            "/api/v1/mcp",
+            json={"jsonrpc": "2.0", "id": specialist.id, "method": "tools/list"},
+            headers=auth(),
+        ).json()["result"]["tools"]
+
+        assert tuple(tool["name"] for tool in listed) == specialist.operations_mcp_tools
+        assert specialist.azure_mcp_tools == ()
 
 
 def test_unknown_tool_is_an_error(tmp_path):
@@ -111,7 +166,7 @@ def test_ontology_curator_gets_exact_read_only_catalog_with_strict_schemas(tmp_p
         assert "scope" not in tool["inputSchema"]["properties"]
 
 
-def test_non_specialist_cannot_call_inventory_grant(tmp_path):
+def test_request_body_cannot_self_bind_noninteractive_consumer_grant(tmp_path):
     denied = client(tmp_path).post(
         "/api/v1/mcp",
         json={
@@ -119,9 +174,9 @@ def test_non_specialist_cannot_call_inventory_grant(tmp_path):
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "inventory_resources",
+                "name": "list_changed_entities",
                 "arguments": {},
-                "specialist_id": "inventory_data_health",
+                "specialist_id": "ontology_curator",
             },
         },
         headers=auth(),

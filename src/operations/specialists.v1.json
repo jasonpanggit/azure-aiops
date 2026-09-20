@@ -2,7 +2,7 @@
   "version": "1",
   "contract_version": "1.0",
   "runtime_contract_version": "network-finding.v1",
-  "legacy_operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context", "cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "incidents", "defender_remediation_cases", "remediation_business_decision", "remediation_plans", "remediation_opportunities"],
+  "legacy_operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context", "cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "incidents", "defender_remediation_cases", "remediation_business_decision", "remediation_plans", "remediation_opportunities", "inventory_resources", "kb_detail", "patch_priorities", "risk_context", "search"],
   "non_interactive_tool_consumers": [
     {
       "id": "ontology_curator",
