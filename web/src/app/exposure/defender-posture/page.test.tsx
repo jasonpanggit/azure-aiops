@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   exposureItems: vi.fn(),
+  exposureFacets: vi.fn(),
   defenderOverview: vi.fn(),
   defenderAlerts: vi.fn(),
   defenderAttackPaths: vi.fn(),
@@ -106,12 +107,37 @@ function envelope(nextCursor: string | null = null) {
   };
 }
 
+function facetsEnvelope() {
+  const completeness = { state: "partial" as const, represented: 7, total: 7, excluded: 0 };
+  const freshness = { state: "reported", as_of: "2026-09-10T04:48:09Z" };
+  return {
+    data: {
+      total_count: 7,
+      generation,
+      completeness,
+      freshness,
+      facets: {
+        severity: [
+          { value: "critical", count: 5 },
+          { value: "high", count: 2 },
+        ],
+      },
+    },
+    evidence: [],
+    warnings: [],
+    scope: { subscription: ["sub-1"] },
+    knowledge_version: generation,
+    pagination: { limit: 0, total: 7, next_cursor: null },
+  };
+}
+
 describe("DefenderPosturePage bounded read model", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     navigation.params = new URLSearchParams("subscription=sub-1&page_size=25");
     authorized.scope = { subscription: ["sub-1"] };
     api.exposureItems.mockResolvedValue(envelope("opaque-next-cursor"));
+    api.exposureFacets.mockResolvedValue(facetsEnvelope());
     for (const method of [
       "defenderOverview",
       "defenderAlerts",
@@ -151,6 +177,23 @@ describe("DefenderPosturePage bounded read model", () => {
     ] as const) {
       expect(api[method]).not.toHaveBeenCalled();
     }
+  });
+
+  it("shows the severity mix across the full authorized partition, not just loaded rows", async () => {
+    render(<DefenderPosturePage />);
+
+    expect(await screen.findByText("Severity mix (all findings)")).toBeInTheDocument();
+    expect(screen.queryByText("Severity mix (loaded rows only)")).not.toBeInTheDocument();
+
+    expect(api.exposureFacets).toHaveBeenCalledTimes(1);
+    const [state, facets] = api.exposureFacets.mock.calls[0];
+    expect(facets).toEqual(["severity"]);
+    expect(state.filters).toMatchObject({
+      source_family: "defender_image",
+      target_kind: "container_image",
+    });
+
+    expect(screen.getByLabelText("Critical findings value")).toHaveTextContent("5");
   });
 
   it("shows an honest unavailable state when the bounded request fails", async () => {
