@@ -559,6 +559,13 @@ export default function CompliancePage() {
           <div><h2>Violations</h2><p>Business-context posture findings with evidence, remediation, and exception state. Select a violation to expand its details inline.</p></div>
         </div>
         <div className="compliance-list">
+          {violations.length > 0 ? (
+            <div className="compliance-list-header" aria-hidden="true">
+              <span>Severity</span>
+              <span>Finding</span>
+              <span>Status</span>
+            </div>
+          ) : null}
           {violations.map((violation) => {
             const isSelected = selected?.id === violation.id;
             return (
@@ -609,6 +616,13 @@ export default function CompliancePage() {
           {governedError ? <StatePanel title="Governed deviations unavailable" message={governedError.message} tone="error" /> : null}
           {governedLoading ? <StatePanel title="Loading change intelligence posture" message="Fetching policy deviations, security deviations, and configuration drift." tone="loading" /> : null}
           <div className="compliance-list">
+            {openGovernedDeviations.length > 0 ? (
+              <div className="compliance-list-header" aria-hidden="true">
+                <span>Severity</span>
+                <span>Deviation</span>
+                <span>Status</span>
+              </div>
+            ) : null}
             {openGovernedDeviations.map((row) => (
               <div key={row.deviation_id} className="compliance-row">
                 <StatusBadge label={row.severity} tone={statusTone(row.severity)} compact />
