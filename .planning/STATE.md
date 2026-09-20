@@ -147,8 +147,9 @@ current_phase_name: Domain Coverage and Operational Twin
 | 260909-032 | Add stage-level progress logging and bounded heartbeats to long-running activation and Fabric publication | 2026-09-09 | f34fde19b | Verified | [260909-032-add-stage-level-progress-logging-and-bou](./quick/260909-032-add-stage-level-progress-logging-and-bou/) |
 | 260910-f2h | Persist combined activation snapshots in OneLake and replay one exact generation without upstream discovery | 2026-09-10 | 89fcb0102 | Verified | [260910-f2h-persist-combined-activation-snapshots-in](./quick/260910-f2h-persist-combined-activation-snapshots-in/) |
 | 260920-cvi | Load the resource-health page before live metrics by fetching each resource card health asynchronously with bounded concurrency and isolated loading/error states | 2026-09-20 | 01860673 | Verified | [260920-cvi-load-the-resource-health-page-before-liv](./quick/260920-cvi-load-the-resource-health-page-before-liv/) |
+| 260920-f9f | Prioritize scheduled required providers before optional providers in ProviderRuntime startup refresh while preserving stable order, with readiness fail-closed tests and focused validation | 2026-09-20 | 4b4e95cb | Verified | [260920-f9f-prioritize-scheduled-required-providers-](./quick/260920-f9f-prioritize-scheduled-required-providers-/) |
 
-Last activity: 2026-09-20 - Completed quick task 260920-cvi: inventory-first resource-health cards with bounded independent health hydration
+Last activity: 2026-09-20 - Completed quick task 260920-f9f: required-first provider startup ordering with fail-closed readiness
 
 ## Performance Metrics
 

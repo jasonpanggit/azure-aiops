@@ -16,8 +16,10 @@ from api.providers import (
     DEGRADED,
     READY,
     STALE,
+    UNAVAILABLE,
     ProviderRuntime,
     ProviderSpec,
+    ProviderUnavailableError,
 )
 
 
@@ -90,6 +92,104 @@ def test_forced_refresh_skips_deferred_provider_io() -> None:
     assert health["providers"]["semantic"]["state"] == DEFERRED
     assert health["providers"]["semantic"]["last_attempt_at"] == ""
     assert health["providers"]["semantic"]["retry"]["attempts"] == 0
+
+
+def test_scheduled_required_providers_publish_before_optional_blocker() -> None:
+    calls: list[str] = []
+    optional_started = Event()
+    release_optional = Event()
+
+    def load(name: str) -> SnapshotProvider:
+        calls.append(name)
+        return SnapshotProvider(
+            version=f"{name}-v1",
+            freshness="2026-09-20T00:00:00Z",
+        )
+
+    def load_optional_blocker() -> SnapshotProvider:
+        calls.append("optional_blocker")
+        optional_started.set()
+        assert release_optional.wait(timeout=2)
+        return SnapshotProvider(
+            version="optional-blocker-v1",
+            freshness="2026-09-20T00:00:00Z",
+        )
+
+    runtime = ProviderRuntime(
+        {
+            "optional_blocker": ProviderSpec(
+                load_optional_blocker,
+                required=False,
+            ),
+            "exposure_query": ProviderSpec(lambda: load("exposure_query")),
+            "optional_follower": ProviderSpec(
+                lambda: load("optional_follower"),
+                required=False,
+            ),
+            "copilot": ProviderSpec(lambda: load("copilot")),
+            "deferred": ProviderSpec(
+                lambda: load("deferred"),
+                required=False,
+                scheduled=False,
+            ),
+        },
+        clock=lambda: datetime(2026, 9, 20, 0, 30, tzinfo=UTC),
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        refresh = pool.submit(runtime.refresh, force=True)
+        assert optional_started.wait(timeout=1)
+        try:
+            assert calls == ["exposure_query", "copilot", "optional_blocker"]
+            assert runtime.get("exposure_query").knowledge_version == "exposure_query-v1"
+            assert runtime.get("copilot").knowledge_version == "copilot-v1"
+            assert runtime.health(refresh=False)["readiness"] == READY
+        finally:
+            release_optional.set()
+        health = refresh.result(timeout=1)
+
+    assert calls == [
+        "exposure_query",
+        "copilot",
+        "optional_blocker",
+        "optional_follower",
+    ]
+    assert health["providers"]["deferred"]["state"] == DEFERRED
+    assert health["providers"]["deferred"]["last_attempt_at"] == ""
+
+
+def test_required_provider_failure_remains_fail_closed_after_priority() -> None:
+    calls: list[str] = []
+
+    def fail_required() -> SnapshotProvider:
+        calls.append("required_failure")
+        raise ConnectionError("required provider unavailable")
+
+    runtime = ProviderRuntime(
+        {
+            "optional": ProviderSpec(
+                lambda: calls.append("optional") or object(),
+                required=False,
+            ),
+            "required_failure": ProviderSpec(fail_required),
+            "required_success": ProviderSpec(
+                lambda: calls.append("required_success") or object()
+            ),
+        },
+        clock=lambda: datetime(2026, 9, 20, 0, 30, tzinfo=UTC),
+    )
+
+    health = runtime.refresh(force=True)
+
+    assert calls == ["required_failure", "required_success", "optional"]
+    assert health["readiness"] == DEGRADED
+    failed = health["providers"]["required_failure"]
+    assert failed["state"] == UNAVAILABLE
+    assert failed["loaded"] is False
+    assert failed["retry"]["attempts"] == 1
+    assert failed["retry"]["next_retry_at"]
+    with pytest.raises(ProviderUnavailableError):
+        runtime.get("required_failure")
 
 
 def test_failed_refresh_retains_last_good_provider():

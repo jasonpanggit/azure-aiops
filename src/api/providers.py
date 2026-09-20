@@ -180,10 +180,11 @@ class ProviderRuntime:
         now = self.clock().astimezone(UTC)
         now_iso = _iso(now)
 
-        for name, spec in self.specs.items():
-            if not spec.scheduled:
-                continue
-            self._refresh_provider(name, spec, now=now, now_iso=now_iso, force=force)
+        for required in (True, False):
+            for name, spec in self.specs.items():
+                if not spec.scheduled or spec.required is not required:
+                    continue
+                self._refresh_provider(name, spec, now=now, now_iso=now_iso, force=force)
 
         if self.metadata_loader is not None:
             try:
