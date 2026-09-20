@@ -234,7 +234,8 @@ describe("Patch priorities", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getByText("SLA age 2 days")).toBeInTheDocument();
-    expect(screen.getByText("SLA age unknown")).toBeInTheDocument();
+    expect(screen.queryByText("SLA age unknown")).not.toBeInTheDocument();
+    expect(screen.getByText("indeterminate")).toBeInTheDocument();
     expect(screen.getByText("Priority score 91/100")).toBeInTheDocument();
     expect(screen.getByText(/5 represented findings/)).toBeInTheDocument();
     expect(screen.getByText(/2 excluded findings/)).toBeInTheDocument();
