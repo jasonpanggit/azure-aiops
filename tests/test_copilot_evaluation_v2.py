@@ -927,6 +927,8 @@ def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
     )
 
     assert turn.synthesis.status == "degraded"
+    assert "not configured" in turn.synthesis.warning.casefold()
+    assert "unavailable" not in turn.synthesis.warning.casefold()
     assert turn.synthesis.warning in turn.result.uncertainty
 
 
@@ -1007,7 +1009,10 @@ def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() ->
     )
 
     assert turn.synthesis.status == "degraded"
-    assert "unavailable" in turn.synthesis.warning.casefold()
+    assert turn.synthesis.warning == (
+        "Foundry narration is not configured; one or more specialist providers "
+        "are unavailable; deterministic cited page evidence was used."
+    )
     assert turn.synthesis.claims
     summaries = " ".join(claim["summary"] for claim in turn.synthesis.claims)
     assert "Windows Server 2022" in summaries
