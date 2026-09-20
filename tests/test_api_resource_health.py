@@ -106,6 +106,219 @@ def _auth(token: str = SCOPED_TOKEN) -> dict[str, str]:
     return {"Authorization": "Bearer " + token}
 
 
+class _FakeInventoryReadPort:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.calls: list[str] = []
+
+    def get_resource(self, scope, resource_id: str) -> dict | None:
+        self.calls.append(resource_id)
+        for row in self.rows:
+            if (
+                str(row["resource_id"]).casefold() == resource_id.casefold()
+                and scope.matches({"subscription": row["subscription_id"]})
+            ):
+                return dict(row)
+        return None
+
+
+def _inventory_row(
+    name: str = "vm-1",
+    *,
+    resource_id: str | None = None,
+    resource_type: str = "microsoft.compute/virtualmachines",
+    subscription_id: str = PROD_SUB,
+) -> dict:
+    return {
+        "resource_id": resource_id
+        or (
+            f"/subscriptions/{subscription_id}/resourceGroups/Rg/providers/"
+            f"Microsoft.Compute/virtualMachines/{name}"
+        ),
+        "resource_name": name,
+        "resource_type": resource_type,
+        "subscription_id": subscription_id,
+        "resource_group": "Rg",
+    }
+
+
+def _resource_client(tmp_path, rows: list[dict]):
+    inventory = _FakeInventoryReadPort(rows)
+    provider_calls: list[tuple[str, ...]] = []
+    metrics_calls: list[str] = []
+    lister_calls: list[str] = []
+
+    class _CaptureMetricsClient:
+        def query_resource_metrics(self, resource_id: str) -> dict:
+            metrics_calls.append(resource_id)
+            return {"Percentage CPU": {"value": 95.0}}
+
+    def provider(subscription_ids: list[str]) -> ResourceHealthService:
+        provider_calls.append(tuple(subscription_ids))
+        return ResourceHealthService(
+            connections=lambda: [_connection()],
+            resource_lister=lambda _conn: lister_calls.append("listed") or [],
+            metrics_client_factory=lambda _conn: _CaptureMetricsClient(),
+        )
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "resource-aiops"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=provider,
+        inventory_read_port_provider=lambda: inventory,
+    )
+    return (
+        TestClient(create_app(context), raise_server_exceptions=False),
+        inventory,
+        provider_calls,
+        metrics_calls,
+        lister_calls,
+    )
+
+
+def test_resource_endpoint_normalizes_authorized_inventory_identity(tmp_path):
+    canonical_id = (
+        "/subscriptions/prod-sub-1/resourceGroups/Rg/providers/"
+        "Microsoft.Compute/virtualMachines/MixedCaseVm"
+    )
+    client, inventory, provider_calls, metrics_calls, lister_calls = _resource_client(
+        tmp_path, [_inventory_row("MixedCaseVm", resource_id=canonical_id)]
+    )
+
+    response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": canonical_id.swapcase()},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert inventory.calls == [canonical_id.swapcase()]
+    assert provider_calls == [(PROD_SUB,)]
+    assert metrics_calls == [canonical_id]
+    assert lister_calls == []
+    assert body["data"]["resources"][0]["resource_id"] == canonical_id
+    assert body["data"]["resources"][0]["resource_group"] == "Rg"
+    assert body["scope"] == {"subscription": [PROD_SUB]}
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        _inventory_row(subscription_id="other-sub"),
+        _inventory_row(resource_type="microsoft.network/virtualnetworks"),
+    ],
+)
+def test_resource_endpoint_returns_same_not_found_before_provider_access(tmp_path, row):
+    rows = [] if row is None else [row]
+    client, _inventory, provider_calls, metrics_calls, _lister_calls = _resource_client(
+        tmp_path, rows
+    )
+    requested_id = (
+        _inventory_row()["resource_id"] if row is None else row["resource_id"]
+    )
+
+    response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": requested_id},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == {
+        "code": "not_found",
+        "message": "Resource health was not found",
+    }
+    assert provider_calls == []
+    assert metrics_calls == []
+
+
+def test_resource_endpoint_missing_matching_connection_is_not_found(tmp_path):
+    row = _inventory_row()
+    inventory = _FakeInventoryReadPort([row])
+    provider_calls: list[tuple[str, ...]] = []
+
+    def provider(subscription_ids: list[str]) -> ResourceHealthService:
+        provider_calls.append(tuple(subscription_ids))
+        return ResourceHealthService(
+            connections=lambda: [],
+            resource_lister=lambda _conn: pytest.fail("must not list resources"),
+            metrics_client_factory=lambda _conn: pytest.fail("must not build metrics"),
+        )
+
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "missing-connection"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        hybrid_resource_health_provider=provider,
+        inventory_read_port_provider=lambda: inventory,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": row["resource_id"]},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == "Resource health was not found"
+    assert provider_calls == [(PROD_SUB,)]
+
+
+def test_resource_endpoint_cache_isolated_by_resource_and_force_refresh(tmp_path):
+    first = _inventory_row("vm-1")
+    second = _inventory_row("vm-2")
+    client, _inventory, provider_calls, metrics_calls, _lister_calls = _resource_client(
+        tmp_path, [first, second]
+    )
+
+    first_response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": first["resource_id"]},
+        headers=_auth(),
+    )
+    cached_response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": first["resource_id"].swapcase()},
+        headers=_auth(),
+    )
+    second_response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": second["resource_id"]},
+        headers=_auth(),
+    )
+    refreshed_response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": first["resource_id"], "force_refresh": "true"},
+        headers=_auth(),
+    )
+
+    assert [
+        response.status_code
+        for response in (
+            first_response,
+            cached_response,
+            second_response,
+            refreshed_response,
+        )
+    ] == [200, 200, 200, 200]
+    assert first_response.json()["data"]["cached"] is False
+    assert cached_response.json()["data"]["cached"] is True
+    assert second_response.json()["data"]["cached"] is False
+    assert refreshed_response.json()["data"]["cached"] is False
+    assert provider_calls == [(PROD_SUB,), (PROD_SUB,), (PROD_SUB,)]
+    assert metrics_calls == [
+        first["resource_id"],
+        second["resource_id"],
+        first["resource_id"],
+    ]
+
+
 def test_returns_live_utilization_for_scoped_resources(client):
     response = client.get("/api/v1/resource-health", headers=_auth())
 
