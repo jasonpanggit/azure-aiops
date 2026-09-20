@@ -10,7 +10,14 @@ from hashlib import sha256
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from operations.specialist_manifest import (
     SpecialistDefinition,
@@ -112,7 +119,9 @@ class _CandidateValidation(_StrictModel):
 
 class _CandidateAgent(_StrictModel):
     agent_name: str = Field(min_length=1, max_length=160)
-    provider_version_id: str = Field(min_length=1, max_length=256)
+    provider_version_id: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+    )
     candidate_version: str = Field(min_length=1, max_length=128)
     model_deployment: str = Field(min_length=1, max_length=160)
     contract_model: str = Field(min_length=1, max_length=160)
@@ -127,6 +136,13 @@ class _CandidateAgent(_StrictModel):
     fallback_mode: Literal["deterministic_local"]
     publication_status: Literal["published"]
     validation: _CandidateValidation
+
+    @field_validator("provider_version_id", mode="before")
+    @classmethod
+    def reject_provider_id_whitespace(cls, value: Any) -> Any:
+        if isinstance(value, str) and value != value.strip():
+            raise ValueError("provider_version_id must not contain outer whitespace")
+        return value
 
     @model_validator(mode="after")
     def validate_immutable_identity(self) -> _CandidateAgent:
@@ -147,10 +163,19 @@ class _CoordinatorValidation(_StrictModel):
 
 class _Coordinator(_StrictModel):
     agent_name: str = Field(min_length=1, max_length=160)
-    provider_version_id: str = Field(min_length=1, max_length=256)
+    provider_version_id: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+    )
     candidate_version: str = Field(min_length=1, max_length=128)
     publication_status: Literal["published"]
     validation: _CoordinatorValidation
+
+    @field_validator("provider_version_id", mode="before")
+    @classmethod
+    def reject_provider_id_whitespace(cls, value: Any) -> Any:
+        if isinstance(value, str) and value != value.strip():
+            raise ValueError("provider_version_id must not contain outer whitespace")
+        return value
 
 
 class _CandidateArtifact(_StrictModel):

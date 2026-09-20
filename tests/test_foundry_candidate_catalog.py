@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from operations.foundry_agent import specialist_catalog
 from operations.foundry_candidate_catalog import (
     CANDIDATE_ARTIFACT_DIGEST_ENV,
@@ -241,13 +243,58 @@ def test_current_model_prompt_and_artifact_digest_mismatches_fail_closed(
 def test_duplicate_provider_identity_fails_each_affected_row(monkeypatch):
     artifact = _candidate_artifact()
     duplicate = artifact["agents"]["network"]["provider_version_id"]
-    artifact["agents"]["vulnerability"]["provider_version_id"] = f" {duplicate} "
+    artifact["agents"]["vulnerability"]["provider_version_id"] = duplicate
 
     rows = _rows(monkeypatch, artifact)
 
     assert "network" not in rows
     assert "vulnerability" not in rows
     assert len(rows) == 10
+
+
+@pytest.mark.parametrize(
+    "provider_version_id",
+    [
+        " provider-1",
+        "provider-1 ",
+        "provider/id",
+        "client_secret=supersecret",
+        "provider id",
+        "",
+    ],
+)
+def test_malformed_specialist_provider_id_fails_only_that_row(
+    monkeypatch,
+    provider_version_id,
+):
+    artifact = _candidate_artifact()
+    artifact["agents"]["network"]["provider_version_id"] = provider_version_id
+
+    rows = _rows(monkeypatch, artifact)
+
+    assert "network" not in rows
+    assert len(rows) == 11
+
+
+@pytest.mark.parametrize(
+    "provider_version_id",
+    [
+        " coordinator-1",
+        "coordinator-1 ",
+        "coordinator/id",
+        "client_secret=supersecret",
+        "",
+        "latest",
+    ],
+)
+def test_malformed_coordinator_provider_id_fails_whole_artifact(
+    monkeypatch,
+    provider_version_id,
+):
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["provider_version_id"] = provider_version_id
+
+    assert _rows(monkeypatch, artifact) == {}
 
 
 def test_stale_or_partial_artifact_fails_as_a_whole(monkeypatch):
