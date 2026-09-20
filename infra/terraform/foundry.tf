@@ -1062,6 +1062,11 @@ resource "terraform_data" "foundry_agent" {
       condition     = local.foundry_promotion_artifact_path != ""
       error_message = "Candidate publication requires a persistent foundry_specialist_promotion_artifact path."
     }
+
+    precondition {
+      condition     = var.enable_foundry_knowledge_search
+      error_message = "Specialist candidate publication requires the governed Azure AI Search connection and index."
+    }
   }
 
   provisioner "local-exec" {

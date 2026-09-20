@@ -819,6 +819,11 @@ def test_candidate_publication_is_explicitly_staged_and_safe_by_default():
         in rollout
     )
     assert "var.foundry_version_pinning_runtime_verified" in rollout
+    assert "condition     = var.enable_foundry_knowledge_search" in rollout
+    assert (
+        "Specialist candidate publication requires the governed Azure AI Search"
+        in rollout
+    )
     assert "azurerm_container_app.api" in rollout
 
 
@@ -1733,7 +1738,7 @@ def test_live_parity_azure_cli_mode_does_not_require_client_secret_env(tmp_path)
     assert report["reason"] == "candidate_mapping_invalid"
 
 
-def test_live_parity_accepts_disabled_optional_ai_search_configuration(tmp_path):
+def test_live_parity_blocks_disabled_ai_search_configuration(tmp_path):
     module = _parity_module()
     report = module.run_live(
         env=_live_env(
@@ -1747,8 +1752,9 @@ def test_live_parity_accepts_disabled_optional_ai_search_configuration(tmp_path)
         )
     )
 
-    assert report["status"] == "fail"
-    assert report["reason"] == "candidate_mapping_invalid"
+    assert report["status"] == "blocked"
+    assert "FOUNDRY_AI_SEARCH_CONNECTION_ID" in report["missing_configuration"]
+    assert "FOUNDRY_AI_SEARCH_INDEX_NAME" in report["missing_configuration"]
 
 
 def test_live_parity_rejects_partial_ai_search_configuration():
@@ -2171,6 +2177,104 @@ def test_live_provider_version_normalization_matches_rollout_capture():
     assert module._entry_provider_version_id({"id": "/agents/network"}) == ""
 
 
+@pytest.mark.parametrize("payload", [None, [], {"value": {}}, {"value": [None]}])
+def test_live_version_entries_reject_malformed_envelopes(payload):
+    module = _parity_module()
+
+    with pytest.raises((TypeError, ValueError)):
+        module._version_entries(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, [], {"result": []}, {"result": {"tools": {}}}, {"result": {"tools": [None]}}],
+)
+def test_live_tool_catalog_rejects_malformed_envelopes(monkeypatch, payload):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_post_json", lambda url, body, headers: payload)
+
+    with pytest.raises((TypeError, ValueError)):
+        module._live_tool_catalog(
+            "https://apim.example.net/operations-mcp",
+            "token",
+        )
+
+
+def test_live_parity_reports_malformed_catalog_without_raising(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_post_json", lambda url, body, headers: [])
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_auth_or_service_failure"
+    assert report["failures"][0]["error_type"] == "TypeError"
+
+
+def test_live_parity_reports_malformed_specialist_versions_without_raising(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+
+    def fake_get(url, headers):
+        if "/connections?" in url:
+            return {
+                "value": [
+                    {"id": OPERATIONS_CONNECTION_ID},
+                    {"id": AZURE_CONNECTION_ID},
+                    {"id": SEARCH_CONNECTION_ID},
+                ]
+            }
+        if "/agents/operations-copilot/" in url:
+            return {
+                "value": [
+                    {
+                        "version": "prov-1",
+                        "definition": {"model": "gpt-5.4-mini"},
+                    }
+                ]
+            }
+        return []
+
+    monkeypatch.setattr(module, "_get_json", fake_get)
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_parity_mismatch"
+    assert any(
+        failure.get("specialist") == "network"
+        and failure.get("error_type") == "TypeError"
+        for failure in report["failures"]
+    )
+
+
+def test_live_parity_rejects_non_object_candidate_mapping(tmp_path):
+    module = _parity_module()
+    path = tmp_path / "candidate.json"
+    path.write_text("[]", encoding="utf-8")
+
+    report = module.run_live(
+        env=_live_env(FOUNDRY_CANDIDATE_MAPPING=str(path))
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+
+
 def test_live_parity_requires_both_governed_project_connections(
     tmp_path, monkeypatch
 ):
@@ -2235,6 +2339,210 @@ def test_live_parity_requires_governed_ai_search_connection(
         {
             "kind": "governed_connection_not_onboarded",
             "server": "azure_ai_search",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "connection_payload",
+    [
+        None,
+        {},
+        {"value": {}},
+        {"value": [None]},
+        {"value": [{"id": 42}]},
+        {"value": [{"id": "not-a-project-connection-id"}]},
+    ],
+)
+def test_live_parity_rejects_malformed_connection_inventory(
+    tmp_path, monkeypatch, connection_payload
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: connection_payload,
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_connection_inventory_invalid"
+    assert report["failures"][0]["kind"] in {
+        "malformed_live_connection_inventory",
+        "malformed_live_connection_entry",
+    }
+
+
+def test_live_parity_rejects_duplicate_governed_connection_inventory(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: {
+            "value": [
+                {"id": OPERATIONS_CONNECTION_ID},
+                {"id": OPERATIONS_CONNECTION_ID},
+                {"id": AZURE_CONNECTION_ID},
+                {"id": SEARCH_CONNECTION_ID},
+            ]
+        },
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_connection_inventory_invalid"
+    assert report["failures"] == [
+        {
+            "kind": "duplicate_live_connection",
+            "count": 1,
+        }
+    ]
+
+
+def test_live_parity_rejects_ambiguous_live_connection_terminal_name(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    wrong_project_same_name = (
+        "/subscriptions/other/resourceGroups/rg/providers/"
+        "Microsoft.CognitiveServices/accounts/account/projects/other/"
+        "connections/ops-mcp"
+    )
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: {
+            "value": [
+                {"id": OPERATIONS_CONNECTION_ID},
+                {"id": wrong_project_same_name},
+                {"id": AZURE_CONNECTION_ID},
+                {"id": SEARCH_CONNECTION_ID},
+            ]
+        },
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_connection_inventory_invalid"
+    assert report["failures"] == [
+        {
+            "kind": "governed_connection_ambiguous",
+            "server": "operations-mcp",
+        }
+    ]
+
+
+def test_live_parity_rejects_wrong_project_terminal_name_when_expected_is_missing(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    wrong_project_same_name = (
+        "/subscriptions/other/resourceGroups/rg/providers/"
+        "Microsoft.CognitiveServices/accounts/account/projects/other/"
+        "connections/ops-mcp"
+    )
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: {
+            "value": [
+                {"id": wrong_project_same_name},
+                {"id": AZURE_CONNECTION_ID},
+                {"id": SEARCH_CONNECTION_ID},
+            ]
+        },
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "live_connection_inventory_invalid"
+    assert report["failures"] == [
+        {
+            "kind": "governed_connection_ambiguous",
+            "server": "operations-mcp",
+        }
+    ]
+
+
+def test_live_parity_rejects_duplicate_expected_connection_id(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(module, "_get_json", lambda url, headers: {"value": []})
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1"),
+            FOUNDRY_AI_SEARCH_CONNECTION_ID=OPERATIONS_CONNECTION_ID,
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+    assert report["failures"] == [
+        {
+            "kind": "governed_connection_identity_duplicate",
+        }
+    ]
+
+
+def test_live_parity_rejects_governed_connections_from_different_projects(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(module, "_get_json", lambda url, headers: {"value": []})
+    wrong_project_search = (
+        "/subscriptions/other/resourceGroups/rg/providers/"
+        "Microsoft.CognitiveServices/accounts/account/projects/other/"
+        "connections/ai-search"
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1"),
+            FOUNDRY_AI_SEARCH_CONNECTION_ID=wrong_project_search,
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+    assert report["failures"] == [
+        {
+            "kind": "governed_connection_project_mismatch",
         }
     ]
 

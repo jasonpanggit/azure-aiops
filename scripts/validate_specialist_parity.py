@@ -40,6 +40,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,8 @@ LIVE_REQUIRED_ENV = (
     "AZURE_MCP_SERVER_URL",
     "MCP_APIM_AUDIENCE",
     "FOUNDRY_CANDIDATE_MAPPING",
+    "FOUNDRY_AI_SEARCH_CONNECTION_ID",
+    "FOUNDRY_AI_SEARCH_INDEX_NAME",
 )
 
 # Foundry's own data-plane audience. Overridable for sovereign clouds, but it
@@ -699,10 +702,20 @@ def _live_tool_catalog(url: str, token: str) -> tuple[str, ...]:
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         {"Authorization": f"Bearer {token}"},
     )
-    tools = (payload or {}).get("result", {}).get("tools", [])
-    return tuple(
-        str(tool.get("name", "")) for tool in tools if isinstance(tool, dict)
-    )
+    if not isinstance(payload, dict):
+        raise TypeError("MCP catalog response must be an object")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise TypeError("MCP catalog result must be an object")
+    tools = result.get("tools")
+    if not isinstance(tools, list) or any(
+        not isinstance(tool, dict)
+        or not isinstance(tool.get("name"), str)
+        or not tool["name"]
+        for tool in tools
+    ):
+        raise ValueError("MCP catalog tools must be named objects")
+    return tuple(tool["name"] for tool in tools)
 
 
 def _deployed_agent_name(specialist, env: dict[str, str]) -> str:
@@ -1055,6 +1068,8 @@ def _candidate_mapping(
     """Load exact provider IDs emitted by the candidate rollout."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("candidate mapping must contain a JSON object")
     agents = payload.get("agents")
     if not isinstance(agents, dict):
         raise TypeError("candidate mapping has no agents map")
@@ -1133,6 +1148,19 @@ def _entry_provider_version_id(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _version_entries(payload: Any) -> list[dict[str, Any]]:
+    """Validate and return one Foundry agent versions collection."""
+
+    if not isinstance(payload, dict):
+        raise TypeError("agent versions response must be an object")
+    entries = payload.get("value")
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) for entry in entries
+    ):
+        raise ValueError("agent versions value must be a list of objects")
+    return entries
+
+
 def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     """Read deployed Foundry and MCP state and compare it to the manifest."""
 
@@ -1147,14 +1175,6 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
         )
     elif auth_mode != "azure_cli":
         missing.append("FOUNDRY_AUTH_MODE")
-    search_connection_id = env.get("FOUNDRY_AI_SEARCH_CONNECTION_ID", "").strip()
-    search_index_name = env.get("FOUNDRY_AI_SEARCH_INDEX_NAME", "").strip()
-    if bool(search_connection_id) != bool(search_index_name):
-        missing.append(
-            "FOUNDRY_AI_SEARCH_INDEX_NAME"
-            if search_connection_id
-            else "FOUNDRY_AI_SEARCH_CONNECTION_ID"
-        )
     if missing:
         return {
             "mode": "live",
@@ -1165,6 +1185,8 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             "checks": [],
             "failures": [],
         }
+    search_connection_id = env.get("FOUNDRY_AI_SEARCH_CONNECTION_ID", "").strip()
+    search_index_name = env.get("FOUNDRY_AI_SEARCH_INDEX_NAME", "").strip()
 
     url_failures = _secure_service_urls(env)
     if url_failures:
@@ -1242,7 +1264,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 env.get("FOUNDRY_AUDIENCE", DEFAULT_FOUNDRY_AUDIENCE)
             ),
         )
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+    except (urllib.error.URLError, OSError, KeyError, TypeError, ValueError) as error:
         failure = _live_failure(error, service=FOUNDRY_SERVICE)
         return {
             "mode": "live",
@@ -1259,7 +1281,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             env,
             scope=_oauth_scope(env["MCP_APIM_AUDIENCE"]),
         )
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+    except (urllib.error.URLError, OSError, KeyError, TypeError, ValueError) as error:
         failure = _live_failure(error, service="apim")
         return {
             "mode": "live",
@@ -1278,7 +1300,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     ):
         try:
             catalogs[server] = _live_tool_catalog(env[variable], apim_token)
-        except (urllib.error.URLError, OSError, KeyError, ValueError) as error:
+        except (urllib.error.URLError, OSError, KeyError, TypeError, ValueError) as error:
             failure = _live_failure(error, service=server)
             return {
                 "mode": "live",
@@ -1295,7 +1317,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             f"{endpoint}/connections?api-version={api_version}",
             {"Authorization": "Bearer " + foundry_token},
         )
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    except (urllib.error.URLError, OSError, TypeError, ValueError) as error:
         failure = _live_failure(error, service=FOUNDRY_SERVICE)
         return {
             "mode": "live",
@@ -1306,18 +1328,135 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             "checks": [_check("live_connections", [failure])],
             "failures": [failure],
         }
-    live_connection_ids = {
-        str(entry.get("id", "")).strip().rstrip("/").casefold()
-        for entry in (connection_payload or {}).get("value", []) or []
-        if isinstance(entry, dict) and entry.get("id")
+    if not isinstance(connection_payload, dict) or not isinstance(
+        connection_payload.get("value"), list
+    ):
+        failure = _failure("malformed_live_connection_inventory")
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_connection_inventory_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+
+    live_connection_ids: list[str] = []
+    malformed_entries = 0
+    for entry in connection_payload["value"]:
+        connection_id = entry.get("id") if isinstance(entry, dict) else None
+        if not isinstance(connection_id, str):
+            malformed_entries += 1
+            continue
+        normalized = connection_id.strip().rstrip("/")
+        if not PROJECT_CONNECTION_ID_PATTERN.fullmatch(normalized):
+            malformed_entries += 1
+            continue
+        live_connection_ids.append(normalized.casefold())
+    if malformed_entries:
+        failure = _failure(
+            "malformed_live_connection_entry",
+            count=malformed_entries,
+        )
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_connection_inventory_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+
+    expected_live_connections = {
+        **candidate_connections,
+        AZURE_AI_SEARCH_TOOL_TYPE: search_connection_id,
     }
-    expected_live_connections = dict(candidate_connections)
-    if search_connection_id:
-        expected_live_connections[AZURE_AI_SEARCH_TOOL_TYPE] = search_connection_id
+    expected_project_ids = {
+        connection_id.rstrip("/").rsplit("/connections/", 1)[0].casefold()
+        for connection_id in expected_live_connections.values()
+    }
+    if len(expected_project_ids) != 1:
+        failure = _failure("governed_connection_project_mismatch")
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "candidate_mapping_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+    normalized_expected_ids = [
+        connection_id.rstrip("/").casefold()
+        for connection_id in expected_live_connections.values()
+    ]
+    if len(set(normalized_expected_ids)) != len(normalized_expected_ids):
+        failure = _failure("governed_connection_identity_duplicate")
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "candidate_mapping_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+
+    live_counts = Counter(live_connection_ids)
+    duplicate_ids = sorted(
+        connection_id
+        for connection_id, count in live_counts.items()
+        if count > 1
+    )
+    if duplicate_ids:
+        failure = _failure(
+            "duplicate_live_connection",
+            count=len(duplicate_ids),
+        )
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_connection_inventory_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", [failure])],
+            "failures": [failure],
+        }
+
+    ambiguous_connections = []
+    for label, connection_id in expected_live_connections.items():
+        expected_id = connection_id.casefold()
+        terminal_name = expected_id.rsplit("/", 1)[-1]
+        terminal_matches = [
+            live_id
+            for live_id in live_connection_ids
+            if live_id.rsplit("/", 1)[-1] == terminal_name
+        ]
+        if terminal_matches and terminal_matches != [expected_id]:
+            ambiguous_connections.append(label)
+    if ambiguous_connections:
+        failures = [
+            _failure(
+                "governed_connection_ambiguous",
+                server=label,
+            )
+            for label in ambiguous_connections
+        ]
+        return {
+            "mode": "live",
+            "status": "fail",
+            "reason": "live_connection_inventory_invalid",
+            "missing_configuration": [],
+            "specialists": [],
+            "checks": [_check("live_connections", failures)],
+            "failures": failures,
+        }
     missing_connections = [
         label
         for label, connection_id in expected_live_connections.items()
-        if connection_id.casefold() not in live_connection_ids
+        if live_counts[connection_id.casefold()] != 1
     ]
     if missing_connections:
         failures = [
@@ -1347,7 +1486,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             f"{endpoint}/agents/{coordinator_name}/versions?api-version={api_version}",
             {"Authorization": "Bearer " + foundry_token},
         )
-        coordinator_entries = (coordinator_versions or {}).get("value", []) or []
+        coordinator_entries = _version_entries(coordinator_versions)
         coordinator_pinned = next(
             (
                 entry
@@ -1393,7 +1532,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                     "azure_grant_count": 0,
                 }
             )
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    except (urllib.error.URLError, OSError, TypeError, ValueError) as error:
         failure = _live_failure(error, service=FOUNDRY_SERVICE)
         failure["specialist"] = "operations_copilot"
         failures.append(failure)
@@ -1419,13 +1558,20 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 f"{endpoint}/agents/{agent_name}/versions?api-version={api_version}",
                 {"Authorization": f"Bearer {foundry_token}"},
             )
-        except (urllib.error.URLError, OSError, ValueError) as error:
+        except (urllib.error.URLError, OSError, TypeError, ValueError) as error:
             failure = _live_failure(error, service=FOUNDRY_SERVICE)
             failure["specialist"] = specialist.id
             failures.append(failure)
             continue
 
-        entries = (versions or {}).get("value", []) or []
+        try:
+            entries = _version_entries(versions)
+        except (TypeError, ValueError) as error:
+            failure = _live_failure(error, service=FOUNDRY_SERVICE)
+            failure["specialist"] = specialist.id
+            failures.append(failure)
+            continue
+
         pinned = next(
             (
                 entry
