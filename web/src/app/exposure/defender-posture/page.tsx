@@ -28,7 +28,7 @@ import {
 import { useScope } from "@/lib/scope-context";
 import { vulnerabilityApi } from "@/lib/services";
 import { buildDefenderPostureCopilotContext } from "@/lib/copilot/page-adapters";
-import type { ExposureFinding, ExposurePage } from "@/lib/types";
+import type { ExposureFacets, ExposureFinding, ExposurePage } from "@/lib/types";
 
 interface DefenderExposureFinding extends ExposureFinding {
   weakness_kind?: string;
@@ -64,6 +64,21 @@ function targetName(value: string): string {
   }
   const segments = value.split("/").filter(Boolean);
   return segments.at(-1) || value;
+}
+
+function displayFacet(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function facetCount(facets: ExposureFacets | null, name: string, value: string): number | null {
+  if (!facets) return null;
+  const folded = value.toLocaleLowerCase("en-US");
+  const match = (facets.facets[name] ?? []).find(
+    (item) => item.value.toLocaleLowerCase("en-US") === folded,
+  );
+  return match?.count ?? 0;
 }
 
 function detailHref(item: DefenderExposureFinding, state: ExposureQueryState): string {
@@ -135,13 +150,33 @@ export default function DefenderPosturePage() {
     isEmpty: (page) => page.items.length === 0,
   });
 
+  const facets = useExposureSection<ExposureFacets>({
+    queryKey: `${exposureQueryKey(queryState)}|defender-exposure=facets`,
+    retentionKey: `${exposureRetentionKey(queryState)}|defender-exposure=facets`,
+    load: ({ signal }) =>
+      vulnerabilityApi.exposureFacets(queryState, ["severity"], { signal }),
+    isEmpty: (data) => data.total_count === 0,
+  });
+  const facetData = facets.data;
+
   const page = section.data;
   const rows = useMemo(() => page?.items ?? [], [page?.items]);
-  const criticalCount = rows.filter(
-    (item) => item.severity?.toLocaleLowerCase("en-US") === "critical",
-  ).length;
+  const criticalCount = facetCount(facetData, "severity", "critical")
+    ?? rows.filter((item) => item.severity?.toLocaleLowerCase("en-US") === "critical").length;
   const severityBreakdown = useMemo(() => {
     const order = ["critical", "high", "medium", "low", "unknown"];
+    if (facetData) {
+      const items = facetData.facets.severity ?? [];
+      const byValue = new Map(items.map((item) => [item.value.toLocaleLowerCase("en-US"), item]));
+      const extra = items.filter((item) => !order.includes(item.value.toLocaleLowerCase("en-US")));
+      const canonical = order.map((key) => byValue.get(key) ?? { value: key, count: 0 });
+      return [...canonical, ...extra].map((item) => ({
+        label: displayFacet(item.value),
+        value: item.count,
+        color: toneColor(statusTone(item.value)),
+        filterValue: item.value.toLocaleLowerCase("en-US"),
+      }));
+    }
     const counts = new Map<string, number>();
     for (const item of rows) {
       const key = (item.severity || "unknown").toLowerCase();
@@ -154,7 +189,7 @@ export default function DefenderPosturePage() {
       color: toneColor(statusTone(key)),
       filterValue: key,
     }));
-  }, [rows]);
+  }, [facetData, rows]);
   const toggleSeverityFilter = useCallback(
     (value: string) => {
       const next = queryState.filters.severity === value ? undefined : value;
@@ -290,22 +325,28 @@ export default function DefenderPosturePage() {
                 completeness={section.status === "current" ? "complete" : "partial"}
               />
               <MetricCard
-                label="Critical findings loaded"
+                label="Critical findings"
                 value={criticalCount}
-                detail={`Across ${rows.length.toLocaleString("en-US")} rows loaded on this page`}
+                detail={
+                  facetData
+                    ? `Across ${(page?.total_count ?? 0).toLocaleString("en-US")} total findings`
+                    : `Across ${rows.length.toLocaleString("en-US")} rows loaded on this page`
+                }
                 tone={criticalCount > 0 ? "critical" : "success"}
-                completeness={section.status === "current" ? "complete" : "partial"}
+                completeness={facets.status === "current" ? "complete" : "partial"}
               />
             </div>
 
             {rows.length > 0 && (
               <div className="dashboard-charts-row">
                 <div className="chart-card">
-                  <h3 className="chart-card-title">Severity mix (loaded rows only)</h3>
+                  <h3 className="chart-card-title">
+                    {facetData ? "Severity mix (all findings)" : "Severity mix (loaded rows only)"}
+                  </h3>
                   <DonutChart
                     segments={severityBreakdown}
-                    centerValue={rows.length}
-                    centerLabel="on this page"
+                    centerValue={facetData ? (page?.total_count ?? rows.length) : rows.length}
+                    centerLabel={facetData ? "total findings" : "on this page"}
                     onSegmentClick={toggleSeverityFilter}
                     activeFilterValue={queryState.filters.severity ?? null}
                   />
