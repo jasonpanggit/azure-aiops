@@ -2154,6 +2154,7 @@ def _compile_silver_patch_queries(
         "'unknown' AS [sla_state], CAST(NULL AS bigint) AS [sla_age_seconds], "
         "CAST(NULL AS bigint) AS [sla_target_seconds], CAST(NULL AS nvarchar(64)) AS [sla_due_at], "
         "CAST(NULL AS bit) AS [sla_overdue], "
+        "NULLIF([update_name], '') AS [finding_title], "
         f"CASE WHEN LOWER([status]) = 'missing' THEN CONCAT('Install ', {weakness_id}) "
         f"WHEN LOWER([status]) = 'installation_failed' THEN CONCAT('Retry ', {weakness_id}, ' installation') "
         f"ELSE CONCAT({weakness_id}, ' is installed') END AS [recommendation], "
