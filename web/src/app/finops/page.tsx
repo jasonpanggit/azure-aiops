@@ -475,7 +475,9 @@ export default function FinOpsPage() {
                               "Unattributed"}
                           </td>
                           <td>
-                            <div className="table-wrap">{row.resource_id || "—"}</div>
+                            <div className="resource-id-cell" title={row.resource_id || undefined}>
+                              {row.resource_id || "—"}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -538,7 +540,9 @@ export default function FinOpsPage() {
                               {row.resource_type || "Resource"}
                             </span>
                             <div className="table-secondary">
-                              <span className="table-wrap">{row.resource_id}</span>
+                              <span className="resource-id-cell" title={row.resource_id}>
+                                {row.resource_id}
+                              </span>
                             </div>
                           </td>
                           <td>

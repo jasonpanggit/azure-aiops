@@ -504,6 +504,13 @@ export default function PreDeploymentPage() {
                               {resource.depth === 0 && (
                                 <StatusBadge label="Changed" tone="info" compact />
                               )}
+                              {resource.name && (
+                                <div className="table-secondary">
+                                  <span className="resource-id-cell" title={resource.resource_id}>
+                                    {resource.resource_id}
+                                  </span>
+                                </div>
+                              )}
                             </td>
                             <td>{resource.business_service || "Not mapped"}</td>
                             <td>{resource.environment || "Unknown"}</td>

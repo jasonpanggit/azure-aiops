@@ -818,7 +818,11 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                           );
                           return (
                             <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
-                              <td data-label="Target"><strong>{finding.server_id || finding.target_id}</strong></td>
+                              <td data-label="Target">
+                                <strong className="resource-id-cell" title={finding.server_id || finding.target_id}>
+                                  {finding.server_id || finding.target_id}
+                                </strong>
+                              </td>
                               <td data-label="CVE">{cveId ? <Link className="table-primary-link" href={cveHref(cveId)}>{cveId}</Link> : "—"}</td>
                               <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
                               <td data-label="Service">{finding.business_service || "Unmapped service"}</td>

@@ -458,7 +458,7 @@ export default function ConnectionsPage() {
                 <tbody>
                   {rowsPaging.pageRows.map((connection) => (
                     <tr key={connection.connection_id}>
-                      <td><strong>{connection.name}</strong><div className="table-secondary">{connection.subscription_id}</div></td>
+                      <td><strong>{connection.name}</strong><div className="table-secondary"><span className="resource-id-cell" title={connection.subscription_id}>{connection.subscription_id}</span></div></td>
                       <td><strong>{connection.business_service || "Service not mapped"}</strong><div className="table-secondary">{connection.environment || "Environment not mapped"} · {connection.criticality || "Criticality not set"}</div></td>
                       <td><StatusBadge label={connection.health_status} tone={statusTone(connection.health_status)} /></td>
                       <td>

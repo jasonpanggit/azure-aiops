@@ -1045,7 +1045,11 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                       <tbody>
                         {rows.map((finding) => (
                           <tr key={finding.exposure_id} id={finding.exposure_id} tabIndex={-1}>
-                            <td data-label="Target"><strong>{finding.server_id || finding.target_id}</strong></td>
+                            <td data-label="Target">
+                              <strong className="resource-id-cell" title={finding.server_id || finding.target_id}>
+                                {finding.server_id || finding.target_id}
+                              </strong>
+                            </td>
                             <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
                             <td data-label="Service">{finding.business_service || "Unmapped service"}</td>
                             <td data-label="Severity">{finding.severity || data?.cve.severity || "Unknown"}</td>

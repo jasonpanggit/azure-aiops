@@ -64,7 +64,17 @@ export function DonutChart({ segments, centerValue, centerLabel }: DonutChartPro
         </svg>
         {(centerValue !== undefined || centerLabel) && (
           <div className="donut-chart-center">
-            {centerValue !== undefined && <span className="donut-chart-center-value">{centerValue}</span>}
+            {centerValue !== undefined && (
+              <span
+                className={
+                  String(centerValue).length > 6
+                    ? "donut-chart-center-value donut-chart-center-value--compact"
+                    : "donut-chart-center-value"
+                }
+              >
+                {centerValue}
+              </span>
+            )}
             {centerLabel && <span className="donut-chart-center-label">{centerLabel}</span>}
           </div>
         )}

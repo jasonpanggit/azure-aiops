@@ -889,7 +889,7 @@ export default function PatchPrioritiesPage() {
                           />
                         </div>
                         <div
-                          className="table-secondary exposure-resource-id"
+                          className="table-secondary resource-id-cell"
                           title={item.target_id}
                         >
                           {item.target_id}

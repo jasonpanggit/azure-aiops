@@ -1328,7 +1328,7 @@ export default function InventoryPage() {
                                   <tbody>
                                     {softwareDetail.map((machine, index) => (
                                       <tr key={`${machine.resource_id || machine.source_computer_id || machine.machine_name}-${index}`}>
-                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id || machine.source_computer_id}</span></td>
+                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle resource-id-cell" title={machine.resource_id || machine.source_computer_id}>{machine.resource_id || machine.source_computer_id}</span></td>
                                         <td>{machine.source_type ? sourceLabel(machine.source_type) : "Unlinked"}<span className="table-subtitle">{machine.environment}</span></td>
                                         <td>{machine.subscription_id || "Unknown"}<span className="table-subtitle">{machine.resource_group || "Unknown"}</span></td>
                                         <td>{machine.canonical_identity}<span className="table-subtitle">{machine.canonical_name} {machine.canonical_version}</span></td>
@@ -1871,7 +1871,7 @@ export default function InventoryPage() {
                                   <tbody>
                                     {detail.map((machine) => (
                                       <tr key={machine.resource_id}>
-                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle">{machine.resource_id}</span></td>
+                                        <td><strong>{machine.machine_name}</strong><span className="table-subtitle resource-id-cell" title={machine.resource_id}>{machine.resource_id}</span></td>
                                         <td>{sourceLabel(machine.source_type)}<span className="table-subtitle">{machine.environment}</span></td>
                                         <td>{machine.subscription_id}<span className="table-subtitle">{machine.resource_group}</span></td>
                                         <td><StatusBadge label={machine.review_required ? "EOL date needs review" : machine.lifecycle_status} tone={machine.review_required ? "unknown" : lifecycleTone({ ...machine, key: machine.resource_id, machine_count: 1, source_types: [machine.source_type] })} /></td>
