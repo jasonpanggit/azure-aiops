@@ -4,6 +4,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { CountBarChart } from "@/components/ui/CountBarChart";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -446,6 +448,27 @@ export default function InventoryPage() {
     () => [...filteredAzureGroups].sort((a, b) => b.resource_count - a.resource_count).slice(0, 5),
     [filteredAzureGroups],
   );
+  const azureTopBarData = useMemo(
+    () =>
+      azureTopGroups.map((group) => ({
+        id: group.key,
+        label: resourceTypeLabel(group.resource_type),
+        value: group.resource_count,
+      })),
+    [azureTopGroups],
+  );
+  const azureProviderMix = useMemo(() => {
+    const palette = ["var(--color-brand)", "#3ea3e0", "var(--color-success)", "var(--color-warning)", "var(--color-text-muted)"];
+    const counts = new Map<string, number>();
+    for (const group of filteredAzureGroups) {
+      const provider = providerLabel(group.resource_type);
+      counts.set(provider, (counts.get(provider) ?? 0) + group.resource_count);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([label, value], index) => ({ label, value, color: palette[index % palette.length] }));
+  }, [filteredAzureGroups]);
 
   const groups = useMemo(() => inventory.data?.data.groups ?? [], [inventory.data]);
   const osNameOptions = useMemo(
@@ -477,6 +500,33 @@ export default function InventoryPage() {
       .reduce((total, group) => total + group.machine_count, 0);
   const expiredCount = machinesInBucket("expired");
   const expiringCount = machinesInBucket("expiring");
+  const osRiskMix = useMemo(() => {
+    const bucketMeta: Record<ReturnType<typeof riskBucket>, { label: string; color: string }> = {
+      expired: { label: "Expired", color: "var(--color-critical)" },
+      expiring: { label: "Expiring within 90 days", color: "var(--color-warning)" },
+      supported: { label: "Supported", color: "var(--color-success)" },
+      review: { label: "Needs review", color: "var(--color-text-muted)" },
+    };
+    return (["expired", "expiring", "supported", "review"] as const).map((bucket) => ({
+      label: bucketMeta[bucket].label,
+      value: filteredGroups
+        .filter((group) => riskBucket(group) === bucket)
+        .reduce((total, group) => total + group.machine_count, 0),
+      color: bucketMeta[bucket].color,
+    }));
+  }, [filteredGroups]);
+  const osTopBarData = useMemo(
+    () =>
+      [...filteredGroups]
+        .sort((a, b) => b.machine_count - a.machine_count)
+        .slice(0, 6)
+        .map((group) => ({
+          id: group.key,
+          label: `${group.os_name} ${group.os_version}`,
+          value: group.machine_count,
+        })),
+    [filteredGroups],
+  );
   const sourceStates: Record<string, InventorySourceStatus> = useMemo(
     () => inventory.data?.data.source_status ?? {},
     [inventory.data],
@@ -505,6 +555,37 @@ export default function InventoryPage() {
   );
   const softwareTotal = filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
   const unlinkedSoftware = filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
+  const softwareTopBarData = useMemo(
+    () =>
+      [...filteredSoftwareGroups]
+        .sort((a, b) => b.install_count - a.install_count)
+        .slice(0, 6)
+        .map((group) => ({
+          id: group.key,
+          label: `${group.software_name} ${group.software_version}`,
+          value: group.install_count,
+        })),
+    [filteredSoftwareGroups],
+  );
+  const softwareSourceMix = useMemo(() => {
+    const labels: Record<string, string> = { azure_vm: "Azure VM", arc: "Arc", unlinked: "Unlinked" };
+    const colors: Record<string, string> = {
+      azure_vm: "var(--color-brand)",
+      arc: "#3ea3e0",
+      unlinked: "var(--color-text-muted)",
+    };
+    const counts = new Map<string, number>();
+    for (const group of filteredSoftwareGroups) {
+      for (const source of group.source_types) {
+        counts.set(source, (counts.get(source) ?? 0) + group.install_count);
+      }
+    }
+    return Array.from(counts.entries()).map(([key, value]) => ({
+      label: labels[key] ?? key,
+      value,
+      color: colors[key] ?? "var(--color-text-muted)",
+    }));
+  }, [filteredSoftwareGroups]);
   const softwareSourceStates: Record<string, InventorySourceStatus> = useMemo(
     () => softwareInventory.data?.data.source_status ?? {},
     [softwareInventory.data],
@@ -1065,15 +1146,19 @@ export default function InventoryPage() {
               tone={unlinkedSoftware > 0 ? "warning" : "success"}
             />
           </section>
-          <section aria-label="Installed software dashboard" className="inventory-dashboard">
-            <div className="card-header"><h2>Top software by install count</h2><span className="muted">{filteredSoftwareGroups.length} shown</span></div>
-            {filteredSoftwareGroups.slice(0, 5).map((group, _index, ranked) => (
-              <div className="inventory-bar-row" key={group.key}>
-                <span>{group.software_name} {group.software_version}</span>
-                <div className="inventory-bar" style={{ width: `${ranked[0]?.install_count ? Math.max(6, (group.install_count / ranked[0].install_count) * 100) : 0}%` }} aria-hidden="true" />
-                <strong>{group.install_count}</strong>
-              </div>
-            ))}
+          <section aria-label="Installed software dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top software by install count</h3>
+              <CountBarChart data={softwareTopBarData} unit="software" />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Discovery source mix</h3>
+              <DonutChart
+                segments={softwareSourceMix}
+                centerValue={softwareTotal}
+                centerLabel="installs"
+              />
+            </div>
           </section>
           <div className="inventory-filters" aria-label="Installed software filters">
             <label>
@@ -1358,25 +1443,19 @@ export default function InventoryPage() {
             <StatePanel title="Resource export unavailable" message={allResourcesError} tone="error" />
           )}
 
-          <section aria-label="Azure inventory dashboard" className="inventory-dashboard">
-            <div className="card-header">
-              <h2>Top resource types by count</h2>
-              <span className="muted">{filteredAzureGroups.length} shown</span>
+          <section aria-label="Azure inventory dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top resource types by count</h3>
+              <CountBarChart data={azureTopBarData} unit="resource type" />
             </div>
-            {azureTopGroups.map((group) => {
-              const peak = azureTopGroups[0]?.resource_count ?? 0;
-              return (
-                <div className="inventory-bar-row" key={group.key}>
-                  <span>{resourceTypeLabel(group.resource_type)}</span>
-                  <div
-                    className="inventory-bar"
-                    style={{ width: `${peak ? Math.max(6, (group.resource_count / peak) * 100) : 0}%` }}
-                    aria-hidden="true"
-                  />
-                  <strong>{group.resource_count}</strong>
-                </div>
-              );
-            })}
+            <div className="chart-card">
+              <h3 className="chart-card-title">Resource provider mix</h3>
+              <DonutChart
+                segments={azureProviderMix}
+                centerValue={azureResourceTotal}
+                centerLabel="resources"
+              />
+            </div>
           </section>
 
           <div className="inventory-filters" aria-label="Azure inventory filters">
@@ -1594,26 +1673,19 @@ export default function InventoryPage() {
               tone={reviewCount > 0 ? "warning" : "success"}
             />
           </section>
-          <section aria-label="OS inventory dashboard" className="inventory-dashboard">
-            <div className="card-header"><h2>EOL risk distribution</h2><span className="muted">{totalMachines} machines</span></div>
-            {(["expired", "expiring", "supported", "review"] as const).map((bucket) => {
-              const count = filteredGroups.filter((group) => riskBucket(group) === bucket).reduce((total, group) => total + group.machine_count, 0);
-              return (
-                <div className="inventory-bar-row" key={bucket}>
-                  <span>{bucket === "expiring" ? "Expiring within 90 days" : bucket === "review" ? "Needs review" : bucket[0].toUpperCase() + bucket.slice(1)}</span>
-                  <div className={`inventory-bar inventory-bar-${bucket}`} style={{ width: `${totalMachines ? Math.max(count ? 4 : 0, (count / totalMachines) * 100) : 0}%` }} aria-hidden="true" />
-                  <strong>{count}</strong>
-                </div>
-              );
-            })}
-            <div className="card-header inventory-chart-secondary"><h2>Top OS versions</h2></div>
-            {filteredGroups.slice(0, 5).map((group, _index, ranked) => (
-              <div className="inventory-bar-row" key={group.key}>
-                <span>{group.os_name} {group.os_version}</span>
-                <div className={`inventory-bar inventory-bar-${riskBucket(group)}`} style={{ width: `${ranked[0]?.machine_count ? Math.max(6, (group.machine_count / ranked[0].machine_count) * 100) : 0}%` }} aria-hidden="true" />
-                <strong>{group.machine_count}</strong>
-              </div>
-            ))}
+          <section aria-label="OS inventory dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">EOL risk distribution</h3>
+              <DonutChart
+                segments={osRiskMix}
+                centerValue={totalMachines}
+                centerLabel="machines"
+              />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top OS versions</h3>
+              <CountBarChart data={osTopBarData} unit="OS version" />
+            </div>
           </section>
           <div className="inventory-filters" aria-label="OS inventory filters">
             <label>

@@ -828,30 +828,37 @@ export default function PatchPrioritiesPage() {
                               : "Finding"
                         }
                       >
-                        <Link
-                          className="table-primary-link"
-                          href={itemDetailHref(item, queryState, 0)}
-                          onClick={(event) => {
-                            if (
-                              event.button === 0 &&
-                              !event.metaKey &&
-                              !event.ctrlKey &&
-                              !event.shiftKey &&
-                              !event.altKey
-                            ) {
-                              event.preventDefault();
-                              router.push(
-                                itemDetailHref(
-                                  item,
-                                  queryState,
-                                  Math.max(0, Math.round(window.scrollY)),
-                                ),
-                              );
-                            }
-                          }}
-                        >
-                          {item.weakness_id}
-                        </Link>
+                        <div className="exposure-finding-heading">
+                          <Link
+                            className="table-primary-link"
+                            href={itemDetailHref(item, queryState, 0)}
+                            onClick={(event) => {
+                              if (
+                                event.button === 0 &&
+                                !event.metaKey &&
+                                !event.ctrlKey &&
+                                !event.shiftKey &&
+                                !event.altKey
+                              ) {
+                                event.preventDefault();
+                                router.push(
+                                  itemDetailHref(
+                                    item,
+                                    queryState,
+                                    Math.max(0, Math.round(window.scrollY)),
+                                  ),
+                                );
+                              }
+                            }}
+                          >
+                            {item.weakness_id}
+                          </Link>
+                          <StatusBadge
+                            label={item.severity ?? "Unknown severity"}
+                            tone={statusTone(item.severity ?? "unknown")}
+                            compact
+                          />
+                        </div>
                         {item.finding_title ? (
                           <div className="table-secondary exposure-long-value">
                             {item.finding_title}
