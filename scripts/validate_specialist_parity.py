@@ -731,6 +731,7 @@ def validate_agent_mcp_definition(
     *,
     specialist_id: str,
     definition: Any,
+    expected_operations_mcp_url: str = "",
     expected_ai_search_connection_id: str = "",
     expected_ai_search_index_name: str = "",
 ) -> list[dict[str, Any]]:
@@ -814,6 +815,35 @@ def validate_agent_mcp_definition(
             continue
         label = str(tool.get("server_label", "")).strip()
         labels.append(label)
+        if label == OPERATIONS_SERVER_LABEL:
+            server_url = tool.get("server_url")
+            if (
+                expected_operations_mcp_url
+                and (
+                    not isinstance(server_url, str)
+                    or server_url.strip().rstrip("/")
+                    != expected_operations_mcp_url.strip().rstrip("/")
+                )
+            ):
+                failures.append(
+                    _failure(
+                        "mcp_server_url_mismatch",
+                        specialist=specialist_id,
+                        server=label,
+                    )
+                )
+            require_approval = tool.get("require_approval")
+            if (
+                expected_operations_mcp_url
+                and require_approval != "never"
+            ):
+                failures.append(
+                    _failure(
+                        "mcp_approval_policy_mismatch",
+                        specialist=specialist_id,
+                        server=label,
+                    )
+                )
         allowed_tools = tool.get("allowed_tools")
         if isinstance(allowed_tools, dict):
             if set(allowed_tools) != {"tool_names"}:
@@ -1557,6 +1587,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             validate_agent_mcp_definition(
                 specialist_id=specialist.id,
                 definition=definition,
+                expected_operations_mcp_url=env["OPERATIONS_MCP_SERVER_URL"],
                 expected_ai_search_connection_id=search_connection_id,
                 expected_ai_search_index_name=search_index_name,
             )

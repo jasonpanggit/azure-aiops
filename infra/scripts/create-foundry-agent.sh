@@ -165,8 +165,12 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
   # A specialist candidate is not publishable unless the governed Operations
   # MCP connection is identified by its exact project-connection resource ID.
   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID:-}" \
+  FOUNDRY_AI_SEARCH_CONNECTION_ID="${FOUNDRY_AI_SEARCH_CONNECTION_ID:-}" \
+  FOUNDRY_AI_SEARCH_INDEX_NAME="${FOUNDRY_AI_SEARCH_INDEX_NAME:-}" \
+  OPERATIONS_MCP_SERVER_URL="${OPERATIONS_MCP_SERVER_URL:-}" \
+  FOUNDRY_SPECIALISTS_JSON="${FOUNDRY_SPECIALISTS_JSON}" \
   python3 -c '
-import os, re
+import json, os, re
 
 pattern = re.compile(
     r"^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/"
@@ -174,11 +178,51 @@ pattern = re.compile(
     r"connections/[^/]+$",
     re.IGNORECASE,
 )
-value = os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/")
-if not pattern.fullmatch(value):
+operations_connection = os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/")
+search_connection = os.environ["FOUNDRY_AI_SEARCH_CONNECTION_ID"].strip().rstrip("/")
+operations_url = os.environ["OPERATIONS_MCP_SERVER_URL"].strip().rstrip("/")
+search_index = os.environ["FOUNDRY_AI_SEARCH_INDEX_NAME"].strip()
+if not pattern.fullmatch(operations_connection):
     raise SystemExit(
         "create-foundry-agent: exact Operations MCP project connection ID is required"
     )
+if not pattern.fullmatch(search_connection) or search_connection.casefold() == operations_connection.casefold():
+    raise SystemExit(
+        "create-foundry-agent: exact distinct Azure AI Search project connection ID is required"
+    )
+if not operations_url.startswith("https://") or not operations_url.endswith("/operations-mcp"):
+    raise SystemExit("create-foundry-agent: exact Operations MCP server URL is required")
+if not search_index:
+    raise SystemExit("create-foundry-agent: Azure AI Search index name is required")
+specialists = json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"])
+if not isinstance(specialists, dict) or len(specialists) != 12:
+    raise SystemExit("create-foundry-agent: exact twelve-specialist payload is required")
+for specialist_id, specialist in specialists.items():
+    tools = specialist.get("tools") if isinstance(specialist, dict) else None
+    if not isinstance(tools, list) or len(tools) != 2:
+        raise SystemExit(f"create-foundry-agent: {specialist_id} requires exactly Operations MCP and Azure AI Search")
+    operations = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "mcp"]
+    searches = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "azure_ai_search"]
+    if len(operations) != 1 or len(searches) != 1:
+        raise SystemExit(f"create-foundry-agent: {specialist_id} has an unexpected tool definition")
+    operation = operations[0]
+    if (
+        operation.get("server_label") != "operations-mcp"
+        or operation.get("server_url", "").rstrip("/") != operations_url
+        or operation.get("require_approval") != "never"
+        or operation.get("project_connection_id", "").rstrip("/") != operations_connection
+        or not isinstance(operation.get("allowed_tools"), list)
+    ):
+        raise SystemExit(f"create-foundry-agent: {specialist_id} Operations MCP boundary mismatch")
+    indexes = (searches[0].get("azure_ai_search") or {}).get("indexes")
+    if (
+        not isinstance(indexes, list)
+        or len(indexes) != 1
+        or indexes[0].get("project_connection_id", "").rstrip("/") != search_connection
+        or indexes[0].get("index_name") != search_index
+        or indexes[0].get("query_type") != "vector_semantic_hybrid"
+    ):
+        raise SystemExit(f"create-foundry-agent: {specialist_id} Azure AI Search boundary mismatch")
 ' || exit 1
 
   if [[ -n "${promotion_record}" && -f "${promotion_record}" ]]; then

@@ -1104,6 +1104,9 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID": (
             OPERATIONS_CONNECTION_ID
         ),
+        "FOUNDRY_AI_SEARCH_CONNECTION_ID": SEARCH_CONNECTION_ID,
+        "FOUNDRY_AI_SEARCH_INDEX_NAME": "aiops-knowledge",
+        "OPERATIONS_MCP_SERVER_URL": "https://apim.example.net/operations-mcp",
     }
     (tmp_path / "create.log").write_text("", encoding="utf-8")
     (tmp_path / "curl-args.log").write_text("", encoding="utf-8")
@@ -1133,7 +1136,28 @@ def _twelve_specialists():
             "version": f"2026.09.{specialist.foundry.version}",
             "model": "gpt-5-4-mini",
             "prompt": "role prompt",
-            "tools": [],
+            "tools": [
+                {
+                    "type": "mcp",
+                    "server_label": "operations-mcp",
+                    "server_url": "https://apim.example.net/operations-mcp",
+                    "require_approval": "never",
+                    "project_connection_id": OPERATIONS_CONNECTION_ID,
+                    "allowed_tools": list(specialist.operations_mcp_tools),
+                },
+                {
+                    "type": "azure_ai_search",
+                    "azure_ai_search": {
+                        "indexes": [
+                            {
+                                "project_connection_id": SEARCH_CONNECTION_ID,
+                                "index_name": "aiops-knowledge",
+                                "query_type": "vector_semantic_hybrid",
+                            }
+                        ]
+                    },
+                },
+            ],
         }
         for specialist in manifest.specialists
     }
@@ -1343,6 +1367,31 @@ def test_candidate_publication_requires_operations_mcp_connection_id(
 
     assert malformed.returncode != 0
     assert "Operations MCP project connection ID is required" in malformed.stderr
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("server_url", "https://apim.example.net/azure-mcp"),
+        ("require_approval", "always"),
+    ],
+)
+def test_candidate_publication_rejects_operations_mcp_boundary_drift(
+    tmp_path, field, value
+):
+    specialists = _twelve_specialists()
+    specialists["network"]["tools"][0][field] = value
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "agent", "version": "prov-__N__"},
+        specialists=specialists,
+    )
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "Operations MCP boundary mismatch" in result.stderr
     assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
@@ -1985,6 +2034,8 @@ def _live_module_with_versions(monkeypatch, module, entries):
         for tool in definition.get("tools", []):
             if tool.get("server_label") == "operations-mcp":
                 tool["project_connection_id"] = OPERATIONS_CONNECTION_ID
+                tool["server_url"] = "https://apim.example.net/operations-mcp"
+                tool["require_approval"] = "never"
         if not any(
             tool.get("type") == "azure_ai_search"
             for tool in definition.get("tools", [])
@@ -2657,6 +2708,46 @@ def test_live_parity_rejects_injected_azure_mcp_definition():
             "duplicate": [],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "delete", "expected_kind"),
+    [
+        (
+            "server_url",
+            "https://apim.example.net/azure-mcp",
+            False,
+            "mcp_server_url_mismatch",
+        ),
+        ("require_approval", "always", False, "mcp_approval_policy_mismatch"),
+        ("server_url", None, True, "mcp_server_url_mismatch"),
+        ("require_approval", None, True, "mcp_approval_policy_mismatch"),
+    ],
+)
+def test_live_parity_rejects_operations_mcp_boundary_drift(
+    field, value, delete, expected_kind
+):
+    module = _parity_module()
+    operation = {
+        "type": "mcp",
+        "server_label": "operations-mcp",
+        "server_url": "https://apim.example.net/operations-mcp",
+        "require_approval": "never",
+        "allowed_tools": [],
+        "project_connection_id": OPERATIONS_CONNECTION_ID,
+    }
+    if delete:
+        operation.pop(field)
+    else:
+        operation[field] = value
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="network",
+        definition={"tools": [operation]},
+        expected_operations_mcp_url="https://apim.example.net/operations-mcp",
+    )
+
+    assert expected_kind in {failure["kind"] for failure in failures}
 
 
 @pytest.mark.parametrize(
