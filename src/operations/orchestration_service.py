@@ -790,6 +790,24 @@ class OrchestrationTurn:
     synthesis: ExecutiveSynthesis
 
 
+def _narration_fallback_warning(
+    *,
+    narrator_state: str,
+    fallback_detail: str,
+    specialist_provider_unavailable: bool,
+) -> str:
+    if narrator_state == "timeout":
+        return f"Foundry narration timed out; {fallback_detail}."
+    if narrator_state == "unavailable":
+        return f"Foundry narration provider is unavailable; {fallback_detail}."
+    if specialist_provider_unavailable:
+        return (
+            "Foundry narration is not configured; one or more specialist "
+            f"providers are unavailable; {fallback_detail}."
+        )
+    return f"Foundry narration is not configured; {fallback_detail}."
+
+
 def executive_synthesis_decision(
     question: str,
     findings: Sequence[Mapping[str, Any]],
@@ -2036,6 +2054,10 @@ class OrchestrationService:
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
+        specialist_provider_unavailable = any(
+            str(item.get("status") or "") == STATUS_UNAVAILABLE
+            for item in tool_results
+        )
         findings = normalize_cited_findings(tool_results)
         decision = executive_synthesis_decision(question, findings)
         cve_claims = self._deterministic_cve_claims(
@@ -2415,19 +2437,12 @@ class OrchestrationService:
             evidence_kind = (
                 "CVE" if cve_claims else "network" if network_claims else "page"
             )
-            warning = {
-                "timeout": (
-                    f"Foundry narration timed out; deterministic cited "
-                    f"{evidence_kind} evidence was used."
+            warning = _narration_fallback_warning(
+                narrator_state=narrator_state,
+                fallback_detail=(
+                    f"deterministic cited {evidence_kind} evidence was used"
                 ),
-                "unavailable": (
-                    f"Foundry narration provider is unavailable; deterministic "
-                    f"cited {evidence_kind} evidence was used."
-                ),
-            }.get(
-                narrator_state,
-                f"Foundry narration is not configured; deterministic cited "
-                f"{evidence_kind} evidence was used.",
+                specialist_provider_unavailable=specialist_provider_unavailable,
             )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
@@ -2477,19 +2492,13 @@ class OrchestrationService:
             self._record_synthesis_metric(synthesis)
             return synthesis
         if self.executive_agent is None:
-            warning = {
-                "timeout": (
-                    "Foundry narration timed out; direct specialist findings and "
-                    "retained current page evidence are shown instead."
+            warning = _narration_fallback_warning(
+                narrator_state=narrator_state,
+                fallback_detail=(
+                    "direct specialist findings and retained current page "
+                    "evidence are shown instead"
                 ),
-                "unavailable": (
-                    "Foundry narration provider is unavailable; direct specialist "
-                    "findings and retained current page evidence are shown instead."
-                ),
-            }.get(
-                narrator_state,
-                "Foundry narration is not configured; direct specialist findings "
-                "and retained current page evidence are shown instead.",
+                specialist_provider_unavailable=specialist_provider_unavailable,
             )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
