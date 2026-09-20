@@ -21,6 +21,7 @@ from operations.foundry_candidate_catalog import (
     SEARCH_INDEX_NAME_ENV,
     SOURCE_REVISION_ENV,
     candidate_artifact_binding,
+    main,
     validated_candidate_catalog,
 )
 from operations.specialist_manifest import (
@@ -343,6 +344,24 @@ def test_semantic_binding_rejects_duplicate_json_keys():
 
     with pytest.raises(ValueError, match="strict JSON"):
         candidate_artifact_binding(duplicated, load_specialist_manifest())
+
+
+def test_digest_cli_hashes_exact_crlf_transport_bytes(
+    tmp_path,
+    capsys,
+):
+    artifact = _candidate_artifact()
+    lf_bytes = (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode()
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+    path = tmp_path / "candidate.json"
+    path.write_bytes(crlf_bytes)
+
+    assert main(["--artifact", str(path)]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["transport_sha256"] == sha256(crlf_bytes).hexdigest()
+    assert output["transport_sha256"] != sha256(lf_bytes).hexdigest()
+    assert output["semantic_sha256"] == _binding(artifact)
 
 
 def test_validated_candidate_artifact_projects_exact_twelve_rows(monkeypatch):

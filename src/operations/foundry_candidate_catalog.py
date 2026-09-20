@@ -337,12 +337,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact", required=True, type=Path)
     args = parser.parse_args(argv)
-    raw = args.artifact.read_text(encoding="utf-8")
+    raw_bytes = args.artifact.read_bytes()
+    raw = raw_bytes.decode("utf-8")
     binding = candidate_artifact_binding(raw, load_specialist_manifest())
     print(
         json.dumps(
             {
-                "transport_sha256": sha256(raw.encode("utf-8")).hexdigest(),
+                "transport_sha256": sha256(raw_bytes).hexdigest(),
                 "semantic_algorithm": binding.algorithm,
                 "semantic_sha256": binding.sha256,
                 "source_revision": binding.source_revision,
