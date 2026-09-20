@@ -153,6 +153,22 @@ _FILTER_FIELDS = {
     "target_kind": "[target_kind]",
     "weakness_id": "[weakness_id]",
 }
+# Enum-like text columns whose stored casing (e.g. Defender's "High"/"Critical")
+# does not match the lowercase canonical values the UI sends (e.g. "high").
+# Fabric's default collation is case-sensitive, so these comparisons must be
+# folded on both sides or a legitimate filter silently matches zero rows.
+_CASE_INSENSITIVE_FILTER_FIELDS = frozenset(
+    {
+        "completeness",
+        "current_state",
+        "deployment_state",
+        "severity",
+        "sla_state",
+        "source_family",
+        "source_state",
+        "target_kind",
+    }
+)
 _FACET_FIELDS = {
     "completeness": "[completeness]",
     "current_state": "[current_state]",
@@ -2306,6 +2322,7 @@ def _append_filter_predicates(
             parameters.extend((f"%{escaped}%",) * 4)
             continue
         column = _FILTER_FIELDS[field]
+        fold = field in _CASE_INSENSITIVE_FILTER_FIELDS
         if operator == "in":
             if isinstance(item.value, (str, bytes)) or not isinstance(
                 item.value,
@@ -2326,11 +2343,17 @@ def _append_filter_predicates(
                 parameters,
                 column,
                 values,
+                fold=fold,
             )
             continue
-        predicates.append(
-            f"{column} {_COMPARISON_OPERATORS[operator]} ?"
-        )
+        if fold and isinstance(item.value, str):
+            predicates.append(
+                f"LOWER({column}) {_COMPARISON_OPERATORS[operator]} LOWER(?)"
+            )
+        else:
+            predicates.append(
+                f"{column} {_COMPARISON_OPERATORS[operator]} ?"
+            )
         parameters.append(item.value)
 
 
@@ -2339,9 +2362,15 @@ def _append_in_predicate(
     parameters: list[Any],
     column: str,
     values: Sequence[str],
+    *,
+    fold: bool = False,
 ) -> None:
-    placeholders = ", ".join("?" for _ in values)
-    predicates.append(f"{column} IN ({placeholders})")
+    placeholders = ", ".join(
+        "LOWER(?)" if fold else "?" for _ in values
+    )
+    predicates.append(
+        f"{f'LOWER({column})' if fold else column} IN ({placeholders})"
+    )
     parameters.extend(values)
 
 
