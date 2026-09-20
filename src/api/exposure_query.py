@@ -2387,7 +2387,12 @@ def _completeness_payload(
     all_complete: Any,
 ) -> dict[str, str]:
     if total_count == 0:
-        state = "unavailable"
+        # A query that legitimately matches zero rows (e.g. a severity
+        # filter with no matching findings) is a healthy, complete result,
+        # not a provider outage. `all_complete` is itself undefined here
+        # (MIN() over an empty scoped set is NULL) so it cannot be used to
+        # distinguish the cases; "healthy-empty" is the correct default.
+        state = "healthy-empty"
     elif int(all_complete or 0) == 1:
         state = "complete"
     else:
