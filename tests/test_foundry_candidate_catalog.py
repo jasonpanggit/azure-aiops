@@ -319,6 +319,27 @@ def test_exact_validated_runtime_mapping_is_active(monkeypatch):
     assert by_id["vulnerability"]["configured"] is False
 
 
+def test_validated_active_mapping_does_not_depend_on_held_candidate_metadata(
+    monkeypatch,
+):
+    monkeypatch.delenv(CANDIDATE_ARTIFACT_ENV, raising=False)
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://project.services.ai.azure.com/api/projects/project",
+    )
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_VERSION", "provider-active")
+    monkeypatch.setenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "validated_promotion")
+    monkeypatch.setenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "true")
+
+    by_id = {row["id"]: row for row in specialist_catalog()}
+
+    assert by_id["network"]["status"] == "active"
+    assert by_id["network"]["configured"] is True
+    assert by_id["vulnerability"]["status"] == "unavailable"
+    assert by_id["vulnerability"]["configured"] is False
+
+
 def test_terraform_wires_catalog_metadata_without_active_version_values():
     variables = (REPO_ROOT / "infra/terraform/variables.tf").read_text(
         encoding="utf-8"

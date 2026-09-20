@@ -1514,10 +1514,7 @@ def specialist_catalog() -> list[dict[str, Any]]:
         candidate = candidates.get(specialist.id)
         configured = bool(
             runtime_configured
-            and candidate
             and activation_source in {"validated_promotion", "validated_rollback"}
-            and name == candidate["name"]
-            and version == candidate["provider_version_id"]
         )
         status = (
             "active"
