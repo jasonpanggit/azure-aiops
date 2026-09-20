@@ -436,15 +436,13 @@ export default function PatchPrioritiesPage() {
   const targetKind = queryState.filters.target_kind ?? "server";
 
   const severityBreakdown = useMemo(() => {
-    const order = ["critical", "high", "medium", "low"];
+    const order = ["critical", "high", "medium", "low", "unknown"];
     const counts = new Map<string, number>();
     for (const item of rows) {
       const key = (item.severity || "unknown").toLowerCase();
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    const labeled = order
-      .filter((key) => counts.has(key))
-      .map((key) => ({ key, label: key.charAt(0).toUpperCase() + key.slice(1) }));
+    const labeled = order.map((key) => ({ key, label: key.charAt(0).toUpperCase() + key.slice(1) }));
     for (const key of Array.from(counts.keys())) {
       if (!order.includes(key)) labeled.push({ key, label: key.charAt(0).toUpperCase() + key.slice(1) });
     }
@@ -452,6 +450,7 @@ export default function PatchPrioritiesPage() {
       label,
       value: counts.get(key) ?? 0,
       color: toneColor(statusTone(key)),
+      filterValue: key,
     }));
   }, [rows]);
 
@@ -519,6 +518,18 @@ export default function PatchPrioritiesPage() {
             source_family:
               targetKind === "container_image" ? "defender_image" : "aum",
           },
+        }),
+      );
+    },
+    [commitQuery, queryState],
+  );
+
+  const toggleSeverityFilter = useCallback(
+    (value: string) => {
+      const next = queryState.filters.severity === value ? undefined : value;
+      commitQuery(
+        updateExposureQueryState(queryState, {
+          filters: { ...queryState.filters, severity: next },
         }),
       );
     },
@@ -672,6 +683,8 @@ export default function PatchPrioritiesPage() {
                   segments={severityBreakdown}
                   centerValue={rows.length}
                   centerLabel="findings"
+                  onSegmentClick={toggleSeverityFilter}
+                  activeFilterValue={queryState.filters.severity ?? null}
                 />
               </div>
               <div className="chart-card">

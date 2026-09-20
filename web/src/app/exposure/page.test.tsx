@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
 
+const navigation = vi.hoisted(() => ({
+  push: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: navigation.push }),
+}));
+
 const api = vi.hoisted(() => ({
   exposureFacets: vi.fn(),
   exposureItems: vi.fn(),
