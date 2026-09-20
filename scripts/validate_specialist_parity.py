@@ -1144,11 +1144,14 @@ def _version_entries(payload: Any) -> list[dict[str, Any]]:
 
     if not isinstance(payload, dict):
         raise TypeError("agent versions response must be an object")
-    entries = payload.get("value")
+    present = [key for key in ("value", "data") if key in payload]
+    if len(present) != 1:
+        raise ValueError("agent versions response must contain exactly one list envelope")
+    entries = payload[present[0]]
     if not isinstance(entries, list) or any(
         not isinstance(entry, dict) for entry in entries
     ):
-        raise ValueError("agent versions value must be a list of objects")
+        raise ValueError("agent versions envelope must be a list of objects")
     return entries
 
 

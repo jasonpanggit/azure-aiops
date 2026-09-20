@@ -322,6 +322,17 @@ sys.exit(0 if ok else 1)
     fi
   fi
 
+  resume_candidate="${FOUNDRY_RESUME_CANDIDATE:-0}"
+  if [[ "${resume_candidate}" == "1" ]]; then
+    if [[ ! -f "${candidate_record}" ]]; then
+      echo "create-foundry-agent: resume candidate is missing" >&2
+      exit 1
+    fi
+    echo "create-foundry-agent: resuming exact published candidate without provider writes"
+  elif [[ "${resume_candidate}" != "0" ]]; then
+    echo "create-foundry-agent: FOUNDRY_RESUME_CANDIDATE must be 0 or 1" >&2
+    exit 1
+  else
   # ---------------------------------------------------------------------------
   # Step 2: publish the candidate versions and capture the ACTUAL immutable
   # provider version ID Foundry returns for each one.
@@ -372,6 +383,8 @@ for specialist_id, v in d.items():
   MANIFEST_DIGEST="${manifest_digest}" \
   RELEASE_STAMP="${release_stamp}" \
   OPERATIONS_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID}" \
+  SEARCH_CONNECTION_ID="${FOUNDRY_AI_SEARCH_CONNECTION_ID}" \
+  SEARCH_INDEX_NAME="${FOUNDRY_AI_SEARCH_INDEX_NAME}" \
   python3 -c '
 import json, os, pathlib
 
@@ -409,6 +422,12 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
                     "project_connection_id": os.environ["OPERATIONS_CONNECTION_ID"],
                 },
             },
+            "search": {
+                "project_connection_id": os.environ["SEARCH_CONNECTION_ID"],
+                "index_name": os.environ["SEARCH_INDEX_NAME"],
+                "query_type": "vector_semantic_hybrid",
+                "cardinality": 1,
+            },
         },
         indent=2,
         sort_keys=True,
@@ -416,6 +435,164 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
     encoding="utf-8",
 )
 '
+  fi
+
+  # Snapshot and normalize the candidate exactly once. Live parity and
+  # promotion consume only this private snapshot, never the mutable source
+  # path. The original byte digest is checked again after parity.
+  candidate_snapshot="$(mktemp "${TMPDIR:-/tmp}/foundry-candidate-snapshot.XXXXXX")"
+  chmod 600 "${candidate_snapshot}"
+  trap 'rm -f "${version_record:-}" "${candidate_snapshot:-}"' EXIT
+  read -r candidate_source_digest candidate_snapshot_digest < <(
+    CANDIDATE_RECORD="${candidate_record}" \
+    SNAPSHOT_RECORD="${candidate_snapshot}" \
+    EXPECTED_DIGEST="${manifest_digest}" \
+    EXPECTED_RELEASE="${release_stamp}" \
+    EXPECTED_SPECIALISTS="${FOUNDRY_SPECIALISTS_JSON}" \
+    EXPECTED_COORDINATOR_NAME="${FOUNDRY_AGENT_NAME}" \
+    EXPECTED_OPERATIONS_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID}" \
+    EXPECTED_SEARCH_CONNECTION_ID="${FOUNDRY_AI_SEARCH_CONNECTION_ID}" \
+    EXPECTED_SEARCH_INDEX_NAME="${FOUNDRY_AI_SEARCH_INDEX_NAME}" \
+    python3 - <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import re
+
+path = pathlib.Path(os.environ["CANDIDATE_RECORD"])
+try:
+    source_bytes = path.read_bytes()
+    candidate = json.loads(source_bytes)
+    expected = json.loads(os.environ["EXPECTED_SPECIALISTS"])
+except (OSError, ValueError):
+    raise SystemExit("create-foundry-agent: candidate is unreadable")
+if not isinstance(candidate, dict) or not isinstance(expected, dict):
+    raise SystemExit("create-foundry-agent: candidate is malformed")
+agents = candidate.get("agents")
+coordinator = candidate.get("coordinator")
+connections = candidate.get("connections")
+if (
+    candidate.get("manifest_digest") != os.environ["EXPECTED_DIGEST"]
+    or candidate.get("release") != os.environ["EXPECTED_RELEASE"]
+    or not isinstance(agents, dict)
+    or set(agents) != set(expected)
+    or not isinstance(coordinator, dict)
+    or set(connections or {}) != {"operations-mcp"}
+):
+    raise SystemExit("create-foundry-agent: candidate identity mismatch")
+
+agent_names = {
+    definition.get("name", "").casefold()
+    for definition in expected.values()
+    if isinstance(definition, dict)
+}
+agent_names.add(os.environ["EXPECTED_COORDINATOR_NAME"].casefold())
+candidate_stamps = {
+    definition.get("version", "").casefold()
+    for definition in expected.values()
+    if isinstance(definition, dict)
+}
+candidate_stamps.add((os.environ["EXPECTED_RELEASE"] + ".coordinator").casefold())
+provider_id_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+credential_markers = (
+    "access_token",
+    "bearer",
+    "client_secret",
+    "credential",
+    "password",
+    "private_key",
+    "secret",
+)
+
+def normalized_provider_id(value, expected_agent_name):
+    if not isinstance(value, str) or value != value.strip():
+        raise SystemExit("create-foundry-agent: candidate provider version id is malformed")
+    normalized = value
+    if "/" in normalized:
+        parts = [part for part in normalized.split("/") if part]
+        if (
+            len(parts) < 4
+            or parts[-4].casefold() != "agents"
+            or parts[-3].casefold() != expected_agent_name.casefold()
+            or parts[-2].casefold() != "versions"
+        ):
+            raise SystemExit("create-foundry-agent: unqualified candidate resource id")
+        normalized = parts[-1]
+    folded = normalized.casefold()
+    if (
+        not provider_id_pattern.fullmatch(normalized)
+        or folded == "latest"
+        or folded in agent_names
+        or folded in candidate_stamps
+        or any(marker in folded for marker in credential_markers)
+    ):
+        raise SystemExit("create-foundry-agent: candidate provider version id is not immutable")
+    return normalized
+
+normalized_provider_identities = []
+for specialist_id, definition in expected.items():
+    entry = agents.get(specialist_id)
+    if (
+        not isinstance(entry, dict)
+        or entry.get("agent_name") != definition.get("name")
+        or entry.get("candidate_version") != definition.get("version")
+    ):
+        raise SystemExit("create-foundry-agent: candidate specialist mismatch")
+    entry["provider_version_id"] = normalized_provider_id(
+        entry.get("provider_version_id"),
+        definition.get("name", ""),
+    )
+    normalized_provider_identities.append(
+        (
+            definition.get("name", "").casefold(),
+            entry["provider_version_id"].casefold(),
+        )
+    )
+if (
+    coordinator.get("agent_name") != os.environ["EXPECTED_COORDINATOR_NAME"]
+    or coordinator.get("candidate_version")
+    != os.environ["EXPECTED_RELEASE"] + ".coordinator"
+):
+    raise SystemExit("create-foundry-agent: candidate coordinator mismatch")
+coordinator["provider_version_id"] = normalized_provider_id(
+    coordinator.get("provider_version_id"),
+    os.environ["EXPECTED_COORDINATOR_NAME"],
+)
+normalized_provider_identities.append(
+    (
+        os.environ["EXPECTED_COORDINATOR_NAME"].casefold(),
+        coordinator["provider_version_id"].casefold(),
+    )
+)
+if len(normalized_provider_identities) != len(set(normalized_provider_identities)):
+    raise SystemExit(
+        "create-foundry-agent: candidate agent-qualified provider identities must be unique"
+    )
+if (
+    connections["operations-mcp"].get("project_connection_id", "").rstrip("/")
+    != os.environ["EXPECTED_OPERATIONS_CONNECTION_ID"].rstrip("/")
+):
+    raise SystemExit("create-foundry-agent: candidate Operations MCP connection mismatch")
+expected_search = {
+    "project_connection_id": os.environ["EXPECTED_SEARCH_CONNECTION_ID"],
+    "index_name": os.environ["EXPECTED_SEARCH_INDEX_NAME"],
+    "query_type": "vector_semantic_hybrid",
+    "cardinality": 1,
+}
+if candidate.get("search") != expected_search:
+    raise SystemExit("create-foundry-agent: candidate Azure AI Search metadata mismatch")
+if "azure-mcp" in source_bytes.decode("utf-8").casefold():
+    raise SystemExit("create-foundry-agent: candidate contains Azure MCP")
+snapshot = json.dumps(candidate, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+pathlib.Path(os.environ["SNAPSHOT_RECORD"]).write_bytes(snapshot)
+os.chmod(os.environ["SNAPSHOT_RECORD"], 0o600)
+print(
+    hashlib.sha256(source_bytes).hexdigest(),
+    hashlib.sha256(snapshot).hexdigest(),
+)
+PY
+  )
 
   # ---------------------------------------------------------------------------
   # Step 3: the live gate, pinned to the exact provider version IDs above.
@@ -426,9 +603,9 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
   parity_live="skipped"
   if (( parity_available == 1 )); then
     set +e
-    FOUNDRY_CANDIDATE_MAPPING="${candidate_record}" \
+    FOUNDRY_CANDIDATE_MAPPING="${candidate_snapshot}" \
       "${parity_python}" "${parity_validator}" --live \
-      --candidate-mapping "${candidate_record}" >/dev/null
+      --candidate-mapping "${candidate_snapshot}" >/dev/null
     live_status=$?
     set -e
     case "${live_status}" in
@@ -445,6 +622,25 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
 
   if [[ "${parity_live}" == "blocked" && "${FOUNDRY_REQUIRE_LIVE_PARITY:-0}" == "1" ]]; then
     echo "create-foundry-agent: live specialist parity is BLOCKED and required; promotion held" >&2
+    exit 1
+  fi
+
+  read -r current_candidate_digest current_snapshot_digest < <(
+    CANDIDATE_RECORD="${candidate_record}" \
+    SNAPSHOT_RECORD="${candidate_snapshot}" \
+    python3 -c '
+import hashlib, os, pathlib
+print(
+    hashlib.sha256(pathlib.Path(os.environ["CANDIDATE_RECORD"]).read_bytes()).hexdigest(),
+    hashlib.sha256(pathlib.Path(os.environ["SNAPSHOT_RECORD"]).read_bytes()).hexdigest(),
+)
+'
+  )
+  if [[
+    "${current_candidate_digest}" != "${candidate_source_digest}" ||
+    "${current_snapshot_digest}" != "${candidate_snapshot_digest}"
+  ]]; then
+    echo "create-foundry-agent: candidate changed during live parity; promotion held" >&2
     exit 1
   fi
 
@@ -471,22 +667,24 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
     PROMOTION_REASON="${reason}" \
     PARITY_OFFLINE="${parity_offline}" \
     PARITY_LIVE="${parity_live}" \
-    CANDIDATE_RECORD="${candidate_record}" \
+    CANDIDATE_RECORD="${candidate_snapshot}" \
+    CANDIDATE_SNAPSHOT_DIGEST="${candidate_snapshot_digest}" \
     MANIFEST_DIGEST="${manifest_digest}" \
     RELEASE_STAMP="${release_stamp}" \
     ROLLBACK_ROTATION="${FOUNDRY_ROLLBACK_ROTATION:-}" \
     RECORD_PATH="${promotion_record}" \
     python3 -c '
-import json, os, pathlib, tempfile
+import hashlib, json, os, pathlib, tempfile
 
 promotion_record_path = pathlib.Path(os.environ["RECORD_PATH"])
 previous = {}
 if promotion_record_path.exists():
     previous = json.loads(promotion_record_path.read_text(encoding="utf-8"))
 
-candidate = json.loads(
-    pathlib.Path(os.environ["CANDIDATE_RECORD"]).read_text(encoding="utf-8")
-)
+candidate_bytes = pathlib.Path(os.environ["CANDIDATE_RECORD"]).read_bytes()
+if hashlib.sha256(candidate_bytes).hexdigest() != os.environ["CANDIDATE_SNAPSHOT_DIGEST"]:
+    raise SystemExit("create-foundry-agent: candidate snapshot changed after live parity")
+candidate = json.loads(candidate_bytes)
 candidate_agents = candidate.get("agents") or {}
 candidate_coordinator = candidate.get("coordinator") or {}
 candidate_connections = candidate.get("connections") or {}
@@ -723,7 +921,9 @@ while true; do
     # usable provider version ID fails the run closed.
     set +e
     provider_version_id=$(
-      RESPONSE_FILE="${response_file}" python3 -c '
+      RESPONSE_FILE="${response_file}" \
+      EXPECTED_AGENT_NAME="${FOUNDRY_AGENT_NAME}" \
+      python3 -c '
 import json, os, re, sys
 
 try:
@@ -733,18 +933,41 @@ except (OSError, ValueError):
 if not isinstance(payload, dict):
     sys.exit(2)
 
-# Ordered by specificity: the version resource own identifier first, the
-# fully-qualified resource id last.
-for key in ("version", "agentVersion", "agent_version", "versionId", "version_id", "id"):
-    value = payload.get(key)
+# Ordered by specificity: a first-create response nests the immutable version
+# under versions.latest, while an add-version response exposes it directly.
+# The top-level id on create is the AGENT identity and must never be treated as
+# a provider version.
+latest = payload.get("versions", {}).get("latest", {})
+candidates = []
+if isinstance(latest, dict):
+    candidates.extend(
+        latest.get(key)
+        for key in ("version", "agentVersion", "agent_version", "versionId", "version_id")
+    )
+    latest_id = latest.get("id")
+    if isinstance(latest_id, str) and "/versions/" in latest_id:
+        candidates.append(latest_id)
+candidates.extend(
+    payload.get(key)
+    for key in ("version", "agentVersion", "agent_version", "versionId", "version_id")
+)
+resource_id = payload.get("id")
+if isinstance(resource_id, str) and "/versions/" in resource_id:
+    candidates.append(resource_id)
+for value in candidates:
     if isinstance(value, str):
         normalized = value.strip()
         if "/" in normalized:
-            path = "/" + normalized.strip("/")
-            marker = "/versions/"
-            if marker not in path:
+            parts = [part for part in normalized.split("/") if part]
+            if (
+                len(parts) < 4
+                or parts[-4].casefold() != "agents"
+                or parts[-3].casefold()
+                != os.environ["EXPECTED_AGENT_NAME"].casefold()
+                or parts[-2].casefold() != "versions"
+            ):
                 continue
-            normalized = path.rsplit(marker, 1)[-1].strip("/")
+            normalized = parts[-1]
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", normalized):
             print(normalized)
             sys.exit(0)
