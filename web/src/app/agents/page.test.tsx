@@ -21,11 +21,11 @@ const envelope = <T,>(data: T) => ({
   knowledge_version: "graph-1",
 });
 
-// Manifest-backed catalog: each agent carries its own deployment status, so the
-// UI renders configured/unavailable from the API rather than a local card list.
+// Manifest-backed catalog: each agent carries catalog availability separately
+// from runtime activation, so the UI never infers execution from a candidate.
 const catalogAgents = [
-  { id: "network", name: "Network Agent", role: "Network", tools: ["network_topology"], keywords: ["network"], depends_on: [], foundry: { id: "network", name: "network-agent", version: "1", model: "gpt-4o", status: "ready", configured: true } },
-  { id: "vulnerability", name: "Vulnerability Agent", role: "Vulnerability", tools: ["vulnerability_exposure"], keywords: ["cve"], depends_on: [], foundry: { id: "vulnerability", name: "", version: "", model: "gpt-4o", status: "unavailable", configured: false } },
+  { id: "network", name: "Network Agent", role: "Network", tools: ["network_topology"], keywords: ["network"], depends_on: [], foundry: { id: "network", name: "network-agent", version: "1", model: "gpt-4o", status: "active", configured: true } },
+  { id: "vulnerability", name: "Vulnerability Agent", role: "Vulnerability", tools: ["vulnerability_exposure"], keywords: ["cve"], depends_on: [], foundry: { id: "vulnerability", name: "vulnerability-agent", version: "1", model: "gpt-4o", status: "available_inactive", configured: false, candidate: { name: "vulnerability-agent", provider_version_id: "provider-vulnerability-1", candidate_version: "2026.09.1", validated_at: "2026-09-20T00:00:00+00:00", source: "validated_candidate_artifact", source_revision: "0123456789abcdef", release: "2026.09" } } },
 ];
 
 const ledger = {
@@ -98,7 +98,7 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(screen.getByText("Deterministic specialist plans")).toBeInTheDocument();
     expect(screen.getByText("Deterministic local fallback")).toBeInTheDocument();
     expect(screen.queryByText("Foundry agent")).toBeNull();
-    expect(screen.getAllByText(/Foundry unavailable/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Foundry available - inactive/i).length).toBeGreaterThan(0);
     expect(screen.queryByText("Specialists coordinated")).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "Finance Ops" } });
@@ -106,18 +106,18 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     await waitFor(() => expect(action).toHaveBeenCalledWith("mai-123", "assign_owner", { owner: "Finance Ops" }, {}));
   });
 
-  it("renders the manifest-backed catalog with explicit configured/unavailable status", async () => {
+  it("renders active and available-inactive as distinct catalog states", async () => {
     renderPage();
 
     const readyAgent = await screen.findByText("Network Agent");
     const unavailableAgent = await screen.findByText("Vulnerability Agent");
 
-    // The configured agent shows a Ready deployment status; the unconfigured one
-    // is explicitly Unavailable — both derived from the API catalog, not the UI.
-    const readyStatus = within(readyAgent.closest(".entity-pill") as HTMLElement).getByText(/ready/i);
-    const unavailableStatus = within(unavailableAgent.closest(".entity-pill") as HTMLElement).getByText(/unavailable/i);
-    expect(readyStatus).toBeInTheDocument();
-    expect(unavailableStatus).toBeInTheDocument();
+    const activeStatus = within(readyAgent.closest(".entity-pill") as HTMLElement).getByText(/Foundry active/i);
+    const inactiveStatus = within(unavailableAgent.closest(".entity-pill") as HTMLElement).getByText(/Foundry available - inactive/i);
+    expect(activeStatus).toBeInTheDocument();
+    expect(inactiveStatus).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeInTheDocument();
+    expect(screen.queryByText("Foundry agent")).toBeNull();
   });
 
   it("labels an all-unavailable catalog as deterministic fallback, never ready agents", async () => {
@@ -137,7 +137,7 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
 
     expect(await screen.findByText(/Foundry unavailable · deterministic fallback/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeInTheDocument();
-    expect(screen.queryByText("Foundry ready")).toBeNull();
+    expect(screen.queryByText("Foundry active")).toBeNull();
   });
 
   it("keeps ledger decisions principal-scoped and confers no execution authority", async () => {

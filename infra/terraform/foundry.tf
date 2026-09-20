@@ -296,6 +296,21 @@ locals {
     ? ""
     : "${abspath(local.foundry_promotion_artifact_path)}.candidate"
   )
+  foundry_candidate_catalog_artifact_path = var.foundry_specialist_candidate_catalog_artifact
+  foundry_candidate_catalog_artifact_present = (
+    local.foundry_candidate_catalog_artifact_path != "" &&
+    fileexists(local.foundry_candidate_catalog_artifact_path)
+  )
+  foundry_candidate_catalog_artifact_json = (
+    local.foundry_candidate_catalog_artifact_present
+    ? file(local.foundry_candidate_catalog_artifact_path)
+    : ""
+  )
+  foundry_candidate_catalog_artifact_digest = (
+    local.foundry_candidate_catalog_artifact_present
+    ? filesha256(local.foundry_candidate_catalog_artifact_path)
+    : ""
+  )
   foundry_promotion_artifact_present = (
     local.foundry_promotion_artifact_path != "" &&
     fileexists(local.foundry_promotion_artifact_path)
@@ -1181,6 +1196,7 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
     activated         = sha256(jsonencode(local.foundry_specialist_activation))
     coordinator       = sha256(jsonencode(local.foundry_coordinator_activation))
     specialist_count  = length(local.foundry_specialist_activation)
+    candidate_catalog = sha256(local.foundry_candidate_catalog_artifact_json)
   }
 
   lifecycle {
@@ -1237,6 +1253,40 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
     precondition {
       condition     = lower(var.foundry_specialist_activation_target) != "legacy" || alltrue([for id, entry in local.foundry_specialist_activation : entry.source == "legacy_unversioned" && entry.version == ""])
       error_message = "Legacy migration must remain unversioned so synthetic release labels cannot be sent as provider IDs."
+    }
+
+    precondition {
+      condition     = !local.foundry_candidate_catalog_artifact_present || var.deployment_source_revision != ""
+      error_message = "Candidate catalog metadata requires deployment_source_revision so stale artifacts fail closed."
+    }
+
+    precondition {
+      condition     = !local.foundry_candidate_catalog_artifact_present || var.enable_foundry_knowledge_search
+      error_message = "Candidate catalog metadata requires the validated Azure AI Search connection and index."
+    }
+
+    precondition {
+      condition = (
+        var.foundry_specialist_candidate_catalog_artifact == "" ||
+        local.foundry_candidate_catalog_artifact_present
+      )
+      error_message = "foundry_specialist_candidate_catalog_artifact must identify an existing reviewed file."
+    }
+
+    precondition {
+      condition = (
+        !local.foundry_candidate_catalog_artifact_present ||
+        local.foundry_candidate_catalog_artifact_digest == var.foundry_specialist_candidate_catalog_artifact_sha256
+      )
+      error_message = "Candidate catalog artifact SHA-256 does not match the separately reviewed digest."
+    }
+
+    precondition {
+      condition = (
+        !local.foundry_candidate_catalog_artifact_present ||
+        sort(keys(var.foundry_specialist_candidate_prompt_digests)) == sort(keys(local.specialists_by_id))
+      )
+      error_message = "Candidate catalog prompt digests must map exactly the twelve manifest specialist IDs."
     }
   }
 }

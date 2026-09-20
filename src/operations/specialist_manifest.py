@@ -459,6 +459,13 @@ def _policy_digest(manifest: SpecialistManifest) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def specialist_manifest_digest(path: str | Path | None = None) -> str:
+    """Return the SHA-256 digest of the exact packaged manifest bytes."""
+
+    manifest_path = Path(path) if path is not None else _DEFAULT_MANIFEST_PATH
+    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
 def load_specialist_manifest(
     path: str | Path | None = None,
 ) -> SpecialistManifest:
@@ -497,4 +504,5 @@ __all__ = [
     "SpecialistDefinition",
     "SpecialistManifest",
     "load_specialist_manifest",
+    "specialist_manifest_digest",
 ]

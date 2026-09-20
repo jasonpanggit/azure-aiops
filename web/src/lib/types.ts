@@ -373,12 +373,21 @@ export interface AgentDeploymentStatus {
   name?: string;
   version?: string;
   model?: string;
-  /** "ready" when a Foundry agent is configured for this specialist, else "unavailable". */
-  status: "ready" | "unavailable" | string;
+  /** Catalog availability is independent from runtime activation. */
+  status: "unavailable" | "available_inactive" | "active";
   configured: boolean;
   activation_source?: string;
   version_pinning_required?: boolean;
   degraded_reason?: string;
+  candidate?: {
+    name: string;
+    provider_version_id: string;
+    candidate_version: string;
+    validated_at: string;
+    source: "validated_candidate_artifact";
+    source_revision: string;
+    release: string;
+  };
 }
 
 export interface AutonomousAgent {
@@ -390,8 +399,8 @@ export interface AutonomousAgent {
   depends_on: string[];
   /**
    * Manifest-backed deployment status from the API catalog. Absent only on
-   * legacy payloads; the UI renders configured/unavailable from this field so
-   * no local specialist list can drift from the manifest (D-05).
+   * legacy payloads; the UI renders unavailable/available-inactive/active from
+   * this field so no local specialist list can drift from the manifest (D-05).
    */
   foundry?: AgentDeploymentStatus;
 }
