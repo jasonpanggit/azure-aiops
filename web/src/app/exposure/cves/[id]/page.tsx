@@ -1050,17 +1050,17 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                                 {finding.server_id || finding.target_id}
                               </strong>
                             </td>
-                            <td data-label="Kind">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
-                            <td data-label="Service">{finding.business_service || "Unmapped service"}</td>
-                            <td data-label="Severity">{finding.severity || data?.cve.severity || "Unknown"}</td>
-                            <td data-label="Patch">
+                            <td data-label="Kind" className="cell-nowrap">{finding.target_kind === "container_image" ? "Container image" : "Server"}</td>
+                            <td data-label="Service" className="cell-nowrap">{finding.business_service || "Unmapped service"}</td>
+                            <td data-label="Severity" className="cell-nowrap">{finding.severity || data?.cve.severity || "Unknown"}</td>
+                            <td data-label="Patch" className="cell-nowrap">
                               {finding.missing_kb ? (
                                 <Link className="table-primary-link" href={kbHref(finding.missing_kb)}>
                                   {finding.missing_kb}
                                 </Link>
                               ) : "—"}
                             </td>
-                            <td data-label="Risk status">{finding.risk_accepted ? "Risk accepted" : "Open"}</td>
+                            <td data-label="Risk status" className="cell-nowrap">{finding.risk_accepted ? "Risk accepted" : "Open"}</td>
                           </tr>
                         ))}
                       </tbody>

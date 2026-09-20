@@ -353,9 +353,9 @@ export default function PreDeploymentPage() {
                     <tbody>
                       {evidencePaging.pageRows.map((item) => (
                         <tr key={`${item.factor}-${item.source}`}>
-                          <td>{titleize(item.factor)}</td>
+                          <td className="cell-nowrap">{titleize(item.factor)}</td>
                           <td>{item.observation}</td>
-                          <td>{item.source}</td>
+                          <td className="cell-nowrap">{item.source}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -435,8 +435,8 @@ export default function PreDeploymentPage() {
                     <tbody>
                       {effectsPaging.pageRows.map((effect) => (
                         <tr key={`${effect.address}-${effect.effect}`}>
-                          <td>{titleize(effect.domain)}</td>
-                          <td>{titleize(effect.effect)}</td>
+                          <td className="cell-nowrap">{titleize(effect.domain)}</td>
+                          <td className="cell-nowrap">{titleize(effect.effect)}</td>
                           <td>
                             <StatusBadge
                               label={titleize(effect.severity)}
@@ -445,7 +445,7 @@ export default function PreDeploymentPage() {
                             />
                           </td>
                           <td>{effect.detail}</td>
-                          <td>{effect.requires_validation ? "Required" : "—"}</td>
+                          <td className="cell-nowrap">{effect.requires_validation ? "Required" : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
