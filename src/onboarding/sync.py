@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,6 +20,43 @@ from ontology.subscription_connection import SubscriptionConnection, SyncState
 from storage.fs import join_root, resolve_root
 
 DEFAULT_STALE_AFTER_HOURS = 24
+
+#: Bounded retry defaults for transient discovery/publish failures (e.g. a
+#: Fabric capacity resume window, a throttled ARG call). Kept small because
+#: retries block the calling thread (a background sync worker for
+#: ``sync_async``, or the request thread for a synchronous ``sync()``); the
+#: goal is to ride out a brief blip, not to mask a genuine outage.
+DEFAULT_TRANSIENT_RETRY_ATTEMPTS = 3
+DEFAULT_TRANSIENT_RETRY_BASE_SECONDS = 2.0
+DEFAULT_TRANSIENT_RETRY_MAX_SECONDS = 10.0
+
+#: Substrings (case-insensitive) that mark a discovery/publish failure as
+#: transient infrastructure unavailability rather than a genuine, actionable
+#: error (bad credentials, malformed query, disabled connection, ...).
+#: "capacity" + "not available" matches Fabric's
+#: "this Fabric capacity ... is currently not available" message emitted
+#: while an F-SKU capacity is paused/resuming.
+_TRANSIENT_MARKERS: tuple[str, ...] = (
+    "capacity",
+    "not available",
+    "temporarily",
+    "timeout",
+    "timed out",
+    "throttl",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _is_transient_sync_error(exc: Exception) -> bool:
+    """Return whether ``exc`` looks like a retryable infrastructure blip."""
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +139,27 @@ class ConnectionSyncCoordinator:
         ontology_name: str = DEFAULT_ONTOLOGY_NAME,
         metrics: Any | None = None,
         publish_timeout_seconds: int = 120,
+        transient_retry_attempts: int = DEFAULT_TRANSIENT_RETRY_ATTEMPTS,
+        transient_retry_base_seconds: float = DEFAULT_TRANSIENT_RETRY_BASE_SECONDS,
+        transient_retry_max_seconds: float = DEFAULT_TRANSIENT_RETRY_MAX_SECONDS,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.ingestion_factory = ingestion_factory
         self.publish_factory = publish_factory
         self.clock = clock or (lambda: datetime.now(UTC))
+        if transient_retry_attempts < 1:
+            raise ValueError("transient_retry_attempts must be positive")
+        if transient_retry_base_seconds < 0:
+            raise ValueError("transient_retry_base_seconds must be zero or positive")
+        if transient_retry_max_seconds < transient_retry_base_seconds:
+            raise ValueError(
+                "transient_retry_max_seconds must cover transient_retry_base_seconds"
+            )
+        self.transient_retry_attempts = transient_retry_attempts
+        self.transient_retry_base_seconds = transient_retry_base_seconds
+        self.transient_retry_max_seconds = transient_retry_max_seconds
+        self.sleep = sleep or time.sleep
         # The Fabric publish step (OneLake/Delta table writes) makes network
         # calls with no caller-supplied timeout anywhere in that path (ARG
         # discovery is bounded by ``command_timeout_seconds``, but the
@@ -193,7 +247,7 @@ class ConnectionSyncCoordinator:
         _report("discovering", f"Running {mode} discovery for {connection.connection_id}", 10)
 
         try:
-            manifest = self.ingestion_factory(connection).run()
+            manifest = self._run_ingestion_with_retry(connection)
         except Exception as exc:  # noqa: BLE001 - failures are recorded, not swallowed
             finished = self.clock()
             message = str(exc).strip() or exc.__class__.__name__
@@ -257,7 +311,7 @@ class ConnectionSyncCoordinator:
                         pct,
                     )
 
-                self._run_publish_with_timeout(connection, _on_fabric_progress)
+                self._run_publish_with_retry(connection, _on_fabric_progress)
             except Exception as exc:
                 logger.exception(
                     "Fabric publish failed for connection '%s' during %s sync",
@@ -327,6 +381,76 @@ class ConnectionSyncCoordinator:
             "last_successful_sync_at": current.last_successful_sync_at,
             "stale_after_hours": self.stale_after_hours,
         }
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        """Exponential backoff for the given zero-indexed retry attempt."""
+        return min(
+            self.transient_retry_base_seconds * (2**attempt),
+            self.transient_retry_max_seconds,
+        )
+
+    def _run_ingestion_with_retry(self, connection: SubscriptionConnection) -> Any:
+        """Run discovery, riding out a bounded number of transient failures.
+
+        A Fabric capacity resume window or an ARG throttle can make one
+        discovery attempt fail even though the underlying data source is
+        healthy moments later; retrying here means a background
+        ``sync_async`` refresh (e.g. Exposure's patch-priorities "Retry")
+        does not surface a user-facing failure for a blip that would have
+        cleared itself within seconds.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self.transient_retry_attempts):
+            try:
+                return self.ingestion_factory(connection).run()
+            except Exception as exc:  # noqa: BLE001 - re-raised below if not retried
+                last_exc = exc
+                is_last_attempt = attempt == self.transient_retry_attempts - 1
+                if is_last_attempt or not _is_transient_sync_error(exc):
+                    raise
+                logger.warning(
+                    "Transient discovery failure for connection '%s'"
+                    " (attempt %d/%d); retrying: %s",
+                    connection.connection_id,
+                    attempt + 1,
+                    self.transient_retry_attempts,
+                    exc,
+                )
+                self.sleep(self._retry_delay_seconds(attempt))
+        raise last_exc  # pragma: no cover - loop always returns or raises above
+
+    def _run_publish_with_retry(
+        self,
+        connection: SubscriptionConnection,
+        progress_callback: Callable[[Any], None] | None = None,
+    ) -> None:
+        """Publish, riding out a bounded number of transient failures.
+
+        Mirrors :meth:`_run_ingestion_with_retry`: OneLake/Delta writes hit
+        the same Fabric capacity as discovery reads, so a capacity blip can
+        fail the publish step alone even when discovery already succeeded.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self.transient_retry_attempts):
+            try:
+                self._run_publish_with_timeout(connection, progress_callback)
+                return
+            except Exception as exc:  # noqa: BLE001 - re-raised below if not retried
+                last_exc = exc
+                is_last_attempt = attempt == self.transient_retry_attempts - 1
+                if is_last_attempt or not _is_transient_sync_error(exc):
+                    raise
+                logger.warning(
+                    "Transient Fabric publish failure for connection '%s'"
+                    " (attempt %d/%d); retrying: %s",
+                    connection.connection_id,
+                    attempt + 1,
+                    self.transient_retry_attempts,
+                    exc,
+                )
+                self.sleep(self._retry_delay_seconds(attempt))
+        if last_exc is not None:  # pragma: no cover - loop always returns or raises above
+            raise last_exc
 
     def _run_publish_with_timeout(
         self,
