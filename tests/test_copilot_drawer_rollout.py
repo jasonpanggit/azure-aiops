@@ -163,7 +163,7 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
     assert executive.calls == 1
 
 
-def test_shadow_reports_real_canonical_compatibility_divergence(
+def test_shadow_reports_deterministic_plan_comparison_without_canonical_io(
     tmp_path,
     monkeypatch,
 ):
@@ -208,7 +208,7 @@ def test_shadow_reports_real_canonical_compatibility_divergence(
     assert response.status_code == 200, response.text
     result = response.json()["data"]
     comparison = result["rollout"]["comparison"]
-    assert result["rollout"]["shadow_reason"].startswith("diverged:")
+    assert result["rollout"]["shadow_reason"] == "accepted"
     assert comparison["compatibility"]["plan_outcome"] == "planned"
     assert comparison["compatibility"]["selected_tools"] == compatibility_calls
     assert comparison["canonical"]["policy_status"] == "accepted"
@@ -216,10 +216,8 @@ def test_shadow_reports_real_canonical_compatibility_divergence(
     assert comparison["canonical"]["selected_tools"]
     assert canonical_calls == []
     assert comparison["matches"]["plan_outcome"] is True
-    assert comparison["matches"]["selected_tools"] is False
-    assert "plan_outcome" not in comparison["divergent_fields"]
-    assert "selected_tools" in comparison["divergent_fields"]
-    assert canonical_calls == []
+    assert comparison["matches"]["selected_tools"] is True
+    assert comparison["divergent_fields"] == []
 
 
 def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
@@ -278,7 +276,7 @@ def test_drawer_default_respects_deterministic_emergency_override(
     }
 
 
-def test_shadow_rejection_does_not_fail_or_duplicate_primary_execution(
+def test_shadow_rejects_invalid_hint_before_primary_or_preview_io(
     tmp_path,
     monkeypatch,
 ):
@@ -317,9 +315,7 @@ def test_shadow_rejection_does_not_fail_or_duplicate_primary_execution(
         json=body,
     )
 
-    assert response.status_code == 200, response.text
-    result = response.json()["data"]
-    assert result["rollout"]["shadow_validated"] is False
-    assert result["rollout"]["shadow_reason"].startswith("candidate_rejected:")
-    assert compatibility_calls == ["inventory_resources"]
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["details"]["reason"] == "page_not_granted"
+    assert compatibility_calls == []
     assert canonical_calls == []

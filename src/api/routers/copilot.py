@@ -2140,7 +2140,7 @@ def investigate_canonical(
     )
     coordinator_synthesis = None
     required_candidate = hint_candidate
-    if coordinator_enabled:
+    if rollout.canonical_enabled and coordinator_enabled:
         required_hint = None
         if required_candidate is not None:
             required_step = required_candidate.steps[0]
@@ -2163,7 +2163,7 @@ def investigate_canonical(
                 candidate=hint_candidate,
                 effective_scope=scope,
             )
-        if rollout.canonical_enabled or coordinator_enabled:
+        if rollout.canonical_enabled:
             result = OrchestrationService(
                 planner=planner,
                 fallback_planner=(
@@ -2231,7 +2231,7 @@ def investigate_canonical(
             }
         )
 
-    if coordinator_enabled:
+    if rollout.canonical_enabled and coordinator_enabled:
         result = result.model_copy(
             update={
                 "synthesis": {
