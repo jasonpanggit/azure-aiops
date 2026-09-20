@@ -338,13 +338,20 @@ export default function PatchPrioritiesPage() {
       ),
     [parsedQueryState, searchParams],
   );
-  const queryState = useMemo(
-    () =>
+  const includeResolved = searchParams.get("include_resolved") === "1";
+  const queryState = useMemo(() => {
+    const base =
       view === "patch"
         ? parsedQueryState
-        : queryStateForView(parsedQueryState, view),
-    [parsedQueryState, view],
-  );
+        : queryStateForView(parsedQueryState, view);
+    // Patch priorities are about what still needs action. Without this
+    // default, already-installed/resolved findings (e.g. compliant KBs)
+    // appear alongside genuinely missing patches, which is misleading.
+    // Applied as a plain merge (not updateExposureQueryState) so this
+    // implicit default never resets an in-flight cursor/generation.
+    if (includeResolved || base.filters.active !== undefined) return base;
+    return { ...base, filters: { ...base.filters, active: true } };
+  }, [parsedQueryState, view, includeResolved]);
   const viewCopy = PATCH_PRIORITY_VIEW_COPY[view];
   const [searchDraft, setSearchDraft] = useState(
     queryState.filters.search ?? "",
@@ -479,6 +486,27 @@ export default function PatchPrioritiesPage() {
       );
     },
     [commitQuery, queryState],
+  );
+
+  const setIncludeResolved = useCallback(
+    (next: boolean) => {
+      const params = encodeExposureQueryState(queryState);
+      if (view !== "patch") params.set("view", view);
+      if (next) {
+        // Showing resolved/installed findings requires dropping the
+        // active-only default so both states are represented.
+        params.delete("active");
+        params.set("include_resolved", "1");
+      } else {
+        params.delete("include_resolved");
+        params.delete("active");
+      }
+      const encoded = params.toString();
+      router.replace(encoded ? `${pathname}?${encoded}` : pathname, {
+        scroll: false,
+      });
+    },
+    [pathname, queryState, router, view],
   );
 
   const selectView = useCallback(
@@ -636,6 +664,17 @@ export default function PatchPrioritiesPage() {
                   }
                 }}
               />
+            </label>
+          </div>
+
+          <div className="form-field patch-priority-status-toggle">
+            <label>
+              <input
+                type="checkbox"
+                checked={includeResolved}
+                onChange={(event) => setIncludeResolved(event.target.checked)}
+              />
+              Include already-installed / resolved findings
             </label>
           </div>
 

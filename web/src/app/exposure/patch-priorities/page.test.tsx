@@ -529,7 +529,7 @@ describe("Patch priorities", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Restart results" }));
     expect(navigation.replace).toHaveBeenLastCalledWith(
-      "/exposure/patch-priorities?subscription=sub-1&target_kind=server&source_family=aum",
+      "/exposure/patch-priorities?subscription=sub-1&target_kind=server&source_family=aum&active=true",
       { scroll: false },
     );
   });
@@ -564,6 +564,12 @@ describe("Patch priorities", () => {
     expect(
       screen.getByRole("searchbox", {
         name: "Search patches and vulnerabilities",
+      }),
+    ).toHaveFocus();
+    await user.tab();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Include already-installed / resolved findings",
       }),
     ).toHaveFocus();
     await user.tab();
