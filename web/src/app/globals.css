@@ -3477,6 +3477,16 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.exposure-resource-id {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
 .table-sort-button {
   min-width: 40px;
   min-height: 40px;

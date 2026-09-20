@@ -152,10 +152,10 @@ function queryStateForView(
   });
 }
 
-function displayDate(value: string | null | undefined): string {
-  if (!value) return "Due date unknown";
+function displayDate(value: string | null | undefined): string | null {
+  if (!value) return null;
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Due date unknown";
+  if (Number.isNaN(parsed.getTime())) return null;
   return `Due ${new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -164,9 +164,9 @@ function displayDate(value: string | null | undefined): string {
   }).format(parsed)}`;
 }
 
-function durationCopy(value: number | null | undefined): string {
+function durationCopy(value: number | null | undefined): string | null {
   if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "SLA age unknown";
+    return null;
   }
   const days = Math.floor(value / 86_400);
   if (days >= 1) return `SLA age ${days.toLocaleString("en-US")} ${days === 1 ? "day" : "days"}`;
@@ -177,7 +177,7 @@ function durationCopy(value: number | null | undefined): string {
 
 function priorityCopy(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "Priority score unknown";
+    return "Not yet scored";
   }
   return `Priority score ${value.toLocaleString("en-US")}/100`;
 }
@@ -816,7 +816,10 @@ export default function PatchPrioritiesPage() {
                             tone="neutral"
                           />
                         </div>
-                        <div className="table-secondary exposure-long-value">
+                        <div
+                          className="table-secondary exposure-resource-id"
+                          title={item.target_id}
+                        >
                           {item.target_id}
                         </div>
                       </td>
@@ -848,11 +851,19 @@ export default function PatchPrioritiesPage() {
                         </td>
                         <td data-label="SLA">
                           <StatusBadge
-                            label={item.sla_state || "indeterminate"}
+                            label={item.sla_state || "Not yet scored"}
                             tone={item.sla_overdue ? "critical" : "neutral"}
                           />
-                          <div className="table-secondary">{durationCopy(item.sla_age_seconds)}</div>
-                          <div className="table-secondary">{displayDate(item.sla_due_at)}</div>
+                          {durationCopy(item.sla_age_seconds) ? (
+                            <div className="table-secondary">
+                              {durationCopy(item.sla_age_seconds)}
+                            </div>
+                          ) : null}
+                          {displayDate(item.sla_due_at) ? (
+                            <div className="table-secondary">
+                              {displayDate(item.sla_due_at)}
+                            </div>
+                          ) : null}
                         </td>
                         <td data-label="Operational priority">
                           <strong>{priorityCopy(item.priority_score)}</strong>
