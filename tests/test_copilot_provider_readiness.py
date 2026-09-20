@@ -370,10 +370,10 @@ def test_rollout_modes_preserve_compatibility_shadow_and_authorized_canary(
         stable_key="operator-a"
     )
     assert canary.canonical_enabled is True
-    assert canary.authorization_id == "test-reviewed-canary"
+    assert canary.authorization_id == "p11-canary-authorization-20260920"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    with pytest.raises(CanaryAuthorizationError, match="not authorized"):
+    with pytest.raises(CanaryAuthorizationError, match="only canary rollout mode"):
         maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
 
