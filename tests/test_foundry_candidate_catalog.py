@@ -35,6 +35,20 @@ SEARCH_CONNECTION_ID = (
     "accounts/account/projects/project/connections/ai-search"
 )
 SEARCH_INDEX_NAME = "aiops-knowledge"
+LIVE_PROVIDER_VERSION_IDS = {
+    "network": "16",
+    "vulnerability": "17",
+    "patch": "17",
+    "incident": "16",
+    "change": "17",
+    "governance": "17",
+    "remediation": "17",
+    "executive_summary": "16",
+    "inventory_data_health": "1",
+    "identity_access": "1",
+    "finops": "1",
+    "resource_health_observability": "1",
+}
 
 
 def _candidate_artifact() -> dict:
@@ -135,6 +149,7 @@ def _configure(monkeypatch, artifact: dict) -> None:
         "FOUNDRY_PROJECT_ENDPOINT",
         "https://project.services.ai.azure.com/api/projects/project",
     )
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
     monkeypatch.setenv(
         CANDIDATE_EXPECTED_NAMES_ENV,
         json.dumps(
@@ -164,6 +179,16 @@ def _rows(monkeypatch, artifact: dict) -> dict[str, dict]:
         load_specialist_manifest(),
         now=datetime(2026, 9, 20, 1, tzinfo=UTC),
     )
+
+
+def _live_candidate_artifact() -> dict:
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["provider_version_id"] = "6"
+    for specialist_id, provider_version_id in LIVE_PROVIDER_VERSION_IDS.items():
+        artifact["agents"][specialist_id]["provider_version_id"] = (
+            provider_version_id
+        )
+    return artifact
 
 
 def test_validated_candidate_artifact_projects_exact_twelve_rows(monkeypatch):
@@ -240,16 +265,16 @@ def test_current_model_prompt_and_artifact_digest_mismatches_fail_closed(
     assert validated_candidate_catalog(load_specialist_manifest()) == {}
 
 
-def test_duplicate_provider_identity_fails_each_affected_row(monkeypatch):
+def test_same_provider_version_is_valid_for_distinct_agents(monkeypatch):
     artifact = _candidate_artifact()
     duplicate = artifact["agents"]["network"]["provider_version_id"]
     artifact["agents"]["vulnerability"]["provider_version_id"] = duplicate.upper()
 
     rows = _rows(monkeypatch, artifact)
 
-    assert "network" not in rows
-    assert "vulnerability" not in rows
-    assert len(rows) == 10
+    assert len(rows) == 12
+    assert rows["network"]["provider_version_id"].casefold() == duplicate.casefold()
+    assert rows["vulnerability"]["provider_version_id"].casefold() == duplicate.casefold()
 
 
 @pytest.mark.parametrize(
@@ -343,47 +368,65 @@ def test_coordinator_provider_id_rejects_non_provider_identity(
     assert _rows(monkeypatch, artifact) == {}
 
 
-def test_coordinator_provider_id_must_be_unique_across_all_thirteen(monkeypatch):
+def test_coordinator_may_share_version_number_with_specialist(monkeypatch):
     artifact = _candidate_artifact()
     artifact["coordinator"]["provider_version_id"] = artifact["agents"]["network"][
+        "provider_version_id"
+    ].upper()
+
+    assert len(_rows(monkeypatch, artifact)) == 12
+
+
+def test_malformed_coordinator_name_invalidates_whole_artifact(
+    monkeypatch,
+):
+    artifact = _candidate_artifact()
+    artifact["coordinator"]["agent_name"] = "wrong-coordinator"
+
+    assert _rows(monkeypatch, artifact) == {}
+
+
+def test_duplicate_expected_agent_names_fail_closed(
+    monkeypatch,
+):
+    artifact = _candidate_artifact()
+    duplicate_name = artifact["agents"]["network"]["agent_name"]
+    artifact["agents"]["vulnerability"]["agent_name"] = duplicate_name
+    _configure(monkeypatch, artifact)
+    expected_names = json.loads(os.environ[CANDIDATE_EXPECTED_NAMES_ENV])
+    expected_names["vulnerability"] = duplicate_name
+    monkeypatch.setenv(CANDIDATE_EXPECTED_NAMES_ENV, json.dumps(expected_names))
+
+    assert validated_candidate_catalog(load_specialist_manifest()) == {}
+
+
+def test_duplicate_qualified_identity_invalidates_whole_artifact(
+    monkeypatch,
+):
+    artifact = _candidate_artifact()
+    vulnerability = artifact["agents"]["vulnerability"]
+    artifact["agents"]["network"]["agent_name"] = (
+        f" {vulnerability['agent_name'].upper()} "
+    )
+    artifact["agents"]["network"]["provider_version_id"] = vulnerability[
         "provider_version_id"
     ].upper()
 
     assert _rows(monkeypatch, artifact) == {}
 
 
-def test_coordinator_collision_invalidates_artifact_when_specialist_row_fails(
+def test_coordinator_qualified_identity_collision_invalidates_whole_artifact(
     monkeypatch,
 ):
     artifact = _candidate_artifact()
+    artifact["agents"]["network"]["agent_name"] = artifact["coordinator"][
+        "agent_name"
+    ]
     artifact["agents"]["network"]["provider_version_id"] = artifact["coordinator"][
         "provider_version_id"
     ]
-    artifact["agents"]["network"]["validation"]["checks"]["scope"] = "fail"
 
     assert _rows(monkeypatch, artifact) == {}
-
-
-def test_raw_provider_collision_survives_malformed_specialist_identity_fields(
-    monkeypatch,
-):
-    artifact = _candidate_artifact()
-    artifact["agents"]["network"]["provider_version_id"] = artifact["coordinator"][
-        "provider_version_id"
-    ]
-    artifact["agents"]["network"]["agent_name"] = ""
-
-    assert _rows(monkeypatch, artifact) == {}
-
-    artifact = _candidate_artifact()
-    duplicate = artifact["agents"]["vulnerability"]["provider_version_id"]
-    artifact["agents"]["network"]["provider_version_id"] = duplicate.upper()
-    artifact["agents"]["network"]["agent_name"] = ""
-
-    rows = _rows(monkeypatch, artifact)
-    assert "network" not in rows
-    assert "vulnerability" not in rows
-    assert len(rows) == 10
 
 
 def test_tampered_coordinator_stamp_cannot_hide_synthetic_provider_id(monkeypatch):
@@ -403,6 +446,16 @@ def test_numeric_provider_ids_are_valid(monkeypatch):
 
     assert len(rows) == 12
     assert rows["network"]["provider_version_id"] == "123"
+
+
+def test_live_provider_version_distribution_projects_all_twelve_rows(monkeypatch):
+    rows = _rows(monkeypatch, _live_candidate_artifact())
+
+    assert tuple(rows) == load_specialist_manifest().specialist_ids
+    assert {
+        specialist_id: row["provider_version_id"]
+        for specialist_id, row in rows.items()
+    } == LIVE_PROVIDER_VERSION_IDS
 
 
 def test_stale_or_partial_artifact_fails_as_a_whole(monkeypatch):
@@ -434,7 +487,7 @@ def test_manifest_mismatch_and_unknown_top_level_fields_fail_closed(monkeypatch)
 
 
 def test_candidate_catalog_never_sets_runtime_configured(monkeypatch):
-    artifact = _candidate_artifact()
+    artifact = _live_candidate_artifact()
     _configure(monkeypatch, artifact)
     for specialist in load_specialist_manifest().specialists:
         monkeypatch.setenv(
@@ -450,6 +503,7 @@ def test_candidate_catalog_never_sets_runtime_configured(monkeypatch):
 
     catalog = specialist_catalog()
 
+    assert len(catalog) == 12
     assert all(row["status"] == "available_inactive" for row in catalog)
     assert all(row["configured"] is False for row in catalog)
 
