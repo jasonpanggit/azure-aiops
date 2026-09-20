@@ -1071,6 +1071,14 @@ if log:
     if mapping_path and os.path.exists(mapping_path):
         payload["mapping"] = json.load(open(mapping_path, encoding="utf-8"))
         payload["mapping_mode"] = oct(os.stat(mapping_path).st_mode & 0o777)
+        if os.environ.get("STUB_ATTEMPT_SNAPSHOT_WRITE") == "1":
+            try:
+                with open(mapping_path, "a", encoding="utf-8") as snapshot:
+                    snapshot.write(" ")
+            except PermissionError:
+                payload["snapshot_write"] = "denied"
+            else:
+                payload["snapshot_write"] = "succeeded"
     with open(log, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
 mutation_path = os.environ.get("STUB_MUTATE_CANDIDATE_PATH")
@@ -1645,6 +1653,7 @@ def test_rollout_resumes_exact_candidate_without_provider_posts(tmp_path):
     promotion.unlink()
     (tmp_path / "create.log").write_text("", encoding="utf-8")
     env["FOUNDRY_RESUME_CANDIDATE"] = "1"
+    env["STUB_ATTEMPT_SNAPSHOT_WRITE"] = "1"
 
     resumed = _run_rollout(env, tmp_path)
 
@@ -1655,7 +1664,8 @@ def test_rollout_resumes_exact_candidate_without_provider_posts(tmp_path):
     assert record["status"] == "validated"
     assert record["parity"] == {"offline": "pass", "live": "pass"}
     live = json.loads((tmp_path / "live.json").read_text(encoding="utf-8"))
-    assert live["mapping_mode"] == "0o600"
+    assert live["mapping_mode"] == "0o400"
+    assert live["snapshot_write"] == "denied"
     script = _read("infra/scripts/create-foundry-agent.sh")
     assert script.count('CANDIDATE_RECORD="${candidate_snapshot}"') == 1
     assert 'FOUNDRY_CANDIDATE_MAPPING="${candidate_snapshot}"' in script

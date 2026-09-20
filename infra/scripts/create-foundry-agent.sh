@@ -591,7 +591,7 @@ if "azure-mcp" in source_bytes.decode("utf-8").casefold():
     raise SystemExit("create-foundry-agent: candidate contains Azure MCP")
 snapshot = json.dumps(candidate, indent=2, sort_keys=True).encode("utf-8") + b"\n"
 pathlib.Path(os.environ["SNAPSHOT_RECORD"]).write_bytes(snapshot)
-os.chmod(os.environ["SNAPSHOT_RECORD"], 0o600)
+os.chmod(os.environ["SNAPSHOT_RECORD"], 0o400)
 print(
     hashlib.sha256(source_bytes).hexdigest(),
     hashlib.sha256(snapshot).hexdigest(),
