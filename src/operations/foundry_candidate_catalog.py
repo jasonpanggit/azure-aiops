@@ -235,6 +235,19 @@ def _validated_provider_id(value: Any) -> str:
     return value
 
 
+def _provider_identity_key(
+    *,
+    agent_name: Any,
+    provider_version_id: Any,
+) -> tuple[str, str]:
+    if not isinstance(agent_name, str) or not agent_name.strip():
+        raise ValueError("agent_name must identify the provider identity owner")
+    return (
+        agent_name.strip().casefold(),
+        _validated_provider_id(provider_version_id).casefold(),
+    )
+
+
 def _expected_names() -> dict[str, str] | None:
     return _string_mapping(CANDIDATE_EXPECTED_NAMES_ENV)
 
@@ -310,6 +323,10 @@ def validated_candidate_catalog(
         MODEL_DEPLOYMENT_ENV,
         "",
     ).strip()
+    expected_coordinator_name = os.environ.get(
+        "FOUNDRY_AGENT_NAME",
+        "",
+    ).strip()
     expected_search_connection_id = os.environ.get(
         SEARCH_CONNECTION_ID_ENV,
         "",
@@ -327,6 +344,7 @@ def validated_candidate_catalog(
         or not expected_project_id
         or not expected_endpoint
         or not expected_model_deployment
+        or not expected_coordinator_name
         or not expected_search_connection_id
         or not expected_search_index_name
         or expected_names is None
@@ -350,6 +368,7 @@ def validated_candidate_catalog(
         coordinator_validated_at.tzinfo is None
         or coordinator_validated_at < generated_at
         or coordinator_validated_at > moment + _MAX_CLOCK_SKEW
+        or artifact.coordinator.agent_name != expected_coordinator_name
         or artifact.coordinator.candidate_version
         != f"{artifact.release}.coordinator"
     ):
@@ -369,28 +388,38 @@ def validated_candidate_catalog(
     if set(expected_prompt_digests) != set(manifest.specialist_ids):
         return {}
 
-    declared_provider_ids: dict[str, str] = {}
+    declared_provider_identities: dict[str, tuple[str, str]] = {}
     for specialist in manifest.specialists:
         raw_candidate = artifact.agents[specialist.id]
         if not isinstance(raw_candidate, dict):
             continue
         try:
-            declared_provider_ids[specialist.id] = _validated_provider_id(
-                raw_candidate.get("provider_version_id")
+            declared_provider_identities[specialist.id] = _provider_identity_key(
+                agent_name=raw_candidate.get("agent_name"),
+                provider_version_id=raw_candidate.get("provider_version_id"),
             )
         except ValueError:
             continue
 
-    provider_id_counts = Counter(
-        provider_id.casefold()
-        for provider_id in declared_provider_ids.values()
-    )
-    duplicate_provider_ids = {
-        provider_id
-        for provider_id, count in provider_id_counts.items()
-        if provider_id and count > 1
+    provider_identity_counts = Counter(declared_provider_identities.values())
+    duplicate_provider_identities = {
+        identity
+        for identity, count in provider_identity_counts.items()
+        if count > 1
     }
-    if artifact.coordinator.provider_version_id.casefold() in provider_id_counts:
+    if duplicate_provider_identities:
+        return {}
+    coordinator_identity = _provider_identity_key(
+        agent_name=artifact.coordinator.agent_name,
+        provider_version_id=artifact.coordinator.provider_version_id,
+    )
+    if coordinator_identity in provider_identity_counts:
+        return {}
+    expected_identity_names = [
+        *(name.casefold() for name in expected_names.values()),
+        expected_coordinator_name.casefold(),
+    ]
+    if len(expected_identity_names) != len(set(expected_identity_names)):
         return {}
 
     parsed_agents: dict[str, _CandidateAgent] = {}
@@ -426,8 +455,6 @@ def validated_candidate_catalog(
     for specialist in manifest.specialists:
         candidate = validated_agents.get(specialist.id)
         if candidate is None:
-            continue
-        if candidate.provider_version_id.casefold() in duplicate_provider_ids:
             continue
         rows[specialist.id] = {
             "name": candidate.agent_name,
