@@ -1932,9 +1932,19 @@ def _next_backoff_seconds(verification_attempts: int) -> float:
     capped at 60 seconds: 5, 10, 20, 40, 60, 60, 60... A transient poll
     failure backs off within the deadline rather than polling in a tight
     loop (CONTEXT.md's Deadline and Recovery decision).
+
+    The exponent is capped before computing 2 ** exponent: for a record
+    with a very large (e.g. stuck/long-running) attempt count, an
+    unbounded Python int power can grow far beyond float range, and
+    ``5.0 * huge_int`` then raises OverflowError converting int to float
+    -- before ``min(60.0, ...)`` ever gets a chance to cap it. Six
+    doublings (5 * 2**6 = 320) already exceeds the 60s cap, so capping
+    the exponent there preserves identical behavior for every attempt
+    count while eliminating the overflow.
     """
     attempt = max(1, int(verification_attempts))
-    return min(60.0, 5.0 * (2 ** (attempt - 1)))
+    capped_exponent = min(attempt - 1, 6)
+    return min(60.0, 5.0 * (2**capped_exponent))
 
 
 def _supersede_eligibility(record: dict[str, Any]) -> str:
