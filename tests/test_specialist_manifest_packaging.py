@@ -1017,6 +1017,17 @@ if [ -n "${STUB_CURL_ARGS:-}" ]; then
 fi
 for arg in "$@"; do
   case "$arg" in
+    @*)
+      if [ "$(cat "${arg#@}")" = "Authorization: Bearer ${STUB_EXPECTED_TOKEN:-stub-token}" ]; then
+        printf 'valid\\n' >>"$STUB_AUTH_RESULT"
+      else
+        printf 'invalid\\n' >>"$STUB_AUTH_RESULT"
+      fi
+      ;;
+  esac
+done
+for arg in "$@"; do
+  case "$arg" in
     *login.microsoftonline.com*)
       printf '%s' '{"access_token": "stub-token"}'
       exit 0
@@ -1094,6 +1105,7 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
         "AZURE_CLIENT_SECRET": "secret",
         "STUB_CREATE_LOG": str(tmp_path / "create.log"),
         "STUB_CURL_ARGS": str(tmp_path / "curl-args.log"),
+        "STUB_AUTH_RESULT": str(tmp_path / "auth-result.log"),
         "STUB_AZ_ARGS": str(tmp_path / "az-args.log"),
         "STUB_RESPONSE_FILE": str(response_file),
         "STUB_LIVE_LOG": str(tmp_path / "live.json"),
@@ -1110,6 +1122,7 @@ def _rollout_fixture(tmp_path, *, response: dict, specialists: dict | None = Non
     }
     (tmp_path / "create.log").write_text("", encoding="utf-8")
     (tmp_path / "curl-args.log").write_text("", encoding="utf-8")
+    (tmp_path / "auth-result.log").write_text("", encoding="utf-8")
     (tmp_path / "az-args.log").write_text("", encoding="utf-8")
 
     if specialists is not None:
@@ -1184,6 +1197,27 @@ def test_create_agent_supports_explicit_azure_cli_auth_without_client_secret(
     curl_args = (tmp_path / "curl-args.log").read_text(encoding="utf-8")
     assert "stub-token" not in curl_args
     assert "secret" not in curl_args
+    assert "stub-token" not in result.stdout
+    assert "stub-token" not in result.stderr
+    assert (tmp_path / "auth-result.log").read_text(encoding="utf-8") == "valid\n"
+
+
+def test_create_agent_rejects_azure_cli_auth_when_az_is_missing(tmp_path):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["FOUNDRY_AUTH_MODE"] = "azure_cli"
+    env.pop("AZURE_TENANT_ID")
+    env.pop("AZURE_CLIENT_ID")
+    env.pop("AZURE_CLIENT_SECRET")
+    (tmp_path / "bin" / "az").unlink()
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "az is required" in result.stderr.casefold()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
 def test_create_agent_rejects_unknown_auth_mode_before_provider_io(tmp_path):
@@ -1224,6 +1258,7 @@ def test_create_agent_keeps_client_secret_and_token_out_of_curl_arguments(tmp_pa
         tmp_path,
         response={"name": "operations-copilot", "version": "provider-1"},
     )
+    env["FOUNDRY_AUTH_MODE"] = "client_credentials"
     env["AZURE_CLIENT_SECRET"] = "s3cr3t-value-123"
 
     result = _run_rollout(env, tmp_path)
@@ -1232,6 +1267,34 @@ def test_create_agent_keeps_client_secret_and_token_out_of_curl_arguments(tmp_pa
     curl_args = (tmp_path / "curl-args.log").read_text(encoding="utf-8")
     assert env["AZURE_CLIENT_SECRET"] not in curl_args
     assert "stub-token" not in curl_args
+    assert env["AZURE_CLIENT_SECRET"] not in result.stdout
+    assert env["AZURE_CLIENT_SECRET"] not in result.stderr
+    assert "stub-token" not in result.stdout
+    assert "stub-token" not in result.stderr
+    assert (tmp_path / "auth-result.log").read_text(encoding="utf-8") == "valid\n"
+
+
+def test_create_agent_requires_secret_for_client_credentials_before_provider_io(
+    tmp_path,
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env["FOUNDRY_AUTH_MODE"] = "client_credentials"
+    env.pop("AZURE_CLIENT_SECRET")
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode != 0
+    assert "azure_client_secret is required" in result.stderr.casefold()
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+
+
+def test_create_agent_auth_contract_never_enables_xtrace():
+    script = CREATE_AGENT_SCRIPT.read_text(encoding="utf-8")
+
+    assert "set -x" not in script
 
 
 def test_create_agent_records_the_actual_provider_version_id(tmp_path):

@@ -13,8 +13,13 @@
 #   FOUNDRY_AGENT_MODEL       model deployment name
 #   FOUNDRY_AGENT_PROMPT      system instructions
 #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#                                required by the default client_credentials
+#                                authentication mode
 #
 # Optional:
+#   FOUNDRY_AUTH_MODE            "client_credentials" (default) or "azure_cli";
+#                                azure_cli uses the current Azure CLI login and
+#                                never reads AZURE_CLIENT_SECRET
 #   FOUNDRY_SPECIALISTS_JSON     map of specialists (name/version/model/prompt/tools)
 #   FOUNDRY_AGENT_TOOLS_JSON_B64 base64 JSON array of MCP tool definitions for
 #                                this single agent (only set on the recursive
@@ -90,12 +95,12 @@ for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
   fi
 done
 
-auth_mode="${FOUNDRY_AUTH_MODE:-client_secret}"
+auth_mode="${FOUNDRY_AUTH_MODE:-client_credentials}"
 case "${auth_mode}" in
-  client_secret)
+  client_credentials)
     for var in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
       if [[ -z "${!var:-}" ]]; then
-        echo "create-foundry-agent: ${var} is required for client_secret authentication" >&2
+        echo "create-foundry-agent: ${var} is required for client_credentials authentication" >&2
         exit 1
       fi
     done
@@ -628,7 +633,13 @@ if [[ -z "${token}" ]]; then
   echo "create-foundry-agent: authentication returned an empty access token" >&2
   exit 1
 fi
+if [[ "${token}" =~ [[:space:]] ]]; then
+  echo "create-foundry-agent: authentication returned an invalid access token" >&2
+  exit 1
+fi
 printf 'Authorization: Bearer %s\n' "${token}" >"${auth_header_file}"
+
+unset token
 
 create_body=$(
   FOUNDRY_AGENT_NAME="$FOUNDRY_AGENT_NAME" \
