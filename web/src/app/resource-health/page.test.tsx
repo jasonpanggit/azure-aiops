@@ -274,12 +274,16 @@ describe("ResourceHealthPage inventory-first hydration", () => {
   });
 
   it("isolates a failed card and retries only that resource", async () => {
-    const resources = [inventoryResource(1), inventoryResource(2)];
+    const resources = [
+      inventoryResource(1),
+      inventoryResource(2),
+      inventoryResource(3),
+    ];
     mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(resources));
     const tracker = installDeferredHealthMock();
 
     render(<ResourceHealthPage />);
-    await waitFor(() => expect(tracker.calls).toHaveLength(2));
+    await waitFor(() => expect(tracker.calls).toHaveLength(3));
 
     await act(async () => {
       tracker.settle(tracker.calls[0], { error: new Error("Metrics unavailable") });
@@ -293,12 +297,15 @@ describe("ResourceHealthPage inventory-first hydration", () => {
       await screen.findByRole("alert", { name: "Health error for vm-1" }),
     ).toHaveTextContent("Metrics unavailable");
     expect(screen.getByText("42.0%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Loading health for vm-3" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry health for vm-1" }));
 
-    await waitFor(() => expect(tracker.calls).toHaveLength(3));
-    expect(tracker.calls[2].resourceId).toBe(resources[0].resource_id);
-    expect(tracker.calls[2].forceRefresh).toBe(true);
+    await waitFor(() => expect(tracker.calls).toHaveLength(4));
+    expect(tracker.calls[3].resourceId).toBe(resources[0].resource_id);
+    expect(tracker.calls[3].forceRefresh).toBe(true);
     expect(screen.getByRole("status", { name: "Loading health for vm-1" })).toBeInTheDocument();
   });
 

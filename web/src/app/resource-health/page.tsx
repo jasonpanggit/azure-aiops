@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -9,11 +15,38 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { UtilizationBarChart } from "@/components/ui/UtilizationBarChart";
-import { useApi } from "@/hooks/useApi";
 import { buildResourceHealthCopilotContext } from "@/lib/copilot/page-adapters";
+import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
-import { resourceHealthApi } from "@/lib/services";
-import type { ResourceUtilization } from "@/lib/types";
+import { inventoryApi, resourceHealthApi } from "@/lib/services";
+import type {
+  EvidenceItem,
+  FlatInventoryResource,
+  ResourceHealthSnapshot,
+  ResourceUtilization,
+} from "@/lib/types";
+
+const MAX_ACTIVE_HEALTH_REQUESTS = 6;
+const SUPPORTED_RESOURCE_TYPES = new Set([
+  "microsoft.compute/virtualmachines",
+  "microsoft.app/containerapps",
+]);
+
+interface CardHealth {
+  loading: boolean;
+  data: ResourceUtilization | null;
+  snapshot: ResourceHealthSnapshot | null;
+  evidence: EvidenceItem[];
+  error: string | null;
+}
+
+interface HealthJob {
+  key: string;
+  resourceId: string;
+  scope: ScopeSelection;
+  generation: number;
+  forceRefresh: boolean;
+}
 
 function formatBytes(value: number | null): string {
   if (value == null) return "—";
@@ -34,97 +67,447 @@ function resourceTypeLabel(resourceType: string): string {
   return resourceType.split("/").pop()?.trim() || "Resource";
 }
 
-function ResourceCard({ resource }: { resource: ResourceUtilization }) {
-  const isContainerApp = resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
+function resourceKey(resourceId: string): string {
+  return resourceId.toLocaleLowerCase();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "Could not load live health.";
+}
+
+function ResourceCard({
+  resource,
+  health,
+  onRetry,
+}: {
+  resource: FlatInventoryResource;
+  health: CardHealth | undefined;
+  onRetry: () => void;
+}) {
+  const detail = health?.data;
+  const isContainerApp =
+    resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
 
   return (
-    <article className="card resource-health-card" style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{resource.resource_name}</div>
-          <div className="cell-subtext">{resource.resource_group}</div>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "0.35rem" }}>
-          <StatusBadge label={resourceTypeLabel(resource.resource_type)} tone="info" compact />
-          <StatusBadge label={resource.status} tone={statusTone(resource.status)} compact />
-        </div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-        <MetricSparkline data={resource.cpu_series ?? []} max={100} />
-        <div>
-          <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>{formatPercent(resource.cpu_percent)}</div>
-          <div className="cell-subtext">CPU</div>
-        </div>
-      </div>
-
+    <article
+      className="card resource-health-card"
+      style={{
+        padding: "1rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.5rem",
+      }}
+    >
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "0.35rem 0.75rem",
-          fontSize: "0.8125rem",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: "0.5rem",
         }}
       >
-        <span className="cell-subtext">Memory: {formatPercent(resource.memory_percent)}</span>
-        {!isContainerApp && (
-          <span className="cell-subtext">Disk free: {formatPercent(resource.disk_free_percent)}</span>
-        )}
-        <span className="cell-subtext">Net in: {formatBytes(resource.network_in_bytes)}</span>
-        <span className="cell-subtext">Net out: {formatBytes(resource.network_out_bytes)}</span>
-        {!isContainerApp && (
-          <>
-            <span className="cell-subtext">Disk read: {formatBytes(resource.disk_read_bytes)}</span>
-            <span className="cell-subtext">Disk write: {formatBytes(resource.disk_write_bytes)}</span>
-          </>
-        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>
+            {resource.resource_name}
+          </div>
+          <div className="cell-subtext">{resource.resource_group}</div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+            gap: "0.35rem",
+          }}
+        >
+          <StatusBadge
+            label={resourceTypeLabel(resource.resource_type)}
+            tone="info"
+            compact
+          />
+          {detail ? (
+            <StatusBadge
+              label={detail.status}
+              tone={statusTone(detail.status)}
+              compact
+            />
+          ) : null}
+        </div>
       </div>
 
-      <div className="cell-subtext resource-health-error">
-        {resource.error ? resource.error : `Observed ${resource.observed_at}`}
-      </div>
+      {health?.loading ? (
+        <div
+          className="cell-subtext"
+          role="status"
+          aria-label={`Loading health for ${resource.resource_name}`}
+        >
+          Fetching live utilization…
+        </div>
+      ) : null}
+
+      {health?.error ? (
+        <div
+          className="state-panel state-error"
+          role="alert"
+          aria-label={`Health error for ${resource.resource_name}`}
+        >
+          <p>{health.error}</p>
+          <button
+            type="button"
+            className="button button-secondary"
+            aria-label={`Retry health for ${resource.resource_name}`}
+            onClick={onRetry}
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {detail ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <MetricSparkline data={detail.cpu_series ?? []} max={100} />
+            <div>
+              <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>
+                {formatPercent(detail.cpu_percent)}
+              </div>
+              <div className="cell-subtext">CPU</div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "0.35rem 0.75rem",
+              fontSize: "0.8125rem",
+            }}
+          >
+            <span className="cell-subtext">
+              Memory: {formatPercent(detail.memory_percent)}
+            </span>
+            {!isContainerApp ? (
+              <span className="cell-subtext">
+                Disk free: {formatPercent(detail.disk_free_percent)}
+              </span>
+            ) : null}
+            <span className="cell-subtext">
+              Net in: {formatBytes(detail.network_in_bytes)}
+            </span>
+            <span className="cell-subtext">
+              Net out: {formatBytes(detail.network_out_bytes)}
+            </span>
+            {!isContainerApp ? (
+              <>
+                <span className="cell-subtext">
+                  Disk read: {formatBytes(detail.disk_read_bytes)}
+                </span>
+                <span className="cell-subtext">
+                  Disk write: {formatBytes(detail.disk_write_bytes)}
+                </span>
+              </>
+            ) : null}
+          </div>
+
+          <div className="cell-subtext resource-health-error">
+            {detail.error ? detail.error : `Observed ${detail.observed_at}`}
+          </div>
+        </>
+      ) : null}
     </article>
   );
 }
 
 /**
- * Live compute-resource utilization sourced from Azure Monitor platform
- * metrics (CPU, network, and disk I/O), merged with memory % and disk
- * free-space % from classic Log Analytics guest performance counters when a
- * workspace is auto-discovered in scope. If no workspace/guest counters are
- * found, a banner names the gap rather than fabricating or silently omitting
- * the numbers.
+ * Inventory-first compute utilization with independently hydrated health cards.
+ *
+ * One page-lifetime scheduler owns all initial, retry, refresh, and scope-change
+ * requests. Aborted requests continue occupying their slots until their
+ * promises settle, keeping the global active request count at six or fewer.
  */
 export default function ResourceHealthPage() {
   const { scope } = useScope();
-  const [refreshToken, setRefreshToken] = useState(0);
-  const forceRefreshRef = useRef(false);
-  const health = useApi(
-    () => {
-      const forceRefresh = forceRefreshRef.current;
-      forceRefreshRef.current = false;
-      return resourceHealthApi.snapshot(scope, forceRefresh);
-    },
-    [scope, refreshToken],
-  );
-
-  const data = health.data?.data;
-  const resources = useMemo(() => data?.resources ?? [], [data]);
-  const summary = data?.summary;
-
+  const [resources, setResources] = useState<FlatInventoryResource[]>([]);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
+  const [healthById, setHealthById] = useState<Record<string, CardHealth>>({});
   const [copilotOpen, setCopilotOpen] = useState(false);
-  const handleRefresh = useCallback(() => {
-    forceRefreshRef.current = true;
-    setRefreshToken((token) => token + 1);
+
+  const mountedRef = useRef(true);
+  const generationRef = useRef(0);
+  const queueRef = useRef<HealthJob[]>([]);
+  const activeCountRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const activeControllersRef = useRef(new Map<number, AbortController>());
+
+  const pump = useCallback(() => {
+    if (!mountedRef.current) return;
+    while (
+      activeCountRef.current < MAX_ACTIVE_HEALTH_REQUESTS &&
+      queueRef.current.length > 0
+    ) {
+      const job = queueRef.current.shift();
+      if (!job || job.generation !== generationRef.current) continue;
+
+      const controller = new AbortController();
+      const requestId = requestSequenceRef.current + 1;
+      requestSequenceRef.current = requestId;
+      activeControllersRef.current.set(requestId, controller);
+      activeCountRef.current += 1;
+
+      let request: ReturnType<typeof resourceHealthApi.resource>;
+      try {
+        request = resourceHealthApi.resource(
+          job.resourceId,
+          job.scope,
+          job.forceRefresh,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        request = Promise.reject(error);
+      }
+
+      void request
+        .then((response) => {
+          if (
+            !mountedRef.current ||
+            controller.signal.aborted ||
+            job.generation !== generationRef.current
+          ) {
+            return;
+          }
+          const detail = response.data.resources[0];
+          if (!detail) {
+            throw new Error("No live health data was returned for this resource.");
+          }
+          setHealthById((current) => ({
+            ...current,
+            [job.key]: {
+              loading: false,
+              data: detail,
+              snapshot: response.data,
+              evidence: response.evidence,
+              error: detail.error || null,
+            },
+          }));
+        })
+        .catch((error: unknown) => {
+          if (
+            !mountedRef.current ||
+            controller.signal.aborted ||
+            job.generation !== generationRef.current
+          ) {
+            return;
+          }
+          setHealthById((current) => ({
+            ...current,
+            [job.key]: {
+              loading: false,
+              data: null,
+              snapshot: null,
+              evidence: [],
+              error: errorMessage(error),
+            },
+          }));
+        })
+        .finally(() => {
+          activeControllersRef.current.delete(requestId);
+          activeCountRef.current -= 1;
+          pump();
+        });
+    }
   }, []);
 
-  // Read-only contextual Copilot over the already-loaded utilization snapshot.
-  // Resource/metric identities, observation windows, and missing-series status
-  // stay explicit; a cached read is still fresh evidence (D-03, D-06, D-09).
-  const healthAvailable = !health.error && Boolean(health.data);
+  const startGeneration = useCallback(
+    (
+      nextResources: FlatInventoryResource[],
+      requestScope: ScopeSelection,
+      forceRefresh: boolean,
+    ) => {
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+      queueRef.current = [];
+      activeControllersRef.current.forEach((controller) => controller.abort());
+
+      const nextHealth: Record<string, CardHealth> = {};
+      const jobs: HealthJob[] = [];
+      for (const resource of nextResources) {
+        const key = resourceKey(resource.resource_id);
+        nextHealth[key] = {
+          loading: true,
+          data: null,
+          snapshot: null,
+          evidence: [],
+          error: null,
+        };
+        jobs.push({
+          key,
+          resourceId: resource.resource_id,
+          scope: requestScope,
+          generation,
+          forceRefresh,
+        });
+      }
+      setHealthById(nextHealth);
+      queueRef.current = jobs;
+      pump();
+    },
+    [pump],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const activeControllers = activeControllersRef.current;
+    return () => {
+      mountedRef.current = false;
+      generationRef.current += 1;
+      queueRef.current = [];
+      activeControllers.forEach((controller) => controller.abort());
+    };
+  }, []);
+
+  useEffect(() => {
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    queueRef.current = [];
+    activeControllersRef.current.forEach((controller) => controller.abort());
+    setResources([]);
+    setHealthById({});
+    setInventoryError(null);
+    setInventoryLoading(true);
+
+    void inventoryApi
+      .resources(scope, 0, 500)
+      .then((response) => {
+        if (!mountedRef.current || generation !== generationRef.current) return;
+        const unique = new Map<string, FlatInventoryResource>();
+        for (const resource of response.data.resources) {
+          if (
+            !SUPPORTED_RESOURCE_TYPES.has(
+              resource.resource_type.toLocaleLowerCase(),
+            )
+          ) {
+            continue;
+          }
+          const key = resourceKey(resource.resource_id);
+          if (!unique.has(key)) unique.set(key, resource);
+        }
+        const nextResources = Array.from(unique.values());
+        setResources(nextResources);
+        setInventoryLoading(false);
+
+        const nextHealth: Record<string, CardHealth> = {};
+        for (const resource of nextResources) {
+          const key = resourceKey(resource.resource_id);
+          nextHealth[key] = {
+            loading: true,
+            data: null,
+            snapshot: null,
+            evidence: [],
+            error: null,
+          };
+          queueRef.current.push({
+            key,
+            resourceId: resource.resource_id,
+            scope,
+            generation,
+            forceRefresh: false,
+          });
+        }
+        setHealthById(nextHealth);
+        pump();
+      })
+      .catch((error: unknown) => {
+        if (!mountedRef.current || generation !== generationRef.current) return;
+        setInventoryError(errorMessage(error));
+        setInventoryLoading(false);
+      });
+  }, [pump, scope]);
+
+  const handleRefresh = useCallback(() => {
+    startGeneration(resources, scope, true);
+  }, [resources, scope, startGeneration]);
+
+  const retryResource = useCallback(
+    (resource: FlatInventoryResource) => {
+      const key = resourceKey(resource.resource_id);
+      setHealthById((current) => ({
+        ...current,
+        [key]: {
+          loading: true,
+          data: null,
+          snapshot: null,
+          evidence: [],
+          error: null,
+        },
+      }));
+      queueRef.current.push({
+        key,
+        resourceId: resource.resource_id,
+        scope,
+        generation: generationRef.current,
+        forceRefresh: true,
+      });
+      pump();
+    },
+    [pump, scope],
+  );
+
+  const successfulSnapshots = useMemo(
+    () =>
+      resources
+        .map((resource) => healthById[resourceKey(resource.resource_id)]?.snapshot)
+        .filter((snapshot): snapshot is ResourceHealthSnapshot => Boolean(snapshot)),
+    [healthById, resources],
+  );
+  const details = useMemo(
+    () =>
+      successfulSnapshots.flatMap((snapshot) => snapshot.resources.slice(0, 1)),
+    [successfulSnapshots],
+  );
+  const summary = useMemo(
+    () => ({
+      total: resources.length,
+      critical: details.filter((resource) => resource.status === "critical").length,
+      warning: details.filter((resource) => resource.status === "warning").length,
+      healthy: details.filter((resource) => resource.status === "healthy").length,
+      unknown: details.filter((resource) => resource.status === "unknown").length,
+    }),
+    [details, resources.length],
+  );
+  const warnings = useMemo(
+    () =>
+      Array.from(
+        new Set(successfulSnapshots.flatMap((snapshot) => snapshot.warnings)),
+      ),
+    [successfulSnapshots],
+  );
+  const unavailableMetrics = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          successfulSnapshots.flatMap(
+            (snapshot) => snapshot.unavailable_metrics,
+          ),
+        ),
+      ),
+    [successfulSnapshots],
+  );
+  const latestSnapshot = successfulSnapshots.at(-1);
+  const evidence = useMemo(
+    () =>
+      resources.flatMap(
+        (resource) =>
+          healthById[resourceKey(resource.resource_id)]?.evidence ?? [],
+      ),
+    [healthById, resources],
+  );
+  const healthAvailable = details.length > 0;
   const resourceHealthCopilot = buildResourceHealthCopilotContext({
     scope,
-    resources: resources.map((resource) => ({
+    resources: details.map((resource) => ({
       resource_id: resource.resource_id,
       resource_name: resource.resource_name,
       resource_type: resource.resource_type,
@@ -136,24 +519,18 @@ export default function ResourceHealthPage() {
       unavailable_metrics: resource.unavailable_metrics ?? [],
       series_point_count: resource.cpu_series?.length ?? 0,
     })),
-    loadedCount: resources.length,
-    totalCount: summary?.total ?? resources.length,
-    summary: summary
-      ? {
-          total: summary.total,
-          critical: summary.critical,
-          warning: summary.warning,
-          healthy: summary.healthy,
-          unknown: summary.unknown,
-        }
-      : null,
+    loadedCount: details.length,
+    totalCount: resources.length,
+    summary,
     available: healthAvailable,
-    cached: data?.cached,
-    observedAt: data?.observed_at,
+    cached:
+      successfulSnapshots.length > 0 &&
+      successfulSnapshots.every((snapshot) => snapshot.cached),
+    observedAt: latestSnapshot?.observed_at,
     freshness: healthAvailable ? "fresh" : "unavailable",
-    unavailableMetrics: data?.unavailable_metrics ?? [],
-    warnings: data?.warnings ?? [],
-    evidence: health.data?.evidence ?? [],
+    unavailableMetrics,
+    warnings,
+    evidence,
   });
 
   return (
@@ -161,17 +538,20 @@ export default function ResourceHealthPage() {
       <PageHeader
         eyebrow="Resource health"
         title="Compute resource health and utilization"
-        description="Azure Monitor utilization metrics for Virtual Machines and Container Apps in scope, cached briefly to avoid throttling."
+        description="Azure Monitor utilization metrics for VMs and Container Apps in scope, hydrated independently after inventory loads."
         metadata={
           <>
-            <span>{summary?.total ?? 0} observed</span>
-            <span>{summary?.critical ?? 0} critical</span>
-            <span>{summary?.warning ?? 0} warning</span>
-            {data && (
+            <span>{summary.total} observed</span>
+            <span>{summary.critical} critical</span>
+            <span>{summary.warning} warning</span>
+            {latestSnapshot ? (
               <span>
-                {data.cached ? "Cached" : "Live"} · observed {data.observed_at}
+                {successfulSnapshots.every((snapshot) => snapshot.cached)
+                  ? "Cached"
+                  : "Live"}{" "}
+                · observed {latestSnapshot.observed_at}
               </span>
-            )}
+            ) : null}
           </>
         }
         actions={
@@ -184,16 +564,20 @@ export default function ResourceHealthPage() {
               type="button"
               className="button button-secondary"
               onClick={handleRefresh}
-              disabled={health.loading}
+              disabled={inventoryLoading || resources.length === 0}
             >
-              {health.loading && refreshToken > 0 ? "Refreshing…" : "Refresh now"}
+              Refresh now
             </button>
           </div>
         }
       />
 
-      {(data?.unavailable_metrics?.length ?? 0) > 0 && (
-        <div className="state-panel state-empty" role="status" style={{ marginBottom: "1.5rem" }}>
+      {unavailableMetrics.length > 0 ? (
+        <div
+          className="state-panel state-empty"
+          role="status"
+          style={{ marginBottom: "1.5rem" }}
+        >
           <p>
             VM memory % and disk free % need either a Log Analytics workspace with
             classic guest performance counters, or an Azure Monitor Workspace receiving
@@ -201,71 +585,88 @@ export default function ResourceHealthPage() {
             Apps use platform memory metrics.
           </p>
         </div>
-      )}
+      ) : null}
 
-      {health.loading && (
-        <StatePanel title="Fetching live utilization…" message="Querying Azure Monitor Metrics for in-scope resources." tone="loading" />
-      )}
-
-      {!health.loading && health.error && (
+      {inventoryLoading ? (
         <StatePanel
-          title="Resource health is unavailable"
-          message={health.error.message || "Could not reach the resource health provider for this scope."}
+          title="Loading compute inventory…"
+          message="Resolving the authorized resources in the current scope."
+          tone="loading"
+        />
+      ) : null}
+
+      {!inventoryLoading && inventoryError ? (
+        <StatePanel
+          title="Resource inventory is unavailable"
+          message={inventoryError}
           tone="error"
         />
-      )}
+      ) : null}
 
-      {!health.loading && !health.error && resources.length === 0 && (
+      {!inventoryLoading && !inventoryError && resources.length === 0 ? (
         <StatePanel
           title="No supported resources found in scope"
           message="No virtual machines or Container Apps matched the current scope, or their connections are inactive."
           tone="empty"
         />
-      )}
+      ) : null}
 
-      {!health.loading && !health.error && resources.length > 0 && (
+      {!inventoryLoading && !inventoryError && resources.length > 0 ? (
         <>
           <div className="metric-grid" style={{ marginBottom: "1.5rem" }}>
-            <MetricCard label="Resources observed" value={summary?.total ?? 0} detail="In current scope" />
+            <MetricCard
+              label="Resources observed"
+              value={summary.total}
+              detail="In current scope"
+            />
             <MetricCard
               label="Critical"
-              value={summary?.critical ?? 0}
+              value={summary.critical}
               detail="CPU ≥ 90%"
-              tone={summary && summary.critical > 0 ? "critical" : "default"}
+              tone={summary.critical > 0 ? "critical" : "default"}
             />
             <MetricCard
               label="Warning"
-              value={summary?.warning ?? 0}
+              value={summary.warning}
               detail="CPU ≥ 70%"
-              tone={summary && summary.warning > 0 ? "warning" : "default"}
+              tone={summary.warning > 0 ? "warning" : "default"}
             />
             <MetricCard
               label="Healthy"
-              value={summary?.healthy ?? 0}
+              value={summary.healthy}
               detail="CPU below 70%"
               tone="success"
             />
           </div>
 
-          {(data?.warnings?.length ?? 0) > 0 && (
-            <div className="state-panel state-empty" role="status" style={{ marginBottom: "1.5rem" }}>
+          {warnings.length > 0 ? (
+            <div
+              className="state-panel state-empty"
+              role="status"
+              style={{ marginBottom: "1.5rem" }}
+            >
               <ul>
-                {data?.warnings?.map((warning) => (
+                {warnings.map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
               </ul>
             </div>
-          )}
+          ) : null}
 
-          <div className="card" style={{ marginBottom: "1.5rem", padding: "1rem" }}>
-            <UtilizationBarChart
-              data={resources.map((r) => ({
-                id: r.resource_id,
-                label: r.resource_name,
-                value: r.cpu_percent,
-              }))}
-            />
-          </div>
+          {details.length > 0 ? (
+            <div
+              className="card"
+              style={{ marginBottom: "1.5rem", padding: "1rem" }}
+            >
+              <UtilizationBarChart
+                data={details.map((resource) => ({
+                  id: resource.resource_id,
+                  label: resource.resource_name,
+                  value: resource.cpu_percent,
+                }))}
+              />
+            </div>
+          ) : null}
 
           <div
             style={{
@@ -275,11 +676,16 @@ export default function ResourceHealthPage() {
             }}
           >
             {resources.map((resource) => (
-              <ResourceCard key={resource.resource_id} resource={resource} />
+              <ResourceCard
+                key={resourceKey(resource.resource_id)}
+                resource={resource}
+                health={healthById[resourceKey(resource.resource_id)]}
+                onRetry={() => retryResource(resource)}
+              />
             ))}
           </div>
         </>
-      )}
+      ) : null}
 
       <CopilotDrawer
         open={copilotOpen}
