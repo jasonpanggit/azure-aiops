@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -586,7 +588,10 @@ def test_forged_object_cannot_authorize_external_execution() -> None:
     assert external_calls == 0
 
 
-def test_injected_authorizer_receives_exact_direct_execution_inputs() -> None:
+def test_constructor_authorizer_injection_is_rejected_and_cannot_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request = InvestigationRequest(
         question="Show inventory health",
         requested_scope={"subscription": ["sub-a"]},
@@ -600,23 +605,33 @@ def test_injected_authorizer_receives_exact_direct_execution_inputs() -> None:
             ),
         ),
     )
-    observed: dict[str, object] = {}
     external_calls = 0
-
-    def authorizer(**kwargs: object) -> None:
-        observed.update(kwargs)
-        raise CanaryAuthorizationError("test authority denied")
 
     def external_executor(*_args, **_kwargs):
         nonlocal external_calls
         external_calls += 1
         raise AssertionError("denied request reached external I/O")
 
-    with pytest.raises(CanaryAuthorizationError, match="test authority denied"):
+    with pytest.raises(TypeError, match="canonical_authorizer"):
         OrchestrationService(
             executor=external_executor,
-            canonical_authorizer=authorizer,
-        ).execute(
+            canonical_authorizer=lambda **_kwargs: None,  # type: ignore[call-arg]
+        )
+
+    manifest_path, metadata_path, environment = _write_authorization(tmp_path)
+    _install_runtime_case(
+        monkeypatch,
+        manifest_path,
+        metadata_path,
+        environment,
+    )
+    monkeypatch.setattr("operations.maf_orchestrator._canary_bucket", lambda _key: 0)
+    monkeypatch.setenv(
+        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        "c" * 64,
+    )
+    with pytest.raises(CanaryAuthorizationError, match="authorization digest"):
+        OrchestrationService(executor=external_executor).execute(
             request,
             context=object(),
             principal_subject="operator-a",
@@ -624,9 +639,6 @@ def test_injected_authorizer_receives_exact_direct_execution_inputs() -> None:
             effective_scope=Scope({"subscription": ["sub-a"]}),
         )
 
-    assert observed["request"] is request
-    assert observed["principal_subject"] == "operator-a"
-    assert observed["stable_key"] == "operator-a"
     assert external_calls == 0
 
 
@@ -673,8 +685,94 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "azure-mcp" not in authorization_release
     assert "aiops-web" not in authorization_release
     assert "-target=azurerm_container_app.api" in build_script
-    assert "validate_running_api_digest" in deploy_script
-    assert "properties.active && properties.healthState=='Healthy'" in deploy_script
+    assert "validate_api_authorization_environment" in deploy_script
+    for variable in (
+        "TF_CLI_ARGS",
+        "TF_CLI_ARGS_apply",
+        "TF_CLI_ARGS_plan",
+    ):
+        assert variable in deploy_script
+    assert '"${!name:-}"' in deploy_script
+    assert (
+        "deploy: API authorization release rejects non-empty ${name}."
+        in deploy_script
+    )
+    assert "validate_api_authorization_target" in deploy_script
+    assert (
+        '"${target_count}" -ne 1 || '
+        '"${target}" != "azurerm_container_app.api"'
+    ) in deploy_script
+    assert "-target|--target)" in deploy_script
+    assert "-target=*|--target=*)" in deploy_script
+    assert deploy_script.count('validate_api_authorization_target "$@"') == 1
+    assert "apply_api_authorization_release" in deploy_script
+    assert "apply_api_compatibility_hold" in deploy_script
+    assert "restore_and_verify_api_compatibility" in deploy_script
+    assert "api_digest_args" in deploy_script
+    assert 'API_DIGEST_ARGS+=("-var=api_image_digest=${digest}")' in deploy_script
+    assert (
+        'captured_api_image="$(terraform output -raw api_image'
+        in deploy_script
+    )
+    assert 'captured_api_digest="${captured_api_image##*@}"' in deploy_script
+    assert (
+        'validate_running_api_revision compatibility 0 "${captured_api_image}"'
+        in deploy_script
+    )
+    assert deploy_script.index(
+        'validate_running_api_revision compatibility 0 "${captured_api_image}"'
+    ) < deploy_script.index(
+        'terraform apply -input=false "${bound_args[@]}"',
+        deploy_script.index("apply_api_authorization_release()"),
+    )
+    assert (
+        '[[ "${applied_api_image}" != "${captured_api_image}" ]]'
+        in deploy_script
+    )
+    assert (
+        '[[ "${applied_api_digest}" != "${captured_api_digest}" ]]'
+        in deploy_script
+    )
+    assert (
+        '"${requested_mode}" "${requested_percentage}" "${captured_api_image}"'
+        in deploy_script
+    )
+    assert deploy_script.count(
+        'restore_and_verify_api_compatibility "${captured_api_image}" '
+        '"${bound_args[@]}"'
+    ) == 3
+    assert (
+        'environment.get("AIOPS_COPILOT_ROLLOUT_MODE", "")'
+        in deploy_script
+    )
+    assert (
+        'environment.get("AIOPS_COPILOT_CANARY_PERCENTAGE", "")'
+        in deploy_script
+    )
+    assert (
+        'az containerapp show --subscription "${ARM_SUBSCRIPTION_ID}"'
+        in deploy_script
+    )
+    assert (
+        'az containerapp revision list --subscription "${ARM_SUBSCRIPTION_ID}"'
+        in deploy_script
+    )
+    assert (
+        deploy_script.count(
+            'az containerapp revision list --subscription '
+            '"${ARM_SUBSCRIPTION_ID}"'
+        )
+        == 1
+    )
+    assert (
+        "resolved API resource ID does not match the authorized subscription, "
+        "resource group, and app"
+    ) in deploy_script
+    assert (
+        'expected_resource_id="/subscriptions/${authorized_subscription}/'
+        'resourceGroups/${authorized_rg}/providers/Microsoft.App/containerApps/'
+        '${authorized_app}"'
+    ) in deploy_script
     assert 'api_authorization_release}" != "1"' in deploy_script
     assert 'api_image_digest = \\"" digest "\\""' in build_script
     assert 'deployment_source_revision = \\"" revision "\\""' in build_script
@@ -684,6 +782,10 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "AIOPS_API_AUTHORIZATION_RELEASE=1 "
         "./infra/scripts/deploy.sh apply "
         "-target=azurerm_container_app.api"
+    ) in build_script
+    assert (
+        'exec "${repo_root}/infra/scripts/deploy.sh" apply \\\n'
+        "      -target=azurerm_container_app.api"
     ) in build_script
     assert 'var.copilot_rollout_mode != "default"' in terraform
     assert 'var.api_image_digest != ""' in terraform
@@ -707,6 +809,127 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         REVIEWED_TREE_EXCLUDED_PATHS,
     )
     assert '"src/operations/copilot_canary_authorization.v1.json"' in packaging
+
+
+@pytest.mark.parametrize(
+    "argument_environment",
+    ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"),
+)
+def test_authorization_release_rejects_terraform_argument_environment(
+    tmp_path: Path,
+    argument_environment: str,
+) -> None:
+    env_file = tmp_path / "deploy.env"
+    env_file.write_text(
+        """AZURE_SUBSCRIPTION_ID=sub
+AZURE_TENANT_ID=tenant
+AZURE_CLIENT_ID=client
+AZURE_CLIENT_SECRET=secret
+NEXT_PUBLIC_ENTRA_CLIENT_ID=web-client
+AIOPS_ENTRA_API_AUDIENCE=audience
+AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
+""",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    for name in ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"):
+        environment.pop(name, None)
+    environment.update(
+        {
+            "AIOPS_API_AUTHORIZATION_RELEASE": "1",
+            "AIOPS_DEPLOYER_OBJECT_ID": "deployer",
+            "AIOPS_ENV_FILE": str(env_file),
+            argument_environment: "-target=azurerm_resource_group.main",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "infra" / "scripts" / "deploy.sh"),
+            "apply",
+            "-target=azurerm_container_app.api",
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (
+        f"API authorization release rejects non-empty {argument_environment}."
+        in result.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--target", "azurerm_resource_group.main"),
+        ("--target=azurerm_resource_group.main",),
+        (
+            "-target=azurerm_container_app.api",
+            "--target=azurerm_resource_group.main",
+        ),
+        (
+            "--target",
+            "azurerm_container_app.api",
+            "-target=azurerm_container_app.api",
+        ),
+        (
+            "-target",
+            "azurerm_container_app.api",
+            "--target",
+            "azurerm_resource_group.main",
+        ),
+    ),
+)
+def test_authorization_release_rejects_invalid_or_multiple_target_forms(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    env_file = tmp_path / "deploy.env"
+    env_file.write_text(
+        """AZURE_SUBSCRIPTION_ID=sub
+AZURE_TENANT_ID=tenant
+AZURE_CLIENT_ID=client
+AZURE_CLIENT_SECRET=secret
+NEXT_PUBLIC_ENTRA_CLIENT_ID=web-client
+AIOPS_ENTRA_API_AUDIENCE=audience
+AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
+""",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    for name in ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"):
+        environment.pop(name, None)
+    environment.update(
+        {
+            "AIOPS_API_AUTHORIZATION_RELEASE": "1",
+            "AIOPS_DEPLOYER_OBJECT_ID": "deployer",
+            "AIOPS_ENV_FILE": str(env_file),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "infra" / "scripts" / "deploy.sh"),
+            "apply",
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "API authorization release requires exactly one Terraform target: "
+        "azurerm_container_app.api."
+    ) in result.stderr
 
 
 def test_observable_api_image_digest_is_not_runtime_authority(

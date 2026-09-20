@@ -45,14 +45,21 @@ from operations.orchestration_contract import (
     SpecialistStep,
     ToolCallCandidate,
 )
-from operations.orchestration_service import executive_synthesis_decision
+from operations.orchestration_service import (
+    OrchestrationService,
+    executive_synthesis_decision,
+)
 from operations.tools import STATUS_OK, Evidence, ToolResult
 from tests.copilot_authorization_fixtures import (
-    AuthorizedOrchestrationService as OrchestrationService,
-)
-from tests.copilot_authorization_fixtures import (
+    install_valid_canary_evidence,
     route_authority_for_test,
 )
+
+
+@pytest.fixture(autouse=True)
+def _install_canary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_valid_canary_evidence(monkeypatch)
+
 
 SENSITIVE_MARKERS = (
     "Which subscriptions",

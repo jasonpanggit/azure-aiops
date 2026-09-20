@@ -92,14 +92,31 @@ providers, reporting ready, or permitting canonical external I/O:
    identities, and coordinator identity exactly match the reviewed record.
 
 Terraform and `build-and-push.sh --api-authorization-release` still require and
-deploy the API by an immutable `sha256:` digest. The projected
+deploy the API by an immutable `sha256:` digest. Authorization releases must use
+`AIOPS_API_AUTHORIZATION_RELEASE=1 ./infra/scripts/deploy.sh apply
+-target=azurerm_container_app.api`; the wrapper rejects a missing target,
+duplicate target, full apply, or any extra/different target. No dependency
+target is required. The projected
 `AIOPS_API_IMAGE_DIGEST` is observability for deployment and external
 validation only: a container environment variable is self-attested and is
 therefore never a runtime authorization predicate or proof of the image that
-the platform is actually running. The post-deploy external validator/platform
-admission check that resolves the Container Apps revision to its registry
-digest is the image root of trust. Live canary promotion remains held until
-that external check passes.
+platform is actually running. Before canary traffic, the deployment wrapper
+first applies only the API target with rollout mode forced to `compatibility`,
+which projects a zero canonical percentage, and validates the active healthy
+revision's platform-reported registry digest, mode, and percentage. Only then
+does a second explicit API-only apply restore the requested canary values. The
+external platform digest is the image root of trust.
+
+The existing Terraform resource uses Container Apps `Single` revision mode, so
+this is a compatibility-mode stage rather than a retained zero-traffic
+revision: the candidate digest may serve legacy-compatible API traffic while
+validation runs, but it cannot serve canonical canary traffic. Terraform inputs
+and `terraform.tfvars` are not rewritten; the second apply reuses the operator's
+exact requested values. A staging, admission, second-apply, or activation
+failure triggers an explicit compatibility apply and verifies mode
+`compatibility` with percentage `0`. If Azure prevents that verification, the
+script exits nonzero with promotion held and requires immediate operator
+intervention; it never reports promotion success.
 
 Raw environment flags cannot create route authority. Any missing, malformed,
 expired, premature, inactive, mutable, or mismatched value makes `/ready`
@@ -115,9 +132,12 @@ invoke a server-held authorizer with the exact request, selection snapshots,
 principal, and principal-derived stable key. Production revalidates the
 packaged immutable `ValidatedCanaryAuthorization` and recomputes canary
 selection immediately before resolving a provider or invoking a tool.
-Caller-constructed decisions or proof objects are not accepted, preventing
-direct-call, replay, and routing-to-execution TOCTOU bypasses. Tests inject a
-bounded validator into the service rather than importing a production token.
+The production constructor exposes no authorizer injection point; callers
+cannot replace the module-held revalidator with a no-op. Caller-constructed
+decisions or proof objects are not accepted, preventing direct-call, replay,
+and routing-to-execution TOCTOU bypasses. Tests install an explicitly test-only
+module fixture rather than importing a production token or passing authority
+through the production constructor.
 
 ## Source the non-secret provider environment
 
@@ -222,7 +242,11 @@ so a rollback is a revision/mode switch, never a rebuild.
 
 ### Stage 3 — `canary`
 
-- **Deploy:** `terraform apply -var 'copilot_rollout_mode=canary' -var 'copilot_canary_percentage=10'`.
+- **Deploy:** record the requested `copilot_rollout_mode=canary` and
+  `copilot_canary_percentage` (1–10) in the normal Terraform inputs, then run
+  `AIOPS_API_AUTHORIZATION_RELEASE=1 ./infra/scripts/deploy.sh apply
+  -target=azurerm_container_app.api`. Do not run a full apply or add another
+  target; the wrapper rejects both.
 - **Behaviour:** the canonical orchestrator becomes the default for the bounded
   traffic share only. This authorization permits no value above 10.
 - **Immutable release inputs:** set the exact reviewed specialist release and
@@ -237,8 +261,12 @@ so a rollback is a revision/mode switch, never a rebuild.
   verifies the returned repository, tag, and lowercase `sha256:` digest, then
   atomically records only `api_image_digest` and
   `deployment_source_revision` in `terraform.tfvars` before Terraform apply.
-  After apply, independently resolve the running Container Apps revision and
-  admit it only when its platform-reported digest equals the release digest.
+  The wrapper performs two API-only applies: first the digest-pinned candidate
+  in compatibility mode with zero canonical canary, then—only after the active
+  healthy revision reports the exact digest/mode/percentage—the originally
+  requested canary. It validates the final active revision too. Any failure
+  automatically restores and verifies compatibility/0 before returning
+  failure.
 - **Automatic hold:** if any applicable predetermined threshold fails
   (`scripts/evaluate_agents.py … evaluate_gates`), the canary **holds
   automatically** — a deterministic safety or citation-integrity failure HOLDs the

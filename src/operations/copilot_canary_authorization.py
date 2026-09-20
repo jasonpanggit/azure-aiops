@@ -392,6 +392,10 @@ class CanaryAuthorizationError(ValueError):
         super().__init__(f"Copilot canary authorization denied: {reason}")
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def canary_authorization_required(
     environment: Mapping[str, str] | None = None,
 ) -> bool:
@@ -474,7 +478,7 @@ def validate_canary_authorization(
     ):
         raise CanaryAuthorizationError("packaged reviewed tree digest mismatch")
 
-    current = (now or datetime.now(UTC)).astimezone(UTC)
+    current = (now or _utc_now()).astimezone(UTC)
     if current < manifest.not_before:
         raise CanaryAuthorizationError("authorization is not yet valid")
     if current >= manifest.expires_at:

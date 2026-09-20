@@ -230,11 +230,15 @@ def authorize_canonical_execution(
         or not decision.authorization_manifest_sha256
         or not decision.reviewed_tree_sha256
         or decision.authorization_expires_at is None
-        or datetime.now(UTC) >= decision.authorization_expires_at
+        or _utc_now() >= decision.authorization_expires_at
     ):
         raise CanaryAuthorizationError(
             "canonical execution route authority is absent or mismatched"
         )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def maf_mode_enabled() -> bool:

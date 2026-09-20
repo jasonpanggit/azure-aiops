@@ -21,6 +21,7 @@ from operations.orchestration_contract import (
     ToolCallCandidate,
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
+from operations.orchestration_service import OrchestrationService
 from operations.specialist_manifest import (
     INVENTORY_DATA_HEALTH_ID,
     PageMapping,
@@ -28,11 +29,14 @@ from operations.specialist_manifest import (
 )
 from operations.tools import ToolResult
 from tests.copilot_authorization_fixtures import (
-    AuthorizedOrchestrationService as OrchestrationService,
-)
-from tests.copilot_authorization_fixtures import (
+    install_valid_canary_evidence,
     route_authority_for_test,
 )
+
+
+@pytest.fixture(autouse=True)
+def _install_canary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_valid_canary_evidence(monkeypatch)
 
 
 def _request(*, scope: dict[str, list[str]] | None = None) -> InvestigationRequest:

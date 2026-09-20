@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from api.errors import ApiError
 from api.scope import Scope
+from operations import maf_orchestrator
 from operations.copilot_canary_authorization import CanaryAuthorizationError
 from operations.cve_response import (
     canonical_cve_id,
@@ -42,9 +43,7 @@ from operations.investigation_thread_store import (
     scope_within,
 )
 from operations.maf_orchestrator import (
-    CanonicalExecutionAuthorizer,
     CopilotRolloutDecision,
-    authorize_canonical_execution,
     build_deterministic_fallback,
     select_specialists_for_turn,
 )
@@ -1073,9 +1072,6 @@ class OrchestrationService:
         executive_agent: Any = None,
         telemetry: Any = None,
         always_synthesize: bool = False,
-        canonical_authorizer: CanonicalExecutionAuthorizer = (
-            authorize_canonical_execution
-        ),
     ) -> None:
         self.planner = planner
         self.fallback_planner = fallback_planner
@@ -1086,7 +1082,6 @@ class OrchestrationService:
         self.executive_agent = executive_agent
         self.telemetry = telemetry
         self.always_synthesize = always_synthesize
-        self.canonical_authorizer = canonical_authorizer
 
     def execute(
         self,
@@ -1134,7 +1129,7 @@ class OrchestrationService:
             raise CanaryAuthorizationError(
                 "caller-supplied canonical route authority is not accepted"
             )
-        self.canonical_authorizer(
+        maf_orchestrator.authorize_canonical_execution(
             request=request,
             principal_subject=principal_subject,
             stable_key=stable_key or principal_subject,

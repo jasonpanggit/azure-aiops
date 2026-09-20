@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -48,25 +49,16 @@ from operations.specialist_manifest import (
 )
 from operations.tools import STATUS_OK, ToolResult
 from tests.copilot_authorization_fixtures import (
-    canonical_authorizer_for_test,
     enable_authorized_canary,
+    install_valid_canary_evidence,
     rollout_decision_for_test,
     route_authority_for_test,
 )
 
 
 @pytest.fixture(autouse=True)
-def _inject_canonical_authorizer(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_init = OrchestrationService.__init__
-
-    def authorized_init(self, **kwargs):
-        kwargs.setdefault(
-            "canonical_authorizer",
-            canonical_authorizer_for_test(),
-        )
-        original_init(self, **kwargs)
-
-    monkeypatch.setattr(OrchestrationService, "__init__", authorized_init)
+def _install_canary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_valid_canary_evidence(monkeypatch)
 
 
 def _enable_canonical_rollout(monkeypatch) -> None:
@@ -10247,6 +10239,10 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
     carries an explicit deployment status, so the UI renders configured/
     unavailable from the API instead of a local, drift-prone card list."""
     _enable_canonical_rollout(monkeypatch)
+    for name in tuple(os.environ):
+        if name.startswith("FOUNDRY_"):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("AIOPS_SPECIALIST_ACTIVATION_SOURCE", raising=False)
     context = _context(tmp_path, None)
     client = TestClient(create_app(context), raise_server_exceptions=False)
 
