@@ -686,12 +686,8 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "aiops-web" not in authorization_release
     assert "-target=azurerm_container_app.api" in build_script
     assert "validate_api_authorization_environment" in deploy_script
-    for variable in (
-        "TF_CLI_ARGS",
-        "TF_CLI_ARGS_apply",
-        "TF_CLI_ARGS_plan",
-    ):
-        assert variable in deploy_script
+    assert "compgen -e" in deploy_script
+    assert "TF_CLI_ARGS|TF_CLI_ARGS_*)" in deploy_script
     assert '"${!name:-}"' in deploy_script
     assert (
         "deploy: API authorization release rejects non-empty ${name}."
@@ -813,7 +809,13 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
 
 @pytest.mark.parametrize(
     "argument_environment",
-    ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"),
+    (
+        "TF_CLI_ARGS",
+        "TF_CLI_ARGS_apply",
+        "TF_CLI_ARGS_plan",
+        "TF_CLI_ARGS_output",
+        "TF_CLI_ARGS_init",
+    ),
 )
 def test_authorization_release_rejects_terraform_argument_environment(
     tmp_path: Path,
@@ -832,7 +834,13 @@ AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
         encoding="utf-8",
     )
     environment = os.environ.copy()
-    for name in ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"):
+    for name in (
+        "TF_CLI_ARGS",
+        "TF_CLI_ARGS_apply",
+        "TF_CLI_ARGS_plan",
+        "TF_CLI_ARGS_output",
+        "TF_CLI_ARGS_init",
+    ):
         environment.pop(name, None)
     environment.update(
         {
@@ -902,7 +910,13 @@ AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
         encoding="utf-8",
     )
     environment = os.environ.copy()
-    for name in ("TF_CLI_ARGS", "TF_CLI_ARGS_apply", "TF_CLI_ARGS_plan"):
+    for name in (
+        "TF_CLI_ARGS",
+        "TF_CLI_ARGS_apply",
+        "TF_CLI_ARGS_plan",
+        "TF_CLI_ARGS_output",
+        "TF_CLI_ARGS_init",
+    ):
         environment.pop(name, None)
     environment.update(
         {

@@ -109,12 +109,16 @@ api_authorization_release="${AIOPS_API_AUTHORIZATION_RELEASE:-0}"
 validate_api_authorization_environment() {
   local name
 
-  for name in TF_CLI_ARGS TF_CLI_ARGS_apply TF_CLI_ARGS_plan; do
-    if [[ -n "${!name:-}" ]]; then
-      echo "deploy: API authorization release rejects non-empty ${name}." >&2
-      return 1
-    fi
-  done
+  while IFS= read -r name; do
+    case "${name}" in
+      TF_CLI_ARGS|TF_CLI_ARGS_*)
+        if [[ -n "${!name:-}" ]]; then
+          echo "deploy: API authorization release rejects non-empty ${name}." >&2
+          return 1
+        fi
+        ;;
+    esac
+  done < <(compgen -e)
 }
 
 validate_api_authorization_target() {
