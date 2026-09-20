@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -77,6 +78,7 @@ CONTAINER_MANIFEST_PATH = "/app/src/operations/specialists.v1.json"
 OPERATIONS_SERVER_LABEL = "operations-mcp"
 AZURE_SERVER_LABEL = "azure-mcp"
 CONNECTION_LABELS = (OPERATIONS_SERVER_LABEL, AZURE_SERVER_LABEL)
+AZURE_AI_SEARCH_TOOL_TYPE = "azure_ai_search"
 PROJECT_CONNECTION_ID_PATTERN = re.compile(
     r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
     r"microsoft\.cognitiveservices/accounts/[^/]+/projects/[^/]+/"
@@ -96,9 +98,6 @@ PROJECT_CONNECTION_ID_PATTERN = re.compile(
 # "just check the newest one" fallback.
 LIVE_REQUIRED_ENV = (
     "FOUNDRY_PROJECT_ENDPOINT",
-    "AZURE_TENANT_ID",
-    "AZURE_CLIENT_ID",
-    "AZURE_CLIENT_SECRET",
     "OPERATIONS_MCP_SERVER_URL",
     "AZURE_MCP_SERVER_URL",
     "MCP_APIM_AUDIENCE",
@@ -495,6 +494,8 @@ def _check_provider_environment() -> dict[str, Any]:
         "FOUNDRY_CANDIDATE_MAPPING",
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
         "FOUNDRY_AZURE_MCP_CONNECTION_ID",
+        "FOUNDRY_AI_SEARCH_CONNECTION_ID",
+        "FOUNDRY_AI_SEARCH_INDEX_NAME",
         "AIOPS_COPILOT_ROLLOUT_MODE",
         "AIOPS_COPILOT_CANARY_PERCENTAGE",
         "AIOPS_COPILOT_ROLLBACK_MODE",
@@ -652,6 +653,28 @@ def _get_json(url: str, headers: dict[str, str]) -> Any:
 def _access_token(env: dict[str, str], *, scope: str) -> str:
     """Acquire a token for one explicit audience."""
 
+    if env.get("FOUNDRY_AUTH_MODE", "client_secret") == "azure_cli":
+        completed = subprocess.run(
+            [
+                "az",
+                "account",
+                "get-access-token",
+                "--scope",
+                scope,
+                "--query",
+                "accessToken",
+                "--output",
+                "tsv",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        token = completed.stdout.strip()
+        if completed.returncode != 0 or not token:
+            raise OSError("Azure CLI token acquisition failed")
+        return token
+
     data = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
@@ -696,22 +719,217 @@ def _agent_allowed_tools(definition: Any) -> dict[str, tuple[str, ...]]:
         OPERATIONS_SERVER_LABEL: (),
         AZURE_SERVER_LABEL: (),
     }
-    for tool in (definition or {}).get("tools", []) or []:
+    if not isinstance(definition, dict):
+        return granted
+    tools = definition.get("tools")
+    if not isinstance(tools, list):
+        return granted
+    for tool in tools:
         if not isinstance(tool, dict) or tool.get("type") != "mcp":
             continue
         label = str(tool.get("server_label", ""))
         if label in granted:
+            allowed_tools = tool.get("allowed_tools")
+            if isinstance(allowed_tools, dict):
+                allowed_tools = allowed_tools.get("tool_names")
+            if not isinstance(allowed_tools, list):
+                continue
             granted[label] = tuple(
-                str(name) for name in tool.get("allowed_tools", []) or []
+                str(name) for name in allowed_tools
             )
     return granted
+
+
+def validate_agent_mcp_definition(
+    *,
+    specialist_id: str,
+    definition: Any,
+    expected_ai_search_connection_id: str = "",
+    expected_ai_search_index_name: str = "",
+) -> list[dict[str, Any]]:
+    """Reject malformed, missing, duplicate, or unexpected MCP definitions."""
+
+    failures: list[dict[str, Any]] = []
+    if not isinstance(definition, dict):
+        return [_failure("malformed_agent_definition", specialist=specialist_id)]
+    tools = definition.get("tools")
+    if not isinstance(tools, list):
+        return [_failure("malformed_mcp_tools", specialist=specialist_id)]
+
+    labels: list[str] = []
+    non_mcp_types: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            failures.append(
+                _failure("malformed_agent_tool", specialist=specialist_id)
+            )
+            continue
+        tool_type = tool.get("type")
+        if tool_type != "mcp":
+            non_mcp_types.append(str(tool_type or ""))
+            if tool_type != AZURE_AI_SEARCH_TOOL_TYPE:
+                failures.append(
+                    _failure(
+                        "unexpected_agent_tool",
+                        specialist=specialist_id,
+                        tool_type=str(tool_type or ""),
+                    )
+                )
+                continue
+            if not expected_ai_search_connection_id or not expected_ai_search_index_name:
+                failures.append(
+                    _failure(
+                        "unexpected_agent_tool",
+                        specialist=specialist_id,
+                        tool_type=AZURE_AI_SEARCH_TOOL_TYPE,
+                    )
+                )
+                continue
+            search = tool.get("azure_ai_search")
+            indexes = search.get("indexes") if isinstance(search, dict) else None
+            expected_search_id = (
+                expected_ai_search_connection_id.strip().rstrip("/").casefold()
+            )
+            valid_search = (
+                isinstance(indexes, list)
+                and len(indexes) == 1
+                and isinstance(indexes[0], dict)
+                and set(indexes[0])
+                == {"project_connection_id", "index_name", "query_type"}
+                and isinstance(indexes[0].get("project_connection_id"), str)
+                and PROJECT_CONNECTION_ID_PATTERN.fullmatch(
+                    indexes[0]["project_connection_id"].strip()
+                )
+                and (
+                    not expected_search_id
+                    or indexes[0]["project_connection_id"]
+                    .strip()
+                    .rstrip("/")
+                    .casefold()
+                    == expected_search_id
+                )
+                and isinstance(indexes[0].get("index_name"), str)
+                and bool(indexes[0]["index_name"].strip())
+                and (
+                    not expected_ai_search_index_name
+                    or indexes[0]["index_name"].strip()
+                    == expected_ai_search_index_name
+                )
+                and indexes[0].get("query_type") == "vector_semantic_hybrid"
+            )
+            if not valid_search:
+                failures.append(
+                    _failure(
+                        "malformed_azure_ai_search_tool",
+                        specialist=specialist_id,
+                    )
+                )
+            continue
+        label = str(tool.get("server_label", "")).strip()
+        labels.append(label)
+        allowed_tools = tool.get("allowed_tools")
+        if isinstance(allowed_tools, dict):
+            if set(allowed_tools) != {"tool_names"}:
+                failures.append(
+                    _failure(
+                        "malformed_mcp_grants",
+                        specialist=specialist_id,
+                        server=label,
+                    )
+                )
+                continue
+            allowed_tools = allowed_tools.get("tool_names")
+        if (
+            not isinstance(allowed_tools, list)
+            or any(not isinstance(name, str) or not name for name in allowed_tools)
+            or len(allowed_tools) != len(set(allowed_tools))
+        ):
+            failures.append(
+                _failure(
+                    "malformed_mcp_grants",
+                    specialist=specialist_id,
+                    server=label,
+                )
+            )
+        connection_id = tool.get("project_connection_id")
+        if not isinstance(connection_id, str) or not connection_id.strip():
+            failures.append(
+                _failure(
+                    "project_connection_mismatch",
+                    specialist=specialist_id,
+                    server=label,
+                )
+            )
+
+    unexpected = sorted(set(labels) - set(CONNECTION_LABELS))
+    missing = sorted(set(CONNECTION_LABELS) - set(labels))
+    duplicate = sorted(label for label in set(labels) if labels.count(label) > 1)
+    if unexpected or missing or duplicate:
+        failures.append(
+            _failure(
+                "mcp_tool_definition_mismatch",
+                specialist=specialist_id,
+                unexpected=unexpected,
+                missing=missing,
+                duplicate=duplicate,
+            )
+        )
+    duplicate_non_mcp = sorted(
+        tool_type
+        for tool_type in set(non_mcp_types)
+        if non_mcp_types.count(tool_type) > 1
+    )
+    if duplicate_non_mcp:
+        failures.append(
+            _failure(
+                "duplicate_agent_tool",
+                specialist=specialist_id,
+                tool_types=duplicate_non_mcp,
+            )
+        )
+    if expected_ai_search_connection_id and non_mcp_types.count(
+        AZURE_AI_SEARCH_TOOL_TYPE
+    ) != 1:
+        failures.append(
+            _failure(
+                "azure_ai_search_tool_mismatch",
+                specialist=specialist_id,
+            )
+        )
+    return failures
+
+
+def validate_coordinator_definition(definition: Any) -> list[dict[str, Any]]:
+    """Require the shared coordinator to remain a prompt-only synthesizer."""
+
+    if not isinstance(definition, dict):
+        return [
+            _failure(
+                "malformed_agent_definition",
+                specialist="operations_copilot",
+            )
+        ]
+    tools = definition.get("tools", [])
+    if not isinstance(tools, list) or tools:
+        return [
+            _failure(
+                "coordinator_tool_boundary_violation",
+                specialist="operations_copilot",
+            )
+        ]
+    return []
 
 
 def _agent_connection_ids(definition: Any) -> dict[str, str]:
     """Return each governed MCP label's exact project connection identity."""
 
     connections = {label: "" for label in CONNECTION_LABELS}
-    for tool in (definition or {}).get("tools", []) or []:
+    if not isinstance(definition, dict):
+        return connections
+    tools = definition.get("tools")
+    if not isinstance(tools, list):
+        return connections
+    for tool in tools:
         if not isinstance(tool, dict) or tool.get("type") != "mcp":
             continue
         label = str(tool.get("server_label", ""))
@@ -729,10 +947,21 @@ def compare_connection_bindings(
     """Require every MCP tool definition to use its governed connection ID."""
 
     failures: list[dict[str, Any]] = []
+    expected_ids = {
+        server: value.strip().rstrip("/").casefold()
+        for server, value in expected.items()
+    }
+    terminal_names = [
+        value.rsplit("/", 1)[-1] for value in expected_ids.values() if value
+    ]
     for server in CONNECTION_LABELS:
-        expected_id = expected.get(server, "").strip().rstrip("/").casefold()
+        expected_id = expected_ids.get(server, "")
         actual_id = actual.get(server, "").strip().rstrip("/").casefold()
-        if not expected_id or actual_id != expected_id:
+        expected_name = expected_id.rsplit("/", 1)[-1]
+        accepted = {expected_id}
+        if expected_name and terminal_names.count(expected_name) == 1:
+            accepted.add(expected_name)
+        if not expected_id or actual_id not in accepted:
             failures.append(
                 _failure(
                     "project_connection_mismatch",
@@ -909,6 +1138,23 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
 
     env = dict(os.environ if env is None else env)
     missing = [name for name in LIVE_REQUIRED_ENV if not env.get(name, "").strip()]
+    auth_mode = env.get("FOUNDRY_AUTH_MODE", "client_secret")
+    if auth_mode == "client_secret":
+        missing.extend(
+            name
+            for name in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+            if not env.get(name, "").strip()
+        )
+    elif auth_mode != "azure_cli":
+        missing.append("FOUNDRY_AUTH_MODE")
+    search_connection_id = env.get("FOUNDRY_AI_SEARCH_CONNECTION_ID", "").strip()
+    search_index_name = env.get("FOUNDRY_AI_SEARCH_INDEX_NAME", "").strip()
+    if bool(search_connection_id) != bool(search_index_name):
+        missing.append(
+            "FOUNDRY_AI_SEARCH_INDEX_NAME"
+            if search_connection_id
+            else "FOUNDRY_AI_SEARCH_CONNECTION_ID"
+        )
     if missing:
         return {
             "mode": "live",
@@ -1065,9 +1311,12 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
         for entry in (connection_payload or {}).get("value", []) or []
         if isinstance(entry, dict) and entry.get("id")
     }
+    expected_live_connections = dict(candidate_connections)
+    if search_connection_id:
+        expected_live_connections[AZURE_AI_SEARCH_TOOL_TYPE] = search_connection_id
     missing_connections = [
         label
-        for label, connection_id in candidate_connections.items()
+        for label, connection_id in expected_live_connections.items()
         if connection_id.casefold() not in live_connection_ids
     ]
     if missing_connections:
@@ -1118,7 +1367,12 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 )
             )
         else:
-            coordinator_definition = coordinator_pinned.get("definition") or {}
+            coordinator_definition = coordinator_pinned.get("definition")
+            failures.extend(
+                validate_coordinator_definition(coordinator_definition)
+            )
+            if not isinstance(coordinator_definition, dict):
+                coordinator_definition = {}
             if (
                 deployment_model
                 and coordinator_definition.get("model") != deployment_model
@@ -1192,8 +1446,20 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             )
             continue
 
-        definition = pinned.get("definition") or {}
-        if deployment_model and definition.get("model") != deployment_model:
+        definition = pinned.get("definition")
+        failures.extend(
+            validate_agent_mcp_definition(
+                specialist_id=specialist.id,
+                definition=definition,
+                expected_ai_search_connection_id=search_connection_id,
+                expected_ai_search_index_name=search_index_name,
+            )
+        )
+        definition_object = definition if isinstance(definition, dict) else {}
+        if (
+            deployment_model
+            and definition_object.get("model") != deployment_model
+        ):
             failures.append(
                 _failure(
                     "deployed_model_mismatch",
@@ -1202,12 +1468,12 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 )
             )
 
-        granted = _agent_allowed_tools(definition)
+        granted = _agent_allowed_tools(definition_object)
         failures.extend(
             compare_connection_bindings(
                 specialist_id=specialist.id,
                 expected=candidate_connections,
-                actual=_agent_connection_ids(definition),
+                actual=_agent_connection_ids(definition_object),
             )
         )
         failures.extend(
