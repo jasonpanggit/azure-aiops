@@ -7,7 +7,11 @@ from test_api_copilot_unified import _canonical_body
 
 from api.app import create_app
 from api.evidence import Evidence
-from operations.foundry_agent import FoundryAgentError
+from operations.foundry_agent import (
+    FoundryAgentError,
+    FoundryCoordinatorPlanner,
+    FoundryCoordinatorSynthesisAgent,
+)
 from operations.investigation import run_investigation
 from operations.orchestration_service import OrchestrationService
 from operations.tools import STATUS_OK, ToolResult
@@ -180,11 +184,25 @@ def test_shadow_reports_deterministic_plan_comparison_without_canonical_io(
         canonical_calls.append(name)
         return ToolResult(status=STATUS_OK)
 
+    def fail_canonical_path(*_args, **_kwargs):
+        raise AssertionError("shadow preview executed a canonical I/O path")
+
     monkeypatch.setattr(
         "operations.investigation.call_tool",
         compatibility_call_tool,
     )
     monkeypatch.setattr("api.routers.copilot.call_tool", canonical_call_tool)
+    monkeypatch.setattr(OrchestrationService, "execute", fail_canonical_path)
+    monkeypatch.setattr(
+        FoundryCoordinatorPlanner,
+        "__call__",
+        fail_canonical_path,
+    )
+    monkeypatch.setattr(
+        FoundryCoordinatorSynthesisAgent,
+        "answer",
+        fail_canonical_path,
+    )
     body = _canonical_body()
     body.pop("hint")
     body["question"] = "Give an executive overview of this resource."
@@ -215,6 +233,16 @@ def test_shadow_reports_deterministic_plan_comparison_without_canonical_io(
     assert comparison["canonical"]["plan_outcome"] == "planned"
     assert comparison["canonical"]["selected_tools"]
     assert canonical_calls == []
+    assert result["rollout"]["canonical_preview_external_io"] == {
+        "tool_calls": 0,
+        "model_or_narration_calls": 0,
+    }
+    assert all(
+        count == 0
+        for count in result["rollout"][
+            "canonical_preview_external_io"
+        ].values()
+    )
     assert comparison["matches"]["plan_outcome"] is True
     assert comparison["matches"]["selected_tools"] is True
     assert comparison["divergent_fields"] == []

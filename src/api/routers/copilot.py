@@ -869,6 +869,10 @@ def _canonical_plan_preview(
             "plan_outcome": (
                 "planned" if candidate is not None else "no_safe_plan"
             ),
+            "external_io": {
+                "tool_calls": 0,
+                "model_or_narration_calls": 0,
+            },
         },
         policy_validated,
     )
@@ -2285,6 +2289,9 @@ def investigate_canonical(
     }
     if comparison is not None:
         result_data["rollout"]["comparison"] = comparison
+        result_data["rollout"]["canonical_preview_external_io"] = (
+            canonical_preview["external_io"]
+        )
     synthesis_evidence_refs = {
         str(reference)
         for claim in (result_data.get("synthesis") or {}).get("claims", [])

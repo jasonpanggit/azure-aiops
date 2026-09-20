@@ -63,6 +63,20 @@ connections read-only, requires both IDs to exist, and checks that every pinned
 agent version uses those exact IDs. A connection display name is not accepted
 as an ID.
 
+### Candidate catalog integrity and authenticity boundary
+
+The configured raw-artifact SHA-256 is an integrity and corruption check only:
+it proves that the deployed bytes match the separately reviewed digest, but it
+does not identify who produced either value. Candidate-catalog authenticity
+currently depends on the compensating deployment boundary: Azure Container Apps
+deployment RBAC plus sole-writer release control must ensure that only the
+reviewed release path can set the artifact and its expected digest together.
+
+Broad promotion requires that compensating control to remain enforced and
+auditable. If deployment ownership cannot remain sole-writer, promotion must
+stay blocked until the catalog uses an identity-bound signature or HMAC whose
+verification key is controlled independently from the artifact writer.
+
 ### Current external onboarding blocker
 
 The reported live inventory contains only one governed connection named
@@ -115,7 +129,10 @@ so a rollback is a revision/mode switch, never a rebuild.
 - **Behaviour:** for each turn, compute the canonical decision alongside the
   fallback and record the comparison. **Shadow reuses the already-collected
   deterministic inputs and never double-runs external tools or models, and never
-  exposes a mutation** (per D-02, D-09, D-10).
+  exposes a mutation** (per D-02, D-09, D-10). Each response reports
+  `data.rollout.canonical_preview_external_io.tool_calls` and
+  `data.rollout.canonical_preview_external_io.model_or_narration_calls`; both
+  must be exactly `0`.
 - **Validate:** run the corpus; confirm zero deterministic safety/citation-integrity
   violations and that shadow adds no external tool/model calls.
 - **Rollback:** `terraform apply -var 'copilot_rollout_mode=compatibility'`.
