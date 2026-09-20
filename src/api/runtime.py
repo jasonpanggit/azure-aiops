@@ -117,6 +117,10 @@ from ontology_discovery.generation_resolver import (
     GenerationSelection,
 )
 from operations.autonomous_investigation import configure_ledger_store
+from operations.copilot_canary_authorization import (
+    canary_authorization_required,
+    require_canary_authorization_if_requested,
+)
 from operations.defender_configuration import (
     AzureArmDefenderConfigurationAdapter,
     DefenderConfigurationUnavailable,
@@ -2938,6 +2942,7 @@ def _load_foundry_agent() -> FoundryPromptAgent | None:
     stateless HTTP client whose configuration cannot change without a restart,
     and rebuilding it per request would discard its cached access token.
     """
+    require_canary_authorization_if_requested()
     global _foundry_agent
     if _foundry_agent is _UNSET:
         # Operations Copilot is the shared narrator/orchestrator. Specialist
@@ -2975,6 +2980,7 @@ def _load_foundry_specialist_agent(specialist_id: str) -> FoundryPromptAgent | N
     shared narrator. Routing every page identically, with the narrator kept
     only as an explicit last resort, removes that ambiguity.
     """
+    require_canary_authorization_if_requested()
     if specialist_id not in _foundry_specialist_agents:
         agent_class = select_foundry_agent_class(
             specialist_id,
@@ -3828,6 +3834,12 @@ def _build_provider_runtime(
         loader=_load_foundry_agent,
         configured=foundry_configured or coordinator_required,
         required=coordinator_required,
+    )
+    authorization_required = canary_authorization_required()
+    specs["copilot_canary_authorization"] = ProviderSpec(
+        loader=require_canary_authorization_if_requested,
+        configured=authorization_required,
+        required=authorization_required,
     )
     for specialist_id in SPECIALIST_IDS:
         specialist_configured = bool(

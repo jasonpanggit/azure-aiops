@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 from onboarding.credentials import SecretNotFoundError, SecretStorageError
 from onboarding.service import OnboardingError
+from operations.copilot_canary_authorization import canary_authorization_health
 
 from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
@@ -480,11 +481,22 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
                 },
             }
         )
+        authorization_health = canary_authorization_health()
+        if authorization_health["status"] == "denied":
+            runtime_health = {
+                **runtime_health,
+                "readiness": "degraded",
+                "degraded_reason": (
+                    "Copilot canary authorization denied: "
+                    f"{authorization_health['reason']}"
+                ),
+            }
         semantic = runtime_health["providers"].get("semantic", {})
         return {
             "status": "ok",
             "version": API_VERSION,
             "semantic_snapshot_loaded": bool(semantic.get("loaded")),
+            "copilot_canary_authorization": authorization_health,
             **runtime_health,
         }
 

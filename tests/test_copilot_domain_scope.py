@@ -18,6 +18,7 @@ from operations.orchestration_policy import PolicyViolation
 from operations.orchestration_service import OrchestrationService
 from semantic.semantic_engine import SemanticEngine
 from semantic.semantic_indexes import SemanticIndexes
+from tests.copilot_authorization_fixtures import route_authority_for_test
 
 
 def test_cross_scope_domain_entity_is_rejected_before_retention(
@@ -198,6 +199,7 @@ def test_service_rejects_unresolved_domain_selection_before_execution():
             context=object(),
             principal_subject="operator-a",
             effective_scope=Scope({"subscription": ["sub-a"]}),
+            route_authority=route_authority_for_test(request),
         )
 
     assert calls == []

@@ -3,7 +3,12 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  registry_server = azurerm_container_registry.main.login_server
+  registry_server                   = azurerm_container_registry.main.login_server
+  copilot_canary_authorization_path = "${path.module}/../../src/operations/copilot_canary_authorization.v1.json"
+  copilot_canary_authorization      = jsondecode(file(local.copilot_canary_authorization_path))
+  copilot_canary_authorization_sha256 = filesha256(
+    local.copilot_canary_authorization_path
+  )
   gateway_assertion = coalesce(
     nonsensitive(var.apim_gateway_assertion),
     random_password.apim_gateway_assertion.result,
@@ -34,15 +39,18 @@ locals {
   #                    external tools/models or exposing any mutation
   #   canary        -> canonical default for a bounded traffic share, with an
   #                    automatic hold on any predetermined threshold failure
-  #   default       -> canonical default for all traffic
+  #   default       -> hard-denied until a separate authorization is reviewed
   #
-  # Canary traffic is bounded only in canary mode; every other mode is 0% or
-  # 100% and never a partial split. Rollback restores the prior revision/mode
-  # without rewriting threads or ledgers, so the fallback mode is retained
-  # alongside the active mode.
+  # Canary traffic is bounded only in canary mode; every other permitted mode
+  # is 0%. Rollback restores the prior revision/mode without rewriting threads
+  # or ledgers, so the fallback mode is retained alongside the active mode.
   copilot_canary_percentage = (
-    var.copilot_rollout_mode == "canary" ? var.copilot_canary_percentage :
-    var.copilot_rollout_mode == "default" ? 100 : 0
+    var.copilot_rollout_mode == "canary" ? var.copilot_canary_percentage : 0
+  )
+  copilot_canary_authorization_requested = (
+    var.copilot_rollout_mode == "canary" ||
+    var.copilot_rollout_mode == "default" ||
+    local.copilot_canary_percentage > 0
   )
   # Deterministic rollback target: the governed page-anchored fallback that
   # remains selectable throughout Phase 11. Never a big-bang cutover.
@@ -66,8 +74,8 @@ variable "copilot_canary_percentage" {
   default     = 10
 
   validation {
-    condition     = var.copilot_canary_percentage >= 0 && var.copilot_canary_percentage <= 100
-    error_message = "copilot_canary_percentage must be between 0 and 100."
+    condition     = var.copilot_canary_percentage >= 1 && var.copilot_canary_percentage <= 10
+    error_message = "copilot_canary_percentage must be between 1 and 10."
   }
 }
 
@@ -488,20 +496,14 @@ resource "azurerm_container_app" "api" {
         }
       }
 
-      dynamic "env" {
-        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
-        content {
-          name  = "AIOPS_SOURCE_REVISION"
-          value = var.deployment_source_revision
-        }
+      env {
+        name  = "AIOPS_SOURCE_REVISION"
+        value = var.deployment_source_revision
       }
 
-      dynamic "env" {
-        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
-        content {
-          name  = "AIOPS_FOUNDRY_PROJECT_RESOURCE_ID"
-          value = azurerm_cognitive_account_project.ops.id
-        }
+      env {
+        name  = "AIOPS_FOUNDRY_PROJECT_RESOURCE_ID"
+        value = azurerm_cognitive_account_project.ops.id
       }
 
       dynamic "env" {
@@ -561,6 +563,124 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AIOPS_COPILOT_ROLLBACK_MODE"
         value = local.copilot_rollback_mode
+      }
+
+      # The canary gate independently validates these deployment facts
+      # against the packaged, build-hashed authorization record before any
+      # Foundry provider is activated or any canonical external I/O can run.
+      env {
+        name  = "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256"
+        value = local.copilot_canary_authorization_sha256
+      }
+
+      env {
+        name  = "AIOPS_API_IMAGE_DIGEST"
+        value = var.api_image_digest
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_TENANT_ID"
+        value = var.tenant_id
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID"
+        value = var.subscription_id
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_RESOURCE_GROUP"
+        value = azurerm_resource_group.main.name
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_APP"
+        value = "${local.base}-api"
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_ENVIRONMENT"
+        value = var.environment
+      }
+
+      env {
+        name  = "AIOPS_DEPLOYMENT_REGION"
+        value = azurerm_resource_group.main.location
+      }
+
+      env {
+        name  = "AIOPS_FOUNDRY_PROJECT_NAME"
+        value = local.foundry_project_name
+      }
+
+      env {
+        name  = "AIOPS_FOUNDRY_ACCOUNT_ENDPOINT"
+        value = "https://${local.foundry_subdomain}.services.ai.azure.com"
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_CANDIDATE_RELEASE"
+        value = var.foundry_specialist_release
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION"
+        value = local.copilot_canary_authorization.candidate_binding.contract_version
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256"
+        value = local.copilot_canary_authorization.candidate_binding.manifest_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256"
+        value = local.copilot_canary_authorization.candidate_binding.strict_candidate_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256"
+        value = local.copilot_canary_authorization.candidate_binding.runtime_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_PARSER_PROOF_SHA256"
+        value = local.copilot_canary_authorization.candidate_binding.parser_proof_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256"
+        value = local.copilot_canary_authorization.candidate_binding.serialization_proof_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_REVISION"
+        value = local.copilot_canary_authorization.shadow_evidence.revision
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_IMAGE_DIGEST"
+        value = local.copilot_canary_authorization.shadow_evidence.image_digest
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_REPORT_SHA256"
+        value = local.copilot_canary_authorization.shadow_evidence.report_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_REPORT_INTEGRITY_SIGNATURE"
+        value = local.copilot_canary_authorization.shadow_evidence.report_integrity_signature
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_MATRIX_SHA256"
+        value = local.copilot_canary_authorization.shadow_evidence.matrix_sha256
+      }
+
+      env {
+        name  = "AIOPS_COPILOT_SHADOW_STATUS"
+        value = local.copilot_canary_authorization.shadow_evidence.shadow_status
       }
 
       # Selects the user-assigned identity for DefaultAzureCredential, which
@@ -659,12 +779,12 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_ARG_CONFIG"
-        value = "/app/config.yaml"
+        value = "/app/arg.config.deploy.yaml"
       }
 
       env {
         name  = "AIOPS_FABRIC_CONFIG"
-        value = "/app/fabric.config.yaml"
+        value = "/app/fabric.config.deploy.yaml"
       }
 
       liveness_probe {
@@ -708,6 +828,84 @@ resource "azurerm_container_app" "api" {
     precondition {
       condition     = !var.enable_sre_agent_patch_execution || local.sre_agent_patch_execution_config_valid
       error_message = "API SRE Agent execution requires bootstrapped RBAC and the complete canonical trigger, secret, endpoint, and managed target configuration."
+    }
+
+    precondition {
+      condition     = var.copilot_rollout_mode != "default"
+      error_message = "The reviewed authorization permits bounded canary only; default canonical rollout is hard-denied."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_canary_authorization_requested ||
+        (
+          var.copilot_rollout_mode == "canary" &&
+          local.copilot_canary_percentage >= 1 &&
+          local.copilot_canary_percentage <= 10 &&
+          var.api_image_digest != "" &&
+          var.deploy_images &&
+          can(regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$", var.deployment_source_revision)) &&
+          lower(var.agent_orchestration_mode) == "maf" &&
+          local.foundry_specialist_activation_source == "validated_promotion" &&
+          local.foundry_candidate_catalog_artifact_present &&
+          local.foundry_candidate_catalog_artifact_digest == local.copilot_canary_authorization.candidate_binding.strict_candidate_sha256 &&
+          local.specialist_manifest_digest == local.copilot_canary_authorization.candidate_binding.manifest_sha256
+        )
+      )
+      error_message = "Canary requires 1-10%, immutable API image/source/candidate/manifest digests, MAF orchestration, and a validated promoted provider mapping."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_canary_authorization_requested ||
+        (
+          local.copilot_canary_authorization.status == "AUTHORIZED" &&
+          local.copilot_canary_authorization.authorization_scope.allowed_modes == ["canary"] &&
+          local.copilot_canary_authorization.authorization_scope.default_authorized == false &&
+          local.copilot_canary_authorization.authorization_scope.activation_source == local.foundry_specialist_activation_source &&
+          local.copilot_canary_authorization.authorization_scope.orchestration == lower(var.agent_orchestration_mode) &&
+          local.copilot_canary_authorization.authorization_scope.rollback_mode == local.copilot_rollback_mode &&
+          var.foundry_specialist_release == local.copilot_canary_authorization.candidate_binding.release
+        )
+      )
+      error_message = "Canary rollout inputs do not match the packaged reviewed authorization scope and candidate release."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_canary_authorization_requested ||
+        (
+          var.tenant_id == local.copilot_canary_authorization.deployment_target.tenant_id &&
+          var.subscription_id == local.copilot_canary_authorization.deployment_target.subscription_id &&
+          azurerm_resource_group.main.name == local.copilot_canary_authorization.deployment_target.resource_group &&
+          "${local.base}-api" == local.copilot_canary_authorization.deployment_target.app &&
+          var.environment == local.copilot_canary_authorization.deployment_target.environment &&
+          azurerm_resource_group.main.location == local.copilot_canary_authorization.deployment_target.region &&
+          azurerm_cognitive_account_project.ops.id == local.copilot_canary_authorization.foundry_project.resource_id &&
+          local.foundry_project_name == local.copilot_canary_authorization.foundry_project.name &&
+          "https://${local.foundry_subdomain}.services.ai.azure.com" == local.copilot_canary_authorization.foundry_project.endpoint
+        )
+      )
+      error_message = "Canary deployment target or Foundry project does not exactly match the packaged reviewed authorization."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_canary_authorization_requested ||
+        (
+          sort(keys(local.foundry_specialist_activation)) == sort([
+            for agent in local.copilot_canary_authorization.candidate_binding.agents : agent.id
+          ]) &&
+          alltrue([
+            for agent in local.copilot_canary_authorization.candidate_binding.agents :
+            try(local.foundry_specialist_activation[agent.id].name, "") == agent.agent_name &&
+            try(local.foundry_specialist_activation[agent.id].version, "") == agent.provider_version
+          ]) &&
+          local.foundry_coordinator_activation.name == local.copilot_canary_authorization.candidate_binding.coordinator.agent_name &&
+          local.foundry_coordinator_activation.version == local.copilot_canary_authorization.candidate_binding.coordinator.provider_version
+        )
+      )
+      error_message = "Canary requires the exact twelve reviewed provider identities and coordinator version; missing, extra, duplicate, or substituted identities are denied."
     }
   }
 }
@@ -941,9 +1139,9 @@ resource "azurerm_container_app_job" "patch_publication" {
       args = [
         "patch-publish",
         "--config",
-        "/app/config.yaml",
+        "/app/arg.config.deploy.yaml",
         "--fabric-config",
-        "/app/fabric.config.yaml",
+        "/app/fabric.config.deploy.yaml",
         "--connection-home",
         "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections",
         "--source-root",

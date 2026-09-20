@@ -15,6 +15,7 @@ from operations.foundry_agent import (
 from operations.investigation import run_investigation
 from operations.orchestration_service import OrchestrationService
 from operations.tools import STATUS_OK, ToolResult
+from tests.copilot_authorization_fixtures import enable_authorized_canary
 
 
 class CountingExecutiveAgent:
@@ -37,9 +38,7 @@ class CountingExecutiveAgent:
     (
         ("compatibility", None, False, False, "compatibility"),
         ("shadow", None, False, True, "compatibility"),
-        ("canary", "0", False, False, "compatibility"),
-        ("canary", "100", True, False, "canonical"),
-        ("default", None, True, False, "canonical"),
+        ("canary", "10", True, False, "canonical"),
     ),
 )
 def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
@@ -58,6 +57,8 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
         monkeypatch.delenv("AIOPS_COPILOT_CANARY_PERCENTAGE", raising=False)
     else:
         monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", percentage)
+    if mode == "canary":
+        enable_authorized_canary(monkeypatch)
 
     resource_id = (
         "/subscriptions/sub-a/resourceGroups/rg/providers/"
@@ -252,7 +253,8 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+    monkeypatch.delenv("AIOPS_COPILOT_CANARY_PERCENTAGE", raising=False)
     monkeypatch.setenv("AIOPS_COPILOT_ROLLBACK_MODE", "canonical")
     body = _canonical_body()
     body.pop("hint")
@@ -276,7 +278,7 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
     }
 
 
-def test_drawer_default_respects_deterministic_emergency_override(
+def test_drawer_default_is_hard_denied_even_with_deterministic_override(
     tmp_path,
     monkeypatch,
 ):
@@ -294,14 +296,9 @@ def test_drawer_default_respects_deterministic_emergency_override(
         json=body,
     )
 
-    assert response.status_code == 200, response.text
-    assert response.json()["data"]["rollout"] == {
-        "mode": "compatibility",
-        "canonical_enabled": False,
-        "shadow_enabled": False,
-        "shadow_validated": False,
-        "shadow_reason": "",
-    }
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert "only canary rollout mode" in response.json()["error"]["message"]
 
 
 def test_shadow_rejects_invalid_hint_before_primary_or_preview_io(

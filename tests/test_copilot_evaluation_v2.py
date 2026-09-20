@@ -50,6 +50,7 @@ from operations.orchestration_service import (
     executive_synthesis_decision,
 )
 from operations.tools import STATUS_OK, Evidence, ToolResult
+from tests.copilot_authorization_fixtures import route_authority_for_test
 
 SENSITIVE_MARKERS = (
     "Which subscriptions",
@@ -590,6 +591,9 @@ def test_synthesis_is_skipped_when_specialists_exhaust_wall_clock_budget() -> No
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Give me an executive summary.")
+        ),
     )
 
     assert executive.calls == []
@@ -616,6 +620,9 @@ def test_synthesis_provider_timeout_is_bounded_to_remaining_budget() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Give me an executive summary.")
+        ),
         max_wall_seconds=0.5,
     )
 
@@ -793,6 +800,9 @@ def test_single_domain_turn_makes_zero_executive_calls() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which paths reach the VM?")
+        ),
     )
 
     assert executive.calls == []
@@ -813,6 +823,9 @@ def test_qualifying_turn_makes_exactly_one_executive_call() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     assert len(executive.calls) == 1
@@ -852,6 +865,9 @@ def test_invalid_executive_citations_degrade_to_specialist_findings() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     assert len(executive.calls) == 1
@@ -880,6 +896,9 @@ def test_unavailable_executive_degrades_without_failing_the_turn() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     assert turn.synthesis.status == "degraded"
@@ -909,6 +928,9 @@ def test_runtime_context_supplies_executive_and_telemetry() -> None:
         context=RuntimeContext(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     assert len(executive.calls) == 1
@@ -924,6 +946,9 @@ def test_admitted_synthesis_without_runtime_agent_degrades() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     assert turn.synthesis.status == "degraded"
@@ -1005,6 +1030,10 @@ def test_foundry_unavailable_returns_page_specific_citation_closed_kb_facts() ->
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            request,
+            canonical_selection_snapshot=canonical,
+        ),
         canonical_selection_snapshot=canonical,
     )
 
@@ -1098,6 +1127,11 @@ def _execute_browser_claim_snapshot(
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            request,
+            selection_snapshot=snapshot,
+            canonical_selection_snapshot=canonical,
+        ),
         selection_snapshot=snapshot,
         canonical_selection_snapshot=canonical,
     )
@@ -1299,6 +1333,9 @@ def test_execute_still_returns_the_canonical_result_only() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which paths reach the VM?")
+        ),
     )
 
     assert result.thread_id.startswith("thr-")
@@ -1412,6 +1449,9 @@ def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> N
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which vulnerabilities exist?")
+        ),
     )
     second_request = _request("Give me an executive summary.").model_copy(
         update={"thread_id": first.thread_id}
@@ -1421,6 +1461,7 @@ def test_turn_ids_do_not_collide_and_used_retained_citations_are_returned() -> N
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(second_request),
     )
 
     first_tool_id = next(
@@ -1565,6 +1606,9 @@ def test_service_emits_only_controlled_orchestration_attributes() -> None:
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(
+            _request("Which subscriptions are exposed and vulnerable?")
+        ),
     )
 
     serialized = _emitted_values(meter)

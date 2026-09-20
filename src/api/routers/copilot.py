@@ -46,8 +46,10 @@ from operations.investigation_thread_store import (
     investigation_thread_store,
 )
 from operations.maf_orchestrator import (
+    CopilotRolloutDecision,
     build_deterministic_fallback,
     canonical_orchestration_enabled,
+    canonical_route_authority,
     copilot_rollout_decision,
 )
 from operations.mcp_server import validate_tool_arguments
@@ -1284,6 +1286,7 @@ def _investigate_via_canonical(
     session_id: str,
     hint_tool: str,
     hint_arguments: Mapping[str, Any],
+    rollout_decision: CopilotRolloutDecision,
 ) -> dict[str, Any]:
     """Route ``/copilot/investigate`` through the canonical OrchestrationService.
 
@@ -1300,6 +1303,7 @@ def _investigate_via_canonical(
             scope=scope,
             context=context,
             principal_subject=principal.subject,
+            rollout_decision=rollout_decision,
             session_id=session_id,
             hint_tool=hint_tool,
             hint_arguments=hint_arguments,
@@ -1396,8 +1400,10 @@ def investigate(
     started = time.monotonic()
     validated_arguments: dict[str, Any] = {}
     known_tools = tool_catalog_names()
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
     canonical_enabled = canonical_orchestration_enabled(
-        stable_key=principal.subject
+        stable_key=principal.subject,
+        decision=rollout,
     )
 
     if payload.tool in known_tools:
@@ -1430,6 +1436,7 @@ def investigate(
             session_id=payload.session_id,
             hint_tool=payload.tool,
             hint_arguments=validated_arguments,
+            rollout_decision=rollout,
         )
 
     if payload.tool and payload.tool not in known_tools:
@@ -1497,6 +1504,7 @@ def _run_context_via_canonical(
     scope: Any,
     principal: Any,
     principal_subject: str,
+    rollout_decision: CopilotRolloutDecision,
 ) -> dict[str, Any]:
     """Thin canonical adapter: route a context investigation through OrchestrationService.
 
@@ -1592,6 +1600,12 @@ def _run_context_via_canonical(
         context=context,
         principal_subject=principal_subject,
         effective_scope=scope,
+        route_authority=canonical_route_authority(
+            rollout_decision,
+            request=request,
+            principal_subject=principal_subject,
+            stable_key=principal_subject,
+        ),
     )
 
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -1726,9 +1740,14 @@ def investigate_context(
             str(exc),
             details={"field": "snapshot.scope"},
         ) from exc
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
+    canonical_enabled = canonical_orchestration_enabled(
+        stable_key=principal.subject,
+        decision=rollout,
+    )
     try:
         if (
-            canonical_orchestration_enabled(stable_key=principal.subject)
+            canonical_enabled
             and snapshot.page_kind in CANONICAL_CONTEXT_PAGE_KINDS
         ):
             ledger = _run_context_via_canonical(
@@ -1737,6 +1756,7 @@ def investigate_context(
                 scope=scope,
                 principal=principal,
                 principal_subject=principal.subject,
+                rollout_decision=rollout,
             )
         else:
             ledger = run_context_investigation(
@@ -1746,7 +1766,7 @@ def investigate_context(
                 principal_subject=principal.subject,
                 principal=principal,
             )
-            if canonical_orchestration_enabled(stable_key=principal.subject):
+            if canonical_enabled:
                 ledger.setdefault("warnings", []).append(
                     f"Canonical context adapter unavailable for {snapshot.page_kind}; "
                     "used the explicit legacy rollback path."
@@ -2189,6 +2209,14 @@ def investigate_canonical(
                 context=context,
                 principal_subject=principal.subject,
                 effective_scope=scope,
+                route_authority=canonical_route_authority(
+                    rollout,
+                    request=request,
+                    principal_subject=principal.subject,
+                    stable_key=principal.subject,
+                    selection_snapshot=selection_snapshot,
+                    canonical_selection_snapshot=canonical_browser_snapshot,
+                ),
                 selection_snapshot=selection_snapshot,
                 canonical_selection_snapshot=canonical_browser_snapshot,
             )
@@ -2286,6 +2314,16 @@ def investigate_canonical(
         "shadow_enabled": rollout.shadow_enabled,
         "shadow_validated": shadow_validated,
         "shadow_reason": shadow_reason,
+        **(
+            {
+                "authorization_id": rollout.authorization_id,
+                "authorization_manifest_sha256": (
+                    rollout.authorization_manifest_sha256
+                ),
+            }
+            if rollout.authorization_id
+            else {}
+        ),
     }
     if comparison is not None:
         result_data["rollout"]["comparison"] = comparison

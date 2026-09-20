@@ -21,7 +21,11 @@ from operations.investigation_thread_store import (
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
 )
-from operations.maf_orchestrator import canonical_orchestration_enabled
+from operations.maf_orchestrator import (
+    CopilotRolloutDecision,
+    canonical_orchestration_enabled,
+    copilot_rollout_decision,
+)
 from operations.orchestration_service import execute_from_question
 
 from ..dependencies import Context, CurrentPrincipal, ReadScope
@@ -287,6 +291,7 @@ def _create_investigation_canonical(
     context: Any,
     scope: ReadScope,
     principal: CurrentPrincipal,
+    rollout_decision: CopilotRolloutDecision,
 ) -> dict[str, Any]:
     """Route POST /agents/investigations through the canonical service.
 
@@ -304,6 +309,7 @@ def _create_investigation_canonical(
             scope=scope,
             context=context,
             principal_subject=principal.subject,
+            rollout_decision=rollout_decision,
             max_wall_seconds=payload.timeout_seconds,
         )
     except ThreadStoreUnavailable as exc:
@@ -604,12 +610,17 @@ def create_investigation(
     scope: ReadScope,
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
-    if canonical_orchestration_enabled(stable_key=principal.subject):
+    rollout = copilot_rollout_decision(stable_key=principal.subject)
+    if canonical_orchestration_enabled(
+        stable_key=principal.subject,
+        decision=rollout,
+    ):
         return _create_investigation_canonical(
             payload,
             context=context,
             scope=scope,
             principal=principal,
+            rollout_decision=rollout,
         )
     ledger = run_autonomous_investigation(
         payload.objective.strip(),

@@ -1,0 +1,151 @@
+{
+  "schema_version": "copilot-canary-authorization.v1",
+  "authorization_id": "p11-canary-authorization-20260920",
+  "status": "AUTHORIZED",
+  "issued_at": "2026-09-20T19:00:00Z",
+  "not_before": "2026-09-20T19:00:00Z",
+  "expires_at": "2026-10-04T19:00:00Z",
+  "issuer": {
+    "name": "azure-aiops-release-review",
+    "role": "canary-authorization-reviewer"
+  },
+  "review_provenance": {
+    "repository": "https://github.com/jasonpanggit/azure-aiops",
+    "evidence_commit": "10af2ff5a8f4e2eb928072e22929d170aa37aada"
+  },
+  "reviewed_tree": {
+    "algorithm": "sha256-path-length-content-v1",
+    "include_roots": [
+      ".dockerignore",
+      "Dockerfile",
+      "arg.config.deploy.yaml",
+      "fabric.config.deploy.yaml",
+      "infra/scripts/build-and-push.sh",
+      "infra/scripts/deploy.sh",
+      "infra/terraform/container_apps.tf",
+      "infra/terraform/outputs.tf",
+      "infra/terraform/variables.tf",
+      "pyproject.toml",
+      "scripts/benchmark_exposure_read_model.py",
+      "scripts/collect_ontology_evidence.py",
+      "scripts/export_copilot_provider_env.py",
+      "scripts/refresh_exposure_enrichment.py",
+      "scripts/validate_exposure_live.py",
+      "scripts/validate_ontology_publisher_rbac.py",
+      "skills",
+      "src",
+      "uv.lock"
+    ],
+    "exclude_paths": [
+      "src/operations/copilot_canary_authorization.v1.json"
+    ],
+    "sha256": "bb88d01049a96c90f7f2f30e898e6efba33303148760b2410549d42b8ff41510"
+  },
+  "authorization_scope": {
+    "allowed_modes": [
+      "canary"
+    ],
+    "minimum_percentage": 1,
+    "maximum_percentage": 10,
+    "default_authorized": false,
+    "activation_source": "validated_promotion",
+    "orchestration": "maf",
+    "rollback_mode": "compatibility"
+  },
+  "deployment_target": {
+    "tenant_id": "ffc83107-fcc0-4d2e-8798-d582da36505e",
+    "subscription_id": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+    "resource_group": "aiops-dev-rg",
+    "app": "aiops-dev-api",
+    "environment": "dev",
+    "region": "australiaeast"
+  },
+  "foundry_project": {
+    "resource_id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/aiops-dev-rg/providers/Microsoft.CognitiveServices/accounts/aiops-dev-foundry/projects/aiops-dev-ops",
+    "name": "aiops-dev-ops",
+    "endpoint": "https://aiops-dev-ai-g6ludc.services.ai.azure.com"
+  },
+  "candidate_binding": {
+    "release": "p11-noazmcp-20260920T093238Z-c562f00e33d7",
+    "contract_version": "foundry-specialist-candidates.v1",
+    "manifest_sha256": "fbfc29fe93006c1a5d3bd035519bd04fd0bbd31e7086405b25b3db4f5dae3571",
+    "strict_candidate_sha256": "0c0ea63264137559615f3565cb6978fe4c24e37600fbe24746a586cf4f152dd6",
+    "runtime_sha256": "2206c289b7d9fb2652ef18d34264846970691c27e9007cb0e8c297791e098636",
+    "parser_proof_sha256": "929c0e067f3dd39c1a1edfe249d30c39cf9cff4102d777f8a9eab8383ec84132",
+    "serialization_proof_sha256": "cd92422b4d2d4c29913f32a103c6d3ae300d084de46fc00079c24063f801ea60",
+    "agents": [
+      {
+        "id": "change",
+        "agent_name": "aiops-change-agent",
+        "provider_version": "17"
+      },
+      {
+        "id": "executive_summary",
+        "agent_name": "aiops-executive-summary-agent",
+        "provider_version": "16"
+      },
+      {
+        "id": "finops",
+        "agent_name": "aiops-finops-agent",
+        "provider_version": "1"
+      },
+      {
+        "id": "governance",
+        "agent_name": "aiops-governance-agent",
+        "provider_version": "17"
+      },
+      {
+        "id": "identity_access",
+        "agent_name": "aiops-identity-access-agent",
+        "provider_version": "1"
+      },
+      {
+        "id": "incident",
+        "agent_name": "aiops-incident-agent",
+        "provider_version": "16"
+      },
+      {
+        "id": "inventory_data_health",
+        "agent_name": "aiops-inventory-data-health-agent",
+        "provider_version": "1"
+      },
+      {
+        "id": "network",
+        "agent_name": "aiops-network-agent",
+        "provider_version": "16"
+      },
+      {
+        "id": "patch",
+        "agent_name": "aiops-patch-agent",
+        "provider_version": "17"
+      },
+      {
+        "id": "remediation",
+        "agent_name": "aiops-remediation-agent",
+        "provider_version": "17"
+      },
+      {
+        "id": "resource_health_observability",
+        "agent_name": "aiops-resource-health-observability-agent",
+        "provider_version": "1"
+      },
+      {
+        "id": "vulnerability",
+        "agent_name": "aiops-vulnerability-agent",
+        "provider_version": "17"
+      }
+    ],
+    "coordinator": {
+      "agent_name": "operations-copilot",
+      "provider_version": "6"
+    }
+  },
+  "shadow_evidence": {
+    "revision": "aiops-dev-api--shadow-10af2ff5-r1",
+    "image_digest": "sha256:b58399d0c41c7dbbf995dfb13fbc76380c2c90e91a21a9f37afe1c0ace406aa2",
+    "report_sha256": "8c9adc6377219adcf69401177eda11e7a718484d9137e27832502bd15f4810a2",
+    "report_integrity_signature": "9da29b506520c8724f12cdfeb04738ae255733dec395c1c3520ca4aa613886dc",
+    "matrix_sha256": "1a8dbd72cdb30acd922c7ff01de45d7c2c2cca5b1c1a0f324fe53de429a2e896",
+    "shadow_status": "PASS"
+  }
+}

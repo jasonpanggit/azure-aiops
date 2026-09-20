@@ -36,16 +36,19 @@ output "foundry_project_endpoint" {
 output "copilot_provider_environment" {
   description = "Non-secret sourceable Operations Copilot provider and rollout environment. Empty provider values mean the corresponding live gate remains BLOCKED."
   value = {
-    FOUNDRY_PROJECT_ENDPOINT             = local.foundry_project_endpoint
-    OPERATIONS_MCP_SERVER_URL            = var.enable_apim ? local.foundry_mcp_server_url : ""
-    MCP_APIM_AUDIENCE                    = var.enable_apim ? local.apim_audience : ""
-    FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path
-    FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
-    FOUNDRY_AI_SEARCH_CONNECTION_ID      = var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
-    FOUNDRY_AI_SEARCH_INDEX_NAME         = var.enable_foundry_knowledge_search ? var.foundry_knowledge_index_name : ""
-    AIOPS_COPILOT_ROLLOUT_MODE           = var.copilot_rollout_mode
-    AIOPS_COPILOT_CANARY_PERCENTAGE      = tostring(local.copilot_canary_percentage)
-    AIOPS_COPILOT_ROLLBACK_MODE          = local.copilot_rollback_mode
+    FOUNDRY_PROJECT_ENDPOINT                   = local.foundry_project_endpoint
+    OPERATIONS_MCP_SERVER_URL                  = var.enable_apim ? local.foundry_mcp_server_url : ""
+    MCP_APIM_AUDIENCE                          = var.enable_apim ? local.apim_audience : ""
+    FOUNDRY_CANDIDATE_MAPPING                  = local.foundry_candidate_artifact_path
+    FOUNDRY_OPERATIONS_MCP_CONNECTION_ID       = var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
+    FOUNDRY_AI_SEARCH_CONNECTION_ID            = var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
+    FOUNDRY_AI_SEARCH_INDEX_NAME               = var.enable_foundry_knowledge_search ? var.foundry_knowledge_index_name : ""
+    AIOPS_COPILOT_ROLLOUT_MODE                 = var.copilot_rollout_mode
+    AIOPS_COPILOT_CANARY_PERCENTAGE            = tostring(local.copilot_canary_percentage)
+    AIOPS_COPILOT_ROLLBACK_MODE                = local.copilot_rollback_mode
+    AIOPS_SOURCE_REVISION                      = var.deployment_source_revision
+    AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256 = local.copilot_canary_authorization_sha256
+    AIOPS_API_IMAGE_DIGEST                     = var.api_image_digest
   }
 }
 

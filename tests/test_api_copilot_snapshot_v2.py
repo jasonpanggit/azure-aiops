@@ -8,6 +8,7 @@ from operations.orchestration_contract import (
     OrchestrationResult,
     SnapshotCoverage,
 )
+from tests.copilot_authorization_fixtures import enable_authorized_canary
 
 
 def _body():
@@ -187,7 +188,7 @@ def test_canonical_endpoint_accepts_remediation_snapshot_v2(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    enable_authorized_canary(monkeypatch)
     captured = []
     result = OrchestrationResult(
         status="empty",

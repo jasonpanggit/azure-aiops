@@ -41,8 +41,12 @@ from operations.investigation_thread_store import (
     scope_within,
 )
 from operations.maf_orchestrator import (
+    CanonicalRouteAuthority,
+    CopilotRolloutDecision,
     build_deterministic_fallback,
+    canonical_route_authority,
     select_specialists_for_turn,
+    validate_canonical_route_authority,
 )
 from operations.mcp_server import validate_tool_arguments
 from operations.orchestration_contract import (
@@ -1087,6 +1091,7 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        route_authority: CanonicalRouteAuthority | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
@@ -1098,6 +1103,7 @@ class OrchestrationService:
             context=context,
             principal_subject=principal_subject,
             effective_scope=effective_scope,
+            route_authority=route_authority,
             max_wall_seconds=max_wall_seconds,
             selection_snapshot=selection_snapshot,
             canonical_selection_snapshot=canonical_selection_snapshot,
@@ -1110,12 +1116,20 @@ class OrchestrationService:
         context: Any,
         principal_subject: str,
         effective_scope: Scope,
+        route_authority: CanonicalRouteAuthority | None = None,
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
+        validate_canonical_route_authority(
+            route_authority,
+            request=request,
+            principal_subject=principal_subject,
+            selection_snapshot=selection_snapshot,
+            canonical_selection_snapshot=canonical_selection_snapshot,
+        )
         if self.telemetry is None:
             api_telemetry = getattr(context, "telemetry", None)
             self.telemetry = getattr(api_telemetry, "orchestration", None)
@@ -4603,6 +4617,7 @@ def execute_from_question(
     scope: Scope,
     context: Any,
     principal_subject: str,
+    rollout_decision: CopilotRolloutDecision,
     session_id: str = "",
     hint_tool: str = "",
     hint_arguments: Mapping[str, Any] | None = None,
@@ -4733,6 +4748,12 @@ def execute_from_question(
             context=context,
             principal_subject=principal_subject,
             effective_scope=scope,
+            route_authority=canonical_route_authority(
+                rollout_decision,
+                request=active_request,
+                principal_subject=principal_subject,
+                stable_key=principal_subject,
+            ),
             max_wall_seconds=max_wall_seconds,
         )
 

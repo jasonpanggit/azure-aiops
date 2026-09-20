@@ -28,6 +28,7 @@ from operations.specialist_manifest import (
     load_specialist_manifest,
 )
 from operations.tools import ToolResult
+from tests.copilot_authorization_fixtures import route_authority_for_test
 
 
 def _request(*, scope: dict[str, list[str]] | None = None) -> InvestigationRequest:
@@ -581,6 +582,7 @@ def test_no_hint_fallback_is_safe_for_every_exact_v2_page_kind(page_kind):
         context=object(),
         principal_subject="operator-a",
         effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
     )
 
     if calls:

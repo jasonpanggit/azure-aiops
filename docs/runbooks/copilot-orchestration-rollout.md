@@ -15,8 +15,8 @@ The rollout is controlled by two Terraform inputs on the API container app
 
 | Input | Meaning |
 |---|---|
-| `copilot_rollout_mode` | `compatibility` → `shadow` → `canary` → `default` |
-| `copilot_canary_percentage` | bounded canonical-default traffic share while in `canary` |
+| `copilot_rollout_mode` | `compatibility` → `shadow` → bounded `canary`; `default` is denied |
+| `copilot_canary_percentage` | reviewed canonical traffic share from 1 through 10 while in `canary` |
 
 These project to the running revision as `AIOPS_COPILOT_ROLLOUT_MODE`,
 `AIOPS_COPILOT_CANARY_PERCENTAGE`, and the retained rollback target
@@ -29,11 +29,85 @@ Runtime request selection is fail closed:
 
 - missing or invalid rollout mode serves `compatibility`;
 - `shadow` keeps the compatibility response path selected;
-- `canary` uses a stable principal-derived bucket and refuses canonical routing
-  when the percentage or stable key is missing or invalid;
-- `default` selects the canonical service unless the explicit
-  `AIOPS_AGENT_ORCHESTRATION_MODE=deterministic` emergency rollback is active;
+- `canary` uses a stable principal-derived bucket only after the packaged
+  authorization, build metadata, target, evidence, and provider pins validate;
+- a missing stable key or a percentage outside 1 through 10 is an error, never
+  a compatibility-shaped success;
+- `default` is hard-denied regardless of environment flags or manifest content;
 - an invalid `AIOPS_COPILOT_ROLLBACK_MODE` also serves `compatibility`.
+
+## Code-bound pre-canary authorization
+
+`src/operations/copilot_canary_authorization.v1.json` is the reviewed,
+strict-schema authorization record. It rejects undeclared fields and binds the
+one allowed canary window to the exact Azure/Foundry target, twelve unordered
+specialist identities, coordinator version, candidate/proof digests, and
+passing shadow evidence. Its current UTC validity window ends at
+`2026-10-04T19:00:00Z`; extending or replacing it requires a separately
+reviewed code change.
+
+The manifest's `reviewed_tree` object is the code authorization boundary. Its
+fixed `include_roots` cover `.dockerignore`, `Dockerfile`, dependency locks,
+both production deploy configuration YAMLs, all packaged files under `src/`
+and `skills/`, every separately copied runtime script, the build/deploy
+scripts, and the Terraform API-image inputs. The same
+roots are pinned in `operations.reviewed_tree.REVIEWED_TREE_ROOTS`; changing
+either side fails closed. The exact file set is every regular file recursively
+found under those roots, sorted by repository-relative POSIX path.
+`__pycache__` entries and `*.pyc` are explicitly excluded as transient compiler
+output. The authorization manifest itself
+(`src/operations/copilot_canary_authorization.v1.json`) is the sole
+`exclude_paths` entry and is always excluded so the digest has no
+self-reference. Files outside the fixed roots are not build/runtime inputs and
+do not participate.
+
+The `sha256-path-length-content-v1` algorithm starts an empty SHA-256 and, for
+each path in lexicographic order, appends exactly
+`UTF8(path) + NUL + ASCII(byte_length) + NUL + file_bytes`. Symlinks, missing
+files, absolute paths, `..`, duplicates, unsorted paths, a changed fixed set,
+or a manifest path in the set are rejected. No newline normalization,
+whitespace normalization, filesystem metadata, or environment/build argument
+participates in the hash.
+
+`build-and-push.sh` rejects an existing API tag before building or recording a
+release, then verifies that digest against the immutable build context
+before invoking Docker. Docker independently recomputes it from the packaged
+files rather than accepting a digest build argument, and writes both the
+recomputed reviewed-tree digest and authorization-manifest SHA-256 to
+`/app/build-metadata.json`. Runtime recomputes the packaged tree again and
+requires all three tree values (manifest, build metadata, runtime computation)
+to match. It additionally requires all of the following before loading Foundry
+providers, reporting ready, or permitting canonical external I/O:
+
+1. packaged authorization bytes match the baked SHA-256 and Terraform-projected
+   SHA-256;
+2. the packaged reviewed tree matches the manifest and baked reviewed-tree
+   SHA-256;
+3. `AIOPS_SOURCE_REVISION` exactly matches the independently baked source
+   revision (a revision value alone cannot authorize different bytes);
+4. the API image is deployed by an immutable `sha256:` digest;
+5. rollout mode is exactly `canary`, percentage is 1–10, orchestration is
+   `maf`, activation source is `validated_promotion`, and rollback remains
+   `compatibility`;
+6. target, project, candidate/proof/shadow digests, all twelve provider
+   identities, and coordinator identity exactly match the reviewed record.
+
+Raw environment flags cannot create route authority. Any missing, malformed,
+expired, premature, inactive, mutable, or mismatched value makes `/ready`
+return 503 and causes canonical requests to fail before provider/tool/model
+I/O. Compatibility and shadow remain unchanged when their projected canary
+percentage is zero. Manifest timestamps must be exact
+`YYYY-MM-DDTHH:MM:SSZ` strings; Unix numbers, offsets, fractional seconds,
+lowercase separators, and surrounding whitespace are rejected before datetime
+parsing.
+
+At the routing boundary, the validated `CopilotRolloutDecision` is converted
+to a frozen authority bound to the principal-derived stable key and a
+deterministic digest of the exact request plus selection snapshots.
+`OrchestrationService.execute` and `execute_turn` reject absent, compatibility,
+shadow, non-selected canary, expired, principal-mismatched, or request-mismatched
+authority before resolving a provider or invoking a tool. They never reread
+ambient rollout configuration to authorize execution.
 
 ## Source the non-secret provider environment
 
@@ -141,7 +215,16 @@ so a rollback is a revision/mode switch, never a rebuild.
 
 - **Deploy:** `terraform apply -var 'copilot_rollout_mode=canary' -var 'copilot_canary_percentage=10'`.
 - **Behaviour:** the canonical orchestrator becomes the default for the bounded
-  traffic share only. Raise the percentage in reviewed increments (e.g. 10 → 25 → 50).
+  traffic share only. This authorization permits no value above 10.
+- **Immutable release inputs:** set the exact reviewed specialist release and
+  source revision, supply the reviewed candidate/promotion artifacts, and set
+  `api_image_digest` to the pushed immutable digest. A mutable tag, absent
+  digest, wrong release, unpinned identity, or mismatched build revision fails
+  the Terraform precondition and runtime gate. With `build-and-push.sh
+  --deploy`, the script resolves `aiops-api:<tag>` back to its ACR manifest,
+  verifies the returned repository, tag, and lowercase `sha256:` digest, then
+  atomically records `image_tag`, `api_image_digest`, and
+  `deployment_source_revision` in `terraform.tfvars` before Terraform apply.
 - **Automatic hold:** if any applicable predetermined threshold fails
   (`scripts/evaluate_agents.py … evaluate_gates`), the canary **holds
   automatically** — a deterministic safety or citation-integrity failure HOLDs the
@@ -225,17 +308,12 @@ so a rollback is a revision/mode switch, never a rebuild.
 - **Rollback:** `terraform apply -var 'copilot_rollout_mode=shadow'` (or
   `compatibility`) — the prior revision and threads are untouched.
 
-### Stage 4 — `default`
+### Stage 4 — `default` (not authorized)
 
-- **Deploy:** `terraform apply -var 'copilot_rollout_mode=default'`.
-- **Behaviour:** canonical default for all traffic; the deterministic fallback
-  remains wired behind the rollback seam.
-- **Promote Foundry versions only when live parity is green** and every applicable
-  threshold row passes (`PROMOTE`). Any model threshold miss is recorded as a
-  `HOLD` in `.planning/eval/copilot-orchestration-baseline.json`, never a fabricated pass.
-- **Rollback:** `terraform apply -var 'copilot_rollout_mode=canary'` /
-  `shadow` / `compatibility`, or redeploy the retained previous revision. No thread
-  or ledger is rewritten.
+This code-bound prerequisite does not authorize default rollout. Terraform and
+runtime both reject `copilot_rollout_mode=default`. A future default rollout
+requires separate reviewed authorization and is not implied by a passing
+canary.
 
 ## Rollback (any stage)
 

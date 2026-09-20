@@ -206,8 +206,16 @@ def load_environment(
     mode = values["AIOPS_COPILOT_ROLLOUT_MODE"].casefold()
     if mode not in ROLLOUT_MODES:
         raise ValueError("AIOPS_COPILOT_ROLLOUT_MODE")
+    if mode == "default":
+        raise ValueError("AIOPS_COPILOT_ROLLOUT_MODE")
     percentage = values["AIOPS_COPILOT_CANARY_PERCENTAGE"]
-    if not percentage.isdecimal() or not 0 <= int(percentage) <= 100:
+    if not percentage.isdecimal():
+        raise ValueError("AIOPS_COPILOT_CANARY_PERCENTAGE")
+    percentage_value = int(percentage)
+    if (
+        (mode == "canary" and not 1 <= percentage_value <= 10)
+        or (mode != "canary" and percentage_value != 0)
+    ):
         raise ValueError("AIOPS_COPILOT_CANARY_PERCENTAGE")
     if values["AIOPS_COPILOT_ROLLBACK_MODE"].casefold() != "compatibility":
         raise ValueError("AIOPS_COPILOT_ROLLBACK_MODE")
