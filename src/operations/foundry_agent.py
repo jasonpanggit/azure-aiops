@@ -37,6 +37,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from operations.foundry_candidate_catalog import validated_candidate_catalog
 from operations.maf_orchestrator import reviewed_specialists_for_page
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
@@ -1489,13 +1490,14 @@ def _extract_text(response: dict[str, Any]) -> str:
 
 
 def specialist_catalog() -> list[dict[str, Any]]:
-    """Return independent release metadata without claiming unavailable agents exist."""
+    """Return active and validated-inactive metadata without changing dispatch."""
     endpoint = os.environ.get(ENV_PROJECT_ENDPOINT, "").strip()
     activation_source = (
         os.environ.get("AIOPS_SPECIALIST_ACTIVATION_SOURCE", "").strip()
         or "unconfigured"
     )
     version_pinning_required = _version_pinning_required()
+    candidates = validated_candidate_catalog(_SPECIALIST_MANIFEST)
     entries: list[dict[str, Any]] = []
     for specialist in _SPECIALIST_MANIFEST.specialists:
         prefix = f"FOUNDRY_{specialist.id.upper()}_AGENT"
@@ -1504,13 +1506,33 @@ def specialist_catalog() -> list[dict[str, Any]]:
         if not name and specialist.id == "network":
             name = os.environ.get(ENV_AGENT_NAME, "").strip()
             version = version or os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
-        configured = bool(
+        runtime_configured = bool(
             endpoint
             and name
             and (version or not version_pinning_required)
         )
+        candidate = candidates.get(specialist.id)
+        configured = bool(
+            runtime_configured
+            and candidate
+            and activation_source in {"validated_promotion", "validated_rollback"}
+            and name == candidate["name"]
+            and version == candidate["provider_version_id"]
+        )
+        status = (
+            "active"
+            if configured
+            else "available_inactive"
+            if candidate
+            else "unavailable"
+        )
         degraded_reason = ""
-        if not configured:
+        if status == "available_inactive":
+            degraded_reason = (
+                "Validated Foundry candidate is available but inactive; "
+                "deterministic execution remains selected."
+            )
+        elif not configured:
             if not endpoint:
                 degraded_reason = "Foundry project endpoint is unavailable."
             elif not name:
@@ -1527,11 +1549,12 @@ def specialist_catalog() -> list[dict[str, Any]]:
                 "name": name or specialist.foundry.name,
                 "version": version or specialist.foundry.version,
                 "model": specialist.foundry.model,
-                "status": "ready" if configured else "unavailable",
+                "status": status,
                 "configured": configured,
                 "activation_source": activation_source,
                 "version_pinning_required": version_pinning_required,
                 "degraded_reason": degraded_reason,
+                **({"candidate": candidate} if candidate else {}),
             }
         )
     return entries

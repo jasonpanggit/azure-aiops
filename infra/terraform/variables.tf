@@ -731,6 +731,52 @@ variable "foundry_specialist_promotion_artifact" {
   default     = ""
 }
 
+variable "foundry_specialist_candidate_catalog_artifact" {
+  description = <<-EOT
+    Path to the separately reviewed foundry-specialist-candidates.v1 artifact
+    exposed to the API catalog. This input is metadata-only: it never supplies
+    FOUNDRY_<ID>_AGENT_VERSION and cannot change the activation target.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "foundry_specialist_candidate_catalog_artifact_sha256" {
+  description = "Separately reviewed SHA-256 digest of the candidate catalog artifact. Required with foundry_specialist_candidate_catalog_artifact."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.foundry_specialist_candidate_catalog_artifact_sha256 == "" || can(regex("^[0-9a-f]{64}$", var.foundry_specialist_candidate_catalog_artifact_sha256))
+    error_message = "foundry_specialist_candidate_catalog_artifact_sha256 must be empty or an exact lowercase SHA-256 digest."
+  }
+}
+
+variable "foundry_specialist_candidate_prompt_digests" {
+  description = "Separately reviewed specialist ID to prompt SHA-256 mapping used to reject stale or mismatched candidate rows."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for digest in values(var.foundry_specialist_candidate_prompt_digests) :
+      can(regex("^[0-9a-f]{64}$", digest))
+    ])
+    error_message = "Every foundry_specialist_candidate_prompt_digests value must be an exact lowercase SHA-256 digest."
+  }
+}
+
+variable "deployment_source_revision" {
+  description = "Exact lowercase Git source revision of the API image. Required when candidate catalog metadata is supplied so stale artifacts fail closed."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.deployment_source_revision == "" || can(regex("^[0-9a-f]{7,64}$", var.deployment_source_revision))
+    error_message = "deployment_source_revision must be empty or a 7-64 character lowercase hexadecimal revision."
+  }
+}
+
 variable "foundry_specialist_activation_target" {
   description = "Specialist provider-ID mapping to activate: legacy, active, or rollback."
   type        = string

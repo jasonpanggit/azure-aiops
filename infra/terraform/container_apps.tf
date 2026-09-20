@@ -456,6 +456,78 @@ resource "azurerm_container_app" "api" {
         value = local.specialist_manifest_digest
       }
 
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"
+          value = local.foundry_candidate_catalog_artifact_json
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"
+          value = var.foundry_specialist_candidate_catalog_artifact_sha256
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_CANDIDATE_EXPECTED_NAMES"
+          value = jsonencode(local.foundry_specialist_agent_names)
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_CANDIDATE_PROMPT_DIGESTS"
+          value = jsonencode(var.foundry_specialist_candidate_prompt_digests)
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_SOURCE_REVISION"
+          value = var.deployment_source_revision
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_PROJECT_RESOURCE_ID"
+          value = azurerm_cognitive_account_project.ops.id
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_MODEL_DEPLOYMENT"
+          value = local.foundry_model_deployment_name
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_AI_SEARCH_CONNECTION_ID"
+          value = var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.foundry_candidate_catalog_artifact_present ? [1] : []
+        content {
+          name  = "AIOPS_FOUNDRY_AI_SEARCH_INDEX_NAME"
+          value = var.foundry_knowledge_index_name
+        }
+      }
+
       # Compatibility window: the pre-manifest eight name/version pairs stay
       # visible so a rollback to the previously deployed specialist set does
       # not require a Terraform edit. Nothing reads this as authority.

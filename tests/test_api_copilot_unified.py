@@ -10010,7 +10010,7 @@ def test_canonical_multi_agent_catalog_exposes_manifest_deployment_status(
     for agent in agents:
         assert "foundry" in agent, "each agent must carry deployment status"
         status = agent["foundry"].get("status")
-        assert status in {"ready", "unavailable"}, status
+        assert status in {"active", "available_inactive", "unavailable"}, status
         # With no FOUNDRY_* env configured, every specialist is honestly
         # reported unavailable rather than implied to exist.
         assert agent["foundry"].get("configured") is False
@@ -10039,11 +10039,11 @@ def test_multi_agent_catalog_reports_mixed_foundry_activation_exactly(
         "name": "network-agent",
         "version": "42",
         "model": "gpt-4.1",
-        "status": "ready",
-        "configured": True,
+        "status": "unavailable",
+        "configured": False,
         "activation_source": "terraform",
         "version_pinning_required": False,
-        "degraded_reason": "",
+        "degraded_reason": "Foundry specialist activation is unavailable.",
     }
     assert by_id["vulnerability"]["foundry"]["configured"] is False
     assert by_id["vulnerability"]["foundry"]["status"] == "unavailable"

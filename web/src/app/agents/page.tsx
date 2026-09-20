@@ -60,6 +60,9 @@ export default function MultiAgentInvestigationPage() {
   const configuredAgents = catalog.filter(
     (agent) => agent.foundry?.configured,
   ).length;
+  const inactiveCandidates = catalog.filter(
+    (agent) => agent.foundry?.status === "available_inactive",
+  ).length;
   const deterministicDegraded = ledger?.data.activation?.mode
     !== "foundry";
 
@@ -88,7 +91,9 @@ export default function MultiAgentInvestigationPage() {
           <StatusBadge label="Human controlled" tone="info" />
           <StatusBadge
             label={configuredAgents
-              ? `${configuredAgents} Foundry ready`
+              ? `${configuredAgents} Foundry active`
+              : inactiveCandidates
+              ? `${inactiveCandidates} Foundry available - inactive · deterministic fallback`
               : "Foundry unavailable · deterministic fallback"}
             tone={configuredAgents ? "success" : "warning"}
           />
@@ -100,15 +105,20 @@ export default function MultiAgentInvestigationPage() {
           </label>
           <div className="entity-pill-row" aria-label="Available specialized agents">
             {catalog.map((agent) => {
-              const configured = agent.foundry?.configured ?? false;
+              const foundryStatus = agent.foundry?.status ?? "unavailable";
               const degradedReason = agent.foundry?.degraded_reason
                 ?? "Foundry activation is unavailable.";
+              const statusLabel = foundryStatus === "active"
+                ? "Foundry active"
+                : foundryStatus === "available_inactive"
+                ? "Foundry available - inactive"
+                : "Foundry unavailable";
               return (
                 <span key={agent.id} className="entity-pill" title={`${agent.role} ${degradedReason}`}>
                   {agent.name}
                   <StatusBadge
-                    label={configured ? "Foundry ready" : "Foundry unavailable"}
-                    tone={configured ? "success" : "neutral"}
+                    label={statusLabel}
+                    tone={foundryStatus === "active" ? "success" : "neutral"}
                     compact
                   />
                 </span>

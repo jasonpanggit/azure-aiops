@@ -909,7 +909,7 @@ def test_all_specialist_agents_have_distinct_ids_and_versions(monkeypatch) -> No
     assert len(set(versions)) == len(SPECIALIST_IDS)
 
 
-def test_specialist_catalog_status_ready_when_all_configured(monkeypatch) -> None:
+def test_specialist_catalog_rejects_unvalidated_runtime_mapping(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
     for specialist in SPECIALIST_IDS:
         monkeypatch.setenv(f"FOUNDRY_{specialist.upper()}_AGENT_NAME", f"{specialist}-agent")
@@ -917,10 +917,11 @@ def test_specialist_catalog_status_ready_when_all_configured(monkeypatch) -> Non
 
     catalog = specialist_catalog()
 
-    assert all(entry["status"] == "ready" for entry in catalog)
+    assert all(entry["status"] == "unavailable" for entry in catalog)
+    assert all(entry["configured"] is False for entry in catalog)
 
 
-def test_specialist_catalog_status_unconfigured_when_missing_env_vars(monkeypatch) -> None:
+def test_specialist_catalog_rejects_partial_unvalidated_mapping(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
     # Only configure network agent; others are unconfigured
     monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
@@ -929,7 +930,8 @@ def test_specialist_catalog_status_unconfigured_when_missing_env_vars(monkeypatc
     catalog = specialist_catalog()
 
     network_entry = next(e for e in catalog if e["id"] == "network")
-    assert network_entry["status"] == "ready"
+    assert network_entry["status"] == "unavailable"
+    assert network_entry["configured"] is False
     
     other_entries = [e for e in catalog if e["id"] != "network"]
     assert all(e["status"] == "unavailable" for e in other_entries)
