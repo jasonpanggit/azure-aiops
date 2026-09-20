@@ -3158,6 +3158,17 @@ textarea:focus-visible {
   line-height: 1;
 }
 
+.donut-chart-center-value--compact {
+  font-size: 12px;
+  line-height: 1.15;
+  padding: 0 4px;
+  word-break: break-word;
+}
+
+.donut-chart-center-value--compact + .donut-chart-center-label {
+  margin-top: 1px;
+}
+
 .donut-chart-center-label {
   margin-top: 2px;
   font-size: 9px;
@@ -3653,7 +3664,7 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.exposure-resource-id {
+.resource-id-cell {
   display: block;
   max-width: 260px;
   overflow: hidden;

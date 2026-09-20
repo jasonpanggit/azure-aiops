@@ -256,7 +256,7 @@ export default function IdentityPage() {
                               className="table-primary-link"
                               href={`/search?q=${encodeURIComponent(row.principal_id)}`}
                             >
-                              <span className="table-wrap">{row.principal_id}</span>
+                              <span className="table-wrap resource-id-cell">{row.principal_id}</span>
                             </Link>
                             <div className="table-secondary">
                               {row.assignment_count} assignment
@@ -272,7 +272,7 @@ export default function IdentityPage() {
                           <td>
                             {titleize(row.widest_scope_breadth || "unknown")}
                             <div className="table-secondary">
-                              <span className="table-wrap">{row.widest_scope}</span>
+                              <span className="resource-id-cell" title={row.widest_scope}>{row.widest_scope}</span>
                             </div>
                           </td>
                           <td>{blastRadius(row.blast_radius)}</td>
@@ -346,7 +346,7 @@ export default function IdentityPage() {
                               className="table-primary-link"
                               href={`/search?q=${encodeURIComponent(row.principal_id)}`}
                             >
-                              <span className="table-wrap">{row.principal_id}</span>
+                              <span className="table-wrap resource-id-cell">{row.principal_id}</span>
                             </Link>
                           </td>
                           <td>{titleize(row.principal_type || "unknown")}</td>
@@ -355,7 +355,7 @@ export default function IdentityPage() {
                               className="table-primary-link"
                               href={`/search?q=${encodeURIComponent(row.subscription_id)}`}
                             >
-                              <span className="table-wrap">{row.subscription_id}</span>
+                              <span className="table-wrap resource-id-cell">{row.subscription_id}</span>
                             </Link>
                           </td>
                           <td>{formatDateTime(row.assigned_on)}</td>
@@ -428,7 +428,7 @@ export default function IdentityPage() {
                               className="table-primary-link"
                               href={`/search?q=${encodeURIComponent(row.principal_id)}`}
                             >
-                              <span className="table-wrap">{row.principal_id}</span>
+                              <span className="table-wrap resource-id-cell">{row.principal_id}</span>
                             </Link>
                           </td>
                           <td>{row.role || "Unresolved"}</td>
@@ -437,7 +437,7 @@ export default function IdentityPage() {
                               className="table-primary-link"
                               href={`/search?q=${encodeURIComponent(row.scope)}`}
                             >
-                              <span className="table-wrap">{row.scope}</span>
+                              <span className="table-wrap resource-id-cell">{row.scope}</span>
                             </Link>
                           </td>
                           <td>{formatDateTime(row.last_changed)}</td>
@@ -509,7 +509,7 @@ export default function IdentityPage() {
                             </Link>
                             {row.resource_id && (
                               <div className="table-secondary">
-                                <span className="table-wrap">{row.resource_id}</span>
+                                <span className="resource-id-cell">{row.resource_id}</span>
                               </div>
                             )}
                           </td>
@@ -608,11 +608,11 @@ export default function IdentityPage() {
                               {row.connection_name || row.connection_id}
                             </Link>
                             <div className="table-secondary">
-                              <span className="table-wrap">{row.subscription_id}</span>
+                              <span className="resource-id-cell">{row.subscription_id}</span>
                             </div>
                           </td>
                           <td>
-                            <span className="table-wrap">{row.client_id || "—"}</span>
+                            <span className="resource-id-cell" title={row.client_id}>{row.client_id || "—"}</span>
                           </td>
                           <td>
                             <StatusBadge
