@@ -34,10 +34,8 @@
 #   FOUNDRY_SPECIALIST_MANIFEST_DIGEST  digest of the manifest being rolled out
 #   FOUNDRY_SPECIALIST_RELEASE   reviewed release stamp for the candidate set
 #   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID
-#   FOUNDRY_AZURE_MCP_CONNECTION_ID
-#                                exact Terraform-created Foundry project
-#                                connection resource IDs captured in the
-#                                candidate mapping
+#                                exact Terraform-created Operations MCP project
+#                                connection resource ID captured in the mapping
 #   FOUNDRY_MODEL_DEPLOYMENT_NAME  real Azure model deployment name, handed to
 #                                the live gate so the deployed model can be
 #                                checked against it
@@ -164,14 +162,15 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
     candidate_record="$(mktemp)"
   fi
 
-  # A specialist candidate is not publishable unless both independently
-  # governed MCP connections are identified by their exact project-connection
-  # resource IDs. Names or a single shared/demo connection are insufficient:
-  # they cannot prove which authenticated tool boundary an agent will use.
+  # A specialist candidate is not publishable unless the governed Operations
+  # MCP connection is identified by its exact project-connection resource ID.
   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID:-}" \
-  FOUNDRY_AZURE_MCP_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID:-}" \
+  FOUNDRY_AI_SEARCH_CONNECTION_ID="${FOUNDRY_AI_SEARCH_CONNECTION_ID:-}" \
+  FOUNDRY_AI_SEARCH_INDEX_NAME="${FOUNDRY_AI_SEARCH_INDEX_NAME:-}" \
+  OPERATIONS_MCP_SERVER_URL="${OPERATIONS_MCP_SERVER_URL:-}" \
+  FOUNDRY_SPECIALISTS_JSON="${FOUNDRY_SPECIALISTS_JSON}" \
   python3 -c '
-import os, re
+import json, os, re
 
 pattern = re.compile(
     r"^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/"
@@ -179,18 +178,51 @@ pattern = re.compile(
     r"connections/[^/]+$",
     re.IGNORECASE,
 )
-values = [
-    os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/"),
-    os.environ["FOUNDRY_AZURE_MCP_CONNECTION_ID"].strip().rstrip("/"),
-]
-if not all(pattern.fullmatch(value) for value in values):
+operations_connection = os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/")
+search_connection = os.environ["FOUNDRY_AI_SEARCH_CONNECTION_ID"].strip().rstrip("/")
+operations_url = os.environ["OPERATIONS_MCP_SERVER_URL"].strip().rstrip("/")
+search_index = os.environ["FOUNDRY_AI_SEARCH_INDEX_NAME"].strip()
+if not pattern.fullmatch(operations_connection):
     raise SystemExit(
-        "create-foundry-agent: exact Operations and Azure MCP project connection IDs are required"
+        "create-foundry-agent: exact Operations MCP project connection ID is required"
     )
-if len({value.casefold() for value in values}) != 2:
+if not pattern.fullmatch(search_connection) or search_connection.casefold() == operations_connection.casefold():
     raise SystemExit(
-        "create-foundry-agent: Operations and Azure MCP project connection IDs must be distinct"
+        "create-foundry-agent: exact distinct Azure AI Search project connection ID is required"
     )
+if not operations_url.startswith("https://") or not operations_url.endswith("/operations-mcp"):
+    raise SystemExit("create-foundry-agent: exact Operations MCP server URL is required")
+if not search_index:
+    raise SystemExit("create-foundry-agent: Azure AI Search index name is required")
+specialists = json.loads(os.environ["FOUNDRY_SPECIALISTS_JSON"])
+if not isinstance(specialists, dict) or len(specialists) != 12:
+    raise SystemExit("create-foundry-agent: exact twelve-specialist payload is required")
+for specialist_id, specialist in specialists.items():
+    tools = specialist.get("tools") if isinstance(specialist, dict) else None
+    if not isinstance(tools, list) or len(tools) != 2:
+        raise SystemExit(f"create-foundry-agent: {specialist_id} requires exactly Operations MCP and Azure AI Search")
+    operations = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "mcp"]
+    searches = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "azure_ai_search"]
+    if len(operations) != 1 or len(searches) != 1:
+        raise SystemExit(f"create-foundry-agent: {specialist_id} has an unexpected tool definition")
+    operation = operations[0]
+    if (
+        operation.get("server_label") != "operations-mcp"
+        or operation.get("server_url", "").rstrip("/") != operations_url
+        or operation.get("require_approval") != "never"
+        or operation.get("project_connection_id", "").rstrip("/") != operations_connection
+        or not isinstance(operation.get("allowed_tools"), list)
+    ):
+        raise SystemExit(f"create-foundry-agent: {specialist_id} Operations MCP boundary mismatch")
+    indexes = (searches[0].get("azure_ai_search") or {}).get("indexes")
+    if (
+        not isinstance(indexes, list)
+        or len(indexes) != 1
+        or indexes[0].get("project_connection_id", "").rstrip("/") != search_connection
+        or indexes[0].get("index_name") != search_index
+        or indexes[0].get("query_type") != "vector_semantic_hybrid"
+    ):
+        raise SystemExit(f"create-foundry-agent: {specialist_id} Azure AI Search boundary mismatch")
 ' || exit 1
 
   if [[ -n "${promotion_record}" && -f "${promotion_record}" ]]; then
@@ -340,7 +372,6 @@ for specialist_id, v in d.items():
   MANIFEST_DIGEST="${manifest_digest}" \
   RELEASE_STAMP="${release_stamp}" \
   OPERATIONS_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID}" \
-  AZURE_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID}" \
   python3 -c '
 import json, os, pathlib
 
@@ -376,9 +407,6 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
             "connections": {
                 "operations-mcp": {
                     "project_connection_id": os.environ["OPERATIONS_CONNECTION_ID"],
-                },
-                "azure-mcp": {
-                    "project_connection_id": os.environ["AZURE_CONNECTION_ID"],
                 },
             },
         },

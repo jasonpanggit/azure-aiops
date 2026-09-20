@@ -77,8 +77,7 @@ PACKAGED_MANIFEST_PATH = "operations/specialists.v1.json"
 CONTAINER_MANIFEST_PATH = "/app/src/operations/specialists.v1.json"
 
 OPERATIONS_SERVER_LABEL = "operations-mcp"
-AZURE_SERVER_LABEL = "azure-mcp"
-CONNECTION_LABELS = (OPERATIONS_SERVER_LABEL, AZURE_SERVER_LABEL)
+CONNECTION_LABELS = (OPERATIONS_SERVER_LABEL,)
 AZURE_AI_SEARCH_TOOL_TYPE = "azure_ai_search"
 PROJECT_CONNECTION_ID_PATTERN = re.compile(
     r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
@@ -100,7 +99,6 @@ PROJECT_CONNECTION_ID_PATTERN = re.compile(
 LIVE_REQUIRED_ENV = (
     "FOUNDRY_PROJECT_ENDPOINT",
     "OPERATIONS_MCP_SERVER_URL",
-    "AZURE_MCP_SERVER_URL",
     "MCP_APIM_AUDIENCE",
     "FOUNDRY_CANDIDATE_MAPPING",
     "FOUNDRY_AI_SEARCH_CONNECTION_ID",
@@ -282,23 +280,6 @@ def _check_operations_grants(manifest) -> dict[str, Any]:
     return _check("operations_mcp_grants", failures)
 
 
-def _check_azure_grants(manifest) -> dict[str, Any]:
-    failures: list[dict[str, Any]] = []
-
-    for specialist_id, expected in manifest.azure_mcp_grants().items():
-        mutating = sorted(tool for tool in expected if is_mutation_capable(tool))
-        if mutating:
-            failures.append(
-                _failure(
-                    "mutation_capable_grant",
-                    specialist=specialist_id,
-                    server=AZURE_SERVER_LABEL,
-                    tools=mutating,
-                )
-            )
-    return _check("azure_mcp_grants", failures)
-
-
 def _check_api_catalog(manifest) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     expected = {item["id"]: item for item in manifest.catalog_projection()}
@@ -353,7 +334,7 @@ def _check_terraform_projection(manifest) -> dict[str, Any]:
     tool_names = {
         tool
         for specialist in manifest.specialists
-        for tool in (*specialist.operations_mcp_tools, *specialist.azure_mcp_tools)
+        for tool in specialist.operations_mcp_tools
     }
     restated = sorted(tool for tool in tool_names if f'"{tool}"' in foundry_tf)
     if restated:
@@ -492,11 +473,9 @@ def _check_provider_environment() -> dict[str, Any]:
     required = (
         "FOUNDRY_PROJECT_ENDPOINT",
         "OPERATIONS_MCP_SERVER_URL",
-        "AZURE_MCP_SERVER_URL",
         "MCP_APIM_AUDIENCE",
         "FOUNDRY_CANDIDATE_MAPPING",
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
-        "FOUNDRY_AZURE_MCP_CONNECTION_ID",
         "FOUNDRY_AI_SEARCH_CONNECTION_ID",
         "FOUNDRY_AI_SEARCH_INDEX_NAME",
         "AIOPS_COPILOT_ROLLOUT_MODE",
@@ -510,14 +489,11 @@ def _check_provider_environment() -> dict[str, Any]:
             failures.append(_failure("provider_environment_value_missing", token=token))
     if not exporter_path.is_file():
         failures.append(_failure("provider_environment_exporter_missing"))
-    for connection in (
-        "azapi_resource.foundry_mcp_connection[0].id",
-        "azapi_resource.foundry_azure_mcp_connection[0].id",
+    if (
+        "project_connection_id = azapi_resource.foundry_mcp_connection[0].id"
+        not in foundry
     ):
-        if f"project_connection_id = {connection}" not in foundry:
-            failures.append(
-                _failure("terraform_project_connection_not_immutable")
-            )
+        failures.append(_failure("terraform_project_connection_not_immutable"))
     return _check("provider_environment", failures)
 
 
@@ -600,7 +576,6 @@ def run_offline() -> dict[str, Any]:
     checks = [
         _check_runtime_projection(manifest),
         _check_operations_grants(manifest),
-        _check_azure_grants(manifest),
         _check_api_catalog(manifest),
         _check_terraform_projection(manifest),
         _check_model_contract(manifest),
@@ -730,7 +705,6 @@ def _deployed_agent_name(specialist, env: dict[str, str]) -> str:
 def _agent_allowed_tools(definition: Any) -> dict[str, tuple[str, ...]]:
     granted: dict[str, tuple[str, ...]] = {
         OPERATIONS_SERVER_LABEL: (),
-        AZURE_SERVER_LABEL: (),
     }
     if not isinstance(definition, dict):
         return granted
@@ -757,6 +731,7 @@ def validate_agent_mcp_definition(
     *,
     specialist_id: str,
     definition: Any,
+    expected_operations_mcp_url: str = "",
     expected_ai_search_connection_id: str = "",
     expected_ai_search_index_name: str = "",
 ) -> list[dict[str, Any]]:
@@ -840,6 +815,35 @@ def validate_agent_mcp_definition(
             continue
         label = str(tool.get("server_label", "")).strip()
         labels.append(label)
+        if label == OPERATIONS_SERVER_LABEL:
+            server_url = tool.get("server_url")
+            if (
+                expected_operations_mcp_url
+                and (
+                    not isinstance(server_url, str)
+                    or server_url.strip().rstrip("/")
+                    != expected_operations_mcp_url.strip().rstrip("/")
+                )
+            ):
+                failures.append(
+                    _failure(
+                        "mcp_server_url_mismatch",
+                        specialist=specialist_id,
+                        server=label,
+                    )
+                )
+            require_approval = tool.get("require_approval")
+            if (
+                expected_operations_mcp_url
+                and require_approval != "never"
+            ):
+                failures.append(
+                    _failure(
+                        "mcp_approval_policy_mismatch",
+                        specialist=specialist_id,
+                        server=label,
+                    )
+                )
         allowed_tools = tool.get("allowed_tools")
         if isinstance(allowed_tools, dict):
             if set(allowed_tools) != {"tool_names"}:
@@ -992,7 +996,6 @@ def _secure_service_urls(env: dict[str, str]) -> list[dict[str, Any]]:
     expected_paths = (
         ("FOUNDRY_PROJECT_ENDPOINT", FOUNDRY_SERVICE, None),
         ("OPERATIONS_MCP_SERVER_URL", OPERATIONS_SERVER_LABEL, "/operations-mcp"),
-        ("AZURE_MCP_SERVER_URL", AZURE_SERVER_LABEL, "/azure-mcp"),
     )
     for variable, service, expected_path in expected_paths:
         try:
@@ -1017,18 +1020,6 @@ def _secure_service_urls(env: dict[str, str]) -> list[dict[str, Any]]:
             or not path_valid
         ):
             failures.append(_failure("insecure_service_url", service=service))
-    operation_host = urllib.parse.urlsplit(
-        env["OPERATIONS_MCP_SERVER_URL"]
-    ).hostname
-    azure_host = urllib.parse.urlsplit(env["AZURE_MCP_SERVER_URL"]).hostname
-    if (
-        operation_host
-        and azure_host
-        and operation_host.casefold() != azure_host.casefold()
-    ):
-        failures.append(
-            _failure("insecure_service_url", service=AZURE_SERVER_LABEL)
-        )
     return failures
 
 
@@ -1296,7 +1287,6 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     catalogs: dict[str, tuple[str, ...]] = {}
     for server, variable in (
         (OPERATIONS_SERVER_LABEL, "OPERATIONS_MCP_SERVER_URL"),
-        (AZURE_SERVER_LABEL, "AZURE_MCP_SERVER_URL"),
     ):
         try:
             catalogs[server] = _live_tool_catalog(env[variable], apim_token)
@@ -1597,6 +1587,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
             validate_agent_mcp_definition(
                 specialist_id=specialist.id,
                 definition=definition,
+                expected_operations_mcp_url=env["OPERATIONS_MCP_SERVER_URL"],
                 expected_ai_search_connection_id=search_connection_id,
                 expected_ai_search_index_name=search_index_name,
             )
@@ -1631,22 +1622,12 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 live_catalog=catalogs[OPERATIONS_SERVER_LABEL],
             )
         )
-        failures.extend(
-            compare_grants(
-                specialist_id=specialist.id,
-                server=AZURE_SERVER_LABEL,
-                expected=specialist.azure_mcp_tools,
-                granted=granted[AZURE_SERVER_LABEL],
-                live_catalog=catalogs[AZURE_SERVER_LABEL],
-            )
-        )
         observed.append(
             {
                 "specialist": specialist.id,
                 "provider_version_id": provider_version_id,
                 "version_count": len(entries),
                 "operations_grant_count": len(granted[OPERATIONS_SERVER_LABEL]),
-                "azure_grant_count": len(granted[AZURE_SERVER_LABEL]),
             }
         )
 
@@ -1658,7 +1639,6 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
         "specialist_count": len(manifest.specialists),
         "specialists": list(manifest.specialist_ids),
         "operations_catalog_size": len(catalogs[OPERATIONS_SERVER_LABEL]),
-        "azure_catalog_size": len(catalogs[AZURE_SERVER_LABEL]),
         "deployment_model_verified": bool(deployment_model),
         "checks": [_check("live_grants", failures)],
         "observed": observed,

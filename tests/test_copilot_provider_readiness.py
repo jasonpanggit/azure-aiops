@@ -19,10 +19,6 @@ OPERATIONS_CONNECTION_ID = (
     "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
     "accounts/account/projects/project/connections/ops-mcp"
 )
-AZURE_CONNECTION_ID = (
-    "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
-    "accounts/account/projects/project/connections/azure-mcp"
-)
 SEARCH_CONNECTION_ID = (
     "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
     "accounts/account/projects/project/connections/ai-search"
@@ -41,11 +37,9 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "OPERATIONS_MCP_SERVER_URL": (
                     "https://gateway.example.net/operations-mcp"
                 ),
-                "AZURE_MCP_SERVER_URL": "https://gateway.example.net/azure-mcp",
                 "MCP_APIM_AUDIENCE": "api://aiops-apim",
                 "FOUNDRY_CANDIDATE_MAPPING": str(candidate_mapping),
                 "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID": OPERATIONS_CONNECTION_ID,
-                "FOUNDRY_AZURE_MCP_CONNECTION_ID": AZURE_CONNECTION_ID,
                 "FOUNDRY_AI_SEARCH_CONNECTION_ID": SEARCH_CONNECTION_ID,
                 "FOUNDRY_AI_SEARCH_INDEX_NAME": "aiops-knowledge",
                 "AIOPS_COPILOT_ROLLOUT_MODE": "canary",
@@ -82,9 +76,6 @@ def _candidate_mapping(path: Path) -> None:
                 "connections": {
                     "operations-mcp": {
                         "project_connection_id": OPERATIONS_CONNECTION_ID,
-                    },
-                    "azure-mcp": {
-                        "project_connection_id": AZURE_CONNECTION_ID,
                     },
                 },
             },
@@ -131,7 +122,6 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
     [
         ("FOUNDRY_PROJECT_ENDPOINT", "http://account.example.test/project"),
         ("OPERATIONS_MCP_SERVER_URL", "https://user@gateway.example.net/operations-mcp"),
-        ("AZURE_MCP_SERVER_URL", "https://gateway.example.net:443/azure-mcp"),
         ("MCP_APIM_AUDIENCE", "not-an-audience"),
         ("FOUNDRY_AI_SEARCH_CONNECTION_ID", "ai-search"),
         ("FOUNDRY_AI_SEARCH_INDEX_NAME", "invalid index name"),
@@ -257,11 +247,9 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
     for key in (
         "FOUNDRY_PROJECT_ENDPOINT",
         "OPERATIONS_MCP_SERVER_URL",
-        "AZURE_MCP_SERVER_URL",
         "MCP_APIM_AUDIENCE",
         "FOUNDRY_CANDIDATE_MAPPING",
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
-        "FOUNDRY_AZURE_MCP_CONNECTION_ID",
         "FOUNDRY_AI_SEARCH_CONNECTION_ID",
         "FOUNDRY_AI_SEARCH_INDEX_NAME",
         "AIOPS_COPILOT_ROLLOUT_MODE",
@@ -435,7 +423,7 @@ def test_rollout_rollback_mode_is_fixed_to_compatibility(
     assert decision.reason == "rollback_mode_invalid"
 
 
-def test_candidate_mapping_requires_distinct_governed_connection_ids(
+def test_candidate_mapping_requires_only_operations_mcp_connection(
     tmp_path: Path,
 ) -> None:
     spec = importlib.util.spec_from_file_location(
@@ -453,15 +441,14 @@ def test_candidate_mapping_requires_distinct_governed_connection_ids(
     assert coordinator["provider_version_id"] == "provider-coordinator"
     assert connections == {
         "operations-mcp": OPERATIONS_CONNECTION_ID,
-        "azure-mcp": AZURE_CONNECTION_ID,
     }
 
     payload = json.loads(candidate.read_text(encoding="utf-8"))
-    payload["connections"]["azure-mcp"]["project_connection_id"] = (
-        OPERATIONS_CONNECTION_ID
-    )
+    payload["connections"]["azure-mcp"] = {
+        "project_connection_id": OPERATIONS_CONNECTION_ID,
+    }
     candidate.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="distinct"):
+    with pytest.raises(ValueError, match="exact connection labels"):
         module._candidate_mapping(str(candidate))
 
 

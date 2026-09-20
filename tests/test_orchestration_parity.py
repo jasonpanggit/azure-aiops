@@ -166,33 +166,17 @@ def test_ontology_curator_is_an_exact_non_interactive_tool_consumer():
     assert consumer.read_only is True
 
 
-def test_azure_mcp_projection_is_exact_and_contains_no_mutation_grants():
+def test_azure_mcp_projection_is_empty_for_every_specialist():
     manifest = load_specialist_manifest()
 
     assert manifest.azure_mcp_grants() == {
-        specialist.id: specialist.azure_mcp_tools
+        specialist.id: ()
         for specialist in manifest.specialists
     }
-    assert manifest.azure_mcp_grants()["identity_access"] == (
-        "subscription_list",
-        "group_list",
-        "role_assignment_list",
-        "arm_execute_query",
-    )
-    assert manifest.azure_mcp_grants()["finops"] == (
-        "subscription_list",
-        "group_list",
-        "arm_query_costs",
-        "advisor_recommendation_list",
-        "advisor_recommendation_summary",
-    )
-    assert manifest.azure_mcp_grants()["resource_health_observability"] == (
-        "subscription_list",
-        "group_list",
-        "resourcehealth_availability-status_get",
-        "resourcehealth_health-events_list",
-        "monitor_activitylog_list",
-        "monitor_resource_log_query",
+    assert all(specialist.azure_mcp_tools == () for specialist in manifest.specialists)
+    assert all(
+        "azure_mcp_tools" not in specialist.model_dump()
+        for specialist in manifest.specialists
     )
 
 
@@ -482,7 +466,7 @@ def test_empty_network_snapshot_skips_fabric_iq_enrichment_io(monkeypatch):
             lambda payload: payload["specialists"][0].update(
                 {"azure_mcp_tools": ["communication_sms_send"]}
             ),
-            "missing or non-read-only Azure MCP tools",
+            "Extra inputs are not permitted",
         ),
         (
             lambda payload: payload["specialists"][0].update(
@@ -562,11 +546,8 @@ def test_manifest_contains_no_credentials_or_mutation_grants():
         )
     )
     assert all(
-        tool == "arm_execute_query" or marker not in tool.casefold()
+        marker not in tool.casefold()
         for specialist in load_specialist_manifest().specialists
-        for tool in (
-            *specialist.operations_mcp_tools,
-            *specialist.azure_mcp_tools,
-        )
+        for tool in specialist.operations_mcp_tools
         for marker in FORBIDDEN_TOOL_MARKERS
     )
