@@ -963,6 +963,49 @@ def test_gold_query_reports_healthy_empty_when_filter_matches_no_rows() -> None:
     assert result.completeness["state"] == "healthy-empty"
 
 
+def test_severity_filter_predicate_is_case_insensitive() -> None:
+    """Defender stores severity as "High"/"Critical" while the UI always
+    sends lowercase canonical values (e.g. "high"). Under Fabric's
+    case-sensitive collation a bare `[severity] = ?` predicate would never
+    match, silently reporting a false healthy-empty result even when
+    matching findings exist. Regression for that bug."""
+    from api.exposure_query import _append_filter_predicates
+
+    predicates: list[str] = []
+    parameters: list[Any] = []
+    _append_filter_predicates(
+        predicates,
+        parameters,
+        (
+            ExposureFilter("severity", "eq", "high"),
+            ExposureFilter("source_family", "in", ("defender_image",)),
+        ),
+    )
+
+    assert predicates == [
+        "LOWER([severity]) = LOWER(?)",
+        "LOWER([source_family]) IN (LOWER(?))",
+    ]
+    assert parameters == ["high", "defender_image"]
+
+
+def test_boolean_filter_predicate_is_not_case_folded() -> None:
+    """`active`/`sla_overdue` are bit columns; wrapping them in LOWER()
+    would be a SQL type error, so only text enum fields are folded."""
+    from api.exposure_query import _append_filter_predicates
+
+    predicates: list[str] = []
+    parameters: list[Any] = []
+    _append_filter_predicates(
+        predicates,
+        parameters,
+        (ExposureFilter("active", "eq", True),),
+    )
+
+    assert predicates == ["[active] = ?"]
+    assert parameters == [True]
+
+
 def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
     reader = RecordingReader()
     service = ExposureQueryService(reader)
@@ -1006,7 +1049,7 @@ def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
             "[read_model_generation_id] = ?"
         )
         assert sql.index("[read_model_generation_id] = ?") < sql.index(
-            "[severity] = ?"
+            "LOWER([severity]) = LOWER(?)"
         )
         assert call["parameters"][:6] == expected_prefix
         assert call["parameters"][6] == "critical"
