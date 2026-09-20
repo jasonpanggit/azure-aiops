@@ -881,6 +881,7 @@ def _execute_retained_compatibility(
     context: Any,
     scope: Scope,
     principal: Any,
+    planned_candidate: CandidatePlan | None = None,
 ) -> OrchestrationResult:
     """Serve the retained deterministic investigation path on the v2 wire."""
 
@@ -904,7 +905,7 @@ def _execute_retained_compatibility(
     planned_calls: list[tuple[str, dict[str, Any]]] | None = None
     planned_specialists: list[str] = []
     if payload.hint is None:
-        candidate = build_deterministic_fallback(
+        candidate = planned_candidate or build_deterministic_fallback(
             request,
             load_specialist_manifest(),
         )
@@ -2194,6 +2195,7 @@ def investigate_canonical(
                 context=context,
                 scope=scope,
                 principal=principal,
+                planned_candidate=required_candidate,
             )
     except PolicyViolation as exc:
         raise ApiError(
