@@ -34,10 +34,8 @@
 #   FOUNDRY_SPECIALIST_MANIFEST_DIGEST  digest of the manifest being rolled out
 #   FOUNDRY_SPECIALIST_RELEASE   reviewed release stamp for the candidate set
 #   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID
-#   FOUNDRY_AZURE_MCP_CONNECTION_ID
-#                                exact Terraform-created Foundry project
-#                                connection resource IDs captured in the
-#                                candidate mapping
+#                                exact Terraform-created Operations MCP project
+#                                connection resource ID captured in the mapping
 #   FOUNDRY_MODEL_DEPLOYMENT_NAME  real Azure model deployment name, handed to
 #                                the live gate so the deployed model can be
 #                                checked against it
@@ -164,12 +162,9 @@ if [[ -n "${FOUNDRY_SPECIALISTS_JSON:-}" ]]; then
     candidate_record="$(mktemp)"
   fi
 
-  # A specialist candidate is not publishable unless both independently
-  # governed MCP connections are identified by their exact project-connection
-  # resource IDs. Names or a single shared/demo connection are insufficient:
-  # they cannot prove which authenticated tool boundary an agent will use.
+  # A specialist candidate is not publishable unless the governed Operations
+  # MCP connection is identified by its exact project-connection resource ID.
   FOUNDRY_OPERATIONS_MCP_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID:-}" \
-  FOUNDRY_AZURE_MCP_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID:-}" \
   python3 -c '
 import os, re
 
@@ -179,17 +174,10 @@ pattern = re.compile(
     r"connections/[^/]+$",
     re.IGNORECASE,
 )
-values = [
-    os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/"),
-    os.environ["FOUNDRY_AZURE_MCP_CONNECTION_ID"].strip().rstrip("/"),
-]
-if not all(pattern.fullmatch(value) for value in values):
+value = os.environ["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"].strip().rstrip("/")
+if not pattern.fullmatch(value):
     raise SystemExit(
-        "create-foundry-agent: exact Operations and Azure MCP project connection IDs are required"
-    )
-if len({value.casefold() for value in values}) != 2:
-    raise SystemExit(
-        "create-foundry-agent: Operations and Azure MCP project connection IDs must be distinct"
+        "create-foundry-agent: exact Operations MCP project connection ID is required"
     )
 ' || exit 1
 
@@ -340,7 +328,6 @@ for specialist_id, v in d.items():
   MANIFEST_DIGEST="${manifest_digest}" \
   RELEASE_STAMP="${release_stamp}" \
   OPERATIONS_CONNECTION_ID="${FOUNDRY_OPERATIONS_MCP_CONNECTION_ID}" \
-  AZURE_CONNECTION_ID="${FOUNDRY_AZURE_MCP_CONNECTION_ID}" \
   python3 -c '
 import json, os, pathlib
 
@@ -376,9 +363,6 @@ pathlib.Path(os.environ["CANDIDATE_RECORD"]).write_text(
             "connections": {
                 "operations-mcp": {
                     "project_connection_id": os.environ["OPERATIONS_CONNECTION_ID"],
-                },
-                "azure-mcp": {
-                    "project_connection_id": os.environ["AZURE_CONNECTION_ID"],
                 },
             },
         },

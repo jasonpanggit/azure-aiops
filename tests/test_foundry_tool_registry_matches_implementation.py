@@ -43,7 +43,7 @@ def _manifest_grants() -> dict[str, tuple[str, ...]]:
     """
     manifest = load_specialist_manifest()
     return {
-        specialist.id: (*specialist.operations_mcp_tools, *specialist.azure_mcp_tools)
+        specialist.id: specialist.operations_mcp_tools
         for specialist in manifest.specialists
     }
 
@@ -61,7 +61,7 @@ def test_registry_block_is_parsed() -> None:
     """A silently-empty parse would make every other assertion here vacuous."""
     rows = _registry_rows()
     assert len(rows) > 10, rows
-    assert {"operations-mcp", "azure-mcp"} == set(rows.values())
+    assert {"operations-mcp"} == set(rows.values())
 
 
 def test_advertised_operations_tools_are_implemented() -> None:

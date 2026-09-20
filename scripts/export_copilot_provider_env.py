@@ -21,11 +21,9 @@ OUTPUT_NAME = "copilot_provider_environment"
 ENV_KEYS = (
     "FOUNDRY_PROJECT_ENDPOINT",
     "OPERATIONS_MCP_SERVER_URL",
-    "AZURE_MCP_SERVER_URL",
     "MCP_APIM_AUDIENCE",
     "FOUNDRY_CANDIDATE_MAPPING",
     "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
-    "FOUNDRY_AZURE_MCP_CONNECTION_ID",
     "FOUNDRY_AI_SEARCH_CONNECTION_ID",
     "FOUNDRY_AI_SEARCH_INDEX_NAME",
     "AIOPS_COPILOT_ROLLOUT_MODE",
@@ -33,7 +31,7 @@ ENV_KEYS = (
     "AIOPS_COPILOT_ROLLBACK_MODE",
 )
 ROLLOUT_MODES = frozenset({"compatibility", "shadow", "canary", "default"})
-CONNECTION_LABELS = ("operations-mcp", "azure-mcp")
+CONNECTION_LABELS = ("operations-mcp",)
 CONNECTION_ID_PATTERN = re.compile(
     r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
     r"microsoft\.cognitiveservices/accounts/[^/]+/projects/[^/]+/"
@@ -120,7 +118,6 @@ def _validate_candidate_mapping(values: dict[str, str]) -> None:
 
     expected = {
         "operations-mcp": values["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"],
-        "azure-mcp": values["FOUNDRY_AZURE_MCP_CONNECTION_ID"],
     }
     normalized: dict[str, str] = {}
     for label in CONNECTION_LABELS:
@@ -195,20 +192,6 @@ def load_environment(
         values["OPERATIONS_MCP_SERVER_URL"],
         expected_path="/operations-mcp",
     )
-    _validate_https_url(
-        "AZURE_MCP_SERVER_URL",
-        values["AZURE_MCP_SERVER_URL"],
-        expected_path="/azure-mcp",
-    )
-    operations_host = (
-        urllib.parse.urlsplit(values["OPERATIONS_MCP_SERVER_URL"]).hostname or ""
-    ).casefold()
-    azure_host = (
-        urllib.parse.urlsplit(values["AZURE_MCP_SERVER_URL"]).hostname or ""
-    ).casefold()
-    if operations_host != azure_host:
-        raise ValueError("AZURE_MCP_SERVER_URL")
-
     audience = urllib.parse.urlsplit(values["MCP_APIM_AUDIENCE"])
     if (
         audience.scheme.casefold() not in {"api", "https"}
@@ -233,10 +216,6 @@ def load_environment(
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
         values["FOUNDRY_OPERATIONS_MCP_CONNECTION_ID"],
     )
-    azure_connection = _normalize_connection_id(
-        "FOUNDRY_AZURE_MCP_CONNECTION_ID",
-        values["FOUNDRY_AZURE_MCP_CONNECTION_ID"],
-    )
     search_connection = _normalize_connection_id(
         "FOUNDRY_AI_SEARCH_CONNECTION_ID",
         values["FOUNDRY_AI_SEARCH_CONNECTION_ID"],
@@ -244,16 +223,14 @@ def load_environment(
     search_index_name = values["FOUNDRY_AI_SEARCH_INDEX_NAME"].strip()
     normalized_connections = {
         operation_connection.casefold(),
-        azure_connection.casefold(),
         search_connection.casefold(),
     }
-    if len(normalized_connections) != 3:
-        raise ValueError("FOUNDRY_AZURE_MCP_CONNECTION_ID")
+    if len(normalized_connections) != 2:
+        raise ValueError("FOUNDRY_AI_SEARCH_CONNECTION_ID")
     connection_projects = {
         connection.rsplit("/connections/", 1)[0].casefold()
         for connection in (
             operation_connection,
-            azure_connection,
             search_connection,
         )
     }

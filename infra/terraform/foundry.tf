@@ -39,35 +39,16 @@ locals {
     id => specialist.operations_mcp_tools
   }
 
-  # Second tool-caller: Microsoft's official Azure MCP Server
-  # (azurerm_container_app.azure_mcp), giving specialists direct read-only
-  # access to live Azure resource state that the governed Operations MCP
-  # relay does not model (e.g. Advisor recommendations, Monitor activity
-  # logs, Resource Health, ARM deployment status). The manifest carries the
-  # complete per-specialist list (including the shared subscription/resource
-  # group scoping tools) and its loader accepts only names present in a
-  # pinned read-only azmcp catalog, so a mutation-capable grant
-  # (e.g. advisor_recommendation_apply, arm_whatif_deployment) cannot reach
-  # this projection.
-  foundry_azure_mcp_specialist_tools = {
-    for id, specialist in local.specialists_by_id :
-    id => specialist.azure_mcp_tools
-  }
-
-  # Shared decision rule explaining which of the two independent MCP
-  # tool-callers (operations-mcp vs azure-mcp) a specialist should reach for.
-  # Neither tool-caller "knows about" the other -- the model picks purely by
-  # matching the question to a tool name, so this rule is injected verbatim
-  # into every specialist prompt to make the choice deterministic rather than
-  # left to name-matching alone.
-  foundry_mcp_routing_rule = "Routing rule for your tool sources -- they answer different questions, not the same question twice: use your operations-mcp tools for governed, business-context-joined analysis (business impact, policy/design alignment, curated CVE/incident/remediation records, and Fabric-modeled topology) -- this is a curated model that is necessarily incomplete and can lag behind or omit resource configuration it was never ingested to capture. Use your azure-mcp tools (Microsoft's official Azure MCP Server) whenever the question needs the exact, current configuration of a specific Azure resource -- e.g. a firewall's actual rule collections, an NSG's actual rules, a VNet's actual subnets, current Advisor recommendations, Resource Health status, Monitor activity logs, ARM deployment status, cost data, or policy/role assignments -- because operations-mcp's curated topology does not and will never model every resource property. When a finding calls a configuration a gap or deviation from 'design policy' or 'Azure best practice', ground that claim in your knowledge search tool (an Azure AI Search index of governance/design/best-practice documents, cited by source and title) before presenting it as a violation -- do not assert a best-practice claim from memory when this tool exists and can be queried. wellarchitectedframework_serviceguide_get (served via azure-mcp) remains available as a live, per-service fetch of Microsoft's own published Well-Architected Framework guidance when the knowledge search index does not cover a specific service in enough depth. Do not conclude a resource has no configuration, no rules, or no data just because operations-mcp returned none or was silent on it -- that means the curated model does not have it, not that Azure does not have it; call azure-mcp (arm_execute_query, or another specific azure-mcp tool if one exists for that resource type) to get the live, authoritative answer before telling the operator something does not exist. When multiple sources are relevant, call operations-mcp first for governed/business context, then azure-mcp for precise resource-level facts, then your knowledge search tool for the design-policy/best-practice standard to compare against, and clearly attribute each claim to the source it came from."
+  # Specialists use only the governed Operations MCP relay for operational
+  # evidence and Azure AI Search for reviewed policy/design grounding. The
+  # separately provisioned Azure MCP connection remains unused by specialists.
+  foundry_mcp_routing_rule = "Routing rule for your tool sources: use operations-mcp for governed, business-context-joined operational evidence (business impact, policy/design alignment, curated CVE/incident/remediation records, and Fabric-modeled topology). Use knowledge search for citable governance, design-policy, and Azure best-practice documents. Do not claim exact live resource configuration unless operations-mcp returned it, and never infer that missing curated evidence means a resource or configuration does not exist. When both sources are relevant, call operations-mcp first for operational context, then knowledge search for the reviewed standard, and clearly attribute each claim to its source."
 
   # ---------------------------------------------------------------------------
   # Tool registry: single source of truth for "what does this tool do and when
   # should an agent reach for it". Every tool name referenced anywhere in
-  # foundry_specialist_tools / foundry_azure_mcp_specialist_tools /
-  # foundry_generic_context_tools / foundry_azure_mcp_generic_tools MUST have
-  # an entry here. foundry_specialist_tool_guide (below) renders each
+  # foundry_specialist_tools MUST have an entry here.
+  # foundry_specialist_tool_guide (below) renders each
   # specialist's assigned subset of this registry into a per-tool "when to use
   # it" line that is spliced into that specialist's prompt -- so instructions
   # are generated from one governed catalog instead of hand-typed tool lists
@@ -102,29 +83,10 @@ locals {
     defender_remediation_cases    = { server = "operations-mcp", purpose = "Read governed Defender-correlated remediation cases with citations, business context, and dispositions; changes nothing." }
     remediation_business_decision = { server = "operations-mcp", purpose = "Read governed business-decision detail for a remediation plan or correlated case, including costs, options, urgency, confidence, and review requirements; changes nothing." }
 
-    # -- azure-mcp: Microsoft's official Azure MCP Server (live, raw Azure state) --
-    subscription_list                         = { server = "azure-mcp", purpose = "Enumerate accessible Azure subscriptions (generic scoping tool)." }
-    group_list                                = { server = "azure-mcp", purpose = "Enumerate resource groups in scope (generic scoping tool)." }
-    resourcehealth_availability-status_get    = { server = "azure-mcp", purpose = "Get the current Azure Resource Health availability status for a resource." }
-    monitor_activitylog_list                  = { server = "azure-mcp", purpose = "List recent Azure Monitor activity-log entries (control-plane operations) for a scope." }
-    advisor_recommendation_list               = { server = "azure-mcp", purpose = "List current Azure Advisor recommendations for a scope." }
-    advisor_recommendation_summary            = { server = "azure-mcp", purpose = "Summarize Azure Advisor recommendations by category/impact for a scope." }
-    compute_vm_get                            = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Azure VM." }
-    appservice_webapp_get                     = { server = "azure-mcp", purpose = "Get live configuration/state of a specific App Service web app." }
-    functionapp_get                           = { server = "azure-mcp", purpose = "Get live configuration/state of a specific Function App." }
-    monitor_resource_log_query                = { server = "azure-mcp", purpose = "Run a log query against a resource's Azure Monitor logs." }
-    resourcehealth_health-events_list         = { server = "azure-mcp", purpose = "List recent Azure Resource Health events for a scope." }
-    arm_get_deployment_status                 = { server = "azure-mcp", purpose = "Get the live status of an ARM deployment." }
-    policy_assignment_list                    = { server = "azure-mcp", purpose = "List live Azure Policy assignments for a scope." }
-    role_assignment_list                      = { server = "azure-mcp", purpose = "List live Azure RBAC role assignments for a scope." }
-    arm_query_costs                           = { server = "azure-mcp", purpose = "Query live Azure cost/usage data for a scope." }
-    arm_execute_query                         = { server = "azure-mcp", purpose = "Run a live Azure Resource Graph (KQL) query for exact, current resource properties (e.g. a firewall's applicationRuleCollections/networkRuleCollections, a VNet's subnets, an NSG's rules) that Fabric/operations-mcp topology has not modeled or may not have re-ingested yet." }
-    wellarchitectedframework_serviceguide_get = { server = "azure-mcp", purpose = "Get official Microsoft Azure Well-Architected Framework guidance (reliability, security, cost, operational excellence, performance) for a specific Azure service -- ground a design-policy or best-practice gap finding in a real, citable Microsoft recommendation instead of asserting it from the model's own training knowledge." }
   }
 
-  # Renders one specialist's full assigned tool set (operations-mcp +
-  # azure-mcp) into "- tool_name (server): purpose" guide lines, grouped by
-  # server so the two tool sources stay visually separated in the prompt. The
+  # Renders one specialist's Operations MCP tool set into
+  # "- tool_name (server): purpose" guide lines. The
   # knowledge search tool (when enabled) is not an MCP tool call -- it has no
   # entry in foundry_tool_registry -- so its guide line is appended
   # separately rather than folded into this loop. Indexing (not lookup())
@@ -134,15 +96,13 @@ locals {
   foundry_specialist_tool_guide = {
     for id, specialist in local.specialists_by_id : id => join("\n", concat(
       [
-        for name in concat(
-          local.foundry_specialist_tools[id],
-          local.foundry_azure_mcp_specialist_tools[id]
-        ) : "- ${name} (${local.foundry_tool_registry[name].server}): ${local.foundry_tool_registry[name].purpose}"
+        for name in local.foundry_specialist_tools[id] :
+        "- ${name} (${local.foundry_tool_registry[name].server}): ${local.foundry_tool_registry[name].purpose}"
       ],
       var.enable_foundry_knowledge_search ? [
         "- knowledge search (azure-ai-search): Search a general-purpose, citable knowledge base (design standards, governance policy, and Azure best-practice guidance -- not limited to any single framework) for evidence grounding a design-policy or best-practice claim."
       ] : [],
-      length(local.foundry_specialist_tools[id]) + length(local.foundry_azure_mcp_specialist_tools[id]) == 0 && !var.enable_foundry_knowledge_search ? [
+      length(local.foundry_specialist_tools[id]) == 0 && !var.enable_foundry_knowledge_search ? [
         "- none: you are aggregation-only. Synthesize the specialist findings supplied to you and never claim evidence you did not receive."
       ] : []
     ))
@@ -192,10 +152,9 @@ locals {
 
   # Final per-specialist instruction = role prompt + shared MCP routing rule
   # + this specialist's tool guide rendered from foundry_tool_registry. Tool
-  # names are never hand-typed here -- they are derived from the same
-  # foundry_specialist_tools / foundry_azure_mcp_specialist_tools maps that
-  # drive the actual allowed_tools wiring, so instructions cannot drift from
-  # what the agent is actually granted.
+  # names are never hand-typed here -- they are derived from
+  # foundry_specialist_tools, which also drives the actual allowed_tools
+  # wiring, so instructions cannot drift from what the agent is granted.
   foundry_specialist_instructions = {
     for id, role_prompt in local.foundry_specialist_role_prompts : id =>
     "${role_prompt} ${local.foundry_mcp_routing_rule} Your available tools:\n${local.foundry_specialist_tool_guide[id]}"
@@ -211,20 +170,9 @@ locals {
     project_connection_id = azapi_resource.foundry_mcp_connection[0].id
   } : null
 
-  # MCP tool-call config for the standalone Azure MCP Server (@azure/mcp),
-  # giving specialists a second, independent tool-caller for live Azure
-  # resource state (see local.foundry_azure_mcp_specialist_tools above).
-  foundry_azure_mcp_tool_config = var.enable_apim ? {
-    type                  = "mcp"
-    server_label          = "azure-mcp"
-    server_url            = local.foundry_azure_mcp_server_url
-    require_approval      = "never"
-    project_connection_id = azapi_resource.foundry_azure_mcp_connection[0].id
-  } : null
-
   # Knowledge-search tool-call config: Azure AI Search wired as a first-class
-  # Foundry "azure_ai_search" tool (distinct from the two `mcp` tool-callers
-  # above). Applied identically to every specialist -- there is one shared
+  # Foundry "azure_ai_search" tool (distinct from the `mcp` tool-caller above).
+  # Applied identically to every specialist -- there is one shared
   # index, so (unlike the MCP tools) there is no per-specialist allowed_tools
   # selection to make.
   # NOTE: unlike the `mcp` tool type above (which resolves a bare connection
@@ -298,11 +246,6 @@ locals {
         local.foundry_mcp_tool_config == null ? [] : [
           merge(local.foundry_mcp_tool_config, {
             allowed_tools = local.foundry_specialist_tools[id]
-          })
-        ],
-        local.foundry_azure_mcp_tool_config == null ? [] : [
-          merge(local.foundry_azure_mcp_tool_config, {
-            allowed_tools = local.foundry_azure_mcp_specialist_tools[id]
           })
         ],
         local.foundry_ai_search_tool_config == null ? [] : [
@@ -711,10 +654,9 @@ resource "azapi_resource" "foundry_mcp_connection" {
   }
 }
 
-# Second project connection: the standalone Azure MCP Server, mirroring
-# foundry_mcp_connection above. Same auth pattern (ProjectManagedIdentity,
-# validated by apim.tf's azure-mcp-inbound.xml policy), distinct target/name
-# so it appears as its own tool-caller in specialist tool definitions.
+# Existing standalone Azure MCP project connection. It is intentionally
+# retained to avoid a destructive infrastructure change, but Operations
+# Copilot specialist publication does not reference or validate it.
 resource "azapi_resource" "foundry_azure_mcp_connection" {
   count                     = var.enable_apim ? 1 : 0
   type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
@@ -1094,13 +1036,9 @@ resource "terraform_data" "foundry_agent" {
       FOUNDRY_SPECIALIST_RELEASE         = var.foundry_specialist_release
       FOUNDRY_MODEL_DEPLOYMENT_NAME      = local.foundry_model_deployment_name
       OPERATIONS_MCP_SERVER_URL          = local.foundry_mcp_server_url == null ? "" : local.foundry_mcp_server_url
-      AZURE_MCP_SERVER_URL               = local.foundry_azure_mcp_server_url == null ? "" : local.foundry_azure_mcp_server_url
       MCP_APIM_AUDIENCE                  = local.apim_audience
       FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = (
         var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
-      )
-      FOUNDRY_AZURE_MCP_CONNECTION_ID = (
-        var.enable_apim ? azapi_resource.foundry_azure_mcp_connection[0].id : ""
       )
       FOUNDRY_AI_SEARCH_CONNECTION_ID = (
         var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
@@ -1117,7 +1055,6 @@ resource "terraform_data" "foundry_agent" {
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
     azapi_resource.foundry_mcp_connection,
-    azapi_resource.foundry_azure_mcp_connection,
     azapi_resource.foundry_ai_search_connection,
     azurerm_role_assignment.foundry_project_search_index_data_contributor,
     azurerm_role_assignment.foundry_project_search_service_contributor,

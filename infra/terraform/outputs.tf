@@ -38,11 +38,9 @@ output "copilot_provider_environment" {
   value = {
     FOUNDRY_PROJECT_ENDPOINT             = local.foundry_project_endpoint
     OPERATIONS_MCP_SERVER_URL            = var.enable_apim ? local.foundry_mcp_server_url : ""
-    AZURE_MCP_SERVER_URL                 = var.enable_apim ? local.foundry_azure_mcp_server_url : ""
     MCP_APIM_AUDIENCE                    = var.enable_apim ? local.apim_audience : ""
     FOUNDRY_CANDIDATE_MAPPING            = local.foundry_candidate_artifact_path
     FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
-    FOUNDRY_AZURE_MCP_CONNECTION_ID      = var.enable_apim ? azapi_resource.foundry_azure_mcp_connection[0].id : ""
     FOUNDRY_AI_SEARCH_CONNECTION_ID      = var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
     FOUNDRY_AI_SEARCH_INDEX_NAME         = var.enable_foundry_knowledge_search ? var.foundry_knowledge_index_name : ""
     AIOPS_COPILOT_ROLLOUT_MODE           = var.copilot_rollout_mode

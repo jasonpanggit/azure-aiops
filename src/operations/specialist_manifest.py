@@ -49,29 +49,7 @@ _MUTATION_MARKERS = (
     "update",
     "write",
 )
-_READ_ONLY_EXECUTE_TOOLS = {"arm_execute_query"}
-_LOCKED_POLICY_DIGEST = "b9a9faa9cf0211cbfe9fe814c0149de44d5f8072e21a9695ae69902fd085419f"
-_READ_ONLY_AZURE_MCP_TOOLS = frozenset(
-    {
-        "advisor_recommendation_list",
-        "advisor_recommendation_summary",
-        "appservice_webapp_get",
-        "arm_execute_query",
-        "arm_get_deployment_status",
-        "arm_query_costs",
-        "compute_vm_get",
-        "functionapp_get",
-        "group_list",
-        "monitor_activitylog_list",
-        "monitor_resource_log_query",
-        "policy_assignment_list",
-        "resourcehealth_availability-status_get",
-        "resourcehealth_health-events_list",
-        "role_assignment_list",
-        "subscription_list",
-        "wellarchitectedframework_serviceguide_get",
-    }
-)
+_LOCKED_POLICY_DIGEST = "c26420d4d7ab517b51622fe26a6908853fd90a007fd05a78d9ddba66916883f1"
 
 PageMapping = Literal[
     "overview",
@@ -156,7 +134,6 @@ class SpecialistDefinition(ManifestModel):
     intent_examples: tuple[str, ...] = Field(min_length=1, max_length=20)
     dependencies: tuple[str, ...] = Field(default=(), max_length=16)
     operations_mcp_tools: tuple[str, ...] = Field(default=(), max_length=16)
-    azure_mcp_tools: tuple[str, ...] = Field(default=(), max_length=16)
     knowledge_policy: KnowledgePolicy
     page_mappings: tuple[PageMapping, ...] = Field(min_length=1, max_length=8)
     primary_page_mappings: tuple[PageMapping, ...] = Field(default=(), max_length=8)
@@ -175,14 +152,12 @@ class SpecialistDefinition(ManifestModel):
             self.intent_examples,
             self.dependencies,
             self.operations_mcp_tools,
-            self.azure_mcp_tools,
             self.page_mappings,
             self.primary_page_mappings,
         )
         if any(len(values) != len(set(values)) for values in collections):
             raise ValueError("specialist contract collections must not contain duplicates")
-        tool_names = (*self.operations_mcp_tools, *self.azure_mcp_tools)
-        if any(_is_mutation_tool(tool) for tool in tool_names):
+        if any(_is_mutation_tool(tool) for tool in self.operations_mcp_tools):
             raise ValueError("specialist contracts may contain only read-only tools")
         if not set(self.primary_page_mappings) <= set(self.page_mappings):
             raise ValueError("primary page mappings must also be page mappings")
@@ -202,6 +177,12 @@ class SpecialistDefinition(ManifestModel):
         """Return the reviewed tool subset for one mapped page."""
 
         return self.page_tool_grants.get(page, self.operations_mcp_tools)
+
+    @property
+    def azure_mcp_tools(self) -> tuple[()]:
+        """Compatibility projection proving specialists have no Azure MCP grants."""
+
+        return ()
 
 
 class NonInteractiveToolConsumer(ManifestModel):
@@ -296,7 +277,7 @@ class SpecialistManifest(ManifestModel):
                 f"{sorted(overlap)}"
             )
         executive = self.require("executive_summary")
-        if executive.operations_mcp_tools or executive.azure_mcp_tools:
+        if executive.operations_mcp_tools:
             raise ValueError("executive_summary must remain aggregation-only")
         if set(executive.dependencies) != known - {"executive_summary"}:
             raise ValueError("executive_summary must depend on every domain specialist")
@@ -346,13 +327,10 @@ class SpecialistManifest(ManifestModel):
             for specialist in self.specialists
         }
 
-    def azure_mcp_grants(self) -> dict[str, tuple[str, ...]]:
-        """Project exact Azure MCP grants by specialist."""
+    def azure_mcp_grants(self) -> dict[str, tuple[()]]:
+        """Compatibility projection with an empty Azure MCP grant per specialist."""
 
-        return {
-            specialist.id: specialist.azure_mcp_tools
-            for specialist in self.specialists
-        }
+        return {specialist.id: () for specialist in self.specialists}
 
     def non_interactive_operations_mcp_grants(
         self,
@@ -446,8 +424,6 @@ def _ordered_unique(values: Iterable[str]) -> tuple[str, ...]:
 
 def _is_mutation_tool(tool: str) -> bool:
     normalized = tool.casefold()
-    if normalized in _READ_ONLY_EXECUTE_TOOLS:
-        return False
     return any(marker in normalized for marker in _MUTATION_MARKERS)
 
 
@@ -502,16 +478,6 @@ def load_specialist_manifest(
     if unassigned_tools:
         raise ValueError(
             f"unassigned Operations MCP tools: {sorted(unassigned_tools)}"
-        )
-    missing_azure_tools = {
-        tool
-        for grants in manifest.azure_mcp_grants().values()
-        for tool in grants
-        if tool not in _READ_ONLY_AZURE_MCP_TOOLS
-    }
-    if missing_azure_tools:
-        raise ValueError(
-            f"missing or non-read-only Azure MCP tools: {sorted(missing_azure_tools)}"
         )
     if not set(manifest.legacy_operations_mcp_tools) <= set(
         manifest.operations_tool_names()

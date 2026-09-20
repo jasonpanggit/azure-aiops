@@ -19,8 +19,7 @@
       "intent_examples": ["network", "traffic", "firewall", "nsg", "route", "blast", "hub", "vnet", "subnet", "peering", "topology", "dependency"],
       "dependencies": [],
       "operations_mcp_tools": ["network_topology", "hub_dependents", "traffic_flow", "firewall_nsg_gaps", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "resourcehealth_availability-status_get", "monitor_activitylog_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["network", "compliance", "twin"],
       "page_tool_grants": {"compliance": ["firewall_nsg_gaps"]},
       "output_contract": {
@@ -41,8 +40,7 @@
       "intent_examples": ["cve", "vulnerability", "exploit", "exposure", "defender", "secure score", "attack path", "risk"],
       "dependencies": [],
       "operations_mcp_tools": ["cve_exposure", "cve_detail", "cve_attack_path", "defender_alerts", "defender_attack_paths", "defender_secure_score", "risk_context", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list", "advisor_recommendation_summary"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["vulnerability", "compliance", "exposure", "cve_detail", "defender_posture", "changes_predeploy"],
       "page_tool_grants": {"compliance": ["cve_exposure"], "changes_predeploy": ["cve_exposure"]},
       "output_contract": {
@@ -63,8 +61,7 @@
       "intent_examples": ["patch", "kb", "update", "sla", "rollback", "maintenance"],
       "dependencies": [],
       "operations_mcp_tools": ["patch_priorities", "kb_detail", "cve_exposure", "cve_detail", "remediation_plans", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "compute_vm_get", "appservice_webapp_get", "functionapp_get", "arm_execute_query"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["patch", "vulnerability", "kb_detail", "patch_priorities"],
       "output_contract": {
         "schema_version": "1",
@@ -84,8 +81,7 @@
       "intent_examples": ["incident", "outage", "alert", "root cause", "timeline", "situation"],
       "dependencies": [],
       "operations_mcp_tools": ["incidents", "defender_alerts", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "monitor_activitylog_list", "monitor_resource_log_query", "resourcehealth_health-events_list"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["incident", "situations", "situation_detail", "changes", "changes_predeploy", "investigate"],
       "page_tool_grants": {"changes": ["incidents"], "changes_predeploy": ["incidents"]},
       "output_contract": {
@@ -106,8 +102,7 @@
       "intent_examples": ["change", "changed", "deployment", "configuration", "predeploy", "drift"],
       "dependencies": [],
       "operations_mcp_tools": ["incidents", "search", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "arm_get_deployment_status", "monitor_activitylog_list", "arm_execute_query"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["incident", "changes", "changes_predeploy"],
       "output_contract": {
         "schema_version": "1",
@@ -127,8 +122,7 @@
       "intent_examples": ["owner", "owned", "approval", "approver", "governance", "policy", "scope", "exception", "compliance"],
       "dependencies": [],
       "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "policy_assignment_list", "role_assignment_list", "arm_execute_query", "wellarchitectedframework_serviceguide_get"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["compliance", "governance", "resource", "remediation", "services"],
       "output_contract": {
         "schema_version": "1",
@@ -148,8 +142,7 @@
       "intent_examples": ["remediation", "fix", "mitigation", "rollback", "plan", "business decision"],
       "dependencies": [],
       "operations_mcp_tools": ["remediation_plans", "remediation_opportunities", "defender_alerts", "defender_attack_paths", "defender_secure_score", "defender_remediation_cases", "remediation_business_decision", "business_service_context", "application_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "advisor_recommendation_list"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["compliance", "remediation", "changes", "changes_predeploy"],
       "page_tool_grants": {"changes": ["remediation_opportunities"], "changes_predeploy": ["remediation_opportunities"]},
       "output_contract": {
@@ -170,7 +163,6 @@
       "intent_examples": ["executive", "summary", "leadership", "decision", "business impact"],
       "dependencies": ["network", "vulnerability", "patch", "incident", "change", "governance", "remediation", "inventory_data_health", "identity_access", "finops", "resource_health_observability"],
       "operations_mcp_tools": [],
-      "azure_mcp_tools": [],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["overview", "copilot", "agents"],
       "output_contract": {
@@ -191,8 +183,7 @@
       "intent_examples": ["inventory", "resource inventory", "data health", "data freshness", "connections", "fabric medallion"],
       "dependencies": [],
       "operations_mcp_tools": ["inventory_resources"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "arm_execute_query"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["inventory", "connections", "connections_fabric"],
       "output_contract": {
         "schema_version": "1",
@@ -212,8 +203,7 @@
       "intent_examples": ["identity", "access", "rbac", "role assignment", "privilege", "service principal"],
       "dependencies": [],
       "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "role_assignment_list", "arm_execute_query"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["identity"],
       "output_contract": {
         "schema_version": "1",
@@ -233,8 +223,7 @@
       "intent_examples": ["finops", "cost", "spend", "waste", "savings", "advisor economics"],
       "dependencies": [],
       "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "arm_query_costs", "advisor_recommendation_list", "advisor_recommendation_summary"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["finops"],
       "output_contract": {
         "schema_version": "1",
@@ -254,8 +243,7 @@
       "intent_examples": ["resource health", "observability", "availability", "metric", "telemetry", "monitor", "degraded"],
       "dependencies": [],
       "operations_mcp_tools": ["incidents", "impact_context", "search"],
-      "azure_mcp_tools": ["subscription_list", "group_list", "resourcehealth_availability-status_get", "resourcehealth_health-events_list", "monitor_activitylog_list", "monitor_resource_log_query"],
-      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "azure_mcp"]},
+      "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["resource_health", "resource", "services", "service_detail", "twin"],
       "primary_page_mappings": ["services"],
       "output_contract": {
