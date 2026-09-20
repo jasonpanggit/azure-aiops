@@ -13,8 +13,11 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { CountBarChart } from "@/components/ui/CountBarChart";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { RiskGauge } from "@/components/ui/RiskGauge";
+import { StatusBadge, statusTone, toneColor } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { useExposureSection } from "@/hooks/useExposureSection";
@@ -432,6 +435,40 @@ export default function PatchPrioritiesPage() {
   const last = rows.length === 0 ? 0 : first + rows.length - 1;
   const targetKind = queryState.filters.target_kind ?? "server";
 
+  const severityBreakdown = useMemo(() => {
+    const order = ["critical", "high", "medium", "low"];
+    const counts = new Map<string, number>();
+    for (const item of rows) {
+      const key = (item.severity || "unknown").toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const labeled = order
+      .filter((key) => counts.has(key))
+      .map((key) => ({ key, label: key.charAt(0).toUpperCase() + key.slice(1) }));
+    for (const key of Array.from(counts.keys())) {
+      if (!order.includes(key)) labeled.push({ key, label: key.charAt(0).toUpperCase() + key.slice(1) });
+    }
+    return labeled.map(({ key, label }) => ({
+      label,
+      value: counts.get(key) ?? 0,
+      color: toneColor(statusTone(key)),
+    }));
+  }, [rows]);
+
+  const targetBreakdown = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of rows) {
+      const key = targetName(item.target_id) || "Unattributed";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([label, value]) => ({ id: label, label, value }));
+  }, [rows]);
+
+  const coveragePercent = total > 0 ? Math.round((represented / total) * 100) : null;
+
   // Read-only contextual Copilot over the already-loaded patch-priority queue.
   // Governed remediation stays behind existing server endpoints (D-03, D-04, D-10).
   const patchCopilot = buildPatchPrioritiesCopilotContext({
@@ -626,6 +663,34 @@ export default function PatchPrioritiesPage() {
               <p>{viewCopy.description}</p>
             </div>
           </div>
+
+          {rows.length > 0 && (
+            <div className="card-body dashboard-charts-row">
+              <div className="chart-card">
+                <h3 className="chart-card-title">Severity mix (this page)</h3>
+                <DonutChart
+                  segments={severityBreakdown}
+                  centerValue={rows.length}
+                  centerLabel="findings"
+                />
+              </div>
+              <div className="chart-card">
+                <h3 className="chart-card-title">Top targets (this page)</h3>
+                <CountBarChart data={targetBreakdown} unit="target" />
+              </div>
+              {coveragePercent !== null && (
+                <div className="chart-card">
+                  <h3 className="chart-card-title">Queue coverage</h3>
+                  <RiskGauge
+                    score={coveragePercent}
+                    invert
+                    label="Represented of total"
+                    detail={`${represented.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} findings represented`}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card-body patch-priority-view-controls">
             <div className="form-field">
@@ -826,7 +891,9 @@ export default function PatchPrioritiesPage() {
                     );
                     return (
                       <tr key={item.exposure_id} id={item.exposure_id} tabIndex={-1}>
-                        <td data-label="Rank">Rank {rank.toLocaleString("en-US")}</td>
+                        <td data-label="Rank">
+                          <span className="rank-badge">{rank.toLocaleString("en-US")}</span>
+                        </td>
                         {view === "patch" ? (
                           <>
                             {findingCell}

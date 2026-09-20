@@ -6,8 +6,11 @@ import { useMemo, useState, type ReactNode } from "react";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { CountBarChart } from "@/components/ui/CountBarChart";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
+import { RiskGauge } from "@/components/ui/RiskGauge";
 import {
   PageHeader,
   type AggregateCompleteness,
@@ -15,6 +18,7 @@ import {
   type PageHeaderCompleteness,
 } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
+import { statusTone, toneColor } from "@/components/ui/StatusBadge";
 import {
   type ExposureSectionResult,
   type ExposureSectionStatus,
@@ -232,7 +236,40 @@ export default function ExposurePage() {
   const warnings = facets.envelope?.warnings ?? [];
   const knowledgeVersion = facetData?.generation;
   const observedAt = facets.metadata.observedAt;
-  const topFindings = (facetData?.items ?? []).slice(0, 3) as OverviewFinding[];
+
+  const severityBreakdown = useMemo(() => {
+    const order = ["critical", "high", "medium", "low"];
+    const items = facetData?.facets.severity ?? [];
+    const byValue = new Map(items.map((item) => [item.value.toLocaleLowerCase("en-US"), item]));
+    const sorted = [
+      ...order.filter((key) => byValue.has(key)).map((key) => byValue.get(key)!),
+      ...items.filter((item) => !order.includes(item.value.toLocaleLowerCase("en-US"))),
+    ];
+    return sorted.map((item) => ({
+      label: displayFacet(item.value),
+      value: item.count,
+      color: toneColor(statusTone(item.value)),
+    }));
+  }, [facetData]);
+
+  const targetKindBreakdown = useMemo(
+    () =>
+      (facetData?.facets.target_kind ?? [])
+        .slice()
+        .sort((a, b) => b.count - a.count)
+        .map((item) => ({ id: item.value, label: displayFacet(item.value), value: item.count })),
+    [facetData],
+  );
+
+  const overduePercent = useMemo(() => {
+    const items = facetData?.facets.sla_state ?? [];
+    const totalSla = items.reduce((sum, item) => sum + item.count, 0);
+    if (totalSla === 0) return null;
+    const overdue = items
+      .filter((item) => item.value.toLocaleLowerCase("en-US").includes("overdue"))
+      .reduce((sum, item) => sum + item.count, 0);
+    return Math.round((overdue / totalSla) * 100);
+  }, [facetData]);  const topFindings = (facetData?.items ?? []).slice(0, 3) as OverviewFinding[];
   const copilotFreshness = facets.status === "current"
     ? "fresh" as const
     : facets.status === "stale"
@@ -334,6 +371,39 @@ export default function ExposurePage() {
               detail={facetData ? `Generation ${facetData.generation}` : "Generation unavailable"}
               completeness={sectionCompleteness(facets.status)}
             />
+          </div>
+        </OverviewSection>
+
+        <OverviewSection
+          title="Findings dashboard"
+          description="At-a-glance visual summary of the current generation-pinned partition."
+          sourceName="Findings dashboard"
+          itemLabel="findings"
+          section={facets}
+        >
+          <div className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">Severity distribution</h3>
+              <DonutChart
+                segments={severityBreakdown}
+                centerValue={facetData?.total_count ?? "—"}
+                centerLabel="findings"
+              />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Findings by target kind</h3>
+              <CountBarChart data={targetKindBreakdown} unit="target kind" />
+            </div>
+            {overduePercent !== null && (
+              <div className="chart-card">
+                <h3 className="chart-card-title">SLA overdue rate</h3>
+                <RiskGauge
+                  score={overduePercent}
+                  label="Overdue findings"
+                  detail={`${overduePercent}% of scored findings are past SLA`}
+                />
+              </div>
+            )}
           </div>
         </OverviewSection>
 
