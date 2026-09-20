@@ -921,6 +921,48 @@ def test_generic_server_query_keeps_gold_generation_path() -> None:
     assert all("[gold_exposure_facts]" in call["sql"] for call in reader.calls)
 
 
+class ZeroResultReader(RecordingReader):
+    def query(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            {
+                "sql": sql,
+                "parameters": tuple(parameters),
+                "max_rows": max_rows,
+            }
+        )
+        if "COUNT_BIG" in sql and "GROUP BY" not in sql:
+            return [{"total_count": 0, "freshest_at": None, "all_complete": None}]
+        return []
+
+
+def test_gold_query_reports_healthy_empty_when_filter_matches_no_rows() -> None:
+    """A severity filter with no matching Defender image findings is a
+    healthy, complete zero-row result -- not a provider outage."""
+    reader = ZeroResultReader()
+
+    result = ExposureQueryService(reader).list_page(
+        _authorization(),
+        generation_id="generation-17",
+        query=ExposureQuery(
+            filters=(
+                ExposureFilter("severity", "eq", "high"),
+                ExposureFilter("target_kind", "eq", "container_image"),
+                ExposureFilter("source_family", "eq", "defender_image"),
+            ),
+        ),
+    )
+
+    assert result.total_count == 0
+    assert result.items == ()
+    assert result.completeness["state"] == "healthy-empty"
+
+
 def test_count_facet_and_page_share_scope_first_bound_predicates() -> None:
     reader = RecordingReader()
     service = ExposureQueryService(reader)
