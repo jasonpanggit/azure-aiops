@@ -225,12 +225,7 @@ describe("ResourceHealthPage inventory-first hydration", () => {
     mocks.inventoryResources.mockResolvedValue(
       inventoryEnvelope([containerApp, virtualMachine]),
     );
-    mocks.resourceHealth.mockImplementation(
-      (resourceId: string) =>
-        new Promise((_resolve, _reject) => {
-          void resourceId;
-        }),
-    );
+    installDeferredHealthMock();
 
     render(<ResourceHealthPage />);
 

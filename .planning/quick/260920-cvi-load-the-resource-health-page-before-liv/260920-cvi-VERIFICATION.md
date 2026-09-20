@@ -14,8 +14,8 @@ overrides_applied: 0
 resource card health asynchronously with bounded concurrency and isolated
 loading/error states.
 
-**Verified:** 2026-09-20T16:34:42Z  
-**Status:** passed  
+**Verified:** 2026-09-20T16:34:42Z
+**Status:** passed
 **Re-verification:** No — initial verification
 
 ## Goal Achievement
@@ -146,5 +146,5 @@ plugin-autoload-disabled rerun, not a product-code failure.
 
 ---
 
-_Verified: 2026-09-20T16:34:42Z_  
+_Verified: 2026-09-20T16:34:42Z_
 _Verifier: the agent (gsd-verifier)_
