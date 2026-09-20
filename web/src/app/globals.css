@@ -3205,6 +3205,36 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+.donut-chart-legend-item--active {
+  border-radius: 4px;
+  background: var(--color-surface-hover, rgba(127, 127, 127, 0.12));
+}
+
+.donut-chart-legend-button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.donut-chart-legend-button:hover {
+  background: var(--color-surface-hover, rgba(127, 127, 127, 0.12));
+}
+
+.donut-chart-legend-button:focus-visible {
+  outline: 2px solid var(--color-focus, #2684ff);
+  outline-offset: 2px;
+}
+
 .donut-chart-swatch {
   width: 8px;
   height: 8px;
@@ -6731,6 +6761,19 @@ body.topology-fullscreen-open {
   gap: 10px;
   align-items: center;
   font-weight: 700;
+}
+
+.exposure-finding-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.exposure-finding-target .table-secondary {
+  color: var(--color-text-muted);
 }
 
 .exposure-finding-score {

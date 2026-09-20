@@ -58,6 +58,14 @@ function completeness(page: ExposurePage<DefenderExposureFinding> | null): PageH
   };
 }
 
+function targetName(value: string): string {
+  if (value.startsWith("sha256:") && value.length > 31) {
+    return `${value.slice(0, 20)}…${value.slice(-8)}`;
+  }
+  const segments = value.split("/").filter(Boolean);
+  return segments.at(-1) || value;
+}
+
 function detailHref(item: DefenderExposureFinding, state: ExposureQueryState): string {
   const segment = item.weakness_kind === "kb" ? "kbs" : "cves";
   return exposureDetailHref(segment, item.weakness_id, {
@@ -133,19 +141,31 @@ export default function DefenderPosturePage() {
     (item) => item.severity?.toLocaleLowerCase("en-US") === "critical",
   ).length;
   const severityBreakdown = useMemo(() => {
-    const order = ["critical", "high", "medium", "low"];
+    const order = ["critical", "high", "medium", "low", "unknown"];
     const counts = new Map<string, number>();
     for (const item of rows) {
       const key = (item.severity || "unknown").toLowerCase();
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    const keys = [...order.filter((key) => counts.has(key)), ...Array.from(counts.keys()).filter((key) => !order.includes(key))];
+    const keys = [...order, ...Array.from(counts.keys()).filter((key) => !order.includes(key))];
     return keys.map((key) => ({
       label: key.charAt(0).toUpperCase() + key.slice(1),
       value: counts.get(key) ?? 0,
       color: toneColor(statusTone(key)),
+      filterValue: key,
     }));
   }, [rows]);
+  const toggleSeverityFilter = useCallback(
+    (value: string) => {
+      const next = queryState.filters.severity === value ? undefined : value;
+      commitQuery(
+        updateExposureQueryState(queryState, {
+          filters: { ...queryState.filters, severity: next },
+        }),
+      );
+    },
+    [commitQuery, queryState],
+  );
 
   const first = rows.length ? (queryState.page - 1) * queryState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
@@ -286,6 +306,8 @@ export default function DefenderPosturePage() {
                     segments={severityBreakdown}
                     centerValue={rows.length}
                     centerLabel="on this page"
+                    onSegmentClick={toggleSeverityFilter}
+                    activeFilterValue={queryState.filters.severity ?? null}
                   />
                 </div>
               </div>
@@ -304,6 +326,11 @@ export default function DefenderPosturePage() {
                         tone={statusTone(item.severity ?? "unknown")}
                         compact
                       />
+                    </div>
+                    <div className="exposure-finding-target">
+                      <strong className="exposure-long-value">{targetName(item.target_id)}</strong>
+                      <StatusBadge label="Container image" tone="neutral" compact />
+                      <span className="table-secondary exposure-long-value">{item.target_id}</span>
                     </div>
                     <p>{item.recommendation || "Review the affected image and current evidence."}</p>
                   </div>

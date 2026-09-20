@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
@@ -187,6 +188,7 @@ function OverviewSection<T>({
 /** Exposure Overview backed only by bounded, generation-pinned Fabric SQL reads. */
 export default function ExposurePage() {
   const { scope } = useScope();
+  const router = useRouter();
   const [copilotOpen, setCopilotOpen] = useState(false);
   const queryState = useMemo<ExposureQueryState>(
     () => ({
@@ -238,19 +240,25 @@ export default function ExposurePage() {
   const observedAt = facets.metadata.observedAt;
 
   const severityBreakdown = useMemo(() => {
-    const order = ["critical", "high", "medium", "low"];
+    const order = ["critical", "high", "medium", "low", "unknown"];
     const items = facetData?.facets.severity ?? [];
     const byValue = new Map(items.map((item) => [item.value.toLocaleLowerCase("en-US"), item]));
-    const sorted = [
-      ...order.filter((key) => byValue.has(key)).map((key) => byValue.get(key)!),
-      ...items.filter((item) => !order.includes(item.value.toLocaleLowerCase("en-US"))),
-    ];
-    return sorted.map((item) => ({
+    const extra = items.filter((item) => !order.includes(item.value.toLocaleLowerCase("en-US")));
+    const canonical = order.map((key) => byValue.get(key) ?? { value: key, count: 0 });
+    return [...canonical, ...extra].map((item) => ({
       label: displayFacet(item.value),
       value: item.count,
       color: toneColor(statusTone(item.value)),
+      filterValue: item.value.toLocaleLowerCase("en-US"),
     }));
   }, [facetData]);
+
+  const goToSeverity = useCallback(
+    (value: string) => {
+      router.push(`/exposure/patch-priorities?severity=${encodeURIComponent(value)}`);
+    },
+    [router],
+  );
 
   const targetKindBreakdown = useMemo(
     () =>
@@ -388,6 +396,7 @@ export default function ExposurePage() {
                 segments={severityBreakdown}
                 centerValue={facetData?.total_count ?? "—"}
                 centerLabel="findings"
+                onSegmentClick={goToSeverity}
               />
             </div>
             <div className="chart-card">

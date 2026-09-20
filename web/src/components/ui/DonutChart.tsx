@@ -4,6 +4,8 @@ export interface DonutSegment {
   label: string;
   value: number;
   color: string;
+  /** Stable filter value backing this segment, if it maps to a queryable filter. */
+  filterValue?: string;
 }
 
 export interface DonutChartProps {
@@ -11,12 +13,23 @@ export interface DonutChartProps {
   /** Rendered in the center of the ring, e.g. the total count. */
   centerValue?: string | number;
   centerLabel?: string;
+  /** When provided, legend entries become clickable and invoke this with the
+   * segment's filterValue (falling back to its label) to toggle a filter. */
+  onSegmentClick?: (filterValue: string) => void;
+  /** filterValue (or label) of the currently active/selected segment, if any. */
+  activeFilterValue?: string | null;
 }
 
 /** Compact ring chart for count breakdowns (e.g. severity, source, or state
  * distributions). Pure SVG, no charting library — matches the hand-rolled
  * convention used by CvssRadarChart, RiskGauge, and UtilizationBarChart. */
-export function DonutChart({ segments, centerValue, centerLabel }: DonutChartProps) {
+export function DonutChart({
+  segments,
+  centerValue,
+  centerLabel,
+  onSegmentClick,
+  activeFilterValue,
+}: DonutChartProps) {
   const total = segments.reduce((sum, segment) => sum + Math.max(0, segment.value), 0);
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
@@ -80,13 +93,33 @@ export function DonutChart({ segments, centerValue, centerLabel }: DonutChartPro
         )}
       </div>
       <ul className="donut-chart-legend">
-        {segments.map((segment) => (
-          <li key={segment.label}>
-            <span className="donut-chart-swatch" style={{ background: segment.color }} aria-hidden="true" />
-            <span className="donut-chart-legend-label">{segment.label}</span>
-            <span className="donut-chart-legend-value">{segment.value.toLocaleString("en-US")}</span>
-          </li>
-        ))}
+        {segments.map((segment) => {
+          const filterValue = segment.filterValue ?? segment.label;
+          const isActive = activeFilterValue != null && activeFilterValue === filterValue;
+          const content = (
+            <>
+              <span className="donut-chart-swatch" style={{ background: segment.color }} aria-hidden="true" />
+              <span className="donut-chart-legend-label">{segment.label}</span>
+              <span className="donut-chart-legend-value">{segment.value.toLocaleString("en-US")}</span>
+            </>
+          );
+          return (
+            <li key={segment.label} className={isActive ? "donut-chart-legend-item--active" : undefined}>
+              {onSegmentClick ? (
+                <button
+                  type="button"
+                  className="donut-chart-legend-button"
+                  aria-pressed={isActive}
+                  onClick={() => onSegmentClick(filterValue)}
+                >
+                  {content}
+                </button>
+              ) : (
+                content
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
