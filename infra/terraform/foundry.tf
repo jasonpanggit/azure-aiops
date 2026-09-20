@@ -1278,7 +1278,15 @@ resource "terraform_data" "foundry_specialist_promotion_gate" {
         !local.foundry_candidate_catalog_artifact_present ||
         local.foundry_candidate_catalog_artifact_digest == var.foundry_specialist_candidate_catalog_artifact_sha256
       )
-      error_message = "Candidate catalog artifact SHA-256 does not match the separately reviewed digest."
+      error_message = "Candidate catalog raw transport SHA-256 does not match the supplied artifact bytes."
+    }
+
+    precondition {
+      condition = (
+        !local.foundry_candidate_catalog_artifact_present ||
+        var.foundry_specialist_candidate_binding_sha256 != ""
+      )
+      error_message = "Candidate catalog metadata requires a reviewed semantic candidate-binding SHA-256 in addition to the raw transport digest."
     }
 
     precondition {

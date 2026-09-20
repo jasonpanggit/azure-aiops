@@ -12,6 +12,7 @@ from operations.foundry_agent import specialist_catalog
 from operations.foundry_candidate_catalog import (
     CANDIDATE_ARTIFACT_DIGEST_ENV,
     CANDIDATE_ARTIFACT_ENV,
+    CANDIDATE_BINDING_ALGORITHM,
     CANDIDATE_EXPECTED_NAMES_ENV,
     CANDIDATE_PROJECT_RESOURCE_ID_ENV,
     CANDIDATE_PROMPT_DIGESTS_ENV,
@@ -19,6 +20,7 @@ from operations.foundry_candidate_catalog import (
     SEARCH_CONNECTION_ID_ENV,
     SEARCH_INDEX_NAME_ENV,
     SOURCE_REVISION_ENV,
+    candidate_artifact_binding,
     validated_candidate_catalog,
 )
 from operations.specialist_manifest import (
@@ -189,6 +191,158 @@ def _live_candidate_artifact() -> dict:
             provider_version_id
         )
     return artifact
+
+
+def _binding(artifact: dict) -> str:
+    return candidate_artifact_binding(
+        json.dumps(artifact),
+        load_specialist_manifest(),
+    ).sha256
+
+
+def test_semantic_binding_excludes_only_release_cycle_metadata():
+    artifact = _candidate_artifact()
+    baseline = candidate_artifact_binding(
+        json.dumps(artifact),
+        load_specialist_manifest(),
+    )
+    artifact["source_revision"] = "f" * 40
+    artifact["generated_at"] = "2026-09-20T00:02:00+00:00"
+    artifact["coordinator"]["validation"]["validated_at"] = (
+        "2026-09-20T00:03:00+00:00"
+    )
+    for candidate in artifact["agents"].values():
+        candidate["validation"]["validated_at"] = "2026-09-20T00:04:00+00:00"
+        candidate["tools"]["operations_mcp"].reverse()
+
+    rebound = candidate_artifact_binding(
+        json.dumps(artifact, sort_keys=True),
+        load_specialist_manifest(),
+    )
+
+    assert baseline.algorithm == CANDIDATE_BINDING_ALGORITHM
+    assert rebound.sha256 == baseline.sha256
+    assert rebound.source_revision == "f" * 40
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "release",
+        "project_resource",
+        "project_endpoint",
+        "model",
+        "contract_model",
+        "prompt",
+        "grant",
+        "connection",
+        "scope",
+        "citation",
+        "timeout",
+        "provider_version",
+        "candidate_version",
+        "agent_name",
+        "coordinator_version",
+    ),
+)
+def test_semantic_binding_changes_for_security_relevant_mutations(case):
+    artifact = _candidate_artifact()
+    baseline = _binding(artifact)
+    network = artifact["agents"]["network"]
+    if case == "release":
+        artifact["release"] = "2026.10"
+    elif case == "project_resource":
+        artifact["project"]["resource_id"] += "-other"
+    elif case == "project_endpoint":
+        artifact["project"]["endpoint_host"] = "other.services.ai.azure.com"
+    elif case == "model":
+        network["model_deployment"] = "gpt-5.4-mini"
+    elif case == "contract_model":
+        network["contract_model"] = "gpt-5"
+    elif case == "prompt":
+        network["prompt_digest"] = "f" * 64
+    elif case == "grant":
+        network["tools"]["operations_mcp"][0] = "search"
+    elif case == "connection":
+        network["tools"]["ai_search"]["project_connection_id"] = (
+            SEARCH_CONNECTION_ID.replace("/connections/", "/connections/other-")
+        )
+    elif case == "scope":
+        network["scope_policy"] = "specialist-scope.v2"
+    elif case == "citation":
+        network["citation_contract"] = "citation-closure.v2"
+    elif case == "timeout":
+        network["timeout_seconds"] = 31.0
+    elif case == "provider_version":
+        network["provider_version_id"] = "provider-new"
+    elif case == "candidate_version":
+        network["candidate_version"] = "2026.09.2"
+    elif case == "agent_name":
+        network["agent_name"] = "network-other"
+    elif case == "coordinator_version":
+        artifact["coordinator"]["provider_version_id"] = "coordinator-new"
+
+    assert _binding(artifact) != baseline
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "read_only",
+        "mutation_authorized",
+        "fallback",
+        "publication",
+        "validation_result",
+        "coordinator_publication",
+        "coordinator_validation",
+        "duplicate_grant",
+        "missing_agent",
+        "extra_agent",
+        "extra_field",
+    ),
+)
+def test_semantic_binding_rejects_invalid_or_ambiguous_artifacts(case):
+    artifact = _candidate_artifact()
+    network = artifact["agents"]["network"]
+    if case == "read_only":
+        network["read_only"] = False
+    elif case == "mutation_authorized":
+        network["mutation_authorized"] = True
+    elif case == "fallback":
+        network["fallback_mode"] = "remote"
+    elif case == "publication":
+        network["publication_status"] = "draft"
+    elif case == "validation_result":
+        network["validation"]["checks"]["scope"] = "fail"
+    elif case == "coordinator_publication":
+        artifact["coordinator"]["publication_status"] = "draft"
+    elif case == "coordinator_validation":
+        artifact["coordinator"]["validation"]["status"] = "fail"
+    elif case == "duplicate_grant":
+        network["tools"]["operations_mcp"].append(
+            network["tools"]["operations_mcp"][0]
+        )
+    elif case == "missing_agent":
+        artifact["agents"].pop("network")
+    elif case == "extra_agent":
+        artifact["agents"]["unexpected"] = dict(network)
+    elif case == "extra_field":
+        network["unreviewed"] = True
+
+    with pytest.raises(ValueError):
+        _binding(artifact)
+
+
+def test_semantic_binding_rejects_duplicate_json_keys():
+    raw = json.dumps(_candidate_artifact())
+    duplicated = raw.replace(
+        '"status": "validated"',
+        '"status": "validated", "status": "validated"',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="strict JSON"):
+        candidate_artifact_binding(duplicated, load_specialist_manifest())
 
 
 def test_validated_candidate_artifact_projects_exact_twelve_rows(monkeypatch):
@@ -565,6 +719,7 @@ def test_terraform_wires_catalog_metadata_without_active_version_values():
         'variable "foundry_specialist_candidate_catalog_artifact_sha256"'
         in variables
     )
+    assert 'variable "foundry_specialist_candidate_binding_sha256"' in variables
     assert 'variable "foundry_specialist_candidate_prompt_digests"' in variables
     assert 'variable "deployment_source_revision"' in variables
     assert 'variable "foundry_specialist_activation_target"' in variables
@@ -575,6 +730,7 @@ def test_terraform_wires_catalog_metadata_without_active_version_values():
 
     assert 'name  = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"' in container
     assert 'name  = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"' in container
+    assert 'name  = "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST"' in container
     assert 'name  = "AIOPS_FOUNDRY_CANDIDATE_EXPECTED_NAMES"' in container
     assert 'name  = "AIOPS_FOUNDRY_CANDIDATE_PROMPT_DIGESTS"' in container
     assert 'name  = "AIOPS_SOURCE_REVISION"' in container

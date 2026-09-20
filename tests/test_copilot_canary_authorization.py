@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from copilot_authorization_fixtures import strict_candidate_artifact
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from test_api_copilot_investigation import _context
@@ -59,6 +60,7 @@ def _authorized_environment(
     scope = payload["authorization_scope"]
     binding = payload["candidate_binding"]
     shadow = payload["shadow_evidence"]
+    candidate_raw = json.dumps(strict_candidate_artifact(), sort_keys=True)
     assert isinstance(target, dict)
     assert isinstance(project, dict)
     assert isinstance(scope, dict)
@@ -71,6 +73,13 @@ def _authorized_environment(
         "AIOPS_AGENT_ORCHESTRATION_MODE": str(scope["orchestration"]),
         "AIOPS_SPECIALIST_ACTIVATION_SOURCE": str(scope["activation_source"]),
         "AIOPS_SOURCE_REVISION": SOURCE_REVISION,
+        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT": candidate_raw,
+        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": hashlib.sha256(
+            candidate_raw.encode()
+        ).hexdigest(),
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(
+            binding["semantic_sha256"]
+        ),
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": manifest_sha256,
         "AIOPS_API_IMAGE_DIGEST": API_IMAGE_DIGEST,
         "AIOPS_DEPLOYMENT_TENANT_ID": str(target["tenant_id"]),
@@ -88,18 +97,11 @@ def _authorized_environment(
         "AIOPS_COPILOT_CANDIDATE_RELEASE": str(binding["release"]),
         "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION": str(binding["contract_version"]),
         "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(binding["manifest_sha256"]),
-        "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256": str(
-            binding["strict_candidate_sha256"]
-        ),
-        "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256": str(binding["runtime_sha256"]),
         "AIOPS_COPILOT_PARSER_PROOF_SHA256": str(binding["parser_proof_sha256"]),
         "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256": str(
             binding["serialization_proof_sha256"]
         ),
         "AIOPS_SPECIALIST_MANIFEST_DIGEST": str(binding["manifest_sha256"]),
-        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": str(
-            binding["strict_candidate_sha256"]
-        ),
         "AIOPS_COPILOT_SHADOW_REVISION": str(shadow["revision"]),
         "AIOPS_COPILOT_SHADOW_IMAGE_DIGEST": str(shadow["image_digest"]),
         "AIOPS_COPILOT_SHADOW_REPORT_SHA256": str(shadow["report_sha256"]),
@@ -208,6 +210,99 @@ def test_reviewed_authorization_accepts_only_bounded_canary(
     )
 
 
+def test_packaged_semantic_digest_matches_reviewed_candidate() -> None:
+    payload = _manifest_payload()
+    binding = authorization.candidate_artifact_binding(
+        json.dumps(strict_candidate_artifact()),
+        authorization.load_specialist_manifest(),
+    )
+
+    assert binding.algorithm == payload["candidate_binding"]["semantic_algorithm"]  # type: ignore[index]
+    assert binding.sha256 == payload["candidate_binding"]["semantic_sha256"]  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "project",
+        "model",
+        "prompt",
+        "grant",
+        "connection",
+        "identity",
+        "coordinator",
+        "provider",
+        "scope",
+        "runtime_policy",
+    ),
+)
+def test_security_relevant_candidate_mutation_fails_authorization(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    manifest_path, metadata_path, environment = _write_authorization(tmp_path)
+    candidate = json.loads(environment["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"])
+    network = candidate["agents"]["network"]
+    if case == "project":
+        candidate["project"]["resource_id"] += "-other"
+    elif case == "model":
+        network["model_deployment"] = "other-model"
+    elif case == "prompt":
+        network["prompt_digest"] = "c" * 64
+    elif case == "grant":
+        network["tools"]["operations_mcp"][0] = "search"
+    elif case == "connection":
+        network["tools"]["ai_search"]["project_connection_id"] += "-other"
+    elif case == "identity":
+        network["agent_name"] = "aiops-network-other"
+    elif case == "coordinator":
+        candidate["coordinator"]["provider_version_id"] = "7"
+    elif case == "provider":
+        network["provider_version_id"] = "99"
+    elif case == "scope":
+        network["scope_policy"] = "specialist-manifest.v2"
+    elif case == "runtime_policy":
+        network["read_only"] = False
+    candidate_raw = json.dumps(candidate, sort_keys=True)
+    environment["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"] = candidate_raw
+    environment["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"] = hashlib.sha256(
+        candidate_raw.encode()
+    ).hexdigest()
+
+    with pytest.raises(
+        CanaryAuthorizationError,
+        match="candidate (artifact is invalid|semantic binding mismatch)",
+    ):
+        authorization.validate_canary_authorization(
+            environment=environment,
+            manifest_path=manifest_path,
+            build_metadata_path=metadata_path,
+            reviewed_tree_root=REPO_ROOT,
+            now=datetime(2026, 9, 21, tzinfo=UTC),
+        )
+
+
+def test_candidate_source_revision_mismatch_is_independent_of_transport_digest(
+    tmp_path: Path,
+) -> None:
+    manifest_path, metadata_path, environment = _write_authorization(tmp_path)
+    candidate = strict_candidate_artifact(source_revision="c" * 40)
+    candidate_raw = json.dumps(candidate, sort_keys=True)
+    environment["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"] = candidate_raw
+    environment["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"] = hashlib.sha256(
+        candidate_raw.encode()
+    ).hexdigest()
+
+    with pytest.raises(CanaryAuthorizationError, match="candidate source revision"):
+        authorization.validate_canary_authorization(
+            environment=environment,
+            manifest_path=manifest_path,
+            build_metadata_path=metadata_path,
+            reviewed_tree_root=REPO_ROOT,
+            now=datetime(2026, 9, 21, tzinfo=UTC),
+        )
+
+
 @pytest.mark.parametrize(
     "case",
     (
@@ -219,7 +314,7 @@ def test_reviewed_authorization_accepts_only_bounded_canary(
         "duplicate_agent",
         "wrong_coordinator",
         "wrong_candidate_digest",
-        "wrong_runtime_digest",
+        "wrong_semantic_digest",
         "wrong_manifest_digest",
         "wrong_report_digest",
         "wrong_matrix_digest",
@@ -306,8 +401,8 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
             "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST",
             "c" * 64,
         ),
-        "wrong_runtime_digest": (
-            "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256",
+        "wrong_semantic_digest": (
+            "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
             "c" * 64,
         ),
         "wrong_manifest_digest": (
@@ -793,6 +888,15 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256" in terraform
     assert "AIOPS_API_IMAGE_DIGEST" in terraform
     assert "AIOPS_SOURCE_REVISION" in terraform
+    assert "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST" in terraform
+    assert "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST" in terraform
+    assert "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256" not in terraform
+    assert "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256" not in terraform
+    assert (
+        "foundry_specialist_candidate_binding_sha256 == "
+        "local.copilot_canary_authorization.candidate_binding.semantic_sha256"
+        in terraform
+    )
     assert 'value = "/app/arg.config.deploy.yaml"' in terraform
     assert 'value = "/app/fabric.config.deploy.yaml"' in terraform
     assert "arg.config.deploy.yaml" in REVIEWED_TREE_ROOTS

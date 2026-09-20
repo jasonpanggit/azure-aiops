@@ -39,7 +39,7 @@ output "foundry_project_endpoint" {
 }
 
 output "copilot_provider_environment" {
-  description = "Non-secret sourceable Operations Copilot provider and rollout environment. The API image digest is deployment observability for external admission, not runtime proof. Empty provider values mean the corresponding live gate remains BLOCKED."
+  description = "Non-secret sourceable Operations Copilot provider and rollout environment. Candidate transport and semantic digests are distinct; the API image digest is deployment observability for external admission, not runtime proof. Empty provider values mean the corresponding live gate remains BLOCKED."
   value = {
     FOUNDRY_PROJECT_ENDPOINT                   = local.foundry_project_endpoint
     OPERATIONS_MCP_SERVER_URL                  = var.enable_apim ? local.foundry_mcp_server_url : ""
@@ -52,6 +52,8 @@ output "copilot_provider_environment" {
     AIOPS_COPILOT_CANARY_PERCENTAGE            = tostring(local.copilot_canary_percentage)
     AIOPS_COPILOT_ROLLBACK_MODE                = local.copilot_rollback_mode
     AIOPS_SOURCE_REVISION                      = var.deployment_source_revision
+    AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST    = var.foundry_specialist_candidate_catalog_artifact_sha256
+    AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST     = var.foundry_specialist_candidate_binding_sha256
     AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256 = local.copilot_canary_authorization_sha256
     AIOPS_API_IMAGE_DIGEST                     = var.api_image_digest
   }
