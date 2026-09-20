@@ -43,6 +43,10 @@ AZURE_CONNECTION_ID = (
     "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
     "accounts/account/projects/project/connections/azure-mcp"
 )
+SEARCH_CONNECTION_ID = (
+    "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
+    "accounts/account/projects/project/connections/ai-search"
+)
 
 # Legacy eight-specialist Terraform input retained for one migration window so
 # existing tfvars keep planning and the previous revision stays selectable.
@@ -1664,6 +1668,8 @@ def _live_env(**overrides) -> dict[str, str]:
         "AZURE_MCP_SERVER_URL": "https://apim.example.net/azure-mcp",
         "MCP_APIM_AUDIENCE": "api://aiops-apim",
         "FOUNDRY_CANDIDATE_MAPPING": "",
+        "FOUNDRY_AI_SEARCH_CONNECTION_ID": SEARCH_CONNECTION_ID,
+        "FOUNDRY_AI_SEARCH_INDEX_NAME": "aiops-knowledge",
     }
     env.update(overrides)
     return env
@@ -1711,6 +1717,103 @@ def test_apim_audience_is_required_configuration_for_live_parity():
     assert "MCP_APIM_AUDIENCE" in report["missing_configuration"]
 
 
+def test_live_parity_azure_cli_mode_does_not_require_client_secret_env(tmp_path):
+    module = _parity_module()
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_AUTH_MODE="azure_cli",
+            AZURE_TENANT_ID="",
+            AZURE_CLIENT_ID="",
+            AZURE_CLIENT_SECRET="",
+            FOUNDRY_CANDIDATE_MAPPING=str(tmp_path / "missing.json"),
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+
+
+def test_live_parity_accepts_disabled_optional_ai_search_configuration(tmp_path):
+    module = _parity_module()
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_AUTH_MODE="azure_cli",
+            AZURE_TENANT_ID="",
+            AZURE_CLIENT_ID="",
+            AZURE_CLIENT_SECRET="",
+            FOUNDRY_AI_SEARCH_CONNECTION_ID="",
+            FOUNDRY_AI_SEARCH_INDEX_NAME="",
+            FOUNDRY_CANDIDATE_MAPPING=str(tmp_path / "missing.json"),
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+
+
+def test_live_parity_rejects_partial_ai_search_configuration():
+    module = _parity_module()
+    report = module.run_live(
+        env=_live_env(FOUNDRY_AI_SEARCH_INDEX_NAME="")
+    )
+
+    assert report["status"] == "blocked"
+    assert "FOUNDRY_AI_SEARCH_INDEX_NAME" in report["missing_configuration"]
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"],
+)
+def test_live_parity_client_secret_mode_requires_all_credentials(missing_name):
+    module = _parity_module()
+    env = _live_env()
+    env[missing_name] = ""
+
+    report = module.run_live(env=env)
+
+    assert report["status"] == "blocked"
+    assert missing_name in report["missing_configuration"]
+
+
+def test_live_access_token_uses_explicit_azure_cli_scope(monkeypatch):
+    module = _parity_module()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="token-value\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    token = module._access_token(
+        {"FOUNDRY_AUTH_MODE": "azure_cli"},
+        scope="https://ai.azure.com/.default",
+    )
+
+    assert token == "token-value"
+    assert calls == [
+        (
+            [
+                "az",
+                "account",
+                "get-access-token",
+                "--scope",
+                "https://ai.azure.com/.default",
+                "--query",
+                "accessToken",
+                "--output",
+                "tsv",
+            ],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+            },
+        )
+    ]
+
+
 def test_live_parity_uses_separate_foundry_and_apim_tokens(tmp_path, monkeypatch):
     module = _parity_module()
     scopes: list[str] = []
@@ -1731,6 +1834,7 @@ def test_live_parity_uses_separate_foundry_and_apim_tokens(tmp_path, monkeypatch
                 "value": [
                     {"id": OPERATIONS_CONNECTION_ID},
                     {"id": AZURE_CONNECTION_ID},
+                    {"id": SEARCH_CONNECTION_ID},
                 ]
             }
         return {"value": []}
@@ -1860,11 +1964,30 @@ def _live_module_with_versions(monkeypatch, module, entries):
     )
     bound_entries = json.loads(json.dumps(entries))
     for entry in bound_entries:
-        for tool in (entry.get("definition") or {}).get("tools", []):
+        definition = entry.get("definition") or {}
+        for tool in definition.get("tools", []):
             if tool.get("server_label") == "operations-mcp":
                 tool["project_connection_id"] = OPERATIONS_CONNECTION_ID
             elif tool.get("server_label") == "azure-mcp":
                 tool["project_connection_id"] = AZURE_CONNECTION_ID
+        if not any(
+            tool.get("type") == "azure_ai_search"
+            for tool in definition.get("tools", [])
+        ):
+            definition.setdefault("tools", []).append(
+                {
+                    "type": "azure_ai_search",
+                    "azure_ai_search": {
+                        "indexes": [
+                            {
+                                "project_connection_id": SEARCH_CONNECTION_ID,
+                                "index_name": "aiops-knowledge",
+                                "query_type": "vector_semantic_hybrid",
+                            }
+                        ]
+                    },
+                }
+            )
 
     def fake_get(url, headers):
         if "/connections?" in url:
@@ -1872,6 +1995,19 @@ def _live_module_with_versions(monkeypatch, module, entries):
                 "value": [
                     {"id": OPERATIONS_CONNECTION_ID},
                     {"id": AZURE_CONNECTION_ID},
+                    {"id": SEARCH_CONNECTION_ID},
+                ]
+            }
+        if "/agents/operations-copilot/" in url:
+            return {
+                "value": [
+                    {
+                        "version": entry.get("version"),
+                        "definition": {
+                            "model": (entry.get("definition") or {}).get("model"),
+                        },
+                    }
+                    for entry in bound_entries
                 ]
             }
         return {"value": bound_entries}
@@ -1987,6 +2123,7 @@ def test_live_parity_requires_the_pinned_shared_coordinator(tmp_path, monkeypatc
                 "value": [
                     {"id": OPERATIONS_CONNECTION_ID},
                     {"id": AZURE_CONNECTION_ID},
+                    {"id": SEARCH_CONNECTION_ID},
                 ]
             }
         if "/agents/operations-copilot/" in url:
@@ -2066,7 +2203,40 @@ def test_live_parity_requires_both_governed_project_connections(
     assert report["reason"] == "governed_connections_not_onboarded"
     assert {
         failure["server"] for failure in report["failures"]
-    } == {"operations-mcp", "azure-mcp"}
+    } == {"operations-mcp", "azure-mcp", "azure_ai_search"}
+
+
+def test_live_parity_requires_governed_ai_search_connection(
+    tmp_path, monkeypatch
+):
+    module = _parity_module()
+    monkeypatch.setattr(module, "_access_token", lambda env, *, scope: "token")
+    monkeypatch.setattr(module, "_live_tool_catalog", lambda url, token: ())
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, headers: {
+            "value": [
+                {"id": OPERATIONS_CONNECTION_ID},
+                {"id": AZURE_CONNECTION_ID},
+            ]
+        },
+    )
+
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_CANDIDATE_MAPPING=_candidate_mapping_file(tmp_path, "prov-1")
+        )
+    )
+
+    assert report["status"] == "blocked"
+    assert report["reason"] == "governed_connections_not_onboarded"
+    assert report["failures"] == [
+        {
+            "kind": "governed_connection_not_onboarded",
+            "server": "azure_ai_search",
+        }
+    ]
 
 
 def test_live_parity_rejects_agent_binding_to_wrong_project_connection():
@@ -2091,6 +2261,447 @@ def test_live_parity_rejects_agent_binding_to_wrong_project_connection():
             "server": "azure-mcp",
         }
     ]
+
+
+def test_live_parity_accepts_foundry_normalized_mcp_definition():
+    module = _parity_module()
+    manifest = load_specialist_manifest()
+    network = next(s for s in manifest.specialists if s.id == "network")
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": {
+                    "tool_names": list(network.operations_mcp_tools),
+                },
+                "project_connection_id": OPERATIONS_CONNECTION_ID.rsplit("/", 1)[-1],
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": {
+                    "tool_names": list(network.azure_mcp_tools),
+                },
+                "project_connection_id": AZURE_CONNECTION_ID.rsplit("/", 1)[-1],
+            },
+        ]
+    }
+
+    assert module._agent_allowed_tools(definition) == {
+        "operations-mcp": network.operations_mcp_tools,
+        "azure-mcp": network.azure_mcp_tools,
+    }
+    assert module.compare_connection_bindings(
+        specialist_id="network",
+        expected={
+            "operations-mcp": OPERATIONS_CONNECTION_ID,
+            "azure-mcp": AZURE_CONNECTION_ID,
+        },
+        actual=module._agent_connection_ids(definition),
+    ) == []
+    assert module.validate_agent_mcp_definition(
+        specialist_id="network",
+        definition=definition,
+    ) == []
+
+
+def test_live_parity_keeps_legacy_mcp_definition_compatible():
+    module = _parity_module()
+    manifest = load_specialist_manifest()
+    network = next(s for s in manifest.specialists if s.id == "network")
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": list(network.operations_mcp_tools),
+                "project_connection_id": OPERATIONS_CONNECTION_ID,
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": list(network.azure_mcp_tools),
+                "project_connection_id": AZURE_CONNECTION_ID,
+            },
+        ]
+    }
+
+    assert module._agent_allowed_tools(definition) == {
+        "operations-mcp": network.operations_mcp_tools,
+        "azure-mcp": network.azure_mcp_tools,
+    }
+    assert module.validate_agent_mcp_definition(
+        specialist_id="network",
+        definition=definition,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_kind"),
+    [
+        (
+            lambda tools: tools.pop(),
+            "mcp_tool_definition_mismatch",
+        ),
+        (
+            lambda tools: tools.append(dict(tools[0])),
+            "mcp_tool_definition_mismatch",
+        ),
+        (
+            lambda tools: tools.append(
+                {
+                    "type": "mcp",
+                    "server_label": "unexpected-mcp",
+                    "allowed_tools": [],
+                    "project_connection_id": "unexpected",
+                }
+            ),
+            "mcp_tool_definition_mismatch",
+        ),
+        (
+            lambda tools: tools[0].update(
+                allowed_tools={"tool_names": ["network_topology", "network_topology"]}
+            ),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(allowed_tools={}),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(allowed_tools={"tool_names": None}),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].pop("allowed_tools"),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(allowed_tools=None),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(allowed_tools=False),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(allowed_tools="network_topology"),
+            "malformed_mcp_grants",
+        ),
+        (
+            lambda tools: tools[0].update(project_connection_id=""),
+            "project_connection_mismatch",
+        ),
+    ],
+)
+def test_live_parity_rejects_malformed_normalized_mcp_definitions(
+    mutate, expected_kind
+):
+    module = _parity_module()
+    tools = [
+        {
+            "type": "mcp",
+            "server_label": "operations-mcp",
+            "allowed_tools": {"tool_names": ["network_topology"]},
+            "project_connection_id": OPERATIONS_CONNECTION_ID.rsplit("/", 1)[-1],
+        },
+        {
+            "type": "mcp",
+            "server_label": "azure-mcp",
+            "allowed_tools": {"tool_names": ["subscription_list"]},
+            "project_connection_id": AZURE_CONNECTION_ID.rsplit("/", 1)[-1],
+        },
+    ]
+    mutate(tools)
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="network",
+        definition={"tools": tools},
+    )
+
+    assert expected_kind in {failure["kind"] for failure in failures}
+
+
+@pytest.mark.parametrize(
+    ("definition", "expected_kind"),
+    [
+        ("not-an-object", "malformed_agent_definition"),
+        ({"tools": 42}, "malformed_mcp_tools"),
+    ],
+)
+def test_live_parity_rejects_malformed_agent_definition(
+    definition, expected_kind
+):
+    module = _parity_module()
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="network",
+        definition=definition,
+    )
+
+    assert failures == [
+        {
+            "kind": expected_kind,
+            "specialist": "network",
+        }
+    ]
+    assert module._agent_allowed_tools(definition) == {
+        "operations-mcp": (),
+        "azure-mcp": (),
+    }
+    assert module._agent_connection_ids(definition) == {
+        "operations-mcp": "",
+        "azure-mcp": "",
+    }
+
+
+def test_live_parity_accepts_one_exact_azure_ai_search_tool():
+    module = _parity_module()
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": [],
+                "project_connection_id": OPERATIONS_CONNECTION_ID,
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": [],
+                "project_connection_id": AZURE_CONNECTION_ID,
+            },
+            {
+                "type": "azure_ai_search",
+                "azure_ai_search": {
+                    "indexes": [
+                        {
+                            "project_connection_id": (
+                                OPERATIONS_CONNECTION_ID.rsplit("/", 1)[0]
+                                + "/aiops-dev-ai-search"
+                            ),
+                            "index_name": "aiops-knowledge",
+                            "query_type": "vector_semantic_hybrid",
+                        }
+                    ]
+                },
+            },
+        ]
+    }
+
+    assert module.validate_agent_mcp_definition(
+        specialist_id="executive_summary",
+        definition=definition,
+        expected_ai_search_connection_id=(
+            OPERATIONS_CONNECTION_ID.rsplit("/", 1)[0]
+            + "/aiops-dev-ai-search"
+        ),
+        expected_ai_search_index_name="aiops-knowledge",
+    ) == []
+
+
+@pytest.mark.parametrize(
+    ("connection_id", "index_name"),
+    [
+        (
+            (
+                "/subscriptions/other/resourceGroups/rg/providers/"
+                "Microsoft.CognitiveServices/accounts/account/projects/project/"
+                "connections/aiops-dev-ai-search"
+            ),
+            "aiops-knowledge",
+        ),
+        (SEARCH_CONNECTION_ID, "other-index"),
+    ],
+)
+def test_live_parity_rejects_wrong_ai_search_target(connection_id, index_name):
+    module = _parity_module()
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": [],
+                "project_connection_id": OPERATIONS_CONNECTION_ID,
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": [],
+                "project_connection_id": AZURE_CONNECTION_ID,
+            },
+            {
+                "type": "azure_ai_search",
+                "azure_ai_search": {
+                    "indexes": [
+                        {
+                            "project_connection_id": connection_id,
+                            "index_name": index_name,
+                            "query_type": "vector_semantic_hybrid",
+                        }
+                    ]
+                },
+            },
+        ]
+    }
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="executive_summary",
+        definition=definition,
+        expected_ai_search_connection_id=SEARCH_CONNECTION_ID,
+        expected_ai_search_index_name="aiops-knowledge",
+    )
+
+    assert any(
+        failure["kind"] == "malformed_azure_ai_search_tool"
+        for failure in failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_tool", "expected_kind"),
+    [
+        ({"type": "code_interpreter"}, "unexpected_agent_tool"),
+        ({"type": "mcp"}, "project_connection_mismatch"),
+        ({"type": "azure_ai_search"}, "unexpected_agent_tool"),
+        ("not-an-object", "malformed_agent_tool"),
+    ],
+)
+def test_live_parity_rejects_unreviewed_or_malformed_extra_tools(
+    extra_tool, expected_kind
+):
+    module = _parity_module()
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": [],
+                "project_connection_id": OPERATIONS_CONNECTION_ID,
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": [],
+                "project_connection_id": AZURE_CONNECTION_ID,
+            },
+            extra_tool,
+        ]
+    }
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="executive_summary",
+        definition=definition,
+    )
+
+    assert expected_kind in {failure["kind"] for failure in failures}
+
+
+def test_live_parity_rejects_duplicate_azure_ai_search_tools():
+    module = _parity_module()
+    search_tool = {
+        "type": "azure_ai_search",
+        "azure_ai_search": {
+            "indexes": [
+                {
+                    "project_connection_id": (
+                        OPERATIONS_CONNECTION_ID.rsplit("/", 1)[0]
+                        + "/aiops-dev-ai-search"
+                    ),
+                    "index_name": "aiops-knowledge",
+                    "query_type": "vector_semantic_hybrid",
+                }
+            ]
+        },
+    }
+    definition = {
+        "tools": [
+            {
+                "type": "mcp",
+                "server_label": "operations-mcp",
+                "allowed_tools": [],
+                "project_connection_id": OPERATIONS_CONNECTION_ID,
+            },
+            {
+                "type": "mcp",
+                "server_label": "azure-mcp",
+                "allowed_tools": [],
+                "project_connection_id": AZURE_CONNECTION_ID,
+            },
+            search_tool,
+            dict(search_tool),
+        ]
+    }
+
+    failures = module.validate_agent_mcp_definition(
+        specialist_id="executive_summary",
+        definition=definition,
+    )
+
+    assert any(failure["kind"] == "duplicate_agent_tool" for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"model": "gpt-5.4-mini"},
+        {"model": "gpt-5.4-mini", "tools": []},
+    ],
+)
+def test_live_parity_accepts_toolless_coordinator(definition):
+    module = _parity_module()
+
+    assert module.validate_coordinator_definition(definition) == []
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "not-an-object",
+        {"model": "gpt-5.4-mini", "tools": None},
+        {"model": "gpt-5.4-mini", "tools": [{"type": "code_interpreter"}]},
+        {
+            "model": "gpt-5.4-mini",
+            "tools": [
+                {
+                    "type": "mcp",
+                    "server_label": "operations-mcp",
+                    "allowed_tools": [],
+                }
+            ],
+        },
+    ],
+)
+def test_live_parity_rejects_coordinator_tools_or_malformed_definition(
+    definition,
+):
+    module = _parity_module()
+
+    assert module.validate_coordinator_definition(definition)
+
+
+def test_live_parity_rejects_ambiguous_bare_connection_name():
+    module = _parity_module()
+    common_name = "shared"
+
+    failures = module.compare_connection_bindings(
+        specialist_id="network",
+        expected={
+            "operations-mcp": OPERATIONS_CONNECTION_ID.rsplit("/", 1)[0]
+            + f"/{common_name}",
+            "azure-mcp": AZURE_CONNECTION_ID.rsplit("/", 1)[0] + f"/{common_name}",
+        },
+        actual={
+            "operations-mcp": common_name,
+            "azure-mcp": common_name,
+        },
+    )
+
+    assert {failure["server"] for failure in failures} == {
+        "operations-mcp",
+        "azure-mcp",
+    }
 
 
 def test_live_parity_fails_when_a_specialist_is_absent_from_the_mapping(

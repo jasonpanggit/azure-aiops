@@ -26,12 +26,17 @@ ENV_KEYS = (
     "FOUNDRY_CANDIDATE_MAPPING",
     "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
     "FOUNDRY_AZURE_MCP_CONNECTION_ID",
+    "FOUNDRY_AI_SEARCH_CONNECTION_ID",
+    "FOUNDRY_AI_SEARCH_INDEX_NAME",
     "AIOPS_COPILOT_ROLLOUT_MODE",
     "AIOPS_COPILOT_CANARY_PERCENTAGE",
     "AIOPS_COPILOT_ROLLBACK_MODE",
 )
 ROLLOUT_MODES = frozenset({"compatibility", "shadow", "canary", "default"})
 CONNECTION_LABELS = ("operations-mcp", "azure-mcp")
+OPTIONAL_EMPTY_KEYS = frozenset(
+    {"FOUNDRY_AI_SEARCH_CONNECTION_ID", "FOUNDRY_AI_SEARCH_INDEX_NAME"}
+)
 CONNECTION_ID_PATTERN = re.compile(
     r"^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/"
     r"microsoft\.cognitiveservices/accounts/[^/]+/projects/[^/]+/"
@@ -52,7 +57,9 @@ def _terraform_value(payload: dict[str, Any]) -> dict[str, str]:
     missing = [
         key
         for key in ENV_KEYS
-        if key not in values or not isinstance(values[key], str) or not values[key].strip()
+        if key not in values
+        or not isinstance(values[key], str)
+        or (key not in OPTIONAL_EMPTY_KEYS and not values[key].strip())
     ]
     if missing:
         raise BlockedConfiguration(",".join(missing))
@@ -233,8 +240,27 @@ def load_environment(
         "FOUNDRY_AZURE_MCP_CONNECTION_ID",
         values["FOUNDRY_AZURE_MCP_CONNECTION_ID"],
     )
-    if operation_connection.casefold() == azure_connection.casefold():
+    search_connection = values["FOUNDRY_AI_SEARCH_CONNECTION_ID"].strip()
+    search_index_name = values["FOUNDRY_AI_SEARCH_INDEX_NAME"].strip()
+    if bool(search_connection) != bool(search_index_name):
+        raise ValueError("FOUNDRY_AI_SEARCH_CONNECTION_ID")
+    normalized_connections = {
+        operation_connection.casefold(),
+        azure_connection.casefold(),
+    }
+    if search_connection:
+        normalized_search = _normalize_connection_id(
+            "FOUNDRY_AI_SEARCH_CONNECTION_ID",
+            search_connection,
+        )
+        normalized_connections.add(normalized_search.casefold())
+    if len(normalized_connections) != (3 if search_connection else 2):
         raise ValueError("FOUNDRY_AZURE_MCP_CONNECTION_ID")
+    if search_index_name and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+        search_index_name,
+    ):
+        raise ValueError("FOUNDRY_AI_SEARCH_INDEX_NAME")
 
     _validate_candidate_mapping(values)
     return values

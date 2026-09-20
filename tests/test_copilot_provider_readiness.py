@@ -23,6 +23,10 @@ AZURE_CONNECTION_ID = (
     "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
     "accounts/account/projects/project/connections/azure-mcp"
 )
+SEARCH_CONNECTION_ID = (
+    "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/"
+    "accounts/account/projects/project/connections/ai-search"
+)
 
 
 def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
@@ -42,6 +46,8 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "FOUNDRY_CANDIDATE_MAPPING": str(candidate_mapping),
                 "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID": OPERATIONS_CONNECTION_ID,
                 "FOUNDRY_AZURE_MCP_CONNECTION_ID": AZURE_CONNECTION_ID,
+                "FOUNDRY_AI_SEARCH_CONNECTION_ID": SEARCH_CONNECTION_ID,
+                "FOUNDRY_AI_SEARCH_INDEX_NAME": "aiops-knowledge",
                 "AIOPS_COPILOT_ROLLOUT_MODE": "canary",
                 "AIOPS_COPILOT_CANARY_PERCENTAGE": "10",
                 "AIOPS_COPILOT_ROLLBACK_MODE": "compatibility",
@@ -127,6 +133,8 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("OPERATIONS_MCP_SERVER_URL", "https://user@gateway.example.net/operations-mcp"),
         ("AZURE_MCP_SERVER_URL", "https://gateway.example.net:443/azure-mcp"),
         ("MCP_APIM_AUDIENCE", "not-an-audience"),
+        ("FOUNDRY_AI_SEARCH_CONNECTION_ID", "ai-search"),
+        ("FOUNDRY_AI_SEARCH_INDEX_NAME", "invalid index name"),
         ("AIOPS_COPILOT_ROLLOUT_MODE", "enabled"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "101"),
         ("AIOPS_COPILOT_ROLLBACK_MODE", "default"),
@@ -184,6 +192,39 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
 
 
+def test_provider_env_export_accepts_disabled_optional_ai_search(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    _candidate_mapping(candidate)
+    payload = _terraform_output(candidate)
+    values = payload["copilot_provider_environment"]["value"]  # type: ignore[index]
+    values["FOUNDRY_AI_SEARCH_CONNECTION_ID"] = ""
+    values["FOUNDRY_AI_SEARCH_INDEX_NAME"] = ""
+
+    result, destination = _run_exporter(tmp_path, payload)
+
+    assert result.returncode == 0, result.stderr
+    assert destination.exists()
+
+
+def test_provider_env_export_rejects_partial_ai_search_configuration(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    _candidate_mapping(candidate)
+    payload = _terraform_output(candidate)
+    payload["copilot_provider_environment"]["value"][  # type: ignore[index]
+        "FOUNDRY_AI_SEARCH_INDEX_NAME"
+    ] = ""
+
+    result, destination = _run_exporter(tmp_path, payload)
+
+    assert result.returncode == 2
+    assert "FOUNDRY_AI_SEARCH_CONNECTION_ID" in result.stderr
+    assert not destination.exists()
+
+
 def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
     outputs = (REPO_ROOT / "infra" / "terraform" / "outputs.tf").read_text(
         encoding="utf-8"
@@ -198,6 +239,8 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "FOUNDRY_CANDIDATE_MAPPING",
         "FOUNDRY_OPERATIONS_MCP_CONNECTION_ID",
         "FOUNDRY_AZURE_MCP_CONNECTION_ID",
+        "FOUNDRY_AI_SEARCH_CONNECTION_ID",
+        "FOUNDRY_AI_SEARCH_INDEX_NAME",
         "AIOPS_COPILOT_ROLLOUT_MODE",
         "AIOPS_COPILOT_CANARY_PERCENTAGE",
         "AIOPS_COPILOT_ROLLBACK_MODE",

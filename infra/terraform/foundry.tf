@@ -1097,6 +1097,12 @@ resource "terraform_data" "foundry_agent" {
       FOUNDRY_AZURE_MCP_CONNECTION_ID = (
         var.enable_apim ? azapi_resource.foundry_azure_mcp_connection[0].id : ""
       )
+      FOUNDRY_AI_SEARCH_CONNECTION_ID = (
+        var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
+      )
+      FOUNDRY_AI_SEARCH_INDEX_NAME = (
+        var.enable_foundry_knowledge_search ? var.foundry_knowledge_index_name : ""
+      )
       FOUNDRY_ROLLBACK_ROTATION = var.foundry_specialist_rollback_rotation
     }
   }
