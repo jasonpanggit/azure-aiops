@@ -4983,6 +4983,25 @@ body.topology-fullscreen-open {
   gap: 5px;
 }
 
+.patch-priority-status-toggle {
+  flex-direction: row;
+}
+
+.patch-priority-status-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.patch-priority-status-toggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-brand);
+}
+
 /* Fields whose control needs the full row (textareas, long JSON artifacts)
    rather than one of the three grid columns. */
 .form-grid > .form-span,
