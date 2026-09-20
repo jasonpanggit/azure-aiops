@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { CountBarChart } from "@/components/ui/CountBarChart";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -88,6 +90,18 @@ export default function FinOpsPage() {
     { id: "impact", label: "Impact", getValues: (row) => row.impact || "unknown" },
     { id: "owner", label: "Owner", getValues: (row) => row.owner || row.business_service || row.subscription || "Unattributed" },
   ]);
+  const savingsByCategory = useMemo(() => {
+    const palette = ["var(--color-brand)", "#3ea3e0", "var(--color-success)", "var(--color-warning)", "var(--color-text-muted)"];
+    const totalsBySource = new Map<string, number>();
+    for (const opportunity of filteredOpportunities) {
+      const key = titleize(opportunity.savings_source || "unknown");
+      totalsBySource.set(key, (totalsBySource.get(key) ?? 0) + (opportunity.annual_savings ?? 0));
+    }
+    return Array.from(totalsBySource.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([label, value], index) => ({ label, value, color: palette[index % palette.length] }));
+  }, [filteredOpportunities]);
   const {
     filteredRows: filteredWasteRows,
     filters: wasteFilters,
@@ -97,6 +111,17 @@ export default function FinOpsPage() {
     { id: "reason", label: "Reason", getValues: (row) => row.reason || "unknown", formatOption: titleize },
     { id: "owner", label: "Owner", getValues: (row) => row.owner || row.business_service || row.subscription || "Unattributed" },
   ]);
+  const wasteByType = useMemo(() => {
+    const totalsByType = new Map<string, number>();
+    for (const item of filteredWasteRows) {
+      const key = titleize(item.resource_type || "Resource");
+      totalsByType.set(key, (totalsByType.get(key) ?? 0) + (item.annual_savings ?? 0));
+    }
+    return Array.from(totalsByType.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([label, value], index) => ({ id: `waste-${index}`, label, value }));
+  }, [filteredWasteRows]);
 
   const attributionPaging = useTablePagination(filteredAttributionGroups);
   const opportunityPaging = useTablePagination(filteredOpportunities);
@@ -237,6 +262,27 @@ export default function FinOpsPage() {
               tone={totals?.actual_spend !== undefined ? "success" : "critical"}
             />
           </div>
+
+          {(savingsByCategory.length > 0 || wasteByType.length > 0) && (
+            <div className="card dashboard-charts-row">
+              {savingsByCategory.length > 0 && (
+                <div className="chart-card">
+                  <h3 className="chart-card-title">Savings by category</h3>
+                  <DonutChart
+                    segments={savingsByCategory}
+                    centerValue={money(totals?.identified_annual_savings ?? null, currency)}
+                    centerLabel="Identified"
+                  />
+                </div>
+              )}
+              {wasteByType.length > 0 && (
+                <div className="chart-card">
+                  <h3 className="chart-card-title">Waste by resource type</h3>
+                  <CountBarChart data={wasteByType} unit="resource type" />
+                </div>
+              )}
+            </div>
+          )}
 
           {(totals?.unavailable_metrics?.length ?? 0) > 0 && (
             <section className="card">

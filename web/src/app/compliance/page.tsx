@@ -4,12 +4,14 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
+import { CountBarChart } from "@/components/ui/CountBarChart";
+import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
-import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
+import { StatusBadge, statusTone, toneColor } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useApi } from "@/hooks/useApi";
 import { buildComplianceCopilotContext } from "@/lib/copilot/page-adapters";
@@ -422,6 +424,30 @@ export default function CompliancePage() {
   const acceptedIds = new Set(exceptions.filter(isExceptionActive).map((item) => item.violationId));
   const activeViolations = violations.filter((violation) => !acceptedIds.has(violation.id));
   const postureScore = scoreFor(violations, exceptions);
+  const severityBreakdown = useMemo(() => {
+    const order: Severity[] = ["critical", "high", "medium", "low"];
+    const counts = new Map<Severity, number>();
+    for (const violation of activeViolations) {
+      counts.set(violation.severity, (counts.get(violation.severity) ?? 0) + 1);
+    }
+    return order
+      .filter((key) => (counts.get(key) ?? 0) > 0)
+      .map((key) => ({
+        label: key.charAt(0).toUpperCase() + key.slice(1),
+        value: counts.get(key) ?? 0,
+        color: toneColor(statusTone(key)),
+      }));
+  }, [activeViolations]);
+  const violationsByType = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const violation of activeViolations) {
+      counts.set(violation.type, (counts.get(violation.type) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([type, value]) => ({ id: type, label: titleize(type), value }));
+  }, [activeViolations]);
   const loading = topology.loading || gaps.loading || findings.loading || exposures.loading;
   const error = topology.error ?? gaps.error ?? findings.error ?? exposures.error;
   const evidence = [
@@ -506,6 +532,23 @@ export default function CompliancePage() {
           <MetricCard label="Open governed deviations" value={openGovernedDeviations.length} detail={changeSummary ? `${changeSummary.drifted_resource_count} drifted resources tracked by change intelligence` : "Policy and security baseline deviations"} tone={criticalGovernedCount ? "critical" : openGovernedDeviations.length ? "warning" : "success"} />
         </section>
       </div>
+
+      {activeViolations.length > 0 && (
+        <div className="card dashboard-charts-row">
+          <div className="chart-card">
+            <h3 className="chart-card-title">Severity mix (active violations)</h3>
+            <DonutChart
+              segments={severityBreakdown}
+              centerValue={activeViolations.length}
+              centerLabel="active"
+            />
+          </div>
+          <div className="chart-card">
+            <h3 className="chart-card-title">Violations by rule type</h3>
+            <CountBarChart data={violationsByType} unit="rule type" />
+          </div>
+        </div>
+      )}
 
       {error ? <StatePanel title="Compliance evaluation unavailable" message={error.message} tone="error" /> : null}
       {loading ? <StatePanel title="Evaluating architecture posture" message="Comparing discovered subscriptions, VNets, routes, peerings, rules, private endpoints, and shared services to policy." tone="loading" /> : null}
