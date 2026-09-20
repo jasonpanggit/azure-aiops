@@ -85,12 +85,34 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
-           FOUNDRY_AGENT_PROMPT AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+           FOUNDRY_AGENT_PROMPT; do
   if [[ -z "${!var:-}" ]]; then
     echo "create-foundry-agent: ${var} is required" >&2
     exit 1
   fi
 done
+
+auth_mode="${FOUNDRY_AUTH_MODE:-client_secret}"
+case "${auth_mode}" in
+  client_secret)
+    for var in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+      if [[ -z "${!var:-}" ]]; then
+        echo "create-foundry-agent: ${var} is required for client_secret authentication" >&2
+        exit 1
+      fi
+    done
+    ;;
+  azure_cli)
+    if ! command -v az >/dev/null 2>&1; then
+      echo "create-foundry-agent: az is required for azure_cli authentication" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "create-foundry-agent: unsupported FOUNDRY_AUTH_MODE '${auth_mode}'" >&2
+    exit 1
+    ;;
+esac
 
 # The ontology curator is a security boundary, not a general specialist.  A
 # hand-edited Terraform payload must not be able to add a writer/general-query
@@ -543,17 +565,42 @@ endpoint="${FOUNDRY_PROJECT_ENDPOINT%/}"
 # under the per-specialist fan-out and could attribute one agent's provider
 # version ID to another.
 response_file="$(mktemp)"
-trap 'rm -f "${response_file}"' EXIT
+auth_header_file="$(mktemp)"
+client_secret_file=""
+chmod 600 "${auth_header_file}"
+cleanup_auth_files() {
+  rm -f "${response_file}" "${auth_header_file}"
+  if [[ -n "${client_secret_file}" ]]; then
+    rm -f "${client_secret_file}"
+  fi
+}
+trap cleanup_auth_files EXIT
 
 # The agent data plane uses its own audience, not the ARM one.
-token=$(curl -sS --fail-with-body \
-  -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'grant_type=client_credentials' \
-  --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
-  --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
-  --data-urlencode 'scope=https://ai.azure.com/.default' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+if [[ "${auth_mode}" == "azure_cli" ]]; then
+  token=$(az account get-access-token \
+    --resource https://ai.azure.com \
+    --query accessToken \
+    --output tsv)
+else
+  client_secret_file="$(mktemp)"
+  chmod 600 "${client_secret_file}"
+  printf '%s' "${AZURE_CLIENT_SECRET}" >"${client_secret_file}"
+  token=$(curl -sS --fail-with-body \
+    -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode 'grant_type=client_credentials' \
+    --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
+    --data-urlencode "client_secret@${client_secret_file}" \
+    --data-urlencode 'scope=https://ai.azure.com/.default' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+fi
+
+if [[ -z "${token}" ]]; then
+  echo "create-foundry-agent: authentication returned an empty access token" >&2
+  exit 1
+fi
+printf 'Authorization: Bearer %s\n' "${token}" >"${auth_header_file}"
 
 create_body=$(
   FOUNDRY_AGENT_NAME="$FOUNDRY_AGENT_NAME" \
@@ -631,7 +678,7 @@ while true; do
 
   http_status=$(curl -sS -o "${response_file}" -w '%{http_code}' \
     -X POST "${url}" \
-    -H "Authorization: Bearer ${token}" \
+    -H "@${auth_header_file}" \
     -H 'Content-Type: application/json' \
     -d "${body}") || http_status=000
 
