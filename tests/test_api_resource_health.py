@@ -93,8 +93,10 @@ def _client(tmp_path, *, with_provider: bool = True, call_counter: list[int] | N
 @pytest.fixture(autouse=True)
 def _clear_resource_health_cache():
     resource_health_router._resource_health_cache.clear()
+    resource_health_router._resource_health_detail_cache.clear()
     yield
     resource_health_router._resource_health_cache.clear()
+    resource_health_router._resource_health_detail_cache.clear()
 
 
 @pytest.fixture
@@ -228,10 +230,8 @@ def test_resource_endpoint_returns_same_not_found_before_provider_access(tmp_pat
     )
 
     assert response.status_code == 404
-    assert response.json()["error"] == {
-        "code": "not_found",
-        "message": "Resource health was not found",
-    }
+    assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["message"] == "Resource health was not found"
     assert provider_calls == []
     assert metrics_calls == []
 
@@ -244,7 +244,7 @@ def test_resource_endpoint_missing_matching_connection_is_not_found(tmp_path):
     def provider(subscription_ids: list[str]) -> ResourceHealthService:
         provider_calls.append(tuple(subscription_ids))
         return ResourceHealthService(
-            connections=lambda: [],
+            connections=list,
             resource_lister=lambda _conn: pytest.fail("must not list resources"),
             metrics_client_factory=lambda _conn: pytest.fail("must not build metrics"),
         )

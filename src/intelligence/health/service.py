@@ -302,6 +302,89 @@ class ResourceHealthService:
             unavailable_metrics=unavailable,
         )
 
+    def snapshot_resource(
+        self,
+        inventory_row: dict[str, Any],
+        *,
+        subscription_ids: list[str],
+    ) -> ResourceHealthSnapshot:
+        """Fetch live utilization for one already-authorized inventory resource.
+
+        The inventory read port is the authoritative identity and authorization
+        boundary for this path. Its snake_case row is normalized explicitly to
+        the ARG-style shape used by the existing metric helpers; this method
+        never invokes ``resource_lister`` or performs another identity lookup.
+
+        Raises:
+            LookupError: When the row is unsupported, outside the supplied
+                subscription scope, or has no active matching connection.
+        """
+        row = {
+            "id": str(inventory_row.get("resource_id") or ""),
+            "name": str(inventory_row.get("resource_name") or ""),
+            "type": str(inventory_row.get("resource_type") or ""),
+            "subscriptionId": str(inventory_row.get("subscription_id") or ""),
+            "resourceGroup": str(inventory_row.get("resource_group") or ""),
+        }
+        resource_type = row["type"].casefold()
+        subscription_id = row["subscriptionId"]
+        allowed_subscriptions = {
+            str(value).casefold() for value in subscription_ids if str(value)
+        }
+        if (
+            not row["id"]
+            or resource_type not in SUPPORTED_RESOURCE_TYPES
+            or not subscription_id
+            or subscription_id.casefold() not in allowed_subscriptions
+        ):
+            raise LookupError("Resource health was not found")
+
+        connection = next(
+            (
+                candidate
+                for candidate in self.connections()
+                if getattr(candidate, "is_active", True)
+                and str(getattr(candidate, "subscription_id", "")).casefold()
+                == subscription_id.casefold()
+            ),
+            None,
+        )
+        if connection is None:
+            raise LookupError("Resource health was not found")
+
+        warnings: list[str] = []
+        guest_performance = self._guest_performance_for_connection(connection, warnings)
+        try:
+            metrics_client = self.metrics_client_factory(connection)
+        except (RuntimeError, ValueError) as exc:
+            class _UnavailableMetricsReader:
+                def __init__(self, message: str) -> None:
+                    self.message = message
+
+                def query_resource_metrics(self, resource_id: str) -> dict[str, Any]:
+                    raise RuntimeError(self.message)
+
+            metrics_client = _UnavailableMetricsReader(str(exc))
+
+        resource = _fetch_resource_utilization(
+            row,
+            connection,
+            metrics_client,
+            guest_performance,
+        )
+        unavailable = (
+            UNAVAILABLE_METRICS
+            if resource_type == "microsoft.compute/virtualmachines"
+            and not guest_performance
+            else ()
+        )
+        return ResourceHealthSnapshot(
+            resources=(resource,),
+            observed_at=_now(),
+            warnings=tuple(warnings),
+            unavailable_metrics=unavailable,
+        )
+
     def _guest_performance_for_connection(
         self, connection: Any, warnings: list[str]
     ) -> dict[str, dict[str, float]]:
