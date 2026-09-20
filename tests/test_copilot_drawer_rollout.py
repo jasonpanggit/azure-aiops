@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from test_api_copilot_investigation import HEADERS, _context
-from test_api_copilot_unified import _canonical_body
+from test_api_copilot_unified import _canonical_body, _network_hub_canonical_body
 
 from api.app import create_app
 from api.evidence import Evidence
-from operations.foundry_agent import FoundryAgentError
+from operations.foundry_agent import AgentAnswer, FoundryAgentError
 from operations.investigation import run_investigation
 from operations.orchestration_service import OrchestrationService
 from operations.tools import STATUS_OK, ToolResult
@@ -161,6 +163,106 @@ def test_drawer_endpoint_applies_rollout_once_without_duplicate_io(
         assert compatibility_executions == 0
         assert canonical_executions == 1
     assert executive.calls == 1
+
+
+def test_shadow_mode_blocks_coordinator_execution_bypass(tmp_path, monkeypatch):
+    """A validated coordinator must not become the live answer during shadow.
+
+    Regression test for a bypass where ``coordinator_enabled`` alone (a live
+    Foundry ``operations-copilot`` agent, independent of rollout stage) took
+    the real OrchestrationService.execute() branch even when
+    rollout.canonical_enabled is False, letting real tool calls/synthesis
+    reach the client during shadow instead of the compatibility path.
+    """
+
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "shadow")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLBACK_MODE", "compatibility")
+    monkeypatch.delenv("AIOPS_AGENT_ORCHESTRATION_MODE", raising=False)
+    monkeypatch.delenv("AIOPS_COPILOT_CANARY_PERCENTAGE", raising=False)
+
+    class Coordinator:
+        agent_name = "operations-copilot"
+        agent_version = "5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def answer(self, *, question, context, **_kwargs):
+            self.calls += 1
+            return AgentAnswer(
+                text=json.dumps({
+                    "steps": [{
+                        "specialist_id": "network",
+                        "tool_calls": [{
+                            "tool": "firewall_nsg_gaps",
+                            "arguments": {"category": "firewall_bypass"},
+                            "citation_ids": ["snapshot:coverage"],
+                            "mutation": False,
+                        }],
+                        "depends_on": [],
+                    }],
+                    "estimated_tokens": 0,
+                    "max_wall_seconds": 30,
+                    "mutation_intent": False,
+                }),
+                agent_name=self.agent_name,
+                agent_version=self.agent_version,
+            )
+
+    coordinator = Coordinator()
+    canonical_tool_calls: list[str] = []
+
+    def canonical_call_tool(*_args, **_kwargs):
+        canonical_tool_calls.append("firewall_nsg_gaps")
+        return ToolResult(
+            status=STATUS_OK,
+            data={"gaps": [], "rule_findings": []},
+            evidence=(
+                Evidence(
+                    source_engine="network.NetworkIntelligenceService",
+                    source_table="ontology_entities",
+                    confidence="medium",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", canonical_call_tool)
+
+    body = _network_hub_canonical_body()
+    body["question"] = "Show inspection bypass paths."
+    body["hint"] = {
+        "specialist_id": "network",
+        "tool": "firewall_nsg_gaps",
+        "arguments": {"category": "firewall_bypass"},
+    }
+    body["snapshot"]["selected_entities"] = []
+    body["snapshot"]["evidence"] = []
+    body["snapshot"]["material_claims"] = []
+    body["snapshot"]["coverage"] = {
+        "visible_count": 0,
+        "total_count": 0,
+        "complete": True,
+    }
+
+    response = TestClient(
+        create_app(_context(tmp_path, coordinator)),
+        raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS,
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["rollout"]["mode"] == "shadow"
+    assert data["rollout"]["canonical_enabled"] is False
+    assert data["rollout"]["shadow_enabled"] is True
+    # The coordinator must not have executed real tool calls against the
+    # client-visible path; the plan-only preview never calls the tool.
+    assert canonical_tool_calls == []
+    # The response must not claim coordinator delegation occurred.
+    assert "coordinator" not in (data.get("synthesis") or {})
 
 
 def test_shadow_reports_real_canonical_compatibility_divergence(

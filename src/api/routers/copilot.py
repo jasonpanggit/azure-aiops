@@ -2163,7 +2163,16 @@ def investigate_canonical(
                 candidate=hint_candidate,
                 effective_scope=scope,
             )
-        if rollout.canonical_enabled or coordinator_enabled:
+        # A live Foundry coordinator may only serve as the client-visible
+        # answer outside of shadow mode. During shadow, compatibility must
+        # remain authoritative and the coordinator (like the deterministic
+        # canonical planner) is limited to the non-executing preview below;
+        # granting coordinator_enabled a bypass here would let real tool
+        # calls/synthesis reach the client while canonical_enabled=false.
+        coordinator_execution_permitted = (
+            coordinator_enabled and not rollout.shadow_enabled
+        )
+        if rollout.canonical_enabled or coordinator_execution_permitted:
             result = OrchestrationService(
                 planner=planner,
                 fallback_planner=(
@@ -2231,7 +2240,7 @@ def investigate_canonical(
             }
         )
 
-    if coordinator_enabled:
+    if coordinator_execution_permitted:
         result = result.model_copy(
             update={
                 "synthesis": {
