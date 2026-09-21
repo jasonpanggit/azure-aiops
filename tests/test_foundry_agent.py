@@ -110,6 +110,40 @@ def test_operations_copilot_returns_typed_untrusted_coordinator_plan() -> None:
     assert "specialist IDs do not claim" in (
         coordinator.calls[0]["context"]["execution_model"]
     )
+    assert coordinator.calls[0]["context"]["allowed_tool_argument_schemas"][
+        "network_topology"
+    ] == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+
+def test_operations_copilot_normalizes_zero_argument_tool_calls() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "network",
+                "tool_calls": [{
+                    "tool": "network_topology",
+                    "arguments": {"scope": "current"},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(coordinator)(_network_request())
+
+    assert plan.steps[0].specialist_id == "network"
+    assert plan.steps[0].tool_calls[0].tool == "network_topology"
+    assert plan.steps[0].tool_calls[0].arguments == {}
 
 
 def test_operations_copilot_synthesis_requires_citation_closed_json() -> None:
