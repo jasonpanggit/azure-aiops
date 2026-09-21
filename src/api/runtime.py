@@ -4106,6 +4106,16 @@ class _RoutingExecutionVerifier:
             )
         return self._sre_agent.cancel(execution_record)
 
+    def read_approvals(self, execution_record: dict[str, Any]) -> list[object]:
+        """Read approval history only through the persisted SRE provider."""
+        provider = str(execution_record.get("provider") or "").strip()
+        if provider != "sre-agent" or self._sre_agent is None:
+            raise ExecutionVerificationUnavailable(
+                "This provider does not expose SRE approval history.",
+                capability="sre_agent_approval_read",
+            )
+        return self._sre_agent.read_approvals(execution_record)
+
 
 def _subscription_id_from_resource_id(resource_id: str) -> str:
     parts = [part for part in str(resource_id or "").strip("/").split("/") if part]
