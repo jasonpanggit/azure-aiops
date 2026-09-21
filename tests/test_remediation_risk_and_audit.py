@@ -22,6 +22,7 @@ from api.routers.vulnerability import (
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from intelligence.governance.audit import (
+    EXPOSURE_AUDIT_EVENT_TYPES,
     AppendOnlyExposureAuditLog,
     ExposureAuditEvent,
 )
@@ -303,6 +304,13 @@ def test_exposure_audit_is_append_only_and_rejects_secret_fields() -> None:
                 "target": {"client_secret": "must-not-be-recorded"},
             }
         )
+
+
+def test_provider_review_approval_has_a_supported_audit_event_type() -> None:
+    assert (
+        "remediation.execution_provider_review_approval_requested"
+        in EXPOSURE_AUDIT_EVENT_TYPES
+    )
 
 
 def test_review_handoff_creation_is_evidence_bound_and_has_no_execution_transition() -> None:
