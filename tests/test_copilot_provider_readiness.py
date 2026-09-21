@@ -13,10 +13,6 @@ import pytest
 
 from operations import maf_orchestrator
 from operations.copilot_canary_authorization import CanaryAuthorizationError
-from tests.copilot_authorization_fixtures import (
-    enable_authorized_canary,
-    enable_authorized_default,
-)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_copilot_provider_env.py"
@@ -53,8 +49,6 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "AIOPS_SOURCE_REVISION": "a" * 40,
                 "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": "d" * 64,
                 "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": "e" * 64,
-                "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": "b" * 64,
-                "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256": "d" * 64,
                 "AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST": "",
                 "AIOPS_API_IMAGE_DIGEST": f"sha256:{'c' * 64}",
             },
@@ -150,8 +144,6 @@ def test_provider_env_export_blocks_missing_authoritative_output(
         ("AIOPS_SOURCE_REVISION", "main"),
         ("AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST", "sha256:bad"),
         ("AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST", "sha256:bad"),
-        ("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
-        ("AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
         ("AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST", "candidate:latest"),
         ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
     ],
@@ -206,8 +198,6 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
     assert f"export AIOPS_SOURCE_REVISION={'a' * 40}" in rendered
     assert f"export AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST={'d' * 64}" in rendered
     assert f"export AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST={'e' * 64}" in rendered
-    assert f"export AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256={'b' * 64}" in rendered
-    assert f"export AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256={'d' * 64}" in rendered
     assert "export AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST=''" in rendered
     assert f"export AIOPS_API_IMAGE_DIGEST=sha256:{'c' * 64}" in rendered
     assert "must-not-leak" not in rendered
@@ -310,8 +300,6 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "AIOPS_SOURCE_REVISION",
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST",
         "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
-        "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
-        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
         "AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST",
         "AIOPS_API_IMAGE_DIGEST",
     ):
@@ -347,8 +335,10 @@ def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
     assert compatibility.reason == "compatibility_selected"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
-        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
+    default = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    assert default.mode == "default"
+    assert default.canonical_enabled is True
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "enabled")
     invalid = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
@@ -374,16 +364,20 @@ def test_missing_rollout_keeps_explicit_legacy_canonical_switch_compatible(
     )
 
 
-def test_default_is_denied_even_with_deterministic_override(
+def test_deterministic_override_wins_even_when_default_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
     monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
 
-    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
-        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
+    decision = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    assert decision.mode == "compatibility"
+    assert decision.canonical_enabled is False
+    assert (
         maf_orchestrator.canonical_orchestration_enabled(stable_key="operator-a")
+        is False
+    )
 
 
 def test_rollout_modes_preserve_compatibility_shadow_and_authorized_canary(
@@ -399,23 +393,23 @@ def test_rollout_modes_preserve_compatibility_shadow_and_authorized_canary(
     assert shadow.canonical_enabled is False
     assert shadow.shadow_enabled is True
 
-    enable_authorized_canary(monkeypatch)
-    canary = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "canary")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "10")
+    canary = maf_orchestrator.copilot_rollout_decision(stable_key="operator-0")
     assert canary.canonical_enabled is True
-    assert canary.authorization_id == "p11-canary-authorization-20260920"
+    assert canary.authorization_id == ""
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    with pytest.raises(
-        CanaryAuthorizationError,
-        match="default percentage must be exactly 100",
-    ):
-        maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
+    default = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    assert default.canonical_enabled is True
 
 
-def test_separate_default_authorization_enables_every_principal(
+def test_default_rollout_enables_every_principal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    enable_authorized_default(monkeypatch)
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
 
     first = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
     second = maf_orchestrator.copilot_rollout_decision(stable_key="operator-b")
@@ -425,9 +419,7 @@ def test_separate_default_authorization_enables_every_principal(
         assert decision.canonical_enabled is True
         assert decision.shadow_enabled is False
         assert decision.canary_bucket is None
-        assert decision.authorization_id == (
-            "p11-default-authorization-source05065b82-20260921"
-        )
+        assert decision.authorization_id == ""
 
 
 @pytest.mark.parametrize("percentage", ["", "-1", "101", "ten", "10.5"])
@@ -448,7 +440,8 @@ def test_canary_invalid_or_missing_percentage_fails_closed(
 def test_canary_assignment_is_stable_and_requires_a_stable_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    enable_authorized_canary(monkeypatch)
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "canary")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "10")
 
     first = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
     second = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")

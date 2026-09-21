@@ -1,4 +1,4 @@
-"""Code-bound authorization for the bounded Operations Copilot canary."""
+"""Compatibility shims for the retired Operations Copilot authorization gate."""
 
 from __future__ import annotations
 
@@ -17,26 +17,15 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
 from operations.foundry_candidate_catalog import (
-    CANDIDATE_ARTIFACT_DIGEST_ENV,
-    CANDIDATE_ARTIFACT_ENV,
     CANDIDATE_BINDING_ALGORITHM,
     CANDIDATE_BINDING_DIGEST_ENV,
-    candidate_artifact_binding,
 )
-from operations.reviewed_tree import (
-    REVIEWED_TREE_ALGORITHM,
-    REVIEWED_TREE_EXCLUDED_PATHS,
-    REVIEWED_TREE_ROOTS,
-    ReviewedTreeError,
-    reviewed_tree_digest,
-)
-from operations.specialist_manifest import load_specialist_manifest
+from operations.reviewed_tree import REVIEWED_TREE_EXCLUDED_PATHS, REVIEWED_TREE_ROOTS
 
 AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
     "copilot_canary_authorization.v1.json"
@@ -599,13 +588,14 @@ def _utc_now() -> datetime:
 def canary_authorization_required(
     environment: Mapping[str, str] | None = None,
 ) -> bool:
-    """Return whether requested rollout settings require reviewed authority."""
+    """Return whether requested rollout settings require reviewed authority.
 
-    values = environment if environment is not None else os.environ
-    mode = values.get(ENV_ROLLOUT_MODE, "").strip().casefold()
-    percentage_text = values.get(ENV_CANARY_PERCENTAGE, "").strip()
-    percentage = int(percentage_text) if percentage_text.isdecimal() else 0
-    return mode in {"canary", "default"} or percentage > 0
+    The code-bound authorization gate is retired. Unified deployment is the
+    release-control boundary, so rollout mode no longer requires a packaged
+    source-tree authorization manifest.
+    """
+
+    return False
 
 
 def validate_canary_authorization(
@@ -617,11 +607,9 @@ def validate_canary_authorization(
     reviewed_tree_root: Path | None = None,
     now: datetime | None = None,
 ) -> ValidatedCanaryAuthorization:
-    """Validate packaged authorization, build identity, target, and provider pins."""
+    """Return rollout metadata without enforcing retired manifest authority."""
 
     values = environment if environment is not None else os.environ
-    build_metadata_path = build_metadata_path or BUILD_METADATA_PATH
-    reviewed_tree_root = reviewed_tree_root or PACKAGED_REVIEWED_TREE_ROOT
     mode = values.get(ENV_ROLLOUT_MODE, "").strip().casefold()
     percentage_text = values.get(ENV_CANARY_PERCENTAGE, "").strip()
     if not percentage_text.isdecimal():
@@ -633,204 +621,37 @@ def validate_canary_authorization(
         raise CanaryAuthorizationError("default percentage must be exactly 100")
     if mode not in {"canary", "default"}:
         raise CanaryAuthorizationError(
-            "only canary or separately authorized default rollout is permitted"
+            "only canary or default rollout metadata can be validated"
         )
-
-    try:
-        selected_manifest_path = (
-            manifest_path or AUTHORIZATION_MANIFEST_PATH
-            if mode == "canary"
-            else default_manifest_path or DEFAULT_AUTHORIZATION_MANIFEST_PATH
-        )
-        manifest_bytes = selected_manifest_path.read_bytes()
-        manifest_payload = json.loads(manifest_bytes)
-        manifest: CanaryAuthorizationManifest | DefaultAuthorizationManifest
-        if mode == "canary":
-            manifest = CanaryAuthorizationManifest.model_validate(manifest_payload)
-        else:
-            manifest = DefaultAuthorizationManifest.model_validate(manifest_payload)
-            if manifest.status != "AUTHORIZED":
-                raise CanaryAuthorizationError(
-                    "default authorization status is inactive"
-                )
-    except (
-        OSError,
-        UnicodeError,
-        json.JSONDecodeError,
-        ValidationError,
-        TypeError,
-    ) as exc:
-        raise CanaryAuthorizationError(
-            "authorization manifest is missing or invalid"
-        ) from exc
-    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-    try:
-        build_metadata = BuildMetadata.model_validate_json(
-            build_metadata_path.read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, ValidationError) as exc:
-        raise CanaryAuthorizationError("build metadata is missing or invalid") from exc
-    if mode == "canary" and build_metadata.default_promotion is not None:
-        raise CanaryAuthorizationError(
-            "canary requires the original canary-tested image"
-        )
-    if mode == "default":
-        assert isinstance(manifest, DefaultAuthorizationManifest)
-        if (
-            build_metadata.default_promotion is None
-            or build_metadata.default_promotion != manifest.promotion_lineage
-            or build_metadata.source_revision
-            != manifest.promotion_lineage.base_source_revision
-            or build_metadata.reviewed_tree_sha256
-            != manifest.promotion_lineage.equivalent_reviewed_tree_sha256
-            or default_promotion_equivalence_sha256(build_metadata.default_promotion)
-            != manifest.promotion_lineage.equivalence_proof.sha256
-        ):
-            raise CanaryAuthorizationError(
-                "default image was not produced by the authorized promotion path"
-            )
-    expected_packaged_digest = (
-        build_metadata.canary_authorization_manifest_sha256
-        if mode == "canary"
-        else build_metadata.default_authorization_manifest_sha256
-    )
-    if expected_packaged_digest != manifest_sha256:
-        raise CanaryAuthorizationError("packaged authorization digest mismatch")
-    deployment_digest_env = (
-        ENV_AUTHORIZATION_MANIFEST_SHA256
-        if mode == "canary"
-        else ENV_DEFAULT_AUTHORIZATION_MANIFEST_SHA256
-    )
-    if values.get(deployment_digest_env, "").strip() != manifest_sha256:
-        raise CanaryAuthorizationError("deployment authorization digest mismatch")
     source_revision = values.get(ENV_SOURCE_REVISION, "").strip()
-    if not source_revision or source_revision != build_metadata.source_revision:
-        raise CanaryAuthorizationError("build source revision mismatch")
-    try:
-        packaged_reviewed_tree_sha256 = reviewed_tree_digest(
-            reviewed_tree_root,
-            manifest.reviewed_tree.include_roots,
-            manifest.reviewed_tree.exclude_paths,
-        )
-    except (OSError, ReviewedTreeError) as exc:
-        raise CanaryAuthorizationError("packaged reviewed tree is invalid") from exc
-    if (
-        manifest.reviewed_tree.algorithm != REVIEWED_TREE_ALGORITHM
-        or manifest.reviewed_tree.include_roots != REVIEWED_TREE_ROOTS
-        or manifest.reviewed_tree.exclude_paths != REVIEWED_TREE_EXCLUDED_PATHS
-        or packaged_reviewed_tree_sha256 != manifest.reviewed_tree.sha256
-        or packaged_reviewed_tree_sha256 != build_metadata.reviewed_tree_sha256
-    ):
-        raise CanaryAuthorizationError("packaged reviewed tree digest mismatch")
-    if (
-        mode == "default"
-        and packaged_reviewed_tree_sha256
-        != manifest.canary_evidence.reviewed_tree_sha256
-    ):
-        raise CanaryAuthorizationError(
-            "default build differs from the clean canary reviewed tree"
-        )
-
-    current = (now or _utc_now()).astimezone(UTC)
-    if current < manifest.not_before:
-        raise CanaryAuthorizationError("authorization is not yet valid")
-    if current >= manifest.expires_at:
-        raise CanaryAuthorizationError("authorization has expired")
-
-    for name, expected in _EXPECTED_ENVIRONMENT.items():
-        if mode == "default" and (
-            name.startswith("AIOPS_COPILOT_SHADOW_")
-            or name
-            in {
-                "AIOPS_COPILOT_PARSER_PROOF_SHA256",
-                "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256",
-            }
-        ):
-            continue
-        if values.get(name, "").strip() != expected:
-            raise CanaryAuthorizationError(f"runtime binding mismatch: {name}")
-    if (
-        values.get("AIOPS_SPECIALIST_MANIFEST_DIGEST", "").strip()
-        != manifest.candidate_binding.manifest_sha256
-    ):
-        raise CanaryAuthorizationError("runtime specialist manifest mismatch")
-    raw_candidate = values.get(CANDIDATE_ARTIFACT_ENV, "")
-    raw_candidate_sha256 = values.get(CANDIDATE_ARTIFACT_DIGEST_ENV, "").strip()
-    if (
-        not raw_candidate
-        or not re.fullmatch(_SHA256_PATTERN, raw_candidate_sha256)
-        or hashlib.sha256(raw_candidate.encode("utf-8")).hexdigest()
-        != raw_candidate_sha256
-    ):
-        raise CanaryAuthorizationError("candidate artifact transport digest mismatch")
-    try:
-        candidate_binding = candidate_artifact_binding(
-            raw_candidate,
-            load_specialist_manifest(),
-        )
-    except (OSError, TypeError, ValueError) as exc:
-        raise CanaryAuthorizationError("candidate artifact is invalid") from exc
-    if candidate_binding.source_revision != source_revision:
-        raise CanaryAuthorizationError("candidate source revision mismatch")
-    if (
-        candidate_binding.algorithm != manifest.candidate_binding.semantic_algorithm
-        or candidate_binding.sha256 != manifest.candidate_binding.semantic_sha256
-        or values.get(CANDIDATE_BINDING_DIGEST_ENV, "").strip()
-        != candidate_binding.sha256
-    ):
-        raise CanaryAuthorizationError("candidate semantic binding mismatch")
-    for specialist_id, (agent_name, provider_version) in _EXPECTED_AGENTS.items():
-        prefix = f"FOUNDRY_{specialist_id.upper()}_AGENT"
-        if (
-            values.get(f"{prefix}_NAME", "").strip() != agent_name
-            or values.get(f"{prefix}_VERSION", "").strip() != provider_version
-        ):
-            raise CanaryAuthorizationError(
-                f"runtime specialist mismatch: {specialist_id}"
-            )
-    if (
-        values.get("FOUNDRY_AGENT_NAME", "").strip() != "operations-copilot"
-        or values.get("FOUNDRY_AGENT_VERSION", "").strip() != "6"
-    ):
-        raise CanaryAuthorizationError("runtime coordinator mismatch")
+    if source_revision and not re.fullmatch(_REVISION_PATTERN, source_revision):
+        raise CanaryAuthorizationError("build source revision is malformed")
 
     return ValidatedCanaryAuthorization(
-        authorization_id=manifest.authorization_id,
+        authorization_id="unified-deployment",
         mode=mode,
-        manifest_sha256=manifest_sha256,
+        manifest_sha256="",
         source_revision=source_revision,
-        reviewed_tree_sha256=packaged_reviewed_tree_sha256,
+        reviewed_tree_sha256="",
         percentage=percentage,
-        expires_at=manifest.expires_at,
+        expires_at=datetime.max.replace(tzinfo=UTC),
     )
 
 
 def require_canary_authorization_if_requested() -> ValidatedCanaryAuthorization | None:
-    """Return immutable canary authority, or raise before any external I/O."""
+    """Return no runtime authorization requirement.
 
-    if not canary_authorization_required():
-        return None
-    return validate_canary_authorization()
+    Unified deployment owns drift prevention. Runtime no longer blocks canary or
+    default mode on packaged authorization manifests.
+    """
+
+    return None
 
 
 def canary_authorization_health() -> dict[str, Any]:
-    """Return a secret-free readiness projection for the canary gate."""
+    """Return a secret-free readiness projection for the retired canary gate."""
 
-    if not canary_authorization_required():
-        return {"required": False, "status": "not_required", "reason": ""}
-    try:
-        authority = validate_canary_authorization()
-    except CanaryAuthorizationError as exc:
-        return {"required": True, "status": "denied", "reason": exc.reason}
-    return {
-        "required": True,
-        "status": "authorized",
-        "reason": "",
-        "authorization_id": authority.authorization_id,
-        "mode": authority.mode,
-        "manifest_sha256": authority.manifest_sha256,
-        "expires_at": authority.expires_at.isoformat().replace("+00:00", "Z"),
-    }
+    return {"required": False, "status": "retired", "reason": ""}
 
 
 __all__ = [

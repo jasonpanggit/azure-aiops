@@ -8,7 +8,6 @@
 #   ./infra/scripts/build-and-push.sh my-fix          # explicit tag
 #   ./infra/scripts/build-and-push.sh my-fix --deploy # build, push, apply
 #   ./infra/scripts/build-and-push.sh my-fix --api-authorization-release
-#   ./infra/scripts/build-and-push.sh my-fix --default-promotion
 #
 # The registry name is read from Terraform state, so this must run after a
 # successful apply.
@@ -61,16 +60,12 @@ fi
 
 deploy_after=0
 authorization_release=0
-default_promotion=0
 tag=""
 for arg in "$@"; do
   case "${arg}" in
     --deploy) deploy_after=1 ;;
     --api-authorization-release) authorization_release=1 ;;
-    --default-promotion)
-      authorization_release=1
-      default_promotion=1
-      ;;
+    --default-promotion) echo "build-and-push: --default-promotion was retired with the Copilot authorization gate." >&2; exit 2 ;;
     -*) echo "build-and-push: unknown flag ${arg}" >&2; exit 2 ;;
     *) if [[ -z "${tag}" ]]; then tag="${arg}"; else
          echo "build-and-push: unexpected argument ${arg}" >&2; exit 2
@@ -131,31 +126,6 @@ source_revision="$(git -C "${repo_root}" rev-parse HEAD)"
 default_base_digest=""
 canary_base_image=""
 
-if [[ "${default_promotion}" -eq 1 ]]; then
-  IFS=$'\t' read -r source_revision default_base_digest < <(
-    python3 - "${repo_root}/src/operations/copilot_default_authorization.v1.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as manifest_file:
-    lineage = json.load(manifest_file)["promotion_lineage"]
-print(lineage["base_source_revision"], lineage["base_image_digest"], sep="\t")
-PY
-  )
-  if [[ ! "${source_revision}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] ||
-    [[ ! "${default_base_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "build-and-push: default promotion manifest has invalid base lineage." >&2
-    exit 1
-  fi
-  canary_base_image="${registry}/aiops-api@${default_base_digest}"
-  if ! az acr repository show \
-    --name "${registry_name}" \
-    --image "aiops-api@${default_base_digest}" >/dev/null 2>&1; then
-    echo "build-and-push: canary base image ${canary_base_image} does not exist." >&2
-    exit 1
-  fi
-fi
-
 prepare_acr_context() {
   [[ "${build_mode}" == "acr" ]] || return 0
   # Azure CLI archives the source tree before ACR sees .dockerignore. A live
@@ -190,11 +160,7 @@ build_image() {
   fi
 
   if [[ "${image}" == "aiops-api" ]]; then
-    if [[ "${default_promotion}" -eq 1 ]]; then
-      build_args=(
-        --build-arg "AIOPS_CANARY_BASE_IMAGE=${canary_base_image}"
-      )
-    elif [[ "${build_mode}" == "local" ]] &&
+    if [[ "${build_mode}" == "local" ]] &&
       [[ -n "$(git -C "${repo_root}" status --porcelain --untracked-files=all)" ]]; then
       echo "build-and-push: local API builds require a clean worktree so baked source revision is exact." >&2
       return 1
@@ -364,25 +330,7 @@ fi
 prepare_acr_context
 
 if [[ "${authorization_release}" -eq 1 ]]; then
-  # This release gate authorizes API code only. Existing Operations MCP
-  # endpoint/catalog/connection identity may be consumed by the API, but MCP
-  # container images are neither built nor validated nor changed by this path.
-  reviewed_root="${repo_root}"
-  if [[ "${build_mode}" == "acr" ]]; then
-    reviewed_root="${acr_context}"
-  fi
-  PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
-    --root "${reviewed_root}" \
-    --manifest "${reviewed_root}/src/operations/copilot_canary_authorization.v1.json" \
-    >/dev/null
-  PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
-    --root "${reviewed_root}" \
-    --manifest "${reviewed_root}/src/operations/copilot_default_authorization.v1.json" \
-    >/dev/null
   api_dockerfile="${repo_root}/Dockerfile"
-  if [[ "${default_promotion}" -eq 1 ]]; then
-    api_dockerfile="${repo_root}/Dockerfile.default-promotion"
-  fi
   build_image aiops-api "${api_dockerfile}" "${repo_root}"
   verify_pushed aiops-api
   api_digest="$(resolve_api_digest)"
