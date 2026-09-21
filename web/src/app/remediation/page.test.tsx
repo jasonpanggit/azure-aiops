@@ -531,6 +531,119 @@ describe("Governed remediation workflow", () => {
     ));
   });
 
+  it("restores a same-action approved patch subset after a fresh page load", async () => {
+    const availablePatches = [
+      { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+      { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+    ];
+    const staleDefault = workflowFixture({
+      availablePatches,
+      approvalStatus: "stale",
+      staleReasons: ["stale_evidence_snapshot"],
+    });
+    workflow
+      .mockResolvedValueOnce(envelope({
+        ...staleDefault,
+        preview: {
+          ...staleDefault.preview,
+          execution_snapshot: {
+            ...staleDefault.preview.execution_snapshot,
+            patch_ids: ["KB600001", "KB600002"],
+            snapshot_hash: "all-patches-hash",
+          },
+        },
+        approval: {
+          ...staleDefault.approval,
+          latest: {
+            decision: "approved",
+            approver: "approver@example.com",
+            decided_at: "2026-09-03T00:00:00Z",
+            execution_snapshot: {
+              target_id: TARGET,
+              patch_ids: ["KB600001"],
+              target_kind: "Azure VM",
+              operation: "install_patches",
+              action_version: "version-1",
+              snapshot_hash: "approved-subset-hash",
+            },
+          },
+        },
+      }))
+      .mockResolvedValueOnce(envelope(workflowFixture({
+        availablePatches,
+        approvalCurrent: true,
+      })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+
+    renderPage();
+
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith(
+      "plan-1",
+      {},
+      ["KB600001"],
+    ));
+    expect(await screen.findByText("1 of 2 patches explicitly selected.")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      name: "the approval action version differs",
+      approvedActionVersion: "version-0",
+      approvedPatchIds: ["KB600001"],
+    },
+    {
+      name: "an approved patch is no longer available",
+      approvedActionVersion: "version-1",
+      approvedPatchIds: ["KB699999"],
+    },
+  ])("does not restore an approved subset when $name", async ({
+    approvedActionVersion,
+    approvedPatchIds,
+  }) => {
+    const staleDefault = workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Critical security update", severity: "Critical" },
+        { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
+      ],
+      approvalStatus: "stale",
+      staleReasons: ["stale_evidence_snapshot"],
+    });
+    workflow.mockResolvedValue(envelope({
+      ...staleDefault,
+      preview: {
+        ...staleDefault.preview,
+        execution_snapshot: {
+          ...staleDefault.preview.execution_snapshot,
+          patch_ids: ["KB600001", "KB600002"],
+          snapshot_hash: "all-patches-hash",
+        },
+      },
+      approval: {
+        ...staleDefault.approval,
+        latest: {
+          decision: "approved",
+          approver: "approver@example.com",
+          decided_at: "2026-09-03T00:00:00Z",
+          execution_snapshot: {
+            target_id: TARGET,
+            patch_ids: approvedPatchIds,
+            target_kind: "Azure VM",
+            operation: "install_patches",
+            action_version: approvedActionVersion,
+            snapshot_hash: "approved-subset-hash",
+          },
+        },
+      },
+    }));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+
+    renderPage();
+
+    expect(await screen.findByText("All 2 eligible patches are selected.")).toBeInTheDocument();
+    expect(workflow).toHaveBeenCalledTimes(1);
+    expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, []);
+  });
+
   it("ignores a superseded patch revalidation while the next selection is debouncing", async () => {
     let resolveStale: ((value: ReturnType<typeof envelope>) => void) | undefined;
     workflow

@@ -891,6 +891,47 @@ function RemediationContent() {
     setSelectedRoleId("");
   }, [selectedPlanId]);
 
+  useEffect(() => {
+    if (
+      selectedPatchIds !== null
+      || workflow?.action.family !== "patch"
+      || workflow.approval.status !== "stale"
+      || workflow.approval.stale_reasons.length !== 1
+      || workflow.approval.stale_reasons[0] !== "stale_evidence_snapshot"
+    ) {
+      return;
+    }
+    const approvedSnapshot = workflow.approval.latest?.execution_snapshot;
+    const currentSnapshot = workflow.preview?.execution_snapshot;
+    if (
+      !approvedSnapshot
+      || !currentSnapshot
+      || !currentSnapshot.available_patches
+      || approvedSnapshot.action_version !== workflow.plan.action_version
+    ) {
+      return;
+    }
+    const approvedPatchIds = Array.from(new Set(
+      approvedSnapshot.patch_ids.map((patchId) => patchId.trim()).filter(Boolean),
+    )).sort();
+    const currentPatchIds = [...currentSnapshot.patch_ids].sort();
+    const availableIds = new Set(
+      currentSnapshot.available_patches.map((patch) => patch.patch_id),
+    );
+    if (
+      approvedPatchIds.length === 0
+      || approvedPatchIds.some((patchId) => !availableIds.has(patchId))
+      || (
+        approvedPatchIds.length === currentPatchIds.length
+        && approvedPatchIds.every((patchId, index) => patchId === currentPatchIds[index])
+      )
+    ) {
+      return;
+    }
+    setSelectedPatchIds(approvedPatchIds);
+    setPatchSelectionRefusal("");
+  }, [selectedPatchIds, workflow]);
+
   // Patch Selection Safety Contract: "Evidence-refresh reconciliation"
   // (locked). A refreshed available-patches set that shrinks below a
   // current explicit selection narrows (removal-only) or refuses -- it
