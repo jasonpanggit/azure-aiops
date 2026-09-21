@@ -1,6 +1,6 @@
 ---
 name: aiops-install-selected-patches-v1
-description: Review and install only an exact approved Windows patch selection on one Azure VM or Arc-enabled server.
+description: Install only an exact app-approved Windows patch selection on one Azure VM or Arc-enabled server.
 ---
 
 # Install exact selected patches
@@ -16,11 +16,10 @@ subscription, target, patch, command, or evidence values from a user or model.
   redirection, pipeline, command substitution, environment variable,
   discovery, fallback, retry, or second command.
 - After validation, invoke `RunAzCliWriteCommands` exactly once with the exact
-  command. Review mode must create its native typed pending `azCliExecution`
-  and wait there for explicit operator approval before submission.
+  command. Autonomous trigger mode may submit it only because the dispatching
+  API has already bound explicit human approval to this immutable payload.
 - Do not present the command only in prose, create a `userQuestion`, ask for a
-  chat response, or call `SubmitMessage` as an approval layer. The native
-  `azCliExecution` Review action is the only approval boundary.
+  chat response, call `SubmitMessage`, or create another approval layer.
 - On refusal or any validation failure, return `blocked_no_action` without a
   write-tool call.
 
@@ -48,14 +47,14 @@ preserve one exact assessment parent, activity ID, and generation; include
 every and only selected patch ID exactly once; and have provider
 `observed_at` no more than 300 seconds before the write handoff and never in
 the future. It must also prove `reboot_pending=false` and, for an Azure VM,
-`vm_power_state=PowerState/running` immediately before Review handoff. A
+`vm_power_state=PowerState/running` immediately before write handoff. A
 deallocated, stopped, or unknown-power VM is blocked and never auto-started.
 A pending or unknown reboot state and a missing selected-patch child row are
 blocked until separately resolved and freshly reassessed. Stored,
 reconstructed, model-authored, stale, partial, extra, or mismatched evidence
 is forbidden.
 
-## Fixed Review command
+## Fixed command
 
 For `target_kind=Azure VM`, pass exactly:
 
@@ -73,7 +72,7 @@ az connectedmachine install-patches --ids <target_id> --windows-parameters '{"kb
 An empty include filter, classification filter, exclusion, Linux parameter,
 alternate target or patch, additional argument, changed command, fallback,
 retry, or second command is forbidden. Never submit before explicit Review
-approval.
+approval recorded in the immutable app payload.
 
 ## Closed outcome
 

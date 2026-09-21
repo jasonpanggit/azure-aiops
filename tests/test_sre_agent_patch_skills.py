@@ -130,12 +130,13 @@ def test_write_skill_routes_exact_vm_and_arc_commands() -> None:
     assert text.count(vm) == 1
     assert text.count(arc) == 1
     assert "invoke `RunAzCliWriteCommands` exactly once" in text
-    assert "native typed pending `azCliExecution`" in text
+    assert "Autonomous trigger mode may submit it only because" in text
     assert "Do not present the command only in prose" in text
     assert "create a `userQuestion`" in text
-    assert "call `SubmitMessage` as an approval layer" in text
+    assert "call `SubmitMessage`" in text
+    assert "create another approval layer" in text
     assert "no more than 300 seconds" in text
-    assert "`vm_power_state=PowerState/running` immediately before Review" in text
+    assert "`vm_power_state=PowerState/running` immediately before write" in text
     assert "`reboot_pending=false`" in text
     assert "never auto-started" in text
     assert "classification filter" in text
@@ -165,7 +166,7 @@ def test_envelope_accepts_both_exact_target_kinds_and_binds_review_contract() ->
     assert chain["write"]["review_command_count"] == 1
 
     definition = json.loads(TRIGGER.read_text(encoding="utf-8"))
-    assert definition["runMode"] == "Review"
+    assert definition["runMode"] == "Autonomous"
     assert definition["payloadSchema"] == contract
 
 

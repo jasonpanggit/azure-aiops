@@ -50,7 +50,7 @@ def _fixture(path: Path) -> dict[str, object]:
 def _real_live_trigger_row(module, **overrides: object) -> dict[str, object]:
     row = {
         "agent": None,
-        "agentMode": "review",
+        "agentMode": "autonomous",
         "agentPrompt": module.canonical_trigger_body(_fixture(DEFINITION))["prompt"],
         "createdAt": "2026-09-16T01:00:00Z",
         "createdBy": "operator",
@@ -319,12 +319,12 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     module = _load_module()
     body = module.canonical_trigger_body(_fixture(DEFINITION))
 
-    assert body["runMode"] == "Review"
+    assert body["runMode"] == "Autonomous"
     assert body["threadGrouping"] == "NewThreadPerRun"
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "1b16195089a2637cbda53ea549b997e6da66ed4dd078bb69b648f035f95d424e"
+        == "fa54348547e661a4d0c8018eae6e03707f07688126fe6d4b4426ddb8a4547760"
     )
 
 
@@ -945,7 +945,7 @@ def test_blocked_live_collector_does_not_write_evidence(
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
-        ("runMode", "Autonomous"),
+        ("runMode", "Review"),
         ("threadGrouping", "SameThread"),
         ("prompt", "Install available patches."),
         ("artifactVersion", "2.0"),
@@ -1215,7 +1215,7 @@ def test_real_live_trigger_row_uses_exact_observed_production_keys() -> None:
     ("overrides", "expected"),
     [
         ({"agentPrompt": "Install available patches."}, "trigger drift detected"),
-        ({"agentMode": "autonomous"}, "agentMode must be review"),
+        ({"agentMode": "review"}, "agentMode must be autonomous"),
         ({"triggerEnabled": False}, "trigger must be enabled"),
         ({"threadId": "shared-thread"}, "threadId must be empty"),
         ({"agent": "other-agent"}, "response agent must remain the default"),
@@ -2160,7 +2160,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "1b16195089a2637cbda53ea549b997e6da66ed4dd078bb69b648f035f95d424e"
+        "fa54348547e661a4d0c8018eae6e03707f07688126fe6d4b4426ddb8a4547760"
     )
 
 
