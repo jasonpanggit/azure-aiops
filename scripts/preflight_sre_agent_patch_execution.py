@@ -92,7 +92,7 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "c38cffda891590d23a7edd190db12eee64cde0b3bff6bc9a94a242ddb1eca69a"
+    "9a4ced45418f238c1ded71b6e3687097ec1a0572f6ca708164ea59900f140b17"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
@@ -105,7 +105,7 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "e2691fe1abee51b63d77265505fd71f8608c3dad7ea1e3f47e78eba4a3dfb71d"
+    "2a4fec5c3959046670a5ea326b728e7ab8b840a654b9d5f040ea4af64dd1ce75"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"

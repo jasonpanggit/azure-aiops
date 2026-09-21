@@ -90,6 +90,7 @@ def _provider_operation(**overrides: object) -> dict[str, object]:
 def _arc_record(**overrides: object) -> dict[str, object]:
     record = _record(
         scope_attributes={"subscription": "sub-1"},
+        created_at="2026-09-21T15:01:59+00:00",
         execution_snapshot={
             "target_id": (
                 "/subscriptions/sub-1/resourceGroups/rg/providers/"
@@ -100,6 +101,31 @@ def _arc_record(**overrides: object) -> dict[str, object]:
             "operation": "install_patches",
             "snapshot_hash": "a" * 64,
         },
+    )
+    record.update(overrides)
+    return record
+
+
+def _arc_record_with_attempt(**overrides: object) -> dict[str, object]:
+    record = _arc_record(
+        attempts=[
+            {
+                "attempt_number": 1,
+                "created_at": "2026-09-21T15:01:59+00:00",
+                "transitions": [
+                    {
+                        "sequence": 1,
+                        "timestamp": "2026-09-21T15:01:59+00:00",
+                        "status": "queued",
+                    },
+                    {
+                        "sequence": 2,
+                        "timestamp": "2026-09-21T15:02:01+00:00",
+                        "status": "running",
+                    },
+                ],
+            }
+        ],
     )
     record.update(overrides)
     return record
@@ -142,6 +168,81 @@ def _pending_cli_execution_payload(**overrides: object) -> dict[str, object]:
             "azCliExecution": execution,
         },
     }
+
+
+def _completed_cli_execution_payload(**overrides: object) -> dict[str, object]:
+    payload = _pending_cli_execution_payload(
+        status="Completed",
+        output="",
+        error=None,
+        startedTimestamp="2026-09-21T15:02:02Z",
+        completedTimestamp="2026-09-21T15:02:03Z",
+    )
+    payload["status"] = "submission_ambiguous"
+    execution = payload["lastMessage"]["azCliExecution"]  # type: ignore[index]
+    assert isinstance(execution, dict)
+    execution.update(overrides)
+    return payload
+
+
+def _activity_log_event(**overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "eventTimestamp": "2026-09-21T15:02:03Z",
+        "resourceId": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1"
+        ),
+        "operationName": {
+            "value": "Microsoft.HybridCompute/machines/installPatches/action"
+        },
+        "status": {"value": "Accepted"},
+        "operationId": "dd6f0ffe-a009-489d-8e46-b07045dfef46",
+        "correlationId": "dd6f0ffe-a009-489d-8e46-b07045dfef46",
+    }
+    event.update(overrides)
+    return event
+
+
+def _patch_installation_parent(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+            "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+        ),
+        "name": "08732f6d-c025-4ef7-9af0-eb59abaa3f1d",
+        "type": "microsoft.hybridcompute/machines/patchinstallationresults",
+        "properties": {
+            "startDateTime": "2026-09-21T15:02:03.3977471Z",
+            "lastModifiedDateTime": "2026-09-21T15:08:18.1378134Z",
+            "status": "Succeeded",
+            "installedPatchCount": 1,
+            "failedPatchCount": 0,
+        },
+    }
+    row.update(overrides)
+    return row
+
+
+def _patch_installation_child(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+            "08732f6d-c025-4ef7-9af0-eb59abaa3f1d/softwarePatches/KB5122874"
+        ),
+        "name": "KB5122874",
+        "type": (
+            "microsoft.hybridcompute/machines/patchinstallationresults/"
+            "softwarepatches"
+        ),
+        "properties": {
+            "patchName": "KB5122874",
+            "installationState": "Installed",
+        },
+    }
+    row.update(overrides)
+    return row
 
 
 def _verifier(
@@ -579,6 +680,246 @@ def test_scalar_submission_ambiguous_preserves_recovery_block() -> None:
 
     assert result["outcome"] == "failed"
     assert result["failure_class"] == "submission_ambiguous"
+
+
+def test_empty_no_wait_submission_recovers_from_exact_patch_installation() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/v1/threads/thread-123":
+            return httpx.Response(
+                200,
+                json=_completed_cli_execution_payload(),
+                request=request,
+            )
+        if request.method == "GET":
+            assert request.url.path == (
+            "/subscriptions/sub-1/providers/microsoft.insights/"
+            "eventtypes/management/values"
+            )
+            assert request.url.params["api-version"] == "2015-04-01"
+            filter_text = request.url.params["$filter"]
+            assert "resourceUri eq '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-1'" in filter_text
+            assert "eventTimestamp ge '2026-09-21T15:00:02Z'" in filter_text
+            assert "eventTimestamp le '2026-09-21T15:07:02Z'" in filter_text
+            return httpx.Response(
+                200,
+                json={"value": [_activity_log_event()]},
+                request=request,
+            )
+        assert request.method == "POST"
+        assert request.url.path == "/providers/Microsoft.ResourceGraph/resources"
+        assert request.url.params["api-version"] == "2022-10-01"
+        payload = json.loads(request.content)
+        assert payload["subscriptions"] == ["sub-1"]
+        assert "patchinstallationresources" in payload["query"]
+        assert (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+        ) in payload["query"]
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    _patch_installation_parent(),
+                    _patch_installation_child(),
+                ]
+            },
+            request=request,
+        )
+
+    credential = _Credential()
+    verifier = SreAgentExecutionVerifier(
+        credential=credential,
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    result = verifier.verify(_arc_record_with_attempt())
+
+    assert result["outcome"] == "succeeded"
+    assert result["verified_state"] == "RecoveredFromPatchInstallation"
+    evidence = result["verification_evidence"]
+    assert evidence["provider_operation"] == {
+        "schema_version": "1.0",
+        "operation_id": "08732f6d-c025-4ef7-9af0-eb59abaa3f1d",
+        "status": "succeeded",
+        "skill_name": "aiops-install-selected-patches-v1",
+        "skill_version": "1.0",
+        "operation": "install_patches",
+        "target_id": _arc_record()["execution_snapshot"]["target_id"],
+        "patch_ids": ["5122874"],
+    }
+    recovery = evidence["patch_installation_recovery"]
+    assert recovery["activity_log"]["correlation_id"] == (
+        "dd6f0ffe-a009-489d-8e46-b07045dfef46"
+    )
+    assert recovery["patch_installation"]["result_id"] == (
+        "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+    )
+    assert recovery["patch_installation"]["assessment_activity_id"] == (
+        "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+    )
+    assert recovery["patch_installation"]["child_patch_ids"] == ["5122874"]
+    assert credential.scopes == [
+        (SRE_AGENT_THREAD_SCOPE,),
+        ("https://management.azure.com/.default",),
+        ("https://management.azure.com/.default",),
+    ]
+    assert len(requests) == 3
+
+
+@pytest.mark.parametrize(
+    "activity_events",
+    [
+        [],
+        [
+            _activity_log_event(),
+            _activity_log_event(operationId="other-operation"),
+        ],
+        [
+            _activity_log_event(
+                resourceId=(
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/other-vm"
+                )
+            )
+        ],
+        [
+            _activity_log_event(
+                operationName={
+                    "value": "Microsoft.HybridCompute/machines/write"
+                }
+            )
+        ],
+        [_activity_log_event(status={"value": "Failed"})],
+    ],
+)
+def test_empty_no_wait_activity_log_context_fails_closed(
+    activity_events: list[dict[str, object]],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/threads/thread-123":
+            return httpx.Response(
+                200,
+                json=_completed_cli_execution_payload(),
+                request=request,
+            )
+        return httpx.Response(200, json={"value": activity_events}, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    result = verifier.verify(_arc_record_with_attempt())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert "provider_operation" not in result["verification_evidence"]
+
+
+@pytest.mark.parametrize(
+    "arg_rows",
+    [
+        [],
+        [_patch_installation_parent()],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(),
+            _patch_installation_parent(
+                id=(
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/vm-1/"
+                    "patchInstallationResults/other-result"
+                ),
+                name="other-result",
+            ),
+            _patch_installation_child(
+                id=(
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/vm-1/"
+                    "patchInstallationResults/other-result/softwarePatches/KB5122874"
+                )
+            ),
+        ],
+        [
+            _patch_installation_parent(
+                properties={
+                    "startDateTime": "2026-09-21T15:01:59Z",
+                    "status": "Succeeded",
+                    "installedPatchCount": 1,
+                    "failedPatchCount": 0,
+                }
+            ),
+            _patch_installation_child(),
+        ],
+        [
+            _patch_installation_parent(
+                properties={
+                    "startDateTime": "2026-09-21T15:02:03Z",
+                    "status": "Failed",
+                    "installedPatchCount": 0,
+                    "failedPatchCount": 1,
+                }
+            ),
+            _patch_installation_child(),
+        ],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(
+                properties={
+                    "patchName": "KB5122874",
+                    "installationState": "Failed",
+                }
+            ),
+        ],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(name="KB999999", properties={"patchName": "KB999999", "installationState": "Installed"}),
+        ],
+    ],
+)
+def test_empty_no_wait_patch_installation_recovery_fails_closed(
+    arg_rows: list[dict[str, object]],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/threads/thread-123":
+            return httpx.Response(
+                200,
+                json=_completed_cli_execution_payload(),
+                request=request,
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"value": [_activity_log_event()]},
+                request=request,
+            )
+        return httpx.Response(200, json={"data": arg_rows}, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    result = verifier.verify(_arc_record_with_attempt())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert "provider_operation" not in result["verification_evidence"]
 
 
 @pytest.mark.parametrize(

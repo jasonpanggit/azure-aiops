@@ -2178,14 +2178,32 @@ def _target_evidence_usable(
     if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
         return True
     assessed_at = str(result.get("assessed_at") or "").strip()
-    boundary_at = _reconciliation_boundary_at(record)
+    recovered_boundary_at = _sre_recovered_patch_installation_boundary_at(record)
+    boundary_at = recovered_boundary_at or _reconciliation_boundary_at(record)
     if not assessed_at or not boundary_at:
         return False
     assessed = _parse_timestamp_for_ordering(assessed_at)
     boundary = _parse_timestamp_for_ordering(boundary_at)
     if assessed is None or boundary is None:
         return False
+    if recovered_boundary_at:
+        return assessed >= boundary
     return assessed > boundary
+
+
+def _sre_recovered_patch_installation_boundary_at(record: dict[str, Any]) -> str:
+    evidence = record.get("verification_evidence")
+    if not isinstance(evidence, dict):
+        return ""
+    recovery = evidence.get("patch_installation_recovery")
+    if not isinstance(recovery, dict):
+        return ""
+    installation = recovery.get("patch_installation")
+    if not isinstance(installation, dict):
+        return ""
+    return str(
+        installation.get("last_modified") or installation.get("start_time") or ""
+    ).strip()
 
 
 def _sre_evidence_has_typed_activity(evidence: Any) -> bool:
