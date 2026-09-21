@@ -2,7 +2,7 @@
 status: investigating
 trigger: "Urgent live remediation root-cause fix. PR #273 is merged/deployed. Fresh Playwright execution RME-6B2363AC2CA1E3FF invoked autonomous SRE thread 9842e930-d5e3-4a9d-9f4f-f42afe300881 for Arc vm1 KB 5122874. SRE performed exact applicability query then exactly one command: az connectedmachine install-patches ... --no-wait true --subscription ... . Tool status Completed, output empty, error null. SRE ended `submission_ambiguous` because no typed provider_operation. Azure Activity Log proves operation was created: operation Microsoft.HybridCompute/machines/installPatches/action, operationId/correlationId dd6f0ffe-a009-489d-8e46-b07045dfef46, Started 15:02:02Z, Accepted 15:02:03Z, exact vm1 resource. Diagnose root cause in latest main and implement the smallest robust fix so successful empty-output `--no-wait` submissions are recovered from authoritative bounded Activity Log evidence without ever retrying the write command. Preserve fail-closed behavior: exact target, operation type, attempt time window, unambiguous single correlation ID, accepted/succeeded status; multiple/missing matches remain submission_ambiguous. Update canonical SRE skill/trigger contracts, hashes/fixtures/runtime parser or verifier as needed. Add focused tests. Run focused pytest + Ruff. Create a feature branch if needed, commit conventional commit with Co-authored-by trailer, push, and create a PR. Report PR number/head and exact deployment/live synchronization requirements. Do not deploy. Stop after PR creation and validated handoff."
 created: 2026-09-21T08:06:29.985-07:00
-updated: 2026-09-21T08:34:00.000-07:00
+updated: 2026-09-21T08:17:00.955-07:00
 ---
 
 ## Current Focus
@@ -23,7 +23,7 @@ reasoning_checkpoint:
     - "contract: canonical SRE write skill/trigger contract forbids Activity Log recovery and says only typed provider_operation proves submission"
     - "data: Azure CLI --no-wait can return empty stdout/stderr while the provider still creates an Activity Log operation"
   and_gate: "yes - data shape (empty CLI output) plus code/contract gap are both required; a typed provider_operation would already succeed, and missing Activity Log recovery only manifests for empty-output no-wait submissions."
-next_action: Commit, push, and open PR for the verified fix.
+next_action: Revise PR #274 so recovery requires unambiguous ARG patchinstallationresources parent/child evidence; Activity Log remains accepted-submission context only.
 
 ## Symptoms
 <!-- Written during gathering, then IMMUTABLE -->
@@ -59,18 +59,26 @@ started: Observed after PR #273 deployment in Playwright execution RME-6B2363AC2
 - timestamp: 2026-09-21T08:34:00.000-07:00
   checked: Focused regression tests
   found: `pytest -q tests/test_sre_agent_execution_verifier.py tests/test_patching_sre_agent_adapter.py tests/test_sre_agent_patch_skills.py` passed.
-  implication: The exact Activity Log recovery succeeds for one accepted match and fail-closed variants remain ambiguous.
+  implication: Superseded by the later Resource Graph proof standard; focused tests were rerun after the revision.
 - timestamp: 2026-09-21T08:34:00.000-07:00
   checked: Focused Ruff
   found: `ruff check src/intelligence/remediation/sre_agent_verifier.py src/operations/patching/sre_agent_adapter.py tests/test_sre_agent_execution_verifier.py tests/test_sre_agent_patch_skills.py tests/test_patching_sre_agent_adapter.py` passed.
-  implication: Touched Python files satisfy lint.
+  implication: Superseded by the later Resource Graph proof standard; Ruff was rerun after the revision.
+- timestamp: 2026-09-21T08:17:00.955-07:00
+  checked: Additional live evidence from Resource Graph
+  found: `patchinstallationresources` contains exact parent `/patchInstallationResults/08732f6d-c025-4ef7-9af0-eb59abaa3f1d` with startDateTime `2026-09-21T15:02:03.3977471Z`, lastModified `15:08:18.1378134Z`, status Succeeded, installedPatchCount 1, failedPatchCount 0, and child KB5122874 `installationState=Installed`; Activity Log correlation `dd6f0ffe-a009-489d-8e46-b07045dfef46` only proves Accepted submission.
+  implication: Recovery must use unambiguous ARG patch-installation parent matched by exact target and start time after write, plus selected-KB child verification; Activity Log correlation must not become provider operation/result ID.
+- timestamp: 2026-09-21T08:17:00.955-07:00
+  checked: Revised focused regression tests and Ruff
+  found: `pytest -q tests/test_sre_agent_execution_verifier.py tests/test_patching_sre_agent_adapter.py tests/test_sre_agent_patch_skills.py && ruff check src/intelligence/remediation/sre_agent_verifier.py src/operations/patching/sre_agent_adapter.py scripts/preflight_sre_agent_patch_execution.py tests/test_sre_agent_execution_verifier.py tests/test_sre_agent_patch_skills.py tests/test_patching_sre_agent_adapter.py` passed.
+  implication: Recovery now requires exact ARG patchinstallationresources parent/child evidence, with Activity Log as accepted-submission context only; touched Python files satisfy lint.
 
 ## Resolution
 <!-- OVERWRITE as understanding evolves -->
 
-root_cause: SRE terminal success verification had no bounded Azure Activity Log recovery path for successful empty-output `az connectedmachine install-patches --no-wait true` submissions that lacked typed provider_operation, so it deterministically classified them as `submission_ambiguous`.
-fix: Added a read-only, fail-closed Azure Activity Log recovery path in `SreAgentExecutionVerifier` that only converts terminal/ambiguous SRE outcomes to submitted when exact target, installPatches operation type, bounded attempt window, accepted/succeeded status, and a single unambiguous correlation ID are present; updated canonical SRE skill/trigger contracts and SHA; added focused tests.
-verification: Focused pytest and Ruff passed.
+root_cause: SRE terminal success verification had no bounded provider-result recovery path for successful empty-output `az connectedmachine install-patches --no-wait true` submissions that lacked typed provider_operation, so it deterministically classified them as `submission_ambiguous`; Activity Log alone is insufficient because it only proves Accepted submission, not the durable patch installation result.
+fix: Revised PR #274 to require read-only, fail-closed Azure Resource Graph `patchinstallationresources` recovery with exact target, parent patchInstallationResults start time after write, unambiguous parent result ID, succeeded status/counts, and selected-KB child installationState; Activity Log is accepted-submission context only.
+verification: Revised focused pytest and Ruff passed.
 files_changed:
   - src/intelligence/remediation/sre_agent_verifier.py
   - src/operations/patching/sre_agent_adapter.py

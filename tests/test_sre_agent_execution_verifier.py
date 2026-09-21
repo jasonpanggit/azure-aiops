@@ -203,6 +203,48 @@ def _activity_log_event(**overrides: object) -> dict[str, object]:
     return event
 
 
+def _patch_installation_parent(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+            "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+        ),
+        "name": "08732f6d-c025-4ef7-9af0-eb59abaa3f1d",
+        "type": "microsoft.hybridcompute/machines/patchinstallationresults",
+        "properties": {
+            "startDateTime": "2026-09-21T15:02:03.3977471Z",
+            "lastModifiedDateTime": "2026-09-21T15:08:18.1378134Z",
+            "status": "Succeeded",
+            "installedPatchCount": 1,
+            "failedPatchCount": 0,
+        },
+    }
+    row.update(overrides)
+    return row
+
+
+def _patch_installation_child(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+            "08732f6d-c025-4ef7-9af0-eb59abaa3f1d/softwarePatches/KB5122874"
+        ),
+        "name": "KB5122874",
+        "type": (
+            "microsoft.hybridcompute/machines/patchinstallationresults/"
+            "softwarepatches"
+        ),
+        "properties": {
+            "patchName": "KB5122874",
+            "installationState": "Installed",
+        },
+    }
+    row.update(overrides)
+    return row
+
+
 def _verifier(
     payload: dict[str, object],
     *,
@@ -640,7 +682,7 @@ def test_scalar_submission_ambiguous_preserves_recovery_block() -> None:
     assert result["failure_class"] == "submission_ambiguous"
 
 
-def test_empty_no_wait_submission_recovers_from_exact_activity_log_event() -> None:
+def test_empty_no_wait_submission_recovers_from_exact_patch_installation() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -651,18 +693,39 @@ def test_empty_no_wait_submission_recovers_from_exact_activity_log_event() -> No
                 json=_completed_cli_execution_payload(),
                 request=request,
             )
-        assert request.url.path == (
+        if request.method == "GET":
+            assert request.url.path == (
             "/subscriptions/sub-1/providers/microsoft.insights/"
             "eventtypes/management/values"
-        )
-        assert request.url.params["api-version"] == "2015-04-01"
-        filter_text = request.url.params["$filter"]
-        assert "resourceUri eq '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-1'" in filter_text
-        assert "eventTimestamp ge '2026-09-21T15:00:02Z'" in filter_text
-        assert "eventTimestamp le '2026-09-21T15:07:02Z'" in filter_text
+            )
+            assert request.url.params["api-version"] == "2015-04-01"
+            filter_text = request.url.params["$filter"]
+            assert "resourceUri eq '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-1'" in filter_text
+            assert "eventTimestamp ge '2026-09-21T15:00:02Z'" in filter_text
+            assert "eventTimestamp le '2026-09-21T15:07:02Z'" in filter_text
+            return httpx.Response(
+                200,
+                json={"value": [_activity_log_event()]},
+                request=request,
+            )
+        assert request.method == "POST"
+        assert request.url.path == "/providers/Microsoft.ResourceGraph/resources"
+        assert request.url.params["api-version"] == "2022-10-01"
+        payload = json.loads(request.content)
+        assert payload["subscriptions"] == ["sub-1"]
+        assert "patchinstallationresources" in payload["query"]
+        assert (
+            "/subscriptions/sub-1/resourceGroups/rg/providers/"
+            "Microsoft.HybridCompute/machines/vm-1/patchInstallationResults/"
+        ) in payload["query"]
         return httpx.Response(
             200,
-            json={"value": [_activity_log_event()]},
+            json={
+                "data": [
+                    _patch_installation_parent(),
+                    _patch_installation_child(),
+                ]
+            },
             request=request,
         )
 
@@ -679,26 +742,32 @@ def test_empty_no_wait_submission_recovers_from_exact_activity_log_event() -> No
     result = verifier.verify(_arc_record_with_attempt())
 
     assert result["outcome"] == "succeeded"
-    assert result["verified_state"] == "RecoveredFromActivityLog"
+    assert result["verified_state"] == "RecoveredFromPatchInstallation"
     evidence = result["verification_evidence"]
     assert evidence["provider_operation"] == {
         "schema_version": "1.0",
-        "operation_id": "dd6f0ffe-a009-489d-8e46-b07045dfef46",
-        "status": "submitted",
+        "operation_id": "08732f6d-c025-4ef7-9af0-eb59abaa3f1d",
+        "status": "succeeded",
         "skill_name": "aiops-install-selected-patches-v1",
         "skill_version": "1.0",
         "operation": "install_patches",
         "target_id": _arc_record()["execution_snapshot"]["target_id"],
         "patch_ids": ["5122874"],
     }
-    assert evidence["activity_log_recovery"]["correlation_id"] == (
+    recovery = evidence["patch_installation_recovery"]
+    assert recovery["activity_log"]["correlation_id"] == (
         "dd6f0ffe-a009-489d-8e46-b07045dfef46"
     )
+    assert recovery["patch_installation"]["result_id"] == (
+        "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+    )
+    assert recovery["patch_installation"]["child_patch_ids"] == ["5122874"]
     assert credential.scopes == [
         (SRE_AGENT_THREAD_SCOPE,),
         ("https://management.azure.com/.default",),
+        ("https://management.azure.com/.default",),
     ]
-    assert len(requests) == 2
+    assert len(requests) == 3
 
 
 @pytest.mark.parametrize(
@@ -727,7 +796,7 @@ def test_empty_no_wait_submission_recovers_from_exact_activity_log_event() -> No
         [_activity_log_event(status={"value": "Failed"})],
     ],
 )
-def test_empty_no_wait_activity_log_recovery_fails_closed(
+def test_empty_no_wait_activity_log_context_fails_closed(
     activity_events: list[dict[str, object]],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -738,6 +807,101 @@ def test_empty_no_wait_activity_log_recovery_fails_closed(
                 request=request,
             )
         return httpx.Response(200, json={"value": activity_events}, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    result = verifier.verify(_arc_record_with_attempt())
+
+    assert result["outcome"] == "failed"
+    assert result["failure_class"] == "submission_ambiguous"
+    assert "provider_operation" not in result["verification_evidence"]
+
+
+@pytest.mark.parametrize(
+    "arg_rows",
+    [
+        [],
+        [_patch_installation_parent()],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(),
+            _patch_installation_parent(
+                id=(
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/vm-1/"
+                    "patchInstallationResults/other-result"
+                ),
+                name="other-result",
+            ),
+            _patch_installation_child(
+                id=(
+                    "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                    "Microsoft.HybridCompute/machines/vm-1/"
+                    "patchInstallationResults/other-result/softwarePatches/KB5122874"
+                )
+            ),
+        ],
+        [
+            _patch_installation_parent(
+                properties={
+                    "startDateTime": "2026-09-21T15:01:59Z",
+                    "status": "Succeeded",
+                    "installedPatchCount": 1,
+                    "failedPatchCount": 0,
+                }
+            ),
+            _patch_installation_child(),
+        ],
+        [
+            _patch_installation_parent(
+                properties={
+                    "startDateTime": "2026-09-21T15:02:03Z",
+                    "status": "Failed",
+                    "installedPatchCount": 0,
+                    "failedPatchCount": 1,
+                }
+            ),
+            _patch_installation_child(),
+        ],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(
+                properties={
+                    "patchName": "KB5122874",
+                    "installationState": "Failed",
+                }
+            ),
+        ],
+        [
+            _patch_installation_parent(),
+            _patch_installation_child(name="KB999999", properties={"patchName": "KB999999", "installationState": "Installed"}),
+        ],
+    ],
+)
+def test_empty_no_wait_patch_installation_recovery_fails_closed(
+    arg_rows: list[dict[str, object]],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/threads/thread-123":
+            return httpx.Response(
+                200,
+                json=_completed_cli_execution_payload(),
+                request=request,
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"value": [_activity_log_event()]},
+                request=request,
+            )
+        return httpx.Response(200, json={"data": arg_rows}, request=request)
 
     verifier = SreAgentExecutionVerifier(
         credential=_Credential(),

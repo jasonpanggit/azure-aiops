@@ -67,6 +67,11 @@ _ACTIVITY_LOG_API_VERSION = "2015-04-01"
 _ACTIVITY_LOG_ACCEPTED_STATUSES = frozenset({"accepted", "succeeded", "success"})
 _ACTIVITY_LOG_QUERY_LOOKBACK = timedelta(minutes=2)
 _ACTIVITY_LOG_QUERY_LOOKAHEAD = timedelta(minutes=5)
+_ARG_API_VERSION = "2022-10-01"
+_ARG_ENDPOINT_PATH = "/providers/Microsoft.ResourceGraph/resources"
+_PATCH_INSTALLATION_QUERY_LOOKAHEAD = timedelta(hours=3)
+_PATCH_INSTALLATION_SUCCEEDED_STATUSES = frozenset({"succeeded", "completed"})
+_PATCH_CHILD_INSTALLED_STATES = frozenset({"installed", "succeeded"})
 
 
 def _expected_review_command(execution_record: dict[str, Any]) -> str:
@@ -462,6 +467,59 @@ def _activity_log_field(row: dict[str, Any], name: str) -> str:
     return str(value or "").strip()
 
 
+def _properties(row: dict[str, Any]) -> dict[str, Any]:
+    value = row.get("properties")
+    return value if isinstance(value, dict) else {}
+
+
+def _patch_installation_parent_id(row: dict[str, Any]) -> str:
+    row_id = str(row.get("id") or "").strip()
+    marker = "/patchInstallationResults/"
+    if marker.casefold() not in row_id.casefold():
+        return ""
+    prefix, suffix = row_id.split(marker, 1)
+    parent_suffix = suffix.split("/softwarePatches/", 1)[0].strip("/")
+    if not prefix or not parent_suffix:
+        return ""
+    return f"{prefix}{marker}{parent_suffix}"
+
+
+def _patch_installation_result_id(parent_id: str) -> str:
+    marker = "/patchInstallationResults/"
+    if marker.casefold() not in parent_id.casefold():
+        return ""
+    return parent_id.rsplit(marker, 1)[-1].strip("/")
+
+
+def _kb_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[2:] if text.casefold().startswith("kb") else text
+
+
+def _patch_row_kb(row: dict[str, Any]) -> str:
+    props = _properties(row)
+    for value in (
+        props.get("patchName"),
+        props.get("kbId"),
+        props.get("kbNumber"),
+        row.get("name"),
+    ):
+        kb = _kb_id(value)
+        if kb:
+            return kb
+    row_id = str(row.get("id") or "")
+    if "/softwarePatches/" in row_id:
+        return _kb_id(row_id.rsplit("/softwarePatches/", 1)[-1])
+    return ""
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _latest_attempt_timestamp(execution_record: dict[str, Any]) -> datetime | None:
     attempts = execution_record.get("attempts")
     if not isinstance(attempts, list) or not attempts:
@@ -659,7 +717,7 @@ class SreAgentExecutionVerifier:
             approval_ids.append(approval_id)
         return approval_ids
 
-    def _recover_provider_operation_from_activity_log(
+    def _recover_provider_operation_from_provider_evidence(
         self,
         execution_record: dict[str, Any],
         *,
@@ -762,29 +820,169 @@ class SreAgentExecutionVerifier:
         correlation_ids = {match["correlation_id"] for match in matches}
         if len(matches) != 1 or len(correlation_ids) != 1:
             return None
-        match = matches[0]
+        activity_match = matches[0]
+        installation = self._recover_patch_installation_from_arg(
+            execution_record,
+            target_id=target_id,
+            subscription_id=subscription_id,
+            attempt_time=attempt_time,
+        )
+        if installation is None:
+            return None
         provider_operation = {
             "schema_version": SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION,
-            "operation_id": match["operation_id"],
-            "status": "submitted",
+            "operation_id": installation["result_id"],
+            "status": "succeeded",
             "skill_name": SRE_PATCH_WRITE_SKILL_NAME,
             "skill_version": SRE_PATCH_WRITE_SKILL_VERSION,
             "operation": OPERATION_INSTALL_PATCHES,
             "target_id": target_id,
             "patch_ids": list(snapshot.get("patch_ids") or []),
         }
-        activity_log_recovery = {
-            "source": "azure_activity_log",
-            "correlation_id": match["correlation_id"],
-            "operation_id": match["operation_id"],
-            "operation_name": operation_name,
-            "target_id": target_id,
-            "status": match["status"],
-            "event_time": match["event_time"].isoformat(),
-            "query_start": start_time.isoformat(),
-            "query_end": end_time.isoformat(),
+        recovery = {
+            "source": "azure_resource_graph_patchinstallationresources",
+            "activity_log": {
+                "source": "azure_activity_log",
+                "correlation_id": activity_match["correlation_id"],
+                "operation_id": activity_match["operation_id"],
+                "operation_name": operation_name,
+                "target_id": target_id,
+                "status": activity_match["status"],
+                "event_time": activity_match["event_time"].isoformat(),
+                "query_start": start_time.isoformat(),
+                "query_end": end_time.isoformat(),
+            },
+            "patch_installation": installation,
         }
-        return provider_operation, activity_log_recovery
+        return provider_operation, recovery
+
+    def _recover_patch_installation_from_arg(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        target_id: str,
+        subscription_id: str,
+        attempt_time: datetime,
+    ) -> dict[str, Any] | None:
+        snapshot = execution_record.get("execution_snapshot")
+        if not isinstance(snapshot, dict):
+            return None
+        patch_ids = [_kb_id(patch_id) for patch_id in snapshot.get("patch_ids") or []]
+        if not patch_ids or any(not patch_id for patch_id in patch_ids):
+            return None
+        start_time = attempt_time
+        end_time = attempt_time + _PATCH_INSTALLATION_QUERY_LOOKAHEAD
+        query = (
+            "patchinstallationresources "
+            f"| where id startswith '{target_id}/patchInstallationResults/' "
+            "| where id has '/softwarePatches/' or type !endswith '/softwarePatches' "
+            "| project id, name, type, subscriptionId, resourceGroup, properties"
+        )
+        arg_url = f"{self._arm_endpoint}{_ARG_ENDPOINT_PATH}"
+        access_token = self._arm_token()
+        headers = {
+            "Authorization": "Bearer " + access_token,
+            "Content-Type": "application/json",
+        }
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=False,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = client.post(
+                arg_url,
+                headers=headers,
+                params={"api-version": _ARG_API_VERSION},
+                json={
+                    "subscriptions": [subscription_id],
+                    "query": query,
+                    "options": {"$top": 256},
+                },
+                follow_redirects=False,
+            )
+        except httpx.HTTPError:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            return None
+        finally:
+            if self._client is None:
+                client.close()
+        if response.status_code != 200:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        _scrub_authorization(response, headers)
+        access_token = ""
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 256:
+            return None
+
+        parents: dict[str, dict[str, Any]] = {}
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            row_id = str(row.get("id") or "")
+            if not _resource_id_equal(row_id.split("/patchInstallationResults/", 1)[0], target_id):
+                continue
+            parent_id = _patch_installation_parent_id(row)
+            if not parent_id:
+                return None
+            if "/softwarePatches/" in row_id:
+                children_by_parent.setdefault(parent_id, []).append(row)
+            else:
+                parents[parent_id] = row
+
+        matches: list[dict[str, Any]] = []
+        for parent_id, parent in parents.items():
+            props = _properties(parent)
+            start = _parse_timestamp(props.get("startDateTime"))
+            last_modified = _parse_timestamp(props.get("lastModifiedDateTime"))
+            status = str(props.get("status") or "").casefold()
+            installed_count = _nonnegative_int(props.get("installedPatchCount"))
+            failed_count = _nonnegative_int(props.get("failedPatchCount"))
+            if (
+                start is None
+                or not start_time <= start <= end_time
+                or status not in _PATCH_INSTALLATION_SUCCEEDED_STATUSES
+                or installed_count < len(patch_ids)
+                or failed_count != 0
+            ):
+                continue
+            children = children_by_parent.get(parent_id) or []
+            child_by_kb: dict[str, dict[str, Any]] = {}
+            invalid_child = False
+            for child in children:
+                kb = _patch_row_kb(child)
+                state = str(_properties(child).get("installationState") or "").casefold()
+                if not kb or state not in _PATCH_CHILD_INSTALLED_STATES:
+                    invalid_child = True
+                    break
+                child_by_kb[kb] = child
+            if invalid_child or set(child_by_kb) != set(patch_ids):
+                continue
+            matches.append(
+                {
+                    "parent_id": parent_id,
+                    "result_id": _patch_installation_result_id(parent_id),
+                    "status": status,
+                    "start_time": start.isoformat(),
+                    "last_modified": last_modified.isoformat() if last_modified else "",
+                    "installed_patch_count": installed_count,
+                    "failed_patch_count": failed_count,
+                    "child_patch_ids": sorted(child_by_kb),
+                    "query_start": start_time.isoformat(),
+                    "query_end": end_time.isoformat(),
+                }
+            )
+        if len(matches) != 1 or not matches[0]["result_id"]:
+            return None
+        return matches[0]
 
     def cancel(
         self,
@@ -1191,7 +1389,7 @@ class SreAgentExecutionVerifier:
             ):
                 verified_state = "Pending Review"
             if outcome == "succeeded" and submitted_operation is None:
-                recovered = self._recover_provider_operation_from_activity_log(
+                recovered = self._recover_provider_operation_from_provider_evidence(
                     execution_record,
                     completed_write=completed_write,
                 )
@@ -1200,9 +1398,9 @@ class SreAgentExecutionVerifier:
                         verified_state="CompleteWithoutSubmissionProof",
                         evidence=evidence,
                     )
-                provider_operation, activity_log_recovery = recovered
+                provider_operation, recovery = recovered
                 evidence["provider_operation"] = provider_operation
-                evidence["activity_log_recovery"] = activity_log_recovery
+                evidence["patch_installation_recovery"] = recovery
             result = {
                 "verifiable": True,
                 "outcome": outcome,
@@ -1218,7 +1416,7 @@ class SreAgentExecutionVerifier:
             return result
         if normalized in {"complete", "success", "succeeded"}:
             if submitted_operation is None:
-                recovered = self._recover_provider_operation_from_activity_log(
+                recovered = self._recover_provider_operation_from_provider_evidence(
                     execution_record,
                     completed_write=completed_write,
                 )
@@ -1227,9 +1425,9 @@ class SreAgentExecutionVerifier:
                         verified_state=raw_status,
                         evidence=evidence,
                     )
-                submitted_operation, activity_log_recovery = recovered
+                submitted_operation, recovery = recovered
                 evidence["provider_operation"] = submitted_operation
-                evidence["activity_log_recovery"] = activity_log_recovery
+                evidence["patch_installation_recovery"] = recovery
             return {
                 "verifiable": True,
                 "outcome": "succeeded",
@@ -1249,18 +1447,18 @@ class SreAgentExecutionVerifier:
                 "verification_evidence": evidence,
             }
         if normalized == "submission_ambiguous":
-            recovered = self._recover_provider_operation_from_activity_log(
+            recovered = self._recover_provider_operation_from_provider_evidence(
                 execution_record,
                 completed_write=completed_write,
             )
             if recovered is not None:
-                provider_operation, activity_log_recovery = recovered
+                provider_operation, recovery = recovered
                 evidence["provider_operation"] = provider_operation
-                evidence["activity_log_recovery"] = activity_log_recovery
+                evidence["patch_installation_recovery"] = recovery
                 return {
                     "verifiable": True,
                     "outcome": "succeeded",
-                    "verified_state": "RecoveredFromActivityLog",
+                    "verified_state": "RecoveredFromPatchInstallation",
                     "verification_evidence": evidence,
                 }
             return {
