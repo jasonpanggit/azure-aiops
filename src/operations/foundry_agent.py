@@ -1097,6 +1097,28 @@ def _run_awaitable(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
 
 
+def _compact_oversized_context_value(value: Any) -> Any:
+    """Retain summary fields when one nested value cannot fit the prompt."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _compact_oversized_context_value(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        if not value:
+            return []
+        compacted = [_compact_oversized_context_value(value[0])]
+        if len(value) > 1:
+            compacted.append(
+                {"_truncation": f"{len(value) - 1} additional items omitted"}
+            )
+        return compacted
+    if isinstance(value, str) and len(value) > 512:
+        return f"{value[:496]}…(truncated)"
+    return value
+
+
 def _serialize_bounded_context(context: Any) -> str:
     """Serialize context as valid JSON without slicing through its structure."""
 
@@ -1125,7 +1147,17 @@ def _serialize_bounded_context(context: Any) -> str:
                     ensure_ascii=False,
                 )
                 if len(candidate_serialized) > MAX_CONTEXT_CHARS:
-                    break
+                    compacted_item = _compact_oversized_context_value(item)
+                    candidate = deepcopy(bounded)
+                    candidate[key].append(compacted_item)
+                    candidate_serialized = json.dumps(
+                        candidate,
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                    if len(candidate_serialized) <= MAX_CONTEXT_CHARS:
+                        bounded = candidate
+                    continue
                 bounded = candidate
             continue
         candidate = {**bounded, key: value}
