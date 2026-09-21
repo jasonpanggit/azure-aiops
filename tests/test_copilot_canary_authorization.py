@@ -1126,6 +1126,10 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert 'deployment_source_revision = \\"" revision "\\""' in build_script
     assert "record_application_release" in build_script
     assert 'api_digest="$(resolve_api_digest)"' in build_script
+    assert "az acr repository show \\" in build_script
+    assert '--image "aiops-api:${tag}"' in build_script
+    assert '--query "{name:name,digest:digest}"' in build_script
+    assert "az acr repository show-tags" not in build_script
     assert (
         "AIOPS_API_AUTHORIZATION_RELEASE=1 "
         "./infra/scripts/deploy.sh apply "

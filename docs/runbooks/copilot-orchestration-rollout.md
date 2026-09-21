@@ -118,10 +118,10 @@ automatically selects the authorization-release workflow even if
 `AIOPS_API_AUTHORIZATION_RELEASE` is omitted. Detection is performed by
 `terraform console`, so normal tfvars, JSON tfvars, sorted auto tfvars,
 `TF_VAR_*`, and direct `-var`/`-var-file` inputs follow Terraform's own
-precedence and syntax. An unprovable value fails closed; command-specific
-`TF_CLI_ARGS_<command>` variable inputs are passed to Terraform's console
-parser for the same evaluation and fail closed if they contain options that
-cannot be evaluated there. Authorization releases require exactly
+precedence and syntax. An unprovable value fails closed. Ambient
+`TF_CLI_ARGS*` inputs are rejected; operators must pass reviewed arguments
+explicitly so hidden plan/apply modifiers cannot bypass the reviewed command
+line. Authorization releases require exactly
 `-target=azurerm_container_app.api`; the wrapper rejects a missing target,
 duplicate target, full apply, or any extra/different target. No dependency
 target is required. The projected
@@ -138,15 +138,15 @@ Any failure must restore and confirm `compatibility`/0; an unconfirmed rollback
 keeps the command failed. The external platform digest is the image root of
 trust.
 
-The existing Terraform resource uses Container Apps `Single` revision mode, so
-this is a compatibility-mode stage rather than a retained zero-traffic
-revision: the candidate digest may serve legacy-compatible API traffic while
-validation runs, but it cannot serve canonical canary traffic. Terraform inputs
-and `terraform.tfvars` are not rewritten; the second apply reuses the operator's
-exact requested values. A staging, admission, second-apply, or activation
-failure triggers an explicit compatibility apply and verifies mode
-`compatibility` with percentage `0`. If Azure prevents that verification, the
-script exits nonzero with promotion held and requires immediate operator
+The API Terraform resource permanently uses Container Apps `Multiple` revision
+mode. Compatibility staging can therefore admit the candidate digest without
+returning the app to `Single` mode; canonical traffic remains zero until the
+requested canary or default authority validates. Terraform inputs and
+`terraform.tfvars` are not rewritten by the deploy wrapper; the second apply
+reuses the operator's exact requested values. A staging, admission, second-apply,
+or activation failure triggers an explicit compatibility apply and verifies
+mode `compatibility` with percentage `0`. If Azure prevents that verification,
+the script exits nonzero with promotion held and requires immediate operator
 intervention; it never reports promotion success.
 
 Raw environment flags cannot create route authority. Any missing, malformed,

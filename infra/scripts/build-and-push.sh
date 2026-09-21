@@ -275,15 +275,22 @@ verify_pushed() {
 # Writing it here is what stops the deployed revision from drifting behind
 # the newest pushed tag.
 resolve_api_digest() {
-  local resolved_tag resolved_digest
-  IFS=$'\t' read -r resolved_tag resolved_digest < <(
-    az acr repository show-tags \
+  local metadata resolved_tag resolved_digest
+  metadata="$(
+    az acr repository show \
       --name "${registry_name}" \
-      --repository "aiops-api" \
-      --detail \
-      --query "[?name=='${tag}'] | [0].[name,digest]" \
-      --output tsv
-  )
+      --image "aiops-api:${tag}" \
+      --query "{name:name,digest:digest}" \
+      --output json
+  )"
+  resolved_digest="$(
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("digest", ""))' \
+      <<<"${metadata}"
+  )"
+  resolved_tag="$(
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("name", ""))' \
+      <<<"${metadata}"
+  )"
   if [[ "${resolved_tag}" != "${tag}" ]]; then
     echo "build-and-push: resolved API manifest does not correspond to aiops-api:${tag}." >&2
     exit 1
