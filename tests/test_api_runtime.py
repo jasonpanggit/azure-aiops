@@ -2547,6 +2547,9 @@ def test_verifier_routes_persisted_arm_and_sre_jobs_independent_of_write_mode(
         def verify(self, _record: dict[str, object]) -> dict[str, str]:
             return {"route": "sre"}
 
+        def read_approvals(self, _record: dict[str, object]) -> list[object]:
+            return [{"id": "approval-1", "status": "Rejected"}]
+
     monkeypatch.setattr(
         runtime_module,
         "_ConnectionScopedExecutionVerifier",
@@ -2566,3 +2569,6 @@ def test_verifier_routes_persisted_arm_and_sre_jobs_independent_of_write_mode(
 
     assert verifier.verify({"provider": "azure-arm"}) == {"route": "arm"}
     assert verifier.verify({"provider": "sre-agent"}) == {"route": "sre"}
+    assert verifier.read_approvals({"provider": "sre-agent"}) == [
+        {"id": "approval-1", "status": "Rejected"}
+    ]
