@@ -157,6 +157,12 @@ def _write_authorization(
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": digest,
                 "default_authorization_manifest_sha256": "d" * 64,
+                "canary_validation_report_sha256": hashlib.sha256(
+                    authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
+                ).hexdigest(),
+                "default_authorization_design_approval_sha256": hashlib.sha256(
+                    authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
+                ).hexdigest(),
                 "reviewed_tree_sha256": str(
                     (payload or _manifest_payload())["reviewed_tree"]["sha256"]  # type: ignore[index]
                 ),
@@ -227,6 +233,28 @@ def test_packaged_default_authorization_requires_clean_canary() -> None:
     assert manifest.authorization_scope.default_authorized is True
     assert manifest.canary_evidence.status == "PASS_CLEAN"
     assert manifest.canary_evidence.cleanup_status == "PASS_COMPLETE"
+
+
+def test_packaged_default_evidence_matches_exact_reviewed_artifacts() -> None:
+    report_bytes = authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
+    approval_bytes = (
+        authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
+    )
+    report = json.loads(report_bytes)
+
+    assert hashlib.sha256(report_bytes).hexdigest() == (
+        "d8e90d7e487f9aa68e6b0f0a0f33882406095a6a918baf592f165c79ad6a3564"
+    )
+    assert report["integrity_signature"]["value"] == (
+        "ff7ae4a3c0d67d6460532c779796b6ec635da5a93a79d1ba21e391b250aa4a32"
+    )
+    assert hashlib.sha256(approval_bytes).hexdigest() == (
+        "183ed181a31e6943d81f172e18a8a8dbd5b1e3609208be31c51c2f356f0b24e2"
+    )
+    assert report["source_revision"] == "0d39d5752e1910215b9d23fa556d20046fd4b19d"
+    assert report["serving_revision"]["image_digest"] == (
+        "sha256:c9abb0bbf07b06b1de704e8c32ede5ff35d91a5e3b615142af341fed58fa3800"
+    )
 
 
 def test_packaged_pending_default_manifest_cannot_authorize(
@@ -300,6 +328,79 @@ def test_default_authorization_rejects_unreviewed_evidence(
     )
 
     with pytest.raises(CanaryAuthorizationError):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
+def test_default_rejects_manifest_and_terraform_digest_co_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    payload = json.loads(
+        authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    payload["canary_evidence"]["report_sha256"] = "c" * 64
+    manifest_path = tmp_path / "default-authorization.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8"))
+    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(
+        authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        manifest_path,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        manifest_sha256,
+    )
+
+    with pytest.raises(
+        CanaryAuthorizationError,
+        match="independent default authorization evidence",
+    ):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_revision", "c" * 40),
+        ("image_digest", f"sha256:{'c' * 64}"),
+    ),
+)
+def test_default_rejects_stale_canary_source_or_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    payload = json.loads(
+        authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    payload["canary_evidence"][field] = value
+    manifest_path = tmp_path / "default-authorization.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8"))
+    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(
+        authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        manifest_path,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        manifest_sha256,
+    )
+
+    with pytest.raises(
+        CanaryAuthorizationError,
+        match="independent default authorization evidence",
+    ):
         copilot_rollout_decision(stable_key="operator-a")
 
 
@@ -802,6 +903,24 @@ def test_default_authority_revalidates_request_boundary(
     assert decision.authorization_id == "p11-default-authorization-20260921"
 
 
+def test_default_accepts_equivalent_build_with_distinct_source_and_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    manifest = authorization.DefaultAuthorizationManifest.model_validate_json(
+        authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+
+    authority = authorization.validate_canary_authorization()
+
+    assert authority.mode == "default"
+    assert authority.reviewed_tree_sha256 == (
+        manifest.canary_evidence.reviewed_tree_sha256
+    )
+    assert authority.source_revision != manifest.canary_evidence.source_revision
+    assert "AIOPS_API_IMAGE_DIGEST" not in os.environ
+
+
 def test_default_authority_requires_exact_effective_percentage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -993,10 +1112,13 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         '"${requested_mode}" "${requested_percentage}" "${captured_api_image}"'
         in deploy_script
     )
-    assert deploy_script.count(
-        'restore_and_verify_api_compatibility "${captured_api_image}" '
-        '"${bound_args[@]}"'
-    ) == 3
+    assert (
+        deploy_script.count(
+            "restore_and_verify_api_compatibility \\\n"
+            '      "${captured_api_image}" "${bound_args[@]}"'
+        )
+        == 3
+    )
     assert (
         'environment.get("AIOPS_COPILOT_ROLLOUT_MODE", "")'
         in deploy_script
@@ -1045,6 +1167,18 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     ) in build_script
     assert 'local.copilot_default_authorization.status == "AUTHORIZED"' in terraform
     assert (
+        "local.copilot_default_design_approval_sha256 == "
+        "local.copilot_expected_default_design_approval_sha256"
+    ) in terraform
+    assert (
+        "local.copilot_default_authorization.canary_evidence.image_digest == "
+        "local.copilot_canary_validation_report.serving_revision.image_digest"
+    ) in terraform
+    assert (
+        "local.copilot_default_authorization.reviewed_tree.sha256 == "
+        "local.copilot_default_authorization.canary_evidence.reviewed_tree_sha256"
+    ) in terraform
+    assert (
         'local.copilot_default_authorization.authorization_scope.percentage == 100'
         in terraform
     )
@@ -1088,8 +1222,15 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         REVIEWED_TREE_EXCLUDED_PATHS,
     )
     assert '"src/operations/copilot_canary_authorization.v1.json"' in packaging
+    assert '"src/operations/copilot_canary_validation_report.v1.json"' in packaging
     assert '"src/operations/copilot_default_authorization.v1.json"' in packaging
+    assert (
+        '"src/operations/copilot_default_authorization_design_approval.v1.json"'
+        in packaging
+    )
     assert '"default_authorization_manifest_sha256"' in dockerfile
+    assert '"canary_validation_report_sha256"' in dockerfile
+    assert '"default_authorization_design_approval_sha256"' in dockerfile
     assert "copilot_default_authorization.v1.json" in build_script
 
 

@@ -163,8 +163,8 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8")
     )
     default_manifest_payload["status"] = "AUTHORIZED"
-    default_manifest_payload["canary_evidence"]["reviewed_tree_sha256"] = (  # type: ignore[index]
-        default_manifest_payload["reviewed_tree"]["sha256"]  # type: ignore[index]
+    default_manifest_payload["reviewed_tree"]["sha256"] = (  # type: ignore[index]
+        default_manifest_payload["canary_evidence"]["reviewed_tree_sha256"]  # type: ignore[index]
     )
     default_manifest_bytes = json.dumps(
         default_manifest_payload,
@@ -191,6 +191,12 @@ def install_valid_canary_evidence(monkeypatch) -> None:
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": manifest_sha256,
                 "default_authorization_manifest_sha256": default_manifest_sha256,
+                "canary_validation_report_sha256": hashlib.sha256(
+                    copilot_canary_authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
+                ).hexdigest(),
+                "default_authorization_design_approval_sha256": hashlib.sha256(
+                    copilot_canary_authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
+                ).hexdigest(),
                 "reviewed_tree_sha256": reviewed_tree_sha256,
             }
         ),
@@ -329,6 +335,38 @@ def enable_authorized_default(monkeypatch) -> None:
     """Activate full canonical rollout through the separate default authority."""
 
     install_valid_canary_evidence(monkeypatch)
+    default_payload = json.loads(
+        copilot_canary_authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(
+            encoding="utf-8"
+        )
+    )
+    default_reviewed_tree_sha256 = str(
+        default_payload["canary_evidence"]["reviewed_tree_sha256"]
+    )
+    metadata = json.loads(
+        copilot_canary_authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8")
+    )
+    metadata["reviewed_tree_sha256"] = default_reviewed_tree_sha256
+    copilot_canary_authorization.BUILD_METADATA_PATH.write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+
+    def read_default_reviewed_tree_digest(root, include_roots, exclude_paths):
+        assert root == REPO_ROOT
+        assert tuple(include_roots) == tuple(
+            default_payload["reviewed_tree"]["include_roots"]
+        )
+        assert tuple(exclude_paths) == tuple(
+            default_payload["reviewed_tree"]["exclude_paths"]
+        )
+        return default_reviewed_tree_sha256
+
+    monkeypatch.setattr(
+        copilot_canary_authorization,
+        "reviewed_tree_digest",
+        read_default_reviewed_tree_digest,
+    )
     monkeypatch.setenv(
         "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
         hashlib.sha256(

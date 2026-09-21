@@ -2,6 +2,7 @@
   "schema_version": "copilot-default-authorization.v1",
   "authorization_id": "p11-default-authorization-20260921",
   "status": "HOLD_PENDING_CANARY_REVALIDATION",
+  "design_approval_sha256": "183ed181a31e6943d81f172e18a8a8dbd5b1e3609208be31c51c2f356f0b24e2",
   "issued_at": "2026-09-21T01:25:00Z",
   "not_before": "2026-09-21T01:25:00Z",
   "expires_at": "2026-10-05T01:25:00Z",
@@ -38,9 +39,11 @@
     ],
     "exclude_paths": [
       "src/operations/copilot_canary_authorization.v1.json",
-      "src/operations/copilot_default_authorization.v1.json"
+      "src/operations/copilot_canary_validation_report.v1.json",
+      "src/operations/copilot_default_authorization.v1.json",
+      "src/operations/copilot_default_authorization_design_approval.v1.json"
     ],
-    "sha256": "c83ef9540b7405e8f3ad78890d0ed1ce0f69abacae6899783d0c15a6724ad1cc"
+    "sha256": "6362cfc1f8384823ad25d55478f88598731308bccc11a6a643eaa6716e27e55e"
   },
   "authorization_scope": {
     "allowed_modes": [

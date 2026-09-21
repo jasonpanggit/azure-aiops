@@ -38,9 +38,11 @@
     ],
     "exclude_paths": [
       "src/operations/copilot_canary_authorization.v1.json",
-      "src/operations/copilot_default_authorization.v1.json"
+      "src/operations/copilot_canary_validation_report.v1.json",
+      "src/operations/copilot_default_authorization.v1.json",
+      "src/operations/copilot_default_authorization_design_approval.v1.json"
     ],
-    "sha256": "c83ef9540b7405e8f3ad78890d0ed1ce0f69abacae6899783d0c15a6724ad1cc"
+    "sha256": "6362cfc1f8384823ad25d55478f88598731308bccc11a6a643eaa6716e27e55e"
   },
   "authorization_scope": {
     "allowed_modes": [

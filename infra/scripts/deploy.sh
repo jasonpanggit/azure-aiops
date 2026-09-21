@@ -106,6 +106,90 @@ command="${1:-plan}"
 shift || true
 api_authorization_release="${AIOPS_API_AUTHORIZATION_RELEASE:-0}"
 
+rollout_mode_from_file() {
+  local file="$1"
+  if [[ "${file}" == *.json ]]; then
+    python3 - "${file}" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as variables_file:
+    print(json.load(variables_file).get("copilot_rollout_mode", ""))
+PY
+    return
+  fi
+  awk -F'=' '/^[ \t]*copilot_rollout_mode[ \t]*=/ {
+    gsub(/[ \t"]/,"",$2); value=$2
+  } END { print value }' "${file}"
+}
+
+requested_copilot_rollout_mode() {
+  local args=("$@")
+  local mode="" candidate="" var_file="" i
+
+  if [[ -n "${TF_VAR_copilot_rollout_mode:-}" ]]; then
+    mode="${TF_VAR_copilot_rollout_mode}"
+  fi
+  if [[ -f "${tf_dir}/terraform.tfvars" ]]; then
+    candidate="$(rollout_mode_from_file "${tf_dir}/terraform.tfvars")"
+    [[ -z "${candidate}" ]] || mode="${candidate}"
+  fi
+  if [[ -f "${tf_dir}/terraform.tfvars.json" ]]; then
+    candidate="$(rollout_mode_from_file "${tf_dir}/terraform.tfvars.json")"
+    [[ -z "${candidate}" ]] || mode="${candidate}"
+  fi
+  while IFS= read -r var_file; do
+    candidate="$(rollout_mode_from_file "${var_file}")"
+    [[ -z "${candidate}" ]] || mode="${candidate}"
+  done < <(
+    find "${tf_dir}" -maxdepth 1 -type f \
+      \( -name '*.auto.tfvars' -o -name '*.auto.tfvars.json' \) | sort
+  )
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -var)
+        if [[ "${args[i + 1]:-}" == copilot_rollout_mode=* ]]; then
+          mode="${args[i + 1]#copilot_rollout_mode=}"
+        fi
+        i=$((i + 1))
+        ;;
+      -var=copilot_rollout_mode=*)
+        mode="${args[i]#-var=copilot_rollout_mode=}"
+        ;;
+      -var-file|--var-file)
+        var_file="${args[i + 1]:-}"
+        i=$((i + 1))
+        ;;
+      -var-file=*|--var-file=*)
+        var_file="${args[i]#*=}"
+        ;;
+    esac
+    if [[ -n "${var_file}" ]]; then
+      if [[ "${var_file}" != /* ]]; then
+        var_file="${tf_dir}/${var_file}"
+      fi
+      if [[ -f "${var_file}" ]]; then
+        candidate="$(rollout_mode_from_file "${var_file}")"
+        [[ -z "${candidate}" ]] || mode="${candidate}"
+      fi
+      var_file=""
+    fi
+  done
+  printf '%s' "${mode}" | tr '[:upper:]' '[:lower:]'
+}
+
+requested_rollout_mode="$(requested_copilot_rollout_mode "$@")"
+while IFS= read -r terraform_args_name; do
+  if [[ "${!terraform_args_name:-}" == *"copilot_rollout_mode"* ]] ||
+    [[ "${!terraform_args_name:-}" == *"-var-file"* ]]; then
+    api_authorization_release=1
+  fi
+done < <(compgen -e | grep '^TF_CLI_ARGS' || true)
+if [[ "${requested_rollout_mode}" == "canary" ]] ||
+  [[ "${requested_rollout_mode}" == "default" ]]; then
+  api_authorization_release=1
+fi
+
 validate_api_authorization_environment() {
   local name
 
@@ -377,7 +461,8 @@ report_running_images() {
 validate_running_api_revision() {
   command -v az >/dev/null 2>&1 || return 1
   local expected_mode="$1" expected_percentage="$2" expected="${3:-}"
-  local rg app attempt actual_image="" actual_mode="" actual_percentage=""
+  local rg app attempt actual_revision="" actual_image="" actual_mode=""
+  local actual_percentage=""
   local authorization_manifest authorized_target authorized_subscription
   local authorized_rg authorized_app expected_resource_id actual_resource_id
   local normalized_arm_subscription normalized_authorized_subscription
@@ -447,10 +532,11 @@ PY
   fi
 
   for attempt in $(seq 1 20); do
+    actual_revision=""
     actual_image=""
     actual_mode=""
     actual_percentage=""
-    read -r actual_image actual_mode actual_percentage < <(
+    IFS=$'\t' read -r actual_revision actual_image actual_mode actual_percentage < <(
       az containerapp revision list --subscription "${ARM_SUBSCRIPTION_ID}" \
         --resource-group "${rg}" --name "${app}" --output json 2>/dev/null |
         python3 -c '
@@ -458,15 +544,13 @@ import json
 import sys
 
 revisions = json.load(sys.stdin)
-active = next(
-    (
-        revision
-        for revision in revisions
-        if revision.get("properties", {}).get("active")
-        and revision.get("properties", {}).get("healthState") == "Healthy"
-    ),
-    {},
-)
+active_revisions = [
+    revision
+    for revision in revisions
+    if revision.get("properties", {}).get("active")
+    and revision.get("properties", {}).get("healthState") == "Healthy"
+]
+active = active_revisions[0] if len(active_revisions) == 1 else {}
 container = (
     active.get("properties", {})
     .get("template", {})
@@ -477,6 +561,7 @@ environment = {
     for item in container.get("env", [])
 }
 print(
+    active.get("name", ""),
     container.get("image", ""),
     environment.get("AIOPS_COPILOT_ROLLOUT_MODE", ""),
     environment.get("AIOPS_COPILOT_CANARY_PERCENTAGE", ""),
@@ -484,32 +569,37 @@ print(
 )
 ' 2>/dev/null || true
     ) || true
-    if [[ "${actual_image}" == "${expected}" ]] &&
+    if [[ -n "${actual_revision}" ]] &&
+      [[ "${actual_image}" == "${expected}" ]] &&
       [[ "${actual_mode}" == "${expected_mode}" ]] &&
       [[ "${actual_percentage}" == "${expected_percentage}" ]]; then
       break
     fi
     sleep 15
   done
-  if [[ "${actual_image}" != "${expected}" ]] ||
+  if [[ -z "${actual_revision}" ]] ||
+    [[ "${actual_image}" != "${expected}" ]] ||
     [[ "${actual_mode}" != "${expected_mode}" ]] ||
     [[ "${actual_percentage}" != "${expected_percentage}" ]]; then
     echo "deploy: platform admission denied; active healthy API revision does not match ${expected}, mode ${expected_mode}, percentage ${expected_percentage}." >&2
     return 1
   fi
-  echo "deploy: platform admission confirmed active API image ${expected}, mode ${expected_mode}, percentage ${expected_percentage}."
+  echo "deploy: platform admission confirmed active immutable API revision ${actual_revision}, image ${expected}, mode ${expected_mode}, percentage ${expected_percentage}."
 }
 
 apply_api_authorization_release() {
   local args=("$@")
   local rollout_json requested_mode requested_percentage applied_api_image
   local captured_api_image captured_api_digest applied_api_digest
+  local requested_rollout_valid=0
   local bound_args=()
 
   echo "deploy: staging immutable API digest in compatibility mode (zero canonical canary)..."
   if ! apply_api_compatibility_hold "${args[@]}"; then
     echo "deploy: compatibility staging failed; restoring the compatibility hold." >&2
-    restore_and_verify_api_compatibility "" "${args[@]}" || true
+    if ! restore_and_verify_api_compatibility "" "${args[@]}"; then
+      return 1
+    fi
     return 1
   fi
   captured_api_image="$(terraform output -raw api_image 2>/dev/null || true)"
@@ -517,21 +607,29 @@ apply_api_authorization_release() {
   if [[ "${captured_api_image}" != *"@${captured_api_digest}" ]] ||
     [[ ! "${captured_api_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "deploy: compatibility staging did not expose an immutable API digest; holding compatibility." >&2
-    restore_and_verify_api_compatibility "" "${args[@]}" || true
+    if ! restore_and_verify_api_compatibility "" "${args[@]}"; then
+      return 1
+    fi
     return 1
   fi
   api_digest_args "${captured_api_digest}" "${args[@]}"
   bound_args=("${API_DIGEST_ARGS[@]}")
   if ! validate_running_api_revision compatibility 0 "${captured_api_image}"; then
     echo "deploy: staged digest validation failed; holding compatibility." >&2
-    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    if ! restore_and_verify_api_compatibility \
+      "${captured_api_image}" "${bound_args[@]}"; then
+      return 1
+    fi
     return 1
   fi
 
-  echo "deploy: staged digest ${captured_api_digest} admitted; applying the requested API canary..."
+  echo "deploy: staged digest ${captured_api_digest} admitted; applying the requested API rollout..."
   if ! terraform apply -input=false "${bound_args[@]}"; then
-    echo "deploy: canary apply failed; restoring compatibility hold." >&2
-    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    echo "deploy: authorized rollout apply failed; restoring compatibility hold." >&2
+    if ! restore_and_verify_api_compatibility \
+      "${captured_api_image}" "${bound_args[@]}"; then
+      return 1
+    fi
     return 1
   fi
 
@@ -549,14 +647,23 @@ apply_api_authorization_release() {
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("AIOPS_API_IMAGE_DIGEST", ""))' \
       <<<"${rollout_json}" 2>/dev/null || true
   )"
-  if [[ "${requested_mode}" != "canary" ]] ||
-    [[ ! "${requested_percentage}" =~ ^([1-9]|10)$ ]] ||
+  if [[ "${requested_mode}" == "canary" ]] &&
+    [[ "${requested_percentage}" =~ ^([1-9]|10)$ ]]; then
+    requested_rollout_valid=1
+  elif [[ "${requested_mode}" == "default" ]] &&
+    [[ "${requested_percentage}" == "100" ]]; then
+    requested_rollout_valid=1
+  fi
+  if [[ "${requested_rollout_valid}" != "1" ]] ||
     [[ "${applied_api_image}" != "${captured_api_image}" ]] ||
     [[ "${applied_api_digest}" != "${captured_api_digest}" ]] ||
     ! validate_running_api_revision \
       "${requested_mode}" "${requested_percentage}" "${captured_api_image}"; then
-    echo "deploy: canary activation validation failed; restoring compatibility hold." >&2
-    restore_and_verify_api_compatibility "${captured_api_image}" "${bound_args[@]}" || true
+    echo "deploy: authorized rollout validation failed; restoring compatibility hold." >&2
+    if ! restore_and_verify_api_compatibility \
+      "${captured_api_image}" "${bound_args[@]}"; then
+      return 1
+    fi
     return 1
   fi
 }
