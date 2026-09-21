@@ -755,7 +755,10 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "ARG AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256" not in dockerfile
     assert 'pathlib.Path("/app/build-metadata.json")' in dockerfile
     assert "operations.reviewed_tree" in dockerfile
-    assert "COPY arg.config.deploy.yaml fabric.config.deploy.yaml /app/" in dockerfile
+    assert "COPY arg.config.deploy.yaml /app/config.yaml" in dockerfile
+    assert "COPY fabric.config.deploy.yaml /app/fabric.config.yaml" in dockerfile
+    assert "AIOPS_ARG_CONFIG=/app/config.yaml" in dockerfile
+    assert "AIOPS_FABRIC_CONFIG=/app/fabric.config.yaml" in dockerfile
     assert dockerfile.index("COPY arg.config.deploy.yaml") < dockerfile.index(
         "python -m operations.reviewed_tree"
     )
@@ -897,8 +900,8 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "local.copilot_canary_authorization.candidate_binding.semantic_sha256"
         in terraform
     )
-    assert 'value = "/app/arg.config.deploy.yaml"' in terraform
-    assert 'value = "/app/fabric.config.deploy.yaml"' in terraform
+    assert 'value = "/app/config.yaml"' in terraform
+    assert 'value = "/app/fabric.config.yaml"' in terraform
     assert "arg.config.deploy.yaml" in REVIEWED_TREE_ROOTS
     assert "fabric.config.deploy.yaml" in REVIEWED_TREE_ROOTS
     required_skill = "skills/operational-context-graph/SKILL.md"

@@ -777,12 +777,12 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_ARG_CONFIG"
-        value = "/app/arg.config.deploy.yaml"
+        value = "/app/config.yaml"
       }
 
       env {
         name  = "AIOPS_FABRIC_CONFIG"
-        value = "/app/fabric.config.deploy.yaml"
+        value = "/app/fabric.config.yaml"
       }
 
       liveness_probe {
