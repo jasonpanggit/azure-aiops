@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -237,13 +237,19 @@ class SreAgentExecutionVerifier:
             )
         return value
 
-    def verify(self, execution_record: dict[str, Any]) -> dict[str, Any]:
-        """Map the documented thread status to the remediation outcome model."""
+    def _thread_id(self, execution_record: dict[str, Any]) -> tuple[str, str]:
+        """Return the validated persisted thread URL and its provider ID."""
         if str(execution_record.get("provider") or "") != SRE_AGENT_PROVIDER:
-            return {"verifiable": False, "reason": "not an SRE Agent execution"}
+            raise ExecutionVerificationUnavailable(
+                "The execution is not an Azure SRE Agent request.",
+                capability="sre_agent_thread_validation",
+            )
         thread_url = str(execution_record.get("provider_job_id") or "").strip()
         if not thread_url:
-            return {"verifiable": False, "reason": "no provider job id"}
+            raise ExecutionVerificationUnavailable(
+                "The Azure SRE Agent execution has no thread handle.",
+                capability="sre_agent_thread_validation",
+            )
         expected_prefix = f"{self._agent_endpoint}/api/v1/threads/"
         parsed_thread = urlsplit(thread_url)
         parsed_endpoint = urlsplit(self._agent_endpoint)
@@ -267,6 +273,170 @@ class SreAgentExecutionVerifier:
                 "The SRE Agent thread handle is outside the configured agent endpoint.",
                 capability="sre_agent_thread_validation",
             )
+        return thread_url, thread_id
+
+    @staticmethod
+    def _approval_rows(payload: object) -> list[object] | None:
+        """Normalize documented list responses and common collection envelopes."""
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for field in ("approvals", "items", "value"):
+                if set(payload) == {field} and isinstance(payload[field], list):
+                    return payload[field]
+        return None
+
+    @classmethod
+    def _pending_approval_ids(cls, payload: object) -> list[str]:
+        """Read only bounded provider-owned approval IDs from the pending list."""
+        rows = cls._approval_rows(payload)
+        if rows is None or not rows or len(rows) > 32:
+            return []
+        approval_ids: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                return []
+            raw_id = row.get("id", row.get("approvalId"))
+            approval_id = raw_id.strip() if isinstance(raw_id, str) else ""
+            status = str(row.get("status") or row.get("state") or "pending")
+            normalized_status = " ".join(status.casefold().split())
+            if (
+                not approval_id
+                or len(approval_id) > 256
+                or normalized_status
+                not in {
+                    "pending",
+                    "pending user input",
+                    "requested",
+                    "waiting for approval",
+                }
+            ):
+                return []
+            approval_ids.append(approval_id)
+        return approval_ids
+
+    def cancel(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+        """Reject every pending approval for the exact persisted SRE thread."""
+        _thread_url, thread_id = self._thread_id(execution_record)
+        current = self.verify(execution_record)
+        current_evidence = current.get("verification_evidence") or {}
+        if (
+            current.get("outcome") != "running"
+            or current.get("provider_active") is not True
+            or current_evidence.get("approval_pending") is not True
+            or current_evidence.get("provider_operation")
+        ):
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent did not confirm that this thread is awaiting "
+                "approval without a submitted patch operation.",
+                capability="sre_agent_approval_cancel",
+            )
+        access_token = self._token()
+        headers = {
+            "Authorization": "Bearer " + access_token,
+            "Content-Type": "application/json",
+        }
+        approvals_url = (
+            f"{self._agent_endpoint}/api/v1/approvals/{quote(thread_id, safe='')}"
+        )
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=False,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = client.get(
+                approvals_url,
+                headers=headers,
+                follow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ExecutionVerificationUnavailable(
+                    f"Azure SRE Agent approval lookup returned HTTP {response.status_code}.",
+                    capability="sre_agent_approval_cancel",
+                )
+            try:
+                pending_ids = self._pending_approval_ids(response.json())
+            except ValueError:
+                pending_ids = []
+            if not pending_ids:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent did not return a typed pending approval to cancel.",
+                    capability="sre_agent_approval_cancel",
+                )
+            for approval_id in pending_ids:
+                decision_url = (
+                    f"{approvals_url}/{quote(approval_id, safe='')}/decision"
+                )
+                response = client.post(
+                    decision_url,
+                    headers=headers,
+                    json={"decision": "reject"},
+                    follow_redirects=False,
+                )
+                if response.status_code not in {200, 202, 204}:
+                    raise ExecutionVerificationUnavailable(
+                        "Azure SRE Agent did not confirm the approval rejection "
+                        f"(HTTP {response.status_code}).",
+                        capability="sre_agent_approval_cancel",
+                    )
+            response = client.get(
+                approvals_url,
+                headers=headers,
+                follow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent could not confirm cancellation.",
+                    capability="sre_agent_approval_cancel",
+                )
+            try:
+                remaining = response.json()
+            except ValueError:
+                remaining = None
+            remaining_rows = self._approval_rows(remaining)
+            if remaining_rows != []:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent still reports an approvable action for this thread.",
+                    capability="sre_agent_approval_cancel",
+                )
+            terminal = self.verify(execution_record)
+            terminal_evidence = terminal.get("verification_evidence") or {}
+            if (
+                terminal.get("outcome") == "succeeded"
+                or terminal_evidence.get("provider_operation")
+            ):
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent reported patch submission while cancellation "
+                    "was being confirmed.",
+                    capability="sre_agent_approval_cancel",
+                )
+            return {
+                "cancelled": True,
+                "thread_id": thread_id,
+                "approval_ids": pending_ids,
+                "thread_state": terminal.get("verified_state") or "unknown",
+            }
+        except httpx.HTTPError:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent was unreachable while cancelling the pending approval.",
+                capability="sre_agent_approval_cancel",
+            ) from None
+        finally:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            if self._client is None:
+                client.close()
+
+    def verify(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+        """Map the documented thread status to the remediation outcome model."""
+        if str(execution_record.get("provider") or "") != SRE_AGENT_PROVIDER:
+            return {"verifiable": False, "reason": "not an SRE Agent execution"}
+        if not str(execution_record.get("provider_job_id") or "").strip():
+            return {"verifiable": False, "reason": "no provider job id"}
+        thread_url, _thread_id = self._thread_id(execution_record)
 
         access_token = self._token()
         headers = {"Authorization": "Bearer " + access_token}
@@ -342,6 +512,8 @@ class SreAgentExecutionVerifier:
             }
             if outcome == "running":
                 result["provider_active"] = True
+                if verified_state == "Pending Review":
+                    evidence["approval_pending"] = True
             if failure_details:
                 result["failure_details"] = failure_details
             return result
@@ -382,6 +554,7 @@ class SreAgentExecutionVerifier:
                 "verification_evidence": evidence,
             }
         if normalized == "pending user input":
+            evidence["approval_pending"] = True
             return {
                 "verifiable": True,
                 "outcome": "running",

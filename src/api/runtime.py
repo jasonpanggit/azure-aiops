@@ -4096,6 +4096,16 @@ class _RoutingExecutionVerifier:
             )
         return self._arm.verify(execution_record)
 
+    def cancel(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+        """Cancel only provider-owned SRE approvals; ARM writes stay immutable."""
+        provider = str(execution_record.get("provider") or "").strip()
+        if provider != "sre-agent" or self._sre_agent is None:
+            raise ExecutionVerificationUnavailable(
+                "This provider does not expose safe remediation cancellation.",
+                capability="provider_cancellation",
+            )
+        return self._sre_agent.cancel(execution_record)
+
 
 def _subscription_id_from_resource_id(resource_id: str) -> str:
     parts = [part for part in str(resource_id or "").strip("/").split("/") if part]

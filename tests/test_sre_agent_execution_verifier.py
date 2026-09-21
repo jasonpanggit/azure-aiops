@@ -131,6 +131,114 @@ def test_pending_user_input_remains_active_for_review_approval() -> None:
     assert result["outcome"] == "running"
     assert result["verified_state"] == "Pending Review"
     assert result["provider_active"] is True
+    assert result["verification_evidence"]["approval_pending"] is True
+
+
+def test_cancel_rejects_exact_pending_approvals_and_confirms_none_remain() -> None:
+    requests: list[httpx.Request] = []
+    approval_reads = 0
+    thread_reads = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal approval_reads, thread_reads
+        requests.append(request)
+        if request.url.path == "/api/v1/threads/thread-123":
+            thread_reads += 1
+            status = (
+                "Pending User Input"
+                if thread_reads == 1
+                else "failed_without_action"
+            )
+            return httpx.Response(200, json={"status": status}, request=request)
+        if request.method == "GET":
+            approval_reads += 1
+            payload = [{"id": "approval-1", "status": "Pending"}] if approval_reads == 1 else []
+            return httpx.Response(200, json=payload, request=request)
+        assert request.method == "POST"
+        assert request.content == b'{"decision":"reject"}'
+        return httpx.Response(204, request=request)
+
+    credential = _Credential()
+    verifier = SreAgentExecutionVerifier(
+        credential=credential,
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    result = verifier.cancel(_record())
+
+    assert result == {
+        "cancelled": True,
+        "thread_id": "thread-123",
+        "approval_ids": ["approval-1"],
+        "thread_state": "failed_without_action",
+    }
+    assert [request.method for request in requests] == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+    ]
+    assert requests[1].url.path == "/api/v1/approvals/thread-123"
+    assert requests[2].url.path == (
+        "/api/v1/approvals/thread-123/approval-1/decision"
+    )
+    assert credential.scopes == [
+        (SRE_AGENT_THREAD_SCOPE,),
+        (SRE_AGENT_THREAD_SCOPE,),
+        (SRE_AGENT_THREAD_SCOPE,),
+    ]
+
+
+def test_cancel_fails_closed_without_a_typed_pending_approval() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload: object = (
+            {"status": "Pending User Input"}
+            if request.url.path == "/api/v1/threads/thread-123"
+            else []
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ExecutionVerificationUnavailable) as excinfo:
+        verifier.cancel(_record())
+
+    assert excinfo.value.capability == "sre_agent_approval_cancel"
+
+
+def test_cancel_fails_closed_when_an_approval_remains_after_rejection() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/threads/thread-123":
+            return httpx.Response(
+                200,
+                json={"status": "Pending User Input"},
+                request=request,
+            )
+        if request.method == "POST":
+            return httpx.Response(204, request=request)
+        return httpx.Response(
+            200,
+            json=[{"id": "approval-1", "status": "Pending"}],
+            request=request,
+        )
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ExecutionVerificationUnavailable, match="still reports"):
+        verifier.cancel(_record())
 
 
 def test_complete_without_typed_write_submission_does_not_succeed() -> None:

@@ -2123,12 +2123,15 @@ function RecoveryControls({
     <div className="remediation-recovery">
       {execution.cancellable && !confirmCancel && (
         <button type="button" className="button" onClick={() => setConfirmCancel(true)}>
-          Cancel queued execution
+          Cancel request
         </button>
       )}
       {execution.cancellable && confirmCancel && (
         <div className="callout" role="alertdialog" aria-label="Confirm cancel">
-          <p>Cancel this queued execution before it reaches the provider?</p>
+          <p>
+            Cancel this request? A pending Azure SRE Agent approval will be rejected
+            before this attempt becomes retryable.
+          </p>
           <button
             type="button"
             className="button button-primary"
