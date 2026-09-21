@@ -1,7 +1,7 @@
 {
   "schema_version": "copilot-default-authorization.v1",
-  "authorization_id": "p11-default-authorization-source58a-20260921",
-  "status": "HOLD_PENDING_CANARY_REVALIDATION",
+  "authorization_id": "p11-default-authorization-source05065b82-20260921",
+  "status": "AUTHORIZED",
   "issued_at": "2026-09-21T01:25:00Z",
   "not_before": "2026-09-21T01:25:00Z",
   "expires_at": "2026-10-05T01:25:00Z",
@@ -11,7 +11,7 @@
   },
   "review_provenance": {
     "repository": "https://github.com/jasonpanggit/azure-aiops",
-    "evidence_commit": "58a545013d41f15eddbf97d6ad9d562b71a1bf27"
+    "evidence_commit": "05065b82d267a3ddac99a3cc07ade5d1e76a2565"
   },
   "reviewed_tree": {
     "algorithm": "sha256-path-length-content-v1",
@@ -96,14 +96,14 @@
   "canary_evidence": {
     "status": "PASS_CLEAN",
     "tested_percentage": 10,
-    "source_revision": "58a545013d41f15eddbf97d6ad9d562b71a1bf27",
-    "image_digest": "sha256:112e516b32a951618215d2bb9b2a85d856e9f4d247d1650686acefa6eb6f45de",
+    "source_revision": "05065b82d267a3ddac99a3cc07ade5d1e76a2565",
+    "image_digest": "sha256:ff2a434d69a77084893ff5f01e9ee0320f1b2d09d45aeeb3b2178db446313121",
     "reviewed_tree_sha256": "f15754d4ecee58c30b5e0c5bd1b617feae4b0d1d6f0e7f1c15a5199588ad7123",
     "cleanup_status": "PASS_COMPLETE"
   },
   "promotion_lineage": {
-    "base_source_revision": "58a545013d41f15eddbf97d6ad9d562b71a1bf27",
-    "base_image_digest": "sha256:112e516b32a951618215d2bb9b2a85d856e9f4d247d1650686acefa6eb6f45de",
+    "base_source_revision": "05065b82d267a3ddac99a3cc07ade5d1e76a2565",
+    "base_image_digest": "sha256:ff2a434d69a77084893ff5f01e9ee0320f1b2d09d45aeeb3b2178db446313121",
     "transformation_policy": "replace-default-authorization-and-bind-lineage-v1",
     "allowed_mutations": [
       "src/operations/copilot_default_authorization.v1.json",
@@ -113,7 +113,7 @@
     "equivalent_reviewed_tree_sha256": "f15754d4ecee58c30b5e0c5bd1b617feae4b0d1d6f0e7f1c15a5199588ad7123",
     "equivalence_proof": {
       "algorithm": "sha256-canonical-json-default-promotion-lineage-v1",
-      "sha256": "81204ca4e68724482e25faa4bf68beb408b6f5809a7477db63cca0aaa8c460ff"
+      "sha256": "a7ea44a08a5ed671b6d6561bd6e0053b3d5c2e1f5ea31835e47094ae7d76dad3"
     }
   }
 }

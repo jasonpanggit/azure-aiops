@@ -426,7 +426,7 @@ def test_separate_default_authorization_enables_every_principal(
         assert decision.shadow_enabled is False
         assert decision.canary_bucket is None
         assert decision.authorization_id == (
-            "p11-default-authorization-source58a-20260921"
+            "p11-default-authorization-source05065b82-20260921"
         )
 
 
