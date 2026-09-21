@@ -285,8 +285,18 @@ describe("KB detail", () => {
       ]),
     );
     expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(3);
-    expect(screen.getAllByText(/1 excluded/).length).toBeGreaterThanOrEqual(3);
-    expect(screen.getAllByText("AUM East connection unavailable").length).toBeGreaterThanOrEqual(3);
+    // Excluded counts/reasons come from each section's own contract now, not
+    // the shared overview — only "Affected assets" (findings) carries its
+    // own completeness with excluded connections in this fixture.
+    const affectedAssetsSection = screen.getByRole("region", { name: "Affected assets section" });
+    expect(within(affectedAssetsSection).getAllByText(/1 excluded/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      within(affectedAssetsSection).getByText("AUM East connection unavailable"),
+    ).toBeInTheDocument();
+    const associatedCvesSection = screen.getByRole("region", { name: "Associated CVEs section" });
+    expect(associatedCvesSection.querySelector(".source-section-coverage")?.textContent ?? "").not.toMatch(
+      /excluded/,
+    );
     expect(screen.getByText("2026-08-01")).toBeInTheDocument();
     expect(screen.getByText("73.0% EPSS")).toBeInTheDocument();
     expect(screen.getByText(/KEV listed · due 2026-08-22/)).toBeInTheDocument();

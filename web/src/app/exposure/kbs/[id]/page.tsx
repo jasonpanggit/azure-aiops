@@ -133,6 +133,12 @@ function presentSection<T>(
     expected:
       common.data?.contract.completeness.expected_connections ??
       common.metadata.expected,
+    // `total`/`excluded` must come from this section's own contract, not the
+    // shared KB-wide target-completeness overview (see the matching fix in
+    // exposure/cves/[id]/page.tsx).
+    total: section.metadata.total,
+    excluded: section.metadata.excluded,
+    excludedReasons: section.metadata.excludedReasons,
     loaded,
     observedAt:
       source?.source_at ??
