@@ -761,6 +761,9 @@ def test_empty_no_wait_submission_recovers_from_exact_patch_installation() -> No
     assert recovery["patch_installation"]["result_id"] == (
         "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
     )
+    assert recovery["patch_installation"]["assessment_activity_id"] == (
+        "08732f6d-c025-4ef7-9af0-eb59abaa3f1d"
+    )
     assert recovery["patch_installation"]["child_patch_ids"] == ["5122874"]
     assert credential.scopes == [
         (SRE_AGENT_THREAD_SCOPE,),

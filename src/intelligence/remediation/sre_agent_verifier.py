@@ -970,6 +970,7 @@ class SreAgentExecutionVerifier:
                 {
                     "parent_id": parent_id,
                     "result_id": _patch_installation_result_id(parent_id),
+                    "assessment_activity_id": _patch_installation_result_id(parent_id),
                     "status": status,
                     "start_time": start.isoformat(),
                     "last_modified": last_modified.isoformat() if last_modified else "",

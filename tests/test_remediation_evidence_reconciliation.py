@@ -365,6 +365,87 @@ def test_sre_reconciliation_accepts_evidence_after_terminal_completion():
     assert result["evidence_reconciliation"]["status"] == "reconciled_clean"
 
 
+def test_sre_recovered_patch_installation_accepts_same_activity_assessment():
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": "2026-09-04T12:01:00+00:00",
+            "target_observed": True,
+        }
+
+    service, store, execution_id = _succeeded_service(
+        refresher=refresher,
+        adapter=_SreOperationUrlAdapter(),
+    )
+    record = store.get(execution_id)
+    record["verification_evidence"] = {
+        "provider_operation": {"operation_id": "provider-operation-1"},
+        "patch_installation_recovery": {
+            "patch_installation": {
+                "result_id": "provider-operation-1",
+                "start_time": "2026-09-04T12:00:30+00:00",
+                "last_modified": "2026-09-04T12:01:00+00:00",
+                "child_patch_ids": ["1111111", "2222222"],
+            }
+        },
+    }
+    store.update(
+        execution_id,
+        actor="test",
+        verification_evidence=record["verification_evidence"],
+    )
+    service._now = lambda: NOW + timedelta(seconds=5)
+
+    result = service.reconcile_evidence(execution_id)
+
+    assert result["evidence_reconciliation"] == {
+        "status": "reconciled_clean",
+        "kbs_cleared": ["1111111", "2222222"],
+        "kbs_remaining": [],
+        "assessed_at": "2026-09-04T12:01:00+00:00",
+    }
+
+
+def test_sre_recovered_patch_installation_rejects_pre_install_assessment():
+    def refresher(subscription_id, target_id):
+        return {
+            "missing_kbs": [],
+            "assessed_at": "2026-09-04T12:00:59+00:00",
+            "target_observed": True,
+        }
+
+    service, store, execution_id = _succeeded_service(
+        refresher=refresher,
+        adapter=_SreOperationUrlAdapter(),
+    )
+    record = store.get(execution_id)
+    record["verification_evidence"] = {
+        "provider_operation": {"operation_id": "provider-operation-1"},
+        "patch_installation_recovery": {
+            "patch_installation": {
+                "result_id": "provider-operation-1",
+                "start_time": "2026-09-04T12:00:30+00:00",
+                "last_modified": "2026-09-04T12:01:00+00:00",
+                "child_patch_ids": ["1111111", "2222222"],
+            }
+        },
+    }
+    store.update(
+        execution_id,
+        actor="test",
+        verification_evidence=record["verification_evidence"],
+    )
+    service._now = lambda: NOW + timedelta(seconds=5)
+
+    result = service.reconcile_evidence(execution_id)
+
+    assert result["evidence_reconciliation"]["status"] == "pending"
+    assert result["evidence_reconciliation"]["kbs_remaining"] == [
+        "1111111",
+        "2222222",
+    ]
+
+
 def test_non_sre_reconciliation_preserves_existing_timestamp_semantics():
     def refresher(subscription_id, target_id):
         return {
