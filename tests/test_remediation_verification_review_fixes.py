@@ -113,6 +113,7 @@ def _approve(repository: PlanRepository, plan: dict) -> None:
         "target_kind": "Azure VM",
         "operation": "install_patches",
         "action_version": plan["action_version"],
+        "subscription_id": "sub-1",
     }
     snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     repository.decisions.append(
@@ -135,6 +136,8 @@ def _execution_snapshot(plan: dict) -> dict:
         "target_kind": "Azure VM",
         "operation": "install_patches",
         "action_version": plan["action_version"],
+        "subscription_id": "sub-1",
+        "approver": "approver@example.com",
     }
     snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     return snapshot

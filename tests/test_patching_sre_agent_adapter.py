@@ -78,6 +78,8 @@ def _run(**overrides: object) -> PatchRun:
         "target_kind": target_kind,
         "operation": operation,
         "action_version": "action-version-1",
+        "subscription_id": SUBSCRIPTION_ID,
+        "approver": "approver@example.com",
     }
     snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
     values = {
@@ -181,6 +183,48 @@ def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
     }
 
 
+def test_approval_projection_fields_do_not_change_snapshot_hash_identity() -> None:
+    snapshot = copy.deepcopy(_run().details["approval_context"]["execution_snapshot"])
+    snapshot_without_projection = {
+        key: value
+        for key, value in snapshot.items()
+        if key not in {"subscription_id", "approver", "snapshot_hash"}
+    }
+
+    assert execution_snapshot_hash(snapshot) == execution_snapshot_hash(
+        snapshot_without_projection
+    )
+    assert sre_adapter._approved_snapshot_hash(snapshot) == snapshot["snapshot_hash"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("subscription_id", "00000000-0000-0000-0000-000000000002"),
+        ("approver", "different-approver@example.com"),
+    ],
+)
+def test_approval_projection_must_match_top_level_envelope_before_http(
+    field: str,
+    value: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    run = _run()
+    run.details["approval_context"]["execution_snapshot"][field] = value
+    adapter, credential = _adapter(
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(202, json={"success": True, "threadId": "unused"})
+        )
+    )
+
+    with pytest.raises(PatchExecutionUnavailable, match="locked contract"):
+        adapter.submit(run, _target())
+
+    assert requests == []
+    assert credential.scopes == []
+
+
 def test_submit_rejects_real_payload_builder_drift_before_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,6 +274,9 @@ def test_operator_identity_is_audit_data_and_never_used_as_bearer_token() -> Non
         approved_by="approver-token-value",
     )
     run.details["approval_context"]["approved_by"] = "approver-token-value"
+    run.details["approval_context"]["execution_snapshot"]["approver"] = (
+        "approver-token-value"
+    )
     adapter.submit(run, _target())
 
     authorization = requests[0].headers["Authorization"]
