@@ -29,10 +29,11 @@ def _plan() -> dict:
     }
 
 
-def _target(*patch_ids: str) -> PatchTarget:
+def _target(*patch_ids: str, subscription_id: str = "sub-1") -> PatchTarget:
     return PatchTarget(
         target_id=TARGET_ID,
         inventory_kind="Azure VM",
+        subscription_id=subscription_id,
         available_patches=tuple(
             AvailablePatch(patch_id=patch_id) for patch_id in patch_ids
         ),
@@ -63,6 +64,7 @@ def test_candidate_snapshot_is_server_derived_sorted_versioned_and_hashed() -> N
         "target_kind": "Azure VM",
         "operation": "install_patches",
         "action_version": "action-v1",
+        "subscription_id": "sub-1",
         "available_patches": [
             AvailablePatch(patch_id="KB600001").to_dict(),
             AvailablePatch(patch_id="KB600002").to_dict(),
@@ -70,6 +72,11 @@ def test_candidate_snapshot_is_server_derived_sorted_versioned_and_hashed() -> N
         "snapshot_hash": execution_snapshot_hash(snapshot),
     }
     assert service.scopes == [scope]
+    # Adding subscription_id must never change the hash: existing pending
+    # approvals recorded before this fix must still revalidate as current.
+    assert execution_snapshot_hash(snapshot) == execution_snapshot_hash(
+        {**snapshot, "subscription_id": ""}
+    )
 
 
 def test_selected_patch_ids_narrows_snapshot_to_operator_chosen_subset() -> None:
@@ -143,6 +150,50 @@ def test_approved_decision_persists_an_immutable_execution_snapshot() -> None:
     assert store.list("RMP-0001")[0]["execution_snapshot"]["patch_ids"] == [
         "KB600001"
     ]
+
+
+def test_candidate_snapshot_carries_subscription_id_for_provider_equality_checks() -> None:
+    """Regression: the SRE Agent's read skill rejects a submitted approval
+    snapshot that lacks ``subscription_id``/``approver`` with
+    ``blocked_no_action`` ("immutable approval snapshot lacks required
+    subscription and approver fields for equality validation"). The target
+    already carries ``subscription_id`` (Azure Update Manager / ARG
+    acquisition); the snapshot must project it so the downstream provider
+    never has to re-derive or trust an un-pinned identity field.
+    """
+    service = _PatchingService(_target("KB600001", subscription_id="sub-prod-1"))
+
+    snapshot = build_execution_snapshot(_plan(), service, scope=object())
+
+    assert snapshot["subscription_id"] == "sub-prod-1"
+
+
+def test_approved_decision_snapshot_carries_the_recorded_approver() -> None:
+    """Regression: the persisted (execution-bound) snapshot must self-attest
+    who approved it -- the same identity dispatched to Azure/the SRE Agent
+    for its own equality validation -- not only the decision record's own
+    top-level ``approver`` field, which the provider never reads.
+    """
+    store = RemediationDecisionStore()
+    snapshot = build_execution_snapshot(
+        _plan(), _PatchingService(_target("KB600001", subscription_id="sub-prod-1"))
+    )
+
+    record = store.append(
+        plan=_plan(),
+        decision="approved",
+        approver="approver@example.com",
+        reason="Approved exact preview",
+        scope={},
+        action_version="action-v1",
+        execution_snapshot=snapshot,
+    )
+
+    assert record["execution_snapshot"]["approver"] == "approver@example.com"
+    assert record["execution_snapshot"]["subscription_id"] == "sub-prod-1"
+    # The approver merge must never change the hash SRE / execute-time
+    # revalidation checks -- it's an additive, non-security-boundary field.
+    assert record["execution_snapshot"]["snapshot_hash"] == snapshot["snapshot_hash"]
 
 
 def test_non_approved_decision_never_persists_an_execution_snapshot() -> None:
