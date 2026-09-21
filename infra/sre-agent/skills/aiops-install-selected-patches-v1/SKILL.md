@@ -82,8 +82,13 @@ exactly schema `1.0`, a nonempty provider `operation_id`, status `submitted`,
 operation `install_patches`, the immutable `target_id`, and the exact ordered
 `patch_ids`. No additional field is allowed. On refusal or validation failure,
 return terminal `failed_without_action` and never fabricate
-`provider_operation`. If write submission may have crossed the provider
-boundary but cannot be proven, return `submission_ambiguous` without retry.
-Tool acceptance, thread completion, and model prose never prove patch success.
-Provider completion never substitutes for refreshed selected-KB
-reconciliation.
+`provider_operation`. If a successful `--no-wait` write command returns empty
+output and no typed provider operation, return `submission_ambiguous` without
+retry; the dispatching runtime may recover submission proof only from its own
+read-only, bounded Azure Activity Log query requiring the exact immutable
+target, exact installPatches operation type, the write-attempt time window,
+exactly one accepted/succeeded correlation ID, and no competing match.
+Missing, multiple, failed, wrong-target, wrong-operation, or out-of-window
+Activity Log evidence remains `submission_ambiguous`. Tool acceptance, thread
+completion, Activity Log recovery, and model prose never prove patch success.
+Provider completion never substitutes for refreshed selected-KB reconciliation.

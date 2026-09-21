@@ -295,5 +295,5 @@ def test_canonical_trigger_skill_drift_fails_before_offline_side_effects(
         ),
     )
 
-    with pytest.raises(preflight.ReadinessError, match="skills"):
+    with pytest.raises(preflight.ReadinessError, match="hash drift|skills"):
         preflight.canonical_trigger_body(drifted)

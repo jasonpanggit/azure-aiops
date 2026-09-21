@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
 
-from operations.patching.azure_adapter import TokenCredential
-from operations.patching.models import OPERATION_INSTALL_PATCHES
+from operations.patching.azure_adapter import ARM_ENDPOINT, ARM_SCOPE, TokenCredential
+from operations.patching.models import (
+    OPERATION_INSTALL_PATCHES,
+    TARGET_KIND_ARC_SERVER,
+    TARGET_KIND_AZURE_VM,
+)
 from operations.patching.sre_agent_adapter import (
     SRE_AGENT_PROVIDER,
     SRE_AGENT_THREAD_SCOPE,
@@ -57,6 +62,11 @@ _TERMINAL_SUCCEEDED_INCIDENT_STATUSES = frozenset(
         "resolved",
     }
 )
+
+_ACTIVITY_LOG_API_VERSION = "2015-04-01"
+_ACTIVITY_LOG_ACCEPTED_STATUSES = frozenset({"accepted", "succeeded", "success"})
+_ACTIVITY_LOG_QUERY_LOOKBACK = timedelta(minutes=2)
+_ACTIVITY_LOG_QUERY_LOOKAHEAD = timedelta(minutes=5)
 
 
 def _expected_review_command(execution_record: dict[str, Any]) -> str:
@@ -163,6 +173,61 @@ def _pending_cli_execution(
         "status": status,
         "command": expected_command,
         "required_scopes": required_scopes,
+    }
+
+
+def _completed_write_execution(
+    payload: dict[str, Any],
+    execution_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Project an exact completed write-tool call without treating it as proof."""
+    last_message = payload.get("lastMessage")
+    if not isinstance(last_message, dict):
+        return None
+    execution = last_message.get("azCliExecution")
+    expected_command = _expected_review_command(execution_record)
+    if not isinstance(execution, dict) or not expected_command:
+        return None
+    execution_id = execution.get("id")
+    command = execution.get("command")
+    status = " ".join(str(execution.get("status") or "").casefold().split())
+    if (
+        status not in {"completed", "complete", "succeeded", "success"}
+        or not isinstance(execution_id, str)
+        or not execution_id.strip()
+        or len(execution_id) > 256
+        or command != expected_command
+        or execution.get("expiredByTimeout") is not False
+        or execution.get("error") not in {None, ""}
+    ):
+        return None
+    original_call = execution.get("originalFunctionCall")
+    if not isinstance(original_call, str) or len(original_call) > 16_384:
+        return None
+    try:
+        parsed_call = json.loads(original_call)
+    except ValueError:
+        return None
+    if (
+        not isinstance(parsed_call, dict)
+        or parsed_call.get("Name") != "RunAzCliWriteCommands"
+        or parsed_call.get("Arguments") != {"command": expected_command}
+        or parsed_call.get("InformationalOnly") is not False
+    ):
+        return None
+    started_at = _parse_timestamp(execution.get("startedTimestamp"))
+    completed_at = _parse_timestamp(execution.get("completedTimestamp"))
+    if started_at is None:
+        return None
+    if completed_at is not None and completed_at < started_at:
+        return None
+    return {
+        "kind": "az_cli_execution",
+        "execution_id": execution_id.strip(),
+        "status": status,
+        "command": expected_command,
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat() if completed_at else "",
     }
 
 
@@ -323,6 +388,106 @@ def _submitted_operation(
     }
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _activity_log_operation_name(execution_record: dict[str, Any]) -> str:
+    snapshot = execution_record.get("execution_snapshot")
+    if not isinstance(snapshot, dict):
+        return ""
+    if snapshot.get("operation") != OPERATION_INSTALL_PATCHES:
+        return ""
+    if snapshot.get("target_kind") == TARGET_KIND_AZURE_VM:
+        return "Microsoft.Compute/virtualMachines/installPatches/action"
+    if snapshot.get("target_kind") == TARGET_KIND_ARC_SERVER:
+        return "Microsoft.HybridCompute/machines/installPatches/action"
+    return ""
+
+
+def _resource_id_equal(left: Any, right: Any) -> bool:
+    left_text = str(left or "").strip().rstrip("/").casefold()
+    right_text = str(right or "").strip().rstrip("/").casefold()
+    return bool(left_text and left_text == right_text)
+
+
+def _subscription_id(execution_record: dict[str, Any]) -> str:
+    scope = execution_record.get("scope_attributes")
+    if isinstance(scope, dict):
+        value = str(scope.get("subscription") or "").strip()
+        if value:
+            return value
+    snapshot = execution_record.get("execution_snapshot")
+    target_id = str(
+        snapshot.get("target_id") if isinstance(snapshot, dict) else ""
+    ).strip()
+    parts = [part for part in target_id.split("/") if part]
+    for index, part in enumerate(parts):
+        if part.casefold() == "subscriptions" and index + 1 < len(parts):
+            return parts[index + 1]
+    return ""
+
+
+def _activity_log_rows(payload: object) -> list[object] | None:
+    if isinstance(payload, dict) and set(payload).issubset({"value", "nextLink"}):
+        rows = payload.get("value")
+        if isinstance(rows, list):
+            return rows
+    return None
+
+
+def _activity_log_event_time(row: dict[str, Any]) -> datetime | None:
+    return _parse_timestamp(
+        row.get("eventTimestamp")
+        or row.get("eventSubmissionTimestamp")
+        or row.get("submissionTimestamp")
+    )
+
+
+def _activity_log_field(row: dict[str, Any], name: str) -> str:
+    value = row.get(name)
+    if isinstance(value, dict):
+        value = value.get("value") or value.get("localizedValue")
+    return str(value or "").strip()
+
+
+def _latest_attempt_timestamp(execution_record: dict[str, Any]) -> datetime | None:
+    attempts = execution_record.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return _parse_timestamp(execution_record.get("created_at"))
+    latest = attempts[-1]
+    if not isinstance(latest, dict):
+        return _parse_timestamp(execution_record.get("created_at"))
+    transitions = latest.get("transitions")
+    candidates: list[datetime] = []
+    if isinstance(transitions, list):
+        for transition in transitions:
+            if not isinstance(transition, dict):
+                continue
+            status = str(transition.get("status") or "").casefold()
+            if status not in {"running", "retrying"}:
+                continue
+            parsed = _parse_timestamp(transition.get("timestamp"))
+            if parsed is not None:
+                candidates.append(parsed)
+    if candidates:
+        return max(candidates)
+    return _parse_timestamp(latest.get("created_at")) or _parse_timestamp(
+        execution_record.get("created_at")
+    )
+
+
 def _completion_without_submission(
     *,
     verified_state: str,
@@ -361,16 +526,24 @@ class SreAgentExecutionVerifier:
         credential: TokenCredential,
         agent_endpoint: str,
         thread_scope: str = SRE_AGENT_THREAD_SCOPE,
+        arm_scope: str = ARM_SCOPE,
+        arm_endpoint: str = ARM_ENDPOINT,
         client: httpx.Client | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._credential = credential
         self._agent_endpoint = self._validate_endpoint(agent_endpoint)
         self._thread_scope = str(thread_scope or "").strip()
+        self._arm_scope = str(arm_scope or "").strip()
+        self._arm_endpoint = str(arm_endpoint or "").rstrip("/")
         self._client = client
         self._timeout = timeout
         if not self._thread_scope:
             raise ValueError("A configured SRE Agent thread token scope is required.")
+        if not self._arm_scope:
+            raise ValueError("A configured Azure ARM token scope is required.")
+        if urlsplit(self._arm_endpoint).scheme != "https":
+            raise ValueError("Azure ARM endpoint must be HTTPS.")
 
     @staticmethod
     def _validate_endpoint(endpoint: str) -> str:
@@ -389,6 +562,22 @@ class SreAgentExecutionVerifier:
             raise ExecutionVerificationUnavailable(
                 "Azure credential returned an empty SRE Agent data-plane token.",
                 capability="sre_agent_token",
+            )
+        return value
+
+    def _arm_token(self) -> str:
+        try:
+            token = self._credential.get_token(self._arm_scope)
+        except Exception as exc:
+            raise ExecutionVerificationUnavailable(
+                "Could not acquire an Azure management token.",
+                capability="sre_agent_activity_log_token",
+            ) from exc
+        value = str(getattr(token, "token", "") or "")
+        if not value:
+            raise ExecutionVerificationUnavailable(
+                "Azure credential returned an empty management token.",
+                capability="sre_agent_activity_log_token",
             )
         return value
 
@@ -469,6 +658,133 @@ class SreAgentExecutionVerifier:
                 return []
             approval_ids.append(approval_id)
         return approval_ids
+
+    def _recover_provider_operation_from_activity_log(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        completed_write: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        snapshot = execution_record.get("execution_snapshot")
+        if not isinstance(snapshot, dict):
+            return None
+        target_id = str(snapshot.get("target_id") or "").strip()
+        operation_name = _activity_log_operation_name(execution_record)
+        subscription_id = _subscription_id(execution_record)
+        attempt_time = (
+            _parse_timestamp(completed_write.get("started_at"))
+            if isinstance(completed_write, dict)
+            else None
+        )
+        if attempt_time is None:
+            attempt_time = _latest_attempt_timestamp(execution_record)
+        if not target_id or not operation_name or not subscription_id or attempt_time is None:
+            return None
+
+        start_time = attempt_time - _ACTIVITY_LOG_QUERY_LOOKBACK
+        end_time = attempt_time + _ACTIVITY_LOG_QUERY_LOOKAHEAD
+        filter_text = (
+            f"eventTimestamp ge '{start_time.isoformat().replace('+00:00', 'Z')}' "
+            f"and eventTimestamp le '{end_time.isoformat().replace('+00:00', 'Z')}' "
+            f"and resourceUri eq '{target_id}'"
+        )
+        activity_url = (
+            f"{self._arm_endpoint}/subscriptions/{quote(subscription_id, safe='')}"
+            "/providers/microsoft.insights/eventtypes/management/values"
+        )
+        access_token = self._arm_token()
+        headers = {"Authorization": "Bearer " + access_token}
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=False,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = client.get(
+                activity_url,
+                headers=headers,
+                params={
+                    "api-version": _ACTIVITY_LOG_API_VERSION,
+                    "$filter": filter_text,
+                },
+                follow_redirects=False,
+            )
+        except httpx.HTTPError:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            return None
+        finally:
+            if self._client is None:
+                client.close()
+        if response.status_code != 200:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            return None
+        try:
+            rows = _activity_log_rows(response.json())
+        except ValueError:
+            rows = None
+        _scrub_authorization(response, headers)
+        access_token = ""
+        if rows is None or not 1 <= len(rows) <= 256:
+            return None
+
+        matches: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            event_time = _activity_log_event_time(row)
+            resource_id = _activity_log_field(row, "resourceId") or _activity_log_field(
+                row, "resourceUri"
+            )
+            row_operation = _activity_log_field(row, "operationName")
+            status = _activity_log_field(row, "status").casefold()
+            correlation_id = str(row.get("correlationId") or "").strip()
+            operation_id = (
+                str(row.get("operationId") or row.get("eventDataId") or "").strip()
+            )
+            if (
+                event_time is not None
+                and start_time <= event_time <= end_time
+                and _resource_id_equal(resource_id, target_id)
+                and row_operation.casefold() == operation_name.casefold()
+                and status in _ACTIVITY_LOG_ACCEPTED_STATUSES
+                and correlation_id
+            ):
+                matches.append(
+                    {
+                        "event_time": event_time,
+                        "operation_id": operation_id or correlation_id,
+                        "correlation_id": correlation_id,
+                        "status": status,
+                    }
+                )
+        correlation_ids = {match["correlation_id"] for match in matches}
+        if len(matches) != 1 or len(correlation_ids) != 1:
+            return None
+        match = matches[0]
+        provider_operation = {
+            "schema_version": SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION,
+            "operation_id": match["operation_id"],
+            "status": "submitted",
+            "skill_name": SRE_PATCH_WRITE_SKILL_NAME,
+            "skill_version": SRE_PATCH_WRITE_SKILL_VERSION,
+            "operation": OPERATION_INSTALL_PATCHES,
+            "target_id": target_id,
+            "patch_ids": list(snapshot.get("patch_ids") or []),
+        }
+        activity_log_recovery = {
+            "source": "azure_activity_log",
+            "correlation_id": match["correlation_id"],
+            "operation_id": match["operation_id"],
+            "operation_name": operation_name,
+            "target_id": target_id,
+            "status": match["status"],
+            "event_time": match["event_time"].isoformat(),
+            "query_start": start_time.isoformat(),
+            "query_end": end_time.isoformat(),
+        }
+        return provider_operation, activity_log_recovery
 
     def cancel(
         self,
@@ -849,6 +1165,11 @@ class SreAgentExecutionVerifier:
             if isinstance(payload, dict)
             else None
         )
+        completed_write = (
+            _completed_write_execution(payload, execution_record)
+            if isinstance(payload, dict)
+            else None
+        )
         evidence = {"thread_status": composite or raw_status or "unknown"}
         if pending_question is not None:
             evidence["approval_pending"] = True
@@ -858,6 +1179,8 @@ class SreAgentExecutionVerifier:
             evidence["provider_review"] = pending_cli_execution
         if submitted_operation is not None:
             evidence["provider_operation"] = submitted_operation
+        if completed_write is not None:
+            evidence["completed_write_execution"] = completed_write
         if composite is not None:
             outcome, verified_state, failure_details = _composite_outcome(
                 composite,
@@ -868,10 +1191,18 @@ class SreAgentExecutionVerifier:
             ):
                 verified_state = "Pending Review"
             if outcome == "succeeded" and submitted_operation is None:
-                return _completion_without_submission(
-                    verified_state="CompleteWithoutSubmissionProof",
-                    evidence=evidence,
+                recovered = self._recover_provider_operation_from_activity_log(
+                    execution_record,
+                    completed_write=completed_write,
                 )
+                if recovered is None:
+                    return _completion_without_submission(
+                        verified_state="CompleteWithoutSubmissionProof",
+                        evidence=evidence,
+                    )
+                provider_operation, activity_log_recovery = recovered
+                evidence["provider_operation"] = provider_operation
+                evidence["activity_log_recovery"] = activity_log_recovery
             result = {
                 "verifiable": True,
                 "outcome": outcome,
@@ -887,10 +1218,18 @@ class SreAgentExecutionVerifier:
             return result
         if normalized in {"complete", "success", "succeeded"}:
             if submitted_operation is None:
-                return _completion_without_submission(
-                    verified_state=raw_status,
-                    evidence=evidence,
+                recovered = self._recover_provider_operation_from_activity_log(
+                    execution_record,
+                    completed_write=completed_write,
                 )
+                if recovered is None:
+                    return _completion_without_submission(
+                        verified_state=raw_status,
+                        evidence=evidence,
+                    )
+                submitted_operation, activity_log_recovery = recovered
+                evidence["provider_operation"] = submitted_operation
+                evidence["activity_log_recovery"] = activity_log_recovery
             return {
                 "verifiable": True,
                 "outcome": "succeeded",
@@ -910,6 +1249,20 @@ class SreAgentExecutionVerifier:
                 "verification_evidence": evidence,
             }
         if normalized == "submission_ambiguous":
+            recovered = self._recover_provider_operation_from_activity_log(
+                execution_record,
+                completed_write=completed_write,
+            )
+            if recovered is not None:
+                provider_operation, activity_log_recovery = recovered
+                evidence["provider_operation"] = provider_operation
+                evidence["activity_log_recovery"] = activity_log_recovery
+                return {
+                    "verifiable": True,
+                    "outcome": "succeeded",
+                    "verified_state": "RecoveredFromActivityLog",
+                    "verification_evidence": evidence,
+                }
             return {
                 "verifiable": True,
                 "outcome": "failed",
