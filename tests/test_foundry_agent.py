@@ -4,6 +4,7 @@ import time
 import pytest
 
 from operations.foundry_agent import (
+    MAX_CONTEXT_CHARS,
     SPECIALIST_IDS,
     AgentAnswer,
     FoundryAgentError,
@@ -11,6 +12,7 @@ from operations.foundry_agent import (
     FoundryCoordinatorSynthesisAgent,
     FoundryPromptAgent,
     MicrosoftAgentFrameworkFoundryAgent,
+    _serialize_bounded_context,
     normalize_cited_findings,
     select_foundry_agent_class,
     specialist_catalog,
@@ -513,6 +515,82 @@ def test_large_executive_context_is_transmitted_as_bounded_valid_json() -> None:
     } <= {
         item["evidence_id"] for item in context["retained_evidence"]
     }
+
+
+def test_oversized_first_fact_retains_summary_and_later_facts() -> None:
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="vulnerability-agent",
+        specialist_id="vulnerability",
+    )
+    context = {
+        "facts": [
+            {
+                "tool": "cve_exposure",
+                "status": "ok",
+                "data": {
+                    "total_count": 8_508,
+                    "returned_count": 25,
+                    "items": [
+                        {"id": index, "detail": "x" * 2_000}
+                        for index in range(25)
+                    ],
+                },
+                "warning": "",
+            },
+            {
+                "tool": "inventory_resources",
+                "status": "ok",
+                "data": {"total": 2},
+                "warning": "",
+            },
+        ]
+    }
+
+    prompt = agent.build_prompt("Which servers are vulnerable?", context)
+    serialized = prompt.split("PAGE CONTEXT (JSON):\n", 1)[1]
+    transmitted = json.loads(serialized)
+
+    assert len(serialized) <= MAX_CONTEXT_CHARS
+    assert [fact["tool"] for fact in transmitted["facts"]] == [
+        "cve_exposure",
+        "inventory_resources",
+    ]
+    assert transmitted["facts"][0]["status"] == "ok"
+    assert transmitted["facts"][0]["data"]["total_count"] == 8_508
+    assert transmitted["facts"][0]["data"]["returned_count"] == 25
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_context_size_boundary_preserves_fact_identity(offset: int) -> None:
+    context = {
+        "facts": [
+            {
+                "tool": "cve_exposure",
+                "status": "ok",
+                "data": {"total_count": 8_508, "detail": ""},
+                "warning": "",
+            }
+        ]
+    }
+    baseline = len(json.dumps(context, ensure_ascii=False))
+    context["facts"][0]["data"]["detail"] = "x" * (
+        MAX_CONTEXT_CHARS + offset - baseline
+    )
+    assert len(json.dumps(context, ensure_ascii=False)) == (
+        MAX_CONTEXT_CHARS + offset
+    )
+
+    transmitted = json.loads(_serialize_bounded_context(context))
+
+    assert len(json.dumps(transmitted, ensure_ascii=False)) <= MAX_CONTEXT_CHARS
+    assert transmitted["facts"][0]["tool"] == "cve_exposure"
+    assert transmitted["facts"][0]["data"]["total_count"] == 8_508
+    if offset <= 0:
+        assert transmitted == context
+    else:
+        assert transmitted["_truncation"] == "(truncated)"
+        assert transmitted["facts"][0]["data"]["detail"].endswith("…(truncated)")
 
 
 def test_many_list_valued_context_keys_remain_within_prompt_limit() -> None:

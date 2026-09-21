@@ -41,7 +41,7 @@
       "src/operations/copilot_canary_authorization.v1.json",
       "src/operations/copilot_default_authorization.v1.json"
     ],
-    "sha256": "d0aa33e0db33c13faa6ee918fbc9180bdcb524295861ab5baaacbaa2d8d8db7c"
+    "sha256": "fde07c01600e575edce6523f0d4169b139204db690bad5e8d5c22c04bfac0c57"
   },
   "authorization_scope": {
     "allowed_modes": [
