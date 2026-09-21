@@ -529,6 +529,7 @@ class RemediationExecutionStore:
         if status not in EXECUTION_STATUSES:
             raise ValueError(f"Unknown execution status {status!r}")
         timestamp = _timestamp(now)
+        previous_record = copy.deepcopy(record)
         previous_status = str(record.get("status") or "")
         record.update(fields)
         record["status"] = status
@@ -554,19 +555,20 @@ class RemediationExecutionStore:
             current["outcome"] = outcome
         elif status in EXECUTION_TERMINAL_STATUSES:
             current["outcome"] = status
-        event = _event(
-            sequence=len(record.setdefault("history", [])) + 1,
-            status=status,
-            actor=actor,
-            timestamp=timestamp,
-            provider_job_id=str(record.get("provider_job_id") or ""),
-            verified_state=str(record.get("verified_state") or ""),
-            failure_details=str(record.get("failure_details") or ""),
-            outcome=str(current.get("outcome") or ""),
-            message=str(record.get("message") or ""),
-        )
-        record["history"].append(event)
-        current.setdefault("transitions", []).append(copy.deepcopy(event))
+        if _has_auditable_transition_change(previous_record, record, status=status):
+            event = _event(
+                sequence=len(record.setdefault("history", [])) + 1,
+                status=status,
+                actor=actor,
+                timestamp=timestamp,
+                provider_job_id=str(record.get("provider_job_id") or ""),
+                verified_state=str(record.get("verified_state") or ""),
+                failure_details=str(record.get("failure_details") or ""),
+                outcome=str(current.get("outcome") or ""),
+                message=str(record.get("message") or ""),
+            )
+            record["history"].append(event)
+            current.setdefault("transitions", []).append(copy.deepcopy(event))
         self._replace_record(state, index, record, timestamp=timestamp, status=status)
         return copy.deepcopy(record)
 
@@ -969,6 +971,44 @@ def _event(
         "outcome": outcome,
         "message": message,
     }
+
+
+_AUDITABLE_TRANSITION_FIELDS = frozenset(
+    {
+        "status",
+        "provider",
+        "provider_job_id",
+        "verified_state",
+        "failure_details",
+        "message",
+        "provider_submitted",
+        "failure_class",
+        "verification_evidence",
+        "evidence_reconciliation",
+        "outcome",
+        "ineligibility_reason",
+        "superseded_by",
+        "superseded_reason",
+    }
+)
+
+
+def _has_auditable_transition_change(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    status: str,
+) -> bool:
+    if str(previous.get("status") or "") != status:
+        return True
+    previous_attempt = _current_attempt(previous)
+    current_attempt = _current_attempt(current)
+    for field in _AUDITABLE_TRANSITION_FIELDS:
+        if previous.get(field) != current.get(field):
+            return True
+        if previous_attempt.get(field) != current_attempt.get(field):
+            return True
+    return False
 
 
 def _current_attempt(record: dict[str, Any]) -> dict[str, Any]:

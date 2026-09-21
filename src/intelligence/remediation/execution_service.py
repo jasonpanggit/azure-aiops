@@ -1411,7 +1411,10 @@ class RemediationExecutionService:
                 verification_evidence=outcome.get("verification_evidence") or {},
                 verification_attempts=next_attempts,
             )
-        if deadline_exceeded and not outcome.get("provider_active", False):
+        if deadline_exceeded and not _sre_outcome_has_deadline_extending_activity(
+            record,
+            outcome,
+        ):
             return self._transition_or_current(
                 execution_id,
                 expected_revision=int(record.get("revision") or 0),
@@ -1958,6 +1961,33 @@ def _target_evidence_usable(
     if assessed is None or boundary is None:
         return False
     return assessed > boundary
+
+
+def _sre_outcome_has_deadline_extending_activity(
+    record: dict[str, Any],
+    outcome: dict[str, Any],
+) -> bool:
+    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
+        return bool(outcome.get("provider_active", False))
+    if outcome.get("provider_active") is not True:
+        return False
+    evidence = outcome.get("verification_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    if isinstance(evidence.get("provider_operation"), dict):
+        return True
+    if evidence.get("approval_pending") is True:
+        return True
+    thread_status = evidence.get("thread_status")
+    if not isinstance(thread_status, dict):
+        return False
+    incident_status = str(thread_status.get("incident_status") or "").strip()
+    if incident_status:
+        return True
+    return bool(
+        thread_status.get("has_critical_actions") is True
+        or thread_status.get("has_warning_actions") is True
+    )
 
 
 def _submission_proof_allows_ambiguity_resolution(
