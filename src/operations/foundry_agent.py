@@ -39,6 +39,7 @@ from pydantic import ValidationError
 
 from operations.foundry_candidate_catalog import validated_candidate_catalog
 from operations.maf_orchestrator import reviewed_specialists_for_page
+from operations.mcp_server import tool_definitions
 from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     CandidatePlan,
@@ -1283,6 +1284,10 @@ class FoundryCoordinatorPlanner:
     def __call__(self, request: InvestigationRequest) -> CandidatePlan:
         page_kind = request.snapshot.page_kind
         page_mapping = self.manifest.page_mapping_projection()
+        tool_schemas = {
+            definition["name"]: definition["inputSchema"]
+            for definition in tool_definitions()
+        }
         allowed_specialists = {}
         for specialist_id in reviewed_specialists_for_page(
             page_kind,
@@ -1312,6 +1317,11 @@ class FoundryCoordinatorPlanner:
             "page_kind": page_kind,
             "page_id": request.snapshot.page_id,
             "allowed_policy_domains_and_local_tools": allowed_specialists,
+            "allowed_tool_argument_schemas": {
+                tool: tool_schemas[tool]
+                for tools in allowed_specialists.values()
+                for tool in tools
+            },
             "execution_model": (
                 "Operations Copilot proposes policy-domain/tool calls. "
                 "Deterministic server policy authorizes them and the API "
@@ -1354,6 +1364,25 @@ class FoundryCoordinatorPlanner:
                 ) from exc
 
         plan = request_plan(planning_question)
+        plan = plan.model_copy(
+            update={
+                "steps": [
+                    step.model_copy(
+                        update={
+                            "tool_calls": [
+                                call.model_copy(update={"arguments": {}})
+                                if not tool_schemas.get(call.tool, {}).get(
+                                    "properties"
+                                )
+                                else call
+                                for call in step.tool_calls
+                            ]
+                        }
+                    )
+                    for step in plan.steps
+                ]
+            }
+        )
         selected = {step.specialist_id for step in plan.steps}
         missing = [
             specialist_id

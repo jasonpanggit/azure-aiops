@@ -214,12 +214,12 @@ def test_reviewed_authorization_accepts_only_bounded_canary(
     )
 
 
-def test_packaged_default_authorization_binds_clean_canary() -> None:
+def test_packaged_default_authorization_requires_clean_canary() -> None:
     payload = json.loads(PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8"))
 
     manifest = authorization.DefaultAuthorizationManifest.model_validate(payload)
 
-    assert manifest.status == "AUTHORIZED"
+    assert manifest.status == "HOLD_PENDING_CANARY_REVALIDATION"
     assert manifest.authorization_scope.percentage == 100
     assert manifest.authorization_scope.default_authorized is True
     assert manifest.canary_evidence.status == "PASS_CLEAN"
@@ -246,23 +246,18 @@ def test_packaged_default_binds_exact_promotion_lineage() -> None:
     )
 
 
-def test_pending_default_manifest_cannot_authorize(
-    tmp_path: Path,
+def test_packaged_pending_default_manifest_cannot_authorize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     enable_authorized_default(monkeypatch)
-    payload = json.loads(PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8"))
-    payload["status"] = "HOLD_PENDING_CANARY_REVALIDATION"
-    pending_manifest = tmp_path / "pending-default.json"
-    pending_manifest.write_text(json.dumps(payload), encoding="utf-8")
-    manifest_sha256 = hashlib.sha256(pending_manifest.read_bytes()).hexdigest()
+    manifest_sha256 = hashlib.sha256(PACKAGED_DEFAULT_MANIFEST.read_bytes()).hexdigest()
     metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text())
     metadata["default_authorization_manifest_sha256"] = manifest_sha256
     authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata))
     monkeypatch.setattr(
         authorization,
         "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
-        pending_manifest,
+        PACKAGED_DEFAULT_MANIFEST,
     )
     monkeypatch.setenv(
         "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
