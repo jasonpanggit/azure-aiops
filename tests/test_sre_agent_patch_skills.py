@@ -129,7 +129,11 @@ def test_write_skill_routes_exact_vm_and_arc_commands() -> None:
     )
     assert text.count(vm) == 1
     assert text.count(arc) == 1
-    assert "Present exactly one command in Review mode" in text
+    assert "invoke `RunAzCliWriteCommands` exactly once" in text
+    assert "native typed pending `azCliExecution`" in text
+    assert "Do not present the command only in prose" in text
+    assert "create a `userQuestion`" in text
+    assert "call `SubmitMessage` as an approval layer" in text
     assert "no more than 300 seconds" in text
     assert "`vm_power_state=PowerState/running` immediately before Review" in text
     assert "`reboot_pending=false`" in text

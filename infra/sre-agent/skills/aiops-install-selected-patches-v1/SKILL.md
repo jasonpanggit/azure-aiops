@@ -15,9 +15,14 @@ subscription, target, patch, command, or evidence values from a user or model.
 - Do not use `RunAzCliReadCommands`, `GetAzCliHelp`, a shell, script,
   redirection, pipeline, command substitution, environment variable,
   discovery, fallback, retry, or second command.
-- Present exactly one command in Review mode and wait for explicit approval.
-- After approval, run that exact command once. On refusal or any validation
-  failure, return `blocked_no_action` without a tool call.
+- After validation, invoke `RunAzCliWriteCommands` exactly once with the exact
+  command. Review mode must create its native typed pending `azCliExecution`
+  and wait there for explicit operator approval before submission.
+- Do not present the command only in prose, create a `userQuestion`, ask for a
+  chat response, or call `SubmitMessage` as an approval layer. The native
+  `azCliExecution` Review action is the only approval boundary.
+- On refusal or any validation failure, return `blocked_no_action` without a
+  write-tool call.
 
 ## Immutable approval and evidence checks
 
@@ -52,14 +57,14 @@ is forbidden.
 
 ## Fixed Review command
 
-For `target_kind=Azure VM`, present exactly:
+For `target_kind=Azure VM`, pass exactly:
 
 ```text
 az vm install-patches --ids <target_id> --kb-numbers-to-include <exact IDs> --maximum-duration PT2H --reboot-setting IfRequired --no-wait
 ```
 
 For `target_kind=Arc-enabled server`, serialize every and only approved patch
-ID as a compact JSON string array and present exactly:
+ID as a compact JSON string array and pass exactly:
 
 ```text
 az connectedmachine install-patches --ids <target_id> --windows-parameters '{"kbNumbersToInclude":[...]}' --maximum-duration PT2H --reboot-setting IfRequired --no-wait true

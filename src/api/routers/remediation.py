@@ -1280,6 +1280,45 @@ def supersede_execution(
 
 
 @router.post(
+    "/executions/{execution_id}/provider-review/approve",
+    summary="Approve the exact pending Azure SRE Agent CLI Review action",
+)
+def approve_provider_review(
+    execution_id: str, context: Context, principal: OperatePrincipal
+) -> dict[str, Any]:
+    service = _execution_service(context, Scope.unrestricted())
+    record = _execution_or_404(service, execution_id)
+    write_scope = context.authorizer.effective_scope(principal, "operate")
+    _authorize_execution_scope(write_scope, record)
+    service = _execution_service(context, write_scope)
+    _audit_execution_request(
+        context=context,
+        principal=principal,
+        scope=write_scope,
+        event_type="remediation.execution_provider_review_approval_requested",
+        decision="approve_provider_review",
+        record=record,
+        reason="exact typed Azure SRE Agent CLI review approval requested",
+    )
+    try:
+        result = service.approve_provider_review(
+            execution_id,
+            requested_by=getattr(principal, "subject", ""),
+        )
+    except RemediationExecutionError as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            str(exc),
+            {"reason": exc.reason, **exc.details},
+        ) from exc
+    return envelope(
+        result,
+        evidence=_execution_evidence(execution_id),
+        scope=write_scope.to_dict(),
+    )
+
+
+@router.post(
     "/executions/{execution_id}/cancel",
     summary="Cancel queued remediation work when cancellation is provably safe",
 )

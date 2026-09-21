@@ -4096,7 +4096,12 @@ class _RoutingExecutionVerifier:
             )
         return self._arm.verify(execution_record)
 
-    def cancel(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+    def cancel(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        requested_by: str = "",
+    ) -> dict[str, Any]:
         """Cancel only provider-owned SRE approvals; ARM writes stay immutable."""
         provider = str(execution_record.get("provider") or "").strip()
         if provider != "sre-agent" or self._sre_agent is None:
@@ -4104,7 +4109,28 @@ class _RoutingExecutionVerifier:
                 "This provider does not expose safe remediation cancellation.",
                 capability="provider_cancellation",
             )
-        return self._sre_agent.cancel(execution_record)
+        return self._sre_agent.cancel(
+            execution_record,
+            requested_by=requested_by,
+        )
+
+    def approve_review(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        """Approve only an exact typed SRE CLI Review action."""
+        provider = str(execution_record.get("provider") or "").strip()
+        if provider != "sre-agent" or self._sre_agent is None:
+            raise ExecutionVerificationUnavailable(
+                "This provider does not expose an approvable CLI review.",
+                capability="sre_agent_review_approve",
+            )
+        return self._sre_agent.approve_review(
+            execution_record,
+            requested_by=requested_by,
+        )
 
     def read_approvals(self, execution_record: dict[str, Any]) -> list[object]:
         """Read approval history only through the persisted SRE provider."""

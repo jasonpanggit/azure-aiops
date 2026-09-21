@@ -87,7 +87,7 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "4d55e26657974cbf1a1c8d50009095a4c4f14a37e5c5dfabfb15f6b1d4049218"
+    "75d8978a47035e72d4a67593e0481c49f1a03c2a5465c77d8f98cf0ca9a961f5"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
@@ -100,7 +100,7 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "dfd60a3be367e505d7714baa3f7756f9c9597ad2c169d3a36c8d0b84f3203853"
+    "4c515a95c932990ad71dd6988705047c41da96596fb2e882f929ec6bf20db6cf"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
@@ -208,7 +208,9 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
                 "Use only `RunAzCliWriteCommands`",
                 "az vm install-patches --ids",
                 "az connectedmachine install-patches --ids",
-                "Present exactly one command in Review mode",
+                "invoke `RunAzCliWriteCommands` exactly once",
+                "native typed pending `azCliExecution`",
+                "Do not present the command only in prose",
                 "no more than 300 seconds",
                 "authoritatively checked the approval decision",
                 "self-calculated expiry",
@@ -317,7 +319,9 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "PT24H",
         "PT5M",
         "RunAzCliWriteCommands",
-        "Review mode present exactly one",
+        "Review mode creates its native typed pending azCliExecution",
+        "Never present the command only in prose",
+        "create a userQuestion",
         "az vm install-patches",
         "az connectedmachine install-patches",
         "Forbid empty filters",

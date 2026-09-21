@@ -7853,6 +7853,24 @@ body.topology-fullscreen-open {
   margin-top: 16px;
 }
 
+.remediation-provider-review {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.remediation-provider-command {
+  display: block;
+  max-width: 100%;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+
 .remediation-supersede-form {
   display: flex;
   flex-direction: column;
