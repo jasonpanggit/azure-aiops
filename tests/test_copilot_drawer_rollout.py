@@ -278,7 +278,7 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
     }
 
 
-def test_drawer_default_is_hard_denied_even_with_deterministic_override(
+def test_drawer_default_without_separate_authority_is_denied(
     tmp_path,
     monkeypatch,
 ):
@@ -298,7 +298,7 @@ def test_drawer_default_is_hard_denied_even_with_deterministic_override(
 
     assert response.status_code == 400, response.text
     assert response.json()["error"]["code"] == "invalid_request"
-    assert "only canary rollout mode" in response.json()["error"]["message"]
+    assert "rollout percentage is malformed" in response.json()["error"]["message"]
 
 
 def test_shadow_rejects_invalid_hint_before_primary_or_preview_io(

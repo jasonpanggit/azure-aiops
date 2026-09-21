@@ -1,0 +1,105 @@
+{
+  "schema_version": "copilot-default-authorization.v1",
+  "authorization_id": "p11-default-authorization-20260921",
+  "status": "HOLD_PENDING_CANARY_REVALIDATION",
+  "issued_at": "2026-09-21T01:25:00Z",
+  "not_before": "2026-09-21T01:25:00Z",
+  "expires_at": "2026-10-05T01:25:00Z",
+  "issuer": {
+    "name": "azure-aiops-release-review",
+    "role": "default-authorization-reviewer"
+  },
+  "review_provenance": {
+    "repository": "https://github.com/jasonpanggit/azure-aiops",
+    "evidence_commit": "0d39d5752e1910215b9d23fa556d20046fd4b19d"
+  },
+  "reviewed_tree": {
+    "algorithm": "sha256-path-length-content-v1",
+    "include_roots": [
+      ".dockerignore",
+      "Dockerfile",
+      "arg.config.deploy.yaml",
+      "fabric.config.deploy.yaml",
+      "infra/scripts/build-and-push.sh",
+      "infra/scripts/deploy.sh",
+      "infra/terraform/container_apps.tf",
+      "infra/terraform/outputs.tf",
+      "infra/terraform/variables.tf",
+      "pyproject.toml",
+      "scripts/benchmark_exposure_read_model.py",
+      "scripts/collect_ontology_evidence.py",
+      "scripts/export_copilot_provider_env.py",
+      "scripts/refresh_exposure_enrichment.py",
+      "scripts/validate_exposure_live.py",
+      "scripts/validate_ontology_publisher_rbac.py",
+      "skills",
+      "src",
+      "uv.lock"
+    ],
+    "exclude_paths": [
+      "src/operations/copilot_canary_authorization.v1.json",
+      "src/operations/copilot_default_authorization.v1.json"
+    ],
+    "sha256": "c83ef9540b7405e8f3ad78890d0ed1ce0f69abacae6899783d0c15a6724ad1cc"
+  },
+  "authorization_scope": {
+    "allowed_modes": [
+      "default"
+    ],
+    "percentage": 100,
+    "default_authorized": true,
+    "activation_source": "validated_promotion",
+    "orchestration": "maf",
+    "rollback_mode": "compatibility"
+  },
+  "deployment_target": {
+    "tenant_id": "ffc83107-fcc0-4d2e-8798-d582da36505e",
+    "subscription_id": "a87a8e64-a52a-4aa8-a760-5e8919d23cd1",
+    "resource_group": "aiops-dev-rg",
+    "app": "aiops-dev-api",
+    "environment": "dev",
+    "region": "australiaeast"
+  },
+  "foundry_project": {
+    "resource_id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/resourceGroups/aiops-dev-rg/providers/Microsoft.CognitiveServices/accounts/aiops-dev-foundry/projects/aiops-dev-ops",
+    "name": "aiops-dev-ops",
+    "endpoint": "https://aiops-dev-ai-g6ludc.services.ai.azure.com"
+  },
+  "candidate_binding": {
+    "release": "p11-noazmcp-20260920T093238Z-c562f00e33d7",
+    "contract_version": "foundry-specialist-candidates.v1",
+    "manifest_sha256": "fbfc29fe93006c1a5d3bd035519bd04fd0bbd31e7086405b25b3db4f5dae3571",
+    "semantic_algorithm": "sha256-canonical-json-candidate-v1",
+    "semantic_sha256": "c3b08c9dfdd6716476675c90457b6289f815fa8166baa29b7e92950fd217a4c4",
+    "parser_proof_sha256": "cf9f16bfd08b8ad3d4aff8a036490229defd96b5e602312995161706f4bb929f",
+    "serialization_proof_sha256": "630ed55b547ede6efc739363409b3a0f7a233ea4ce99e456b640b367f3e292b8",
+    "agents": [
+      {"id": "change", "agent_name": "aiops-change-agent", "provider_version": "17"},
+      {"id": "executive_summary", "agent_name": "aiops-executive-summary-agent", "provider_version": "16"},
+      {"id": "finops", "agent_name": "aiops-finops-agent", "provider_version": "1"},
+      {"id": "governance", "agent_name": "aiops-governance-agent", "provider_version": "17"},
+      {"id": "identity_access", "agent_name": "aiops-identity-access-agent", "provider_version": "1"},
+      {"id": "incident", "agent_name": "aiops-incident-agent", "provider_version": "16"},
+      {"id": "inventory_data_health", "agent_name": "aiops-inventory-data-health-agent", "provider_version": "1"},
+      {"id": "network", "agent_name": "aiops-network-agent", "provider_version": "16"},
+      {"id": "patch", "agent_name": "aiops-patch-agent", "provider_version": "17"},
+      {"id": "remediation", "agent_name": "aiops-remediation-agent", "provider_version": "17"},
+      {"id": "resource_health_observability", "agent_name": "aiops-resource-health-observability-agent", "provider_version": "1"},
+      {"id": "vulnerability", "agent_name": "aiops-vulnerability-agent", "provider_version": "17"}
+    ],
+    "coordinator": {
+      "agent_name": "operations-copilot",
+      "provider_version": "6"
+    }
+  },
+  "canary_evidence": {
+    "report_sha256": "d8e90d7e487f9aa68e6b0f0a0f33882406095a6a918baf592f165c79ad6a3564",
+    "report_integrity_signature": "ff7ae4a3c0d67d6460532c779796b6ec635da5a93a79d1ba21e391b250aa4a32",
+    "status": "PASS_CLEAN",
+    "tested_percentage": 10,
+    "source_revision": "0d39d5752e1910215b9d23fa556d20046fd4b19d",
+    "image_digest": "sha256:c9abb0bbf07b06b1de704e8c32ede5ff35d91a5e3b615142af341fed58fa3800",
+    "reviewed_tree_sha256": "68d2669e319947235b22d7ae0539b27073372b41f9bff8afcd6ca0a0b10490cd",
+    "cleanup_status": "PASS_COMPLETE"
+  }
+}

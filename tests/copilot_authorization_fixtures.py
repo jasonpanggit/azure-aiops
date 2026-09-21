@@ -23,8 +23,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGED_MANIFEST = (
     REPO_ROOT / "src" / "operations" / "copilot_canary_authorization.v1.json"
 )
+PACKAGED_DEFAULT_MANIFEST = (
+    REPO_ROOT / "src" / "operations" / "copilot_default_authorization.v1.json"
+)
 SOURCE_REVISION = "a" * 40
-AUTHORIZED_NOW = datetime(2026, 9, 21, tzinfo=UTC)
+AUTHORIZED_NOW = datetime(2026, 9, 21, 2, tzinfo=UTC)
 _PROVIDER_VERSIONS = {
     "change": "17",
     "executive_summary": "16",
@@ -156,6 +159,18 @@ def install_valid_canary_evidence(monkeypatch) -> None:
     payload = json.loads(PACKAGED_MANIFEST.read_text(encoding="utf-8"))
     manifest_bytes = PACKAGED_MANIFEST.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    default_manifest_payload = json.loads(
+        PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8")
+    )
+    default_manifest_payload["status"] = "AUTHORIZED"
+    default_manifest_payload["canary_evidence"]["reviewed_tree_sha256"] = (  # type: ignore[index]
+        default_manifest_payload["reviewed_tree"]["sha256"]  # type: ignore[index]
+    )
+    default_manifest_bytes = json.dumps(
+        default_manifest_payload,
+        sort_keys=True,
+    ).encode()
+    default_manifest_sha256 = hashlib.sha256(default_manifest_bytes).hexdigest()
     reviewed_tree_sha256 = str(payload["reviewed_tree"]["sha256"])
     cache_root = REPO_ROOT / ".pytest_cache"
     cache_root.mkdir(exist_ok=True)
@@ -165,14 +180,17 @@ def install_valid_canary_evidence(monkeypatch) -> None:
     )
     evidence_root = Path(evidence_directory.name)
     manifest_path = evidence_root / "authorization.json"
+    default_manifest_path = evidence_root / "default-authorization.json"
     metadata_path = evidence_root / "build-metadata.json"
     manifest_path.write_bytes(manifest_bytes)
+    default_manifest_path.write_bytes(default_manifest_bytes)
     metadata_path.write_text(
         json.dumps(
             {
                 "schema_version": "copilot-build-metadata.v1",
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": manifest_sha256,
+                "default_authorization_manifest_sha256": default_manifest_sha256,
                 "reviewed_tree_sha256": reviewed_tree_sha256,
             }
         ),
@@ -188,6 +206,11 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         copilot_canary_authorization,
         "AUTHORIZATION_MANIFEST_PATH",
         manifest_path,
+    )
+    monkeypatch.setattr(
+        copilot_canary_authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        default_manifest_path,
     )
     monkeypatch.setattr(
         copilot_canary_authorization,
@@ -300,6 +323,20 @@ def enable_authorized_canary(
         "_canary_bucket",
         lambda _stable_key: 0 if canonical else 99,
     )
+
+
+def enable_authorized_default(monkeypatch) -> None:
+    """Activate full canonical rollout through the separate default authority."""
+
+    install_valid_canary_evidence(monkeypatch)
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        hashlib.sha256(
+            copilot_canary_authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_bytes()
+        ).hexdigest(),
+    )
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
 
 
 def rollout_decision_for_test(

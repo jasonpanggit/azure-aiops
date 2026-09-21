@@ -13,7 +13,10 @@ import pytest
 
 from operations import maf_orchestrator
 from operations.copilot_canary_authorization import CanaryAuthorizationError
-from tests.copilot_authorization_fixtures import enable_authorized_canary
+from tests.copilot_authorization_fixtures import (
+    enable_authorized_canary,
+    enable_authorized_default,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_copilot_provider_env.py"
@@ -51,6 +54,7 @@ def _terraform_output(candidate_mapping: Path) -> dict[str, object]:
                 "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": "d" * 64,
                 "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": "e" * 64,
                 "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": "b" * 64,
+                "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256": "d" * 64,
                 "AIOPS_API_IMAGE_DIGEST": f"sha256:{'c' * 64}",
             },
         },
@@ -133,7 +137,6 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("FOUNDRY_AI_SEARCH_CONNECTION_ID", "ai-search"),
         ("FOUNDRY_AI_SEARCH_INDEX_NAME", "invalid index name"),
         ("AIOPS_COPILOT_ROLLOUT_MODE", "enabled"),
-        ("AIOPS_COPILOT_ROLLOUT_MODE", "default"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "0"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "11"),
         ("AIOPS_COPILOT_CANARY_PERCENTAGE", "101"),
@@ -142,6 +145,7 @@ def test_provider_env_export_blocks_missing_authoritative_output(tmp_path: Path)
         ("AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST", "sha256:bad"),
         ("AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST", "sha256:bad"),
         ("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
+        ("AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256", "sha256:bad"),
         ("AIOPS_API_IMAGE_DIGEST", "candidate:latest"),
     ],
 )
@@ -205,10 +209,32 @@ def test_provider_env_export_writes_only_allowlisted_non_secret_values(
         f"export AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256={'b' * 64}"
         in rendered
     )
+    assert (
+        f"export AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256={'d' * 64}"
+        in rendered
+    )
     assert f"export AIOPS_API_IMAGE_DIGEST=sha256:{'c' * 64}" in rendered
     assert "must-not-leak" not in rendered
     assert "AZURE_CLIENT_SECRET" not in rendered
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+
+
+def test_provider_env_export_accepts_separately_authorized_default(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    _candidate_mapping(candidate)
+    payload = _terraform_output(candidate)
+    values = payload["copilot_provider_environment"]["value"]  # type: ignore[index]
+    values["AIOPS_COPILOT_ROLLOUT_MODE"] = "default"
+    values["AIOPS_COPILOT_CANARY_PERCENTAGE"] = "100"
+
+    result, destination = _run_exporter(tmp_path, payload)
+
+    assert result.returncode == 0, result.stderr
+    rendered = destination.read_text(encoding="utf-8")
+    assert "export AIOPS_COPILOT_ROLLOUT_MODE=default" in rendered
+    assert "export AIOPS_COPILOT_CANARY_PERCENTAGE=100" in rendered
 
 
 def test_provider_env_export_blocks_disabled_ai_search(
@@ -288,6 +314,7 @@ def test_terraform_exposes_complete_sourceable_provider_environment() -> None:
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST",
         "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
         "AIOPS_API_IMAGE_DIGEST",
     ):
         assert key in outputs
@@ -323,7 +350,7 @@ def test_unspecified_rollout_fails_closed_but_explicit_modes_still_win(
     assert compatibility.reason == "compatibility_selected"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    with pytest.raises(CanaryAuthorizationError, match="only canary"):
+    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
         maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "enabled")
@@ -356,9 +383,9 @@ def test_default_is_denied_even_with_deterministic_override(
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
     monkeypatch.setenv("AIOPS_AGENT_ORCHESTRATION_MODE", "deterministic")
 
-    with pytest.raises(CanaryAuthorizationError, match="only canary"):
+    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
         maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
-    with pytest.raises(CanaryAuthorizationError, match="only canary"):
+    with pytest.raises(CanaryAuthorizationError, match="rollout percentage"):
         maf_orchestrator.canonical_orchestration_enabled(
             stable_key="operator-a"
         )
@@ -387,8 +414,27 @@ def test_rollout_modes_preserve_compatibility_shadow_and_authorized_canary(
     assert canary.authorization_id == "p11-canary-authorization-20260920"
 
     monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
-    with pytest.raises(CanaryAuthorizationError, match="only canary rollout mode"):
+    with pytest.raises(
+        CanaryAuthorizationError,
+        match="default percentage must be exactly 100",
+    ):
         maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+
+
+def test_separate_default_authorization_enables_every_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+
+    first = maf_orchestrator.copilot_rollout_decision(stable_key="operator-a")
+    second = maf_orchestrator.copilot_rollout_decision(stable_key="operator-b")
+
+    for decision in (first, second):
+        assert decision.mode == "default"
+        assert decision.canonical_enabled is True
+        assert decision.shadow_enabled is False
+        assert decision.canary_bucket is None
+        assert decision.authorization_id == "p11-default-authorization-20260921"
 
 
 @pytest.mark.parametrize("percentage", ["", "-1", "101", "ten", "10.5"])

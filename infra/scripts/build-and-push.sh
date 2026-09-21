@@ -324,6 +324,10 @@ if [[ "${authorization_release}" -eq 1 ]]; then
     --root "${reviewed_root}" \
     --manifest "${reviewed_root}/src/operations/copilot_canary_authorization.v1.json" \
     >/dev/null
+  PYTHONPATH="${reviewed_root}/src" python3 -m operations.reviewed_tree \
+    --root "${reviewed_root}" \
+    --manifest "${reviewed_root}/src/operations/copilot_default_authorization.v1.json" \
+    >/dev/null
   build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
   verify_pushed aiops-api
   api_digest="$(resolve_api_digest)"

@@ -9,6 +9,11 @@ locals {
   copilot_canary_authorization_sha256 = filesha256(
     local.copilot_canary_authorization_path
   )
+  copilot_default_authorization_path = "${path.module}/../../src/operations/copilot_default_authorization.v1.json"
+  copilot_default_authorization      = jsondecode(file(local.copilot_default_authorization_path))
+  copilot_default_authorization_sha256 = filesha256(
+    local.copilot_default_authorization_path
+  )
   gateway_assertion = coalesce(
     nonsensitive(var.apim_gateway_assertion),
     random_password.apim_gateway_assertion.result,
@@ -45,13 +50,14 @@ locals {
   # is 0%. Rollback restores the prior revision/mode without rewriting threads
   # or ledgers, so the fallback mode is retained alongside the active mode.
   copilot_canary_percentage = (
-    var.copilot_rollout_mode == "canary" ? var.copilot_canary_percentage : 0
+    var.copilot_rollout_mode == "canary" ? var.copilot_canary_percentage :
+    var.copilot_rollout_mode == "default" ? 100 : 0
   )
   copilot_canary_authorization_requested = (
     var.copilot_rollout_mode == "canary" ||
-    var.copilot_rollout_mode == "default" ||
-    local.copilot_canary_percentage > 0
+    (local.copilot_canary_percentage > 0 && var.copilot_rollout_mode != "default")
   )
+  copilot_default_authorization_requested = var.copilot_rollout_mode == "default"
   # Deterministic rollback target: the governed page-anchored fallback that
   # remains selectable throughout Phase 11. Never a big-bang cutover.
   copilot_rollback_mode = "compatibility"
@@ -582,6 +588,11 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256"
+        value = local.copilot_default_authorization_sha256
+      }
+
+      env {
         name  = "AIOPS_API_IMAGE_DIGEST"
         value = var.api_image_digest
       }
@@ -829,11 +840,6 @@ resource "azurerm_container_app" "api" {
     }
 
     precondition {
-      condition     = var.copilot_rollout_mode != "default"
-      error_message = "The reviewed authorization permits bounded canary only; default canonical rollout is hard-denied."
-    }
-
-    precondition {
       condition = (
         !local.copilot_canary_authorization_requested ||
         (
@@ -906,6 +912,83 @@ resource "azurerm_container_app" "api" {
         )
       )
       error_message = "Canary requires the exact twelve reviewed provider identities and coordinator version; missing, extra, duplicate, or substituted identities are denied."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_default_authorization_requested ||
+        (
+          local.copilot_canary_percentage == 100 &&
+          var.api_image_digest != "" &&
+          var.deploy_images &&
+          can(regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$", var.deployment_source_revision)) &&
+          lower(var.agent_orchestration_mode) == "maf" &&
+          local.foundry_specialist_activation_source == "validated_promotion" &&
+          local.foundry_candidate_catalog_artifact_present &&
+          local.foundry_candidate_catalog_artifact_digest == var.foundry_specialist_candidate_catalog_artifact_sha256 &&
+          var.foundry_specialist_candidate_binding_sha256 == local.copilot_default_authorization.candidate_binding.semantic_sha256 &&
+          local.copilot_default_authorization.candidate_binding.semantic_algorithm == "sha256-canonical-json-candidate-v1" &&
+          local.specialist_manifest_digest == local.copilot_default_authorization.candidate_binding.manifest_sha256
+        )
+      )
+      error_message = "Default requires 100%, immutable API image/source, raw candidate transport integrity, the reviewed semantic binding, MAF orchestration, and validated promoted providers."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_default_authorization_requested ||
+        (
+          local.copilot_default_authorization.status == "AUTHORIZED" &&
+          local.copilot_default_authorization.authorization_scope.allowed_modes == ["default"] &&
+          local.copilot_default_authorization.authorization_scope.percentage == 100 &&
+          local.copilot_default_authorization.authorization_scope.default_authorized == true &&
+          local.copilot_default_authorization.authorization_scope.activation_source == local.foundry_specialist_activation_source &&
+          local.copilot_default_authorization.authorization_scope.orchestration == lower(var.agent_orchestration_mode) &&
+          local.copilot_default_authorization.authorization_scope.rollback_mode == local.copilot_rollback_mode &&
+          local.copilot_default_authorization.canary_evidence.status == "PASS_CLEAN" &&
+          local.copilot_default_authorization.canary_evidence.tested_percentage == 10 &&
+          local.copilot_default_authorization.canary_evidence.cleanup_status == "PASS_COMPLETE" &&
+          var.foundry_specialist_release == local.copilot_default_authorization.candidate_binding.release
+        )
+      )
+      error_message = "Default inputs do not match the separate reviewed authorization and clean canary evidence."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_default_authorization_requested ||
+        (
+          var.tenant_id == local.copilot_default_authorization.deployment_target.tenant_id &&
+          var.subscription_id == local.copilot_default_authorization.deployment_target.subscription_id &&
+          azurerm_resource_group.main.name == local.copilot_default_authorization.deployment_target.resource_group &&
+          "${local.base}-api" == local.copilot_default_authorization.deployment_target.app &&
+          var.environment == local.copilot_default_authorization.deployment_target.environment &&
+          azurerm_resource_group.main.location == local.copilot_default_authorization.deployment_target.region &&
+          azurerm_cognitive_account_project.ops.id == local.copilot_default_authorization.foundry_project.resource_id &&
+          local.foundry_project_name == local.copilot_default_authorization.foundry_project.name &&
+          "https://${local.foundry_subdomain}.services.ai.azure.com" == local.copilot_default_authorization.foundry_project.endpoint
+        )
+      )
+      error_message = "Default deployment target or Foundry project does not exactly match the separate authorization."
+    }
+
+    precondition {
+      condition = (
+        !local.copilot_default_authorization_requested ||
+        (
+          sort(keys(local.foundry_specialist_activation)) == sort([
+            for agent in local.copilot_default_authorization.candidate_binding.agents : agent.id
+          ]) &&
+          alltrue([
+            for agent in local.copilot_default_authorization.candidate_binding.agents :
+            try(local.foundry_specialist_activation[agent.id].name, "") == agent.agent_name &&
+            try(local.foundry_specialist_activation[agent.id].version, "") == agent.provider_version
+          ]) &&
+          local.foundry_coordinator_activation.name == local.copilot_default_authorization.candidate_binding.coordinator.agent_name &&
+          local.foundry_coordinator_activation.version == local.copilot_default_authorization.candidate_binding.coordinator.provider_version
+        )
+      )
+      error_message = "Default requires the exact twelve reviewed provider identities and coordinator version."
     }
   }
 }

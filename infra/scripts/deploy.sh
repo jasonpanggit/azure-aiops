@@ -394,6 +394,9 @@ validate_running_api_revision() {
   fi
 
   authorization_manifest="${repo_root}/src/operations/copilot_canary_authorization.v1.json"
+  if [[ "${expected_mode}" == "default" ]]; then
+    authorization_manifest="${repo_root}/src/operations/copilot_default_authorization.v1.json"
+  fi
   authorized_target="$(
     python3 - "${authorization_manifest}" <<'PY' 2>/dev/null
 import json

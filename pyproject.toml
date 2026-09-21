@@ -46,6 +46,7 @@ packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology",
 # packaging default that only collects .py files.
 "src/operations/specialists.v1.json" = "operations/specialists.v1.json"
 "src/operations/copilot_canary_authorization.v1.json" = "operations/copilot_canary_authorization.v1.json"
+"src/operations/copilot_default_authorization.v1.json" = "operations/copilot_default_authorization.v1.json"
 "src/fabric/catalogs/governed_remediation_catalog.v1.json" = "fabric/catalogs/governed_remediation_catalog.v1.json"
 
 [tool.uv]

@@ -41,12 +41,18 @@ from operations.specialist_manifest import load_specialist_manifest
 AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
     "copilot_canary_authorization.v1.json"
 )
+DEFAULT_AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
+    "copilot_default_authorization.v1.json"
+)
 BUILD_METADATA_PATH = Path("/app/build-metadata.json")
 PACKAGED_REVIEWED_TREE_ROOT = Path("/app")
 ENV_ROLLOUT_MODE = "AIOPS_COPILOT_ROLLOUT_MODE"
 ENV_CANARY_PERCENTAGE = "AIOPS_COPILOT_CANARY_PERCENTAGE"
 ENV_SOURCE_REVISION = "AIOPS_SOURCE_REVISION"
 ENV_AUTHORIZATION_MANIFEST_SHA256 = "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256"
+ENV_DEFAULT_AUTHORIZATION_MANIFEST_SHA256 = (
+    "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256"
+)
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REVISION_PATTERN = r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
@@ -132,7 +138,10 @@ class Issuer(_StrictModel):
     """Reviewed identity that issued the authorization."""
 
     name: Literal["azure-aiops-release-review"]
-    role: Literal["canary-authorization-reviewer"]
+    role: Literal[
+        "canary-authorization-reviewer",
+        "default-authorization-reviewer",
+    ]
 
 
 class ReviewProvenance(_StrictModel):
@@ -184,6 +193,33 @@ class AuthorizationScope(_StrictModel):
             or self.rollback_mode != "compatibility"
         ):
             raise ValueError("authorization scope differs from the reviewed boundary")
+        return self
+
+
+class DefaultAuthorizationScope(_StrictModel):
+    """Only full canonical rollout state covered by default authority."""
+
+    allowed_modes: tuple[str, ...]
+    percentage: int = Field(strict=True)
+    default_authorized: bool = Field(strict=True)
+    activation_source: str
+    orchestration: str
+    rollback_mode: str
+
+    @model_validator(mode="after")
+    def validate_exact_scope(self) -> DefaultAuthorizationScope:
+        if self.allowed_modes != ("default",):
+            raise ValueError("allowed_modes must be exactly ['default']")
+        if (
+            self.percentage != 100
+            or self.default_authorized is not True
+            or self.activation_source != "validated_promotion"
+            or self.orchestration != "maf"
+            or self.rollback_mode != "compatibility"
+        ):
+            raise ValueError(
+                "default authorization scope differs from the reviewed boundary"
+            )
         return self
 
 
@@ -265,6 +301,19 @@ class ShadowEvidence(_StrictModel):
     shadow_status: str
 
 
+class CleanCanaryEvidence(_StrictModel):
+    """Passing, cleaned canary evidence required before default rollout."""
+
+    report_sha256: str = Field(pattern=_SHA256_PATTERN)
+    report_integrity_signature: str = Field(pattern=_SHA256_PATTERN)
+    status: Literal["PASS_CLEAN"]
+    tested_percentage: Literal[10]
+    source_revision: str = Field(pattern=_REVISION_PATTERN)
+    image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    reviewed_tree_sha256: str = Field(pattern=_SHA256_PATTERN)
+    cleanup_status: Literal["PASS_COMPLETE"]
+
+
 class CanaryAuthorizationManifest(_StrictModel):
     """Strict packaged record authorizing one bounded canary window."""
 
@@ -294,6 +343,8 @@ class CanaryAuthorizationManifest(_StrictModel):
     def validate_reviewed_values(self) -> CanaryAuthorizationManifest:
         if self.status != "AUTHORIZED":
             raise ValueError("authorization status is inactive")
+        if self.issuer.role != "canary-authorization-reviewer":
+            raise ValueError("canary authorization issuer role is invalid")
         for name, value in (
             ("issued_at", self.issued_at),
             ("not_before", self.not_before),
@@ -364,12 +415,99 @@ class CanaryAuthorizationManifest(_StrictModel):
         return self
 
 
+class DefaultAuthorizationManifest(_StrictModel):
+    """Strict packaged record authorizing one full canonical rollout."""
+
+    schema_version: Literal["copilot-default-authorization.v1"]
+    authorization_id: str = Field(min_length=1, max_length=128)
+    status: Literal["AUTHORIZED", "HOLD_PENDING_CANARY_REVALIDATION"]
+    issued_at: datetime
+    not_before: datetime
+    expires_at: datetime
+    issuer: Issuer
+    review_provenance: ReviewProvenance
+    reviewed_tree: ReviewedTree
+    authorization_scope: DefaultAuthorizationScope
+    deployment_target: DeploymentTarget
+    foundry_project: FoundryProject
+    candidate_binding: CandidateBinding
+    canary_evidence: CleanCanaryEvidence
+
+    @field_validator("issued_at", "not_before", "expires_at", mode="before")
+    @classmethod
+    def validate_canonical_utc_timestamp(cls, value: Any) -> str:
+        if not isinstance(value, str) or _CANONICAL_UTC_PATTERN.fullmatch(value) is None:
+            raise ValueError("timestamp must be canonical RFC3339 UTC")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reviewed_values(self) -> DefaultAuthorizationManifest:
+        if self.issuer.role != "default-authorization-reviewer":
+            raise ValueError("default authorization issuer role is invalid")
+        for name, value in (
+            ("issued_at", self.issued_at),
+            ("not_before", self.not_before),
+            ("expires_at", self.expires_at),
+        ):
+            if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+                raise ValueError(f"{name} must be UTC")
+        if not self.issued_at <= self.not_before < self.expires_at:
+            raise ValueError("authorization window is invalid")
+        expected_target = DeploymentTarget(
+            tenant_id=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_TENANT_ID"],
+            subscription_id=_EXPECTED_ENVIRONMENT[
+                "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID"
+            ],
+            resource_group=_EXPECTED_ENVIRONMENT[
+                "AIOPS_DEPLOYMENT_RESOURCE_GROUP"
+            ],
+            app=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_APP"],
+            environment=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_ENVIRONMENT"],
+            region=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_REGION"],
+        )
+        expected_project = FoundryProject(
+            resource_id=_EXPECTED_ENVIRONMENT["AIOPS_FOUNDRY_PROJECT_RESOURCE_ID"],
+            name=_EXPECTED_ENVIRONMENT["AIOPS_FOUNDRY_PROJECT_NAME"],
+            endpoint=_EXPECTED_ENVIRONMENT["AIOPS_FOUNDRY_ACCOUNT_ENDPOINT"],
+        )
+        if self.deployment_target != expected_target:
+            raise ValueError("deployment target differs from reviewed target")
+        if self.foundry_project != expected_project:
+            raise ValueError("Foundry project differs from reviewed target")
+        expected_binding = {
+            "release": _EXPECTED_ENVIRONMENT["AIOPS_COPILOT_CANDIDATE_RELEASE"],
+            "contract_version": _EXPECTED_ENVIRONMENT[
+                "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION"
+            ],
+            "manifest_sha256": _EXPECTED_ENVIRONMENT[
+                "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256"
+            ],
+            "semantic_algorithm": CANDIDATE_BINDING_ALGORITHM,
+            "semantic_sha256": _EXPECTED_ENVIRONMENT[CANDIDATE_BINDING_DIGEST_ENV],
+        }
+        if any(
+            getattr(self.candidate_binding, key) != value
+            for key, value in expected_binding.items()
+        ):
+            raise ValueError("candidate binding differs from reviewed evidence")
+        if (
+            self.status == "AUTHORIZED"
+            and self.canary_evidence.reviewed_tree_sha256
+            != self.reviewed_tree.sha256
+        ):
+            raise ValueError(
+                "authorized default requires clean canary evidence for this tree"
+            )
+        return self
+
+
 class BuildMetadata(_StrictModel):
     """Immutable metadata generated inside the production image build."""
 
     schema_version: Literal["copilot-build-metadata.v1"]
     source_revision: str = Field(pattern=_REVISION_PATTERN)
     canary_authorization_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    default_authorization_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     reviewed_tree_sha256: str = Field(pattern=_SHA256_PATTERN)
 
 
@@ -378,6 +516,7 @@ class ValidatedCanaryAuthorization:
     """Immutable server-held authorization state returned after code checks."""
 
     authorization_id: str
+    mode: Literal["canary", "default"]
     manifest_sha256: str
     source_revision: str
     reviewed_tree_sha256: str
@@ -386,11 +525,11 @@ class ValidatedCanaryAuthorization:
 
 
 class CanaryAuthorizationError(ValueError):
-    """Raised before provider or external execution when canary authority fails."""
+    """Raised before provider or external execution when rollout authority fails."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
-        super().__init__(f"Copilot canary authorization denied: {reason}")
+        super().__init__(f"Copilot rollout authorization denied: {reason}")
 
 
 def _utc_now() -> datetime:
@@ -413,6 +552,7 @@ def validate_canary_authorization(
     *,
     environment: Mapping[str, str] | None = None,
     manifest_path: Path | None = None,
+    default_manifest_path: Path | None = None,
     build_metadata_path: Path | None = None,
     reviewed_tree_root: Path | None = None,
     now: datetime | None = None,
@@ -420,24 +560,37 @@ def validate_canary_authorization(
     """Validate packaged authorization, build identity, target, and provider pins."""
 
     values = environment if environment is not None else os.environ
-    manifest_path = manifest_path or AUTHORIZATION_MANIFEST_PATH
     build_metadata_path = build_metadata_path or BUILD_METADATA_PATH
     reviewed_tree_root = reviewed_tree_root or PACKAGED_REVIEWED_TREE_ROOT
     mode = values.get(ENV_ROLLOUT_MODE, "").strip().casefold()
-    if mode != "canary":
-        raise CanaryAuthorizationError("only canary rollout mode is authorized")
     percentage_text = values.get(ENV_CANARY_PERCENTAGE, "").strip()
     if not percentage_text.isdecimal():
-        raise CanaryAuthorizationError("canary percentage is malformed")
+        raise CanaryAuthorizationError("rollout percentage is malformed")
     percentage = int(percentage_text)
-    if not 1 <= percentage <= 10:
+    if mode == "canary" and not 1 <= percentage <= 10:
         raise CanaryAuthorizationError("canary percentage must be between 1 and 10")
+    if mode == "default" and percentage != 100:
+        raise CanaryAuthorizationError("default percentage must be exactly 100")
+    if mode not in {"canary", "default"}:
+        raise CanaryAuthorizationError(
+            "only canary or separately authorized default rollout is permitted"
+        )
 
     try:
-        manifest_bytes = manifest_path.read_bytes()
-        manifest = CanaryAuthorizationManifest.model_validate(
-            json.loads(manifest_bytes)
+        selected_manifest_path = (
+            manifest_path or AUTHORIZATION_MANIFEST_PATH
+            if mode == "canary"
+            else default_manifest_path or DEFAULT_AUTHORIZATION_MANIFEST_PATH
         )
+        manifest_bytes = selected_manifest_path.read_bytes()
+        manifest_payload = json.loads(manifest_bytes)
+        manifest: CanaryAuthorizationManifest | DefaultAuthorizationManifest
+        if mode == "canary":
+            manifest = CanaryAuthorizationManifest.model_validate(manifest_payload)
+        else:
+            manifest = DefaultAuthorizationManifest.model_validate(manifest_payload)
+            if manifest.status != "AUTHORIZED":
+                raise CanaryAuthorizationError("default authorization status is inactive")
     except (
         OSError,
         UnicodeError,
@@ -455,9 +608,19 @@ def validate_canary_authorization(
         )
     except (OSError, UnicodeError, ValidationError) as exc:
         raise CanaryAuthorizationError("build metadata is missing or invalid") from exc
-    if build_metadata.canary_authorization_manifest_sha256 != manifest_sha256:
+    expected_packaged_digest = (
+        build_metadata.canary_authorization_manifest_sha256
+        if mode == "canary"
+        else build_metadata.default_authorization_manifest_sha256
+    )
+    if expected_packaged_digest != manifest_sha256:
         raise CanaryAuthorizationError("packaged authorization digest mismatch")
-    if values.get(ENV_AUTHORIZATION_MANIFEST_SHA256, "").strip() != manifest_sha256:
+    deployment_digest_env = (
+        ENV_AUTHORIZATION_MANIFEST_SHA256
+        if mode == "canary"
+        else ENV_DEFAULT_AUTHORIZATION_MANIFEST_SHA256
+    )
+    if values.get(deployment_digest_env, "").strip() != manifest_sha256:
         raise CanaryAuthorizationError("deployment authorization digest mismatch")
     source_revision = values.get(ENV_SOURCE_REVISION, "").strip()
     if not source_revision or source_revision != build_metadata.source_revision:
@@ -486,6 +649,15 @@ def validate_canary_authorization(
         raise CanaryAuthorizationError("authorization has expired")
 
     for name, expected in _EXPECTED_ENVIRONMENT.items():
+        if mode == "default" and (
+            name.startswith("AIOPS_COPILOT_SHADOW_")
+            or name
+            in {
+                "AIOPS_COPILOT_PARSER_PROOF_SHA256",
+                "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256",
+            }
+        ):
+            continue
         if values.get(name, "").strip() != expected:
             raise CanaryAuthorizationError(f"runtime binding mismatch: {name}")
     if (
@@ -536,6 +708,7 @@ def validate_canary_authorization(
 
     return ValidatedCanaryAuthorization(
         authorization_id=manifest.authorization_id,
+        mode=mode,
         manifest_sha256=manifest_sha256,
         source_revision=source_revision,
         reviewed_tree_sha256=packaged_reviewed_tree_sha256,
@@ -566,6 +739,7 @@ def canary_authorization_health() -> dict[str, Any]:
         "status": "authorized",
         "reason": "",
         "authorization_id": authority.authorization_id,
+        "mode": authority.mode,
         "manifest_sha256": authority.manifest_sha256,
         "expires_at": authority.expires_at.isoformat().replace("+00:00", "Z"),
     }
@@ -574,10 +748,12 @@ def canary_authorization_health() -> dict[str, Any]:
 __all__ = [
     "AUTHORIZATION_MANIFEST_PATH",
     "BUILD_METADATA_PATH",
+    "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
     "PACKAGED_REVIEWED_TREE_ROOT",
     "BuildMetadata",
     "CanaryAuthorizationError",
     "CanaryAuthorizationManifest",
+    "DefaultAuthorizationManifest",
     "ValidatedCanaryAuthorization",
     "canary_authorization_health",
     "canary_authorization_required",

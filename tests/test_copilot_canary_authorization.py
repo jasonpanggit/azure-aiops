@@ -12,7 +12,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from copilot_authorization_fixtures import strict_candidate_artifact
+from copilot_authorization_fixtures import (
+    enable_authorized_default,
+    strict_candidate_artifact,
+)
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from test_api_copilot_investigation import _context
@@ -40,6 +43,9 @@ from operations.reviewed_tree import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGED_MANIFEST = (
     REPO_ROOT / "src" / "operations" / "copilot_canary_authorization.v1.json"
+)
+PACKAGED_DEFAULT_MANIFEST = (
+    REPO_ROOT / "src" / "operations" / "copilot_default_authorization.v1.json"
 )
 SOURCE_REVISION = "a" * 40
 API_IMAGE_DIGEST = f"sha256:{'b' * 64}"
@@ -150,6 +156,7 @@ def _write_authorization(
                 "schema_version": "copilot-build-metadata.v1",
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": digest,
+                "default_authorization_manifest_sha256": "d" * 64,
                 "reviewed_tree_sha256": str(
                     (payload or _manifest_payload())["reviewed_tree"]["sha256"]  # type: ignore[index]
                 ),
@@ -208,6 +215,131 @@ def test_reviewed_authorization_accepts_only_bounded_canary(
         authority.manifest_sha256
         == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     )
+
+
+def test_packaged_default_authorization_requires_clean_canary() -> None:
+    payload = json.loads(PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+
+    manifest = authorization.DefaultAuthorizationManifest.model_validate(payload)
+
+    assert manifest.status == "HOLD_PENDING_CANARY_REVALIDATION"
+    assert manifest.authorization_scope.percentage == 100
+    assert manifest.authorization_scope.default_authorized is True
+    assert manifest.canary_evidence.status == "PASS_CLEAN"
+    assert manifest.canary_evidence.cleanup_status == "PASS_COMPLETE"
+
+
+def test_packaged_pending_default_manifest_cannot_authorize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    manifest_sha256 = hashlib.sha256(
+        PACKAGED_DEFAULT_MANIFEST.read_bytes()
+    ).hexdigest()
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text())
+    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata))
+    monkeypatch.setattr(
+        authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        PACKAGED_DEFAULT_MANIFEST,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        manifest_sha256,
+    )
+
+    with pytest.raises(CanaryAuthorizationError, match="status is inactive"):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("status", "REVOKED"),
+        ("tested_percentage", 9),
+        ("cleanup_status", "PENDING"),
+        ("canary_tree", "c" * 64),
+        ("semantic_sha256", "c" * 64),
+    ),
+)
+def test_default_authorization_rejects_unreviewed_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    payload = json.loads(PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    payload["status"] = "AUTHORIZED"
+    payload["canary_evidence"]["reviewed_tree_sha256"] = payload["reviewed_tree"][  # type: ignore[index]
+        "sha256"
+    ]
+    if field == "semantic_sha256":
+        payload["candidate_binding"][field] = value
+    elif field == "canary_tree":
+        payload["canary_evidence"]["reviewed_tree_sha256"] = value
+    elif field == "status":
+        payload[field] = value
+    else:
+        payload["canary_evidence"][field] = value
+    manifest_path = tmp_path / "default-authorization.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text())
+    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata))
+    monkeypatch.setattr(
+        authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        manifest_path,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        manifest_sha256,
+    )
+
+    with pytest.raises(CanaryAuthorizationError):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
+def test_default_manifest_cannot_authorize_canary(
+    tmp_path: Path,
+) -> None:
+    _, metadata_path, environment = _write_authorization(tmp_path)
+    environment["AIOPS_COPILOT_ROLLOUT_MODE"] = "canary"
+    environment["AIOPS_COPILOT_CANARY_PERCENTAGE"] = "10"
+
+    with pytest.raises(CanaryAuthorizationError, match="missing or invalid"):
+        authorization.validate_canary_authorization(
+            environment=environment,
+            manifest_path=PACKAGED_DEFAULT_MANIFEST,
+            build_metadata_path=metadata_path,
+            reviewed_tree_root=REPO_ROOT,
+            now=datetime(2026, 9, 21, 2, tzinfo=UTC),
+        )
+
+
+def test_canary_manifest_cannot_authorize_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    manifest_sha256 = hashlib.sha256(PACKAGED_MANIFEST.read_bytes()).hexdigest()
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text())
+    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata))
+    monkeypatch.setattr(
+        authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        PACKAGED_MANIFEST,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        manifest_sha256,
+    )
+
+    with pytest.raises(CanaryAuthorizationError, match="missing or invalid"):
+        copilot_rollout_decision(stable_key="operator-a")
 
 
 def test_packaged_semantic_digest_matches_reviewed_candidate() -> None:
@@ -651,6 +783,35 @@ def test_route_authority_rejects_mismatched_principal_stable_key(
         )
 
 
+def test_default_authority_revalidates_request_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    request = {"question": "Show inventory health"}
+
+    decision = copilot_rollout_decision(stable_key="operator-a")
+    authorize_canonical_execution(
+        request=request,
+        principal_subject="operator-a",
+        stable_key="operator-a",
+    )
+
+    assert decision.mode == "default"
+    assert decision.canonical_enabled is True
+    assert decision.canary_bucket is None
+    assert decision.authorization_id == "p11-default-authorization-20260921"
+
+
+def test_default_authority_requires_exact_effective_percentage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "99")
+
+    with pytest.raises(CanaryAuthorizationError, match="exactly 100"):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
 def test_forged_object_cannot_authorize_external_execution() -> None:
     request = InvestigationRequest(
         question="Show inventory health",
@@ -882,7 +1043,11 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         'exec "${repo_root}/infra/scripts/deploy.sh" apply \\\n'
         "      -target=azurerm_container_app.api"
     ) in build_script
-    assert 'var.copilot_rollout_mode != "default"' in terraform
+    assert 'local.copilot_default_authorization.status == "AUTHORIZED"' in terraform
+    assert (
+        'local.copilot_default_authorization.authorization_scope.percentage == 100'
+        in terraform
+    )
     assert 'var.api_image_digest != ""' in terraform
     assert "local.copilot_canary_percentage <= 10" in terraform
     assert (
@@ -890,6 +1055,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         in terraform
     )
     assert "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256" in terraform
+    assert "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256" in terraform
     assert "AIOPS_API_IMAGE_DIGEST" in terraform
     assert "AIOPS_SOURCE_REVISION" in terraform
     assert "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST" in terraform
@@ -901,10 +1067,19 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "local.copilot_canary_authorization.candidate_binding.semantic_sha256"
         in terraform
     )
+    assert (
+        "foundry_specialist_candidate_binding_sha256 == "
+        "local.copilot_default_authorization.candidate_binding.semantic_sha256"
+        in terraform
+    )
     assert 'value = "/app/config.yaml"' in terraform
     assert 'value = "/app/fabric.config.yaml"' in terraform
     assert "arg.config.deploy.yaml" in REVIEWED_TREE_ROOTS
     assert "fabric.config.deploy.yaml" in REVIEWED_TREE_ROOTS
+    assert (
+        "src/operations/copilot_default_authorization.v1.json"
+        in REVIEWED_TREE_EXCLUDED_PATHS
+    )
     required_skill = "skills/operational-context-graph/SKILL.md"
     assert "!skills/**/SKILL.md" in dockerignore.splitlines()
     assert required_skill in reviewed_tree_paths(
@@ -913,6 +1088,9 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         REVIEWED_TREE_EXCLUDED_PATHS,
     )
     assert '"src/operations/copilot_canary_authorization.v1.json"' in packaging
+    assert '"src/operations/copilot_default_authorization.v1.json"' in packaging
+    assert '"default_authorization_manifest_sha256"' in dockerfile
+    assert "copilot_default_authorization.v1.json" in build_script
 
 
 @pytest.mark.parametrize(

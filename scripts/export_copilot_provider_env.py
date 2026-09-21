@@ -33,6 +33,7 @@ ENV_KEYS = (
     "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST",
     "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
     "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
+    "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
     "AIOPS_API_IMAGE_DIGEST",
 )
 ROLLOUT_MODES = frozenset({"compatibility", "shadow", "canary", "default"})
@@ -214,15 +215,14 @@ def load_environment(
     mode = values["AIOPS_COPILOT_ROLLOUT_MODE"].casefold()
     if mode not in ROLLOUT_MODES:
         raise ValueError("AIOPS_COPILOT_ROLLOUT_MODE")
-    if mode == "default":
-        raise ValueError("AIOPS_COPILOT_ROLLOUT_MODE")
     percentage = values["AIOPS_COPILOT_CANARY_PERCENTAGE"]
     if not percentage.isdecimal():
         raise ValueError("AIOPS_COPILOT_CANARY_PERCENTAGE")
     percentage_value = int(percentage)
     if (
         (mode == "canary" and not 1 <= percentage_value <= 10)
-        or (mode != "canary" and percentage_value != 0)
+        or (mode == "default" and percentage_value != 100)
+        or (mode in {"compatibility", "shadow"} and percentage_value != 0)
     ):
         raise ValueError("AIOPS_COPILOT_CANARY_PERCENTAGE")
     if values["AIOPS_COPILOT_ROLLBACK_MODE"].casefold() != "compatibility":
@@ -241,6 +241,10 @@ def load_environment(
         values["AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256"]
     ):
         raise ValueError("AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256")
+    if not SHA256_PATTERN.fullmatch(
+        values["AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256"]
+    ):
+        raise ValueError("AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256")
     if not IMAGE_DIGEST_PATTERN.fullmatch(values["AIOPS_API_IMAGE_DIGEST"]):
         raise ValueError("AIOPS_API_IMAGE_DIGEST")
 
