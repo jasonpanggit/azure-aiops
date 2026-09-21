@@ -14,6 +14,10 @@ from operations import (
     maf_orchestrator,
 )
 from operations.maf_orchestrator import CopilotRolloutDecision
+from operations.specialist_manifest import (
+    load_specialist_manifest,
+    specialist_manifest_digest,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGED_MANIFEST = (
@@ -21,6 +25,129 @@ PACKAGED_MANIFEST = (
 )
 SOURCE_REVISION = "a" * 40
 AUTHORIZED_NOW = datetime(2026, 9, 21, tzinfo=UTC)
+_PROVIDER_VERSIONS = {
+    "change": "17",
+    "executive_summary": "16",
+    "finops": "1",
+    "governance": "17",
+    "identity_access": "1",
+    "incident": "16",
+    "inventory_data_health": "1",
+    "network": "16",
+    "patch": "17",
+    "remediation": "17",
+    "resource_health_observability": "1",
+    "vulnerability": "17",
+}
+_PROMPT_DIGESTS = {
+    "change": "f5bd4b600c7dd5db6a6e9eab83c7cae615d4c9cd0d731724812ba596860ae9f8",
+    "executive_summary": "6a5b0ac929ddd7ef893b7113c38f6cb38fa41231e5b61656526416d1eaf8d8e7",
+    "finops": "e49abaa747f2ec6dec245231f098b3d490e049027b36f40660a535b29a7684c4",
+    "governance": "a786d8fab42fcff387a89a2da64be0f1032ff71ab28b566b6c801a1326318b37",
+    "identity_access": "db8c85b2baf0a15ad1652d8d1a49dc593c4436f6a41862d8b155ea43ae891755",
+    "incident": "da8636baf5c6ef5ee92cb6c3675b9970504c2bf20909cc74c494e39dd7d833a2",
+    "inventory_data_health": "2741a98dabf398861d34e6750eb28e0ac80da79429f0ad0dd027ee83573f763f",
+    "network": "2e5624865daa12c09a98ad579375952b176b1c4e032727911642052ede89184d",
+    "patch": "293e1d951cbbdaa2948e7094d696288b50ce8b3968f3fa529d3632aa8dab3f48",
+    "remediation": "f29b802c3bf3c7b304697700a0684b9be954d97e367bccfaf6471d827d9e50bf",
+    "resource_health_observability": "bc9c0ec5e9aaab63b963c8f696d28e6b7e8cd0d87650ebbe4291e5167663b7ae",
+    "vulnerability": "2be9e625b46ca7391bf6044f44e72b943c37f9bf95ee361fc7e99d0b70b23b2d",
+}
+_CANDIDATE_RELEASE = "p11-noazmcp-20260920T093238Z-c562f00e33d7"
+_PROJECT_RESOURCE_ID = (
+    "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/"
+    "resourceGroups/aiops-dev-rg/providers/Microsoft.CognitiveServices/"
+    "accounts/aiops-dev-foundry/projects/aiops-dev-ops"
+)
+_SEARCH_CONNECTION_ID = f"{_PROJECT_RESOURCE_ID}/connections/aiops-dev-ai-search"
+
+
+def strict_candidate_artifact(
+    *,
+    source_revision: str = SOURCE_REVISION,
+    generated_at: str = "2026-09-20T23:12:57.137515Z",
+    validated_at: str = "2026-09-20T23:12:57.137515Z",
+) -> dict[str, object]:
+    """Build the exact reviewed strict candidate semantics for tests."""
+
+    manifest = load_specialist_manifest()
+    checks = {
+        "identity": "pass",
+        "project": "pass",
+        "model": "pass",
+        "manifest": "pass",
+        "prompt": "pass",
+        "tool_grants": "pass",
+        "scope": "pass",
+        "read_only": "pass",
+        "citations": "pass",
+        "latency": "pass",
+        "errors": "pass",
+        "fallback": "pass",
+    }
+    agents = {
+        specialist.id: {
+            "agent_name": f"aiops-{specialist.foundry.name}-agent",
+            "provider_version_id": _PROVIDER_VERSIONS[specialist.id],
+            "candidate_version": (
+                f"{_CANDIDATE_RELEASE}.{specialist.foundry.version}"
+            ),
+            "model_deployment": "gpt-5.4-mini",
+            "contract_model": specialist.foundry.model,
+            "contract_version": specialist.foundry.version,
+            "prompt_digest": _PROMPT_DIGESTS[specialist.id],
+            "tools": {
+                "operations_mcp": list(specialist.operations_mcp_tools),
+                "ai_search": {
+                    "enabled": True,
+                    "project_connection_id": _SEARCH_CONNECTION_ID,
+                    "index_name": "aiops-knowledge",
+                    "query_type": "vector_semantic_hybrid",
+                    "cardinality": 1,
+                },
+            },
+            "scope_policy": "specialist-manifest.v1",
+            "read_only": True,
+            "mutation_authorized": False,
+            "citation_contract": "network-finding.v1/output-contract.1",
+            "timeout_seconds": 30,
+            "fallback_mode": "deterministic_local",
+            "publication_status": "published",
+            "validation": {
+                "status": "pass",
+                "validated_at": validated_at,
+                "checks": dict(checks),
+            },
+        }
+        for specialist in manifest.specialists
+    }
+    return {
+        "contract_version": "foundry-specialist-candidates.v1",
+        "status": "validated",
+        "promotion": "held",
+        "reason": "available_inactive",
+        "release": _CANDIDATE_RELEASE,
+        "manifest_digest": specialist_manifest_digest(),
+        "source_revision": source_revision,
+        "generated_at": generated_at,
+        "project": {
+            "resource_id": _PROJECT_RESOURCE_ID,
+            "endpoint_host": "aiops-dev-ai-g6ludc.services.ai.azure.com",
+        },
+        "agents": agents,
+        "coordinator": {
+            "agent_name": "operations-copilot",
+            "provider_version_id": "6",
+            "candidate_version": f"{_CANDIDATE_RELEASE}.coordinator",
+            "publication_status": "published",
+            "validation": {
+                "status": "pass",
+                "validated_at": validated_at,
+            },
+        },
+        "rollback_target": {},
+        "rollback_coordinator": {},
+    }
 
 
 def install_valid_canary_evidence(monkeypatch) -> None:
@@ -97,6 +224,9 @@ def install_valid_canary_evidence(monkeypatch) -> None:
     scope = payload["authorization_scope"]
     binding = payload["candidate_binding"]
     shadow = payload["shadow_evidence"]
+    candidate = strict_candidate_artifact()
+    candidate_raw = json.dumps(candidate, sort_keys=True)
+    candidate_transport_sha256 = hashlib.sha256(candidate_raw.encode()).hexdigest()
     environment = {
         "AIOPS_COPILOT_ROLLOUT_MODE": "compatibility",
         "AIOPS_COPILOT_CANARY_PERCENTAGE": "0",
@@ -104,6 +234,11 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         "AIOPS_AGENT_ORCHESTRATION_MODE": str(scope["orchestration"]),
         "AIOPS_SPECIALIST_ACTIVATION_SOURCE": str(scope["activation_source"]),
         "AIOPS_SOURCE_REVISION": SOURCE_REVISION,
+        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT": candidate_raw,
+        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": candidate_transport_sha256,
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(
+            binding["semantic_sha256"]
+        ),
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": manifest_sha256,
         "AIOPS_DEPLOYMENT_TENANT_ID": str(target["tenant_id"]),
         "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID": str(target["subscription_id"]),
@@ -124,18 +259,11 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(
             binding["manifest_sha256"]
         ),
-        "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256": str(
-            binding["strict_candidate_sha256"]
-        ),
-        "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256": str(binding["runtime_sha256"]),
         "AIOPS_COPILOT_PARSER_PROOF_SHA256": str(binding["parser_proof_sha256"]),
         "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256": str(
             binding["serialization_proof_sha256"]
         ),
         "AIOPS_SPECIALIST_MANIFEST_DIGEST": str(binding["manifest_sha256"]),
-        "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": str(
-            binding["strict_candidate_sha256"]
-        ),
         "AIOPS_COPILOT_SHADOW_REVISION": str(shadow["revision"]),
         "AIOPS_COPILOT_SHADOW_IMAGE_DIGEST": str(shadow["image_digest"]),
         "AIOPS_COPILOT_SHADOW_REPORT_SHA256": str(shadow["report_sha256"]),

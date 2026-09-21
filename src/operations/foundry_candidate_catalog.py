@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -23,11 +26,13 @@ from pydantic import (
 from operations.specialist_manifest import (
     SpecialistDefinition,
     SpecialistManifest,
+    load_specialist_manifest,
     specialist_manifest_digest,
 )
 
 CANDIDATE_ARTIFACT_ENV = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT"
 CANDIDATE_ARTIFACT_DIGEST_ENV = "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"
+CANDIDATE_BINDING_DIGEST_ENV = "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST"
 CANDIDATE_EXPECTED_NAMES_ENV = "AIOPS_FOUNDRY_CANDIDATE_EXPECTED_NAMES"
 CANDIDATE_PROMPT_DIGESTS_ENV = "AIOPS_FOUNDRY_CANDIDATE_PROMPT_DIGESTS"
 CANDIDATE_PROJECT_RESOURCE_ID_ENV = "AIOPS_FOUNDRY_PROJECT_RESOURCE_ID"
@@ -36,6 +41,7 @@ SEARCH_CONNECTION_ID_ENV = "AIOPS_FOUNDRY_AI_SEARCH_CONNECTION_ID"
 SEARCH_INDEX_NAME_ENV = "AIOPS_FOUNDRY_AI_SEARCH_INDEX_NAME"
 SOURCE_REVISION_ENV = "AIOPS_SOURCE_REVISION"
 CANDIDATE_CONTRACT_VERSION = "foundry-specialist-candidates.v1"
+CANDIDATE_BINDING_ALGORITHM = "sha256-canonical-json-candidate-v1"
 REQUIRED_CHECKS = (
     "identity",
     "project",
@@ -207,6 +213,145 @@ class _CandidateArtifact(_StrictModel):
         if self.rollback_target or self.rollback_coordinator:
             raise ValueError("held candidate catalog artifact must not select rollback")
         return self
+
+
+@dataclass(frozen=True)
+class CandidateArtifactBinding:
+    """Stable semantic identity derived from one strict candidate artifact."""
+
+    algorithm: str
+    sha256: str
+    source_revision: str
+
+
+def _reject_duplicate_object_pairs(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"candidate artifact contains duplicate key: {key}")
+        values[key] = value
+    return values
+
+
+def _strict_candidate_artifact(
+    raw: str,
+    manifest: SpecialistManifest,
+) -> tuple[_CandidateArtifact, dict[str, _CandidateAgent]]:
+    try:
+        payload = json.loads(raw, object_pairs_hook=_reject_duplicate_object_pairs)
+        artifact = _CandidateArtifact.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise ValueError("candidate artifact is not valid strict JSON") from exc
+    if set(artifact.agents) != set(manifest.specialist_ids):
+        raise ValueError("candidate artifact must contain exactly the manifest agents")
+
+    parsed_agents: dict[str, _CandidateAgent] = {}
+    identities: list[tuple[str, str]] = []
+    for specialist in manifest.specialists:
+        try:
+            candidate = _CandidateAgent.model_validate(artifact.agents[specialist.id])
+        except ValidationError as exc:
+            raise ValueError(
+                f"candidate artifact agent is invalid: {specialist.id}"
+            ) from exc
+        parsed_agents[specialist.id] = candidate
+        identities.append(
+            _provider_identity_key(
+                agent_name=candidate.agent_name,
+                provider_version_id=candidate.provider_version_id,
+            )
+        )
+    coordinator_identity = _provider_identity_key(
+        agent_name=artifact.coordinator.agent_name,
+        provider_version_id=artifact.coordinator.provider_version_id,
+    )
+    if len(identities) != len(set(identities)):
+        raise ValueError("candidate artifact provider identities must be unique")
+    if coordinator_identity in identities:
+        raise ValueError("candidate coordinator identity must be unique")
+    return artifact, parsed_agents
+
+
+def candidate_artifact_binding(
+    raw: str,
+    manifest: SpecialistManifest,
+) -> CandidateArtifactBinding:
+    """Return the versioned semantic digest of a strict candidate artifact.
+
+    The projection excludes only release-cycle metadata: the top-level source
+    revision and generation time plus specialist/coordinator validation times.
+    Operations MCP grants are sorted because the existing validator defines
+    them as an unordered set; every other list retains its declared order.
+    """
+
+    artifact, parsed_agents = _strict_candidate_artifact(raw, manifest)
+    projection = artifact.model_dump(
+        mode="json",
+        exclude={
+            "source_revision": True,
+            "generated_at": True,
+            "agents": True,
+            "coordinator": True,
+        },
+    )
+    semantic_agents: dict[str, Any] = {}
+    for specialist in manifest.specialists:
+        candidate = parsed_agents[specialist.id]
+        semantic_agents[specialist.id] = {
+            **candidate.model_dump(
+                mode="json",
+                exclude={"validation": {"validated_at"}},
+            ),
+            "tools": {
+                **candidate.tools.model_dump(mode="json"),
+                "operations_mcp": sorted(candidate.tools.operations_mcp),
+            },
+        }
+    projection["agents"] = semantic_agents
+    projection["coordinator"] = artifact.coordinator.model_dump(
+        mode="json",
+        exclude={"validation": {"validated_at"}},
+    )
+    canonical = json.dumps(
+        {
+            "algorithm": CANDIDATE_BINDING_ALGORITHM,
+            "candidate": projection,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return CandidateArtifactBinding(
+        algorithm=CANDIDATE_BINDING_ALGORITHM,
+        sha256=sha256(canonical).hexdigest(),
+        source_revision=artifact.source_revision,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Print transport and semantic digests for one strict candidate artifact."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--artifact", required=True, type=Path)
+    args = parser.parse_args(argv)
+    raw_bytes = args.artifact.read_bytes()
+    raw = raw_bytes.decode("utf-8")
+    binding = candidate_artifact_binding(raw, load_specialist_manifest())
+    print(
+        json.dumps(
+            {
+                "transport_sha256": sha256(raw_bytes).hexdigest(),
+                "semantic_algorithm": binding.algorithm,
+                "semantic_sha256": binding.sha256,
+                "source_revision": binding.source_revision,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _validate_provider_identity(
@@ -471,6 +616,8 @@ def validated_candidate_catalog(
 __all__ = [
     "CANDIDATE_ARTIFACT_DIGEST_ENV",
     "CANDIDATE_ARTIFACT_ENV",
+    "CANDIDATE_BINDING_ALGORITHM",
+    "CANDIDATE_BINDING_DIGEST_ENV",
     "CANDIDATE_CONTRACT_VERSION",
     "CANDIDATE_EXPECTED_NAMES_ENV",
     "CANDIDATE_PROJECT_RESOURCE_ID_ENV",
@@ -480,5 +627,12 @@ __all__ = [
     "SEARCH_CONNECTION_ID_ENV",
     "SEARCH_INDEX_NAME_ENV",
     "SOURCE_REVISION_ENV",
+    "CandidateArtifactBinding",
+    "candidate_artifact_binding",
+    "main",
     "validated_candidate_catalog",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -39,7 +39,7 @@
     "exclude_paths": [
       "src/operations/copilot_canary_authorization.v1.json"
     ],
-    "sha256": "5b7d944a5351f30dd585b02641803a703fc66ee5cb50fc9d84e9d57f383874d7"
+    "sha256": "ce4b41027b107762207813904b5e27dac67c69e15de9b13dddbec0d2d9fcc6b7"
   },
   "authorization_scope": {
     "allowed_modes": [
@@ -69,8 +69,8 @@
     "release": "p11-noazmcp-20260920T093238Z-c562f00e33d7",
     "contract_version": "foundry-specialist-candidates.v1",
     "manifest_sha256": "fbfc29fe93006c1a5d3bd035519bd04fd0bbd31e7086405b25b3db4f5dae3571",
-    "strict_candidate_sha256": "0c0ea63264137559615f3565cb6978fe4c24e37600fbe24746a586cf4f152dd6",
-    "runtime_sha256": "2206c289b7d9fb2652ef18d34264846970691c27e9007cb0e8c297791e098636",
+    "semantic_algorithm": "sha256-canonical-json-candidate-v1",
+    "semantic_sha256": "c3b08c9dfdd6716476675c90457b6289f815fa8166baa29b7e92950fd217a4c4",
     "parser_proof_sha256": "929c0e067f3dd39c1a1edfe249d30c39cf9cff4102d777f8a9eab8383ec84132",
     "serialization_proof_sha256": "cd92422b4d2d4c29913f32a103c6d3ae300d084de46fc00079c24063f801ea60",
     "agents": [

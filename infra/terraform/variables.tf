@@ -742,13 +742,24 @@ variable "foundry_specialist_candidate_catalog_artifact" {
 }
 
 variable "foundry_specialist_candidate_catalog_artifact_sha256" {
-  description = "Separately reviewed SHA-256 digest of the candidate catalog artifact. Required with foundry_specialist_candidate_catalog_artifact."
+  description = "Raw SHA-256 of the candidate catalog bytes, used only for transport/file integrity. Required with foundry_specialist_candidate_catalog_artifact."
   type        = string
   default     = ""
 
   validation {
     condition     = var.foundry_specialist_candidate_catalog_artifact_sha256 == "" || can(regex("^[0-9a-f]{64}$", var.foundry_specialist_candidate_catalog_artifact_sha256))
     error_message = "foundry_specialist_candidate_catalog_artifact_sha256 must be empty or an exact lowercase SHA-256 digest."
+  }
+}
+
+variable "foundry_specialist_candidate_binding_sha256" {
+  description = "Reviewed sha256-canonical-json-candidate-v1 semantic digest of the strict candidate catalog, excluding only source_revision, generated_at, and validation timestamps."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.foundry_specialist_candidate_binding_sha256 == "" || can(regex("^[0-9a-f]{64}$", var.foundry_specialist_candidate_binding_sha256))
+    error_message = "foundry_specialist_candidate_binding_sha256 must be empty or an exact lowercase SHA-256 digest."
   }
 }
 

@@ -41,8 +41,8 @@ Runtime request selection is fail closed:
 `src/operations/copilot_canary_authorization.v1.json` is the reviewed,
 strict-schema authorization record. It rejects undeclared fields and binds the
 one allowed canary window to the exact Azure/Foundry target, twelve unordered
-specialist identities, coordinator version, candidate/proof digests, and
-passing shadow evidence. Its current UTC validity window ends at
+specialist identities, coordinator version, semantic candidate/proof digests,
+and passing shadow evidence. Its current UTC validity window ends at
 `2026-10-04T19:00:00Z`; extending or replacing it requires a separately
 reviewed code change.
 
@@ -88,8 +88,13 @@ providers, reporting ready, or permitting canonical external I/O:
 4. rollout mode is exactly `canary`, percentage is 1–10, orchestration is
    `maf`, activation source is `validated_promotion`, and rollback remains
    `compatibility`;
-5. target, project, candidate/proof/shadow digests, all twelve provider
-   identities, and coordinator identity exactly match the reviewed record.
+5. target, project, semantic candidate/proof/shadow digests, all twelve
+   provider identities, and coordinator identity exactly match the reviewed
+   record;
+6. the candidate bytes match the separately supplied raw transport SHA-256,
+   the strict parser accepts the complete twelve-agent artifact, its embedded
+   source revision matches the baked image source, and its computed semantic
+   binding matches the packaged authorization.
 
 Terraform and `build-and-push.sh --api-authorization-release` still require and
 deploy the API by an immutable `sha256:` digest. Authorization releases must use
@@ -169,14 +174,60 @@ exact ID. A connection display name is not accepted as an ID. This gate does
 not authorize, build, validate, or deploy either the `mcp-server` or
 `azure-mcp` container image.
 
-### Candidate catalog integrity and authenticity boundary
+### Candidate catalog transport and semantic authorization boundary
 
-The configured raw-artifact SHA-256 is an integrity and corruption check only:
-it proves that the deployed bytes match the separately reviewed digest, but it
-does not identify who produced either value. Candidate-catalog authenticity
-currently depends on the compensating deployment boundary: Azure Container Apps
-deployment RBAC plus sole-writer release control must ensure that only the
-reviewed release path can set the artifact and its expected digest together.
+The raw `foundry_specialist_candidate_catalog_artifact_sha256` remains a
+transport/file-integrity check only. It proves the runtime parsed the exact
+bytes supplied by Terraform, but the packaged authorization does **not** bind
+that raw digest: those bytes contain `source_revision`, `generated_at`, and
+per-agent/coordinator validation timestamps, so binding the raw digest creates
+an impossible source → artifact → authorization manifest → source cycle.
+
+The packaged authorization instead binds
+`sha256-canonical-json-candidate-v1`. Compute both values offline with:
+
+```sh
+PYTHONPATH=src python -m operations.foundry_candidate_catalog \
+  --artifact /secure/path/foundry-specialist-candidates.v1.json
+```
+
+The semantic projection first applies the existing strict Pydantic candidate
+contract, rejects missing/extra agents, undeclared fields, duplicate grants,
+duplicate provider identities, mutation authority, non-passing validation, and
+invalid coordinator state, then excludes only:
+
+- top-level `source_revision`;
+- top-level `generated_at`;
+- each `agents.<id>.validation.validated_at`;
+- `coordinator.validation.validated_at`.
+
+Every other parsed field remains bound, including release/contract/manifest
+identity, project resource ID and endpoint host, all twelve agent identities
+and provider/candidate versions, model deployments and contract models, prompt
+digests, Operations MCP grants, AI Search connection/index policy, read-only
+and mutation policy, scope/citation/timeout/fallback contracts, publication and
+non-timestamp validation results, and coordinator identity/status. Mapping keys
+are canonical JSON key order. Operations MCP grant lists alone are sorted
+because the existing validator defines those grants as an unordered set; no
+other list is reordered.
+
+The digest input is UTF-8 JSON with sorted mapping keys, no insignificant
+whitespace, and the exact envelope
+`{"algorithm":"sha256-canonical-json-candidate-v1","candidate":<projection>}`.
+Strings and non-grant lists retain the strict parser's values and order.
+
+Set `foundry_specialist_candidate_binding_sha256` to the reported semantic
+digest. Terraform separately verifies the raw artifact SHA, requires the
+semantic digest to equal the packaged authorization, and projects both values.
+Runtime re-verifies the raw bytes, parses the strict artifact, independently
+compares its `source_revision` with the baked image revision, recomputes the
+semantic digest, and compares it with both Terraform and the package.
+
+The raw digest still does not identify who produced the bytes.
+Candidate-catalog authenticity depends on the compensating deployment boundary:
+Azure Container Apps deployment RBAC plus sole-writer release control must
+ensure that only the reviewed release path can set the artifact and both
+digests together.
 
 Broad promotion requires that compensating control to remain enforced and
 auditable. If deployment ownership cannot remain sole-writer, promotion must
@@ -250,10 +301,11 @@ so a rollback is a revision/mode switch, never a rebuild.
 - **Behaviour:** the canonical orchestrator becomes the default for the bounded
   traffic share only. This authorization permits no value above 10.
 - **Immutable release inputs:** set the exact reviewed specialist release and
-  source revision, supply the reviewed candidate/promotion artifacts, and set
-  `api_image_digest` to the pushed immutable digest. A mutable tag, absent
-  digest, wrong release, unpinned identity, or mismatched build revision fails
-  the Terraform precondition or code-bound runtime gate. Use
+  source revision, supply the reviewed candidate/promotion artifacts, set the
+  raw candidate transport SHA-256 and independently reviewed semantic binding
+  SHA-256, and set `api_image_digest` to the pushed immutable digest. A mutable
+  tag, absent digest, wrong release, unpinned identity, or mismatched build
+  revision fails the Terraform precondition or code-bound runtime gate. Use
   `build-and-push.sh <tag> --api-authorization-release --deploy`; this path
   builds, verifies, records, and deploys only the API image. It never builds,
   pushes, verifies, or changes `mcp-server`, `azure-mcp`, or web image

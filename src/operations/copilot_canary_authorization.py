@@ -22,6 +22,13 @@ from pydantic import (
     model_validator,
 )
 
+from operations.foundry_candidate_catalog import (
+    CANDIDATE_ARTIFACT_DIGEST_ENV,
+    CANDIDATE_ARTIFACT_ENV,
+    CANDIDATE_BINDING_ALGORITHM,
+    CANDIDATE_BINDING_DIGEST_ENV,
+    candidate_artifact_binding,
+)
 from operations.reviewed_tree import (
     REVIEWED_TREE_ALGORITHM,
     REVIEWED_TREE_EXCLUDED_PATHS,
@@ -29,6 +36,7 @@ from operations.reviewed_tree import (
     ReviewedTreeError,
     reviewed_tree_digest,
 )
+from operations.specialist_manifest import load_specialist_manifest
 
 AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
     "copilot_canary_authorization.v1.json"
@@ -90,11 +98,8 @@ _EXPECTED_ENVIRONMENT = {
     "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": (
         "fbfc29fe93006c1a5d3bd035519bd04fd0bbd31e7086405b25b3db4f5dae3571"
     ),
-    "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256": (
-        "0c0ea63264137559615f3565cb6978fe4c24e37600fbe24746a586cf4f152dd6"
-    ),
-    "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256": (
-        "2206c289b7d9fb2652ef18d34264846970691c27e9007cb0e8c297791e098636"
+    CANDIDATE_BINDING_DIGEST_ENV: (
+        "c3b08c9dfdd6716476675c90457b6289f815fa8166baa29b7e92950fd217a4c4"
     ),
     "AIOPS_COPILOT_PARSER_PROOF_SHA256": (
         "929c0e067f3dd39c1a1edfe249d30c39cf9cff4102d777f8a9eab8383ec84132"
@@ -222,8 +227,8 @@ class CandidateBinding(_StrictModel):
     release: str
     contract_version: str
     manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    strict_candidate_sha256: str = Field(pattern=_SHA256_PATTERN)
-    runtime_sha256: str = Field(pattern=_SHA256_PATTERN)
+    semantic_algorithm: Literal["sha256-canonical-json-candidate-v1"]
+    semantic_sha256: str = Field(pattern=_SHA256_PATTERN)
     parser_proof_sha256: str = Field(pattern=_SHA256_PATTERN)
     serialization_proof_sha256: str = Field(pattern=_SHA256_PATTERN)
     agents: tuple[CandidateAgent, ...]
@@ -323,12 +328,8 @@ class CanaryAuthorizationManifest(_StrictModel):
             "manifest_sha256": _EXPECTED_ENVIRONMENT[
                 "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256"
             ],
-            "strict_candidate_sha256": _EXPECTED_ENVIRONMENT[
-                "AIOPS_COPILOT_STRICT_CANDIDATE_SHA256"
-            ],
-            "runtime_sha256": _EXPECTED_ENVIRONMENT[
-                "AIOPS_COPILOT_CANDIDATE_RUNTIME_SHA256"
-            ],
+            "semantic_algorithm": CANDIDATE_BINDING_ALGORITHM,
+            "semantic_sha256": _EXPECTED_ENVIRONMENT[CANDIDATE_BINDING_DIGEST_ENV],
             "parser_proof_sha256": _EXPECTED_ENVIRONMENT[
                 "AIOPS_COPILOT_PARSER_PROOF_SHA256"
             ],
@@ -492,11 +493,32 @@ def validate_canary_authorization(
         != manifest.candidate_binding.manifest_sha256
     ):
         raise CanaryAuthorizationError("runtime specialist manifest mismatch")
+    raw_candidate = values.get(CANDIDATE_ARTIFACT_ENV, "")
+    raw_candidate_sha256 = values.get(CANDIDATE_ARTIFACT_DIGEST_ENV, "").strip()
     if (
-        values.get("AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST", "").strip()
-        != manifest.candidate_binding.strict_candidate_sha256
+        not raw_candidate
+        or not re.fullmatch(_SHA256_PATTERN, raw_candidate_sha256)
+        or hashlib.sha256(raw_candidate.encode("utf-8")).hexdigest()
+        != raw_candidate_sha256
     ):
-        raise CanaryAuthorizationError("runtime candidate artifact mismatch")
+        raise CanaryAuthorizationError("candidate artifact transport digest mismatch")
+    try:
+        candidate_binding = candidate_artifact_binding(
+            raw_candidate,
+            load_specialist_manifest(),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise CanaryAuthorizationError("candidate artifact is invalid") from exc
+    if candidate_binding.source_revision != source_revision:
+        raise CanaryAuthorizationError("candidate source revision mismatch")
+    if (
+        candidate_binding.algorithm
+        != manifest.candidate_binding.semantic_algorithm
+        or candidate_binding.sha256 != manifest.candidate_binding.semantic_sha256
+        or values.get(CANDIDATE_BINDING_DIGEST_ENV, "").strip()
+        != candidate_binding.sha256
+    ):
+        raise CanaryAuthorizationError("candidate semantic binding mismatch")
     for specialist_id, (agent_name, provider_version) in _EXPECTED_AGENTS.items():
         prefix = f"FOUNDRY_{specialist_id.upper()}_AGENT"
         if (
