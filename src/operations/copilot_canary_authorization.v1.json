@@ -11,13 +11,14 @@
   },
   "review_provenance": {
     "repository": "https://github.com/jasonpanggit/azure-aiops",
-    "evidence_commit": "7dcd1b94e838908f39dec9426faee6377043dcd6"
+    "evidence_commit": "0d39d5752e1910215b9d23fa556d20046fd4b19d"
   },
   "reviewed_tree": {
     "algorithm": "sha256-path-length-content-v1",
     "include_roots": [
       ".dockerignore",
       "Dockerfile",
+      "Dockerfile.default-promotion",
       "arg.config.deploy.yaml",
       "fabric.config.deploy.yaml",
       "infra/scripts/build-and-push.sh",
@@ -37,9 +38,10 @@
       "uv.lock"
     ],
     "exclude_paths": [
-      "src/operations/copilot_canary_authorization.v1.json"
+      "src/operations/copilot_canary_authorization.v1.json",
+      "src/operations/copilot_default_authorization.v1.json"
     ],
-    "sha256": "68d2669e319947235b22d7ae0539b27073372b41f9bff8afcd6ca0a0b10490cd"
+    "sha256": "5d0297485e083fe46a67137dc577066b0caf97917cc752fbafcbc7dcfa355902"
   },
   "authorization_scope": {
     "allowed_modes": [

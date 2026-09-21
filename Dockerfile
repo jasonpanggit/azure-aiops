@@ -68,7 +68,7 @@ ARG AIOPS_SOURCE_REVISION
 LABEL source_cache_bust="${SOURCE_CACHE_BUST}"
 
 COPY --from=builder /app/.venv /app/.venv
-COPY .dockerignore pyproject.toml uv.lock Dockerfile /app/
+COPY .dockerignore pyproject.toml uv.lock Dockerfile Dockerfile.default-promotion /app/
 COPY infra/scripts/build-and-push.sh infra/scripts/deploy.sh /app/infra/scripts/
 COPY infra/terraform/container_apps.tf infra/terraform/outputs.tf infra/terraform/variables.tf /app/infra/terraform/
 COPY src/ /app/src/
@@ -91,7 +91,7 @@ RUN PYTHONPATH=/app/src python -m operations.reviewed_tree \
         --root /app \
         --manifest /app/src/operations/copilot_canary_authorization.v1.json \
         > /app/reviewed-tree.sha256 \
-    && python -c 'import hashlib,json,pathlib,re,sys; source=sys.argv[1]; manifest=pathlib.Path("/app/src/operations/copilot_canary_authorization.v1.json").read_bytes(); manifest_digest=hashlib.sha256(manifest).hexdigest(); tree_digest=pathlib.Path("/app/reviewed-tree.sha256").read_text(encoding="utf-8").strip(); assert re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?",source), "AIOPS_SOURCE_REVISION must be an exact Git revision"; assert re.fullmatch(r"[0-9a-f]{64}",tree_digest), "reviewed tree digest is invalid"; pathlib.Path("/app/build-metadata.json").write_text(json.dumps({"schema_version":"copilot-build-metadata.v1","source_revision":source,"canary_authorization_manifest_sha256":manifest_digest,"reviewed_tree_sha256":tree_digest},sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")' "${AIOPS_SOURCE_REVISION}"
+    && python -c 'import hashlib,json,pathlib,re,sys; source=sys.argv[1]; operations=pathlib.Path("/app/src/operations"); canary=(operations/"copilot_canary_authorization.v1.json").read_bytes(); default=(operations/"copilot_default_authorization.v1.json").read_bytes(); tree_digest=pathlib.Path("/app/reviewed-tree.sha256").read_text(encoding="utf-8").strip(); assert re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?",source), "AIOPS_SOURCE_REVISION must be an exact Git revision"; assert re.fullmatch(r"[0-9a-f]{64}",tree_digest), "reviewed tree digest is invalid"; pathlib.Path("/app/build-metadata.json").write_text(json.dumps({"schema_version":"copilot-build-metadata.v1","source_revision":source,"canary_authorization_manifest_sha256":hashlib.sha256(canary).hexdigest(),"default_authorization_manifest_sha256":hashlib.sha256(default).hexdigest(),"reviewed_tree_sha256":tree_digest},sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")' "${AIOPS_SOURCE_REVISION}"
 # Baked-in default connector configs so the inventory-refresh trigger endpoint
 # (POST /api/v1/inventory/refresh, called by the Fabric Data Pipeline Web
 # activity) has a config to load without needing a mounted volume. Neither

@@ -202,7 +202,7 @@ def authorize_canonical_execution(
     selection_snapshot: Any = None,
     canonical_selection_snapshot: Any = None,
 ) -> None:
-    """Revalidate server-held canary state for one exact canonical execution.
+    """Revalidate server-held rollout state for one exact canonical execution.
 
     No caller-provided decision or capability is accepted. The production
     execution boundary reloads the packaged authorization and binds the current
@@ -212,7 +212,7 @@ def authorize_canonical_execution(
 
     if not principal_subject or stable_key != principal_subject:
         raise CanaryAuthorizationError(
-            "canonical route was not selected by validated canary authority"
+            "canonical route was not selected by validated rollout authority"
         )
     decision = copilot_rollout_decision(stable_key=stable_key)
     execution_sha256 = canonical_execution_sha256(
@@ -220,11 +220,17 @@ def authorize_canonical_execution(
         selection_snapshot=selection_snapshot,
         canonical_selection_snapshot=canonical_selection_snapshot,
     )
+    authorized_mode = decision.mode in {ROLLOUT_CANARY, ROLLOUT_DEFAULT}
+    bucket_matches_mode = (
+        decision.canary_bucket is not None
+        if decision.mode == ROLLOUT_CANARY
+        else decision.canary_bucket is None
+    )
     if (
         not execution_sha256
-        or decision.mode != ROLLOUT_CANARY
+        or not authorized_mode
         or not decision.canonical_enabled
-        or decision.canary_bucket is None
+        or not bucket_matches_mode
         or decision.stable_key_sha256 != _identity_sha256(stable_key)
         or not decision.authorization_id
         or not decision.authorization_manifest_sha256
@@ -257,10 +263,11 @@ def _canary_bucket(stable_key: str) -> int:
 def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
     """Resolve compatibility → shadow → canary → default without widening.
 
-    An unspecified, blank, or malformed non-canary deployment value selects
-    compatibility. Canary misconfiguration raises before external execution,
-    and default mode is not authorized. Canary assignment is stable for one
-    principal and cannot fall back to random or process-local state. The
+    An unspecified, blank, or malformed deployment value selects compatibility.
+    Canary or default misconfiguration raises before external execution.
+    Canary assignment is stable for one principal and cannot fall back to
+    random or process-local state. Default requires a separate reviewed
+    authorization and selects canonical execution for every principal. The
     retained rollback mode is fixed to compatibility.
     """
 
@@ -318,7 +325,7 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
         return CopilotRolloutDecision(mode, False, True, "shadow_selected")
 
     if mode == ROLLOUT_CANARY:
-        if authority is None:
+        if authority is None or authority.mode != ROLLOUT_CANARY:
             raise CanaryAuthorizationError("validated route authority is missing")
         percentage = authority.percentage
         if not stable_key:
@@ -337,7 +344,21 @@ def copilot_rollout_decision(*, stable_key: str = "") -> CopilotRolloutDecision:
             authorization_expires_at=authority.expires_at,
         )
 
-    raise CanaryAuthorizationError("default rollout mode is not authorized")
+    if authority is None or authority.mode != ROLLOUT_DEFAULT:
+        raise CanaryAuthorizationError("validated default authority is missing")
+    if not stable_key:
+        raise CanaryAuthorizationError("default stable key is missing")
+    return CopilotRolloutDecision(
+        mode,
+        True,
+        False,
+        "default_selected",
+        authorization_id=authority.authorization_id,
+        authorization_manifest_sha256=authority.manifest_sha256,
+        reviewed_tree_sha256=authority.reviewed_tree_sha256,
+        stable_key_sha256=_identity_sha256(stable_key),
+        authorization_expires_at=authority.expires_at,
+    )
 
 
 def canonical_orchestration_enabled(
@@ -354,7 +375,10 @@ def canonical_orchestration_enabled(
     """
 
     decision = decision or copilot_rollout_decision(stable_key=stable_key)
-    if decision.mode == ROLLOUT_CANARY and decision.authorization_id:
+    if (
+        decision.mode in {ROLLOUT_CANARY, ROLLOUT_DEFAULT}
+        and decision.authorization_id
+    ):
         return decision.canonical_enabled
     legacy_mode = os.environ.get(ENV_AGENT_ORCHESTRATION_MODE, "").strip().casefold()
     return legacy_mode == MODE_CANONICAL and decision.canonical_enabled

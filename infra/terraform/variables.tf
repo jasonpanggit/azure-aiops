@@ -119,6 +119,17 @@ variable "api_image_digest" {
   }
 }
 
+variable "copilot_default_base_image_digest" {
+  description = "Exact immutable canary-tested API image digest from which a default-promotion image was derived. Required only for default rollout."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.copilot_default_base_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.copilot_default_base_image_digest))
+    error_message = "copilot_default_base_image_digest must be empty or an exact lowercase sha256 digest."
+  }
+}
+
 variable "web_image_digest" {
   description = "Optional immutable sha256 digest for the web image. When set, it takes precedence over image_tag."
   type        = string

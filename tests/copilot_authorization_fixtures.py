@@ -23,8 +23,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGED_MANIFEST = (
     REPO_ROOT / "src" / "operations" / "copilot_canary_authorization.v1.json"
 )
+PACKAGED_DEFAULT_MANIFEST = (
+    REPO_ROOT / "src" / "operations" / "copilot_default_authorization.v1.json"
+)
 SOURCE_REVISION = "a" * 40
-AUTHORIZED_NOW = datetime(2026, 9, 21, tzinfo=UTC)
+CANARY_BASE_IMAGE_DIGEST = f"sha256:{'b' * 64}"
+AUTHORIZED_NOW = datetime(2026, 9, 21, 2, tzinfo=UTC)
 _PROVIDER_VERSIONS = {
     "change": "17",
     "executive_summary": "16",
@@ -89,9 +93,7 @@ def strict_candidate_artifact(
         specialist.id: {
             "agent_name": f"aiops-{specialist.foundry.name}-agent",
             "provider_version_id": _PROVIDER_VERSIONS[specialist.id],
-            "candidate_version": (
-                f"{_CANDIDATE_RELEASE}.{specialist.foundry.version}"
-            ),
+            "candidate_version": (f"{_CANDIDATE_RELEASE}.{specialist.foundry.version}"),
             "model_deployment": "gpt-5.4-mini",
             "contract_model": specialist.foundry.model,
             "contract_version": specialist.foundry.version,
@@ -156,7 +158,43 @@ def install_valid_canary_evidence(monkeypatch) -> None:
     payload = json.loads(PACKAGED_MANIFEST.read_text(encoding="utf-8"))
     manifest_bytes = PACKAGED_MANIFEST.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    default_manifest_payload = json.loads(
+        PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8")
+    )
+    default_manifest_payload["status"] = "AUTHORIZED"
     reviewed_tree_sha256 = str(payload["reviewed_tree"]["sha256"])
+    default_manifest_payload["reviewed_tree"]["sha256"] = reviewed_tree_sha256  # type: ignore[index]
+    default_manifest_payload["canary_evidence"].update(  # type: ignore[union-attr]
+        {
+            "source_revision": SOURCE_REVISION,
+            "image_digest": CANARY_BASE_IMAGE_DIGEST,
+            "reviewed_tree_sha256": reviewed_tree_sha256,
+        }
+    )
+    lineage = default_manifest_payload["promotion_lineage"]
+    assert isinstance(lineage, dict)
+    lineage.update(
+        {
+            "base_source_revision": SOURCE_REVISION,
+            "base_image_digest": CANARY_BASE_IMAGE_DIGEST,
+            "equivalent_reviewed_tree_sha256": reviewed_tree_sha256,
+        }
+    )
+    proof_payload = {
+        key: value for key, value in lineage.items() if key != "equivalence_proof"
+    }
+    lineage["equivalence_proof"]["sha256"] = hashlib.sha256(  # type: ignore[index]
+        json.dumps(
+            proof_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    default_manifest_bytes = json.dumps(
+        default_manifest_payload,
+        sort_keys=True,
+    ).encode()
+    default_manifest_sha256 = hashlib.sha256(default_manifest_bytes).hexdigest()
     cache_root = REPO_ROOT / ".pytest_cache"
     cache_root.mkdir(exist_ok=True)
     evidence_directory = tempfile.TemporaryDirectory(
@@ -165,14 +203,17 @@ def install_valid_canary_evidence(monkeypatch) -> None:
     )
     evidence_root = Path(evidence_directory.name)
     manifest_path = evidence_root / "authorization.json"
+    default_manifest_path = evidence_root / "default-authorization.json"
     metadata_path = evidence_root / "build-metadata.json"
     manifest_path.write_bytes(manifest_bytes)
+    default_manifest_path.write_bytes(default_manifest_bytes)
     metadata_path.write_text(
         json.dumps(
             {
                 "schema_version": "copilot-build-metadata.v1",
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": manifest_sha256,
+                "default_authorization_manifest_sha256": default_manifest_sha256,
                 "reviewed_tree_sha256": reviewed_tree_sha256,
             }
         ),
@@ -188,6 +229,11 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         copilot_canary_authorization,
         "AUTHORIZATION_MANIFEST_PATH",
         manifest_path,
+    )
+    monkeypatch.setattr(
+        copilot_canary_authorization,
+        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+        default_manifest_path,
     )
     monkeypatch.setattr(
         copilot_canary_authorization,
@@ -236,9 +282,7 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         "AIOPS_SOURCE_REVISION": SOURCE_REVISION,
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT": candidate_raw,
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": candidate_transport_sha256,
-        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(
-            binding["semantic_sha256"]
-        ),
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(binding["semantic_sha256"]),
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": manifest_sha256,
         "AIOPS_DEPLOYMENT_TENANT_ID": str(target["tenant_id"]),
         "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID": str(target["subscription_id"]),
@@ -253,12 +297,8 @@ def install_valid_canary_evidence(monkeypatch) -> None:
             f"{project['endpoint']}/api/projects/{project['name']}"
         ),
         "AIOPS_COPILOT_CANDIDATE_RELEASE": str(binding["release"]),
-        "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION": str(
-            binding["contract_version"]
-        ),
-        "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(
-            binding["manifest_sha256"]
-        ),
+        "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION": str(binding["contract_version"]),
+        "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(binding["manifest_sha256"]),
         "AIOPS_COPILOT_PARSER_PROOF_SHA256": str(binding["parser_proof_sha256"]),
         "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256": str(
             binding["serialization_proof_sha256"]
@@ -300,6 +340,56 @@ def enable_authorized_canary(
         "_canary_bucket",
         lambda _stable_key: 0 if canonical else 99,
     )
+
+
+def enable_authorized_default(monkeypatch) -> None:
+    """Activate full canonical rollout through the separate default authority."""
+
+    install_valid_canary_evidence(monkeypatch)
+    default_payload = json.loads(
+        copilot_canary_authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(
+            encoding="utf-8"
+        )
+    )
+    default_reviewed_tree_sha256 = str(
+        default_payload["canary_evidence"]["reviewed_tree_sha256"]
+    )
+    metadata = json.loads(
+        copilot_canary_authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8")
+    )
+    metadata["reviewed_tree_sha256"] = default_reviewed_tree_sha256
+    metadata["source_revision"] = default_payload["promotion_lineage"][  # type: ignore[index]
+        "base_source_revision"
+    ]
+    metadata["default_promotion"] = default_payload["promotion_lineage"]
+    copilot_canary_authorization.BUILD_METADATA_PATH.write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+
+    def read_default_reviewed_tree_digest(root, include_roots, exclude_paths):
+        assert root == REPO_ROOT
+        assert tuple(include_roots) == tuple(
+            default_payload["reviewed_tree"]["include_roots"]
+        )
+        assert tuple(exclude_paths) == tuple(
+            default_payload["reviewed_tree"]["exclude_paths"]
+        )
+        return default_reviewed_tree_sha256
+
+    monkeypatch.setattr(
+        copilot_canary_authorization,
+        "reviewed_tree_digest",
+        read_default_reviewed_tree_digest,
+    )
+    monkeypatch.setenv(
+        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+        hashlib.sha256(
+            copilot_canary_authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_bytes()
+        ).hexdigest(),
+    )
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "default")
+    monkeypatch.setenv("AIOPS_COPILOT_CANARY_PERCENTAGE", "100")
 
 
 def rollout_decision_for_test(

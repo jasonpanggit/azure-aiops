@@ -12,9 +12,13 @@ REVIEWED_TREE_ALGORITHM = "sha256-path-length-content-v1"
 AUTHORIZATION_MANIFEST_RELATIVE_PATH = (
     "src/operations/copilot_canary_authorization.v1.json"
 )
+DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH = (
+    "src/operations/copilot_default_authorization.v1.json"
+)
 REVIEWED_TREE_ROOTS = (
     ".dockerignore",
     "Dockerfile",
+    "Dockerfile.default-promotion",
     "arg.config.deploy.yaml",
     "fabric.config.deploy.yaml",
     "infra/scripts/build-and-push.sh",
@@ -35,6 +39,7 @@ REVIEWED_TREE_ROOTS = (
 )
 REVIEWED_TREE_EXCLUDED_PATHS = (
     AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+    DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
 )
 
 
@@ -57,15 +62,17 @@ def _validate_definition(
         (reviewed_exclusions, "exclusions"),
     ):
         if values != tuple(sorted(values)) or len(set(values)) != len(values):
-            raise ReviewedTreeError(
-                f"reviewed tree {label} must be sorted and unique"
-            )
+            raise ReviewedTreeError(f"reviewed tree {label} must be sorted and unique")
         for value in values:
             path = PurePosixPath(value)
             if path.is_absolute() or ".." in path.parts or str(path) != value:
                 raise ReviewedTreeError(f"invalid reviewed tree path: {value}")
-    if AUTHORIZATION_MANIFEST_RELATIVE_PATH not in reviewed_exclusions:
-        raise ReviewedTreeError("authorization manifest must be excluded")
+    required_exclusions = {
+        AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+        DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+    }
+    if not required_exclusions.issubset(reviewed_exclusions):
+        raise ReviewedTreeError("authorization manifests must be excluded")
     return reviewed_roots, reviewed_exclusions
 
 
@@ -102,8 +109,16 @@ def reviewed_tree_paths(
                 )
             if path.is_file():
                 files.add(relative)
-    if AUTHORIZATION_MANIFEST_RELATIVE_PATH in files:
-        raise ReviewedTreeError("authorization manifest must not hash itself")
+    if (
+        required_exclusions := {
+            AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+            DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+        }
+        & files
+    ):
+        raise ReviewedTreeError(
+            f"authorization manifests must not hash themselves: {sorted(required_exclusions)}"
+        )
     return tuple(sorted(files))
 
 
@@ -116,7 +131,8 @@ def reviewed_tree_digest(
 
     Files are processed in lexicographic path order. For every file the SHA-256
     input is ``UTF8(path) + NUL + ASCII(byte_length) + NUL + file_bytes``.
-    The authorization manifest is deliberately excluded to avoid self-reference.
+    Authorization evidence artifacts are deliberately excluded to avoid
+    self-reference.
     """
 
     reviewed_paths = reviewed_tree_paths(root, roots, excluded_paths)
