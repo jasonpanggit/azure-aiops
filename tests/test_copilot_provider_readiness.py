@@ -425,7 +425,9 @@ def test_separate_default_authorization_enables_every_principal(
         assert decision.canonical_enabled is True
         assert decision.shadow_enabled is False
         assert decision.canary_bucket is None
-        assert decision.authorization_id == "p11-default-authorization-20260921"
+        assert decision.authorization_id == (
+            "p11-default-authorization-source58a-20260921"
+        )
 
 
 @pytest.mark.parametrize("percentage", ["", "-1", "101", "ten", "10.5"])
