@@ -596,9 +596,21 @@ describe("Governed remediation workflow", () => {
       approvedActionVersion: "version-1",
       approvedPatchIds: ["KB699999"],
     },
+    {
+      name: "approval is stale for a reason other than the patch snapshot",
+      approvedActionVersion: "version-1",
+      approvedPatchIds: ["KB600001"],
+      staleReasons: ["stale_action_version"],
+    },
+    {
+      name: "the approved patch selection is empty",
+      approvedActionVersion: "version-1",
+      approvedPatchIds: [],
+    },
   ])("does not restore an approved subset when $name", async ({
     approvedActionVersion,
     approvedPatchIds,
+    staleReasons = ["stale_evidence_snapshot"],
   }) => {
     const staleDefault = workflowFixture({
       availablePatches: [
@@ -606,7 +618,7 @@ describe("Governed remediation workflow", () => {
         { patch_id: "KB600002", title: "Optional feature update", severity: "Low" },
       ],
       approvalStatus: "stale",
-      staleReasons: ["stale_evidence_snapshot"],
+      staleReasons,
     });
     workflow.mockResolvedValue(envelope({
       ...staleDefault,
