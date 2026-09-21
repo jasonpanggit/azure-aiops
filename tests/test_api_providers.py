@@ -9,8 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from api.app import _start_background_refresh
+from api.app import (
+    _REMEDIATION_PLANNER_REFRESH_INTERVAL_SECONDS,
+    _refresh_remediation_planner,
+    _start_background_refresh,
+    _start_remediation_planner_refresh,
+)
 from api.providers import (
     DEFERRED,
     DEGRADED,
@@ -373,6 +379,53 @@ def test_initial_get_during_background_startup_does_not_duplicate_io() -> None:
 
     assert not app.state.provider_refresh_thread.is_alive()
     assert runtime.get("network") is provider
+
+
+def test_remediation_planner_is_warmed_before_requests() -> None:
+    calls: list[list[str]] = []
+    app = FastAPI()
+    context = SimpleNamespace(
+        onboarding=SimpleNamespace(
+            registry=SimpleNamespace(
+                list=lambda *, include_disabled: [
+                    SimpleNamespace(subscription_id="sub-b"),
+                    SimpleNamespace(subscription_id="sub-a"),
+                    SimpleNamespace(subscription_id="sub-a"),
+                ]
+            )
+        ),
+        hybrid_remediation_provider=lambda subscriptions: calls.append(subscriptions),
+    )
+
+    _start_remediation_planner_refresh(app, context)
+
+    with TestClient(app):
+        assert calls == [["sub-a", "sub-b"]]
+        assert _REMEDIATION_PLANNER_REFRESH_INTERVAL_SECONDS == 30
+        assert app.state.remediation_planner_refresh_thread.is_alive()
+
+    assert not app.state.remediation_planner_refresh_thread.is_alive()
+
+
+def test_remediation_planner_refresh_reuses_the_warmed_subscription_scope() -> None:
+    calls: list[list[str]] = []
+    context = SimpleNamespace(
+        onboarding=SimpleNamespace(
+            registry=SimpleNamespace(
+                list=lambda *, include_disabled: [
+                    SimpleNamespace(subscription_id="sub-b"),
+                    SimpleNamespace(subscription_id="sub-a"),
+                    SimpleNamespace(subscription_id="sub-a"),
+                ]
+            )
+        ),
+        hybrid_remediation_provider=lambda subscriptions: calls.append(subscriptions),
+    )
+
+    _refresh_remediation_planner(context)
+    _refresh_remediation_planner(context)
+
+    assert calls == [["sub-a", "sub-b"], ["sub-a", "sub-b"]]
 
 
 def test_unchanged_cache_key_skips_periodic_provider_rebuild() -> None:

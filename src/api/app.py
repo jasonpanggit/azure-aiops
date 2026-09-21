@@ -65,6 +65,7 @@ semantic snapshots.
 """
 logger = logging.getLogger("aiops.api")
 _CORRELATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+_REMEDIATION_PLANNER_REFRESH_INTERVAL_SECONDS = 30
 _ERROR_RESPONSES = {
     str(status): {
         "description": description,
@@ -200,6 +201,61 @@ def _start_background_refresh(app: FastAPI, context: ApiContext) -> None:
         thread.join(timeout=5)
 
 
+def _refresh_remediation_planner(context: ApiContext) -> None:
+    """Refresh the all-subscription remediation planner outside request handling."""
+    provider = context.hybrid_remediation_provider
+    if provider is None:
+        return
+    subscriptions = {
+        str(connection.subscription_id)
+        for connection in context.onboarding.registry.list(include_disabled=False)
+        if str(connection.subscription_id)
+    }
+    if subscriptions:
+        provider(sorted(subscriptions))
+
+
+def _start_remediation_planner_refresh(app: FastAPI, context: ApiContext) -> None:
+    """Warm the short-lived remediation cache before it can block a page request."""
+    if context.hybrid_remediation_provider is None:
+        return
+
+    @app.on_event("startup")
+    def _start() -> None:
+        try:
+            _refresh_remediation_planner(context)
+        except Exception:
+            logger.exception("remediation_planner_warmup_failed")
+
+        stop_event = threading.Event()
+
+        def _loop() -> None:
+            # The provider rebuilds only after its 30-second TTL expires.
+            # Polling sooner would return the cached value and postpone the
+            # actual refresh until the following interval.
+            while not stop_event.wait(_REMEDIATION_PLANNER_REFRESH_INTERVAL_SECONDS):
+                try:
+                    _refresh_remediation_planner(context)
+                except Exception:
+                    logger.exception("remediation_planner_refresh_failed")
+
+        thread = threading.Thread(
+            target=_loop, name="remediation-planner-refresh", daemon=True
+        )
+        thread.start()
+        app.state.remediation_planner_refresh_stop = stop_event
+        app.state.remediation_planner_refresh_thread = thread
+
+    @app.on_event("shutdown")
+    def _stop() -> None:
+        stop_event = getattr(app.state, "remediation_planner_refresh_stop", None)
+        thread = getattr(app.state, "remediation_planner_refresh_thread", None)
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None:
+            thread.join(timeout=5)
+
+
 def _start_verification_coordinator(app: FastAPI, context: ApiContext) -> None:
     """Drive every due remediation execution on a dedicated background thread.
 
@@ -276,6 +332,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     )
     app.state.context = context
     _start_background_refresh(app, context)
+    _start_remediation_planner_refresh(app, context)
     _start_verification_coordinator(app, context)
     configured_origins = os.environ.get(
         "AIOPS_API_CORS_ORIGINS",
