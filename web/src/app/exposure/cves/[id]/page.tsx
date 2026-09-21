@@ -327,6 +327,13 @@ function presentSection<T>(
     expected:
       (common.data as ExposureOverview | null)?.contract.completeness
         .expected_connections ?? common.metadata.expected,
+    // `total`/`excluded` must come from this section's own contract, not the
+    // shared CVE-wide target-completeness overview — otherwise every
+    // section (Attack path, NVD, EPSS, KEV, KB mapping) wrongly borrows the
+    // overview's total/excluded regardless of its own record count.
+    total: section.metadata.total,
+    excluded: section.metadata.excluded,
+    excludedReasons: section.metadata.excludedReasons,
     loaded,
     observedAt:
       source?.source_at ??

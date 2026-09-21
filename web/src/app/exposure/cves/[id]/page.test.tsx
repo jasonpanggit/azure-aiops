@@ -550,6 +550,13 @@ describe("CVE detail", () => {
     }
     expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText(/2 excluded/).length).toBeGreaterThanOrEqual(2);
+    // "excluded"/"total" must come from each section's own contract, not the
+    // shared CVE-wide overview — sections without their own count (e.g.
+    // Attack path) should not display it at all.
+    const attackSection = screen.getByRole("region", { name: "Attack path section" });
+    expect(attackSection.querySelector(".source-section-coverage")?.textContent ?? "").not.toMatch(
+      /excluded|4 total/,
+    );
     expect(screen.getByLabelText("CVSS value")).toHaveTextContent(/9.8\s*\/10/);
     expect(screen.getByLabelText("EPSS value")).toHaveTextContent(/73.0\s*%/);
     expect(screen.getByText("1 mapped service")).toBeInTheDocument();
