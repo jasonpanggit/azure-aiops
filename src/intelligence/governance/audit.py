@@ -44,6 +44,7 @@ EXPOSURE_AUDIT_EVENT_TYPES = frozenset(
         "remediation.execution_retry_requested",
         "remediation.execution_supersede_requested",
         "remediation.execution_cancel_requested",
+        "remediation.execution_abandon_requested",
     }
 )
 _SENSITIVE_AUDIT_KEY_MARKERS = (

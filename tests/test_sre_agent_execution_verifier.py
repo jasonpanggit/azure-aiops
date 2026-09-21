@@ -241,6 +241,81 @@ def test_cancel_fails_closed_when_an_approval_remains_after_rejection() -> None:
         verifier.cancel(_record())
 
 
+def test_read_approvals_returns_every_row_regardless_of_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/v1/approvals/thread-123"
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "approval-1", "status": "Rejected"},
+                {"id": "approval-2", "status": "Approved"},
+            ],
+            request=request,
+        )
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    rows = verifier.read_approvals(_record())
+
+    assert rows == [
+        {"id": "approval-1", "status": "Rejected"},
+        {"id": "approval-2", "status": "Approved"},
+    ]
+
+
+def test_read_approvals_returns_empty_list_when_none_exist() -> None:
+    verifier, _credential = _verifier([])
+
+    assert verifier.read_approvals(_record()) == []
+
+
+def test_read_approvals_fails_closed_on_non_200() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ExecutionVerificationUnavailable) as excinfo:
+        verifier.read_approvals(_record())
+
+    assert excinfo.value.capability == "sre_agent_approval_read"
+
+
+def test_read_approvals_fails_closed_on_unrecognized_shape() -> None:
+    verifier, _credential = _verifier({"unexpected": "shape"})
+
+    with pytest.raises(ExecutionVerificationUnavailable) as excinfo:
+        verifier.read_approvals(_record())
+
+    assert excinfo.value.capability == "sre_agent_approval_read"
+
+
+def test_read_approvals_fails_closed_on_transport_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unreachable-sentinel", request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(ExecutionVerificationUnavailable) as excinfo:
+        verifier.read_approvals(_record())
+
+    assert excinfo.value.capability == "sre_agent_approval_read"
+    assert "unreachable-sentinel" not in str(excinfo.value)
+
+
 def test_complete_without_typed_write_submission_does_not_succeed() -> None:
     verifier, _credential = _verifier(
         {

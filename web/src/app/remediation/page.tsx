@@ -1119,6 +1119,23 @@ function RemediationContent() {
     }
   };
 
+  const abandonExecution = async (execution: RemediationExecution) => {
+    if (!execution.can_abandon || submitting) return;
+    setSubmitting(true);
+    setActionError("");
+    try {
+      const response = await remediationApi.abandon(execution.execution_id, effectiveScope);
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
+      setWorkflowRefresh((value) => value + 1);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const supersedeExecution = async (execution: RemediationExecution, reason: string) => {
     if (!execution.supersedable || submitting) return;
     setSubmitting(true);
@@ -1913,6 +1930,7 @@ function RemediationContent() {
                             onCancel={() => cancelExecution(workflow.execution!)}
                             onRetry={() => retryExecution(workflow.execution!)}
                             onSupersede={(reason) => supersedeExecution(workflow.execution!, reason)}
+                            onAbandon={() => abandonExecution(workflow.execution!)}
                             submitting={submitting}
                             supersedeIneligibilityReason={supersedeIneligibilityReason}
                           />
@@ -2144,6 +2162,7 @@ function RecoveryControls({
   onCancel,
   onRetry,
   onSupersede,
+  onAbandon,
   submitting,
   supersedeIneligibilityReason,
 }: {
@@ -2151,14 +2170,23 @@ function RecoveryControls({
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
   onSupersede: (reason: string) => void | Promise<void>;
+  onAbandon: () => void | Promise<void>;
   submitting: boolean;
   supersedeIneligibilityReason: string;
 }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [showSupersedeForm, setShowSupersedeForm] = useState(false);
   const [supersedeReason, setSupersedeReason] = useState("");
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
 
-  if (!execution.cancellable && !execution.retryable && !execution.supersedable) return null;
+  if (
+    !execution.cancellable
+    && !execution.retryable
+    && !execution.supersedable
+    && !execution.can_abandon
+  ) {
+    return null;
+  }
 
   return (
     <div className="remediation-recovery">
@@ -2222,6 +2250,32 @@ function RecoveryControls({
             Confirm supersede
           </button>
           <button type="button" className="button button-quiet" onClick={() => setShowSupersedeForm(false)}>Back</button>
+        </div>
+      )}
+      {execution.can_abandon && !confirmAbandon && (
+        <button type="button" className="button" onClick={() => setConfirmAbandon(true)}>
+          Abandon request
+        </button>
+      )}
+      {execution.can_abandon && confirmAbandon && (
+        <div className="callout" role="alertdialog" aria-label="Confirm abandon">
+          <p>
+            Abandoning this request only stops local tracking here -- it does not
+            cancel any Azure SRE Agent provider work, and is only offered when no
+            provider action or approval exists for this thread.
+          </p>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={submitting}
+            onClick={() => {
+              void onAbandon();
+              setConfirmAbandon(false);
+            }}
+          >
+            Confirm abandon
+          </button>
+          <button type="button" className="button button-quiet" onClick={() => setConfirmAbandon(false)}>Back</button>
         </div>
       )}
       {supersedeIneligibilityReason && (

@@ -430,6 +430,68 @@ class SreAgentExecutionVerifier:
             if self._client is None:
                 client.close()
 
+    def read_approvals(self, execution_record: dict[str, Any]) -> list[object]:
+        """Read-only listing of every approval record for this thread.
+
+        Distinct from :meth:`cancel`: never posts a decision and never
+        requires a *pending* approval. Used by abandon eligibility to fail
+        closed when any approval row exists for the thread -- including an
+        already-decided, rejected, or expired one -- that the composite
+        thread-status summary alone does not surface. Fails closed (raises
+        :class:`ExecutionVerificationUnavailable`) on any transport error,
+        non-200 response, unparseable body, or unrecognized collection
+        shape; never returns a permissive "no approvals" default in those
+        cases.
+        """
+        _thread_url, thread_id = self._thread_id(execution_record)
+        access_token = self._token()
+        headers = {"Authorization": "Bearer " + access_token}
+        approvals_url = (
+            f"{self._agent_endpoint}/api/v1/approvals/{quote(thread_id, safe='')}"
+        )
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=False,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = client.get(
+                approvals_url,
+                headers=headers,
+                follow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ExecutionVerificationUnavailable(
+                    f"Azure SRE Agent approval lookup returned HTTP {response.status_code}.",
+                    capability="sre_agent_approval_read",
+                )
+            try:
+                payload = response.json()
+            except ValueError:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent returned an unparseable approval list.",
+                    capability="sre_agent_approval_read",
+                ) from None
+            rows = self._approval_rows(payload)
+            if rows is None:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent returned an unrecognized approval list shape.",
+                    capability="sre_agent_approval_read",
+                )
+            return rows
+        except httpx.HTTPError:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent was unreachable while reading approvals.",
+                capability="sre_agent_approval_read",
+            ) from None
+        finally:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            if self._client is None:
+                client.close()
+
     def verify(self, execution_record: dict[str, Any]) -> dict[str, Any]:
         """Map the documented thread status to the remediation outcome model."""
         if str(execution_record.get("provider") or "") != SRE_AGENT_PROVIDER:
