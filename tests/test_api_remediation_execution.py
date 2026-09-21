@@ -26,6 +26,7 @@ from intelligence.remediation.approval_decisions import (
 from intelligence.remediation.approval_gate import policy_version_for
 from intelligence.remediation.execution_service import RemediationExecutionService
 from intelligence.remediation.execution_store import RemediationExecutionStore
+from intelligence.remediation.execution_verifier import ExecutionVerificationUnavailable
 from intelligence.remediation.plan_repository import PlanRepository
 from onboarding.service import SubscriptionOnboardingService
 from operations.defender_configuration import (
@@ -113,6 +114,7 @@ def _client(
     principals=None,
     adapter=None,
     defender_adapter=None,
+    execution_verifier=None,
 ) -> TestClient:
     decision_store = RemediationDecisionStore()
     resolved_planner = planner or remediation_planner(
@@ -182,6 +184,7 @@ def _client(
             patching_service=patching_service,
             defender_configuration_adapter=defender_adapter,
             execution_store=execution_store,
+            execution_verifier=execution_verifier,
             # Shared across many tests here, none of which exercise SoD
             # refusal (that is covered narrowly by Plan 03.5-05's own
             # dedicated tests) -- consistent with this fixture's existing
@@ -1350,3 +1353,150 @@ def test_recorded_decision_approver_roles_names_the_satisfying_capacity_not_ever
 
     assert "approver" in decision["approver_roles"]
     assert "operator" not in decision["approver_roles"]
+
+
+class _AbandonApiQuiescentVerifier:
+    """Reachable, blank-status SRE thread with zero approval records --
+    the exact quiescent shape the abandon self-service control targets."""
+
+    def __init__(self, *, approvals: list[object] | None = ()) -> None:
+        self._approvals = approvals
+
+    def verify(self, _record: dict) -> dict:
+        return {
+            "verifiable": True,
+            "outcome": "running",
+            "verified_state": "In Progress",
+            "provider_active": True,
+            "verification_evidence": {
+                "thread_status": {
+                    "last_message_complete": True,
+                    "has_critical_actions": False,
+                    "has_warning_actions": False,
+                    "incident_status": "",
+                }
+            },
+        }
+
+    def read_approvals(self, _record: dict) -> list[object]:
+        if self._approvals is None:
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent approval lookup returned HTTP 503.",
+                capability="sre_agent_approval_read",
+            )
+        return list(self._approvals)
+
+
+class _AbandonApiPendingApprovalVerifier(_AbandonApiQuiescentVerifier):
+    def verify(self, _record: dict) -> dict:
+        return {
+            "verifiable": True,
+            "outcome": "running",
+            "verified_state": "Pending Review",
+            "provider_active": True,
+            "verification_evidence": {"approval_pending": True},
+        }
+
+
+def _running_sre_execution_over_http(
+    client: TestClient, planner, execution_store, plan
+) -> dict:
+    _approve(planner, plan)
+    execution = client.post(
+        f"/api/v1/remediation/plans/{plan['plan_id']}/execute",
+        headers=_auth(),
+    ).json()["data"]
+    current = execution_store.get(execution["execution_id"])
+    return execution_store.transition(
+        execution["execution_id"],
+        expected_revision=current["revision"],
+        expected_status="running",
+        status="running",
+        actor="test",
+        provider="sre-agent",
+        provider_job_id="https://sre.example.azure.com/api/v1/threads/thread-abandon-http",
+        verification_evidence={},
+    )
+
+
+def test_execution_abandon_endpoint_is_mounted_in_the_running_app(tmp_path) -> None:
+    client, _planner, _store = _client(tmp_path)
+    paths = client.get("/openapi.json", headers=_auth()).json()["paths"]
+    assert "/api/v1/remediation/executions/{execution_id}/abandon" in paths
+
+
+def test_abandon_terminalizes_a_quiescent_sre_request_over_http(tmp_path) -> None:
+    client, planner, execution_store = _client(
+        tmp_path, execution_verifier=_AbandonApiQuiescentVerifier(approvals=[])
+    )
+    plan = _patch_recovery_plan(client)
+    running = _running_sre_execution_over_http(client, planner, execution_store, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{running['execution_id']}/abandon",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200, response.text
+    execution = response.json()["data"]
+    assert execution["status"] == "failed"
+    assert execution["outcome"] == "unknown"
+    assert (
+        execution["failure_class"] == "operator_abandoned_without_provider_cancellation"
+    )
+    assert execution["abandoned"] is True
+    assert execution["provider_cancelled"] is False
+    assert execution["execution_id"] == running["execution_id"]
+    assert execution["provider_job_id"] == running["provider_job_id"]
+
+
+def test_abandon_refuses_when_a_pending_approval_exists_over_http(tmp_path) -> None:
+    client, planner, execution_store = _client(
+        tmp_path, execution_verifier=_AbandonApiPendingApprovalVerifier()
+    )
+    plan = _patch_recovery_plan(client)
+    running = _running_sre_execution_over_http(client, planner, execution_store, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{running['execution_id']}/abandon",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["error"]["details"]["reason"] == "approval_pending"
+    assert execution_store.get(running["execution_id"])["status"] == "running"
+
+
+def test_abandon_fails_closed_without_a_configured_verifier_over_http(tmp_path) -> None:
+    client, planner, execution_store = _client(tmp_path)
+    plan = _patch_recovery_plan(client)
+    running = _running_sre_execution_over_http(client, planner, execution_store, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{running['execution_id']}/abandon",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["details"]["reason"] == "verification_unavailable"
+    assert execution_store.get(running["execution_id"])["status"] == "running"
+
+
+def test_abandon_out_of_scope_execution_is_404(tmp_path) -> None:
+    """Same 403/404 narrowing behavior as retry/cancel/supersede: an
+    out-of-scope caller cannot abandon an execution outside their operate
+    scope."""
+    client, planner, execution_store = _client(
+        tmp_path, execution_verifier=_AbandonApiQuiescentVerifier(approvals=[])
+    )
+    plan = _patch_recovery_plan(client)
+    running = _running_sre_execution_over_http(client, planner, execution_store, plan)
+
+    response = client.post(
+        f"/api/v1/remediation/executions/{running['execution_id']}/abandon",
+        headers=_auth(SCOPED_OPERATOR_TOKEN),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"

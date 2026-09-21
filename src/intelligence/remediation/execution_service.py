@@ -1073,6 +1073,7 @@ class RemediationExecutionService:
         else:
             reason = "execution_not_retryable"
         supersede_ineligibility_reason = _supersede_eligibility(view)
+        abandon_ineligibility_reason = _abandon_eligibility(view)
         view.update(
             {
                 "retryable": retryable,
@@ -1082,6 +1083,8 @@ class RemediationExecutionService:
                 "ineligibility_reason": reason,
                 "supersedable": supersede_ineligibility_reason == "",
                 "supersede_ineligibility_reason": supersede_ineligibility_reason,
+                "can_abandon": abandon_ineligibility_reason == "",
+                "abandon_ineligibility_reason": abandon_ineligibility_reason,
             }
         )
         return view
@@ -1187,6 +1190,163 @@ class RemediationExecutionService:
         view["ineligibility_reason"] = "execution_not_cancellable"
         return view
 
+    def abandon(self, execution_id: str, *, requested_by: str) -> dict[str, Any]:
+        """Operator self-service recovery for a safe, quiescent SRE request.
+
+        Distinct from :meth:`cancel`: this never contacts Azure SRE Agent
+        and never claims to reject or cancel anything server-side. It only
+        ends *this repo's own local tracking* of a running thread once a
+        FRESH verification proves the thread has no pending approval, no
+        approval record of any status, no submitted provider operation, no
+        typed active incident/action, and no success evidence -- i.e.
+        nothing an operator could still be waiting on. Every ambiguous or
+        unconfirmable case fails closed and leaves the execution
+        unchanged; a stale/cached ``verification_evidence`` on the record
+        is never trusted for this decision.
+        """
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to abandon",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        if (
+            str(record.get("status") or "") != "running"
+            or str(record.get("provider") or "") != SRE_AGENT_PROVIDER
+            or not str(record.get("provider_job_id") or "").strip()
+        ):
+            raise RemediationExecutionError(
+                "Only a running Azure SRE Agent request can be abandoned",
+                reason="execution_not_abandonable",
+                details={"execution_id": execution_id},
+            )
+        if self._verifier is None or not callable(
+            getattr(self._verifier, "verify", None)
+        ):
+            raise RemediationExecutionError(
+                "No execution verifier is configured; cannot confirm this "
+                "request is safe to abandon",
+                reason="verification_unavailable",
+                details={"execution_id": execution_id},
+            )
+        try:
+            outcome = self._verifier.verify(record)
+        except ExecutionVerificationUnavailable as exc:
+            raise RemediationExecutionError(
+                "Azure SRE Agent did not confirm this thread's current "
+                "state; abandon refused.",
+                reason="verification_unavailable",
+                details={"execution_id": execution_id, "capability": exc.capability},
+            ) from exc
+        if not outcome.get("verifiable", False):
+            raise RemediationExecutionError(
+                "Azure SRE Agent verification is unavailable; abandon refused.",
+                reason="verification_unavailable",
+                details={"execution_id": execution_id},
+            )
+        if outcome.get("outcome") in {"succeeded", "failed", "cancelled"}:
+            raise RemediationExecutionError(
+                "This request already reached a terminal provider outcome; "
+                "poll instead of abandoning.",
+                reason="execution_already_terminal",
+                details={"execution_id": execution_id},
+            )
+        evidence = outcome.get("verification_evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        if evidence.get("approval_pending") is True:
+            raise RemediationExecutionError(
+                "A pending Azure SRE Agent approval exists; abandon refused.",
+                reason="approval_pending",
+                details={"execution_id": execution_id},
+            )
+        if isinstance(evidence.get("provider_operation"), dict):
+            raise RemediationExecutionError(
+                "Azure SRE Agent already has a submitted provider operation; "
+                "abandon refused.",
+                reason="provider_operation_exists",
+                details={"execution_id": execution_id},
+            )
+        if _sre_evidence_has_typed_activity(evidence):
+            raise RemediationExecutionError(
+                "Azure SRE Agent reports a typed active incident or action; "
+                "abandon refused.",
+                reason="typed_active_action_exists",
+                details={"execution_id": execution_id},
+            )
+        # WR-abandon: even a quiescent, no-flags composite must not be
+        # trusted alone -- a decided/rejected/expired approval the
+        # composite summary never surfaces still proves an operator was
+        # actively engaged with this thread. Read-only; never posts a
+        # decision (that is exclusively `cancel()`'s job).
+        read_approvals = getattr(self._verifier, "read_approvals", None)
+        if not callable(read_approvals):
+            raise RemediationExecutionError(
+                "Azure SRE Agent approval history cannot be confirmed for "
+                "this thread; abandon refused.",
+                reason="verification_unavailable",
+                details={"execution_id": execution_id},
+            )
+        try:
+            approvals = read_approvals(record)
+        except ExecutionVerificationUnavailable as exc:
+            raise RemediationExecutionError(
+                "Azure SRE Agent approval history could not be confirmed; "
+                "abandon refused.",
+                reason="verification_unavailable",
+                details={"execution_id": execution_id, "capability": exc.capability},
+            ) from exc
+        if approvals:
+            raise RemediationExecutionError(
+                "An Azure SRE Agent approval record exists for this thread; "
+                "abandon refused.",
+                reason="approval_exists",
+                details={"execution_id": execution_id},
+            )
+        try:
+            abandoned = self._store.transition(
+                execution_id,
+                expected_revision=int(record.get("revision") or 0),
+                expected_status="running",
+                status="failed",
+                actor=requested_by,
+                outcome="unknown",
+                failure_class="operator_abandoned_without_provider_cancellation",
+                verified_state="operator_abandoned",
+                message=_append_note(
+                    record.get("message"),
+                    "The operator abandoned local tracking of this request. "
+                    "Azure SRE Agent was not contacted and no provider "
+                    "cancellation occurred.",
+                ),
+                failure_details=(
+                    "The operator abandoned tracking of this quiescent Azure "
+                    "SRE Agent request through the self-service recovery "
+                    "control. Azure SRE Agent was not contacted and no "
+                    "provider cancellation occurred; verify the thread "
+                    "directly before assuming no action was taken."
+                ),
+                verification_evidence=evidence,
+                ineligibility_reason="",
+                now=self._now(),
+            )
+        except ExecutionClaimConflict as exc:
+            raise RemediationExecutionError(
+                "Another lifecycle operation changed the execution while "
+                "abandonment was being confirmed.",
+                reason=exc.reason,
+                details={"execution_id": execution_id},
+            ) from exc
+        view = self.execution_view(abandoned)
+        view["abandoned"] = True
+        view["provider_cancelled"] = False
+        return view
 
     def poll_verification(self, execution_id: str) -> dict[str, Any]:
         """Poll the real upstream source of truth for one running execution.
@@ -1963,15 +2123,16 @@ def _target_evidence_usable(
     return assessed > boundary
 
 
-def _sre_outcome_has_deadline_extending_activity(
-    record: dict[str, Any],
-    outcome: dict[str, Any],
-) -> bool:
-    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
-        return bool(outcome.get("provider_active", False))
-    if outcome.get("provider_active") is not True:
-        return False
-    evidence = outcome.get("verification_evidence")
+def _sre_evidence_has_typed_activity(evidence: Any) -> bool:
+    """Whether SRE verification evidence proves a typed active action.
+
+    Shared by :func:`_sre_outcome_has_deadline_extending_activity` (a fresh
+    verifier outcome) and :func:`_record_has_typed_active_sre_evidence` (a
+    durable record's last-stored evidence), so a live poll and a read-side
+    projection can never disagree about what counts as "still active":
+    a submitted provider operation, a pending approval, a nonblank typed
+    incident status, or a typed critical/warning action flag.
+    """
     if not isinstance(evidence, dict):
         return False
     if isinstance(evidence.get("provider_operation"), dict):
@@ -1988,6 +2149,30 @@ def _sre_outcome_has_deadline_extending_activity(
         thread_status.get("has_critical_actions") is True
         or thread_status.get("has_warning_actions") is True
     )
+
+
+def _sre_outcome_has_deadline_extending_activity(
+    record: dict[str, Any],
+    outcome: dict[str, Any],
+) -> bool:
+    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
+        return bool(outcome.get("provider_active", False))
+    if outcome.get("provider_active") is not True:
+        return False
+    return _sre_evidence_has_typed_activity(outcome.get("verification_evidence"))
+
+
+def _record_has_typed_active_sre_evidence(record: dict[str, Any]) -> bool:
+    """Whether a durable record's own stored evidence still looks active.
+
+    Read-side counterpart used only by :meth:`RemediationExecutionService
+    .execution_view`'s ``can_abandon`` projection -- never by the write-side
+    :meth:`RemediationExecutionService.abandon`, which always re-verifies
+    fresh before ever committing a terminal transition.
+    """
+    if str(record.get("provider") or "") != SRE_AGENT_PROVIDER:
+        return False
+    return _sre_evidence_has_typed_activity(record.get("verification_evidence"))
 
 
 def _submission_proof_allows_ambiguity_resolution(
@@ -2029,6 +2214,37 @@ def _next_backoff_seconds(verification_attempts: int) -> float:
     attempt = max(1, int(verification_attempts))
     capped_exponent = min(attempt - 1, 6)
     return min(60.0, 5.0 * (2**capped_exponent))
+
+
+def _abandon_eligibility(record: dict[str, Any]) -> str:
+    """Shared read-side static abandon-eligibility check.
+
+    Only the structural preconditions that never require a live provider
+    call: the record must be a running Azure SRE Agent request with a
+    thread handle, and its last-stored evidence must not already show a
+    typed active action (used by :meth:`RemediationExecutionService
+    .execution_view`'s ``can_abandon`` projection). :meth:`
+    RemediationExecutionService.abandon` always re-verifies fresh on top
+    of this before ever committing a terminal transition -- this
+    projection only decides whether to offer the control.
+    """
+    status = str(record.get("status") or "")
+    if (
+        status != "running"
+        or str(record.get("provider") or "") != SRE_AGENT_PROVIDER
+        or not str(record.get("provider_job_id") or "").strip()
+    ):
+        return "execution_not_abandonable"
+    evidence = record.get("verification_evidence")
+    if isinstance(evidence, dict) and evidence.get("approval_pending") is True:
+        return "approval_pending"
+    if isinstance(evidence, dict) and isinstance(
+        evidence.get("provider_operation"), dict
+    ):
+        return "provider_operation_exists"
+    if _record_has_typed_active_sre_evidence(record):
+        return "typed_active_action_exists"
+    return ""
 
 
 def _supersede_eligibility(record: dict[str, Any]) -> str:
