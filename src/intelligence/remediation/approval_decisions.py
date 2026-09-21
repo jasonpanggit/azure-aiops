@@ -151,6 +151,14 @@ def build_execution_snapshot(
         "target_kind": target.inventory_kind,
         "operation": target.operation,
         "action_version": str(plan.get("action_version") or ""),
+        # Not part of _SNAPSHOT_FIELDS/execution_snapshot_hash: target_id
+        # already pins the subscription (it's an ARM resource id), so this
+        # is a self-contained, non-security-boundary projection rather than
+        # a new tamper surface. The downstream Azure SRE Agent read skill
+        # performs its own equality validation against the submitted
+        # approval snapshot and requires subscription_id to be present as
+        # an explicit field rather than re-parsed from target_id.
+        "subscription_id": target.subscription_id,
         "available_patches": available_patches,
     }
     snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
@@ -246,6 +254,22 @@ class RemediationDecisionStore:
             else ""
         )
         recorded_admin_override = bool(admin_override) if decision == "approved" else False
+        # The persisted snapshot is what execute-time revalidation
+        # (`_validated_execution_snapshot`) returns unchanged and what then
+        # flows onto the execution record dispatched to the provider -- the
+        # downstream Azure SRE Agent read skill validates this exact object
+        # for equality and requires `approver` to be present on it directly
+        # (its own tamper check, independent of this store's top-level
+        # `approver` field, which the provider never reads). Merging it in
+        # here, once, keeps `build_execution_snapshot` itself approver-
+        # agnostic (it also runs pre-approval, before any approver exists)
+        # and never touches `execution_snapshot_hash`/_SNAPSHOT_FIELDS, so
+        # every already-recorded pending approval's hash is unaffected.
+        stored_execution_snapshot = (
+            {**execution_snapshot, "approver": approver}
+            if decision == "approved" and execution_snapshot is not None
+            else None
+        )
         with self._lock:
             for _ in range(3):
                 state = self._read_state()
@@ -274,8 +298,8 @@ class RemediationDecisionStore:
                     "execution_performed": False,
                     "read_only": True,
                     "execution_snapshot": (
-                        copy.deepcopy(execution_snapshot)
-                        if decision == "approved" and execution_snapshot is not None
+                        copy.deepcopy(stored_execution_snapshot)
+                        if stored_execution_snapshot is not None
                         else None
                     ),
                     "approver_roles": normalized_roles,
