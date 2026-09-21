@@ -755,6 +755,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "ARG AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256" not in dockerfile
     assert 'pathlib.Path("/app/build-metadata.json")' in dockerfile
     assert "operations.reviewed_tree" in dockerfile
+    assert "COPY arg.config.deploy.yaml fabric.config.deploy.yaml /app/" in dockerfile
     assert "COPY arg.config.deploy.yaml /app/config.yaml" in dockerfile
     assert "COPY fabric.config.deploy.yaml /app/fabric.config.yaml" in dockerfile
     assert "AIOPS_ARG_CONFIG=/app/config.yaml" in dockerfile
