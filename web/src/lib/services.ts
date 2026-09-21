@@ -1034,6 +1034,10 @@ export interface RemediationExecution {
   superseded_reason?: string;
   supersedable?: boolean;
   supersede_ineligibility_reason?: string;
+  can_abandon?: boolean;
+  abandon_ineligibility_reason?: string;
+  abandoned?: boolean;
+  provider_cancelled?: boolean;
   verification_deadline_at?: string;
   next_verification_at?: string;
   verification_attempts?: number;
@@ -1290,6 +1294,11 @@ export const remediationApi = {
       method: "POST",
       query: scopeToSearchParams(scope),
       body: { reason },
+    }),
+  abandon: (executionId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/abandon`, {
+      method: "POST",
+      query: scopeToSearchParams(scope),
     }),
 };
 

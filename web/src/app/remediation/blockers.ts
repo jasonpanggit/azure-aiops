@@ -273,6 +273,48 @@ export const BLOCKER_VOCABULARY: Record<
     step: "verify",
     nextAction: "See the lineage below for the current, active execution.",
   },
+  execution_not_abandonable: {
+    severity: "warning",
+    message: "This execution is not in a state that can be abandoned.",
+    step: "verify",
+    nextAction: "Abandon is only offered for a running Azure SRE Agent request with a live thread.",
+  },
+  execution_already_terminal: {
+    severity: "warning",
+    message: "This request already reached a terminal provider outcome.",
+    step: "verify",
+    nextAction: "Wait for the next poll to reflect the terminal outcome instead of abandoning.",
+  },
+  approval_pending: {
+    severity: "warning",
+    message: "A pending Azure SRE Agent approval exists for this thread.",
+    step: "verify",
+    nextAction: "Resolve the pending approval directly in Azure SRE Agent before abandoning.",
+  },
+  provider_operation_exists: {
+    severity: "warning",
+    message: "Azure SRE Agent already has a submitted provider operation for this thread.",
+    step: "verify",
+    nextAction: "Wait for verification to confirm the provider outcome instead of abandoning.",
+  },
+  typed_active_action_exists: {
+    severity: "warning",
+    message: "Azure SRE Agent reports a typed active incident or action for this thread.",
+    step: "verify",
+    nextAction: "Resolve the active incident/action directly in Azure SRE Agent before abandoning.",
+  },
+  approval_exists: {
+    severity: "warning",
+    message: "An Azure SRE Agent approval record exists for this thread.",
+    step: "verify",
+    nextAction: "Confirm the approval history directly in Azure SRE Agent before abandoning.",
+  },
+  verification_unavailable: {
+    severity: "critical",
+    message: "Azure SRE Agent verification could not confirm this thread is safe to abandon.",
+    step: "verify",
+    nextAction: "Wait a moment and try again; abandon fails closed when verification is unavailable.",
+  },
 };
 
 /**

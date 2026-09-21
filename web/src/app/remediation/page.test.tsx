@@ -5,6 +5,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
 const {
+  abandon,
   acceptRisk,
   approve,
   cancel,
@@ -18,6 +19,7 @@ const {
   supersede,
   workflow,
 } = vi.hoisted(() => ({
+  abandon: vi.fn(),
   acceptRisk: vi.fn(),
   approve: vi.fn(),
   cancel: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock("@/lib/services", async () => {
     ...actual,
     operationsApi: { remediationPlans },
     remediationApi: {
+      abandon,
       approve,
       cancel,
       createExposureHandoff,
@@ -1644,6 +1647,13 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
     cancel.mockResolvedValue(envelope(executionRecord({ status: "cancelled" })));
     supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
+    abandon.mockResolvedValue(envelope(executionRecord({
+      status: "failed",
+      outcome: "unknown",
+      failure_class: "operator_abandoned_without_provider_cancellation",
+      abandoned: true,
+      provider_cancelled: false,
+    })));
   });
 
   it("renders only Cancel when cancellable is true and retryable/supersedable are false, and completes the confirm flow", async () => {
@@ -1980,6 +1990,100 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
 
     await waitFor(() => expect(execution.mock.calls.length).toBe(initialCalls + 1));
     expect(execution).toHaveBeenLastCalledWith("RME-1", {});
+  });
+
+  it("renders Abandon request for a quiescent SRE thread and completes the confirm flow with the non-cancellation copy", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "running",
+        provider: "sre-agent",
+        provider_job_id: "https://sre.example/api/v1/threads/thread-123",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        can_abandon: true,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getByRole("button", { name: "Abandon request" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abandon request" }));
+    expect(screen.getByRole("alertdialog", { name: "Confirm abandon" })).toBeInTheDocument();
+    expect(screen.getByText(/only stops local tracking here/)).toBeInTheDocument();
+    expect(screen.getByText((_text, node) => (
+      node?.tagName === "P"
+      && (node?.textContent ?? "").includes("does not cancel any Azure SRE Agent provider work")
+    ))).toBeInTheDocument();
+    expect(screen.getByText((_text, node) => (
+      node?.tagName === "P"
+      && (node?.textContent ?? "").includes("only offered when no provider action or approval exists")
+    ))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm abandon" }));
+
+    await waitFor(() => expect(abandon).toHaveBeenCalledWith("RME-1", {}));
+  });
+
+  it("does not render Abandon request when can_abandon is false", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "running",
+        provider: "sre-agent",
+        provider_job_id: "https://sre.example/api/v1/threads/thread-123",
+        cancellable: false,
+        retryable: false,
+        supersedable: false,
+        can_abandon: false,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.queryByRole("button", { name: "Abandon request" })).not.toBeInTheDocument();
+  });
+
+  it("exposes Start a new run after a successful abandon terminalizes the execution", async () => {
+    const runningExecution = executionRecord({
+      status: "running",
+      provider: "sre-agent",
+      provider_job_id: "https://sre.example/api/v1/threads/thread-123",
+      cancellable: false,
+      retryable: false,
+      supersedable: false,
+      can_abandon: true,
+    });
+    const abandonedExecution = executionRecord({
+      status: "failed",
+      outcome: "unknown",
+      failure_class: "operator_abandoned_without_provider_cancellation",
+      abandoned: true,
+      provider_cancelled: false,
+      can_abandon: false,
+    });
+    workflow.mockResolvedValue(envelope(workflowFixture({ execution: runningExecution })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.queryByRole("button", { name: "Start a new run" })).not.toBeInTheDocument();
+
+    // The refetch triggered by a successful abandon (per the recovery
+    // control contract) must see the now-terminalized record, not the
+    // still-running snapshot it started with.
+    workflow.mockResolvedValue(envelope(workflowFixture({ execution: abandonedExecution })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Abandon request" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm abandon" }));
+
+    await waitFor(() => expect(abandon).toHaveBeenCalledWith("RME-1", {}));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start a new run" })).toBeInTheDocument());
   });
 });
 
