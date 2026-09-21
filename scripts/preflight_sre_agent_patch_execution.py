@@ -92,7 +92,7 @@ SECRET_TAG_TRIGGER_ID = "aiops-trigger-id"
 SECRET_TAG_TRIGGER_ORIGIN = "aiops-trigger-origin"
 SECRET_TAG_CANONICAL_HASH = "aiops-trigger-definition-sha256"
 CANONICAL_TRIGGER_PROMPT_SHA256 = (
-    "75d8978a47035e72d4a67593e0481c49f1a03c2a5465c77d8f98cf0ca9a961f5"
+    "c38cffda891590d23a7edd190db12eee64cde0b3bff6bc9a94a242ddb1eca69a"
 )
 PATCH_READ_SKILL_NAME = "aiops-read-patch-applicability-v1"
 PATCH_READ_SKILL_VERSION = "1.0"
@@ -105,7 +105,7 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "4c515a95c932990ad71dd6988705047c41da96596fb2e882f929ec6bf20db6cf"
+    "e2691fe1abee51b63d77265505fd71f8608c3dad7ea1e3f47e78eba4a3dfb71d"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
@@ -214,7 +214,7 @@ def canonical_skill_builder_artifact(path: Path) -> dict[str, Any]:
                 "az vm install-patches --ids",
                 "az connectedmachine install-patches --ids",
                 "invoke `RunAzCliWriteCommands` exactly once",
-                "native typed pending `azCliExecution`",
+                "Autonomous trigger mode may submit it only because",
                 "Do not present the command only in prose",
                 "no more than 300 seconds",
                 "authoritatively checked the approval decision",
@@ -297,8 +297,8 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         )
     if definition.get("name") != "aiops-selected-patch-execution-v1":
         raise ReadinessError("trigger name does not match the versioned contract")
-    if definition.get("runMode") != "Review":
-        raise ReadinessError("trigger runMode must be Review")
+    if definition.get("runMode") != "Autonomous":
+        raise ReadinessError("trigger runMode must be Autonomous")
     if definition.get("threadGrouping") != "NewThreadPerRun":
         raise ReadinessError("trigger threadGrouping must be NewThreadPerRun")
     _canonical_secret_contract(definition)
@@ -324,7 +324,7 @@ def canonical_trigger_body(definition: Mapping[str, Any]) -> dict[str, Any]:
         "PT24H",
         "PT5M",
         "RunAzCliWriteCommands",
-        "Review mode creates its native typed pending azCliExecution",
+        "Autonomous submission is allowed only because the dispatching API",
         "Never present the command only in prose",
         "create a userQuestion",
         "az vm install-patches",
@@ -1708,8 +1708,8 @@ def _normalize_live_trigger(
         raise ReadinessError("live trigger invocation URL is not exact")
     if raw.get("agent") is not None:
         raise ReadinessError("live trigger response agent must remain the default")
-    if raw.get("agentMode") != "review":
-        raise ReadinessError("live trigger agentMode must be review")
+    if raw.get("agentMode") != "autonomous":
+        raise ReadinessError("live trigger agentMode must be autonomous")
     raw_thread_id = raw.get("threadId")
     if raw_thread_id not in ("", None):
         raise ReadinessError("live trigger threadId must be empty for NewThreadPerRun")
@@ -1717,7 +1717,7 @@ def _normalize_live_trigger(
         "id": trigger_id,
         "enabled": raw.get("triggerEnabled"),
         "prompt": raw.get("agentPrompt"),
-        "runMode": "Review",
+        "runMode": "Autonomous",
         "threadGrouping": "NewThreadPerRun",
         "name": raw.get("name"),
     }
