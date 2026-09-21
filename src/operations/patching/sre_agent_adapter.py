@@ -52,12 +52,17 @@ SRE_PATCH_WRITE_OUTPUT_SCHEMA_VERSION = "1.0"
 SRE_PATCH_APPLICABILITY_MAXIMUM_ROWS = 257
 SRE_PATCH_APPLICABILITY_MAXIMUM_AGE = "PT24H"
 SRE_PATCH_WRITE_EVIDENCE_MAXIMUM_AGE = "PT5M"
-SRE_PATCH_APPROVED_SNAPSHOT_FIELDS = (
+SRE_PATCH_APPROVED_SNAPSHOT_IDENTITY_FIELDS = (
     "target_id",
     "patch_ids",
     "target_kind",
     "operation",
     "action_version",
+)
+SRE_PATCH_APPROVED_SNAPSHOT_FIELDS = (
+    *SRE_PATCH_APPROVED_SNAPSHOT_IDENTITY_FIELDS,
+    "subscription_id",
+    "approver",
     "snapshot_hash",
 )
 _TRIGGER_PATH_MARKER = "/api/v1/httptriggers/trigger/"
@@ -219,6 +224,15 @@ def sre_agent_patch_envelope_contract() -> dict[str, object]:
                                 "minLength": 1,
                                 "maxLength": 256,
                             },
+                            "subscription_id": {
+                                "type": "string",
+                                "format": "uuid",
+                            },
+                            "approver": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": _MAX_AUDIT_IDENTITY_LENGTH,
+                            },
                             "snapshot_hash": {
                                 "type": "string",
                                 "minLength": 64,
@@ -304,6 +318,8 @@ def _validate_sre_agent_patch_envelope(payload: Mapping[str, object]) -> None:
         or snapshot.get("target_kind") != payload.get("target_kind")
         or snapshot.get("patch_ids") != payload.get("patch_ids")
         or snapshot.get("operation") != payload.get("operation")
+        or snapshot.get("subscription_id") != payload.get("subscription_id")
+        or snapshot.get("approver") != payload.get("approved_by")
         or snapshot.get("snapshot_hash") != _approved_snapshot_hash(snapshot)
     ):
         _raise_envelope_drift()
@@ -363,8 +379,7 @@ def _validate_contract_value(value: object, schema: Mapping[str, object]) -> Non
 def _approved_snapshot_hash(snapshot: Mapping[str, object]) -> str:
     canonical = {
         field: snapshot.get(field)
-        for field in SRE_PATCH_APPROVED_SNAPSHOT_FIELDS
-        if field != "snapshot_hash"
+        for field in SRE_PATCH_APPROVED_SNAPSHOT_IDENTITY_FIELDS
     }
     encoded = json.dumps(
         canonical,
@@ -905,6 +920,8 @@ class SreAgentPatchExecutionAdapter:
             or snapshot.get("target_kind") != target.inventory_kind
             or snapshot.get("operation") != run.operation
             or not str(snapshot.get("action_version") or "")
+            or snapshot.get("subscription_id") != run.subscription_id
+            or snapshot.get("approver") != run.approved_by
             or snapshot.get("snapshot_hash") != _approved_snapshot_hash(snapshot)
         ):
             _raise_envelope_drift()

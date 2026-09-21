@@ -540,6 +540,8 @@ class RemediationExecutionService:
                                 "target_kind",
                                 "operation",
                                 "action_version",
+                                "subscription_id",
+                                "approver",
                                 "snapshot_hash",
                             )
                         },
