@@ -79,6 +79,7 @@ COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrich
 COPY scripts/validate_exposure_live.py /app/scripts/validate_exposure_live.py
 COPY scripts/validate_ontology_publisher_rbac.py /app/scripts/validate_ontology_publisher_rbac.py
 COPY scripts/collect_ontology_evidence.py /app/scripts/collect_ontology_evidence.py
+COPY arg.config.deploy.yaml fabric.config.deploy.yaml /app/
 COPY arg.config.deploy.yaml /app/config.yaml
 COPY fabric.config.deploy.yaml /app/fabric.config.yaml
 
