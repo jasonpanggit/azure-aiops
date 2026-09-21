@@ -18,6 +18,7 @@
     "include_roots": [
       ".dockerignore",
       "Dockerfile",
+      "Dockerfile.default-promotion",
       "arg.config.deploy.yaml",
       "fabric.config.deploy.yaml",
       "infra/scripts/build-and-push.sh",
@@ -38,11 +39,9 @@
     ],
     "exclude_paths": [
       "src/operations/copilot_canary_authorization.v1.json",
-      "src/operations/copilot_canary_validation_report.v1.json",
-      "src/operations/copilot_default_authorization.v1.json",
-      "src/operations/copilot_default_authorization_design_approval.v1.json"
+      "src/operations/copilot_default_authorization.v1.json"
     ],
-    "sha256": "6362cfc1f8384823ad25d55478f88598731308bccc11a6a643eaa6716e27e55e"
+    "sha256": "5d0297485e083fe46a67137dc577066b0caf97917cc752fbafcbc7dcfa355902"
   },
   "authorization_scope": {
     "allowed_modes": [

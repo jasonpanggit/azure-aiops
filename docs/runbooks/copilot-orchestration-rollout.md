@@ -17,6 +17,7 @@ The rollout is controlled by two Terraform inputs on the API container app
 |---|---|
 | `copilot_rollout_mode` | `compatibility` → `shadow` → bounded `canary` → separately authorized `default` |
 | `copilot_canary_percentage` | reviewed canonical traffic share from 1 through 10 in `canary`; effective value is 100 in `default` |
+| `copilot_default_base_image_digest` | immutable canary-tested API digest from which the default image is derived; empty outside `default` |
 
 These project to the running revision as `AIOPS_COPILOT_ROLLOUT_MODE`,
 `AIOPS_COPILOT_CANARY_PERCENTAGE`, and the retained rollback target
@@ -58,11 +59,14 @@ roots are pinned in `operations.reviewed_tree.REVIEWED_TREE_ROOTS`; changing
 either side fails closed. The exact file set is every regular file recursively
 found under those roots, sorted by repository-relative POSIX path.
 `__pycache__` entries and `*.pyc` are explicitly excluded as transient compiler
-output. The canary/default manifests, exact clean-canary report, and signed
-default design approval are the only `exclude_paths` entries and are always
-excluded so authorization-only promotion cannot change the protected-tree
-digest. Build metadata binds all four artifact hashes to the image. Files
-outside the fixed roots are not build/runtime inputs and do not participate.
+output. The canary and default authorization manifests are the only
+`exclude_paths` entries. `Dockerfile.default-promotion` is included in the
+reviewed tree. The default image may differ from the canary image only by
+replacing the excluded default manifest, updating its raw SHA-256 field in
+`/app/build-metadata.json`, and adding the strictly validated
+`default_promotion` lineage object to that metadata. No dependency resolution,
+source-tree copy, package installation, or other filesystem mutation is part
+of the default-promotion Dockerfile.
 
 The `sha256-path-length-content-v1` algorithm starts an empty SHA-256 and, for
 each path in lexicographic order, appends exactly
@@ -98,20 +102,29 @@ providers, reporting ready, or permitting canonical external I/O:
    the strict parser accepts the complete twelve-agent artifact, its embedded
    source revision matches the baked image source, and its computed semantic
       binding matches the packaged authorization;
-   7. for `default`, the exact clean-canary report and pinned signed design
-      approval match their baked hashes and canonical integrity digests, the
-      report's platform-observed source/image and cleanup facts match the default
-      manifest, and the independently recomputed current protected tree equals
-      the canary-tested tree.
+7. for `default`, the baked promotion lineage exactly matches the separate
+   manifest: base canary source revision, immutable base image digest, fixed
+   three-entry mutation allowlist, transformation policy, equivalent reviewed
+   tree, and canonical equivalence proof. A normal rebuilt image has no
+   `default_promotion` metadata and cannot authorize.
 
-   Terraform and `build-and-push.sh --api-authorization-release` still require and
-   deploy the API by an immutable `sha256:` digest. Whenever the effective
-   Terraform rollout mode is `canary` or `default`, `deploy.sh` automatically
-   selects the authorization-release workflow even if
-   `AIOPS_API_AUTHORIZATION_RELEASE` is omitted. Authorization releases still
-   require exactly `-target=azurerm_container_app.api`; the wrapper rejects a
-   missing target, duplicate target, full apply, or any extra/different target.
-   No dependency target is required. The projected
+Terraform and the authorization build paths still require and deploy the API
+by an immutable `sha256:` digest. Canary uses
+`build-and-push.sh --api-authorization-release`; default uses
+`build-and-push.sh --default-promotion`, whose Dockerfile starts with the exact
+`registry/aiops-api@sha256:...` canary evidence digest. Whenever Terraform
+evaluates the effective rollout mode as `canary` or `default`, `deploy.sh`
+automatically selects the authorization-release workflow even if
+`AIOPS_API_AUTHORIZATION_RELEASE` is omitted. Detection is performed by
+`terraform console`, so normal tfvars, JSON tfvars, sorted auto tfvars,
+`TF_VAR_*`, and direct `-var`/`-var-file` inputs follow Terraform's own
+precedence and syntax. An unprovable value fails closed; command-specific
+`TF_CLI_ARGS_<command>` variable inputs are passed to Terraform's console
+parser for the same evaluation and fail closed if they contain options that
+cannot be evaluated there. Authorization releases require exactly
+`-target=azurerm_container_app.api`; the wrapper rejects a missing target,
+duplicate target, full apply, or any extra/different target. No dependency
+target is required. The projected
 `AIOPS_API_IMAGE_DIGEST` is observability for deployment and external
 validation only: a container environment variable is self-attested and is
 therefore never a runtime authorization predicate or proof of the image that
@@ -419,14 +432,20 @@ so a rollback is a revision/mode switch, never a rebuild.
 
 Default rollout is never implied by a passing canary. It requires the separate
 packaged `copilot_default_authorization.v1.json`, effective percentage 100,
-the exact baked clean-canary report and pinned signed design approval,
-platform-observed canary source/image, exact candidate bindings, and a
-recomputed protected tree equal to the canary-tested tree. The implementation
+the exact canary source/image, exact candidate bindings, and a recomputed
+protected tree equal to the canary-tested tree. The manifest binds the exact
+base digest and source revision, fixed transformation policy and mutation
+allowlist, and canonical equivalence proof. Terraform validates those values
+and `copilot_default_base_image_digest`; runtime validates the independently
+baked metadata. Neither treats a manifest-derived environment variable or the
+running image's self-referential digest as corroboration. The implementation
 image initially ships that manifest as
 `HOLD_PENDING_CANARY_REVALIDATION`; after the new protected runtime completes
 Stage 0, shadow, and clean 10% canary, an authorization-artifact-only review may
-set it to `AUTHORIZED`. Missing, stale, expired, cross-mode, or mismatched
-default authority fails readiness and canonical execution before external I/O.
+set it to `AUTHORIZED` and build only with
+`build-and-push.sh <tag> --default-promotion --deploy`. Missing, stale,
+expired, cross-mode, generally rebuilt, or mismatched default authority fails
+readiness and canonical execution before external I/O.
 
 ## Rollback (any stage)
 

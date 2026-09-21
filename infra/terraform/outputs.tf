@@ -56,6 +56,7 @@ output "copilot_provider_environment" {
     AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST      = var.foundry_specialist_candidate_binding_sha256
     AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256  = local.copilot_canary_authorization_sha256
     AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256 = local.copilot_default_authorization_sha256
+    AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST   = var.copilot_default_base_image_digest
     AIOPS_API_IMAGE_DIGEST                      = var.api_image_digest
   }
 }

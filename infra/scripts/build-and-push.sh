@@ -8,6 +8,7 @@
 #   ./infra/scripts/build-and-push.sh my-fix          # explicit tag
 #   ./infra/scripts/build-and-push.sh my-fix --deploy # build, push, apply
 #   ./infra/scripts/build-and-push.sh my-fix --api-authorization-release
+#   ./infra/scripts/build-and-push.sh my-fix --default-promotion
 #
 # The registry name is read from Terraform state, so this must run after a
 # successful apply.
@@ -60,11 +61,16 @@ fi
 
 deploy_after=0
 authorization_release=0
+default_promotion=0
 tag=""
 for arg in "$@"; do
   case "${arg}" in
     --deploy) deploy_after=1 ;;
     --api-authorization-release) authorization_release=1 ;;
+    --default-promotion)
+      authorization_release=1
+      default_promotion=1
+      ;;
     -*) echo "build-and-push: unknown flag ${arg}" >&2; exit 2 ;;
     *) if [[ -z "${tag}" ]]; then tag="${arg}"; else
          echo "build-and-push: unexpected argument ${arg}" >&2; exit 2
@@ -122,6 +128,33 @@ platform="linux/amd64"
 build_mode="${AIOPS_BUILD_MODE:-acr}"
 acr_context=""
 source_revision="$(git -C "${repo_root}" rev-parse HEAD)"
+default_base_digest=""
+canary_base_image=""
+
+if [[ "${default_promotion}" -eq 1 ]]; then
+  IFS=$'\t' read -r source_revision default_base_digest < <(
+    python3 - "${repo_root}/src/operations/copilot_default_authorization.v1.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    lineage = json.load(manifest_file)["promotion_lineage"]
+print(lineage["base_source_revision"], lineage["base_image_digest"], sep="\t")
+PY
+  )
+  if [[ ! "${source_revision}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] ||
+    [[ ! "${default_base_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "build-and-push: default promotion manifest has invalid base lineage." >&2
+    exit 1
+  fi
+  canary_base_image="${registry}/aiops-api@${default_base_digest}"
+  if ! az acr repository show \
+    --name "${registry_name}" \
+    --image "aiops-api@${default_base_digest}" >/dev/null 2>&1; then
+    echo "build-and-push: canary base image ${canary_base_image} does not exist." >&2
+    exit 1
+  fi
+fi
 
 prepare_acr_context() {
   [[ "${build_mode}" == "acr" ]] || return 0
@@ -130,7 +163,9 @@ prepare_acr_context() {
   # upload. Build from an immutable archive of HEAD instead: this also keeps
   # ignored credentials, local evidence, and unrelated working-tree files out
   # of the remote build context.
-  acr_context="$(mktemp -d)"
+  acr_context="${repo_root}/.acr-build-context.$$"
+  rm -rf "${acr_context}"
+  mkdir -p "${acr_context}"
   git -C "${repo_root}" archive HEAD | tar -x -C "${acr_context}"
   trap '[[ -z "${acr_context}" ]] || rm -rf "${acr_context}"' EXIT
 }
@@ -155,14 +190,19 @@ build_image() {
   fi
 
   if [[ "${image}" == "aiops-api" ]]; then
-    if [[ "${build_mode}" == "local" ]] &&
+    if [[ "${default_promotion}" -eq 1 ]]; then
+      build_args=(
+        --build-arg "AIOPS_CANARY_BASE_IMAGE=${canary_base_image}"
+      )
+    elif [[ "${build_mode}" == "local" ]] &&
       [[ -n "$(git -C "${repo_root}" status --porcelain --untracked-files=all)" ]]; then
       echo "build-and-push: local API builds require a clean worktree so baked source revision is exact." >&2
       return 1
+    else
+      build_args=(
+        --build-arg "AIOPS_SOURCE_REVISION=${source_revision}"
+      )
     fi
-    build_args=(
-      --build-arg "AIOPS_SOURCE_REVISION=${source_revision}"
-    )
   elif [[ "${image}" == "aiops-web" ]]; then
     : "${NEXT_PUBLIC_ENTRA_CLIENT_ID:?Set NEXT_PUBLIC_ENTRA_CLIENT_ID}"
     : "${NEXT_PUBLIC_ENTRA_TENANT_ID:?Set NEXT_PUBLIC_ENTRA_TENANT_ID}"
@@ -256,7 +296,7 @@ resolve_api_digest() {
 }
 
 record_authorization_release() {
-  local api_digest="$1"
+  local api_digest="$1" base_digest="${2:-}"
   if [[ ! -f "${tfvars}" ]]; then
     echo "build-and-push: ${tfvars} not found; cannot record immutable release." >&2
     if [[ "${deploy_after}" -eq 1 ]]; then
@@ -265,18 +305,20 @@ record_authorization_release() {
     return 0
   fi
   local tmp="${tfvars}.tmp.$$"
-  if ! awk -v digest="${api_digest}" -v revision="${source_revision}" '
+  if ! awk -v digest="${api_digest}" -v revision="${source_revision}" -v base_digest="${base_digest}" '
     /^[ \t]*api_image_digest[ \t]*=/ { print "api_image_digest = \"" digest "\""; seen_digest = 1; next }
     /^[ \t]*deployment_source_revision[ \t]*=/ { print "deployment_source_revision = \"" revision "\""; seen_revision = 1; next }
+    /^[ \t]*copilot_default_base_image_digest[ \t]*=/ { print "copilot_default_base_image_digest = \"" base_digest "\""; seen_base = 1; next }
     { print }
     END { if (!seen_digest) print "api_image_digest = \"" digest "\"" }
     END { if (!seen_revision) print "deployment_source_revision = \"" revision "\"" }
+    END { if (!seen_base) print "copilot_default_base_image_digest = \"" base_digest "\"" }
   ' "${tfvars}" >"${tmp}"; then
     rm -f "${tmp}"
     return 1
   fi
   mv "${tmp}" "${tfvars}"
-  echo "build-and-push: atomically recorded API digest=${api_digest} and deployment_source_revision=${source_revision}"
+  echo "build-and-push: atomically recorded API digest=${api_digest}, deployment_source_revision=${source_revision}, and default base digest=${base_digest:-none}"
 }
 
 record_application_release() {
@@ -293,10 +335,12 @@ record_application_release() {
     /^[ \t]*image_tag[ \t]*=/ { print "image_tag     = \"" tag "\""; seen = 1; next }
     /^[ \t]*api_image_digest[ \t]*=/ { print "api_image_digest = \"" digest "\""; seen_digest = 1; next }
     /^[ \t]*deployment_source_revision[ \t]*=/ { print "deployment_source_revision = \"" revision "\""; seen_revision = 1; next }
+    /^[ \t]*copilot_default_base_image_digest[ \t]*=/ { print "copilot_default_base_image_digest = \"\""; seen_base = 1; next }
     { print }
     END { if (!seen) print "image_tag     = \"" tag "\"" }
     END { if (!seen_digest) print "api_image_digest = \"" digest "\"" }
     END { if (!seen_revision) print "deployment_source_revision = \"" revision "\"" }
+    END { if (!seen_base) print "copilot_default_base_image_digest = \"\"" }
   ' "${tfvars}" >"${tmp}"; then
     rm -f "${tmp}"
     return 1
@@ -328,10 +372,14 @@ if [[ "${authorization_release}" -eq 1 ]]; then
     --root "${reviewed_root}" \
     --manifest "${reviewed_root}/src/operations/copilot_default_authorization.v1.json" \
     >/dev/null
-  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
+  api_dockerfile="${repo_root}/Dockerfile"
+  if [[ "${default_promotion}" -eq 1 ]]; then
+    api_dockerfile="${repo_root}/Dockerfile.default-promotion"
+  fi
+  build_image aiops-api "${api_dockerfile}" "${repo_root}"
   verify_pushed aiops-api
   api_digest="$(resolve_api_digest)"
-  record_authorization_release "${api_digest}"
+  record_authorization_release "${api_digest}" "${default_base_digest}"
   echo
   echo "build-and-push: pushed API authorization release '${tag}'."
 else

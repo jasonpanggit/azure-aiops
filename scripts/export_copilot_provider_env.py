@@ -34,8 +34,10 @@ ENV_KEYS = (
     "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST",
     "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256",
     "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
+    "AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST",
     "AIOPS_API_IMAGE_DIGEST",
 )
+OPTIONAL_EMPTY_ENV_KEYS = frozenset({"AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST"})
 ROLLOUT_MODES = frozenset({"compatibility", "shadow", "canary", "default"})
 CONNECTION_LABELS = ("operations-mcp",)
 CONNECTION_ID_PATTERN = re.compile(
@@ -63,7 +65,7 @@ def _terraform_value(payload: dict[str, Any]) -> dict[str, str]:
         for key in ENV_KEYS
         if key not in values
         or not isinstance(values[key], str)
-        or not values[key].strip()
+        or (not values[key].strip() and key not in OPTIONAL_EMPTY_ENV_KEYS)
     ]
     if missing:
         raise BlockedConfiguration(",".join(missing))
@@ -229,13 +231,9 @@ def load_environment(
         raise ValueError("AIOPS_COPILOT_ROLLBACK_MODE")
     if not SOURCE_REVISION_PATTERN.fullmatch(values["AIOPS_SOURCE_REVISION"]):
         raise ValueError("AIOPS_SOURCE_REVISION")
-    if not SHA256_PATTERN.fullmatch(
-        values["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"]
-    ):
+    if not SHA256_PATTERN.fullmatch(values["AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST"]):
         raise ValueError("AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST")
-    if not SHA256_PATTERN.fullmatch(
-        values["AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST"]
-    ):
+    if not SHA256_PATTERN.fullmatch(values["AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST"]):
         raise ValueError("AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST")
     if not SHA256_PATTERN.fullmatch(
         values["AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256"]
@@ -245,6 +243,11 @@ def load_environment(
         values["AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256"]
     ):
         raise ValueError("AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256")
+    base_digest = values["AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST"]
+    if base_digest and not IMAGE_DIGEST_PATTERN.fullmatch(base_digest):
+        raise ValueError("AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST")
+    if mode == "default" and not base_digest:
+        raise ValueError("AIOPS_DEFAULT_PROMOTION_BASE_IMAGE_DIGEST")
     if not IMAGE_DIGEST_PATTERN.fullmatch(values["AIOPS_API_IMAGE_DIGEST"]):
         raise ValueError("AIOPS_API_IMAGE_DIGEST")
 

@@ -14,17 +14,20 @@ locals {
   copilot_default_authorization_sha256 = filesha256(
     local.copilot_default_authorization_path
   )
-  copilot_canary_validation_report_path = "${path.module}/../../src/operations/copilot_canary_validation_report.v1.json"
-  copilot_canary_validation_report      = jsondecode(file(local.copilot_canary_validation_report_path))
-  copilot_canary_validation_report_sha256 = filesha256(
-    local.copilot_canary_validation_report_path
-  )
-  copilot_default_design_approval_path = "${path.module}/../../src/operations/copilot_default_authorization_design_approval.v1.json"
-  copilot_default_design_approval      = jsondecode(file(local.copilot_default_design_approval_path))
-  copilot_default_design_approval_sha256 = filesha256(
-    local.copilot_default_design_approval_path
-  )
-  copilot_expected_default_design_approval_sha256 = "183ed181a31e6943d81f172e18a8a8dbd5b1e3609208be31c51c2f356f0b24e2"
+  copilot_default_transformation_policy = "replace-default-authorization-and-bind-lineage-v1"
+  copilot_default_allowed_mutations = [
+    "src/operations/copilot_default_authorization.v1.json",
+    "build-metadata.json:default_authorization_manifest_sha256",
+    "build-metadata.json:default_promotion",
+  ]
+  copilot_default_equivalence_algorithm = "sha256-canonical-json-default-promotion-lineage-v1"
+  copilot_default_equivalence_payload = {
+    base_source_revision            = local.copilot_default_authorization.promotion_lineage.base_source_revision
+    base_image_digest               = local.copilot_default_authorization.promotion_lineage.base_image_digest
+    transformation_policy           = local.copilot_default_authorization.promotion_lineage.transformation_policy
+    allowed_mutations               = local.copilot_default_authorization.promotion_lineage.allowed_mutations
+    equivalent_reviewed_tree_sha256 = local.copilot_default_authorization.promotion_lineage.equivalent_reviewed_tree_sha256
+  }
   gateway_assertion = coalesce(
     nonsensitive(var.apim_gateway_assertion),
     random_password.apim_gateway_assertion.result,
@@ -931,6 +934,7 @@ resource "azurerm_container_app" "api" {
         (
           local.copilot_canary_percentage == 100 &&
           var.api_image_digest != "" &&
+          var.copilot_default_base_image_digest != "" &&
           var.deploy_images &&
           can(regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$", var.deployment_source_revision)) &&
           lower(var.agent_orchestration_mode) == "maf" &&
@@ -956,51 +960,23 @@ resource "azurerm_container_app" "api" {
           local.copilot_default_authorization.authorization_scope.activation_source == local.foundry_specialist_activation_source &&
           local.copilot_default_authorization.authorization_scope.orchestration == lower(var.agent_orchestration_mode) &&
           local.copilot_default_authorization.authorization_scope.rollback_mode == local.copilot_rollback_mode &&
-          local.copilot_default_design_approval_sha256 == local.copilot_expected_default_design_approval_sha256 &&
-          local.copilot_default_authorization.design_approval_sha256 == local.copilot_expected_default_design_approval_sha256 &&
-          local.copilot_default_authorization.canary_evidence.report_sha256 == local.copilot_canary_validation_report_sha256 &&
-          local.copilot_default_authorization.canary_evidence.report_integrity_signature == local.copilot_canary_validation_report.integrity_signature.value &&
           local.copilot_default_authorization.canary_evidence.status == "PASS_CLEAN" &&
           local.copilot_default_authorization.canary_evidence.tested_percentage == 10 &&
-          local.copilot_default_authorization.canary_evidence.source_revision == local.copilot_canary_validation_report.source_revision &&
-          local.copilot_default_authorization.canary_evidence.image_digest == local.copilot_canary_validation_report.serving_revision.image_digest &&
-          local.copilot_default_authorization.canary_evidence.report_sha256 == local.copilot_default_design_approval.manifest_contract.canary_evidence.clean_report_sha256 &&
-          local.copilot_default_authorization.canary_evidence.report_integrity_signature == local.copilot_default_design_approval.manifest_contract.canary_evidence.clean_report_signature &&
-          local.copilot_default_authorization.canary_evidence.source_revision == local.copilot_default_design_approval.manifest_contract.canary_evidence.source_revision &&
-          local.copilot_default_authorization.canary_evidence.image_digest == local.copilot_default_design_approval.manifest_contract.canary_evidence.image_digest &&
-          local.copilot_default_authorization.canary_evidence.reviewed_tree_sha256 == local.copilot_default_design_approval.manifest_contract.canary_evidence.reviewed_tree_sha256 &&
-          local.copilot_default_authorization.reviewed_tree.sha256 == local.copilot_default_authorization.canary_evidence.reviewed_tree_sha256 &&
           local.copilot_default_authorization.canary_evidence.cleanup_status == "PASS_COMPLETE" &&
-          local.copilot_canary_validation_report.schema_version == "foundry-canary-validation-report.v1" &&
-          local.copilot_canary_validation_report.status == "PASS_CLEAN" &&
-          local.copilot_canary_validation_report.canary_status == "PASS" &&
-          local.copilot_canary_validation_report.canary_authorized == true &&
-          local.copilot_canary_validation_report.authorization.rollout_mode == "canary" &&
-          local.copilot_canary_validation_report.authorization.percentage == 10 &&
-          local.copilot_canary_validation_report.serving_revision.active == true &&
-          local.copilot_canary_validation_report.serving_revision.health_state == "Healthy" &&
-          local.copilot_canary_validation_report.serving_revision.latest == true &&
-          local.copilot_canary_validation_report.serving_revision.latest_ready == true &&
-          local.copilot_canary_validation_report.serving_revision.replica_ready == true &&
-          local.copilot_canary_validation_report.operational_cleanup.status == "PASS_COMPLETE" &&
-          alltrue(values(local.copilot_canary_validation_report.execution_evidence_equivalence)) &&
-          local.copilot_canary_validation_report.bindings.candidate_semantic_sha256 == local.copilot_default_authorization.candidate_binding.semantic_sha256 &&
-          sha256(jsonencode({
-            for key, value in local.copilot_canary_validation_report :
-            key => value if key != "integrity_signature"
-          })) == local.copilot_canary_validation_report.integrity_signature.value &&
-          local.copilot_default_design_approval.schema_version == "foundry-default-authorization-design-approval.v1" &&
-          local.copilot_default_design_approval.decision == "APPROVE_FOR_IMPLEMENTATION" &&
-          local.copilot_default_design_approval.default_authorized == false &&
-          local.copilot_default_design_approval.reviewed_tree_contract.protected_tree_must_equal_clean_canary_tree == true &&
-          sha256(jsonencode({
-            for key, value in local.copilot_default_design_approval :
-            key => value if key != "integrity_signature"
-          })) == local.copilot_default_design_approval.integrity_signature.value &&
+          var.deployment_source_revision == local.copilot_default_authorization.promotion_lineage.base_source_revision &&
+          var.copilot_default_base_image_digest == local.copilot_default_authorization.promotion_lineage.base_image_digest &&
+          local.copilot_default_authorization.canary_evidence.source_revision == local.copilot_default_authorization.promotion_lineage.base_source_revision &&
+          local.copilot_default_authorization.canary_evidence.image_digest == local.copilot_default_authorization.promotion_lineage.base_image_digest &&
+          local.copilot_default_authorization.canary_evidence.reviewed_tree_sha256 == local.copilot_default_authorization.promotion_lineage.equivalent_reviewed_tree_sha256 &&
+          local.copilot_default_authorization.reviewed_tree.sha256 == local.copilot_default_authorization.promotion_lineage.equivalent_reviewed_tree_sha256 &&
+          local.copilot_default_authorization.promotion_lineage.transformation_policy == local.copilot_default_transformation_policy &&
+          local.copilot_default_authorization.promotion_lineage.allowed_mutations == local.copilot_default_allowed_mutations &&
+          local.copilot_default_authorization.promotion_lineage.equivalence_proof.algorithm == local.copilot_default_equivalence_algorithm &&
+          local.copilot_default_authorization.promotion_lineage.equivalence_proof.sha256 == sha256(jsonencode(local.copilot_default_equivalence_payload)) &&
           var.foundry_specialist_release == local.copilot_default_authorization.candidate_binding.release
         )
       )
-      error_message = "Default inputs do not match the separate reviewed authorization and clean canary evidence."
+      error_message = "Default inputs do not prove the exact canary base digest, source revision, reviewed-tree equivalence, and manifest-only promotion policy."
     }
 
     precondition {

@@ -27,6 +27,7 @@ PACKAGED_DEFAULT_MANIFEST = (
     REPO_ROOT / "src" / "operations" / "copilot_default_authorization.v1.json"
 )
 SOURCE_REVISION = "a" * 40
+CANARY_BASE_IMAGE_DIGEST = f"sha256:{'b' * 64}"
 AUTHORIZED_NOW = datetime(2026, 9, 21, 2, tzinfo=UTC)
 _PROVIDER_VERSIONS = {
     "change": "17",
@@ -92,9 +93,7 @@ def strict_candidate_artifact(
         specialist.id: {
             "agent_name": f"aiops-{specialist.foundry.name}-agent",
             "provider_version_id": _PROVIDER_VERSIONS[specialist.id],
-            "candidate_version": (
-                f"{_CANDIDATE_RELEASE}.{specialist.foundry.version}"
-            ),
+            "candidate_version": (f"{_CANDIDATE_RELEASE}.{specialist.foundry.version}"),
             "model_deployment": "gpt-5.4-mini",
             "contract_model": specialist.foundry.model,
             "contract_version": specialist.foundry.version,
@@ -163,15 +162,39 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8")
     )
     default_manifest_payload["status"] = "AUTHORIZED"
-    default_manifest_payload["reviewed_tree"]["sha256"] = (  # type: ignore[index]
-        default_manifest_payload["canary_evidence"]["reviewed_tree_sha256"]  # type: ignore[index]
+    reviewed_tree_sha256 = str(payload["reviewed_tree"]["sha256"])
+    default_manifest_payload["reviewed_tree"]["sha256"] = reviewed_tree_sha256  # type: ignore[index]
+    default_manifest_payload["canary_evidence"].update(  # type: ignore[union-attr]
+        {
+            "source_revision": SOURCE_REVISION,
+            "image_digest": CANARY_BASE_IMAGE_DIGEST,
+            "reviewed_tree_sha256": reviewed_tree_sha256,
+        }
     )
+    lineage = default_manifest_payload["promotion_lineage"]
+    assert isinstance(lineage, dict)
+    lineage.update(
+        {
+            "base_source_revision": SOURCE_REVISION,
+            "base_image_digest": CANARY_BASE_IMAGE_DIGEST,
+            "equivalent_reviewed_tree_sha256": reviewed_tree_sha256,
+        }
+    )
+    proof_payload = {
+        key: value for key, value in lineage.items() if key != "equivalence_proof"
+    }
+    lineage["equivalence_proof"]["sha256"] = hashlib.sha256(  # type: ignore[index]
+        json.dumps(
+            proof_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     default_manifest_bytes = json.dumps(
         default_manifest_payload,
         sort_keys=True,
     ).encode()
     default_manifest_sha256 = hashlib.sha256(default_manifest_bytes).hexdigest()
-    reviewed_tree_sha256 = str(payload["reviewed_tree"]["sha256"])
     cache_root = REPO_ROOT / ".pytest_cache"
     cache_root.mkdir(exist_ok=True)
     evidence_directory = tempfile.TemporaryDirectory(
@@ -191,12 +214,6 @@ def install_valid_canary_evidence(monkeypatch) -> None:
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": manifest_sha256,
                 "default_authorization_manifest_sha256": default_manifest_sha256,
-                "canary_validation_report_sha256": hashlib.sha256(
-                    copilot_canary_authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
-                ).hexdigest(),
-                "default_authorization_design_approval_sha256": hashlib.sha256(
-                    copilot_canary_authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
-                ).hexdigest(),
                 "reviewed_tree_sha256": reviewed_tree_sha256,
             }
         ),
@@ -265,9 +282,7 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         "AIOPS_SOURCE_REVISION": SOURCE_REVISION,
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT": candidate_raw,
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": candidate_transport_sha256,
-        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(
-            binding["semantic_sha256"]
-        ),
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(binding["semantic_sha256"]),
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": manifest_sha256,
         "AIOPS_DEPLOYMENT_TENANT_ID": str(target["tenant_id"]),
         "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID": str(target["subscription_id"]),
@@ -282,12 +297,8 @@ def install_valid_canary_evidence(monkeypatch) -> None:
             f"{project['endpoint']}/api/projects/{project['name']}"
         ),
         "AIOPS_COPILOT_CANDIDATE_RELEASE": str(binding["release"]),
-        "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION": str(
-            binding["contract_version"]
-        ),
-        "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(
-            binding["manifest_sha256"]
-        ),
+        "AIOPS_COPILOT_CANDIDATE_CONTRACT_VERSION": str(binding["contract_version"]),
+        "AIOPS_COPILOT_CANDIDATE_MANIFEST_SHA256": str(binding["manifest_sha256"]),
         "AIOPS_COPILOT_PARSER_PROOF_SHA256": str(binding["parser_proof_sha256"]),
         "AIOPS_COPILOT_SERIALIZATION_PROOF_SHA256": str(
             binding["serialization_proof_sha256"]
@@ -347,6 +358,10 @@ def enable_authorized_default(monkeypatch) -> None:
         copilot_canary_authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8")
     )
     metadata["reviewed_tree_sha256"] = default_reviewed_tree_sha256
+    metadata["source_revision"] = default_payload["promotion_lineage"][  # type: ignore[index]
+        "base_source_revision"
+    ]
+    metadata["default_promotion"] = default_payload["promotion_lineage"]
     copilot_canary_authorization.BUILD_METADATA_PATH.write_text(
         json.dumps(metadata),
         encoding="utf-8",

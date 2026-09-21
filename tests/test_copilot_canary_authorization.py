@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -83,9 +82,7 @@ def _authorized_environment(
         "AIOPS_FOUNDRY_CANDIDATE_ARTIFACT_DIGEST": hashlib.sha256(
             candidate_raw.encode()
         ).hexdigest(),
-        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(
-            binding["semantic_sha256"]
-        ),
+        "AIOPS_FOUNDRY_CANDIDATE_BINDING_DIGEST": str(binding["semantic_sha256"]),
         "AIOPS_CANARY_AUTHORIZATION_MANIFEST_SHA256": manifest_sha256,
         "AIOPS_API_IMAGE_DIGEST": API_IMAGE_DIGEST,
         "AIOPS_DEPLOYMENT_TENANT_ID": str(target["tenant_id"]),
@@ -157,12 +154,6 @@ def _write_authorization(
                 "source_revision": SOURCE_REVISION,
                 "canary_authorization_manifest_sha256": digest,
                 "default_authorization_manifest_sha256": "d" * 64,
-                "canary_validation_report_sha256": hashlib.sha256(
-                    authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
-                ).hexdigest(),
-                "default_authorization_design_approval_sha256": hashlib.sha256(
-                    authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
-                ).hexdigest(),
                 "reviewed_tree_sha256": str(
                     (payload or _manifest_payload())["reviewed_tree"]["sha256"]  # type: ignore[index]
                 ),
@@ -235,25 +226,23 @@ def test_packaged_default_authorization_requires_clean_canary() -> None:
     assert manifest.canary_evidence.cleanup_status == "PASS_COMPLETE"
 
 
-def test_packaged_default_evidence_matches_exact_reviewed_artifacts() -> None:
-    report_bytes = authorization.CANARY_VALIDATION_REPORT_PATH.read_bytes()
-    approval_bytes = (
-        authorization.DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH.read_bytes()
+def test_packaged_default_binds_exact_promotion_lineage() -> None:
+    manifest = authorization.DefaultAuthorizationManifest.model_validate_json(
+        PACKAGED_DEFAULT_MANIFEST.read_text(encoding="utf-8")
     )
-    report = json.loads(report_bytes)
 
-    assert hashlib.sha256(report_bytes).hexdigest() == (
-        "d8e90d7e487f9aa68e6b0f0a0f33882406095a6a918baf592f165c79ad6a3564"
+    assert manifest.promotion_lineage.base_source_revision == (
+        manifest.canary_evidence.source_revision
     )
-    assert report["integrity_signature"]["value"] == (
-        "ff7ae4a3c0d67d6460532c779796b6ec635da5a93a79d1ba21e391b250aa4a32"
+    assert manifest.promotion_lineage.base_image_digest == (
+        manifest.canary_evidence.image_digest
     )
-    assert hashlib.sha256(approval_bytes).hexdigest() == (
-        "183ed181a31e6943d81f172e18a8a8dbd5b1e3609208be31c51c2f356f0b24e2"
+    assert manifest.promotion_lineage.allowed_mutations == (
+        authorization.DEFAULT_PROMOTION_ALLOWED_MUTATIONS
     )
-    assert report["source_revision"] == "0d39d5752e1910215b9d23fa556d20046fd4b19d"
-    assert report["serving_revision"]["image_digest"] == (
-        "sha256:c9abb0bbf07b06b1de704e8c32ede5ff35d91a5e3b615142af341fed58fa3800"
+    assert (
+        authorization.default_promotion_equivalence_sha256(manifest.promotion_lineage)
+        == manifest.promotion_lineage.equivalence_proof.sha256
     )
 
 
@@ -261,9 +250,7 @@ def test_packaged_pending_default_manifest_cannot_authorize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     enable_authorized_default(monkeypatch)
-    manifest_sha256 = hashlib.sha256(
-        PACKAGED_DEFAULT_MANIFEST.read_bytes()
-    ).hexdigest()
+    manifest_sha256 = hashlib.sha256(PACKAGED_DEFAULT_MANIFEST.read_bytes()).hexdigest()
     metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text())
     metadata["default_authorization_manifest_sha256"] = manifest_sha256
     authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata))
@@ -331,34 +318,17 @@ def test_default_authorization_rejects_unreviewed_evidence(
         copilot_rollout_decision(stable_key="operator-a")
 
 
-def test_default_rejects_manifest_and_terraform_digest_co_mutation(
-    tmp_path: Path,
+def test_general_rebuilt_image_cannot_authorize_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     enable_authorized_default(monkeypatch)
-    payload = json.loads(
-        authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(encoding="utf-8")
-    )
-    payload["canary_evidence"]["report_sha256"] = "c" * 64
-    manifest_path = tmp_path / "default-authorization.json"
-    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
-    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8"))
-    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    metadata.pop("default_promotion")
     authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata), encoding="utf-8")
-    monkeypatch.setattr(
-        authorization,
-        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
-        manifest_path,
-    )
-    monkeypatch.setenv(
-        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
-        manifest_sha256,
-    )
 
     with pytest.raises(
         CanaryAuthorizationError,
-        match="independent default authorization evidence",
+        match="authorized promotion path",
     ):
         copilot_rollout_decision(stable_key="operator-a")
 
@@ -370,37 +340,50 @@ def test_default_rejects_manifest_and_terraform_digest_co_mutation(
         ("image_digest", f"sha256:{'c' * 64}"),
     ),
 )
-def test_default_rejects_stale_canary_source_or_image(
-    tmp_path: Path,
+def test_default_rejects_stale_canary_source_or_base_image(
     monkeypatch: pytest.MonkeyPatch,
     field: str,
     value: str,
 ) -> None:
     enable_authorized_default(monkeypatch)
-    payload = json.loads(
-        authorization.DEFAULT_AUTHORIZATION_MANIFEST_PATH.read_text(encoding="utf-8")
-    )
-    payload["canary_evidence"][field] = value
-    manifest_path = tmp_path / "default-authorization.json"
-    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
-    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8"))
-    metadata["default_authorization_manifest_sha256"] = manifest_sha256
+    lineage_field = (
+        "base_source_revision" if field == "source_revision" else "base_image_digest"
+    )
+    metadata["default_promotion"][lineage_field] = value
     authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata), encoding="utf-8")
-    monkeypatch.setattr(
-        authorization,
-        "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
-        manifest_path,
-    )
-    monkeypatch.setenv(
-        "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
-        manifest_sha256,
-    )
 
     with pytest.raises(
         CanaryAuthorizationError,
-        match="independent default authorization evidence",
+        match="authorized promotion path",
     ):
+        copilot_rollout_decision(stable_key="operator-a")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("transformation_policy", "general-rebuild-v1"),
+        (
+            "equivalence_proof",
+            {
+                "algorithm": authorization.DEFAULT_PROMOTION_EQUIVALENCE_ALGORITHM,
+                "sha256": "c" * 64,
+            },
+        ),
+    ),
+)
+def test_default_rejects_wrong_transformation_policy_or_equivalence_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    enable_authorized_default(monkeypatch)
+    metadata = json.loads(authorization.BUILD_METADATA_PATH.read_text(encoding="utf-8"))
+    metadata["default_promotion"][field] = value
+    authorization.BUILD_METADATA_PATH.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(CanaryAuthorizationError):
         copilot_rollout_decision(stable_key="operator-a")
 
 
@@ -597,9 +580,7 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
     elif case == "inactive":
         payload["status"] = "REVOKED"
     elif case == "expired":
-        payload["issued_at"] = (now - timedelta(hours=3)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        payload["issued_at"] = (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         payload["not_before"] = (now - timedelta(hours=2)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
@@ -607,9 +588,7 @@ def test_every_authorization_failure_blocks_readiness_and_external_io(
             "%Y-%m-%dT%H:%M:%SZ"
         )
     elif case == "not_yet_valid":
-        payload["issued_at"] = (now + timedelta(hours=1)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        payload["issued_at"] = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         payload["not_before"] = (now + timedelta(hours=2)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
@@ -903,7 +882,7 @@ def test_default_authority_revalidates_request_boundary(
     assert decision.authorization_id == "p11-default-authorization-20260921"
 
 
-def test_default_accepts_equivalent_build_with_distinct_source_and_image(
+def test_exact_canary_derived_default_fixture_authorizes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     enable_authorized_default(monkeypatch)
@@ -917,7 +896,7 @@ def test_default_accepts_equivalent_build_with_distinct_source_and_image(
     assert authority.reviewed_tree_sha256 == (
         manifest.canary_evidence.reviewed_tree_sha256
     )
-    assert authority.source_revision != manifest.canary_evidence.source_revision
+    assert authority.source_revision == manifest.promotion_lineage.base_source_revision
     assert "AIOPS_API_IMAGE_DIGEST" not in os.environ
 
 
@@ -1019,6 +998,9 @@ def test_constructor_authorizer_injection_is_rejected_and_cannot_bypass(
 
 def test_build_and_terraform_wiring_is_fail_closed() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    promotion_dockerfile = (REPO_ROOT / "Dockerfile.default-promotion").read_text(
+        encoding="utf-8"
+    )
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
     build_script = (REPO_ROOT / "infra" / "scripts" / "build-and-push.sh").read_text(
         encoding="utf-8"
@@ -1046,14 +1028,25 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert 'git -C "${repo_root}" rev-parse HEAD' in build_script
     assert "python3 -m operations.reviewed_tree" in build_script
     assert (
-        build_script.count("refusing to reuse existing API tag aiops-api:${tag}")
-        == 2
+        build_script.count("refusing to reuse existing API tag aiops-api:${tag}") == 2
     )
     assert build_script.index('image "aiops-api:${tag}"') < build_script.index(
         "prepare_acr_context"
     )
     assert "resolve_api_digest()" in build_script
     assert "--api-authorization-release" in build_script
+    assert "--default-promotion" in build_script
+    assert 'api_dockerfile="${repo_root}/Dockerfile.default-promotion"' in build_script
+    assert "FROM ${AIOPS_CANARY_BASE_IMAGE}" in promotion_dockerfile
+    assert promotion_dockerfile.count("COPY ") == 1
+    assert (
+        "COPY src/operations/copilot_default_authorization.v1.json "
+        "/app/src/operations/copilot_default_authorization.v1.json"
+        in promotion_dockerfile
+    )
+    assert "uv sync" not in promotion_dockerfile
+    assert "COPY src/ /app/src/" not in promotion_dockerfile
+    assert 'metadata["default_promotion"]=lineage.model_dump' in promotion_dockerfile
     authorization_release = build_script.split(
         "# This release gate authorizes API code only.",
         maxsplit=1,
@@ -1064,18 +1057,12 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "azure-mcp" not in authorization_release
     assert "aiops-web" not in authorization_release
     assert "-target=azurerm_container_app.api" in build_script
-    assert "validate_api_authorization_environment" in deploy_script
-    assert "compgen -e" in deploy_script
-    assert "TF_CLI_ARGS|TF_CLI_ARGS_*)" in deploy_script
-    assert '"${!name:-}"' in deploy_script
-    assert (
-        "deploy: API authorization release rejects non-empty ${name}."
-        in deploy_script
-    )
+    assert "terraform console -no-color" in deploy_script
+    assert "var.copilot_rollout_mode" in deploy_script
+    assert "rollout_mode_from_file" not in deploy_script
     assert "validate_api_authorization_target" in deploy_script
     assert (
-        '"${target_count}" -ne 1 || '
-        '"${target}" != "azurerm_container_app.api"'
+        '"${target_count}" -ne 1 || "${target}" != "azurerm_container_app.api"'
     ) in deploy_script
     assert "-target|--target)" in deploy_script
     assert "-target=*|--target=*)" in deploy_script
@@ -1085,10 +1072,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     assert "restore_and_verify_api_compatibility" in deploy_script
     assert "api_digest_args" in deploy_script
     assert 'API_DIGEST_ARGS+=("-var=api_image_digest=${digest}")' in deploy_script
-    assert (
-        'captured_api_image="$(terraform output -raw api_image'
-        in deploy_script
-    )
+    assert 'captured_api_image="$(terraform output -raw api_image' in deploy_script
     assert 'captured_api_digest="${captured_api_image##*@}"' in deploy_script
     assert (
         'validate_running_api_revision compatibility 0 "${captured_api_image}"'
@@ -1100,14 +1084,8 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         'terraform apply -input=false "${bound_args[@]}"',
         deploy_script.index("apply_api_authorization_release()"),
     )
-    assert (
-        '[[ "${applied_api_image}" != "${captured_api_image}" ]]'
-        in deploy_script
-    )
-    assert (
-        '[[ "${applied_api_digest}" != "${captured_api_digest}" ]]'
-        in deploy_script
-    )
+    assert '[[ "${applied_api_image}" != "${captured_api_image}" ]]' in deploy_script
+    assert '[[ "${applied_api_digest}" != "${captured_api_digest}" ]]' in deploy_script
     assert (
         '"${requested_mode}" "${requested_percentage}" "${captured_api_image}"'
         in deploy_script
@@ -1119,17 +1097,10 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         )
         == 3
     )
+    assert 'environment.get("AIOPS_COPILOT_ROLLOUT_MODE", "")' in deploy_script
+    assert 'environment.get("AIOPS_COPILOT_CANARY_PERCENTAGE", "")' in deploy_script
     assert (
-        'environment.get("AIOPS_COPILOT_ROLLOUT_MODE", "")'
-        in deploy_script
-    )
-    assert (
-        'environment.get("AIOPS_COPILOT_CANARY_PERCENTAGE", "")'
-        in deploy_script
-    )
-    assert (
-        'az containerapp show --subscription "${ARM_SUBSCRIPTION_ID}"'
-        in deploy_script
+        'az containerapp show --subscription "${ARM_SUBSCRIPTION_ID}"' in deploy_script
     )
     assert (
         'az containerapp revision list --subscription "${ARM_SUBSCRIPTION_ID}"'
@@ -1137,8 +1108,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     )
     assert (
         deploy_script.count(
-            'az containerapp revision list --subscription '
-            '"${ARM_SUBSCRIPTION_ID}"'
+            'az containerapp revision list --subscription "${ARM_SUBSCRIPTION_ID}"'
         )
         == 1
     )
@@ -1148,7 +1118,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     ) in deploy_script
     assert (
         'expected_resource_id="/subscriptions/${authorized_subscription}/'
-        'resourceGroups/${authorized_rg}/providers/Microsoft.App/containerApps/'
+        "resourceGroups/${authorized_rg}/providers/Microsoft.App/containerApps/"
         '${authorized_app}"'
     ) in deploy_script
     assert 'api_authorization_release}" != "1"' in deploy_script
@@ -1167,19 +1137,21 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
     ) in build_script
     assert 'local.copilot_default_authorization.status == "AUTHORIZED"' in terraform
     assert (
-        "local.copilot_default_design_approval_sha256 == "
-        "local.copilot_expected_default_design_approval_sha256"
+        "var.copilot_default_base_image_digest == "
+        "local.copilot_default_authorization.promotion_lineage.base_image_digest"
     ) in terraform
     assert (
-        "local.copilot_default_authorization.canary_evidence.image_digest == "
-        "local.copilot_canary_validation_report.serving_revision.image_digest"
+        "local.copilot_default_authorization.promotion_lineage."
+        "equivalence_proof.sha256 == sha256("
+        "jsonencode(local.copilot_default_equivalence_payload))"
     ) in terraform
     assert (
         "local.copilot_default_authorization.reviewed_tree.sha256 == "
-        "local.copilot_default_authorization.canary_evidence.reviewed_tree_sha256"
+        "local.copilot_default_authorization.promotion_lineage."
+        "equivalent_reviewed_tree_sha256"
     ) in terraform
     assert (
-        'local.copilot_default_authorization.authorization_scope.percentage == 100'
+        "local.copilot_default_authorization.authorization_scope.percentage == 100"
         in terraform
     )
     assert 'var.api_image_digest != ""' in terraform
@@ -1214,6 +1186,7 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "src/operations/copilot_default_authorization.v1.json"
         in REVIEWED_TREE_EXCLUDED_PATHS
     )
+    assert "Dockerfile.default-promotion" in REVIEWED_TREE_ROOTS
     required_skill = "skills/operational-context-graph/SKILL.md"
     assert "!skills/**/SKILL.md" in dockerignore.splitlines()
     assert required_skill in reviewed_tree_paths(
@@ -1222,155 +1195,11 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         REVIEWED_TREE_EXCLUDED_PATHS,
     )
     assert '"src/operations/copilot_canary_authorization.v1.json"' in packaging
-    assert '"src/operations/copilot_canary_validation_report.v1.json"' in packaging
     assert '"src/operations/copilot_default_authorization.v1.json"' in packaging
-    assert (
-        '"src/operations/copilot_default_authorization_design_approval.v1.json"'
-        in packaging
-    )
     assert '"default_authorization_manifest_sha256"' in dockerfile
-    assert '"canary_validation_report_sha256"' in dockerfile
-    assert '"default_authorization_design_approval_sha256"' in dockerfile
+    assert "copilot_canary_validation_report" not in dockerfile
+    assert "default_authorization_design_approval" not in dockerfile
     assert "copilot_default_authorization.v1.json" in build_script
-
-
-@pytest.mark.parametrize(
-    "argument_environment",
-    (
-        "TF_CLI_ARGS",
-        "TF_CLI_ARGS_apply",
-        "TF_CLI_ARGS_plan",
-        "TF_CLI_ARGS_output",
-        "TF_CLI_ARGS_init",
-    ),
-)
-def test_authorization_release_rejects_terraform_argument_environment(
-    tmp_path: Path,
-    argument_environment: str,
-) -> None:
-    env_file = tmp_path / "deploy.env"
-    env_file.write_text(
-        """AZURE_SUBSCRIPTION_ID=sub
-AZURE_TENANT_ID=tenant
-AZURE_CLIENT_ID=client
-AZURE_CLIENT_SECRET=secret
-NEXT_PUBLIC_ENTRA_CLIENT_ID=web-client
-AIOPS_ENTRA_API_AUDIENCE=audience
-AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
-""",
-        encoding="utf-8",
-    )
-    environment = os.environ.copy()
-    for name in (
-        "TF_CLI_ARGS",
-        "TF_CLI_ARGS_apply",
-        "TF_CLI_ARGS_plan",
-        "TF_CLI_ARGS_output",
-        "TF_CLI_ARGS_init",
-    ):
-        environment.pop(name, None)
-    environment.update(
-        {
-            "AIOPS_API_AUTHORIZATION_RELEASE": "1",
-            "AIOPS_DEPLOYER_OBJECT_ID": "deployer",
-            "AIOPS_ENV_FILE": str(env_file),
-            argument_environment: "-target=azurerm_resource_group.main",
-        }
-    )
-
-    result = subprocess.run(
-        [
-            str(REPO_ROOT / "infra" / "scripts" / "deploy.sh"),
-            "apply",
-            "-target=azurerm_container_app.api",
-        ],
-        cwd=REPO_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert (
-        f"API authorization release rejects non-empty {argument_environment}."
-        in result.stderr
-    )
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    (
-        ("--target", "azurerm_resource_group.main"),
-        ("--target=azurerm_resource_group.main",),
-        (
-            "-target=azurerm_container_app.api",
-            "--target=azurerm_resource_group.main",
-        ),
-        (
-            "--target",
-            "azurerm_container_app.api",
-            "-target=azurerm_container_app.api",
-        ),
-        (
-            "-target",
-            "azurerm_container_app.api",
-            "--target",
-            "azurerm_resource_group.main",
-        ),
-    ),
-)
-def test_authorization_release_rejects_invalid_or_multiple_target_forms(
-    tmp_path: Path,
-    arguments: tuple[str, ...],
-) -> None:
-    env_file = tmp_path / "deploy.env"
-    env_file.write_text(
-        """AZURE_SUBSCRIPTION_ID=sub
-AZURE_TENANT_ID=tenant
-AZURE_CLIENT_ID=client
-AZURE_CLIENT_SECRET=secret
-NEXT_PUBLIC_ENTRA_CLIENT_ID=web-client
-AIOPS_ENTRA_API_AUDIENCE=audience
-AIOPS_ENTRA_GRANTS_JSON={"principal":[]}
-""",
-        encoding="utf-8",
-    )
-    environment = os.environ.copy()
-    for name in (
-        "TF_CLI_ARGS",
-        "TF_CLI_ARGS_apply",
-        "TF_CLI_ARGS_plan",
-        "TF_CLI_ARGS_output",
-        "TF_CLI_ARGS_init",
-    ):
-        environment.pop(name, None)
-    environment.update(
-        {
-            "AIOPS_API_AUTHORIZATION_RELEASE": "1",
-            "AIOPS_DEPLOYER_OBJECT_ID": "deployer",
-            "AIOPS_ENV_FILE": str(env_file),
-        }
-    )
-
-    result = subprocess.run(
-        [
-            str(REPO_ROOT / "infra" / "scripts" / "deploy.sh"),
-            "apply",
-            *arguments,
-        ],
-        cwd=REPO_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert (
-        "API authorization release requires exactly one Terraform target: "
-        "azurerm_container_app.api."
-    ) in result.stderr
 
 
 def test_observable_api_image_digest_is_not_runtime_authority(

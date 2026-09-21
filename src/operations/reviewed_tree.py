@@ -12,18 +12,13 @@ REVIEWED_TREE_ALGORITHM = "sha256-path-length-content-v1"
 AUTHORIZATION_MANIFEST_RELATIVE_PATH = (
     "src/operations/copilot_canary_authorization.v1.json"
 )
-CANARY_VALIDATION_REPORT_RELATIVE_PATH = (
-    "src/operations/copilot_canary_validation_report.v1.json"
-)
 DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH = (
     "src/operations/copilot_default_authorization.v1.json"
-)
-DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_RELATIVE_PATH = (
-    "src/operations/copilot_default_authorization_design_approval.v1.json"
 )
 REVIEWED_TREE_ROOTS = (
     ".dockerignore",
     "Dockerfile",
+    "Dockerfile.default-promotion",
     "arg.config.deploy.yaml",
     "fabric.config.deploy.yaml",
     "infra/scripts/build-and-push.sh",
@@ -44,9 +39,7 @@ REVIEWED_TREE_ROOTS = (
 )
 REVIEWED_TREE_EXCLUDED_PATHS = (
     AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-    CANARY_VALIDATION_REPORT_RELATIVE_PATH,
     DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-    DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_RELATIVE_PATH,
 )
 
 
@@ -69,18 +62,14 @@ def _validate_definition(
         (reviewed_exclusions, "exclusions"),
     ):
         if values != tuple(sorted(values)) or len(set(values)) != len(values):
-            raise ReviewedTreeError(
-                f"reviewed tree {label} must be sorted and unique"
-            )
+            raise ReviewedTreeError(f"reviewed tree {label} must be sorted and unique")
         for value in values:
             path = PurePosixPath(value)
             if path.is_absolute() or ".." in path.parts or str(path) != value:
                 raise ReviewedTreeError(f"invalid reviewed tree path: {value}")
     required_exclusions = {
         AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-        CANARY_VALIDATION_REPORT_RELATIVE_PATH,
         DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-        DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_RELATIVE_PATH,
     }
     if not required_exclusions.issubset(reviewed_exclusions):
         raise ReviewedTreeError("authorization manifests must be excluded")
@@ -120,12 +109,13 @@ def reviewed_tree_paths(
                 )
             if path.is_file():
                 files.add(relative)
-    if required_exclusions := {
-        AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-        CANARY_VALIDATION_REPORT_RELATIVE_PATH,
-        DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
-        DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_RELATIVE_PATH,
-    } & files:
+    if (
+        required_exclusions := {
+            AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+            DEFAULT_AUTHORIZATION_MANIFEST_RELATIVE_PATH,
+        }
+        & files
+    ):
         raise ReviewedTreeError(
             f"authorization manifests must not hash themselves: {sorted(required_exclusions)}"
         )

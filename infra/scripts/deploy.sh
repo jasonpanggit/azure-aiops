@@ -106,104 +106,107 @@ command="${1:-plan}"
 shift || true
 api_authorization_release="${AIOPS_API_AUTHORIZATION_RELEASE:-0}"
 
-rollout_mode_from_file() {
-  local file="$1"
-  if [[ "${file}" == *.json ]]; then
-    python3 - "${file}" <<'PY' 2>/dev/null
+terraform_variable_args() {
+  local args=("$@")
+  local i
+
+  TERRAFORM_VARIABLE_ARGS=()
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -var|-var-file|--var-file)
+        if [[ -z "${args[i + 1]:-}" ]]; then
+          echo "deploy: ${args[i]} requires a value; effective rollout mode is uncertain." >&2
+          return 1
+        fi
+        TERRAFORM_VARIABLE_ARGS+=("${args[i]}" "${args[i + 1]}")
+        i=$((i + 1))
+        ;;
+      -var=*|-var-file=*|--var-file=*)
+        TERRAFORM_VARIABLE_ARGS+=("${args[i]}")
+        ;;
+    esac
+  done
+}
+
+terraform_console_string() {
+  local expression="$1"
+  shift
+  local raw
+
+  if ! raw="$(
+    printf '%s\n' "${expression}" |
+      terraform console -no-color "$@" 2>/dev/null
+  )"; then
+    return 1
+  fi
+  python3 - "${raw}" <<'PY'
 import json
 import sys
 
-with open(sys.argv[1], encoding="utf-8") as variables_file:
-    print(json.load(variables_file).get("copilot_rollout_mode", ""))
+value = json.loads(sys.argv[1])
+if not isinstance(value, str):
+    raise SystemExit(1)
+print(value)
 PY
-    return
-  fi
-  awk -F'=' '/^[ \t]*copilot_rollout_mode[ \t]*=/ {
-    gsub(/[ \t"]/,"",$2); value=$2
-  } END { print value }' "${file}"
 }
 
-requested_copilot_rollout_mode() {
-  local args=("$@")
-  local mode="" candidate="" var_file="" i
-
-  if [[ -n "${TF_VAR_copilot_rollout_mode:-}" ]]; then
-    mode="${TF_VAR_copilot_rollout_mode}"
+effective_copilot_configuration() {
+  terraform_variable_args "$@" || return 1
+  if ! requested_rollout_mode="$(
+    terraform_console_string \
+      "var.copilot_rollout_mode" \
+      ${TERRAFORM_VARIABLE_ARGS[@]+"${TERRAFORM_VARIABLE_ARGS[@]}"}
+  )"; then
+    echo "deploy: Terraform could not prove the effective Copilot rollout mode." >&2
+    return 1
   fi
-  if [[ -f "${tf_dir}/terraform.tfvars" ]]; then
-    candidate="$(rollout_mode_from_file "${tf_dir}/terraform.tfvars")"
-    [[ -z "${candidate}" ]] || mode="${candidate}"
+  requested_rollout_mode="$(
+    printf '%s' "${requested_rollout_mode}" | tr '[:upper:]' '[:lower:]'
+  )"
+  if [[ ! "${requested_rollout_mode}" =~ ^(compatibility|shadow|canary|default)$ ]]; then
+    echo "deploy: Terraform returned an invalid effective Copilot rollout mode." >&2
+    return 1
   fi
-  if [[ -f "${tf_dir}/terraform.tfvars.json" ]]; then
-    candidate="$(rollout_mode_from_file "${tf_dir}/terraform.tfvars.json")"
-    [[ -z "${candidate}" ]] || mode="${candidate}"
+  if ! requested_api_image_digest="$(
+    terraform_console_string \
+      "var.api_image_digest" \
+      ${TERRAFORM_VARIABLE_ARGS[@]+"${TERRAFORM_VARIABLE_ARGS[@]}"}
+  )"; then
+    echo "deploy: Terraform could not prove the effective API image digest." >&2
+    return 1
   fi
-  while IFS= read -r var_file; do
-    candidate="$(rollout_mode_from_file "${var_file}")"
-    [[ -z "${candidate}" ]] || mode="${candidate}"
-  done < <(
-    find "${tf_dir}" -maxdepth 1 -type f \
-      \( -name '*.auto.tfvars' -o -name '*.auto.tfvars.json' \) | sort
-  )
-  for ((i = 0; i < ${#args[@]}; i++)); do
-    case "${args[i]}" in
-      -var)
-        if [[ "${args[i + 1]:-}" == copilot_rollout_mode=* ]]; then
-          mode="${args[i + 1]#copilot_rollout_mode=}"
-        fi
-        i=$((i + 1))
-        ;;
-      -var=copilot_rollout_mode=*)
-        mode="${args[i]#-var=copilot_rollout_mode=}"
-        ;;
-      -var-file|--var-file)
-        var_file="${args[i + 1]:-}"
-        i=$((i + 1))
-        ;;
-      -var-file=*|--var-file=*)
-        var_file="${args[i]#*=}"
-        ;;
-    esac
-    if [[ -n "${var_file}" ]]; then
-      if [[ "${var_file}" != /* ]]; then
-        var_file="${tf_dir}/${var_file}"
-      fi
-      if [[ -f "${var_file}" ]]; then
-        candidate="$(rollout_mode_from_file "${var_file}")"
-        [[ -z "${candidate}" ]] || mode="${candidate}"
-      fi
-      var_file=""
-    fi
-  done
-  printf '%s' "${mode}" | tr '[:upper:]' '[:lower:]'
 }
 
-requested_rollout_mode="$(requested_copilot_rollout_mode "$@")"
-while IFS= read -r terraform_args_name; do
-  if [[ "${!terraform_args_name:-}" == *"copilot_rollout_mode"* ]] ||
-    [[ "${!terraform_args_name:-}" == *"-var-file"* ]]; then
-    api_authorization_release=1
-  fi
-done < <(compgen -e | grep '^TF_CLI_ARGS' || true)
-if [[ "${requested_rollout_mode}" == "canary" ]] ||
-  [[ "${requested_rollout_mode}" == "default" ]]; then
-  api_authorization_release=1
-fi
-
-validate_api_authorization_environment() {
+reject_terraform_cli_args() {
   local name
 
-  while IFS= read -r name; do
-    case "${name}" in
-      TF_CLI_ARGS|TF_CLI_ARGS_*)
-        if [[ -n "${!name:-}" ]]; then
-          echo "deploy: API authorization release rejects non-empty ${name}." >&2
-          return 1
-        fi
-        ;;
-    esac
-  done < <(compgen -e)
+  for name in \
+    TF_CLI_ARGS \
+    TF_CLI_ARGS_init \
+    TF_CLI_ARGS_plan \
+    TF_CLI_ARGS_apply \
+    TF_CLI_ARGS_console \
+    TF_CLI_ARGS_output; do
+    if [[ -n "${!name:-}" ]]; then
+      echo "deploy: ${name} is not supported for plan/apply; pass arguments explicitly." >&2
+      return 1
+    fi
+  done
 }
+
+cd "${tf_dir}"
+
+if [[ "${command}" == "plan" || "${command}" == "apply" ]]; then
+  reject_terraform_cli_args
+  if [[ ! -d .terraform ]]; then
+    terraform init -input=false
+  fi
+  effective_copilot_configuration "$@"
+  if [[ "${requested_rollout_mode}" == "canary" ]] ||
+    [[ "${requested_rollout_mode}" == "default" ]]; then
+    api_authorization_release=1
+  fi
+fi
 
 validate_api_authorization_target() {
   local args=("$@")
@@ -211,6 +214,13 @@ validate_api_authorization_target() {
 
   for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[i]}" in
+      -destroy|--destroy|-destroy=*|--destroy=*|\
+      -replace|--replace|-replace=*|--replace=*|\
+      -refresh-only|--refresh-only|-refresh-only=*|--refresh-only=*|\
+      -refresh=*|--refresh=*)
+        echo "deploy: ${args[i]} is not permitted for an API authorization release." >&2
+        return 1
+        ;;
       -target|--target)
         target="${args[i + 1]:-}"
         if [[ -z "${target}" ]]; then
@@ -318,12 +328,7 @@ verify_images_exist() {
   local deploy_images="" image_tag="" i
 
   if [[ "${api_authorization_release}" == "1" ]]; then
-    local api_digest
-    api_digest="$(
-      awk -F'=' '/^[ \t]*api_image_digest[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' \
-        "${tf_dir}/terraform.tfvars" | tail -1
-    )"
-    if [[ ! "${api_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    if [[ ! "${requested_api_image_digest:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       echo "deploy: API authorization release requires an immutable api_image_digest." >&2
       exit 1
     fi
@@ -377,15 +382,12 @@ verify_images_exist() {
 }
 
 if [[ "${api_authorization_release}" == "1" ]]; then
-  validate_api_authorization_environment
   case "${command}" in
     plan|apply) validate_api_authorization_target "$@" ;;
   esac
 fi
 
-cd "${tf_dir}"
-
-artifact_dir="${AIOPS_DEPLOY_ARTIFACT_DIR:-${TMPDIR:-/tmp}/aiops-deploy}"
+artifact_dir="${AIOPS_DEPLOY_ARTIFACT_DIR:-${repo_root}/.deploy-artifacts}"
 capture_apim_snapshot() {
   [[ "${AIOPS_CAPTURE_APIM_SNAPSHOT:-true}" == "true" ]] || return 0
   command -v az >/dev/null 2>&1 || return 0

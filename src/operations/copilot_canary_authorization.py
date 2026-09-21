@@ -44,12 +44,6 @@ AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
 DEFAULT_AUTHORIZATION_MANIFEST_PATH = Path(__file__).with_name(
     "copilot_default_authorization.v1.json"
 )
-CANARY_VALIDATION_REPORT_PATH = Path(__file__).with_name(
-    "copilot_canary_validation_report.v1.json"
-)
-DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH = Path(__file__).with_name(
-    "copilot_default_authorization_design_approval.v1.json"
-)
 BUILD_METADATA_PATH = Path("/app/build-metadata.json")
 PACKAGED_REVIEWED_TREE_ROOT = Path("/app")
 ENV_ROLLOUT_MODE = "AIOPS_COPILOT_ROLLOUT_MODE"
@@ -62,8 +56,16 @@ ENV_DEFAULT_AUTHORIZATION_MANIFEST_SHA256 = (
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REVISION_PATTERN = r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
-_DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_SHA256 = (
-    "183ed181a31e6943d81f172e18a8a8dbd5b1e3609208be31c51c2f356f0b24e2"
+DEFAULT_PROMOTION_TRANSFORMATION_POLICY = (
+    "replace-default-authorization-and-bind-lineage-v1"
+)
+DEFAULT_PROMOTION_EQUIVALENCE_ALGORITHM = (
+    "sha256-canonical-json-default-promotion-lineage-v1"
+)
+DEFAULT_PROMOTION_ALLOWED_MUTATIONS = (
+    "src/operations/copilot_default_authorization.v1.json",
+    "build-metadata.json:default_authorization_manifest_sha256",
+    "build-metadata.json:default_promotion",
 )
 _CANONICAL_UTC_PATTERN = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
@@ -313,14 +315,49 @@ class ShadowEvidence(_StrictModel):
 class CleanCanaryEvidence(_StrictModel):
     """Passing, cleaned canary evidence required before default rollout."""
 
-    report_sha256: str = Field(pattern=_SHA256_PATTERN)
-    report_integrity_signature: str = Field(pattern=_SHA256_PATTERN)
     status: Literal["PASS_CLEAN"]
     tested_percentage: Literal[10]
     source_revision: str = Field(pattern=_REVISION_PATTERN)
     image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     reviewed_tree_sha256: str = Field(pattern=_SHA256_PATTERN)
     cleanup_status: Literal["PASS_COMPLETE"]
+
+
+class DefaultPromotionEquivalenceProof(_StrictModel):
+    """Digest of every immutable input to the allowed promotion transform."""
+
+    algorithm: Literal["sha256-canonical-json-default-promotion-lineage-v1"]
+    sha256: str = Field(pattern=_SHA256_PATTERN)
+
+
+class DefaultPromotionLineage(_StrictModel):
+    """Exact base image and filesystem transformation for default promotion."""
+
+    base_source_revision: str = Field(pattern=_REVISION_PATTERN)
+    base_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    transformation_policy: Literal["replace-default-authorization-and-bind-lineage-v1"]
+    allowed_mutations: tuple[str, ...]
+    equivalent_reviewed_tree_sha256: str = Field(pattern=_SHA256_PATTERN)
+    equivalence_proof: DefaultPromotionEquivalenceProof
+
+    @model_validator(mode="after")
+    def validate_exact_transformation(self) -> DefaultPromotionLineage:
+        if self.allowed_mutations != DEFAULT_PROMOTION_ALLOWED_MUTATIONS:
+            raise ValueError("default promotion mutations differ from fixed policy")
+        if self.equivalence_proof.algorithm != DEFAULT_PROMOTION_EQUIVALENCE_ALGORITHM:
+            raise ValueError("default promotion equivalence algorithm is unsupported")
+        return self
+
+
+def default_promotion_equivalence_sha256(
+    lineage: DefaultPromotionLineage,
+) -> str:
+    """Return the canonical digest binding all permitted promotion inputs."""
+
+    payload = lineage.model_dump(mode="json", exclude={"equivalence_proof"})
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class CanaryAuthorizationManifest(_StrictModel):
@@ -344,7 +381,10 @@ class CanaryAuthorizationManifest(_StrictModel):
     @field_validator("issued_at", "not_before", "expires_at", mode="before")
     @classmethod
     def validate_canonical_utc_timestamp(cls, value: Any) -> str:
-        if not isinstance(value, str) or _CANONICAL_UTC_PATTERN.fullmatch(value) is None:
+        if (
+            not isinstance(value, str)
+            or _CANONICAL_UTC_PATTERN.fullmatch(value) is None
+        ):
             raise ValueError("timestamp must be canonical RFC3339 UTC")
         return value
 
@@ -430,7 +470,6 @@ class DefaultAuthorizationManifest(_StrictModel):
     schema_version: Literal["copilot-default-authorization.v1"]
     authorization_id: str = Field(min_length=1, max_length=128)
     status: Literal["AUTHORIZED", "HOLD_PENDING_CANARY_REVALIDATION"]
-    design_approval_sha256: str = Field(pattern=_SHA256_PATTERN)
     issued_at: datetime
     not_before: datetime
     expires_at: datetime
@@ -442,11 +481,15 @@ class DefaultAuthorizationManifest(_StrictModel):
     foundry_project: FoundryProject
     candidate_binding: CandidateBinding
     canary_evidence: CleanCanaryEvidence
+    promotion_lineage: DefaultPromotionLineage
 
     @field_validator("issued_at", "not_before", "expires_at", mode="before")
     @classmethod
     def validate_canonical_utc_timestamp(cls, value: Any) -> str:
-        if not isinstance(value, str) or _CANONICAL_UTC_PATTERN.fullmatch(value) is None:
+        if (
+            not isinstance(value, str)
+            or _CANONICAL_UTC_PATTERN.fullmatch(value) is None
+        ):
             raise ValueError("timestamp must be canonical RFC3339 UTC")
         return value
 
@@ -465,12 +508,8 @@ class DefaultAuthorizationManifest(_StrictModel):
             raise ValueError("authorization window is invalid")
         expected_target = DeploymentTarget(
             tenant_id=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_TENANT_ID"],
-            subscription_id=_EXPECTED_ENVIRONMENT[
-                "AIOPS_DEPLOYMENT_SUBSCRIPTION_ID"
-            ],
-            resource_group=_EXPECTED_ENVIRONMENT[
-                "AIOPS_DEPLOYMENT_RESOURCE_GROUP"
-            ],
+            subscription_id=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_SUBSCRIPTION_ID"],
+            resource_group=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_RESOURCE_GROUP"],
             app=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_APP"],
             environment=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_ENVIRONMENT"],
             region=_EXPECTED_ENVIRONMENT["AIOPS_DEPLOYMENT_REGION"],
@@ -501,13 +540,23 @@ class DefaultAuthorizationManifest(_StrictModel):
         ):
             raise ValueError("candidate binding differs from reviewed evidence")
         if (
-            self.status == "AUTHORIZED"
-            and self.canary_evidence.reviewed_tree_sha256
-            != self.reviewed_tree.sha256
+            self.canary_evidence.source_revision
+            != self.promotion_lineage.base_source_revision
+            or self.canary_evidence.image_digest
+            != self.promotion_lineage.base_image_digest
+            or self.canary_evidence.reviewed_tree_sha256
+            != self.promotion_lineage.equivalent_reviewed_tree_sha256
+            or self.reviewed_tree.sha256
+            != self.promotion_lineage.equivalent_reviewed_tree_sha256
         ):
             raise ValueError(
-                "authorized default requires clean canary evidence for this tree"
+                "default promotion lineage differs from clean canary evidence"
             )
+        if (
+            default_promotion_equivalence_sha256(self.promotion_lineage)
+            != self.promotion_lineage.equivalence_proof.sha256
+        ):
+            raise ValueError("default promotion equivalence proof does not match")
         return self
 
 
@@ -518,11 +567,8 @@ class BuildMetadata(_StrictModel):
     source_revision: str = Field(pattern=_REVISION_PATTERN)
     canary_authorization_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     default_authorization_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    canary_validation_report_sha256: str = Field(pattern=_SHA256_PATTERN)
-    default_authorization_design_approval_sha256: str = Field(
-        pattern=_SHA256_PATTERN
-    )
     reviewed_tree_sha256: str = Field(pattern=_SHA256_PATTERN)
+    default_promotion: DefaultPromotionLineage | None = None
 
 
 @dataclass(frozen=True)
@@ -562,131 +608,11 @@ def canary_authorization_required(
     return mode in {"canary", "default"} or percentage > 0
 
 
-def _canonical_artifact_integrity(payload: dict[str, Any]) -> str:
-    signature = payload.get("integrity_signature")
-    if not isinstance(signature, dict) or signature.get("algorithm") != "sha256":
-        raise ValueError("artifact integrity signature is invalid")
-    unsigned = dict(payload)
-    unsigned.pop("integrity_signature")
-    actual = hashlib.sha256(
-        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    if signature.get("value") != actual:
-        raise ValueError("artifact integrity signature does not match")
-    return actual
-
-
-def _validate_default_evidence_artifacts(
-    *,
-    manifest: DefaultAuthorizationManifest,
-    build_metadata: BuildMetadata,
-    report_path: Path,
-    design_approval_path: Path,
-) -> None:
-    try:
-        report_bytes = report_path.read_bytes()
-        report = json.loads(report_bytes)
-        approval_bytes = design_approval_path.read_bytes()
-        approval = json.loads(approval_bytes)
-        if not isinstance(report, dict) or not isinstance(approval, dict):
-            raise TypeError("authorization evidence artifacts must be objects")
-        _canonical_artifact_integrity(report)
-        _canonical_artifact_integrity(approval)
-
-        report_sha256 = hashlib.sha256(report_bytes).hexdigest()
-        approval_sha256 = hashlib.sha256(approval_bytes).hexdigest()
-        evidence = manifest.canary_evidence
-        report_authorization = report["authorization"]
-        report_bindings = report["bindings"]
-        serving_revision = report["serving_revision"]
-        cleanup = report["operational_cleanup"]
-        execution_equivalence = report["execution_evidence_equivalence"]
-        approval_contract = approval["manifest_contract"]
-        approval_evidence = approval_contract["canary_evidence"]
-        approval_tree = approval["reviewed_tree_contract"]
-
-        if (
-            report_sha256 != evidence.report_sha256
-            or build_metadata.canary_validation_report_sha256 != report_sha256
-            or report["integrity_signature"]["value"]
-            != evidence.report_integrity_signature
-            or report.get("schema_version")
-            != "foundry-canary-validation-report.v1"
-            or report.get("status") != "PASS_CLEAN"
-            or report.get("canary_status") != "PASS"
-            or report.get("canary_authorized") is not True
-            or report_authorization.get("rollout_mode") != "canary"
-            or report_authorization.get("percentage") != evidence.tested_percentage
-            or report.get("source_revision") != evidence.source_revision
-            or serving_revision.get("image_digest") != evidence.image_digest
-            or serving_revision.get("active") is not True
-            or serving_revision.get("health_state") != "Healthy"
-            or serving_revision.get("latest") is not True
-            or serving_revision.get("latest_ready") is not True
-            or serving_revision.get("replica_ready") is not True
-            or cleanup.get("status") != evidence.cleanup_status
-            or not execution_equivalence
-            or not all(value is True for value in execution_equivalence.values())
-            or report_bindings.get("candidate_semantic_sha256")
-            != manifest.candidate_binding.semantic_sha256
-        ):
-            raise ValueError(
-                "clean canary evidence differs from the platform-observed report"
-            )
-
-        if (
-            approval_sha256 != _DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_SHA256
-            or manifest.design_approval_sha256
-            != _DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_SHA256
-            or build_metadata.default_authorization_design_approval_sha256
-            != approval_sha256
-            or approval.get("schema_version")
-            != "foundry-default-authorization-design-approval.v1"
-            or approval.get("decision") != "APPROVE_FOR_IMPLEMENTATION"
-            or approval.get("default_authorized") is not False
-            or approval_contract.get("schema_version")
-            != manifest.schema_version
-            or approval_contract.get("path")
-            != "src/operations/copilot_default_authorization.v1.json"
-            or approval_evidence.get("clean_report_sha256")
-            != evidence.report_sha256
-            or approval_evidence.get("clean_report_signature")
-            != evidence.report_integrity_signature
-            or approval_evidence.get("status") != evidence.status
-            or approval_evidence.get("tested_percentage")
-            != evidence.tested_percentage
-            or approval_evidence.get("source_revision")
-            != evidence.source_revision
-            or approval_evidence.get("image_digest") != evidence.image_digest
-            or approval_evidence.get("reviewed_tree_sha256")
-            != evidence.reviewed_tree_sha256
-            or approval_evidence.get("cleanup_status") != evidence.cleanup_status
-            or approval_tree.get("protected_tree_must_equal_clean_canary_tree")
-            is not True
-        ):
-            raise ValueError(
-                "default authorization differs from the signed design approval"
-            )
-    except (
-        OSError,
-        UnicodeError,
-        json.JSONDecodeError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        raise CanaryAuthorizationError(
-            "independent default authorization evidence is missing or invalid"
-        ) from exc
-
-
 def validate_canary_authorization(
     *,
     environment: Mapping[str, str] | None = None,
     manifest_path: Path | None = None,
     default_manifest_path: Path | None = None,
-    canary_report_path: Path | None = None,
-    design_approval_path: Path | None = None,
     build_metadata_path: Path | None = None,
     reviewed_tree_root: Path | None = None,
     now: datetime | None = None,
@@ -696,10 +622,6 @@ def validate_canary_authorization(
     values = environment if environment is not None else os.environ
     build_metadata_path = build_metadata_path or BUILD_METADATA_PATH
     reviewed_tree_root = reviewed_tree_root or PACKAGED_REVIEWED_TREE_ROOT
-    canary_report_path = canary_report_path or CANARY_VALIDATION_REPORT_PATH
-    design_approval_path = (
-        design_approval_path or DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH
-    )
     mode = values.get(ENV_ROLLOUT_MODE, "").strip().casefold()
     percentage_text = values.get(ENV_CANARY_PERCENTAGE, "").strip()
     if not percentage_text.isdecimal():
@@ -728,7 +650,9 @@ def validate_canary_authorization(
         else:
             manifest = DefaultAuthorizationManifest.model_validate(manifest_payload)
             if manifest.status != "AUTHORIZED":
-                raise CanaryAuthorizationError("default authorization status is inactive")
+                raise CanaryAuthorizationError(
+                    "default authorization status is inactive"
+                )
     except (
         OSError,
         UnicodeError,
@@ -746,13 +670,25 @@ def validate_canary_authorization(
         )
     except (OSError, UnicodeError, ValidationError) as exc:
         raise CanaryAuthorizationError("build metadata is missing or invalid") from exc
-    if mode == "default":
-        _validate_default_evidence_artifacts(
-            manifest=manifest,
-            build_metadata=build_metadata,
-            report_path=canary_report_path,
-            design_approval_path=design_approval_path,
+    if mode == "canary" and build_metadata.default_promotion is not None:
+        raise CanaryAuthorizationError(
+            "canary requires the original canary-tested image"
         )
+    if mode == "default":
+        assert isinstance(manifest, DefaultAuthorizationManifest)
+        if (
+            build_metadata.default_promotion is None
+            or build_metadata.default_promotion != manifest.promotion_lineage
+            or build_metadata.source_revision
+            != manifest.promotion_lineage.base_source_revision
+            or build_metadata.reviewed_tree_sha256
+            != manifest.promotion_lineage.equivalent_reviewed_tree_sha256
+            or default_promotion_equivalence_sha256(build_metadata.default_promotion)
+            != manifest.promotion_lineage.equivalence_proof.sha256
+        ):
+            raise CanaryAuthorizationError(
+                "default image was not produced by the authorized promotion path"
+            )
     expected_packaged_digest = (
         build_metadata.canary_authorization_manifest_sha256
         if mode == "canary"
@@ -837,8 +773,7 @@ def validate_canary_authorization(
     if candidate_binding.source_revision != source_revision:
         raise CanaryAuthorizationError("candidate source revision mismatch")
     if (
-        candidate_binding.algorithm
-        != manifest.candidate_binding.semantic_algorithm
+        candidate_binding.algorithm != manifest.candidate_binding.semantic_algorithm
         or candidate_binding.sha256 != manifest.candidate_binding.semantic_sha256
         or values.get(CANDIDATE_BINDING_DIGEST_ENV, "").strip()
         != candidate_binding.sha256
@@ -901,17 +836,20 @@ def canary_authorization_health() -> dict[str, Any]:
 __all__ = [
     "AUTHORIZATION_MANIFEST_PATH",
     "BUILD_METADATA_PATH",
-    "CANARY_VALIDATION_REPORT_PATH",
-    "DEFAULT_AUTHORIZATION_DESIGN_APPROVAL_PATH",
     "DEFAULT_AUTHORIZATION_MANIFEST_PATH",
+    "DEFAULT_PROMOTION_ALLOWED_MUTATIONS",
+    "DEFAULT_PROMOTION_EQUIVALENCE_ALGORITHM",
+    "DEFAULT_PROMOTION_TRANSFORMATION_POLICY",
     "PACKAGED_REVIEWED_TREE_ROOT",
     "BuildMetadata",
     "CanaryAuthorizationError",
     "CanaryAuthorizationManifest",
     "DefaultAuthorizationManifest",
+    "DefaultPromotionLineage",
     "ValidatedCanaryAuthorization",
     "canary_authorization_health",
     "canary_authorization_required",
+    "default_promotion_equivalence_sha256",
     "require_canary_authorization_if_requested",
     "validate_canary_authorization",
 ]

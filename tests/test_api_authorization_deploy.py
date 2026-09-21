@@ -9,6 +9,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API_DIGEST = f"sha256:{'a' * 64}"
 API_IMAGE = f"registry.example/aiops-api@{API_DIGEST}"
@@ -20,7 +22,9 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _deploy_workspace(tmp_path: Path, *, mode: str = "default") -> tuple[Path, dict[str, str]]:
+def _deploy_workspace(
+    tmp_path: Path, *, mode: str = "default"
+) -> tuple[Path, dict[str, str]]:
     root = tmp_path / "deploy-workspace"
     scripts = root / "infra" / "scripts"
     terraform_dir = root / "infra" / "terraform"
@@ -76,15 +80,46 @@ def _deploy_workspace(tmp_path: Path, *, mode: str = "default") -> tuple[Path, d
         command="${{1:-}}"
         shift || true
         case "${{command}}" in
+          console)
+            if [[ "${{FAKE_CONSOLE_FAIL:-0}}" == "1" ]]; then
+              exit 1
+            fi
+            read -r expression
+            mode="${{FAKE_EFFECTIVE_MODE:-{mode}}}"
+            case "${{TF_CLI_ARGS_console:-}}" in
+              *copilot_rollout_mode=default*) mode=default ;;
+              *copilot_rollout_mode=canary*) mode=canary ;;
+              *copilot_rollout_mode=compatibility*) mode=compatibility ;;
+            esac
+            previous=""
+            for argument in "$@"; do
+              if [[ "${{previous}}" == "-var" ]] &&
+                [[ "${{argument}}" == copilot_rollout_mode=* ]]; then
+                mode="${{argument#copilot_rollout_mode=}}"
+              fi
+              case "${{argument}}" in
+                -var=copilot_rollout_mode=*)
+                  mode="${{argument#-var=copilot_rollout_mode=}}"
+                  ;;
+              esac
+              previous="${{argument}}"
+            done
+            case "${{expression}}" in
+              var.copilot_rollout_mode) printf '"%s"\\n' "${{mode}}" ;;
+              var.api_image_digest) printf '"%s"\\n' "{API_DIGEST}" ;;
+              *) exit 2 ;;
+            esac
+            ;;
           apply)
             count="$(cat "${{FAKE_APPLY_COUNT}}")"
             count=$((count + 1))
             printf '%s' "${{count}}" >"${{FAKE_APPLY_COUNT}}"
-            mode="$(
-              awk -F'=' '/^[ \t]*copilot_rollout_mode[ \t]*=/ {{
-                gsub(/[ \t"]/,"",$2); value=$2
-              }} END {{ print value }}' terraform.tfvars
-            )"
+            mode="${{FAKE_EFFECTIVE_MODE:-{mode}}}"
+            case "${{TF_CLI_ARGS_apply:-}}" in
+              *copilot_rollout_mode=default*) mode=default ;;
+              *copilot_rollout_mode=canary*) mode=canary ;;
+              *copilot_rollout_mode=compatibility*) mode=compatibility ;;
+            esac
             for argument in "$@"; do
               case "${{argument}}" in
                 -var=copilot_rollout_mode=*)
@@ -122,6 +157,7 @@ def _deploy_workspace(tmp_path: Path, *, mode: str = "default") -> tuple[Path, d
                 "${{output_mode}}" "${{percentage}}"
             fi
             ;;
+          plan) ;;
           init) ;;
           *) exit 2 ;;
         esac
@@ -166,6 +202,7 @@ def _deploy_workspace(tmp_path: Path, *, mode: str = "default") -> tuple[Path, d
         "TF_CLI_ARGS_plan",
         "TF_CLI_ARGS_output",
         "TF_CLI_ARGS_init",
+        "TF_CLI_ARGS_console",
         "TF_VAR_copilot_rollout_mode",
     ):
         environment.pop(name, None)
@@ -177,6 +214,7 @@ def _deploy_workspace(tmp_path: Path, *, mode: str = "default") -> tuple[Path, d
             "FAKE_STATE": str(state_file),
             "FAKE_APPLY_COUNT": str(apply_count_file),
             "FAKE_TERRAFORM_LOG": str(log_file),
+            "FAKE_EFFECTIVE_MODE": mode,
         }
     )
     return scripts / "deploy.sh", environment
@@ -197,6 +235,26 @@ def _run_deploy(
     )
 
 
+def _run_plan(
+    script: Path,
+    environment: dict[str, str],
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(script), "plan", *arguments],
+        cwd=script.parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _terraform_log(environment: dict[str, str]) -> str:
+    path = Path(environment["FAKE_TERRAFORM_LOG"])
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
 def test_default_rollout_uses_staged_workflow_and_confirms_active_revision(
     tmp_path: Path,
 ) -> None:
@@ -213,7 +271,7 @@ def test_default_rollout_uses_staged_workflow_and_confirms_active_revision(
         (
             result.stderr,
             result.stdout,
-            Path(environment["FAKE_TERRAFORM_LOG"]).read_text(encoding="utf-8"),
+            _terraform_log(environment),
         )
     )
     assert "staging immutable API digest in compatibility mode" in result.stdout
@@ -234,11 +292,160 @@ def test_canary_rollout_keeps_bounded_staged_semantics(tmp_path: Path) -> None:
         (
             result.stderr,
             result.stdout,
-            Path(environment["FAKE_TERRAFORM_LOG"]).read_text(encoding="utf-8"),
+            _terraform_log(environment),
         )
     )
     assert "active immutable API revision api--canary-r1" in result.stdout
     assert "mode canary, percentage 10" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ("canary", "default"))
+def test_inline_comment_rollout_mode_is_terraform_evaluated_and_staged(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path, mode="compatibility")
+    tfvars = script.parents[1] / "terraform" / "terraform.tfvars"
+    tfvars.write_text(
+        f'copilot_rollout_mode = "{mode}" # valid inline comment\n'
+        f'api_image_digest = "{API_DIGEST}"\n',
+        encoding="utf-8",
+    )
+    environment["FAKE_EFFECTIVE_MODE"] = mode
+
+    result = _run_deploy(
+        script,
+        environment,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "staging immutable API digest in compatibility mode" in result.stdout
+
+
+def test_auto_tfvars_can_override_compatibility_to_default(
+    tmp_path: Path,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path, mode="compatibility")
+    terraform_dir = script.parents[1] / "terraform"
+    (terraform_dir / "promotion.auto.tfvars").write_text(
+        'copilot_rollout_mode = "default"\n',
+        encoding="utf-8",
+    )
+    environment["FAKE_EFFECTIVE_MODE"] = "default"
+
+    result = _run_deploy(
+        script,
+        environment,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "active immutable API revision api--default-r1" in result.stdout
+
+
+def test_auto_tfvars_can_override_default_to_compatibility(
+    tmp_path: Path,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path, mode="default")
+    terraform_dir = script.parents[1] / "terraform"
+    (terraform_dir / "promotion.auto.tfvars.json").write_text(
+        '{"copilot_rollout_mode":"compatibility"}\n',
+        encoding="utf-8",
+    )
+    environment["FAKE_EFFECTIVE_MODE"] = "compatibility"
+
+    result = _run_plan(script, environment)
+
+    assert result.returncode == 0, result.stderr
+    assert "staging immutable API digest" not in result.stdout
+    assert "plan -input=false" in _terraform_log(environment)
+
+
+def test_rollout_mode_uncertainty_fails_closed_before_apply(
+    tmp_path: Path,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path)
+    environment["FAKE_CONSOLE_FAIL"] = "1"
+
+    result = _run_deploy(
+        script,
+        environment,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode != 0
+    assert "could not prove the effective Copilot rollout mode" in result.stderr
+    log = _terraform_log(environment)
+    assert not any(line.startswith("apply ") for line in log.splitlines())
+
+
+def test_command_specific_cli_variable_input_fails_closed(
+    tmp_path: Path,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path, mode="compatibility")
+    environment["TF_CLI_ARGS_apply"] = "-var=copilot_rollout_mode=default"
+
+    result = _run_deploy(
+        script,
+        environment,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode != 0
+    assert "TF_CLI_ARGS_apply is not supported" in result.stderr
+    assert not any(
+        line.startswith("apply ")
+        for line in _terraform_log(environment).splitlines()
+    )
+
+
+def test_command_specific_destroy_cannot_change_guarded_apply(
+    tmp_path: Path,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path)
+    environment["TF_CLI_ARGS_apply"] = "-destroy"
+
+    result = _run_deploy(
+        script,
+        environment,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode != 0
+    assert "TF_CLI_ARGS_apply is not supported" in result.stderr
+    assert not any(
+        line.startswith("apply ")
+        for line in _terraform_log(environment).splitlines()
+    )
+
+
+@pytest.mark.parametrize("destroy_flag", ("-destroy", "--destroy"))
+def test_explicit_destroy_cannot_change_guarded_apply(
+    tmp_path: Path,
+    destroy_flag: str,
+) -> None:
+    script, environment = _deploy_workspace(tmp_path)
+
+    result = _run_deploy(
+        script,
+        environment,
+        destroy_flag,
+        "-target=azurerm_container_app.api",
+        "-auto-approve",
+    )
+
+    assert result.returncode != 0
+    assert f"{destroy_flag} is not permitted" in result.stderr
+    assert not any(
+        line.startswith("apply ")
+        for line in _terraform_log(environment).splitlines()
+    )
 
 
 def test_default_rollout_cannot_bypass_staging_when_release_flag_is_omitted(
@@ -258,7 +465,9 @@ def test_default_rollout_cannot_bypass_staging_when_release_flag_is_omitted(
         "API authorization release requires exactly one Terraform target"
         in result.stderr
     )
-    assert not Path(environment["FAKE_TERRAFORM_LOG"]).exists()
+    assert not any(
+        line.startswith("apply ") for line in _terraform_log(environment).splitlines()
+    )
 
 
 def test_authorized_rollout_fails_when_rollback_cannot_be_confirmed(
