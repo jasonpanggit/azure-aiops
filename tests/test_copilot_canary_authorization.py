@@ -1154,6 +1154,15 @@ def test_build_and_terraform_wiring_is_fail_closed() -> None:
         "local.copilot_default_authorization.authorization_scope.percentage == 100"
         in terraform
     )
+    api_resource = terraform.split(
+        'resource "azurerm_container_app" "api" {',
+        maxsplit=1,
+    )[1].split(
+        'resource "azurerm_container_app" "web" {',
+        maxsplit=1,
+    )[0]
+    assert 'revision_mode                = "Multiple"' in api_resource
+    assert 'revision_mode                = "Single"' not in api_resource
     assert 'var.api_image_digest != ""' in terraform
     assert "local.copilot_canary_percentage <= 10" in terraform
     assert (
