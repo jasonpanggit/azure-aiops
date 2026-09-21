@@ -47,7 +47,7 @@
   ],
   "roleDefinitionCaptures": [
     {
-      "rawSha256": "3ac18c4e8c66b443afa3139055cdd57a04f18a2649c79eec068e0c9a98882c86",
+      "rawSha256": "d540992db49dc7b5df1f1d6ae4490f55f905b76bca94173471c93cdd015a9b81",
       "raw": {
         "id": "/subscriptions/a87a8e64-a52a-4aa8-a760-5e8919d23cd1/providers/Microsoft.Authorization/roleDefinitions/10000000-0000-0000-0000-000000000001",
         "roleName": "aiops-dev-sre-agent-trigger-invoker",
@@ -59,6 +59,7 @@
             "actions": [],
             "notActions": [],
             "dataActions": [
+              "Microsoft.App/agents/threads/approve/action",
               "Microsoft.App/agents/threads/write"
             ],
             "notDataActions": []

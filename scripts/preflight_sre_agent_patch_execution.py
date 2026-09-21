@@ -67,7 +67,12 @@ THREAD_SCOPE = "https://azuresre.dev/.default"
 TRIGGER_ROLE_NAME = "aiops-dev-sre-agent-trigger-invoker"
 THREAD_READER_ROLE_NAME = "aiops-dev-sre-agent-thread-reader"
 PATCH_ROLE_NAME = "aiops-dev-sre-agent-patch-executor"
-TRIGGER_WRITE_DATA_ACTIONS = frozenset({"Microsoft.App/agents/threads/write"})
+TRIGGER_WRITE_DATA_ACTIONS = frozenset(
+    {
+        "Microsoft.App/agents/threads/approve/action",
+        "Microsoft.App/agents/threads/write",
+    }
+)
 THREAD_READ_DATA_ACTIONS = frozenset({"Microsoft.App/agents/threads/read"})
 TRIGGER_DATA_ACTIONS = TRIGGER_WRITE_DATA_ACTIONS | THREAD_READ_DATA_ACTIONS
 PATCH_ACTIONS = frozenset(

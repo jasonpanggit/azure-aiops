@@ -153,6 +153,7 @@ def test_sre_trigger_caller_role_is_agent_scoped_and_flag_guarded() -> None:
     assert re.search(r"^\s*data_actions\s+= \[$", permissions, re.MULTILINE)
     assert re.search(r"^\s*not_data_actions\s+= \[\]$", permissions, re.MULTILINE)
     assert '"Microsoft.App/agents/threads/read"' not in permissions
+    assert '"Microsoft.App/agents/threads/approve/action"' in permissions
     assert '"Microsoft.App/agents/threads/write"' in permissions
     assert (
         'assignable_scopes = ["/subscriptions/${local.sre_agent_subscription_id}"]'
@@ -167,6 +168,7 @@ def test_sre_trigger_caller_role_is_agent_scoped_and_flag_guarded() -> None:
     )
     reader = terraform[reader_start:reader_end]
     assert '"Microsoft.App/agents/threads/read"' in reader
+    assert '"Microsoft.App/agents/threads/approve/action"' not in reader
     assert '"Microsoft.App/agents/threads/write"' not in reader
     assert (
         "var.enable_sre_agent_patch_rbac || "
