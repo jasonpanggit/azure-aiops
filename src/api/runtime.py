@@ -204,7 +204,7 @@ ENV_GATEWAY_ASSERTION = "AIOPS_GATEWAY_ASSERTION"
 # Override for how long a submitted remediation execution may stay
 # unverified before the autonomous coordinator (Phase 03.4) reports it
 # terminal-unknown. Absent, RemediationExecutionService's own default
-# (VERIFICATION_DEADLINE_SECONDS, 30 minutes) applies.
+# (VERIFICATION_DEADLINE_SECONDS, PT2H + 15 minutes) applies.
 ENV_REMEDIATION_VERIFICATION_DEADLINE_SECONDS = (
     "AIOPS_REMEDIATION_VERIFICATION_DEADLINE_SECONDS"
 )

@@ -1001,6 +1001,10 @@ def _full_plan(plan: dict) -> dict:
 # --- Plan 03.4-02 Task 1: deadline-first poll_verification ------------------
 
 
+def test_default_verification_deadline_matches_patch_duration_plus_buffer():
+    assert VERIFICATION_DEADLINE_SECONDS == 8100.0
+
+
 def test_execute_sets_verification_deadline_and_next_verification_at():
     plan = _plan()
     service, store = _service_with_store(plan=plan)

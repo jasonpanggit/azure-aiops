@@ -51,8 +51,10 @@ MAX_EXECUTION_ATTEMPTS = 3
 
 # Recommendation 3 (Deadline and Recovery): every provider-submitted
 # execution reaches a terminal outcome by this deadline, never staying
-# "running"/"submission_ambiguous" indefinitely. 30 minutes.
-VERIFICATION_DEADLINE_SECONDS = 1800.0
+# "running"/"submission_ambiguous" indefinitely. Patch providers may run for
+# PT2H, so the default is that maximum duration plus a 15-minute evidence
+# reconciliation buffer.
+VERIFICATION_DEADLINE_SECONDS = 8100.0
 
 
 class RemediationExecutionError(RuntimeError):
