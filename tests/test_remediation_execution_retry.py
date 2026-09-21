@@ -405,3 +405,95 @@ def test_cancel_and_retry_compare_and_set_claims_have_one_winner() -> None:
     assert cancelled is None
     retried = service.retry(failed["execution_id"])
     assert retried["attempt_count"] == 2
+
+
+class _SreCancellationVerifier:
+    def __init__(self) -> None:
+        self.cancelled: list[str] = []
+
+    def cancel(self, execution_record: dict) -> dict:
+        self.cancelled.append(execution_record["execution_id"])
+        return {
+            "cancelled": True,
+            "thread_id": "thread-123",
+            "approval_ids": ["approval-1"],
+            "thread_state": "failed_without_action",
+        }
+
+
+def test_running_sre_review_can_be_cancelled_then_retried() -> None:
+    plan = _full_plan()
+    service, store, _ = _service(plan=plan)
+    verifier = _SreCancellationVerifier()
+    service._verifier = verifier
+    execution = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    current = store.get(execution["execution_id"])
+    store.transition(
+        execution["execution_id"],
+        expected_revision=current["revision"],
+        expected_status="running",
+        status="running",
+        actor="test",
+        provider="sre-agent",
+        provider_job_id=(
+            "https://sre-agent.example.azure.com/api/v1/threads/thread-123"
+        ),
+        verification_evidence={"approval_pending": True},
+    )
+
+    before = service.execution_view(store.get(execution["execution_id"]))
+    cancelled = service.cancel(
+        execution["execution_id"],
+        requested_by="operator@example.com",
+    )
+
+    assert before["cancellable"] is True
+    assert verifier.cancelled == [execution["execution_id"]]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["failure_class"] == "provider_rejected"
+    assert cancelled["retryable"] is True
+    assert cancelled["verification_evidence"]["provider_cancellation"] == {
+        "cancelled": True,
+        "thread_id": "thread-123",
+        "approval_ids": ["approval-1"],
+        "thread_state": "failed_without_action",
+    }
+
+
+def test_unverified_sre_thread_is_not_advertised_as_cancellable() -> None:
+    view = RemediationExecutionService.execution_view(
+        {
+            "status": "running",
+            "provider": "sre-agent",
+            "provider_job_id": (
+                "https://sre-agent.example.azure.com/api/v1/threads/thread-123"
+            ),
+            "provider_submitted": True,
+            "verification_evidence": {},
+            "attempts": [],
+        }
+    )
+
+    assert view["cancellable"] is False
+    assert view["ineligibility_reason"] == "provider_not_cancellable"
+
+
+def test_sre_write_submission_evidence_disables_cancel() -> None:
+    view = RemediationExecutionService.execution_view(
+        {
+            "status": "running",
+            "provider": "sre-agent",
+            "provider_job_id": (
+                "https://sre-agent.example.azure.com/api/v1/threads/thread-123"
+            ),
+            "provider_submitted": True,
+            "verification_evidence": {
+                "approval_pending": True,
+                "provider_operation": {"operation_id": "patch-write-1"}
+            },
+            "attempts": [],
+        }
+    )
+
+    assert view["cancellable"] is False
+    assert view["ineligibility_reason"] == "provider_not_cancellable"

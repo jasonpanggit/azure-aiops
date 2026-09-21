@@ -1530,14 +1530,37 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     await screen.findAllByText(/KB600001/);
     fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
 
-    expect(screen.getByRole("button", { name: "Cancel queued execution" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel request" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry approved snapshot" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Supersede this execution" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel queued execution" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel request" }));
     expect(screen.getByRole("alertdialog", { name: "Confirm cancel" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
 
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
+  });
+
+  it("offers Cancel request for a provider-confirmed cancellable SRE review", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "running",
+        provider: "sre-agent",
+        provider_job_id: "https://sre.example/api/v1/threads/thread-123",
+        cancellable: true,
+        retryable: false,
+        supersedable: false,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel request" }));
+
+    expect(screen.getByText(/pending Azure SRE Agent approval will be rejected/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
   });
 
@@ -1551,7 +1574,7 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
 
     expect(screen.getByRole("button", { name: "Supersede this execution" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cancel queued execution" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel request" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Supersede this execution" }));
     const confirmButton = screen.getByRole("button", { name: "Confirm supersede" });

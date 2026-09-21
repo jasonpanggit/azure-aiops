@@ -1049,11 +1049,18 @@ class RemediationExecutionService:
         retryable = status in {"failed", "cancelled"} and remaining > 0 and not ambiguous
         cancellable = (
             status == "queued" and not bool(view.get("provider_job_id"))
+        ) or (
+            status == "running"
+            and str(view.get("provider") or "") == "sre-agent"
+            and bool(view.get("provider_job_id"))
+            and (view.get("verification_evidence") or {}).get("approval_pending")
+            is True
+            and not bool((view.get("verification_evidence") or {}).get("provider_operation"))
         )
         explicit = str(view.get("ineligibility_reason") or "")
         if explicit:
             reason = explicit
-        elif status == "running" and view.get("provider_job_id"):
+        elif status == "running" and view.get("provider_job_id") and not cancellable:
             reason = "provider_not_cancellable"
         elif status == "succeeded":
             reason = "already_succeeded"
@@ -1080,7 +1087,7 @@ class RemediationExecutionService:
         return view
 
     def cancel(self, execution_id: str, *, requested_by: str) -> dict[str, Any]:
-        """Cancel queued local work or record that provider work cannot cancel."""
+        """Cancel queued work or a typed pending Azure SRE Agent approval."""
         if self._store is None:
             raise RemediationExecutionError(
                 "No execution store is configured; nothing to cancel",
@@ -1109,6 +1116,54 @@ class RemediationExecutionService:
                     details={"execution_id": execution_id},
                 ) from exc
             return self.execution_view(cancelled)
+        view = self.execution_view(record)
+        if (
+            view.get("cancellable")
+            and str(record.get("provider") or "") == "sre-agent"
+            and self._verifier is not None
+            and callable(getattr(self._verifier, "cancel", None))
+        ):
+            try:
+                cancellation = self._verifier.cancel(record)
+            except ExecutionVerificationUnavailable as exc:
+                raise RemediationExecutionError(
+                    "Azure SRE Agent did not confirm cancellation; the request "
+                    "remains active.",
+                    reason="provider_cancellation_unconfirmed",
+                    details={
+                        "execution_id": execution_id,
+                        "capability": exc.capability,
+                    },
+                ) from exc
+            try:
+                cancelled = self._store.transition(
+                    execution_id,
+                    expected_revision=int(record.get("revision") or 0),
+                    expected_status="running",
+                    status="cancelled",
+                    actor=requested_by,
+                    outcome="cancelled",
+                    verified_state="Cancelled",
+                    failure_class="provider_rejected",
+                    failure_details=(
+                        "The operator rejected the pending Azure SRE Agent "
+                        "approval before patch submission."
+                    ),
+                    message="Azure SRE Agent request cancelled by the operator.",
+                    verification_evidence={
+                        "provider_cancellation": cancellation,
+                    },
+                    ineligibility_reason="",
+                    now=self._now(),
+                )
+            except ExecutionClaimConflict as exc:
+                raise RemediationExecutionError(
+                    "Another lifecycle operation changed the execution while "
+                    "cancellation was being confirmed.",
+                    reason=exc.reason,
+                    details={"execution_id": execution_id},
+                ) from exc
+            return self.execution_view(cancelled)
         if record.get("status") == "running" or record.get("provider_job_id"):
             message = _append_note(
                 record.get("message"),
@@ -1129,7 +1184,6 @@ class RemediationExecutionService:
             except ExecutionClaimConflict:
                 current = self._store.get(execution_id)
             return self.execution_view(current)
-        view = self.execution_view(record)
         view["ineligibility_reason"] = "execution_not_cancellable"
         return view
 
