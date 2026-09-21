@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -58,6 +59,113 @@ _TERMINAL_SUCCEEDED_INCIDENT_STATUSES = frozenset(
 )
 
 
+def _expected_review_command(execution_record: dict[str, Any]) -> str:
+    """Build the only write command permitted by the approved snapshot."""
+    snapshot = execution_record.get("execution_snapshot")
+    if not isinstance(snapshot, dict):
+        return ""
+    target_id = snapshot.get("target_id")
+    target_kind = snapshot.get("target_kind")
+    patch_ids = snapshot.get("patch_ids")
+    if (
+        snapshot.get("operation") != OPERATION_INSTALL_PATCHES
+        or not isinstance(target_id, str)
+        or not target_id.strip()
+        or not isinstance(patch_ids, list)
+        or not patch_ids
+        or any(not isinstance(patch_id, str) or not patch_id for patch_id in patch_ids)
+    ):
+        return ""
+    if target_kind == "Azure VM":
+        return (
+            f"az vm install-patches --ids {target_id} "
+            f"--kb-numbers-to-include {' '.join(patch_ids)} "
+            "--maximum-duration PT2H --reboot-setting IfRequired --no-wait"
+        )
+    if target_kind == "Arc-enabled server":
+        parameters = json.dumps(
+            {"kbNumbersToInclude": patch_ids},
+            separators=(",", ":"),
+        )
+        return (
+            f"az connectedmachine install-patches --ids {target_id} "
+            f"--windows-parameters '{parameters}' "
+            "--maximum-duration PT2H --reboot-setting IfRequired --no-wait true"
+        )
+    return ""
+
+
+def _pending_cli_execution(
+    payload: dict[str, Any],
+    execution_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Project only the exact pending Review-mode CLI execution."""
+    last_message = payload.get("lastMessage")
+    if not isinstance(last_message, dict):
+        return None
+    execution = last_message.get("azCliExecution")
+    expected_command = _expected_review_command(execution_record)
+    if not isinstance(execution, dict) or not expected_command:
+        return None
+    execution_id = execution.get("id")
+    command = execution.get("command")
+    status = " ".join(str(execution.get("status") or "").casefold().split())
+    if (
+        status not in {"pending", "pending authorization", "pendingauthorization"}
+        or not isinstance(execution_id, str)
+        or not execution_id.strip()
+        or len(execution_id) > 256
+        or command != expected_command
+        or execution.get("expiredByTimeout") is not False
+        or execution.get("output") is not None
+        or execution.get("error") is not None
+        or execution.get("startedTimestamp") is not None
+        or execution.get("completedTimestamp") is not None
+    ):
+        return None
+    original_call = execution.get("originalFunctionCall")
+    if not isinstance(original_call, str) or len(original_call) > 16_384:
+        return None
+    try:
+        parsed_call = json.loads(original_call)
+    except ValueError:
+        return None
+    if (
+        not isinstance(parsed_call, dict)
+        or parsed_call.get("Name") != "RunAzCliWriteCommands"
+        or parsed_call.get("Arguments") != {"command": expected_command}
+        or parsed_call.get("InformationalOnly") is not False
+    ):
+        return None
+    required_scopes = execution.get("requiredScopes")
+    if required_scopes is not None:
+        if isinstance(required_scopes, str):
+            if not required_scopes.strip() or len(required_scopes) > 2_048:
+                return None
+            required_scopes = required_scopes.strip()
+        elif isinstance(required_scopes, list):
+            if (
+                not 1 <= len(required_scopes) <= 32
+                or any(
+                    not isinstance(scope, str)
+                    or not scope.strip()
+                    or len(scope) > 256
+                    for scope in required_scopes
+                )
+            ):
+                return None
+            required_scopes = [scope.strip() for scope in required_scopes]
+        else:
+            return None
+    return {
+        "kind": "az_cli_execution",
+        "execution_id": execution_id.strip(),
+        "status": status,
+        "command": expected_command,
+        "required_scopes": required_scopes,
+    }
+
+
 def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize the production thread status without reading message prose."""
     status = payload.get("status")
@@ -84,6 +192,53 @@ def _composite_thread_status(payload: dict[str, Any]) -> dict[str, Any] | None:
         "has_critical_actions": critical,
         "has_warning_actions": warning,
         "incident_status": incident_status.strip(),
+    }
+
+
+def _pending_user_question(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Project the typed SRE review question without parsing message prose."""
+    last_message = payload.get("lastMessage")
+    if not isinstance(last_message, dict):
+        return None
+    question = last_message.get("userQuestion")
+    if not isinstance(question, dict):
+        return None
+    question_id = question.get("questionId")
+    question_text = question.get("question")
+    options = question.get("options")
+    status = " ".join(str(question.get("status") or "").casefold().split())
+    if (
+        status != "pending"
+        or not isinstance(question_id, str)
+        or not question_id.strip()
+        or len(question_id) > 256
+        or not isinstance(question_text, str)
+        or not question_text.strip()
+        or len(question_text) > 1_000
+        or question.get("allowFreeText") is not False
+        or not isinstance(options, list)
+        or not 1 <= len(options) <= 32
+    ):
+        return None
+    labels: list[str] = []
+    for option in options:
+        if not isinstance(option, dict):
+            return None
+        label = option.get("label")
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or len(label) > 128
+        ):
+            return None
+        labels.append(label.strip())
+    if labels != ["Approve submission", "Decline"]:
+        return None
+    return {
+        "question_id": question_id.strip(),
+        "question": question_text.strip(),
+        "options": labels,
+        "allow_free_text": False,
     }
 
 
@@ -315,7 +470,12 @@ class SreAgentExecutionVerifier:
             approval_ids.append(approval_id)
         return approval_ids
 
-    def cancel(self, execution_record: dict[str, Any]) -> dict[str, Any]:
+    def cancel(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        requested_by: str = "",
+    ) -> dict[str, Any]:
         """Reject every pending approval for the exact persisted SRE thread."""
         _thread_url, thread_id = self._thread_id(execution_record)
         current = self.verify(execution_record)
@@ -331,6 +491,33 @@ class SreAgentExecutionVerifier:
                 "approval without a submitted patch operation.",
                 capability="sre_agent_approval_cancel",
             )
+        provider_review = current_evidence.get("provider_review")
+        if isinstance(provider_review, dict):
+            review_execution_id = str(provider_review.get("execution_id") or "")
+            self._post_review_action(
+                execution_record,
+                provider_review=provider_review,
+                action="cancel",
+                actor=requested_by,
+            )
+            refreshed = self.verify(execution_record)
+            refreshed_evidence = refreshed.get("verification_evidence") or {}
+            if (
+                refreshed.get("outcome") == "succeeded"
+                or refreshed_evidence.get("provider_operation")
+                or refreshed_evidence.get("provider_review") == provider_review
+            ):
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent did not confirm cancellation of the exact "
+                    "pending CLI review.",
+                    capability="sre_agent_approval_cancel",
+                )
+            return {
+                "cancelled": True,
+                "thread_id": thread_id,
+                "approval_ids": [review_execution_id],
+                "thread_state": refreshed.get("verified_state") or "unknown",
+            }
         access_token = self._token()
         headers = {
             "Authorization": "Bearer " + access_token,
@@ -423,6 +610,107 @@ class SreAgentExecutionVerifier:
             raise ExecutionVerificationUnavailable(
                 "Azure SRE Agent was unreachable while cancelling the pending approval.",
                 capability="sre_agent_approval_cancel",
+            ) from None
+        finally:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            if self._client is None:
+                client.close()
+
+    def approve_review(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        """Approve the exact typed SRE CLI review, never a prose instruction."""
+        current = self.verify(execution_record)
+        evidence = current.get("verification_evidence") or {}
+        provider_review = evidence.get("provider_review")
+        if (
+            current.get("outcome") != "running"
+            or current.get("provider_active") is not True
+            or evidence.get("approval_pending") is not True
+            or not isinstance(provider_review, dict)
+            or evidence.get("provider_operation")
+        ):
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent did not return an exact pending CLI review.",
+                capability="sre_agent_review_approve",
+            )
+        return self._post_review_action(
+            execution_record,
+            provider_review=provider_review,
+            action="run",
+            actor=requested_by,
+        )
+
+    def _post_review_action(
+        self,
+        execution_record: dict[str, Any],
+        *,
+        provider_review: dict[str, Any],
+        action: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Submit one action against the freshly verified Review object."""
+        if action not in {"run", "cancel"}:
+            raise ValueError("Unsupported SRE Agent review action.")
+        _thread_url, thread_id = self._thread_id(execution_record)
+        execution_id = str(provider_review.get("execution_id") or "").strip()
+        required_scopes = provider_review.get("required_scopes")
+        if not execution_id or provider_review.get("kind") != "az_cli_execution":
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent CLI review identity is invalid.",
+                capability="sre_agent_review_action",
+            )
+        access_token = self._token()
+        headers = {
+            "Authorization": "Bearer " + access_token,
+            "Content-Type": "application/json",
+        }
+        if isinstance(required_scopes, str) and required_scopes:
+            headers["x-sreagent-obo-scope"] = required_scopes
+        elif isinstance(required_scopes, list) and required_scopes:
+            headers["x-sreagent-obo-scope"] = " ".join(required_scopes)
+        action_url = (
+            f"{self._agent_endpoint}/api/v1/azCliExecution/"
+            f"{quote(thread_id, safe='')}/{quote(execution_id, safe='')}/action"
+        )
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=False,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = client.post(
+                action_url,
+                headers=headers,
+                json={
+                    "action": action,
+                    "user": actor,
+                    "ApproveScope": "none",
+                },
+                follow_redirects=False,
+            )
+            if response.status_code not in {200, 202, 204}:
+                raise ExecutionVerificationUnavailable(
+                    "Azure SRE Agent did not accept the exact CLI review action "
+                    f"(HTTP {response.status_code}).",
+                    capability="sre_agent_review_action",
+                )
+            return {
+                "accepted": True,
+                "thread_id": thread_id,
+                "execution_id": execution_id,
+                "action": action,
+            }
+        except httpx.HTTPError:
+            _scrub_authorization(response, headers)
+            access_token = ""
+            raise ExecutionVerificationUnavailable(
+                "Azure SRE Agent was unreachable while submitting the CLI review action.",
+                capability="sre_agent_review_action",
             ) from None
         finally:
             _scrub_authorization(response, headers)
@@ -548,12 +836,26 @@ class SreAgentExecutionVerifier:
         composite = (
             _composite_thread_status(payload) if isinstance(payload, dict) else None
         )
+        pending_question = (
+            _pending_user_question(payload) if isinstance(payload, dict) else None
+        )
+        pending_cli_execution = (
+            _pending_cli_execution(payload, execution_record)
+            if isinstance(payload, dict)
+            else None
+        )
         submitted_operation = (
             _submitted_operation(payload, execution_record)
             if isinstance(payload, dict)
             else None
         )
         evidence = {"thread_status": composite or raw_status or "unknown"}
+        if pending_question is not None:
+            evidence["approval_pending"] = True
+            evidence["user_question"] = pending_question
+        if pending_cli_execution is not None:
+            evidence["approval_pending"] = True
+            evidence["provider_review"] = pending_cli_execution
         if submitted_operation is not None:
             evidence["provider_operation"] = submitted_operation
         if composite is not None:
@@ -561,6 +863,10 @@ class SreAgentExecutionVerifier:
                 composite,
                 has_submitted_operation=submitted_operation is not None,
             )
+            if outcome == "running" and (
+                pending_question is not None or pending_cli_execution is not None
+            ):
+                verified_state = "Pending Review"
             if outcome == "succeeded" and submitted_operation is None:
                 return _completion_without_submission(
                     verified_state="CompleteWithoutSubmissionProof",

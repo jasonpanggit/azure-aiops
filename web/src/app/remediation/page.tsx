@@ -1119,6 +1119,25 @@ function RemediationContent() {
     }
   };
 
+  const approveProviderReview = async (execution: RemediationExecution) => {
+    if (!execution.provider_reviewable || submitting) return;
+    setSubmitting(true);
+    setActionError("");
+    try {
+      const response = await remediationApi.approveProviderReview(
+        execution.execution_id,
+        effectiveScope,
+      );
+      setWorkflow((current) => (
+        current ? withExecution(current, response.data) : current
+      ));
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const abandonExecution = async (execution: RemediationExecution) => {
     if (!execution.can_abandon || submitting) return;
     setSubmitting(true);
@@ -1927,6 +1946,7 @@ function RemediationContent() {
                         <>
                           <RecoveryControls
                             execution={workflow.execution}
+                            onApproveProviderReview={() => approveProviderReview(workflow.execution!)}
                             onCancel={() => cancelExecution(workflow.execution!)}
                             onRetry={() => retryExecution(workflow.execution!)}
                             onSupersede={(reason) => supersedeExecution(workflow.execution!, reason)}
@@ -2159,6 +2179,7 @@ function ReconciliationSummary({
 
 function RecoveryControls({
   execution,
+  onApproveProviderReview,
   onCancel,
   onRetry,
   onSupersede,
@@ -2167,6 +2188,7 @@ function RecoveryControls({
   supersedeIneligibilityReason,
 }: {
   execution: RemediationExecution;
+  onApproveProviderReview: () => void | Promise<void>;
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
   onSupersede: (reason: string) => void | Promise<void>;
@@ -2175,12 +2197,14 @@ function RecoveryControls({
   supersedeIneligibilityReason: string;
 }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmProviderReview, setConfirmProviderReview] = useState(false);
   const [showSupersedeForm, setShowSupersedeForm] = useState(false);
   const [supersedeReason, setSupersedeReason] = useState("");
   const [confirmAbandon, setConfirmAbandon] = useState(false);
 
   if (
     !execution.cancellable
+    && !execution.provider_reviewable
     && !execution.retryable
     && !execution.supersedable
     && !execution.can_abandon
@@ -2190,6 +2214,52 @@ function RecoveryControls({
 
   return (
     <div className="remediation-recovery">
+      {execution.provider_reviewable && execution.provider_review && (
+        <div
+          className="callout remediation-provider-review"
+          aria-label="Azure SRE Agent provider review"
+        >
+          <p>
+            Azure SRE Agent is waiting for approval to submit this exact command.
+          </p>
+          <code className="remediation-provider-command">
+            {execution.provider_review.command}
+          </code>
+          {!confirmProviderReview ? (
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={() => setConfirmProviderReview(true)}
+            >
+              Approve submission
+            </button>
+          ) : (
+            <div role="alertdialog" aria-label="Confirm provider submission">
+              <p>
+                Submit only the reviewed target and patch selection shown above?
+              </p>
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={submitting}
+                onClick={() => {
+                  void onApproveProviderReview();
+                  setConfirmProviderReview(false);
+                }}
+              >
+                Confirm submission
+              </button>
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => setConfirmProviderReview(false)}
+              >
+                Back
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {execution.cancellable && !confirmCancel && (
         <button type="button" className="button" onClick={() => setConfirmCancel(true)}>
           Cancel request

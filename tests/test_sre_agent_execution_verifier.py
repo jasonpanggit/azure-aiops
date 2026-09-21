@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -83,6 +85,63 @@ def _provider_operation(**overrides: object) -> dict[str, object]:
     }
     evidence.update(overrides)
     return evidence
+
+
+def _arc_record(**overrides: object) -> dict[str, object]:
+    record = _record(
+        scope_attributes={"subscription": "sub-1"},
+        execution_snapshot={
+            "target_id": (
+                "/subscriptions/sub-1/resourceGroups/rg/providers/"
+                "Microsoft.HybridCompute/machines/vm-1"
+            ),
+            "target_kind": "Arc-enabled server",
+            "patch_ids": ["5122874"],
+            "operation": "install_patches",
+            "snapshot_hash": "a" * 64,
+        },
+    )
+    record.update(overrides)
+    return record
+
+
+def _pending_cli_execution_payload(**overrides: object) -> dict[str, object]:
+    command = (
+        "az connectedmachine install-patches --ids /subscriptions/sub-1/"
+        "resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-1 "
+        "--windows-parameters '{\"kbNumbersToInclude\":[\"5122874\"]}' "
+        "--maximum-duration PT2H --reboot-setting IfRequired --no-wait true"
+    )
+    execution: dict[str, object] = {
+        "id": "cli-execution-1",
+        "command": command,
+        "description": "Setting resource configuration",
+        "status": "Pending",
+        "originalFunctionCall": json.dumps(
+            {
+                "Name": "RunAzCliWriteCommands",
+                "Arguments": {"command": command},
+                "InformationalOnly": False,
+                "CallId": "call-1",
+            }
+        ),
+        "output": None,
+        "error": None,
+        "createdTimestamp": "2026-09-21T12:05:52Z",
+        "startedTimestamp": None,
+        "completedTimestamp": None,
+        "executedBy": None,
+        "requiredScopes": None,
+        "expiredByTimeout": False,
+    }
+    execution.update(overrides)
+    return {
+        **_LIVE_MESSAGE_COMPLETE_THREAD,
+        "lastMessage": {
+            "isComplete": True,
+            "azCliExecution": execution,
+        },
+    }
 
 
 def _verifier(
@@ -644,6 +703,176 @@ def test_live_message_complete_thread_stays_active_before_review_actions() -> No
         "has_warning_actions": False,
         "incident_status": "",
     }
+
+
+def test_live_typed_user_question_maps_to_pending_review() -> None:
+    payload = {
+        **_LIVE_MESSAGE_COMPLETE_THREAD,
+        "lastMessage": {
+            "isComplete": True,
+            "userQuestion": {
+                "questionId": "question-123",
+                "question": "Submit the displayed command?",
+                "header": "Install patch",
+                "options": [
+                    {
+                        "label": "Approve submission",
+                        "description": "Submit the reviewed request.",
+                    },
+                    {
+                        "label": "Decline",
+                        "description": "Do not submit.",
+                    },
+                ],
+                "allowFreeText": False,
+                "status": "Pending",
+            },
+        },
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["outcome"] == "running"
+    assert result["verified_state"] == "Pending Review"
+    assert result["provider_active"] is True
+    assert result["verification_evidence"]["approval_pending"] is True
+    assert result["verification_evidence"]["user_question"] == {
+        "question_id": "question-123",
+        "question": "Submit the displayed command?",
+        "options": ["Approve submission", "Decline"],
+        "allow_free_text": False,
+    }
+
+
+def test_live_typed_cli_execution_maps_to_exact_pending_review() -> None:
+    verifier, _credential = _verifier(_pending_cli_execution_payload())
+
+    result = verifier.verify(_arc_record())
+
+    assert result["outcome"] == "running"
+    assert result["verified_state"] == "Pending Review"
+    assert result["provider_active"] is True
+    assert result["verification_evidence"]["approval_pending"] is True
+    assert result["verification_evidence"]["provider_review"] == {
+        "kind": "az_cli_execution",
+        "execution_id": "cli-execution-1",
+        "status": "pending",
+        "command": _pending_cli_execution_payload()["lastMessage"][
+            "azCliExecution"
+        ]["command"],
+        "required_scopes": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "Completed"),
+        ("command", "az account show"),
+        ("expiredByTimeout", True),
+        ("output", "submitted"),
+        ("startedTimestamp", "2026-09-21T12:06:00Z"),
+        ("originalFunctionCall", "{}"),
+    ],
+)
+def test_unrecognized_cli_execution_never_unlocks_review(
+    field: str,
+    value: object,
+) -> None:
+    payload = _pending_cli_execution_payload(**{field: value})
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_arc_record())
+
+    assert result["verified_state"] == "In Progress"
+    assert "approval_pending" not in result["verification_evidence"]
+    assert "provider_review" not in result["verification_evidence"]
+
+
+def test_approve_review_posts_only_the_fresh_exact_cli_execution() -> None:
+    requests: list[httpx.Request] = []
+    payload = _pending_cli_execution_payload(requiredScopes="scope-a scope-b")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=payload, request=request)
+        assert request.method == "POST"
+        assert request.url.path == (
+            "/api/v1/azCliExecution/thread-123/cli-execution-1/action"
+        )
+        assert request.headers["x-sreagent-obo-scope"] == "scope-a scope-b"
+        assert json.loads(request.content) == {
+            "action": "run",
+            "user": "operator@example.com",
+            "ApproveScope": "none",
+        }
+        return httpx.Response(202, json={"status": "accepted"}, request=request)
+
+    verifier = SreAgentExecutionVerifier(
+        credential=_Credential(),
+        agent_endpoint=AGENT_ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = verifier.approve_review(
+        _arc_record(),
+        requested_by="operator@example.com",
+    )
+
+    assert result == {
+        "accepted": True,
+        "thread_id": "thread-123",
+        "execution_id": "cli-execution-1",
+        "action": "run",
+    }
+    assert [request.method for request in requests] == ["GET", "POST"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "Answered"),
+        ("allowFreeText", True),
+        (
+            "options",
+            [
+                {"label": "Run anything"},
+                {"label": "Decline"},
+            ],
+        ),
+    ],
+)
+def test_unrecognized_user_question_does_not_unlock_review(
+    field: str,
+    value: object,
+) -> None:
+    question = {
+        "questionId": "question-123",
+        "question": "Submit the displayed command?",
+        "options": [
+            {"label": "Approve submission"},
+            {"label": "Decline"},
+        ],
+        "allowFreeText": False,
+        "status": "Pending",
+    }
+    question[field] = value
+    payload = {
+        **_LIVE_MESSAGE_COMPLETE_THREAD,
+        "lastMessage": {
+            "isComplete": True,
+            "userQuestion": question,
+        },
+    }
+    verifier, _credential = _verifier(payload)
+
+    result = verifier.verify(_submitted_record())
+
+    assert result["verified_state"] == "In Progress"
+    assert "approval_pending" not in result["verification_evidence"]
+    assert "user_question" not in result["verification_evidence"]
 
 
 def test_live_message_complete_thread_is_not_retryable_or_supersedable() -> None:

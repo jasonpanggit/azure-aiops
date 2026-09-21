@@ -411,7 +411,12 @@ class _SreCancellationVerifier:
     def __init__(self) -> None:
         self.cancelled: list[str] = []
 
-    def cancel(self, execution_record: dict) -> dict:
+    def cancel(
+        self,
+        execution_record: dict,
+        *,
+        requested_by: str = "",
+    ) -> dict:
         self.cancelled.append(execution_record["execution_id"])
         return {
             "cancelled": True,
@@ -419,6 +424,81 @@ class _SreCancellationVerifier:
             "approval_ids": ["approval-1"],
             "thread_state": "failed_without_action",
         }
+
+
+class _SreReviewVerifier:
+    def __init__(self) -> None:
+        self.approved: list[tuple[str, str]] = []
+
+    def approve_review(
+        self,
+        execution_record: dict,
+        *,
+        requested_by: str,
+    ) -> dict:
+        self.approved.append((execution_record["execution_id"], requested_by))
+        return {
+            "accepted": True,
+            "thread_id": "thread-123",
+            "execution_id": "cli-execution-1",
+            "action": "run",
+        }
+
+    def verify(self, _execution_record: dict) -> dict:
+        return {
+            "verifiable": True,
+            "outcome": "running",
+            "verified_state": "In Progress",
+            "provider_active": True,
+            "verification_evidence": {
+                "thread_status": "In Progress",
+            },
+        }
+
+
+def test_exact_sre_cli_review_can_be_approved() -> None:
+    plan = _full_plan()
+    service, store, _ = _service(plan=plan)
+    verifier = _SreReviewVerifier()
+    service._verifier = verifier
+    execution = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    current = store.get(execution["execution_id"])
+    provider_review = {
+        "kind": "az_cli_execution",
+        "execution_id": "cli-execution-1",
+        "status": "pending",
+        "command": "az vm install-patches --ids exact",
+        "required_scopes": None,
+    }
+    store.transition(
+        execution["execution_id"],
+        expected_revision=current["revision"],
+        expected_status="running",
+        status="running",
+        actor="test",
+        provider="sre-agent",
+        provider_job_id=(
+            "https://sre-agent.example.azure.com/api/v1/threads/thread-123"
+        ),
+        verification_evidence={
+            "approval_pending": True,
+            "provider_review": provider_review,
+        },
+    )
+
+    before = service.execution_view(store.get(execution["execution_id"]))
+    approved = service.approve_provider_review(
+        execution["execution_id"],
+        requested_by="operator@example.com",
+    )
+
+    assert before["provider_reviewable"] is True
+    assert before["provider_review"] == provider_review
+    assert verifier.approved == [
+        (execution["execution_id"], "operator@example.com")
+    ]
+    assert approved["status"] == "running"
+    assert approved["provider_reviewable"] is False
 
 
 def test_running_sre_review_can_be_cancelled_then_retried() -> None:

@@ -1003,6 +1003,14 @@ export interface RemediationExecutionAttempt {
   failure_class?: string;
 }
 
+export interface RemediationProviderReview {
+  kind: "az_cli_execution";
+  execution_id: string;
+  status: string;
+  command: string;
+  required_scopes?: string | string[] | null;
+}
+
 export interface RemediationExecution {
   execution_id: string;
   approval_decision_id?: string;
@@ -1042,6 +1050,9 @@ export interface RemediationExecution {
   next_verification_at?: string;
   verification_attempts?: number;
   evidence_reconciliation?: RemediationEvidenceReconciliation;
+  verification_evidence?: Record<string, unknown>;
+  provider_review?: RemediationProviderReview | null;
+  provider_reviewable?: boolean;
 }
 
 export interface RemediationExecutionList {
@@ -1289,6 +1300,14 @@ export const remediationApi = {
       method: "POST",
       query: scopeToSearchParams(scope),
     }),
+  approveProviderReview: (executionId: string, scope: ScopeSelection = {}) =>
+    apiRequest<RemediationExecution>(
+      `/remediation/executions/${encodeURIComponent(executionId)}/provider-review/approve`,
+      {
+        method: "POST",
+        query: scopeToSearchParams(scope),
+      },
+    ),
   supersede: (executionId: string, reason: string, scope: ScopeSelection = {}) =>
     apiRequest<RemediationExecution>(`/remediation/executions/${encodeURIComponent(executionId)}/supersede`, {
       method: "POST",

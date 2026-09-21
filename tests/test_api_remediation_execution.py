@@ -873,6 +873,10 @@ def test_execution_retry_and_list_endpoints_are_mounted(tmp_path) -> None:
 
     assert "/api/v1/remediation/executions/{execution_id}/retry" in paths
     assert "/api/v1/remediation/executions/{execution_id}/cancel" in paths
+    assert (
+        "/api/v1/remediation/executions/{execution_id}/provider-review/approve"
+        in paths
+    )
     assert "/api/v1/remediation/plans/{plan_id}/executions" in paths
 
 

@@ -1076,6 +1076,23 @@ class RemediationExecutionService:
             reason = "execution_not_retryable"
         supersede_ineligibility_reason = _supersede_eligibility(view)
         abandon_ineligibility_reason = _abandon_eligibility(view)
+        provider_review = (view.get("verification_evidence") or {}).get(
+            "provider_review"
+        )
+        provider_review = (
+            copy.deepcopy(provider_review)
+            if isinstance(provider_review, dict)
+            else None
+        )
+        provider_reviewable = bool(
+            status == "running"
+            and provider_review
+            and (view.get("verification_evidence") or {}).get("approval_pending")
+            is True
+            and not bool(
+                (view.get("verification_evidence") or {}).get("provider_operation")
+            )
+        )
         view.update(
             {
                 "retryable": retryable,
@@ -1087,9 +1104,52 @@ class RemediationExecutionService:
                 "supersede_ineligibility_reason": supersede_ineligibility_reason,
                 "can_abandon": abandon_ineligibility_reason == "",
                 "abandon_ineligibility_reason": abandon_ineligibility_reason,
+                "provider_review": provider_review,
+                "provider_reviewable": provider_reviewable,
             }
         )
         return view
+
+    def approve_provider_review(
+        self,
+        execution_id: str,
+        *,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        """Approve one exact typed SRE CLI Review action."""
+        if self._store is None:
+            raise RemediationExecutionError(
+                "No execution store is configured; nothing to approve",
+                reason="store_not_configured",
+                details={"execution_id": execution_id},
+            )
+        record = self._store.get(execution_id)
+        if record is None:
+            raise RemediationExecutionError(
+                f"Execution {execution_id!r} was not found",
+                reason="execution_not_found",
+                details={"execution_id": execution_id},
+            )
+        view = self.execution_view(record)
+        approve_review = getattr(self._verifier, "approve_review", None)
+        if not view.get("provider_reviewable") or not callable(approve_review):
+            raise RemediationExecutionError(
+                "This execution has no exact pending Azure SRE Agent CLI review.",
+                reason="provider_review_not_approvable",
+                details={"execution_id": execution_id},
+            )
+        try:
+            approve_review(record, requested_by=requested_by)
+        except ExecutionVerificationUnavailable as exc:
+            raise RemediationExecutionError(
+                "Azure SRE Agent did not accept the exact CLI review approval.",
+                reason="provider_review_approval_unconfirmed",
+                details={
+                    "execution_id": execution_id,
+                    "capability": exc.capability,
+                },
+            ) from exc
+        return self.poll_verification(execution_id)
 
     def cancel(self, execution_id: str, *, requested_by: str) -> dict[str, Any]:
         """Cancel queued work or a typed pending Azure SRE Agent approval."""
@@ -1129,7 +1189,10 @@ class RemediationExecutionService:
             and callable(getattr(self._verifier, "cancel", None))
         ):
             try:
-                cancellation = self._verifier.cancel(record)
+                cancellation = self._verifier.cancel(
+                    record,
+                    requested_by=requested_by,
+                )
             except ExecutionVerificationUnavailable as exc:
                 raise RemediationExecutionError(
                     "Azure SRE Agent did not confirm cancellation; the request "

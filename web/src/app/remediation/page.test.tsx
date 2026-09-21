@@ -8,6 +8,7 @@ const {
   abandon,
   acceptRisk,
   approve,
+  approveProviderReview,
   cancel,
   createExposureHandoff,
   execute,
@@ -22,6 +23,7 @@ const {
   abandon: vi.fn(),
   acceptRisk: vi.fn(),
   approve: vi.fn(),
+  approveProviderReview: vi.fn(),
   cancel: vi.fn(),
   createExposureHandoff: vi.fn(),
   execute: vi.fn(),
@@ -46,6 +48,7 @@ vi.mock("@/lib/services", async () => {
     remediationApi: {
       abandon,
       approve,
+      approveProviderReview,
       cancel,
       createExposureHandoff,
       execute,
@@ -279,6 +282,7 @@ describe("Governed remediation workflow", () => {
           }),
     )));
     approve.mockResolvedValue(envelope({ decision_id: "RMD-1", decision: "approved" }));
+    approveProviderReview.mockResolvedValue(envelope(executionRecord({ status: "running" })));
     execute.mockResolvedValue(envelope(executionRecord()));
     execution.mockResolvedValue(envelope(executionRecord()));
     retry.mockResolvedValue(envelope(executionRecord({ status: "running" })));
@@ -1697,6 +1701,51 @@ describe("Phase 03.6 Plan 05: Recovery Controls, Reconciliation Summary, and Lin
     expect(screen.getByText(/pending Azure SRE Agent approval will be rejected/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledWith("RME-1", {}));
+  });
+
+  it("shows and approves only the exact typed SRE CLI review command", async () => {
+    const command = (
+      "az connectedmachine install-patches --ids /subscriptions/sub-1/"
+      + "resourceGroups/rg/providers/Microsoft.HybridCompute/machines/vm-1 "
+      + "--windows-parameters '{\"kbNumbersToInclude\":[\"5122874\"]}' "
+      + "--maximum-duration PT2H --reboot-setting IfRequired --no-wait true"
+    );
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "running",
+        provider: "sre-agent",
+        provider_job_id: "https://sre.example/api/v1/threads/thread-123",
+        provider_reviewable: true,
+        provider_review: {
+          kind: "az_cli_execution",
+          execution_id: "cli-execution-1",
+          status: "pending",
+          command,
+          required_scopes: null,
+        },
+        cancellable: true,
+        retryable: false,
+        supersedable: false,
+      }),
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+
+    await screen.findAllByText(/KB600001/);
+    fireEvent.click(screen.getByRole("button", { name: /Verify/ }));
+
+    expect(screen.getAllByText(command)).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Approve submission" }));
+    expect(screen.getByRole(
+      "alertdialog",
+      { name: "Confirm provider submission" },
+    )).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm submission" }));
+
+    await waitFor(() => expect(approveProviderReview).toHaveBeenCalledWith(
+      "RME-1",
+      {},
+    ));
   });
 
   it("renders only Supersede when supersedable is true, with a required reason before Confirm supersede is enabled", async () => {
