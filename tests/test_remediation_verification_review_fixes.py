@@ -276,6 +276,104 @@ def test_pending_review_thread_stays_active_past_local_deadline() -> None:
     assert store.get(running["execution_id"])["status"] == "running"
 
 
+def test_stale_blank_sre_thread_times_out_past_deadline_and_is_not_due() -> None:
+    class _BlankReachableVerifier:
+        def verify(self, _record):
+            return {
+                "verifiable": True,
+                "outcome": "running",
+                "verified_state": "In Progress",
+                "provider_active": True,
+                "verification_evidence": {
+                    "thread_status": {
+                        "last_message_complete": True,
+                        "has_critical_actions": False,
+                        "has_warning_actions": False,
+                        "incident_status": "",
+                    }
+                },
+            }
+
+    service, store, plan = _service_with_store()
+    service._verifier = _BlankReachableVerifier()
+    created, _claimed = store.create_or_get(
+        plan["plan_id"],
+        requested_by="operator@example.com",
+        approved_by="approver@example.com",
+        execution_snapshot=_execution_snapshot(plan),
+        now=NOW,
+    )
+    running = store.transition(
+        created["execution_id"],
+        expected_revision=int(created["revision"]),
+        expected_status="queued",
+        status="running",
+        actor="operator@example.com",
+        provider=SRE_AGENT_PROVIDER,
+        provider_job_id="https://sre.example/api/v1/threads/thread-1",
+        verification_deadline_at=(NOW - timedelta(seconds=1)).isoformat(),
+        next_verification_at=NOW.isoformat(),
+        now=NOW,
+    )
+
+    result = service.poll_verification(running["execution_id"])
+
+    assert result["status"] == "failed"
+    assert result["outcome"] == "unknown"
+    assert result["failure_class"] == "verification_timed_out"
+    assert result["verified_state"] == "verification_deadline_exceeded"
+    assert result["failure_details"]
+    assert result["retryable"] is True
+    assert result["supersedable"] is True
+    assert running["execution_id"] not in {
+        due["execution_id"] for due in store.list_due_for_verification(now=NOW)
+    }
+
+
+def test_unchanged_running_verification_poll_skips_duplicates_but_audits_changes() -> None:
+    class _StableRunningVerifier:
+        def __init__(self) -> None:
+            self.evidence = {"thread_status": "In Progress"}
+
+        def verify(self, _record):
+            return {
+                "verifiable": True,
+                "outcome": "running",
+                "verified_state": "In Progress",
+                "verification_evidence": self.evidence,
+            }
+
+    service, store, plan = _service_with_store()
+    verifier = _StableRunningVerifier()
+    service._verifier = verifier
+    result = service.execute(plan["plan_id"], requested_by="operator@example.com")
+    execution_id = result["execution_id"]
+
+    first = service.poll_verification(execution_id)
+    after_first = store.get(execution_id)
+    history_len = len(after_first["history"])
+    transition_len = len(after_first["attempts"][-1]["transitions"])
+
+    second = service.poll_verification(execution_id)
+    after_second = store.get(execution_id)
+
+    assert second["status"] == first["status"] == "running"
+    assert second["verified_state"] == first["verified_state"] == "In Progress"
+    assert second["verification_evidence"] == first["verification_evidence"]
+    assert after_second["verification_attempts"] == after_first["verification_attempts"] + 1
+    assert after_second["revision"] == after_first["revision"] + 1
+    assert len(after_second["history"]) == history_len
+    assert len(after_second["attempts"][-1]["transitions"]) == transition_len
+
+    verifier.evidence = {"thread_status": "Waiting for approval"}
+    service.poll_verification(execution_id)
+    changed = store.get(execution_id)
+
+    assert changed["verification_evidence"] == verifier.evidence
+    assert len(changed["history"]) == history_len + 1
+    assert len(changed["attempts"][-1]["transitions"]) == transition_len + 1
+
+
 @pytest.mark.parametrize("mode", ["missing", "unavailable", "not_verifiable"])
 def test_unproven_review_thread_times_out_instead_of_running_forever(
     mode: str,
