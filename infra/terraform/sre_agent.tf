@@ -158,6 +158,7 @@ resource "azurerm_role_definition" "sre_agent_trigger_invoker" {
     actions     = []
     not_actions = []
     data_actions = [
+      "Microsoft.App/agents/threads/approve/action",
       "Microsoft.App/agents/threads/write",
     ]
     not_data_actions = []
