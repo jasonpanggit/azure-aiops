@@ -232,6 +232,7 @@ interface TopologyWorkspaceProps {
   warnings?: string[] | null;
   knowledgeVersion?: string | null;
   graphFreshness?: string;
+  onSelectionChange?: (selection: TopologySelection) => void;
 }
 
 /** Interactive topology workspace: Cytoscape canvas, filters, and a detail drawer. */
@@ -256,6 +257,7 @@ export function TopologyWorkspace({
   warnings = null,
   knowledgeVersion = null,
   graphFreshness,
+  onSelectionChange,
 }: TopologyWorkspaceProps) {
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState(false);
@@ -400,12 +402,14 @@ export function TopologyWorkspace({
 
   const clearSelection = useCallback(() => {
     setSelection(EMPTY_SELECTION);
+    onSelectionChange?.(EMPTY_SELECTION);
     graphHandleRef.current?.focusCanvas();
-  }, []);
+  }, [onSelectionChange]);
   const handleSelection = useCallback((next: TopologySelection) => {
     setSelectionAnnouncement("");
     setSelection(next);
-  }, []);
+    onSelectionChange?.(next);
+  }, [onSelectionChange]);
 
   useEffect(() => {
     const contextKey = `${scopeKey}::${renderedDetailLevel}`;
@@ -424,10 +428,11 @@ export function TopologyWorkspace({
     if (topologyRef.current !== topology) {
       clearTopologyDetailCache();
       setSelection(EMPTY_SELECTION);
+      onSelectionChange?.(EMPTY_SELECTION);
       setSelectionAnnouncement("");
     }
     topologyRef.current = topology;
-  }, [topology]);
+  }, [onSelectionChange, topology]);
 
   useEffect(
     () => () => {

@@ -1675,6 +1675,24 @@ type NetworkBypassEnvelope = Envelope<{
   count: number;
 }>;
 
+/** UI-independent topology subject selected on the Network page. */
+export interface NetworkCopilotSelection {
+  node: {
+    id: string;
+    label: string;
+    kind: string;
+    entityType?: string;
+  } | null;
+  edge: {
+    id: string;
+    source: string;
+    target: string;
+    label: string;
+    kind: string;
+    relationshipType?: string;
+  } | null;
+}
+
 /** Already-loaded Network envelopes and active page state. */
 export interface NetworkCopilotPageInput {
   scope: ScopeSelection;
@@ -1687,6 +1705,7 @@ export interface NetworkCopilotPageInput {
   gaps?: NetworkGapsEnvelope | null;
   findings?: NetworkFindingsEnvelope | null;
   bypass?: NetworkBypassEnvelope | null;
+  selection?: NetworkCopilotSelection | null;
 }
 
 /** Compliance row projected by the page before the adapter assigns identity. */
@@ -3843,6 +3862,84 @@ function networkCoreInput(input: NetworkCopilotPageInput): CoreCopilotAdapterInp
   const gaps = input.gaps?.data.gaps ?? [];
   const findings = input.findings?.data.findings ?? [];
   const bypassGaps = input.bypass?.data.gaps ?? [];
+  const selection = input.selection;
+  const selectedNodeId = selection?.node?.id.toLowerCase();
+  const selectedEdge = selection?.edge;
+  const selectedEndpointIds = new Set(
+    selectedEdge
+      ? [selectedEdge.source.toLowerCase(), selectedEdge.target.toLowerCase()]
+      : [],
+  );
+  const normalizeVnetType = (entityType: string | undefined, role?: string) =>
+    entityType === "VNet" || ["hub", "spoke", "isolated"].includes(role ?? "")
+      ? "Microsoft.Network/virtualNetworks"
+      : entityType;
+  const topologyResources = [
+    ...(topology?.resources ?? []),
+    ...(topology
+      ? [...topology.hubs, ...topology.spokes, ...topology.isolated].map((vnet) => ({
+          id: vnet.vnet_id,
+          name: vnet.name,
+          entity_type: "VNet",
+          role: vnet.role,
+          subscription_id: vnet.subscription_id,
+          resource_group: "",
+          location: "",
+          connection_id: vnet.connection_id,
+          environment: "",
+          business_service: "",
+          application: "",
+          owner: "",
+          tags: {},
+          details: {
+            peer_count: vnet.peer_count,
+            signals: vnet.signals,
+          },
+        }))
+      : []),
+  ].filter((resource, index, resources) =>
+    resources.findIndex((candidate) =>
+      candidate.id.toLowerCase() === resource.id.toLowerCase()) === index);
+  const selectedRelationship = selectedEdge
+    ? (topology?.relationships ?? []).find((relationship) =>
+        relationship.id === selectedEdge.id) ?? {
+          id: selectedEdge.id,
+          source: selectedEdge.source,
+          target: selectedEdge.target,
+          relationship_type: selectedEdge.relationshipType ?? selectedEdge.kind,
+          label: selectedEdge.label,
+          details: {},
+        }
+    : null;
+  const adjacentRelationships = (topology?.relationships ?? [])
+    .filter((relationship) => {
+      const source = relationship.source.toLowerCase();
+      const target = relationship.target.toLowerCase();
+      return selectedNodeId
+        ? source === selectedNodeId || target === selectedNodeId
+        : selectedEdge
+          ? relationship.id === selectedEdge.id
+          : false;
+    })
+    .slice(0, 12);
+  const adjacentResourceIds = new Set(
+    adjacentRelationships.flatMap((relationship) => [
+      relationship.source.toLowerCase(),
+      relationship.target.toLowerCase(),
+    ]),
+  );
+  if (selectedNodeId) adjacentResourceIds.add(selectedNodeId);
+  selectedEndpointIds.forEach((endpointId) => adjacentResourceIds.add(endpointId));
+  const adjacentResources = topologyResources
+    .filter((resource) => adjacentResourceIds.has(resource.id.toLowerCase()))
+    .sort((left, right) => {
+      const leftSelected = left.id.toLowerCase() === selectedNodeId
+        || selectedEndpointIds.has(left.id.toLowerCase());
+      const rightSelected = right.id.toLowerCase() === selectedNodeId
+        || selectedEndpointIds.has(right.id.toLowerCase());
+      return Number(rightSelected) - Number(leftSelected);
+    })
+    .slice(0, 12);
   const records: CoreCopilotRecord[] = [
     ...(input.topology ? [{
       identity: "network-summary",
@@ -3856,25 +3953,65 @@ function networkCoreInput(input: NetworkCopilotPageInput): CoreCopilotAdapterInp
         unresolved_peer_vnet_ids: topology?.unresolved_peer_vnet_ids ?? [],
       },
     }] : []),
-    ...(topology?.hubs ?? []).slice(0, 50).map((hub) => ({
-      identity: hub.vnet_id,
+    ...adjacentResources.map((resource) => {
+      const resourceId = isCanonicalAzureResourceId(resource.id)
+        ? resource.id
+        : undefined;
+      const isSelected = resource.id.toLowerCase() === selectedNodeId
+        || selectedEndpointIds.has(resource.id.toLowerCase());
+      return {
+      identity: resource.id,
       namespace: "network",
-      kind: "virtual_network",
+      kind: normalizeVnetType(resource.entity_type, resource.role)
+        === "Microsoft.Network/virtualNetworks"
+        ? "virtual_network"
+        : "topology_resource",
       source: "network/topology",
-      resourceId: hub.vnet_id,
-      resourceType: "Microsoft.Network/virtualNetworks",
-      name: hub.name,
-      selected: true,
-      priority: 1,
+      resourceId,
+      resourceType: normalizeVnetType(resource.entity_type, resource.role),
+      name: resource.name,
+      selected: isSelected,
+      priority: isSelected ? 1 : 2,
       data: {
-        name: hub.name,
-        role: hub.role,
-        connection_id: hub.connection_id,
-        subscription_id: hub.subscription_id,
-        peer_count: hub.peer_count,
-        signals: hub.signals,
+          name: resource.name,
+          role: resource.role,
+          entity_type: resource.entity_type,
+          connection_id: resource.connection_id,
+          subscription_id: resource.subscription_id,
+          resource_group: resource.resource_group,
+          peer_count: resource.details.peer_count,
+        },
+      };
+    }),
+    ...(selectedRelationship ? [{
+      identity: selectedRelationship.id,
+      namespace: "network",
+      kind: "topology_relationship",
+      source: "network/topology",
+      selected: true,
+      priority: 0,
+      data: {
+        label: selectedRelationship.label,
+        relationship_type: selectedRelationship.relationship_type,
+        source: selectedRelationship.source,
+        target: selectedRelationship.target,
       },
-    })),
+    }] : []),
+    ...adjacentRelationships
+      .filter((relationship) => relationship.id !== selectedRelationship?.id)
+      .map((relationship) => ({
+        identity: relationship.id,
+        namespace: "network",
+        kind: "topology_relationship",
+        source: "network/topology",
+        priority: 3,
+        data: {
+          label: relationship.label,
+          relationship_type: relationship.relationship_type,
+          source: relationship.source,
+          target: relationship.target,
+        },
+      })),
     ...bypassGaps.map((gap) => networkGapRecord(gap, "network/firewall-bypass", 5)),
     ...gaps.map((gap) => networkGapRecord(gap, "network/gaps", 10)),
     ...findings.map((finding) => ({
@@ -6256,20 +6393,21 @@ export function buildNetworkCopilotContext(
     isCoreCopilotInput(input) ? input : networkCoreInput(input),
     NETWORK_STARTERS,
   );
-  if (isCoreCopilotInput(input)) return context;
-  const firstHub = input.topology?.data.topology.hubs[0];
-  if (!firstHub) return context;
+  if (isCoreCopilotInput(input) || (!input.selection?.node && !input.selection?.edge)) {
+    return context;
+  }
+  const subject = input.selection.node ?? input.selection.edge!;
+  const selector = input.selection.node?.id ?? input.selection.edge!.id;
   return {
     ...context,
     starterQuestions: [
-      context.starterQuestions[0],
       {
-        label: `What depends on ${firstHub.name}?`,
+        label: `Explain ${subject.label} (${subject.kind}).`,
         specialistId: "network",
-        tool: "hub_dependents",
-        toolArguments: { vnet_id: firstHub.vnet_id },
+        tool: "network_topology",
+        toolArguments: { selector },
       },
-      ...context.starterQuestions.slice(1),
+      ...context.starterQuestions,
     ],
   };
 }

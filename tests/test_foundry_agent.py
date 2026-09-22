@@ -241,7 +241,7 @@ def test_operations_copilot_maps_current_freshness_alias_to_unknown() -> None:
     )
 
 
-def test_hub_dependents_projects_bounded_facts_for_coordinator() -> None:
+def test_hub_dependents_projects_only_hub_name_and_dependent_count() -> None:
     services = [
         {"service_kind": "azure_firewall", "name": "demo-firewall"},
         {"service_kind": "azure_bastion", "name": "demo-bastion"},
@@ -279,15 +279,10 @@ def test_hub_dependents_projects_bounded_facts_for_coordinator() -> None:
     }])
 
     assert findings[0]["summary"] == (
-        "Hub demo-vnet has 0 dependent VNets. Shared services (24 total; "
-        "showing 8): azure_firewall demo-firewall; azure_bastion demo-bastion; "
-        "private_dns_zone privatelink.documents.azure.com; private_dns_zone "
-        "privatelink.postgres.database.azure.com; unbounded must-not-pass-0; "
-        "unbounded must-not-pass-1; unbounded must-not-pass-2; unbounded "
-        "must-not-pass-3."
+        "Hub demo-vnet has 0 dependent VNets."
     )
     assert findings[0]["evidence_refs"] == ["tool:hub:0"]
-    assert "must-not-pass-4" not in findings[0]["summary"]
+    assert "demo-firewall" not in findings[0]["summary"]
     assert "secret" not in findings[0]["summary"]
     assert len(findings[0]["summary"]) < 1_000
 
@@ -353,9 +348,65 @@ def test_hub_dependents_caps_utf8_bytes_and_skips_invalid_early_rows() -> None:
     }])
 
     summary = findings[0]["summary"]
-    assert "valid-spoke" in summary
-    assert "private_dns_zone valid.zone.example" in summary
+    assert "valid-spoke" not in summary
+    assert "private_dns_zone valid.zone.example" not in summary
     assert len(summary.encode("utf-8")) <= 2_000
+
+
+def test_network_topology_projects_only_allowlisted_selected_resource_facts() -> None:
+    selected_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Network/virtualNetworks/hub-vnet"
+    )
+    findings = normalize_cited_findings(
+        [{
+            "call_id": "topology:0",
+            "specialist_id": "network",
+            "tool": "network_topology",
+            "status": "ok",
+            "data": {
+                "summary": {
+                    "hub_count": 1,
+                    "spoke_count": 1,
+                    "arbitrary_total": 999,
+                    "secret_count": 999,
+                },
+                "topology": {
+                    "resources": [{
+                        "id": selected_id,
+                        "name": "hub-vnet",
+                        "entity_type": "Microsoft.Network/virtualNetworks",
+                        "role": "hub",
+                        "peer_count": 3,
+                        "client_secret": "must-not-pass",
+                        "properties": {"token": "must-not-pass"},
+                    }, {
+                        "id": "/subscriptions/sub-a/resourceGroups/rg/providers/"
+                        "Microsoft.Network/virtualNetworks/unselected-vnet",
+                        "name": "must-not-pass",
+                        "entity_type": "Microsoft.Network/virtualNetworks",
+                        "peer_count": 99,
+                    }],
+                    "shared_services": [{"name": "must-not-pass"}],
+                },
+            },
+            "evidence": [{"evidence_id": "tool:topology:0"}],
+        }],
+        selected_resource_ids={selected_id},
+    )
+
+    summary = findings[0]["summary"]
+    assert "hub_count=1" in summary
+    assert "spoke_count=1" in summary
+    assert (
+        "selected resource: name=hub-vnet, role=hub, "
+        "type=Microsoft.Network/virtualNetworks, peer_count=3"
+    ) in summary
+    assert "arbitrary_total" not in summary
+    assert "secret_count" not in summary
+    assert "must-not-pass" not in summary
+    assert "client_secret" not in summary
+    assert "token" not in summary
 
 
 def test_operations_copilot_cannot_change_required_page_hint() -> None:

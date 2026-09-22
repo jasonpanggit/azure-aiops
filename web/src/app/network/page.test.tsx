@@ -29,10 +29,12 @@ const mocks = vi.hoisted(() => ({
   updatePolicy: vi.fn(),
   previewPolicy: vi.fn(),
   buildNetworkCopilotContext: vi.fn(),
+  investigateContext: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
   networkApi: mocks,
+  copilotApi: { investigateContext: mocks.investigateContext },
   buildCopilotSnapshot: vi.fn((value) => value),
   copilotEvidenceRows: vi.fn(() => []),
 }));
@@ -52,6 +54,7 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
     ruleFindings,
     detailLevel,
     onDetailLevelChange,
+    onSelectionChange,
     findingsTruncated,
   }: {
     topology: unknown;
@@ -59,6 +62,15 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
     ruleFindings: unknown[];
     detailLevel: "summary" | "full";
     onDetailLevelChange: (detail: "summary" | "full") => void;
+    onSelectionChange?: (selection: {
+      node: {
+        id: string;
+        label: string;
+        kind: string;
+        entityType: string;
+      } | null;
+      edge: null;
+    }) => void;
     findingsTruncated?: boolean;
   }) => (
     <div data-testid="topology-workspace">
@@ -73,6 +85,21 @@ vi.mock("@/components/network/TopologyWorkspace", () => ({
       </span>
       <button type="button" onClick={() => onDetailLevelChange("full")}>
         Test full detail
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onSelectionChange?.({
+            node: {
+              id: "/subscriptions/sub-a/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/hub-vnet",
+              label: "hub-vnet",
+              kind: "hub",
+              entityType: "VNet",
+            },
+            edge: null,
+          })}
+      >
+        Select test topology node
       </button>
     </div>
   ),
@@ -273,6 +300,23 @@ function primeSuccessfulLoaders(gapTotal = 340, findingTotal = 620) {
   );
   mocks.firewallBypass.mockResolvedValue(bypassEnvelope());
   mocks.policy.mockResolvedValue(policyEnvelope());
+  mocks.buildNetworkCopilotContext.mockReturnValue({
+    requestedScope: {},
+    snapshot: {
+      version: "1",
+      page_kind: "network",
+      page_id: "network-topology",
+      selected_resources: [],
+      filters: {},
+      freshness: [],
+      scope: { declared: {}, authorized: true },
+      evidence: [],
+      question: "Summarize the visible page evidence.",
+      rechecks: [],
+    },
+    starterQuestions: [],
+  });
+  mocks.investigateContext.mockReturnValue(new Promise(() => undefined));
 }
 
 describe("Network path endpoint selectors", () => {
@@ -866,6 +910,49 @@ describe("Network page honest totals and server pagination", () => {
         findings: expect.objectContaining({ data: expect.any(Object) }),
         bypass: expect.objectContaining({ data: expect.any(Object) }),
       }),
+    );
+  });
+
+  it("renders insights first without blocking page content while the request is unresolved", async () => {
+    const pending = deferred<never>();
+    mocks.investigateContext.mockReturnValue(pending.promise);
+
+    renderPage();
+
+    const insights = screen.getByRole("heading", { name: "Topology insights" });
+    const evidence = await screen.findByLabelText("Data trust and provenance");
+    expect(screen.getByText("Reviewing the bounded topology evidence…")).toBeInTheDocument();
+    expect(screen.getByText("Observed network")).toBeInTheDocument();
+    expect(
+      insights.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("passes graph selection to the adapter and the top insight request", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "Topology" }));
+    await user.click(screen.getByRole("button", { name: "Select test topology node" }));
+
+    await waitFor(() =>
+      expect(mocks.buildNetworkCopilotContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          selection: expect.objectContaining({
+            node: expect.objectContaining({
+              label: "hub-vnet",
+              entityType: "VNet",
+            }),
+          }),
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mocks.investigateContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          question: expect.stringContaining("Selected selector: /subscriptions/sub-a/"),
+        }),
+      ),
     );
   });
 

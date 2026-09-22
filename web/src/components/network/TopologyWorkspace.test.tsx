@@ -777,13 +777,20 @@ describe("TopologyWorkspace export and selection honesty", () => {
   });
 
   it("clears selection immediately when the active scope changes", async () => {
+    const onSelectionChange = vi.fn();
     const { rerender } = renderWorkspace({
       scope: { subscription: ["sub-a"] },
+      onSelectionChange,
     });
     fireEvent.click(
       screen.getByRole("button", { name: "Select first graph node" }),
     );
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onSelectionChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        node: expect.objectContaining({ label: "vnet-0", entityType: "VNet" }),
+      }),
+    );
 
     rerender(
       <TopologyWorkspace
@@ -793,12 +800,17 @@ describe("TopologyWorkspace export and selection honesty", () => {
         loading={false}
         error={null}
         scope={{ subscription: ["sub-b"] }}
+        onSelectionChange={onSelectionChange}
       />,
     );
 
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+    expect(onSelectionChange).toHaveBeenLastCalledWith({
+      node: null,
+      edge: null,
+    });
   });
 
   it("clears selection when a detail response omits the selected node", async () => {
