@@ -1626,17 +1626,7 @@ def _run_context_via_canonical(
             ]
         )
 
-    specialist_agent = None
-    page_specialists = (
-        load_specialist_manifest()
-        .page_mapping_projection()
-        .get(snapshot.page_kind, ())
-    )
-    for specialist_id in page_specialists:
-        specialist_agent = context.specialist_agent(specialist_id)
-        if specialist_agent is not None:
-            break
-    executive_agent = specialist_agent or context.foundry_agent()
+    executive_agent = _canonical_synthesis_agent(context)
 
     # Canonical proposal→policy→execution loop (no hardcoded planner)
     result = OrchestrationService(
@@ -1863,6 +1853,25 @@ def investigate_context(
         scope=scope.to_dict(),
         warnings=list(ledger["warnings"]),
     )
+
+
+def _canonical_synthesis_agent(context: Any) -> Any | None:
+    """Resolve final narration independently of the planning coordinator."""
+
+    try:
+        narrator = context.specialist_agent("executive_summary")
+    except (ApiError, ConnectionError, FoundryAgentError, TimeoutError) as exc:
+        logger.warning(
+            "canonical executive narrator unavailable",
+            extra={
+                "provider_role": "executive_summary",
+                "exception_class": type(exc).__name__,
+            },
+        )
+        return None
+    if narrator is None:
+        return None
+    return FoundryCoordinatorSynthesisAgent(narrator)
 
 
 @router.post(
@@ -2240,7 +2249,7 @@ def investigate_canonical(
             coordinator,
             required_hint=required_hint,
         )
-        coordinator_synthesis = FoundryCoordinatorSynthesisAgent(coordinator)
+        coordinator_synthesis = _canonical_synthesis_agent(context)
 
     try:
         if plan_hint is not None and hint_candidate is not None:

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from api.routers.copilot import _run_context_via_canonical
+from operations.foundry_agent import FoundryCoordinatorSynthesisAgent
 from operations.orchestration_contract import (
     CandidatePlan,
     Citation,
@@ -11,16 +12,16 @@ from operations.orchestration_service import OrchestrationService
 from tests.copilot_authorization_fixtures import rollout_decision_for_test
 
 
-def test_context_canonical_selected_vnet_uses_network_plan_and_narrator(
+def test_context_canonical_selected_vnet_uses_network_plan_and_executive_narrator(
     monkeypatch,
 ) -> None:
-    """The Network drawer keeps its shared legacy narration contract."""
+    """The Network drawer separates evidence collection from final narration."""
 
     selected_vnet_id = (
         "/subscriptions/sub-a/resourceGroups/rg/providers/"
         "Microsoft.Network/virtualNetworks/hub-vnet"
     )
-    network_agent = object()
+    executive_agent = object()
     shared_agent = object()
     captured: dict[str, object] = {}
     fake_result = OrchestrationResult(
@@ -71,7 +72,7 @@ def test_context_canonical_selected_vnet_uses_network_plan_and_narrator(
     )
     context = SimpleNamespace(
         specialist_agent=lambda agent_id: (
-            network_agent if agent_id == "network" else None
+            executive_agent if agent_id == "executive_summary" else None
         ),
         foundry_agent=lambda: shared_agent,
     )
@@ -90,7 +91,10 @@ def test_context_canonical_selected_vnet_uses_network_plan_and_narrator(
     )
 
     plan = captured["plan"]
-    assert captured["executive_agent"] is network_agent
+    narrator = captured["executive_agent"]
+    assert isinstance(narrator, FoundryCoordinatorSynthesisAgent)
+    assert narrator.agent is executive_agent
+    assert narrator.agent is not shared_agent
     assert isinstance(plan, CandidatePlan)
     assert [call.tool for call in plan.steps[0].tool_calls] == [
         "network_topology",
@@ -117,4 +121,4 @@ def test_context_canonical_selected_vnet_uses_network_plan_and_narrator(
         principal_subject="test@example.com",
         rollout_decision=rollout_decision,
     )
-    assert captured["executive_agent"] is shared_agent
+    assert captured["executive_agent"] is None
