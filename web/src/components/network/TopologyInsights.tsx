@@ -28,9 +28,10 @@ function executiveQuestion(selection?: NetworkCopilotSelection | null): string {
 }
 
 function deterministicSummary(result: CopilotContextResult): string {
-  const summaries = result.findings
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  const summaries = findings
     .filter((finding) => finding.status !== "denied")
-    .map((finding) => finding.summary.trim())
+    .map((finding) => (typeof finding.summary === "string" ? finding.summary.trim() : ""))
     .filter(Boolean);
   return summaries.slice(0, 3).join(" ");
 }
