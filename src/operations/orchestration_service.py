@@ -786,6 +786,21 @@ class ExecutiveSynthesis:
     mode: str = "deterministic"
     narration: str = ""
     agent: str = ""
+    #: Controlled-vocabulary reason the narrator did not answer, distinct
+    #: from ``reason`` (the admission decision). Populated only on the
+    #: narration-provider-related degrade paths so operators can tell a
+    #: local wall-clock budget cutoff apart from a genuine Foundry timeout,
+    #: an unreachable/errored provider, or a malformed response -- without
+    #: reading free-text ``warning`` strings. Empty when narration was not
+    #: attempted for an unrelated reason (e.g. admission was declined) or
+    #: when it succeeded.
+    degraded_reason: str = ""
+    #: Wall-clock seconds the narrator was actually given for this call
+    #: (0.0 when narration was skipped before ever being attempted). Lets
+    #: operators see whether a timeout was caused by an exhausted local
+    #: budget (small value) versus the provider itself being slow despite
+    #: a full budget.
+    narration_budget_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1253,6 +1268,23 @@ class OrchestrationService:
         if max_wall_seconds is not None:
             wall_seconds = min(wall_seconds, max(0.0, max_wall_seconds))
         deadline = execution_started + wall_seconds
+        # Narration must not inherit the tool-execution budget. A candidate
+        # plan declares `max_wall_seconds` to bound its own governed tool
+        # calls (often a few seconds); reusing that same shrinking deadline
+        # for the downstream Foundry narration call starves the narrator of
+        # nearly all of the wall-clock budget the moment tool execution
+        # consumes any of it, regardless of how much time the pinned agent
+        # is actually provisioned and validated for (published manifests use
+        # timeout_seconds up to the policy ceiling). Narration instead gets
+        # its own budget measured from the same execution_started instant,
+        # up to the full governance-approved ceiling (still capped by any
+        # caller-supplied outer request timeout).
+        narration_wall_seconds = self.policy.limits.max_wall_seconds
+        if max_wall_seconds is not None:
+            narration_wall_seconds = min(
+                narration_wall_seconds, max(0.0, max_wall_seconds)
+            )
+        narration_deadline = execution_started + narration_wall_seconds
         tool_results: list[dict[str, Any]] = []
         tool_statuses: list[str] = []
         citations = self._snapshot_citations(request)
@@ -1561,6 +1593,7 @@ class OrchestrationService:
             current_retained_evidence=current_retained_evidence,
             snapshot=page_snapshot,
             deadline=deadline,
+            narration_deadline=narration_deadline,
             narrator_state=narrator_state,
             fabric_page_truth_authorized=authorized_fabric_truth,
             resource_health_page_observations_accepted=(
@@ -2110,6 +2143,7 @@ class OrchestrationService:
         current_retained_evidence: Sequence[Mapping[str, Any]] = (),
         snapshot: EvidenceSnapshotV2 | None = None,
         deadline: float | None = None,
+        narration_deadline: float | None = None,
         narrator_state: str = "configured",
         fabric_page_truth_authorized: bool = False,
         resource_health_page_observations_accepted: bool = False,
@@ -2556,6 +2590,7 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason="budget_exhausted",
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -2577,6 +2612,7 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason=narrator_state,
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
@@ -2596,6 +2632,10 @@ class OrchestrationService:
             for item in synthesis_input["retained_evidence"]
             if item.get("evidence_id")
         )
+        # `deadline` is the tool-execution wall-clock budget: if the
+        # specialists already burned through the entire turn budget, the
+        # turn is out of time altogether and synthesis is skipped outright
+        # (regardless of how much of the separate narration ceiling remains).
         remaining_seconds = (
             max(0.0, deadline - self.clock())
             if deadline is not None
@@ -2614,16 +2654,26 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason="budget_exhausted",
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
+        # When synthesis does proceed, the timeout actually handed to the
+        # provider is bounded by `narration_deadline` -- narration's own,
+        # governance-sized budget -- not by whatever sliver of the (much
+        # smaller) tool-execution budget happens to remain.
+        narration_remaining_seconds = (
+            max(0.0, narration_deadline - self.clock())
+            if narration_deadline is not None
+            else remaining_seconds
+        )
         try:
             answer_kwargs = {
                 "question": question,
                 "context": synthesis_input,
             }
-            if remaining_seconds is not None:
-                answer_kwargs["timeout_seconds"] = remaining_seconds
+            if narration_remaining_seconds is not None:
+                answer_kwargs["timeout_seconds"] = narration_remaining_seconds
             answer = self.executive_agent.answer(**answer_kwargs)
             claims = validate_executive_synthesis(
                 getattr(answer, "text", ""),
@@ -2633,6 +2683,7 @@ class OrchestrationService:
             # A rejected or unreachable narrator must not remove the evidence
             # the specialists already produced, so the turn degrades to their
             # direct findings and says so rather than failing.
+            caused_by_timeout = _caused_by_timeout(exc)
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
@@ -2641,13 +2692,15 @@ class OrchestrationService:
                 warning=(
                     "Foundry narration timed out; deterministic cited evidence is "
                     "shown instead."
-                    if _caused_by_timeout(exc)
+                    if caused_by_timeout
                     else "Foundry narration provider is unavailable; deterministic "
                     "cited evidence is shown instead."
                 ),
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason="timeout" if caused_by_timeout else "unavailable",
+                narration_budget_seconds=narration_remaining_seconds or 0.0,
             )
         except TimeoutError:
             synthesis = ExecutiveSynthesis(
@@ -2662,6 +2715,8 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason="timeout",
+                narration_budget_seconds=narration_remaining_seconds or 0.0,
             )
         except (AttributeError, ConnectionError, TypeError, ValueError):
             synthesis = ExecutiveSynthesis(
@@ -2676,6 +2731,8 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+                degraded_reason="unavailable",
+                narration_budget_seconds=narration_remaining_seconds or 0.0,
             )
         else:
             used_refs = {
@@ -2700,6 +2757,7 @@ class OrchestrationService:
                     if str(claim.get("summary") or "").strip()
                 ),
                 agent=str(getattr(answer, "agent_name", "") or "").strip(),
+                narration_budget_seconds=narration_remaining_seconds or 0.0,
             )
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)
@@ -4365,6 +4423,8 @@ class OrchestrationService:
             decision=synthesis.reason,
             status=synthesis.status,
             domain_count=synthesis.domain_count,
+            degraded_reason=synthesis.degraded_reason,
+            narration_budget_seconds=synthesis.narration_budget_seconds,
         )
 
     def _record_thread_metric(self, outcome: str, durability: str) -> None:
