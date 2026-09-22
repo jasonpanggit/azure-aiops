@@ -49,6 +49,20 @@ _SYNTHESIS_DECISIONS = frozenset(
     {"explicit_intent", "multi_domain", "single_domain", "no_cited_findings"}
 )
 _SYNTHESIS_STATUSES = frozenset({"skipped", "synthesized", "degraded"})
+#: Why the narrator did not answer, distinct from the admission decision.
+#: Closed vocabulary so a local wall-clock budget cutoff, an unreachable/
+#: errored provider, and a genuine provider-reported timeout are always
+#: distinguishable in exported telemetry -- never inferred from free text.
+_SYNTHESIS_DEGRADED_REASONS = frozenset(
+    {
+        "",
+        "configured",
+        "not_configured",
+        "timeout",
+        "unavailable",
+        "budget_exhausted",
+    }
+)
 #: Fallback reasons are produced by the orchestration policy, so the vocabulary
 #: is closed. A compound reason keeps only its leading code.
 _FALLBACK_REASONS = frozenset(
@@ -161,6 +175,17 @@ class OrchestrationTelemetry:
             "aiops.orchestration.synthesis",
             description="Executive synthesis admission decisions and outcomes",
         )
+        self._synthesis_budget = self._meter.create_histogram(
+            "aiops.orchestration.synthesis.budget",
+            unit="ms",
+            description=(
+                "Wall-clock budget the narrator was given for one synthesis "
+                "call, labelled with why it degraded (if it did). A small "
+                "budget alongside degraded_reason=timeout distinguishes a "
+                "locally-exhausted orchestration deadline from a genuinely "
+                "slow or unreachable Foundry provider."
+            ),
+        )
         self._threads = self._meter.create_counter(
             "aiops.orchestration.thread",
             description="Continuity outcomes by durability",
@@ -225,14 +250,19 @@ class OrchestrationTelemetry:
         decision: str,
         status: str,
         domain_count: int,
+        degraded_reason: str = "",
+        narration_budget_seconds: float = 0.0,
     ) -> None:
-        self._synthesis.add(
-            1,
-            {
-                "decision": _controlled(decision, _SYNTHESIS_DECISIONS),
-                "status": _controlled(status, _SYNTHESIS_STATUSES),
-                "domain_count": _count(domain_count),
-            },
+        attributes = {
+            "decision": _controlled(decision, _SYNTHESIS_DECISIONS),
+            "status": _controlled(status, _SYNTHESIS_STATUSES),
+            "domain_count": _count(domain_count),
+        }
+        self._synthesis.add(1, attributes)
+        reason_code = _controlled(degraded_reason, _SYNTHESIS_DEGRADED_REASONS)
+        self._synthesis_budget.record(
+            _duration(narration_budget_seconds) * 1000.0,
+            {"degraded_reason": reason_code},
         )
 
     def record_thread(self, *, outcome: str, durability: str) -> None:
