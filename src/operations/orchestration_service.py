@@ -1021,11 +1021,32 @@ def deterministic_network_claims(
                 ),
             }
         break
-    if network_claim is None:
-        return []
 
-    claims = [network_claim]
-    covered_refs = set(network_claim["evidence_refs"])
+    # A missing firewall_nsg_gaps claim does not mean there is nothing cite-
+    # worthy on this page: successful Network findings such as network_topology
+    # still carry rich, citation-closed evidence (hubs, spokes, shared
+    # services, resources) and must still surface as deterministic claims when
+    # optional model narration is unavailable or times out. Bailing out here
+    # unconditionally silently dropped that evidence even though it was fully
+    # populated, so the fallback loop below always runs regardless of whether
+    # a firewall claim was built.
+    claims: list[dict[str, Any]] = [network_claim] if network_claim is not None else []
+    covered_refs: set[str] = (
+        set(network_claim["evidence_refs"]) if network_claim is not None else set()
+    )
+    # Tools whose normalized finding summary is already a rich, self-describing
+    # projection of the tool's own data (see normalize_cited_findings) rather
+    # than a generic templated sentence. Prefer that richer, still
+    # citation-closed summary over the generic fallback text for these tools.
+    rich_summary_tools = {"network_topology", "hub_dependents"}
+    call_id_to_tool = {
+        str(
+            result.get("call_id")
+            or f"{result.get('specialist_id')}:{result.get('tool')}"
+        ): str(result.get("tool") or "")
+        for result in tool_results
+        if isinstance(result, Mapping)
+    }
     for finding in normalize_cited_findings(
         tool_results,
         selected_resource_ids=selected_resource_ids,
@@ -1040,14 +1061,21 @@ def deterministic_network_claims(
             "_",
             " ",
         )
+        tool_name = call_id_to_tool.get(str(finding.get("finding_id") or ""), "")
+        rich_summary = str(finding.get("summary") or "").strip()
+        summary = (
+            rich_summary
+            if tool_name in rich_summary_tools and rich_summary
+            else (
+                f"The {specialist} specialist returned cited "
+                f"{finding.get('status') or 'unknown'!s} evidence for "
+                f"this investigation."
+            )
+        )
         claims.append(
             {
                 "finding_id": f"direct:{finding['finding_id']}",
-                "summary": (
-                    f"The {specialist} specialist returned cited "
-                    f"{finding.get('status') or 'unknown'!s} evidence for "
-                    f"this investigation."
-                ),
+                "summary": summary,
                 "evidence_refs": evidence_refs,
                 "confidence": "medium",
                 "freshness": "unknown",
