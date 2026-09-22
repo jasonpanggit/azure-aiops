@@ -783,6 +783,9 @@ class ExecutiveSynthesis:
     claims: list[dict[str, Any]] = field(default_factory=list)
     warning: str = ""
     used_retained_evidence: list[dict[str, Any]] = field(default_factory=list)
+    mode: str = "deterministic"
+    narration: str = ""
+    agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -890,6 +893,7 @@ def deterministic_network_claims(
     *,
     snapshot: EvidenceSnapshotV2 | None,
     tool_results: Sequence[Mapping[str, Any]],
+    selected_resource_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Summarize cited firewall findings without optional model narration."""
 
@@ -1022,7 +1026,10 @@ def deterministic_network_claims(
 
     claims = [network_claim]
     covered_refs = set(network_claim["evidence_refs"])
-    for finding in normalize_cited_findings(tool_results):
+    for finding in normalize_cited_findings(
+        tool_results,
+        selected_resource_ids=selected_resource_ids,
+    ):
         evidence_refs = [
             str(reference)
             for reference in finding.get("evidence_refs") or []
@@ -1534,6 +1541,11 @@ class OrchestrationService:
             inventory_page_observations_accepted=(
                 accepted_inventory_observations
             ),
+            selected_resource_ids={
+                entity.resource_id
+                for entity in page_snapshot.selected_entities
+                if isinstance(entity, AzureEntityRef)
+            },
         )
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
@@ -1575,6 +1587,9 @@ class OrchestrationService:
                 "domain_count": synthesis.domain_count,
                 "claims": synthesis.claims,
                 "warning": synthesis.warning,
+                "mode": synthesis.mode,
+                "narration": synthesis.narration,
+                "agent": synthesis.agent,
             },
         )
         return OrchestrationTurn(
@@ -2071,6 +2086,7 @@ class OrchestrationService:
         fabric_page_truth_authorized: bool = False,
         resource_health_page_observations_accepted: bool = False,
         inventory_page_observations_accepted: bool = False,
+        selected_resource_ids: set[str] | None = None,
     ) -> ExecutiveSynthesis:
         """Run at most one citation-closed aggregation call, or none at all."""
 
@@ -2078,7 +2094,10 @@ class OrchestrationService:
             str(item.get("status") or "") == STATUS_UNAVAILABLE
             for item in tool_results
         )
-        findings = normalize_cited_findings(tool_results)
+        findings = normalize_cited_findings(
+            tool_results,
+            selected_resource_ids=selected_resource_ids,
+        )
         decision = executive_synthesis_decision(question, findings)
         cve_claims = self._deterministic_cve_claims(
             question,
@@ -2092,6 +2111,7 @@ class OrchestrationService:
         network_claims = deterministic_network_claims(
             snapshot=snapshot,
             tool_results=tool_results,
+            selected_resource_ids=selected_resource_ids,
         )
         remediation_claims = self._deterministic_remediation_claims(
             question,
@@ -2645,6 +2665,13 @@ class OrchestrationService:
                     for item in synthesis_input["retained_evidence"]
                     if item.get("evidence_id") in used_refs
                 ],
+                mode="foundry",
+                narration="\n\n".join(
+                    str(claim.get("summary") or "").strip()
+                    for claim in claims
+                    if str(claim.get("summary") or "").strip()
+                ),
+                agent=str(getattr(answer, "agent_name", "") or "").strip(),
             )
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)

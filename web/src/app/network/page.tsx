@@ -10,6 +10,8 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { TablePagination } from "@/components/ui/TablePagination";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import type { TopologyDetailLevel } from "@/components/network/TopologyWorkspace";
+import type { TopologySelection } from "@/components/network/TopologyGraph";
+import { TopologyInsights } from "@/components/network/TopologyInsights";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
@@ -19,6 +21,7 @@ import {
   presentVerdict,
 } from "@/lib/flow-verdict";
 import { buildNetworkCopilotContext } from "@/lib/copilot/page-adapters";
+import type { NetworkCopilotSelection } from "@/lib/copilot/page-adapters";
 import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { networkApi } from "@/lib/services";
@@ -77,6 +80,8 @@ export default function NetworkPage() {
     : NETWORK_PAGE_SIZE;
   const [topologyDetail, setTopologyDetail] =
     useState<TopologyDetailLevel>("summary");
+  const [topologySelection, setTopologySelection] =
+    useState<NetworkCopilotSelection | null>(null);
   const [policyFeedback, setPolicyFeedback] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const [pendingPolicyRefresh, setPendingPolicyRefresh] = useState<{
     beforeGapTotal: number;
@@ -130,6 +135,28 @@ export default function NetworkPage() {
     topology.cancel();
     setTopologyDetail(renderedTopologyDetail);
   }, [renderedTopologyDetail, topology]);
+  const handleTopologySelection = useCallback((selection: TopologySelection) => {
+    setTopologySelection({
+      node: selection.node
+        ? {
+            id: selection.node.id,
+            label: selection.node.label,
+            kind: selection.node.kind,
+            entityType: selection.node.entityType,
+          }
+        : null,
+      edge: selection.edge
+        ? {
+            id: selection.edge.id,
+            source: selection.edge.source,
+            target: selection.edge.target,
+            label: selection.edge.label,
+            kind: selection.edge.kind,
+            relationshipType: selection.edge.relationshipType,
+          }
+        : null,
+    });
+  }, []);
 
   useEffect(() => {
     if (paginationScopeKey === scopeKey) return;
@@ -241,6 +268,7 @@ export default function NetworkPage() {
     gaps: gaps.data,
     findings: findings.data,
     bypass: bypass.data,
+    selection: topologySelection,
   });
 
   return (
@@ -257,6 +285,12 @@ export default function NetworkPage() {
             <span>{flowLogProvenanceText(flowLogProvenance)}</span>
           </>
         }
+      />
+
+      <TopologyInsights
+        snapshot={networkCopilot.snapshot}
+        selection={topologySelection}
+        onAskFollowUp={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar
@@ -375,6 +409,7 @@ export default function NetworkPage() {
               warnings={topologyWarnings.length > 0 ? topologyWarnings : null}
               knowledgeVersion={topology.data?.knowledge_version ?? null}
               graphFreshness={topology.data?.graph_freshness}
+              onSelectionChange={handleTopologySelection}
             />
           </section>
         )

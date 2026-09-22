@@ -69,6 +69,19 @@ MAX_SYNTHESIS_FINDINGS = 25
 MAX_RETAINED_SYNTHESIS_EVIDENCE = 50
 MAX_CONTEXT_CHARS = 24_000
 _MAX_CONTEXT_CHARS = MAX_CONTEXT_CHARS
+_NETWORK_TOPOLOGY_COUNT_FIELDS = frozenset({
+    "hub_count",
+    "spoke_count",
+    "isolated_vnet_count",
+    "peering_count",
+    "cross_subscription_peering_count",
+    "unhealthy_peering_count",
+    "shared_service_count",
+    "connection_count",
+    "gap_count",
+    "rule_finding_count",
+    "projected_full_node_count",
+})
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -309,6 +322,8 @@ def parse_specialist_findings(
 
 def normalize_cited_findings(
     tool_results: Iterable[Mapping[str, Any]],
+    *,
+    selected_resource_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Project specialist tool results into normalized, cited findings.
 
@@ -337,68 +352,101 @@ def normalize_cited_findings(
             return ""
         return bounded_utf8(normalized, limit)
 
+    selected_ids = {
+        resource_id.casefold()
+        for resource_id in selected_resource_ids or set()
+        if isinstance(resource_id, str) and resource_id.strip()
+    }
+
     def hub_dependents_summary(data: Any) -> str:
         if not isinstance(data, Mapping):
             return ""
         hub_name = bounded_text(data.get("hub_name")) or "the requested hub"
-        dependents = [
-            item
-            for item in data.get("dependent_vnets") or data.get("dependents") or []
-            if isinstance(item, Mapping)
-        ]
         raw_count = data.get("dependent_count")
         dependent_count = (
             raw_count
             if isinstance(raw_count, int) and raw_count >= 0
-            else len(dependents)
+            else 0
         )
-        dependent_labels = []
-        for item in dependents:
-            label = bounded_text(item.get("name"))
-            if label:
-                dependent_labels.append(label)
-            if len(dependent_labels) >= 8:
-                break
         summary = f"Hub {hub_name} has {dependent_count} dependent VNets"
-        if dependent_labels:
-            suffix = (
-                f" (showing {len(dependent_labels)}): "
-                if dependent_count > len(dependent_labels)
-                else ": "
-            )
-            summary += suffix + "; ".join(dependent_labels)
         summary += "."
-
-        services = [
-            item
-            for item in data.get("shared_services") or []
-            if isinstance(item, Mapping)
-        ]
-        if services:
-            labels = []
-            for item in services:
-                service_type = bounded_text(
-                    item.get("service_kind") or item.get("type"),
-                    80,
-                )
-                name = bounded_text(item.get("name"), 160)
-                label = " ".join(part for part in (service_type, name) if part)
-                if label:
-                    labels.append(label)
-                if len(labels) >= 8:
-                    break
-            if labels:
-                count_text = (
-                    f"{len(services)} total; showing {len(labels)}"
-                    if len(services) > len(labels)
-                    else str(len(services))
-                )
-                summary += (
-                    f" Shared services ({count_text}): "
-                    + "; ".join(labels)
-                    + "."
-                )
         return bounded_utf8(summary, 2_000)
+
+    def network_topology_summary(data: Any) -> str:
+        if not isinstance(data, Mapping):
+            return ""
+        summary_data = data.get("summary")
+        topology_data = data.get("topology")
+        counts = summary_data if isinstance(summary_data, Mapping) else {}
+        topology = topology_data if isinstance(topology_data, Mapping) else {}
+        count_parts = [
+            f"{key}={value}"
+            for key, value in sorted(counts.items())
+            if (
+                isinstance(key, str)
+                and key in _NETWORK_TOPOLOGY_COUNT_FIELDS
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+        ] if isinstance(counts, Mapping) else []
+        selected_parts: list[str] = []
+        emitted_selected_ids: set[str] = set()
+        for collection, collection_role in (
+            ("hubs", "hub"),
+            ("spokes", "spoke"),
+            ("isolated", "isolated"),
+            ("resources", ""),
+        ):
+            rows = topology.get(collection)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                resource_id = str(
+                    row.get("id") or row.get("vnet_id") or row.get("resource_id") or ""
+                ).strip()
+                normalized_resource_id = resource_id.casefold()
+                if (
+                    not resource_id
+                    or normalized_resource_id not in selected_ids
+                    or normalized_resource_id in emitted_selected_ids
+                ):
+                    continue
+                name = bounded_text(row.get("name"))
+                role = bounded_text(row.get("role")) or collection_role
+                resource_type = bounded_text(
+                    row.get("entity_type") or row.get("resource_type") or row.get("type")
+                )
+                peer_count = row.get("peer_count")
+                fields = [
+                    part
+                    for part in (
+                        f"name={name}" if name else "",
+                        f"role={role}" if role else "",
+                        f"type={resource_type}" if resource_type else "",
+                        (
+                            f"peer_count={peer_count}"
+                            if (
+                                isinstance(peer_count, int)
+                                and not isinstance(peer_count, bool)
+                                and peer_count >= 0
+                            )
+                            else ""
+                        ),
+                    )
+                    if part
+                ]
+                if fields:
+                    selected_parts.append("selected resource: " + ", ".join(fields))
+                    emitted_selected_ids.add(normalized_resource_id)
+                    break
+        parts = [
+            f"Topology counts: {', '.join(count_parts)}." if count_parts else "",
+            *dict.fromkeys(selected_parts),
+        ]
+        return bounded_utf8(" ".join(part for part in parts if part), 2_000)
 
     findings: list[dict[str, Any]] = []
     for result in tool_results:
@@ -422,6 +470,8 @@ def normalize_cited_findings(
         summary = (
             hub_dependents_summary(result.get("data"))
             if tool == "hub_dependents" and status == "ok"
+            else network_topology_summary(result.get("data"))
+            if tool == "network_topology" and status == "ok"
             else ""
         )
         findings.append(

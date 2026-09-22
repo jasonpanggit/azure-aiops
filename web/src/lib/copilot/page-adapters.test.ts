@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { CopilotPageKind, CopilotPageKindV2, CopilotPageSnapshot } from "@/lib/types";
+import { buildTopologyEnvelope } from "@/test/network-fixtures";
 import {
   buildChangesCopilotContext,
   buildComplianceCopilotContext,
@@ -424,6 +425,142 @@ describe("shared page adapter canonical endpoint compatibility", () => {
 describe("inventory Copilot page adapter", () => {
   it("has an explicit integrated route disposition", () => {
     expect(copilotPageDisposition("/inventory")).toBe("integrated");
+  });
+
+  describe("Network topology selection adapter", () => {
+    const hubId =
+      "/subscriptions/sub-a/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/hub-vnet";
+    const spokeId =
+      "/subscriptions/sub-a/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/spoke-vnet";
+
+    function networkInput() {
+      const topology = buildTopologyEnvelope();
+      topology.data.topology.resources = [
+        {
+          id: hubId,
+          name: "hub-vnet",
+          entity_type: "VNet",
+          role: "hub",
+          subscription_id: "sub-a",
+          resource_group: "rg-network",
+          location: "eastus",
+          connection_id: "conn-a",
+          environment: "prod",
+          business_service: "",
+          application: "",
+          owner: "",
+          tags: {},
+          details: { peer_count: 1 },
+        },
+        {
+          id: spokeId,
+          name: "spoke-vnet",
+          entity_type: "VNet",
+          role: "spoke",
+          subscription_id: "sub-a",
+          resource_group: "rg-network",
+          location: "eastus",
+          connection_id: "conn-a",
+          environment: "prod",
+          business_service: "",
+          application: "",
+          owner: "",
+          tags: {},
+          details: { peer_count: 1 },
+        },
+      ];
+      topology.data.topology.relationships = [{
+        id: "hub-to-spoke",
+        source: hubId,
+        target: spokeId,
+        relationship_type: "peered_to",
+        label: "peered to",
+        details: {},
+      }];
+      return {
+        scope: { subscription: ["sub-a"] },
+        tab: "topology" as const,
+        gapOffset: 0,
+        gapLimit: 20,
+        findingOffset: 0,
+        findingLimit: 20,
+        topology,
+      };
+    }
+
+    it("does not select every hub when the graph has no selection", () => {
+      const context = buildNetworkCopilotContext(networkInput());
+
+      expect(context.snapshot.selected_resources).toEqual([]);
+      expect(context.selectedEntities).toEqual([]);
+      expect(context.snapshot.evidence.every((row) => row.data.selected !== true)).toBe(true);
+    });
+
+    it("canonicalizes a selected VNet as the only selected resource and first starter", () => {
+      const context = buildNetworkCopilotContext({
+        ...networkInput(),
+        selection: {
+          node: {
+            id: hubId,
+            label: "hub-vnet",
+            kind: "hub",
+            entityType: "VNet",
+          },
+          edge: null,
+        },
+      });
+
+      expect(context.snapshot.selected_resources).toEqual([{
+        resource_id: hubId.toLowerCase(),
+        resource_type: "Microsoft.Network/virtualNetworks",
+        name: "hub-vnet",
+      }]);
+      expect(context.selectedEntities).toEqual([{
+        type: "azure",
+        resource_id: hubId.toLowerCase(),
+      }]);
+      expect(
+        context.snapshot.evidence.filter((row) => row.data.selected === true),
+      ).toHaveLength(1);
+      expect(context.starterQuestions[0]).toMatchObject({
+        label: "Explain hub-vnet (hub).",
+        specialistId: "network",
+        tool: "network_topology",
+        toolArguments: { selector: hubId },
+      });
+      expect(context.starterQuestions.slice(1).map((starter) => starter.label)).toEqual([
+        "Can UAT reach PROD?",
+        "Show inspection bypass paths.",
+      ]);
+    });
+
+    it("selects only a relationship and its canonical endpoints within the adjacency bound", () => {
+      const context = buildNetworkCopilotContext({
+        ...networkInput(),
+        selection: {
+          node: null,
+          edge: {
+            id: "hub-to-spoke",
+            source: hubId,
+            target: spokeId,
+            label: "peered to",
+            kind: "relationship",
+            relationshipType: "peered_to",
+          },
+        },
+      });
+
+      expect(context.snapshot.selected_resources).toEqual([
+        expect.objectContaining({ resource_id: hubId.toLowerCase() }),
+        expect.objectContaining({ resource_id: spokeId.toLowerCase() }),
+      ]);
+      expect(
+        context.snapshot.evidence.filter((row) => row.data.selected === true),
+      ).toHaveLength(3);
+      expect(
+        context.snapshot.evidence.filter((row) => row.data.relationship_type),
+      ).toHaveLength(1);
+    });
   });
 
   const corePageInput = {

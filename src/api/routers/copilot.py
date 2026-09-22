@@ -1591,9 +1591,61 @@ def _run_context_via_canonical(
                 warning="Tool unavailable in context canonical mode",
             )
 
+    selected_vnet_id = next(
+        (
+            resource.resource_id
+            for resource in snapshot.selected_resources
+            if (
+                resource.resource_type.casefold()
+                == "microsoft.network/virtualnetworks"
+            )
+        ),
+        "",
+    )
+
+    def _selected_vnet_plan(
+        _: CanonicalInvestigationRequest,
+    ) -> CandidatePlan:
+        return CandidatePlan(
+            steps=[
+                SpecialistStep(
+                    specialist_id="network",
+                    tool_calls=[
+                        ToolCallCandidate(
+                            tool="network_topology",
+                            arguments={},
+                            citation_ids=[COVERAGE_CITATION_ID],
+                        ),
+                        ToolCallCandidate(
+                            tool="hub_dependents",
+                            arguments={"vnet_id": selected_vnet_id},
+                            citation_ids=[COVERAGE_CITATION_ID],
+                        ),
+                    ],
+                )
+            ]
+        )
+
+    specialist_agent = None
+    page_specialists = (
+        load_specialist_manifest()
+        .page_mapping_projection()
+        .get(snapshot.page_kind, ())
+    )
+    for specialist_id in page_specialists:
+        specialist_agent = context.specialist_agent(specialist_id)
+        if specialist_agent is not None:
+            break
+    executive_agent = specialist_agent or context.foundry_agent()
+
     # Canonical proposal→policy→execution loop (no hardcoded planner)
     result = OrchestrationService(
         executor=_safe_executor,
+        planner=_selected_vnet_plan if (
+            snapshot.page_kind == "network" and selected_vnet_id
+        ) else None,
+        executive_agent=executive_agent,
+        always_synthesize=True,
     ).execute(
         request,
         context=context,
@@ -1649,6 +1701,16 @@ def _run_context_via_canonical(
         citation.model_dump(mode="json")
         for citation in result.citations
     ]
+    synthesis = dict(result.synthesis or {})
+    synthesis_mode = str(synthesis.get("mode") or "deterministic")
+    narration = str(synthesis.get("narration") or "").strip()
+    if not narration:
+        narration = "\n\n".join(
+            str(claim.get("summary") or "").strip()
+            for claim in synthesis.get("claims") or []
+            if isinstance(claim, Mapping) and str(claim.get("summary") or "").strip()
+        )
+    synthesis_agent = str(synthesis.get("agent") or "").strip()
     return {
         "contract_version": result.contract_version,
         "ledger_id": f"ctx-{_uuid.uuid4().hex[:12]}",
@@ -1690,14 +1752,19 @@ def _run_context_via_canonical(
             if tr.get("data")
         ],
         "synthesis": {
-            "mode": "canonical",
+            "mode": synthesis_mode,
+            "narration": narration,
+            "synthesis_mode": synthesis_mode,
+            "synthesis_agent": synthesis_agent,
             "status": result.status,
             "policy_status": result.policy_status,
             "fallback_reason": result.fallback_reason,
             "coverage": result.coverage.model_dump(mode="json"),
             "uncertainty": list(result.uncertainty),
-            "executive": result.synthesis,
+            "executive": synthesis,
         },
+        "synthesis_mode": synthesis_mode,
+        "synthesis_agent": synthesis_agent,
         "citations": citations,
         "warnings": list(result.uncertainty),
         "stop_reason": "reassessed",
