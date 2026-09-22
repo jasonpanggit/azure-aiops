@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import json
 
+from api.evidence import Evidence
 from api.scope import Scope
-from operations.foundry_agent import AgentAnswer
 from operations import maf_orchestrator
+from operations.foundry_agent import AgentAnswer
 from operations.maf_orchestrator import build_deterministic_fallback
 from operations.orchestration_contract import (
     EvidenceSnapshotV2,
@@ -44,7 +45,6 @@ from operations.orchestration_contract import (
 )
 from operations.orchestration_service import OrchestrationService
 from operations.specialist_manifest import load_specialist_manifest
-from api.evidence import Evidence
 from operations.tools import STATUS_OK, ToolResult
 from tests.copilot_authorization_fixtures import route_authority_for_test
 
