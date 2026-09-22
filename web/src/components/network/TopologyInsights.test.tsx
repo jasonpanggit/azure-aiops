@@ -118,6 +118,35 @@ describe("TopologyInsights", () => {
     expect(screen.getByText("One unhealthy peering is present.")).toBeInTheDocument();
   });
 
+  it("keeps the page rendered when a partial deployed finding omits summary", async () => {
+    mocks.investigateContext.mockResolvedValue(
+      envelope(result({
+        synthesis_mode: "deterministic",
+        synthesis_agent: "",
+        synthesis: null,
+        findings: [{
+          finding_id: "finding-partial",
+          resource_ids: [],
+          check_id: "topology",
+          policy_id: "",
+          source_status: "partial",
+          status: "partial",
+          evidence_refs: [],
+          confidence: "medium",
+          uncertainty: ["Copilot response was partial"],
+          stale: false,
+          next_check: "",
+          actionable: false,
+        } as unknown as CopilotContextResult["findings"][number]],
+      })),
+    );
+
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByText("Insights unavailable")).toBeInTheDocument();
+    expect(screen.getByText("The bounded snapshot returned no supported findings or narration.")).toBeInTheDocument();
+  });
+
   it("refreshes on demand and opens the shared follow-up experience", async () => {
     const onAskFollowUp = vi.fn();
     mocks.investigateContext.mockResolvedValue(envelope(result()));
