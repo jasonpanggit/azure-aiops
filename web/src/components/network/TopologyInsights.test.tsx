@@ -118,6 +118,45 @@ describe("TopologyInsights", () => {
     expect(screen.getByText("One unhealthy peering is present.")).toBeInTheDocument();
   });
 
+  it("renders the deterministic Network narration when Foundry narration times out (planner_unavailable fallback)", async () => {
+    // Live production regression: HTTP 200, status=partial, synthesis.mode=deterministic,
+    // policy_status=fallback, fallback_reason=planner_unavailable, uncertainty noting
+    // Foundry narration timed out -- while a successful `network_topology` tool
+    // finding (hub, isolated VNet, shared services, resources) was present. The
+    // backend now folds that citation-backed evidence into synthesis.narration
+    // instead of leaving it empty, so the fallback must render it here.
+    mocks.investigateContext.mockResolvedValue(
+      envelope(result({
+        synthesis_mode: "deterministic",
+        synthesis_agent: "",
+        synthesis: {
+          mode: "deterministic",
+          narration:
+            "Topology counts: hub_count=1, isolated_vnet_count=1, shared_service_count=2.",
+        },
+        findings: [{
+          finding_id: "topology:0",
+          tool: "network_topology",
+          specialist_id: "network",
+          status: "ok",
+          data: { summary: { hub_count: 1, isolated_vnet_count: 1 } },
+          citation_ids: ["tool:topology:0:0", "tool:topology:0:1"],
+        } as unknown as CopilotContextResult["findings"][number]],
+        warnings: ["Foundry narration timed out; deterministic cited network evidence was used."],
+      })),
+    );
+
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByText("Evidence-only fallback")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Topology counts: hub_count=1, isolated_vnet_count=1, shared_service_count=2.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Insights unavailable")).not.toBeInTheDocument();
+  });
+
   it("keeps the page rendered when a partial deployed finding omits summary", async () => {
     mocks.investigateContext.mockResolvedValue(
       envelope(result({
