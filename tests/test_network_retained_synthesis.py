@@ -137,6 +137,7 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis(
 @pytest.mark.parametrize("invalid", [
     {"next_check": "Create a private endpoint now."},
     {"next_check": "Execute az network private-endpoint create."},
+    {"next_check": "Apply the recommended private endpoint configuration."},
     {"evidence_refs": ["retained:invented"]},
     {"confidence": "certain"},
     {"summary": ""},
@@ -158,3 +159,21 @@ def test_remediation_narration_keeps_citations_and_read_only_checks_strict(inval
             json.dumps({"findings": [finding]}),
             evidence_refs={"retained:acr-gap"},
         )
+
+
+def test_read_only_check_can_verify_whether_remediation_was_applied():
+    finding = {
+        "finding_id": "registry-exposure",
+        "summary": "Evidence recommends: create a private endpoint for demoacr.",
+        "evidence_refs": ["retained:acr-gap"],
+        "confidence": "high",
+        "freshness": "fresh",
+        "uncertainty": ["The recommendation may already have been applied."],
+        "actionable": False,
+        "next_check": "Verify whether the recommendation has been applied.",
+    }
+
+    assert validate_executive_synthesis(
+        json.dumps({"findings": [finding]}),
+        evidence_refs={"retained:acr-gap"},
+    ) == [finding]

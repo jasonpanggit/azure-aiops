@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -83,6 +84,10 @@ _NETWORK_TOPOLOGY_COUNT_FIELDS = frozenset({
     "projected_full_node_count",
 })
 _MUTATION_WORDS = ("delete", "create", "update", "modify", "execute", "apply", "remediate")
+_MUTATION_WORD_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(_MUTATION_WORDS)})\b",
+    re.IGNORECASE,
+)
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -326,7 +331,7 @@ def parse_specialist_findings(
                 key: value for key, value in finding.items() if key != "summary"
             }
         text_values = json.dumps(mutation_fields, ensure_ascii=False).casefold()
-        if any(word in text_values for word in _MUTATION_WORDS):
+        if _MUTATION_WORD_PATTERN.search(text_values):
             raise FoundryAgentError(f"{agent_id} specialist output contains mutation instructions")
         
         validated.append(finding)
