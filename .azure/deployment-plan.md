@@ -673,6 +673,32 @@ change is in scope.
 
 ## Validation Proof
 
+- 2026-09-23: PR #282 merged as
+  `cbc2edeb4d99aba35c556b3e64c24d82a1417c3e` from reviewed head
+  `848145697db65f7b0e5479004ade0cd68fbadfe9`. The bounded API/web fix
+  asserts submitted page evidence as material claims, retains independent
+  resource observations under partial coverage, keeps resource-less
+  aggregates gated on complete coverage, propagates stable source/claim
+  identity, and asks Network synthesis for named resources and evidence-carried
+  remediation. Independent validation passed: focused backend 8/8, Ruff,
+  `git diff --check`, TypeScript, Network Vitest 91/91, targeted ESLint, and an
+  exact-merge production Next.js build. GitHub backend/frontend/security jobs
+  executed zero steps because of the known account billing limit.
+  Exact-merge ACR builds succeeded: API run `cr115`, digest
+  `sha256:e2314f5d7615886458dee099bb2c02538d81370d5581d1b185932a20d6b21c4a`;
+  web run `cr114`, digest
+  `sha256:de46dff0181ddbe509bfd52847a69d9cacbbc82d9eadc6c7ff87dcf0af40314f`.
+  Web revision `aiops-dev-web--pr282-de46dff0-r1` is Healthy/Running at 100%
+  traffic; public `/api/config` and `/network` return HTTP 200. API revision
+  `aiops-dev-api--pr282-e2314f5d-r1` preserves 4 CPU / 8 GiB, reached
+  Healthy/RunningAtMaxScale, passed revision-scoped and public `/health` and
+  `/ready` with `readiness=ready` and required Copilot/Exposure providers
+  ready, and is at 100% traffic. Initial API scheduling was blocked because
+  superseded PR #280 plus PR #281 occupied the `api-d4` two-node maximum;
+  after the already-released PR #280 rollback was deactivated, the candidate
+  scheduled and passed all gates. PR #281 remains Active/Healthy at 0% as the
+  requested rollback pending authenticated PR #282 acceptance.
+
 - 2026-09-23: PR #281 merged as `d159d5eaaca9753f8b2ec851ca8eca5aeaedce84`
   (branch tip `cd82a4142e1672d9ecbc4e0dcbe400da6c57f060`, base merged PR #280
   `5d647ebfa`). Fix pins `_canonical_synthesis_agent()` to the dedicated
