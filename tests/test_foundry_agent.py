@@ -212,6 +212,37 @@ def test_operations_copilot_normalizes_safe_synthesis_type_drift() -> None:
     )
 
 
+def test_operations_copilot_replaces_unsafe_next_check_with_read_only_review():
+    coordinator = _Coordinator([
+        json.dumps({
+            "findings": [{
+                "finding_id": "network-1",
+                "evidence_refs": ["tool:network:0"],
+                "confidence": "high",
+                "uncertainty": ["The recommendation can be applied later."],
+                "freshness": "fresh",
+                "actionable": False,
+                "next_check": "Create a private endpoint now.",
+                "summary": "The cited evidence recommends a private endpoint.",
+            }]
+        })
+    ])
+
+    answer = FoundryCoordinatorSynthesisAgent(coordinator).answer(
+        question="Show inspection bypass paths.",
+        context={"findings": [{"evidence_refs": ["tool:network:0"]}]},
+    )
+    payload = json.loads(answer.text)
+
+    assert payload["findings"][0]["next_check"] == (
+        "Review the cited evidence before any governed change."
+    )
+    assert validate_executive_synthesis(
+        answer.text,
+        evidence_refs={"tool:network:0"},
+    )
+
+
 def test_operations_copilot_maps_current_freshness_alias_to_unknown() -> None:
     coordinator = _Coordinator([
         json.dumps({
