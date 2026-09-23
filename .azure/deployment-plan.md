@@ -2103,3 +2103,63 @@ change is in scope.
   repeated authenticated `/network` reliability acceptance re-run —
   target 5/5 Foundry synthesis calls. Do not release the `pr287` rollback
   hold until that PASSes.
+
+## PR #291 — fix(copilot): allow executive uncertainty remediation context
+
+- Follow-up to PR #290 after Topology reported PR290 acceptance FAIL
+  (4/5 foundry synthesis, 1 degraded `contract_error/response_contract`).
+  Root cause: executive mutation-word validation still applied across all
+  finding fields except `summary`, so legitimate remediation-describing
+  language in `uncertainty` could still trigger whole-finding rejection.
+  Fix narrows the mutation-word guard to only `next_check` (already
+  sanitized deterministic-safe by PR290); `summary`/`uncertainty` may
+  describe cited remediation without rejection. Generic (non-executive)
+  specialist validation and all schema/citation/freshness/confidence
+  checks unchanged and strict.
+- Patch persisted by Topology, SHA-256
+  `82fec12db046cb69a2ade42f20e8d0d6ab6612652fcf828f9b24f0106e24e12b`,
+  applied cleanly onto fresh `origin/main` (`c19a94c5644ab98cf6a65d4b74733c8d7b7d1add`,
+  includes PR290 deployment record). Exactly 2 files: `src/operations/foundry_agent.py`
+  (10 lines) and `tests/test_network_retained_synthesis.py` (20 lines).
+- Independent validation (isolated worktree, before commit): 68/68 focused
+  backend tests passed (`test_foundry_agent.py`,
+  `test_executive_summary_specialist.py`, `test_network_retained_synthesis.py`,
+  `test_foundry_narration_provider_selection.py`,
+  `test_foundry_narration_budget_starvation.py`); Ruff clean; `compileall`
+  clean; `git diff --check` clean.
+- Committed with conventional-commit message + Co-authored-by trailer
+  (`c89063743447e7974fdbff11b26055134f9c3d1c`), pushed branch
+  `fix/executive-uncertainty-validation`, opened **PR #291**.
+- Topology independently confirmed exact-diff match (`gh pr diff 291`
+  SHA-256 matches the validated patch artifact exactly) and authorized
+  merge.
+- Merge: head-SHA guarded (`gh pr merge 291 --squash --match-head-commit
+  c89063743447e7974fdbff11b26055134f9c3d1c --admin`) →
+  `6ab7133f675e1ddfc7e641b20d923ccdc3d9eeaf` on `main`.
+- Build: API image only (no web changes), built from the exact merge
+  commit in an isolated worktree, registry `aiopsdevacrg6ludc`. Run
+  `cr11g`, tag `executive-uncertainty-6ab7133f6-20260923T183605Z`,
+  digest `sha256:0835e454447b13f95b5907cdfee490a2a27e2b8fc3eb9fe99ba17fe52060f335`,
+  `--build-arg AIOPS_SOURCE_REVISION=6ab7133f675e1ddfc7e641b20d923ccdc3d9eeaf`.
+- Deploy: created `aiops-dev-api--pr291-0835e454` at 4 CPU / 8 GiB
+  (unchanged sizing), 0% traffic. `api-d4` had headroom
+  (`currentCount: 3, maximumCount: 4`) — no capacity mutation needed;
+  candidate reached Healthy/RunningAtMaxScale after continued polling
+  (~75s). Smoke-checked `/health` and `/ready` directly against the
+  revision FQDN → both 200. Promoted to 100% traffic (`az containerapp
+  ingress traffic set`), dropping `pr290` to 0%; `pr287` left untouched
+  at 0% (rollback hold preserved throughout).
+- No web changes/redeploy needed for this PR (API-only fix).
+- Final revision state: API `pr287` (Healthy, 0%, preserved rollback hold
+  — pending confirmed re-acceptance against this specific deployment),
+  `pr289` (Healthy, 0%, superseded), `pr290` (Healthy, 0%, superseded),
+  `pr291` (Healthy, 100%, live). Web unchanged: `0000247` (Healthy, 100%,
+  live).
+- Smoke-checked production ingress `/health` and `/ready` → both 200.
+- Note: Topology's PR291 acceptance message referenced an
+  `executive_summary_agent` readiness timestamp (`2026-09-23T18:40:54Z`)
+  predating this deploy's completion (`lastModifiedAt 2026-09-23T18:41:31Z`)
+  and `pr291` was still at 0% traffic when that message was sent — the
+  reported 5/5 evidence likely tested the then-live `pr290`, not `pr291`.
+  Requested a fresh re-run specifically against the now-live `pr291`
+  before releasing the `pr287` rollback hold.
