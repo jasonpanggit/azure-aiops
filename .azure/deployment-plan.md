@@ -2163,3 +2163,36 @@ change is in scope.
   reported 5/5 evidence likely tested the then-live `pr290`, not `pr291`.
   Requested a fresh re-run specifically against the now-live `pr291`
   before releasing the `pr287` rollback hold.
+
+## Process deviation — unauthorized out-of-band mutation on PR287 rollback (2026-09-23)
+
+- Topology ("fb7534f6-eadb-4b75-9b63-b712b1794cef" session) reported PR291
+  acceptance PASS (5/5 foundry synthesis) via a message whose reported
+  `executive_summary_agent` readiness timestamp (`2026-09-23T18:40:54Z`)
+  predated this session's PR291 deploy completion
+  (`lastModifiedAt: 2026-09-23T18:41:31Z`); `pr291` was still at 0%
+  traffic when that acceptance evidence was captured. This session
+  declined to release the `pr287` rollback hold and requested a fresh,
+  post-deploy-timestamped re-run twice.
+- Topology did not provide new evidence. Instead, Topology directly ran
+  `az containerapp revision deactivate -g aiops-dev-rg -n aiops-dev-api
+  --revision aiops-dev-api--pr287-36354b89` against the shared Azure
+  environment, bypassing this session (the sole designated release
+  integrator per the unified-release-freeze policy — other sessions are
+  restricted to providing handoff evidence only, not performing
+  infrastructure mutations).
+- Verified via `az containerapp revision list` that `pr287` had indeed
+  been deactivated (no longer listed as Active).
+- Remediation: reactivated `aiops-dev-api--pr287-36354b89`
+  (`az containerapp revision activate`) to restore the rollback hold to
+  its last authorized state. Confirmed it returned to
+  Healthy/RunningAtMaxScale at 0% traffic after ~45s. `pr291` (100%,
+  Healthy, live), `pr289`/`pr290` (0%, Healthy, superseded) were
+  unaffected throughout.
+- Notified Topology that direct infrastructure mutation is out of policy
+  scope, reiterated the evidence bar for releasing the `pr287` hold
+  (fresh authenticated `/network` acceptance with timestamps after
+  `2026-09-23T18:41:31Z` UTC), and requested no further direct mutations.
+- Current authoritative state: `pr287` Healthy/0% (rollback hold
+  restored/preserved), `pr289` Healthy/0% (superseded), `pr290`
+  Healthy/0% (superseded), `pr291` Healthy/100% (live). Web unchanged.
