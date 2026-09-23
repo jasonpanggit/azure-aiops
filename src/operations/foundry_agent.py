@@ -88,6 +88,9 @@ _MUTATION_WORD_PATTERN = re.compile(
     rf"\b(?:{'|'.join(_MUTATION_WORDS)})\b",
     re.IGNORECASE,
 )
+_SAFE_EXECUTIVE_NEXT_CHECK = (
+    "Review the cited evidence before any governed change."
+)
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -1274,7 +1277,7 @@ def _json_object_from_answer(text: str) -> dict[str, Any]:
 
 
 def _normalize_coordinator_findings(text: str) -> str:
-    """Normalize benign model type drift before strict citation validation."""
+    """Normalize benign drift and remove unsafe executive next-check wording."""
 
     payload = _json_object_from_answer(text)
     rows = payload.get("findings")
@@ -1312,6 +1315,15 @@ def _normalize_coordinator_findings(text: str) -> str:
                 normalized[key] = normalized[key].strip().casefold()
         if normalized.get("freshness") == "current":
             normalized["freshness"] = "unknown"
+        next_check = normalized.get("next_check")
+        if (
+            isinstance(next_check, str)
+            and _MUTATION_WORD_PATTERN.search(next_check)
+        ):
+            # Executive narration cannot execute changes. Retain the cited
+            # finding but do not show a model-authored mutation instruction
+            # as the operator's next read-only check.
+            normalized["next_check"] = _SAFE_EXECUTIVE_NEXT_CHECK
         findings.append(normalized)
     return json.dumps({"findings": findings}, ensure_ascii=False)
 
