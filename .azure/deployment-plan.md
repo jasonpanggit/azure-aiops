@@ -1611,3 +1611,46 @@ change is in scope.
   gitignored `terraform.tfvars`, or deployment environment file. Validation
   must remain incomplete and deployment must not start until those canonical
   artifacts are supplied without using a dirty worktree.
+
+## PR #283 rollout — network Copilot ready-gate race fix (2026-09-23)
+
+- Root cause: `TopologyInsights` fired its `investigate-context` Copilot fetch
+  before the Network page's `gaps`/`findings`/`bypass` queries resolved,
+  producing a snapshot with only 2 mandatory `coverage` evidence rows and zero
+  detail rows. Confirmed independently by tracing `page.tsx`,
+  `TopologyInsights.tsx`, and `page-adapters.ts` before Topology's own fix
+  arrived; the diagnosis matches exactly.
+- Fix: PR #283 (`fix/network-copilot-ready-gate`), head
+  `d949b3d5a5ea0162c2aa2b4594425a9cc8f8c684`, adds a `ready` prop to
+  `TopologyInsights` (default `true`) computed in `network/page.tsx` as
+  "topology + gaps + findings + bypass all have data and none are loading."
+  The fetch effect short-circuits (stays `loading=true`, no API call) while
+  `!ready`. Web-only change (4 files, +134/-1).
+- Independent validation (isolated worktree, not just owner report):
+  `npx tsc --noEmit` clean; `npx eslint` clean on the 4 touched files;
+  `npx vitest run src/components/network src/app/network/page.test.tsx` → 6
+  files / 147 tests passed; `npm run build` (production) succeeded.
+- Merge: squash-merged with a head-SHA guard
+  (`gh pr merge 283 --squash --match-head-commit d949b3d5a...`) as
+  `0842f461abaf992c316f3fc2ec36efe17c61de70` on `main`.
+- Build: `az acr build` for `aiops-web` only (API unchanged), registry
+  `aiopsdevacrg6ludc`, run `cr117`, tag
+  `network-copilot-ready-0842f461a-20260923T132458Z`, digest
+  `sha256:ad3e39dfe5479c5adf12c4b3c4e455f95bf722d0c87fc7e534d00c7a96a5aea4`,
+  built from the exact merge commit in an isolated worktree
+  (`web/` build context, `NEXT_PUBLIC_ENTRA_*` build-args from `web/.env.local`).
+- Deploy: `az containerapp update --name aiops-dev-web --image
+  aiopsdevacrg6ludc.azurecr.io/aiops-web:network-copilot-ready-0842f461a-20260923T132458Z`.
+  New revision `aiops-dev-web--0000246` auto-promoted (single-revision mode),
+  Healthy, Active, Traffic=100%. Prior `aiops-dev-web--pr282-de46dff0-r1`
+  remains Active, Traffic=0, Healthy (not deprovisioned).
+- Smoke checks (unauthenticated): `GET /api/config` → 200; `GET /network` →
+  200.
+- API unchanged: `aiops-dev-api--pr282-e2314f5d-r1` remains Healthy at 100%
+  traffic; `aiops-dev-api--pr281-7975c091-r1` rollback remains Healthy at 0%
+  traffic, preserved pending PR #283 acceptance re-run.
+- Next: awaiting Topology's authenticated Playwright re-run confirming the
+  first `investigate-context` request includes `network/gaps` /
+  `network/rule-findings` / `network/firewall-bypass` evidence rows and
+  narration names specific resources with `retained:` evidence ids. On PASS,
+  release the PR #281 API rollback hold per deployment policy.
