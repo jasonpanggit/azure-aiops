@@ -14,8 +14,16 @@ interface TopologyInsightsProps {
 
 function executiveQuestion(selection?: NetworkCopilotSelection | null): string {
   const subject = selection?.node ?? selection?.edge;
+  const instructions = [
+    "Name the specific affected resources and the concrete gaps or rule findings that drive the risk, rather than only aggregate counts.",
+    "For each material gap, state the observed issue and the recommended remediation carried in that evidence.",
+    "Close with the residual uncertainty and the next read-only check.",
+  ];
   if (!subject) {
-    return "Provide an executive summary grounded only in this bounded Network topology snapshot. Explain the most important observed topology, risk, uncertainty, and next read-only check.";
+    return [
+      "Provide an executive summary grounded only in this bounded Network topology snapshot.",
+      ...instructions,
+    ].join(" ");
   }
   const selector = selection?.node?.id ?? selection?.edge?.id ?? "";
   return [
@@ -23,7 +31,7 @@ function executiveQuestion(selection?: NetworkCopilotSelection | null): string {
     `Selected label: ${subject.label}.`,
     `Selected kind: ${subject.kind}.`,
     `Selected selector: ${selector}.`,
-    "Explain the most important observed topology, risk, uncertainty, and next read-only check.",
+    ...instructions,
   ].join(" ");
 }
 
