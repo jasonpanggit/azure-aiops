@@ -177,3 +177,23 @@ def test_read_only_check_can_verify_whether_remediation_was_applied():
         json.dumps({"findings": [finding]}),
         evidence_refs={"retained:acr-gap"},
     ) == [finding]
+
+
+def test_executive_uncertainty_can_describe_pending_mutation_state():
+    finding = {
+        "finding_id": "registry-exposure",
+        "summary": "Evidence recommends: create a private endpoint for demoacr.",
+        "evidence_refs": ["retained:acr-gap"],
+        "confidence": "high",
+        "freshness": "fresh",
+        "uncertainty": [
+            "The snapshot does not prove whether the private endpoint was created."
+        ],
+        "actionable": False,
+        "next_check": "Review the cited evidence before any governed change.",
+    }
+
+    assert validate_executive_synthesis(
+        json.dumps({"findings": [finding]}),
+        evidence_refs={"retained:acr-gap"},
+    ) == [finding]

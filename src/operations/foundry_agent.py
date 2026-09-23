@@ -326,13 +326,13 @@ def parse_specialist_findings(
         if not isinstance(finding["summary"], str) or not finding["summary"].strip():
             raise FoundryAgentError(f"{agent_id} finding summary is required")
         
-        # Describing remediation is not executing it. Only the executive
-        # narrative gets this exception; next_check and uncertainty stay strict.
+        # Describing remediation or residual uncertainty is not executing it.
+        # Only the operator-facing next_check remains mutation-guarded for
+        # executive synthesis; the adapter normalizes unsafe next checks before
+        # validation.
         mutation_fields = finding
         if allow_remediation_summary and agent_id == EXECUTIVE_SPECIALIST_ID:
-            mutation_fields = {
-                key: value for key, value in finding.items() if key != "summary"
-            }
+            mutation_fields = {"next_check": finding.get("next_check")}
         text_values = json.dumps(mutation_fields, ensure_ascii=False).casefold()
         if _MUTATION_WORD_PATTERN.search(text_values):
             raise FoundryAgentError(f"{agent_id} specialist output contains mutation instructions")
