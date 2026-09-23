@@ -200,6 +200,52 @@ describe("TopologyInsights", () => {
     expect(onAskFollowUp).toHaveBeenCalledTimes(1);
   });
 
+  it("waits for a usable page snapshot before asking Copilot", async () => {
+    const { rerender } = render(
+      <TopologyInsights
+        snapshot={snapshot}
+        ready={false}
+        onAskFollowUp={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Reviewing the bounded topology evidence…")).toBeInTheDocument();
+    expect(mocks.investigateContext).not.toHaveBeenCalled();
+
+    mocks.investigateContext.mockResolvedValue(envelope(result()));
+    rerender(
+      <TopologyInsights
+        snapshot={{
+          ...snapshot,
+          evidence: [{
+            evidence_id: "gap-1",
+            section: "network/gaps",
+            resource_id:
+              "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe1",
+            status: "ok",
+            data: {
+              source_key: "gap-1",
+              claim_type: "inspection_gap",
+              issue: "Private endpoint has no private DNS zone group.",
+              recommendation: "Attach a private DNS zone group.",
+            },
+          }],
+        }}
+        ready
+        onAskFollowUp={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(mocks.investigateContext).toHaveBeenCalledTimes(1));
+    expect(mocks.investigateContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidence: expect.arrayContaining([
+          expect.objectContaining({ section: "network/gaps" }),
+        ]),
+      }),
+    );
+  });
+
   it("ignores a stale overlapping response", async () => {
     const first = deferred<ReturnType<typeof envelope>>();
     const second = deferred<ReturnType<typeof envelope>>();

@@ -928,6 +928,75 @@ describe("Network page honest totals and server pagination", () => {
     ).toBeTruthy();
   });
 
+  it("does not submit the initial empty Copilot snapshot before network findings load", async () => {
+    const detailedSnapshot = {
+      version: "1",
+      page_kind: "network",
+      page_id: "network-topology",
+      selected_resources: [],
+      filters: {},
+      freshness: [],
+      scope: { declared: {}, authorized: true },
+      evidence: [{
+        evidence_id: "gap-1",
+        section: "network/gaps",
+        resource_id:
+          "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe1",
+        status: "ok",
+        data: {
+          source_key: "gap-1",
+          claim_type: "inspection_gap",
+          issue: "Private endpoint has no private DNS zone group.",
+          recommendation: "Attach a private DNS zone group.",
+        },
+      }],
+      question: "Summarize the visible page evidence.",
+      rechecks: [],
+    };
+    mocks.buildNetworkCopilotContext.mockImplementation((input) => ({
+      requestedScope: {},
+      snapshot:
+        input.topology && input.gaps && input.findings && input.bypass
+          ? detailedSnapshot
+          : {
+              ...detailedSnapshot,
+              evidence: [],
+            },
+      starterQuestions: [],
+    }));
+    mocks.investigateContext.mockResolvedValue({
+      data: {
+        page_kind: "network",
+        page_id: "network-topology",
+        snapshot_hash: "snapshot-1",
+        stages: [],
+        findings: [],
+        tool_calls: [],
+        synthesis_mode: "foundry",
+        synthesis_agent: "network",
+        synthesis: { mode: "foundry", narration: "Named resource gap." },
+        warnings: [],
+      },
+      evidence: [],
+      scope: {},
+      warnings: [],
+    });
+
+    renderPage();
+
+    expect(mocks.investigateContext).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.investigateContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evidence: expect.arrayContaining([
+            expect.objectContaining({ section: "network/gaps" }),
+          ]),
+        }),
+      ),
+    );
+    expect(mocks.investigateContext).toHaveBeenCalledTimes(1);
+  });
+
   it("passes graph selection to the adapter and the top insight request", async () => {
     const user = userEvent.setup();
     renderPage();

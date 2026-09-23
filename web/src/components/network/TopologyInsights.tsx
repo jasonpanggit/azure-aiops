@@ -9,6 +9,7 @@ import type { CopilotContextResult, CopilotPageSnapshot } from "@/lib/types";
 interface TopologyInsightsProps {
   snapshot: CopilotPageSnapshot;
   selection?: NetworkCopilotSelection | null;
+  ready?: boolean;
   onAskFollowUp: () => void;
 }
 
@@ -48,6 +49,7 @@ function deterministicSummary(result: CopilotContextResult): string {
 export function TopologyInsights({
   snapshot,
   selection = null,
+  ready = true,
   onAskFollowUp,
 }: TopologyInsightsProps) {
   const [refreshGeneration, setRefreshGeneration] = useState(0);
@@ -63,6 +65,11 @@ export function TopologyInsights({
   const requestKey = JSON.stringify(requestSnapshot);
 
   useEffect(() => {
+    if (!ready) {
+      setLoading(true);
+      setError(null);
+      return undefined;
+    }
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
     setLoading(true);
@@ -86,7 +93,7 @@ export function TopologyInsights({
         requestGeneration.current += 1;
       }
     };
-  }, [refreshGeneration, requestKey]);
+  }, [ready, refreshGeneration, requestKey]);
 
   const narration = result?.synthesis?.narration?.trim()
     || result?.synthesis?.text?.trim()

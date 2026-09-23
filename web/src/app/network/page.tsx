@@ -270,6 +270,16 @@ export default function NetworkPage() {
     bypass: bypass.data,
     selection: topologySelection,
   });
+  const networkCopilotReady = Boolean(
+    topology.data &&
+      gaps.data &&
+      findings.data &&
+      bypass.data &&
+      !topology.loading &&
+      !gaps.loading &&
+      !findings.loading &&
+      !bypass.loading,
+  );
 
   return (
     <div className="page-container">
@@ -290,6 +300,7 @@ export default function NetworkPage() {
       <TopologyInsights
         snapshot={networkCopilot.snapshot}
         selection={topologySelection}
+        ready={networkCopilotReady}
         onAskFollowUp={() => setCopilotOpen(true)}
       />
 
