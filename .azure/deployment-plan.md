@@ -1970,3 +1970,70 @@ change is in scope.
   next-checks/uncertainty render separately (not collapsed), retained
   citations expandable, honest fallback warning text, zero console
   errors. Do not release the `pr287` rollback hold until that PASSes.
+
+## PR #289 — mutation-word-boundary false-positive fix (API-only)
+
+- Context: Topology's post-PR288 authenticated acceptance run FAILed
+  reliability — only 3/5 `/network` calls synthesized via Foundry, 2/5
+  incorrectly fell back to deterministic/degraded, misclassified as
+  `foundry_agent_error`/`provider_error`. UI/rendering criteria (structured
+  claims, next-checks, uncertainty, expandable citations, honest fallback
+  warning, zero console errors) all PASSed on PR288; only the reliability
+  percentage was flagged. No rollback mutation was requested or made.
+- Root cause: `_MUTATION_WORDS` substring matching in
+  `parse_specialist_findings` rejected valid Foundry executive summaries
+  whose read-only wording contained a mutation-word stem as a substring of
+  a longer word (e.g. `apply` inside `applied`, as in "Verify whether the
+  recommendation has been applied").
+- Fix: Topology supplied a 2-file patch (`src/operations/foundry_agent.py`
+  + `tests/test_network_retained_synthesis.py`) switching mutation-word
+  detection to a compiled word-boundary regex
+  `\b(?:delete|create|update|modify|execute|apply|remediate)\b`
+  (case-insensitive), which still correctly rejects genuine imperative
+  mutation instructions. Persisted at
+  `.copilot/session-state/fb7534f6-eadb-4b75-9b63-b712b1794cef/files/pr288-followup-word-boundary.patch`
+  (SHA-256 `0783ff5d...`).
+- Independent validation (before merge): applied cleanly
+  (`git apply --check` → 0), 60/60 focused backend tests passed
+  (`test_network_retained_synthesis.py`,
+  `test_foundry_narration_provider_selection.py`, `test_foundry_agent.py`,
+  `test_page_evidence_material_claims.py`,
+  `test_api_copilot_context_bridge.py`), Ruff clean, `compileall` clean.
+- PR: opened **PR #289** from branch `fix/mutation-word-boundary-detection`,
+  head `db999a67d5bf6220a4c59ca8811d1fd21c94fdad`. Topology confirmed
+  byte-for-byte match against their persisted patch and authorized
+  proceeding. GitHub Actions again failed at workflow admission (all jobs
+  zero-execution in 2-4s — known billing/spending-limit infra issue,
+  non-blocking per established policy).
+- Merge: head-SHA guarded
+  (`gh pr merge 289 --squash --match-head-commit
+  db999a67d5bf6220a4c59ca8811d1fd21c94fdad --admin`) →
+  `3de259e3c1a4392e6b7284004d93ac34d2e03ac7` on `main`.
+- Build: API image only (no web changes in this PR), built from the exact
+  merge commit in an isolated worktree, registry `aiopsdevacrg6ludc`. Run
+  `cr11e`, tag `mutation-word-boundary-3de259e3c-20260923T175823Z`, digest
+  `sha256:c611c145b46d11c2b5fdffb90bd3c57bea503218640c855e974fbe7212334878`,
+  `--build-arg AIOPS_SOURCE_REVISION=3de259e3c1a4392e6b7284004d93ac34d2e03ac7`.
+- Deploy: created `aiops-dev-api--pr289-c611c145` at 4 CPU / 8 GiB
+  (unchanged sizing), 0% traffic. Hit the same `api-d4` node-capacity
+  pattern; this time with only 3 active revisions and `pr287` under an
+  explicit Topology preservation hold (pending their reliability
+  re-acceptance) plus `pr288` still serving live 100% traffic, there was no
+  safe revision to deactivate. Confirmed `api-d4` workload profile had
+  headroom (`currentCount: 3`, `maximumCount: 4`) and continued polling
+  without any capacity mutation; the candidate reached
+  Healthy/RunningAtMaxScale on its own (~90s). Smoke-checked `/health` and
+  `/ready` directly against the revision FQDN → both 200. Promoted to 100%
+  traffic (`az containerapp ingress traffic set`), dropping `pr288` to 0%;
+  `pr287` left untouched at 0% (rollback hold preserved throughout).
+- No web changes/redeploy needed for this PR (API-only fix).
+- Final revision state: API `pr287` (Healthy, 0%, preserved rollback hold —
+  pending Topology's reliability re-acceptance), `pr288` (Healthy, 0%,
+  immediate prior state), `pr289` (Healthy, 100%, live). Web unchanged:
+  `0000247` (Healthy, 100%, live).
+- Smoke-checked production ingress `/health` and `/ready` → both 200.
+- Next: notifying Topology of the PR289 deployment and requesting their
+  repeated authenticated `/network` reliability acceptance re-run —
+  target 5/5 Foundry synthesis calls (up from the 3/5 that failed on
+  PR288), plus re-confirmation of the UI/rendering criteria already
+  PASSed. Do not release the `pr287` rollback hold until that PASSes.
