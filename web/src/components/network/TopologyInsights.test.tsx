@@ -118,6 +118,74 @@ describe("TopologyInsights", () => {
     expect(screen.getByText("One unhealthy peering is present.")).toBeInTheDocument();
   });
 
+  it("renders structured executive claims, read-only checks, uncertainty and citations", async () => {
+    mocks.investigateContext.mockResolvedValue(envelope(result({
+      synthesis: {
+        narration: "Flattened text must not duplicate the structured claims.",
+        executive: {
+          mode: "foundry",
+          agent: "executive-summary-agent",
+          claims: [{
+            finding_id: "acr",
+            summary: "**demoacr** is publicly reachable.\n\nEvidence recommends a private endpoint.",
+            next_check: "Verify private endpoint coverage for demoacr.",
+            uncertainty: ["Cross-subscription coverage is incomplete."],
+            evidence_refs: ["retained:acr"],
+            confidence: "medium",
+            freshness: "partial",
+            actionable: false,
+          }],
+        },
+      },
+    })));
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByRole("list", { name: "Topology findings" })).toBeInTheDocument();
+    expect(screen.getByText("demoacr").tagName).toBe("STRONG");
+    expect(screen.getByText("Evidence recommends a private endpoint.")).toBeInTheDocument();
+    expect(screen.getByText("Next read-only check")).toBeInTheDocument();
+    expect(screen.getByText("Verify private endpoint coverage for demoacr.")).toBeInTheDocument();
+    expect(screen.getByText("Cross-subscription coverage is incomplete.")).toBeInTheDocument();
+    expect(screen.getByText("retained:acr")).toBeInTheDocument();
+    expect(screen.getByText("Agent: executive-summary-agent")).toBeInTheDocument();
+    expect(screen.queryByText("Flattened text must not duplicate the structured claims.")).not.toBeInTheDocument();
+  });
+
+  it("shows the executive rejection warning without labeling fallback as grounded", async () => {
+    mocks.investigateContext.mockResolvedValue(envelope(result({
+      synthesis: {
+        narration: "Deterministic cited findings.",
+        executive: {
+          mode: "deterministic",
+          warning: "Foundry narration failed response validation; deterministic cited evidence is shown instead.",
+          provider_error_reason: "response_contract",
+        },
+      },
+    })));
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByText("Evidence-only fallback")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("failed response validation");
+    expect(screen.queryByText("Grounded LLM insight")).not.toBeInTheDocument();
+  });
+
+  it("renders legacy narration paragraphs and lists without interpreting HTML", async () => {
+    mocks.investigateContext.mockResolvedValue(envelope(result({
+      synthesis: {
+        narration: "Overview with _emphasis_ and demo_registry_one.\n\n- First gap\n- Second gap\n\n<script>alert(1)</script>",
+      },
+    })));
+    const { container } = render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    await screen.findByText("Grounded LLM insight");
+    expect(screen.getByRole("list")).toBeInTheDocument();
+    expect(screen.getByText("First gap").tagName).toBe("LI");
+    expect(screen.getByText("emphasis").tagName).toBe("EM");
+    expect(container).toHaveTextContent("demo_registry_one");
+    expect(screen.getByText("<script>alert(1)</script>")).toBeInTheDocument();
+    expect(container.querySelector("script")).toBeNull();
+  });
+
   it("renders the deterministic Network narration when Foundry narration times out (planner_unavailable fallback)", async () => {
     // Live production regression: HTTP 200, status=partial, synthesis.mode=deterministic,
     // policy_status=fallback, fallback_reason=planner_unavailable, uncertainty noting

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from operations.foundry_agent import AgentAnswer
+import pytest
+
+from operations.foundry_agent import (
+    AgentAnswer,
+    FoundryResponseContractError,
+    validate_executive_synthesis,
+)
 from operations.orchestration_contract import EvidenceSnapshotV2, SnapshotCoverage
 from operations.orchestration_service import (
     OrchestrationService,
@@ -11,7 +17,10 @@ from operations.orchestration_service import (
 from operations.tools import STATUS_OK
 
 
-def test_network_page_retained_evidence_is_sent_to_executive_synthesis() -> None:
+@pytest.mark.parametrize("invalid_next_check", [False, True])
+def test_network_page_retained_evidence_is_sent_to_executive_synthesis(
+    invalid_next_check,
+) -> None:
     snapshot = EvidenceSnapshotV2(
         page_kind="network",
         page_id="network-topology",
@@ -37,7 +46,7 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis() -> None
                 "no private endpoint targets it."
             ),
             "recommendation": (
-                "Plan a private endpoint for 'aiopsdemoacr' and disable its "
+                "Create a private endpoint for 'aiopsdemoacr' and disable its "
                 "public network access."
             ),
         },
@@ -71,7 +80,11 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis() -> None
                         "uncertainty": [],
                         "freshness": "fresh",
                         "actionable": False,
-                        "next_check": "Review the cited retained Network row.",
+                        "next_check": (
+                            "Create a private endpoint now."
+                            if invalid_next_check
+                            else "Review the cited retained Network row."
+                        ),
                         "summary": retained_finding["summary"],
                     }]
                 }),
@@ -100,12 +113,48 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis() -> None
         finding["finding_id"].startswith("network-page:")
         and finding["evidence_refs"] == ["retained:acr-gap"]
         and "aiopsdemoacr" in finding["summary"]
-        and "Plan a private endpoint" in finding["summary"]
+        and "Create a private endpoint" in finding["summary"]
         for finding in coordinator.context["findings"]
     )
+    if invalid_next_check:
+        assert synthesis.status == "degraded"
+        assert synthesis.mode == "deterministic"
+        assert synthesis.degraded_reason == "response_contract"
+        assert synthesis.provider_error_reason == "response_contract"
+        assert synthesis.provider_error_class == "contract_error"
+        assert "failed response validation" in synthesis.warning
+        assert synthesis.used_retained_evidence == retained
+        assert synthesis.claims
+        return
     assert synthesis.status == "synthesized"
     assert synthesis.claims[0]["evidence_refs"] == ["retained:acr-gap"]
     assert "aiopsdemoacr" in synthesis.narration
-    assert "Plan a private endpoint" in synthesis.narration
+    assert "Create a private endpoint" in synthesis.narration
     assert synthesis.used_retained_evidence == retained
     assert _executive_synthesis_payload(synthesis)["used_retained_evidence"] == retained
+
+
+@pytest.mark.parametrize("invalid", [
+    {"next_check": "Create a private endpoint now."},
+    {"next_check": "Execute az network private-endpoint create."},
+    {"evidence_refs": ["retained:invented"]},
+    {"confidence": "certain"},
+    {"summary": ""},
+])
+def test_remediation_narration_keeps_citations_and_read_only_checks_strict(invalid):
+    finding = {
+        "finding_id": "registry-exposure",
+        "summary": "Evidence recommends: create a private endpoint for demoacr.",
+        "evidence_refs": ["retained:acr-gap"],
+        "confidence": "high",
+        "freshness": "fresh",
+        "uncertainty": [],
+        "actionable": False,
+        "next_check": "Verify private endpoint coverage for demoacr.",
+        **invalid,
+    }
+    with pytest.raises(FoundryResponseContractError):
+        validate_executive_synthesis(
+            json.dumps({"findings": [finding]}),
+            evidence_refs={"retained:acr-gap"},
+        )

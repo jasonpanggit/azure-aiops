@@ -15,7 +15,7 @@ interface InlineToken {
  * pulling in a full markdown/remark dependency chain for one chat surface. */
 function tokenizeInline(line: string): InlineToken[] {
   const tokens: InlineToken[] = [];
-  const pattern = /(\*\*(.+?)\*\*|`(.+?)`|\*(.+?)\*|_(.+?)_)/g;
+  const pattern = /(\*\*(.+?)\*\*|`(.+?)`|\*(.+?)\*|(?<!\w)_(.+?)_(?!\w))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(line)) !== null) {
