@@ -70,10 +70,10 @@ def test_query_gold_grounding_retries_http_errors_then_raises_unavailable(
         )
 
     assert attempts["count"] == MAX_RETRIES + 1
-    assert sleeps == [0.5, 1.0]
+    assert sleeps == []
 
 
-def test_query_gold_grounding_retries_json_decode_error_then_recovers(
+def test_query_gold_grounding_fails_closed_on_json_decode_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sleeps: list[float] = []
@@ -95,17 +95,20 @@ def test_query_gold_grounding_retries_json_decode_error_then_recovers(
     monkeypatch.setattr("fabric.gold_grounding_client.httpx.post", fake_post)
     monkeypatch.setattr("fabric.gold_grounding_client.time.sleep", lambda seconds: sleeps.append(seconds))
 
-    result = query_gold_grounding(
-        workspace_id="workspace-id",
-        data_agent_id="agent-id",
-        tool_name="tool",
-        question="q",
-        token="delegated-token",
-    )
+    with pytest.raises(
+        GoldGroundingUnavailable,
+        match="unreachable after 1 attempts",
+    ):
+        query_gold_grounding(
+            workspace_id="workspace-id",
+            data_agent_id="agent-id",
+            tool_name="tool",
+            question="q",
+            token="delegated-token",
+        )
 
-    assert result["isError"] is False
-    assert calls["count"] == 2
-    assert sleeps == [0.5]
+    assert calls["count"] == 1
+    assert sleeps == []
 
 
 def test_query_gold_grounding_raises_immediately_on_mcp_is_error(

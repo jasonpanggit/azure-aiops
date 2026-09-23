@@ -7,8 +7,8 @@ import time
 
 import httpx
 
-MCP_TOOLS_CALL_TIMEOUT_SECONDS = 30.0
-MAX_RETRIES = 2
+MCP_TOOLS_CALL_TIMEOUT_SECONDS = 20.0
+MAX_RETRIES = 0
 
 
 class GoldGroundingUnavailable(RuntimeError):

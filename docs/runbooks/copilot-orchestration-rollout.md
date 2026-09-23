@@ -86,6 +86,43 @@ or connection IDs fail. Credentials must still come from the approved secret
 mechanism. This output no longer carries canary/default authorization manifest
 SHA-256 values because the code-bound rollout authorization gate is retired.
 
+## Fabric IQ grounding through Fabric Data Agent
+
+The browser is a thin client for Copilot investigations. It sends the question,
+authorized scope, opaque thread/session continuity, and optional selected
+identifiers as untrusted hints. It does **not** send resource inventories,
+findings, topology, or ontology snapshots as operational truth. Operations
+Copilot resolves current context on the server through its governed tools.
+
+Fabric IQ remains the semantic authority for ontology, relationships, business
+meaning, and immutable generation lineage. The Fabric Data Agent is the
+read-only natural-language grounding provider over that governed semantic
+model; it does not replace Operations Copilot or the specialist agents.
+Specialists continue to use the shared `fabric_iq_relationships`,
+`fabric_iq_topology`, and `fabric_iq_policy_context` contracts. The provider
+binding can be enabled with:
+
+| Environment variable | Purpose |
+|---|---|
+| `AIOPS_ENABLE_FABRIC_IQ=true` | Enables the governed Fabric IQ tool adapter. |
+| `AIOPS_ENABLE_FABRIC_DATA_AGENT_GROUNDING=true` | Binds Fabric IQ tool reads to the Fabric Data Agent. |
+| `FABRIC_GOLD_GROUNDING_AGENT_ID` | Required Fabric Data Agent item ID. |
+| `FABRIC_GOLD_GROUNDING_TOOL_NAME` | Optional MCP tool name; defaults to `DataAgent_AI_Ops_Data_Agent`. |
+
+Each request includes the server-resolved authorized scope and immutable
+ontology generation. Structured findings must cite governed Gold rows, pass
+scope validation, and return truthful `fabric-data-agent` provenance. Missing
+generation, degraded findings, scope-invalid findings, transport errors, and
+malformed responses fail closed; the transport permits one bounded 20-second
+attempt.
+
+The current token is acquired from the runtime credential. That is a service
+identity, not evidence of end-user delegation. Production activation therefore
+requires application-side scope filtering and should use Fabric RLS/OBO when
+supported. The Data Agent has no authority to mutate resources, approve
+remediation, accept ontology proposals, publish generations, or perform
+rollback. Those remain deterministic, audited application workflows.
+
 The candidate artifact binds all twelve specialist agent names and immutable
 provider version IDs to the existing full `operations-mcp` Foundry
 project-connection resource ID. Live parity lists the project's actual

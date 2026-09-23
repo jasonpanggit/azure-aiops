@@ -21,7 +21,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import cache
@@ -37,8 +37,10 @@ from fabric.config import (
     OntologyRuntimeConfig,
 )
 from fabric.dataset_mapper import ExposureOntologyMapper, InventoryDatasetMapper
+from fabric.gold_grounding_client import query_gold_grounding
 from fabric.runtime import FabricRuntime, build_runtime
 from fabric.sql_endpoint import require_exposure_ready
+from fabric_pipelines.gold_grounding_contract import parse_gold_grounded_findings
 from intelligence.governance import EnterpriseSettingsStore
 from intelligence.health.service import ResourceHealthService
 from intelligence.incident.incident_intelligence import IncidentIntelligence
@@ -3222,6 +3224,54 @@ def _fabric_runtime_from_environment() -> FabricRuntime | None:
 #: surface is wired (``fabric_pipelines/ontology_binding.py``), that path
 #: gets its own provenance value rather than reusing this one.
 _ONTOLOGY_PROJECTION_PROVENANCE = "onelake-ontology-projection"
+_FABRIC_DATA_AGENT_PROVENANCE = "fabric-data-agent"
+
+
+def _data_agent_findings(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    content = result.get("content")
+    if not isinstance(content, list):
+        raise TypeError("Fabric Data Agent returned no content")
+    lines = [
+        str(item.get("text") or "")
+        for item in content
+        if isinstance(item, Mapping) and str(item.get("text") or "").strip()
+    ]
+    findings = parse_gold_grounded_findings(
+        "\n".join(lines),
+        tool_call_id="fabric-iq-grounding",
+    )
+    if not findings:
+        raise ValueError("Fabric Data Agent returned no structured findings")
+    if any(finding.degraded or not finding.scope_ok for finding in findings):
+        raise PermissionError("Fabric Data Agent evidence failed scope validation")
+    return [finding.model_dump(mode="json") for finding in findings]
+
+
+def _data_agent_findings_in_scope(
+    findings: Sequence[Mapping[str, Any]],
+    scope: Scope,
+) -> bool:
+    """Verify Data Agent resource identities against enforceable scope axes."""
+    if set(scope.dimensions) - {"subscription"}:
+        return False
+    subscriptions = scope.values("subscription")
+    if not subscriptions:
+        return scope.is_unrestricted()
+    for finding in findings:
+        resource_ids = finding.get("resource_ids")
+        if not isinstance(resource_ids, list) or not resource_ids:
+            return False
+        for resource_id in resource_ids:
+            segments = [segment for segment in str(resource_id).split("/") if segment]
+            normalized_segments = [segment.casefold() for segment in segments]
+            try:
+                subscription_index = normalized_segments.index("subscriptions")
+                subscription_id = segments[subscription_index + 1].casefold()
+            except (ValueError, IndexError):
+                return False
+            if subscription_id not in subscriptions:
+                return False
+    return True
 
 
 def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
@@ -3240,11 +3290,59 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
     runtime = _fabric_runtime_from_environment()
     if runtime is None:
         return None
+    data_agent_id = os.environ.get("FABRIC_GOLD_GROUNDING_AGENT_ID", "").strip()
+    data_agent_tool = (
+        os.environ.get(
+            "FABRIC_GOLD_GROUNDING_TOOL_NAME",
+            "DataAgent_AI_Ops_Data_Agent",
+        ).strip()
+        or "DataAgent_AI_Ops_Data_Agent"
+    )
+    use_data_agent = _truthy("AIOPS_ENABLE_FABRIC_DATA_AGENT_GROUNDING")
+    if use_data_agent and not data_agent_id:
+        return None
+    credential = build_credential(runtime.config.auth) if use_data_agent else None
 
     def query(kind: str, args: dict[str, Any], scope: Any) -> dict[str, Any]:
         subject = str(args.get("subject") or "").strip()
         if not subject:
             raise ValueError("Ontology enrichment subject is required")
+        if use_data_agent:
+            generation_id = str(args.get("generation_id") or "").strip()
+            if not generation_id:
+                raise ValueError(
+                    "Fabric Data Agent grounding requires an immutable generation"
+                )
+            scoped_question = (
+                "Return line-delimited structured findings only. "
+                f"Review {kind} context for {subject}. "
+                f"Immutable generation: {generation_id}. "
+                f"Authorized scope: {json.dumps(scope.to_dict(), sort_keys=True)}."
+            )
+            token = credential.get_token(
+                "https://api.fabric.microsoft.com/.default"
+            ).token
+            result = query_gold_grounding(
+                workspace_id=runtime.config.workspace_id,
+                data_agent_id=data_agent_id,
+                tool_name=data_agent_tool,
+                question=scoped_question,
+                token=token,
+            )
+            findings = _data_agent_findings(result)
+            if not _data_agent_findings_in_scope(findings, scope):
+                raise PermissionError(
+                    "Fabric Data Agent evidence is outside the authorized scope"
+                )
+            return {
+                "data": {
+                    "findings": findings,
+                    "generation_id": generation_id,
+                },
+                "freshness": "generation-bound",
+                "authorization": "application-scope-checked",
+                "provenance": _FABRIC_DATA_AGENT_PROVENANCE,
+            }
         result = runtime.service.ontology_query(
             f"{kind} context for {subject}", entity=kind
         )
@@ -3257,7 +3355,12 @@ def _load_fabric_iq_adapter() -> FabricIQToolAdapter | None:
             "provenance": _ONTOLOGY_PROJECTION_PROVENANCE,
         }
 
-    return FabricIQToolAdapter(query=query, source=_ONTOLOGY_PROJECTION_PROVENANCE)
+    source = (
+        _FABRIC_DATA_AGENT_PROVENANCE
+        if use_data_agent
+        else _ONTOLOGY_PROJECTION_PROVENANCE
+    )
+    return FabricIQToolAdapter(query=query, source=source)
 
 
 def _fabric_network_service(runtime: FabricRuntime) -> NetworkIntelligenceService:

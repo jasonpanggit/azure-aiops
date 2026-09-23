@@ -16,6 +16,43 @@ vi.mock("@/lib/copilot/page-adapters", async () => {
   const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>("@/lib/copilot/page-adapters");
   return { ...actual, investigateCanonical };
 });
+vi.mock("@/lib/services", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
+  return {
+    ...actual,
+    copilotApi: {
+      ...actual.copilotApi,
+      investigate: (
+        question: string,
+        scope: Record<string, string[]>,
+        options: {
+          sessionId?: string;
+          tool?: string;
+          toolArguments?: Record<string, unknown>;
+        },
+      ) => investigateCanonical(
+        {
+          contract_version: "1",
+          question,
+          requested_scope: scope,
+          ...(options.sessionId ? { thread_id: options.sessionId } : {}),
+          ...(options.tool
+            ? {
+                hint: {
+                  specialist_id: options.tool.startsWith("cve")
+                    ? "vulnerability"
+                    : "server-routed",
+                  tool: options.tool,
+                  arguments: options.toolArguments ?? {},
+                },
+              }
+            : {}),
+        },
+        scope,
+      ),
+    },
+  };
+});
 
 const snapshot = {
   version: "1" as const,
@@ -189,7 +226,7 @@ describe("CopilotDrawer", () => {
     };
   }
 
-  it("submits the exact typed page snapshot and renders deterministic citations", async () => {
+  it("keeps the page snapshot local and renders server-grounded citations", async () => {
     const result = canonicalResult(
       "thr-ffffffffffffffffffffffffffffffff",
       "server:network",
@@ -221,10 +258,6 @@ describe("CopilotDrawer", () => {
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
       expect.objectContaining({
         question: "What is wrong?",
-        snapshot: expect.objectContaining({
-          version: "2",
-          page_kind: "network",
-        }),
       }),
       {},
     ));
@@ -237,7 +270,7 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("server:network")).toBeVisible();
   });
 
-  it("normalizes integrated legacy snapshots and submits retained revision CAS", async () => {
+  it("keeps legacy snapshots local and submits retained opaque continuity", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
     const threadId = "thr-dddddddddddddddddddddddddddddddd";
@@ -278,28 +311,12 @@ describe("CopilotDrawer", () => {
       expect.objectContaining({
         contract_version: "1",
         thread_id: threadId,
-        expected_thread_revision: 4,
-        snapshot: expect.objectContaining({
-          version: "2",
-          page_kind: "remediation",
-          page_id: "remediation",
-          selected_entities: expect.any(Array),
-          filters: { tab: ["gaps"] },
-          query: "",
-          generation_id: expect.stringMatching(/^generation:[a-f0-9]{64}$/),
-          material_claims: expect.arrayContaining([
-            expect.objectContaining({
-              evidence_refs: ["network:gap:1"],
-              requires_complete_coverage: false,
-            }),
-          ]),
-        }),
       }),
       { subscription: ["sub-a"] },
     ));
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
-    expect(request.snapshot).not.toHaveProperty("scope");
-    expect(request.snapshot).not.toHaveProperty("question");
+    expect(request).not.toHaveProperty("snapshot");
+    expect(request).not.toHaveProperty("expected_thread_revision");
   });
 
   it("preserves first-turn compatibility by omitting thread CAS fields", async () => {
@@ -327,7 +344,7 @@ describe("CopilotDrawer", () => {
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
     expect(request).not.toHaveProperty("thread_id");
     expect(request).not.toHaveProperty("expected_thread_revision");
-    expect(request.snapshot.version).toBe("2");
+    expect(request).not.toHaveProperty("snapshot");
   });
 
   it("renders a duplicated backend warning only once", async () => {
@@ -1300,7 +1317,6 @@ describe("CopilotDrawer", () => {
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(2));
     expect(investigateCanonical.mock.calls[1][0]).toMatchObject({
       thread_id: "thr-22222222222222222222222222222222",
-      snapshot: canonicalSnapshot("software"),
     });
   });
 
@@ -1463,9 +1479,6 @@ describe("CopilotDrawer", () => {
         tool: "cve_detail",
         arguments: { cve_id: "CVE-2026-13221" },
       },
-      snapshot: expect.objectContaining({
-        page_id: "cve:CVE-2026-13221",
-      }),
     });
   });
 
@@ -1560,10 +1573,6 @@ describe("CopilotDrawer", () => {
           tool: "cve_detail",
           arguments: { cve_id: cveId },
         },
-        snapshot: expect.objectContaining({
-          page_id: `cve:${cveId}`,
-          selected_entities: cveSnapshot.selected_entities,
-        }),
       }),
       {},
     );
