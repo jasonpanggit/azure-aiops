@@ -10,7 +10,7 @@ import re
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -1178,6 +1178,120 @@ def deterministic_network_claims(
     return claims
 
 
+def retained_network_page_claims(
+    *,
+    snapshot: EvidenceSnapshotV2 | None,
+    retained_evidence: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Promote current retained Network page rows into cited findings.
+
+    The network_topology tool returns aggregate posture counts. The Network
+    page, however, already supplies resource-level gap/rule/firewall-bypass
+    rows with observed issues and recommended remediations. Keep those rows in
+    the same citation-closed synthesis channel as tool findings so the
+    executive narrator can name resources without inventing uncited detail.
+    """
+
+    if snapshot is None or snapshot.page_kind != "network":
+        return []
+    rows: list[Mapping[str, Any]] = []
+    for item in retained_evidence:
+        claim_type = str(item.get("claim_type") or "").casefold()
+        if claim_type not in {"network_gap", "rule_finding", "firewall_bypass"}:
+            continue
+        evidence_id = str(item.get("evidence_id") or "")
+        data = item.get("data")
+        if not evidence_id or not isinstance(data, Mapping):
+            continue
+        rows.append(item)
+    if not rows:
+        return []
+
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+    def row_key(item: Mapping[str, Any]) -> tuple[int, str, str]:
+        data = item.get("data")
+        assert isinstance(data, Mapping)
+        return (
+            severity_rank.get(str(item.get("severity") or "").casefold(), 4),
+            str(data.get("source_key") or data.get("rule_name") or ""),
+            str(item.get("evidence_id") or ""),
+        )
+
+    evidence_refs: list[str] = []
+    highlights: list[str] = []
+    for item in sorted(rows, key=row_key)[:8]:
+        data = item["data"]
+        assert isinstance(data, Mapping)
+        evidence_id = str(item.get("evidence_id") or "")
+        evidence_refs.append(evidence_id)
+        claim_type = str(item.get("claim_type") or "").casefold()
+        severity = str(item.get("severity") or "unknown").casefold()
+        resource = str(
+            data.get("resource_name")
+            or data.get("rule_name")
+            or data.get("name")
+            or item.get("resource_id")
+            or ""
+        ).strip()
+        issue = str(
+            data.get("issue")
+            or data.get("finding")
+            or data.get("title")
+            or ""
+        ).strip()
+        recommendation = str(data.get("recommendation") or "").strip()
+        prefix = {
+            "network_gap": "gap",
+            "rule_finding": "rule finding",
+            "firewall_bypass": "firewall bypass",
+        }.get(claim_type, "network finding")
+        subject = f"{resource}: " if resource else ""
+        next_step = (
+            f" Recommended remediation: {recommendation}"
+            if recommendation
+            else ""
+        )
+        highlights.append(
+            f"- {prefix} ({severity}) — {subject}{issue}.{next_step}"
+        )
+    if not evidence_refs:
+        return []
+
+    counts = Counter(str(item.get("claim_type") or "") for item in rows)
+    summary = (
+        "Network page evidence supplies resource-level findings: "
+        f"{counts.get('network_gap', 0)} gaps, "
+        f"{counts.get('rule_finding', 0)} rule findings, and "
+        f"{counts.get('firewall_bypass', 0)} firewall-bypass findings."
+    )
+    if highlights:
+        summary += "\n\n" + "\n".join(highlights)
+    uncertainty = (
+        []
+        if snapshot.coverage.complete
+        else ["Visible page coverage is incomplete."]
+    )
+    return [
+        {
+            "finding_id": (
+                "network-page:"
+                + hashlib.sha256("|".join(evidence_refs).encode()).hexdigest()[:24]
+            ),
+            "summary": summary[:2000],
+            "evidence_refs": evidence_refs,
+            "confidence": "high" if snapshot.coverage.complete else "medium",
+            "freshness": snapshot_claim_freshness(snapshot),
+            "uncertainty": uncertainty,
+            "actionable": False,
+            "next_check": (
+                "Review the cited retained Network page rows before changing "
+                "private endpoint, firewall, route, or NSG policy."
+            ),
+        }
+    ]
+
+
 class OrchestrationService:
     """Execute a fully validated plan and persist only authorized result state."""
 
@@ -2250,6 +2364,10 @@ class OrchestrationService:
             tool_results=tool_results,
             selected_resource_ids=selected_resource_ids,
         )
+        network_page_claims = retained_network_page_claims(
+            snapshot=snapshot,
+            retained_evidence=current_retained_evidence,
+        )
         remediation_claims = self._deterministic_remediation_claims(
             question,
             snapshot=snapshot,
@@ -2488,11 +2606,12 @@ class OrchestrationService:
             )
         )
         deterministic_claims = (
-            [*page_claims, *network_claims][:8]
+            [*page_claims, *network_page_claims, *network_claims][:8]
             if highest_risk_compliance and page_claims
             else (
                 cve_claims
                 or patch_claims
+                or network_page_claims
                 or network_claims
                 or remediation_claims
                 or page_claims
@@ -2510,7 +2629,7 @@ class OrchestrationService:
                     "finding_id": str(claim.get("finding_id") or ""),
                     "specialist_id": (
                         "network"
-                        if network_claims
+                        if network_page_claims or network_claims
                         else "patch"
                         if patch_claims
                         else "vulnerability"
@@ -2612,7 +2731,11 @@ class OrchestrationService:
             )
         if deterministic_claims and self.executive_agent is None:
             evidence_kind = (
-                "CVE" if cve_claims else "network" if network_claims else "page"
+                "CVE"
+                if cve_claims
+                else "network"
+                if network_page_claims or network_claims
+                else "page"
             )
             warning = _narration_fallback_warning(
                 narrator_state=narrator_state,
@@ -2833,16 +2956,22 @@ class OrchestrationService:
                 for claim in claims
                 for ref in claim.get("evidence_refs") or []
             }
+            used_retained_by_id: dict[str, dict[str, Any]] = {}
+            for item in [
+                *synthesis_input["retained_evidence"],
+                *current_retained_evidence,
+            ]:
+                if not isinstance(item, Mapping):
+                    continue
+                evidence_id = str(item.get("evidence_id") or "")
+                if evidence_id in used_refs and evidence_id not in used_retained_by_id:
+                    used_retained_by_id[evidence_id] = dict(item)
             synthesis = ExecutiveSynthesis(
                 status="synthesized",
                 reason=decision.reason,
                 domain_count=decision.domain_count,
                 claims=claims,
-                used_retained_evidence=[
-                    dict(item)
-                    for item in synthesis_input["retained_evidence"]
-                    if item.get("evidence_id") in used_refs
-                ],
+                used_retained_evidence=list(used_retained_by_id.values()),
                 mode="foundry",
                 narration="\n\n".join(
                     str(claim.get("summary") or "").strip()
@@ -5036,5 +5165,6 @@ __all__ = [
     "execute_from_question",
     "executive_synthesis_decision",
     "legacy_session_history",
+    "retained_network_page_claims",
     "snapshot_claim_freshness",
 ]
