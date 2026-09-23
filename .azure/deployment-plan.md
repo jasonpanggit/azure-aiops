@@ -673,6 +673,72 @@ change is in scope.
 
 ## Validation Proof
 
+- 2026-09-23: PR #281 merged as `d159d5eaaca9753f8b2ec851ca8eca5aeaedce84`
+  (branch tip `cd82a4142e1672d9ecbc4e0dcbe400da6c57f060`, base merged PR #280
+  `5d647ebfa`). Fix pins `_canonical_synthesis_agent()` to the dedicated
+  `executive_summary` specialist for both the live `/investigate-context`
+  bridge and canonical investigations, replacing prior selection of a
+  page/domain specialist (e.g. `aiops-network-agent`) whose response failed
+  the executive-synthesis contract and was mis-classified as
+  `degraded_reason=unavailable`. Adds sanitized, closed-vocabulary
+  `provider_error_class`/`provider_error_reason` telemetry (no raw exception
+  text). Independent integrator validation: focused pytest passed 9/9
+  (`test_foundry_narration_provider_selection.py`,
+  `test_api_copilot_context_bridge.py`,
+  `test_foundry_narration_budget_starvation.py`,
+  `test_topology_insights_empty_fallback.py`); `ruff check` clean on all
+  changed files; `python -m compileall` clean; `git diff --check` clean.
+  Confirmed the `test_orchestration_policy.py` collection error (missing
+  `reviewed_tree_digest` attribute on `copilot_canary_authorization`)
+  reproduces identically on the pre-PR281 baseline (`5d647ebfa`, PR #280 merge
+  commit) in an isolated worktree — pre-existing/unrelated environment issue,
+  not a regression from this change. No Terraform/RBAC/environment changes
+  required; rollout is API-image-only from the exact merge SHA. Per source
+  session instruction, the PR #280 revision must remain active (not
+  deactivated) until authenticated live verification confirms
+  `synthesis.mode=foundry`, non-empty narration, and agent identity with zero
+  browser console errors. `terraform -chdir=infra/terraform fmt -check
+  -recursive` reported only the pre-existing gitignored `terraform.tfvars`
+  (unrelated to this PR, which touches zero `.tf` files);
+  `terraform -chdir=infra/terraform validate` passed
+  ("Success! The configuration is valid."). `git diff --stat
+  5d647ebfa..d159d5eaa -- infra/` is empty, confirming zero Terraform/RBAC
+  changes for this API-only rollout.
+
+- 2026-09-23: PR #281 rollout executed. ACR build `cr113` (registry
+  `aiopsdevacrg6ludc`, run `az acr build --file Dockerfile --build-arg
+  AIOPS_SOURCE_REVISION=d159d5eaaca9753f8b2ec851ca8eca5aeaedce84`) succeeded
+  from exact merge SHA `d159d5eaaca9753f8b2ec851ca8eca5aeaedce84`. Image
+  `aiopsdevacrg6ludc.azurecr.io/aiops-api@sha256:7975c0911e1652083a440e9721674d81d2a1d3f3162f547406d0e8c9dd9c3cb9`
+  (tag `foundry-provider-d159d5ea-20260923T055835Z`). A prior build attempt
+  (`cr112`) failed at Dockerfile step 30/35 for a missing
+  `AIOPS_SOURCE_REVISION` build-arg; a second attempt failed transiently
+  during source upload (DNS resolution to `management.azure.com`), confirmed
+  reachable moments later — `cr113` succeeded on retry. Candidate revision
+  `aiops-dev-api--pr281-7975c091-r1` created via `az containerapp revision
+  copy` preserving 4.0 CPU / 8Gi memory and `AIOPS_SOURCE_REVISION` env var,
+  first at 0% traffic. Reached `Healthy`/`RunningAtMaxScale`; revision-scoped
+  `/health` and `/ready` both returned HTTP 200 with `readiness: ready` and
+  required providers `copilot` and `exposure_query` in state `ready`.
+  Promoted to 100% traffic via `az containerapp ingress traffic set`. Per
+  explicit rollback instruction, the prior `aiops-dev-api--pr280-5d647ebf-r1`
+  revision was **not** deactivated — it remains `Active: True`,
+  `HealthState: Healthy`, at 0% traffic as an immediate rollback target.
+  Public `/health` and `/ready` on the app FQDN both returned 200
+  post-promotion. Awaiting authenticated live Playwright verification of
+  `synthesis.mode=foundry`, non-empty narration, and correct executive agent
+  identity before any further cleanup of the PR #280 revision.
+
+- 2026-09-22: PR #280 merged as `5d647ebfa3fd6071e2de75c08604d171881eff28`.
+  Focused narration-budget and topology fallback tests passed (5 tests), Ruff
+  passed for the changed API/test files, Python compileall passed, repository
+  Terraform validation passed through
+  `AIOPS_ENV_FILE=web/.env.local ./infra/scripts/deploy.sh validate`, and the
+  merged release introduced no Terraform or RBAC changes. The generic Terraform
+  preflight was also run against `infra/terraform`; its bare-plan failures were
+  limited to expected repository secret-backed variables, and its state/config
+  checks passed.
+
 - 2026-09-12: Exposure Copilot CVE grounding release validated from clean commit
   `18d4c63e6`. The focused backend release suite passed 106 tests; the contextual
   Copilot suite passed 30 tests; Ruff, Pylance, and `git diff --check` passed.
@@ -1062,6 +1128,13 @@ change is in scope.
   - Terraform state is accessible.
   - Go-style template variables are absent from Terraform JSON variables.
   - `main.tfvars.json` JSON syntax is valid.
+  - Terraform validation recipe for the PR #280 API-only rollout:
+    - Terraform and Azure CLI are installed and Azure CLI is authenticated.
+    - Terraform is initialized, formatted, and validates successfully.
+    - The deployment plan is limited to the intended API image/revision update with no
+      unapproved destructive changes.
+    - Terraform state is accessible and the Terraform variable-template and JSON syntax
+      checks pass.
 
 - Terraform preflight sequence:
   - Terraform installed
