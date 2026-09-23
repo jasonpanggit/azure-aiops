@@ -4,7 +4,10 @@ import json
 
 from operations.foundry_agent import AgentAnswer
 from operations.orchestration_contract import EvidenceSnapshotV2, SnapshotCoverage
-from operations.orchestration_service import OrchestrationService
+from operations.orchestration_service import (
+    OrchestrationService,
+    _executive_synthesis_payload,
+)
 from operations.tools import STATUS_OK
 
 
@@ -105,3 +108,4 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis() -> None
     assert "aiopsdemoacr" in synthesis.narration
     assert "Plan a private endpoint" in synthesis.narration
     assert synthesis.used_retained_evidence == retained
+    assert _executive_synthesis_payload(synthesis)["used_retained_evidence"] == retained
