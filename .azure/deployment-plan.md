@@ -1897,3 +1897,76 @@ change is in scope.
 - Web: unchanged throughout this entire thread (API-only fixes, per
   Topology's explicit rollout constraints on #281/#284/#286/#287; #282/
   #283 were the only paired API+web releases in this chain).
+
+## PR #288 — Foundry topology-narration recurrence fix (paired API+web)
+
+- Context: after the PR #280→#287 thread was closed, Topology reported a
+  recurring intermittent fallback: repeated `/network` refreshes
+  sometimes returned `synthesis.mode=deterministic`/`status=degraded`
+  with `provider_error_class=foundry_agent_error`. Root cause reproduced:
+  `parse_specialist_findings` was rejecting valid Foundry executive
+  answers that described a concrete remediation (e.g. "create a private
+  endpoint"), misclassifying successful provider calls as errors.
+  Additionally, the deployed `TopologyInsights` UI collapsed successful
+  structured claims/next-checks/uncertainty into a single paragraph.
+- Topology's session was blocked from opening its own PR (dirty unrelated
+  branch `feat/kb-finding-title`; PR tool limited to session's own
+  branch) and persisted a validated 10-file patch instead. As sole
+  release integrator, this session applied the patch in an isolated
+  worktree from clean `origin/main`, independently re-validated it, and
+  opened PR #288 on Topology's behalf. Topology confirmed (byte-for-byte
+  diff) the PR matches their intended fix.
+- Independent validation (isolated worktree, clean main):
+  - Backend: 60/60 focused tests passed (`test_foundry_narration_provider_selection.py`,
+    `test_network_retained_synthesis.py`, `test_page_evidence_material_claims.py`,
+    `test_api_copilot_context_bridge.py`, `test_foundry_agent.py`).
+    Ruff + `compileall` clean.
+  - Two pre-existing unrelated test failures found on unpatched main too
+    (`test_ontology_trace_redaction.py` missing `opentelemetry.sdk`;
+    `test_orchestration_policy.py` missing `reviewed_tree_digest`
+    attribute) — confirmed via `git stash` not caused by this patch;
+    excluded from release gate.
+  - Web: `npx vitest run` 837/837 passed (65 files, incl.
+    `TopologyInsights.test.tsx` 10/10), ESLint clean, `tsc --noEmit`
+    clean, production build succeeded (28/28 static pages).
+- Merge: PR #288 merged via head-SHA guard
+  (`--match-head-commit cce5dfefef7ccac10e6bfc74e26f1b5dd6f04608 --admin`,
+  GitHub Actions non-executed at workflow admission — known billing/
+  spending-limit infra issue, treated as non-blocking per established
+  policy) → `2e7b8dea202ec7d9315935b5c7f0ea716877518d` on `main`.
+- Build: both API and web images built from the exact merge commit in an
+  isolated worktree, registry `aiopsdevacrg6ludc`.
+  - API: run `cr11c`, tag
+    `topology-recurrence-2e7b8dea2-20260923T173529Z`, digest
+    `sha256:8c4edb0639128ae1c58938ed54bdcaeb1596ba47bf271005543ae019db4aad21`,
+    `--build-arg AIOPS_SOURCE_REVISION=2e7b8dea202ec7d9315935b5c7f0ea716877518d`.
+  - Web: run `cr11d`, tag
+    `topology-recurrence-2e7b8dea2-20260923T174050Z`, digest
+    `sha256:04bd1d555fe7d25f186c6c6aa62305a8539498785141a3f1ff522a8b39a9f843`.
+- Deploy — API: created `aiops-dev-api--pr288-8c4edb06` at 4 CPU / 8 GiB
+  (unchanged sizing), 0% traffic. Hit the same `api-d4` node-capacity
+  exhaustion pattern seen in prior PRs (3 active revisions filled all
+  nodes). Resolved by deactivating the now-doubly-superseded
+  `aiops-dev-api--pr286-03966666` (superseded by `pr287`, then by
+  `pr288`). Revision reached Healthy/RunningAtMaxScale shortly after.
+  Smoke-checked `/health` and `/ready` directly against the revision
+  FQDN → both 200. Promoted to 100% traffic
+  (`az containerapp ingress traffic set`).
+- Rollback preserved: `aiops-dev-api--pr287-36354b89` (prior 100%
+  revision, itself already acceptance-PASSed for Foundry synthesis +
+  `used_retained_evidence`) remains Healthy at 0% as the new immediate
+  rollback point. `aiops-dev-api--pr286-03966666` deactivated this entry
+  (superseded twice over) — no longer Active.
+- Deploy — Web: `az containerapp update` on `aiops-dev-web` (Single
+  revision mode — auto-promotes to 100% immediately, no canary staging
+  possible). New revision `aiops-dev-web--0000247` reached
+  Healthy/Running. Smoke-checked `/` and `/network` → both 200.
+- Final revision state: API `pr287` (Healthy, 0%, rollback), `pr288`
+  (Healthy, 100%, live); Web `0000247` (Healthy, 100%, live — only web
+  deploy since the PR #282/#283 pair).
+- Next: awaiting Topology's authenticated Playwright re-acceptance run
+  against `pr288` + web `0000247` confirming: repeated refreshes/reload
+  return `mode=foundry` reliably (not just once), structured claims/
+  next-checks/uncertainty render separately (not collapsed), retained
+  citations expandable, honest fallback warning text, zero console
+  errors. Do not release the `pr287` rollback hold until that PASSes.
