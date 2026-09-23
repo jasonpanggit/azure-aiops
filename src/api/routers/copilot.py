@@ -20,7 +20,7 @@ import logging
 import re
 import time
 import uuid as _uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -59,6 +59,7 @@ from operations.orchestration_contract import (
     Citation,
     DomainEntityRef,
     EvidenceSnapshotV2,
+    MaterialClaim,
     ObservationRef,
     OrchestrationResult,
     SnapshotCoverage,
@@ -1496,6 +1497,61 @@ def investigate(
     )
 
 
+MAX_CLAIM_EVIDENCE_REFS = 32
+
+
+def _page_row_text(row: Any, field: str, *, limit: int) -> str:
+    """Read one bounded string field from a submitted page row payload."""
+
+    data = getattr(row, "data", None)
+    value = data.get(field) if isinstance(data, Mapping) else None
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip()
+    return normalized if 0 < len(normalized) <= limit else ""
+
+
+def _page_material_claims(
+    evidence: Sequence[SnapshotEvidence],
+) -> list[MaterialClaim]:
+    """Assert submitted page rows so evidence retention can admit them.
+
+    Retention only keeps rows referenced by a material claim, so a bridge that
+    submits no claims silently discards every page row and leaves synthesis
+    with aggregate tool counts alone.  A row naming a specific resource is an
+    independent per-resource observation that stays true under partial
+    coverage.  A row without a resource identity is an aggregate whose truth
+    depends on observing every row, so it stays gated on complete coverage.
+    """
+
+    admissible = [row for row in evidence if row.status in ("ok", "partial")]
+    claims: list[MaterialClaim] = []
+    for prefix, requires_complete_coverage, rows in (
+        (
+            "page-observation",
+            False,
+            [row for row in admissible if row.resource_id],
+        ),
+        (
+            "page-aggregate",
+            True,
+            [row for row in admissible if not row.resource_id],
+        ),
+    ):
+        for offset in range(0, len(rows), MAX_CLAIM_EVIDENCE_REFS):
+            chunk = rows[offset : offset + MAX_CLAIM_EVIDENCE_REFS]
+            claims.append(
+                MaterialClaim(
+                    claim_id=(
+                        f"{prefix}-{offset // MAX_CLAIM_EVIDENCE_REFS + 1}"
+                    ),
+                    evidence_refs=[row.evidence_id for row in chunk],
+                    requires_complete_coverage=requires_complete_coverage,
+                )
+            )
+    return claims
+
+
 def _run_context_via_canonical(
     snapshot: PageSnapshot,
     *,
@@ -1531,6 +1587,9 @@ def _run_context_via_canonical(
             ),
             observed_at=getattr(row, "observed_at", ""),
             resource_id=getattr(row, "resource_id", ""),
+            source_key=_page_row_text(row, "source_key", limit=256),
+            claim_type=_page_row_text(row, "claim_type", limit=128)
+            or "observation",
             data=getattr(row, "data", {}),
         )
         for row in snapshot.evidence
@@ -1563,6 +1622,7 @@ def _run_context_via_canonical(
         evidence=canonical_evidence,
         freshness=canonical_freshness,
         selected_entities=canonical_entities,
+        material_claims=_page_material_claims(canonical_evidence),
     )
     request = CanonicalInvestigationRequest(
         question=snapshot.question,
