@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import threading
@@ -26,11 +27,14 @@ from operations.cve_response import (
 )
 from operations.foundry_agent import (
     FoundryAgentError,
+    FoundryCircuitOpenError,
     executive_synthesis_input,
     is_highest_risk_compliance_question,
     normalize_cited_findings,
     validate_executive_synthesis,
 )
+
+_LOGGER = logging.getLogger(__name__)
 from operations.investigation_thread_store import (
     OBSERVATION_CURRENT,
     OBSERVATION_HISTORICAL,
@@ -801,6 +805,8 @@ class ExecutiveSynthesis:
     #: budget (small value) versus the provider itself being slow despite
     #: a full budget.
     narration_budget_seconds: float = 0.0
+    provider_error_class: str = ""
+    provider_error_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -827,6 +833,71 @@ def _narration_fallback_warning(
             f"providers are unavailable; {fallback_detail}."
         )
     return f"Foundry narration is not configured; {fallback_detail}."
+
+
+def _narration_failure_details(exc: BaseException) -> tuple[str, str]:
+    """Classify a provider failure without retaining uncontrolled text."""
+
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and len(chain) < 8:
+        chain.append(current)
+        current = current.__cause__
+    if any(isinstance(item, FoundryCircuitOpenError) for item in chain):
+        return "foundry_circuit_open", "circuit_open"
+    if any(isinstance(item, TimeoutError) for item in chain):
+        return "timeout_error", "timeout"
+    for item in chain:
+        status = getattr(item, "code", None)
+        if status in {401, 403}:
+            return "http_error", "authorization"
+        if status == 429:
+            return "http_error", "rate_limited"
+        if isinstance(status, int) and status >= 500:
+            return "http_error", "provider_service"
+        if isinstance(status, int) and status >= 400:
+            return "http_error", "request_rejected"
+    class_names = {type(item).__name__ for item in chain}
+    if class_names & {"ClientAuthenticationError", "CredentialUnavailableError"}:
+        return "credential_error", "identity"
+    if any(isinstance(item, ConnectionError) for item in chain):
+        return "connection_error", "connectivity"
+    if class_names & {"JSONDecodeError", "ValidationError"}:
+        return "contract_error", "response_contract"
+    if isinstance(exc, FoundryAgentError):
+        return "foundry_agent_error", "provider_error"
+    if isinstance(exc, AttributeError):
+        return "attribute_error", "response_state"
+    if isinstance(exc, TypeError):
+        return "type_error", "response_contract"
+    if isinstance(exc, ValueError):
+        return "value_error", "response_contract"
+    return "other", "provider_error"
+
+
+def _log_narration_failure(
+    exc: BaseException,
+    *,
+    budget_seconds: float | None,
+) -> tuple[str, str]:
+    error_class, reason = _narration_failure_details(exc)
+    _LOGGER.warning(
+        "foundry narration degraded",
+        extra={
+            "provider_error_class": error_class,
+            "provider_error_reason": reason,
+            "narration_budget_bucket": (
+                "none"
+                if budget_seconds is None
+                else "lt_1s"
+                if budget_seconds < 1
+                else "lt_10s"
+                if budget_seconds < 10
+                else "gte_10s"
+            ),
+        },
+    )
+    return error_class, reason
 
 
 def executive_synthesis_decision(
@@ -1651,6 +1722,10 @@ class OrchestrationService:
                 "mode": synthesis.mode,
                 "narration": synthesis.narration,
                 "agent": synthesis.agent,
+                "degraded_reason": synthesis.degraded_reason,
+                "narration_budget_seconds": synthesis.narration_budget_seconds,
+                "provider_error_class": synthesis.provider_error_class,
+                "provider_error_reason": synthesis.provider_error_reason,
             },
         )
         return OrchestrationTurn(
@@ -2684,6 +2759,10 @@ class OrchestrationService:
             # the specialists already produced, so the turn degrades to their
             # direct findings and says so rather than failing.
             caused_by_timeout = _caused_by_timeout(exc)
+            error_class, error_reason = _log_narration_failure(
+                exc,
+                budget_seconds=narration_remaining_seconds,
+            )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
@@ -2701,8 +2780,14 @@ class OrchestrationService:
                 ],
                 degraded_reason="timeout" if caused_by_timeout else "unavailable",
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
+                provider_error_class=error_class,
+                provider_error_reason=error_reason,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
+            error_class, error_reason = _log_narration_failure(
+                exc,
+                budget_seconds=narration_remaining_seconds,
+            )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
@@ -2717,8 +2802,14 @@ class OrchestrationService:
                 ],
                 degraded_reason="timeout",
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
+                provider_error_class=error_class,
+                provider_error_reason=error_reason,
             )
-        except (AttributeError, ConnectionError, TypeError, ValueError):
+        except (AttributeError, ConnectionError, TypeError, ValueError) as exc:
+            error_class, error_reason = _log_narration_failure(
+                exc,
+                budget_seconds=narration_remaining_seconds,
+            )
             synthesis = ExecutiveSynthesis(
                 status="degraded",
                 reason=decision.reason,
@@ -2733,6 +2824,8 @@ class OrchestrationService:
                 ],
                 degraded_reason="unavailable",
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
+                provider_error_class=error_class,
+                provider_error_reason=error_reason,
             )
         else:
             used_refs = {
@@ -4425,6 +4518,8 @@ class OrchestrationService:
             domain_count=synthesis.domain_count,
             degraded_reason=synthesis.degraded_reason,
             narration_budget_seconds=synthesis.narration_budget_seconds,
+            provider_error_class=synthesis.provider_error_class,
+            provider_error_reason=synthesis.provider_error_reason,
         )
 
     def _record_thread_metric(self, outcome: str, durability: str) -> None:

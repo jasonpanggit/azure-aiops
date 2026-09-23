@@ -63,6 +63,38 @@ _SYNTHESIS_DEGRADED_REASONS = frozenset(
         "budget_exhausted",
     }
 )
+_PROVIDER_ERROR_CLASSES = frozenset(
+    {
+        "",
+        "foundry_agent_error",
+        "foundry_circuit_open",
+        "timeout_error",
+        "http_error",
+        "credential_error",
+        "connection_error",
+        "contract_error",
+        "attribute_error",
+        "type_error",
+        "value_error",
+        "other",
+    }
+)
+_PROVIDER_ERROR_REASONS = frozenset(
+    {
+        "",
+        "authorization",
+        "rate_limited",
+        "provider_service",
+        "request_rejected",
+        "identity",
+        "connectivity",
+        "response_contract",
+        "response_state",
+        "circuit_open",
+        "timeout",
+        "provider_error",
+    }
+)
 #: Fallback reasons are produced by the orchestration policy, so the vocabulary
 #: is closed. A compound reason keeps only its leading code.
 _FALLBACK_REASONS = frozenset(
@@ -252,17 +284,29 @@ class OrchestrationTelemetry:
         domain_count: int,
         degraded_reason: str = "",
         narration_budget_seconds: float = 0.0,
+        provider_error_class: str = "",
+        provider_error_reason: str = "",
     ) -> None:
         attributes = {
             "decision": _controlled(decision, _SYNTHESIS_DECISIONS),
             "status": _controlled(status, _SYNTHESIS_STATUSES),
             "domain_count": _count(domain_count),
+            "provider_error_class": _controlled(
+                provider_error_class, _PROVIDER_ERROR_CLASSES
+            ),
+            "provider_error_reason": _controlled(
+                provider_error_reason, _PROVIDER_ERROR_REASONS
+            ),
         }
         self._synthesis.add(1, attributes)
         reason_code = _controlled(degraded_reason, _SYNTHESIS_DEGRADED_REASONS)
         self._synthesis_budget.record(
             _duration(narration_budget_seconds) * 1000.0,
-            {"degraded_reason": reason_code},
+            {
+                "degraded_reason": reason_code,
+                "provider_error_class": attributes["provider_error_class"],
+                "provider_error_reason": attributes["provider_error_reason"],
+            },
         )
 
     def record_thread(self, *, outcome: str, durability: str) -> None:
