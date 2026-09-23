@@ -1654,3 +1654,60 @@ change is in scope.
   `network/rule-findings` / `network/firewall-bypass` evidence rows and
   narration names specific resources with `retained:` evidence ids. On PASS,
   release the PR #281 API rollback hold per deployment policy.
+
+## PR #284 rollout — synthesize retained network findings (2026-09-23)
+
+- Root cause (Topology's diagnosis, independently confirmed): after PR #283,
+  `/network` correctly submits detailed `network/gaps` /
+  `network/rule-findings` / `network/firewall-bypass` rows, and backend
+  retention preserves them as `retained:` citations, but the Foundry
+  executive-synthesis path only received normalized aggregate
+  `network_topology` tool findings plus prior retained thread evidence — the
+  detailed current-page rows never entered the coordinator's citation-closed
+  findings set, so narration said exact resources/remediations were "not
+  supplied" despite being present in the response's citation list.
+- Fix: `src/operations/orchestration_service.py` adds
+  `retained_network_page_claims()`, which promotes current retained Network
+  page gap/rule-finding/firewall-bypass rows into citation-closed synthesis
+  findings (severity-ranked, capped at 8, with resource/issue/recommendation
+  text and evidence refs) before Foundry executive narration, prefers these
+  over aggregate topology counts in claim/specialist selection, and folds
+  current retained citations into synthesized success bookkeeping
+  (`used_retained_evidence`). API-only change (2 files, +139/-9 in
+  `orchestration_service.py`, +107 new test file).
+- Independent validation (isolated worktree, not just owner report):
+  `pytest -p no:phoenix tests/test_network_retained_synthesis.py
+  tests/test_page_evidence_material_claims.py
+  tests/test_api_copilot_context_bridge.py
+  tests/test_foundry_narration_provider_selection.py` → 9/9 passed;
+  `ruff check` clean on both touched files; `compileall` clean. Broader
+  orchestration-adjacent suite run for regression check; the only failures
+  were the pre-existing baseline `reviewed_tree_digest` fixture-attribute
+  errors already documented as unrelated environment issues (confirmed
+  present on clean `main` too, not caused by this change).
+- Merge: squash-merged with a head-SHA guard
+  (`gh pr merge 284 --squash --match-head-commit
+  32a53d123695ad556b97cf5c399a9274d04a4683`) as
+  `d872e43ba2d825464a93abda926a18d3cdea22d4` on `main`.
+- Build: `az acr build` for `aiops-api` only (web unchanged), registry
+  `aiopsdevacrg6ludc`, run `cr119`, tag
+  `network-retained-synthesis-d872e43ba-20260923T134551Z`, digest
+  `sha256:e76176292551a4117bf3b0b775b46783209f09f5eb23eebc0ca440c2c2f28fb3`,
+  built from the exact merge commit in an isolated worktree with explicit
+  `--build-arg AIOPS_SOURCE_REVISION=d872e43ba2d825464a93abda926a18d3cdea22d4`
+  (required by the Dockerfile's exact-revision assertion step).
+- Deploy: multi-revision API — created
+  `aiops-dev-api--pr284-e7617629` at 4 CPU / 8 GiB (unchanged from baseline),
+  0% traffic; polled to Healthy/RunningAtMaxScale; smoke-checked `/health`
+  and `/ready` → both 200 directly against the revision FQDN; promoted to
+  100% traffic (`az containerapp ingress traffic set`). Confirmed via main
+  ingress FQDN: `/health` → 200, `/ready` → 200.
+- Rollback preserved: `aiops-dev-api--pr281-7975c091-r1` remains Healthy,
+  Active, Traffic=0%, per Topology's explicit hold request — acceptance for
+  the Network narration thread (PR #280/#281/#282/#283/#284) has still not
+  fully PASSed as of this entry. `aiops-dev-api--pr282-e2314f5d-r1` (prior
+  100% revision) also remains Healthy at 0%, not deprovisioned.
+- Next: awaiting Topology's authenticated Playwright re-run confirming
+  narration now names specific retained resources (e.g. `aiopsdemoacr`)
+  with `retained:` citation ids and recommendations, zero console errors. On
+  PASS, release the PR #281 API rollback hold per deployment policy.
