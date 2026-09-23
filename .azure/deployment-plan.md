@@ -2228,3 +2228,66 @@ change is in scope.
   released following confirmed 5/5 reliability on PR291's fix chain
   (word-boundary mutation detection → next_check sanitization →
   uncertainty/summary scope narrowing).
+
+## PR #293 — Fabric Data Agent grounding for Operations Copilot (2026-09-23)
+
+- Change: `feat(copilot): ground specialists through Fabric Data Agent`. Pivots
+  Operations Copilot to thin-client requests and generation-pinned Fabric Data
+  Agent grounding behind existing governed `fabric_iq_*` specialist tools.
+  Scope: `docs/runbooks/copilot-orchestration-rollout.md`,
+  `src/api/runtime.py`, `src/fabric/gold_grounding_client.py`,
+  `src/operations/tools.py`, `tests/test_fabric_iq_governance.py`,
+  `tests/test_gold_grounding_client.py`,
+  `web/src/app/inventory/page.test.tsx`,
+  `web/src/components/ui/CopilotDrawer.tsx` (+ test) — 9 files.
+- Feature remains OFF by default: activation requires
+  `AIOPS_ENABLE_FABRIC_IQ=true`, `AIOPS_ENABLE_FABRIC_DATA_AGENT_GROUNDING=true`,
+  `FABRIC_GOLD_GROUNDING_AGENT_ID`, optional
+  `FABRIC_GOLD_GROUNDING_TOOL_NAME`. No such env vars were set on this
+  deployment, so the change is dormant in production pending a separate
+  activation decision. Documented RLS/OBO production gate preserved; no Data
+  Agent mutation/publication authority granted.
+- CI status: PR #293 backend/frontend/security-scan checks failed in ~2-3s
+  with no log output — the known account billing/spend-limit infra failure
+  pattern (not test evidence), consistent with prior PRs in this cycle.
+- Independent local validation (fresh clone `/tmp/aiops-pr293-verify`, merged
+  against `origin/main`, 0 behind):
+  - `pytest -p no:phoenix -q tests/test_fabric_iq_governance.py
+    tests/test_gold_grounding_client.py tests/test_api_runtime.py
+    tests/test_fabric_commands.py` => 21/21 passed.
+  - `ruff check` on changed files: clean. `compileall`: clean.
+    `git diff --check`: clean. `git diff --stat` confirmed exact 9-file scope
+    (426 insertions / 164 deletions).
+  - Frontend: `vitest run` on `CopilotDrawer.test.tsx` and
+    `inventory/page.test.tsx` => 49/49 passed (React `act()` warnings only,
+    not failures). ESLint clean. `tsc --noEmit` clean. `npm run build`
+    succeeded.
+- Merge: admin-merged via `gh pr merge 293 --admin --merge` given exact-diff
+  match plus exhaustive independent validation and the known CI infra-failure
+  pattern. Merge commit `41f72d7fe8137fddfecd1e4c3755f0151fb7f607`.
+- Build:
+  - API: `aiopsdevacrg6ludc.azurecr.io/aiops-api:fabric-iq-grounding-41f72d7fe-20260923T200930Z`,
+    digest `sha256:0a854bd301806563cc001b985f32f9a1240d4f429890f2a20a118a68b282378f`.
+  - Web: `aiopsdevacrg6ludc.azurecr.io/aiops-web:fabric-iq-grounding-41f72d7fe-20260923T200930Z`,
+    digest `sha256:b91beb74f6628b11997e7fc3ee83cb3c5804c15aace1e4d80bd1ba4495fdd857`.
+- Deploy:
+  - API: `az containerapp revision copy` from prior active revision
+    `aiops-dev-api--pr291-0835e454`, new revision
+    `aiops-dev-api--pr293-0a854bd3`, `AIOPS_SOURCE_REVISION` set to the merge
+    SHA. CPU/memory preserved automatically at 4.0 CPU / 8Gi. Revision reached
+    `Healthy`/`RunningAtMaxScale`; promoted to 100% traffic via
+    `az containerapp ingress traffic set`. Per explicit user direction to keep
+    the API on a single active revision, prior revision
+    `aiops-dev-api--pr291-0835e454` was deactivated after promotion (no
+    lingering 0%-traffic rollback revision this cycle).
+  - Web: `az containerapp update --name aiops-dev-web --image
+    aiops-web:fabric-iq-grounding-41f72d7fe-20260923T200930Z` (Single revision
+    mode). New revision `aiops-dev-web--0000248` reached `Running`/100%,
+    prior revision `aiops-dev-web--0000247` auto-deprovisioned.
+- Post-deploy smoke checks (production ingress):
+  - API `/health` and `/ready`: `status: ok`, `readiness: ready`; required
+    providers `copilot` and `exposure_query` both `ready`/`loaded`.
+  - Web `/`, `/network`, `/inventory`: HTTP 200.
+- Final state: single active API revision
+  `aiops-dev-api--pr293-0a854bd3` (100%, Healthy); single active web revision
+  `aiops-dev-web--0000248` (100%, Running).
