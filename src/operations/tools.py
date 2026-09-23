@@ -234,7 +234,11 @@ def _fabric_iq_result(tool_context: ToolContext, kind: str, args: Mapping[str, A
         return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ is unavailable")
     if not isinstance(adapter, FabricIQToolAdapter):
         return ToolResult(status=STATUS_UNAVAILABLE, warning="Fabric IQ provider is invalid")
-    return adapter.run(kind, args, tool_context.scope)
+    grounded_args = dict(args)
+    generation_id = _generation_id(tool_context.generation_selection)
+    if generation_id:
+        grounded_args["generation_id"] = generation_id
+    return adapter.run(kind, grounded_args, tool_context.scope)
 
 
 def _resolve_vnet_id(service: Any, subject: str) -> str:

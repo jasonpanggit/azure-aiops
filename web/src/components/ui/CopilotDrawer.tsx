@@ -15,9 +15,12 @@ import {
 } from "@/lib/copilot/thread-context";
 import { useScope } from "@/lib/scope-context";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
-import { buildCopilotSnapshot } from "@/lib/services";
 import {
-  investigateCanonical,
+  buildCopilotSnapshot,
+  copilotApi,
+  toCanonicalInvestigationView,
+} from "@/lib/services";
+import {
   normalizeCopilotSnapshotV2,
   type CanonicalCopilotResult,
   type CopilotEvidenceSnapshotV2,
@@ -264,98 +267,61 @@ export function CopilotDrawer({
           }),
         );
       setLastSnapshot(submittedSnapshot);
-      const envelope = await investigateCanonical(
-        {
-          contract_version: "1",
-          question: nextQuestion,
-          requested_scope: effectiveRequestedScope,
-          snapshot: submittedSnapshot,
-          ...(threadContinuity.thread
-            ? {
-                thread_id: threadContinuity.thread.threadId,
-                expected_thread_revision: threadContinuity.thread.threadRevision,
-              }
-            : {}),
-          ...(specialistId && tool
-            ? {
-                hint: {
-                  specialist_id: specialistId,
-                  tool,
-                  arguments: toolArguments ?? {},
-                },
-              }
-            : {}),
-        },
+      const envelope = await copilotApi.investigate(
+        nextQuestion,
         effectiveRequestedScope,
+        {
+          sessionId: threadContinuity.thread?.threadId,
+          tool: specialistId && tool ? tool : undefined,
+          toolArguments: specialistId && tool ? toolArguments : undefined,
+        },
       );
       if (!requestIsCurrent()) return;
       const result = envelope.data;
-      const synthesisWarning = result.synthesis?.warning?.trim() || undefined;
-      if (!threadContinuity.acceptServerState(
-        {
-          threadId: result.thread_id,
-          threadRevision: result.thread_revision,
-        },
-        submittedContinuityGeneration,
-      )) {
-        return;
+      const view = toCanonicalInvestigationView(result);
+      if (view.threadId && view.threadRevision) {
+        if (!threadContinuity.acceptServerState(
+          {
+            threadId: view.threadId,
+            threadRevision: view.threadRevision,
+          },
+          submittedContinuityGeneration,
+        )) {
+          return;
+        }
       }
       setTurns((current) => [
         ...current,
         {
           question: nextQuestion,
-          toolCalls: result.tool_results.map((call) => ({
-            tool: call.tool,
-            arguments: {},
-            status: call.status === "partial" ? "unavailable" : call.status,
-            data: call.data,
-            evidence: [],
-            warning: call.warning,
-          })),
+          toolCalls: view.toolCalls,
           evidence: envelope.evidence ?? [],
           knowledgeVersion: envelope.knowledge_version,
           warnings: uniqueWarnings(envelope.warnings),
-          policyStatus: result.policy_status,
-          fallbackReason: result.fallback_reason,
-          degradationReason: synthesisWarning,
-          coordinator: result.synthesis?.coordinator,
-          uncertainty: uniqueWarnings(result.uncertainty).filter(
-            (warning) => warning !== synthesisWarning,
+          policyStatus: view.policyStatus,
+          fallbackReason: view.fallbackReason,
+          degradationReason: view.degradationNote || undefined,
+          coordinator: view.synthesis?.coordinator,
+          uncertainty: uniqueWarnings(view.uncertainty).filter(
+            (warning) => warning !== view.degradationNote,
           ),
-          coverage: result.coverage,
-          citations: result.citations,
-          narration: result.synthesis?.claims?.length
-            ? {
-                text: result.synthesis.claims
-                  .map((claim) => claim.summary)
-                  .join("\n\n"),
-                agent_name:
-                  result.synthesis.status === "synthesized"
-                    ? result.synthesis.coordinator?.name || "Operations Copilot"
-                    : "Deterministic page evidence",
-                model:
-                  result.synthesis.status === "synthesized"
-                    ? result.synthesis.coordinator?.version
-                      ? `Foundry · v${result.synthesis.coordinator.version}`
-                      : "Foundry"
-                    : "Deterministic",
-                grounded: true,
-              }
-            : null,
+          coverage: view.coverage,
+          citations: view.citations,
+          narration: view.narration,
           synthesisMode:
-            result.synthesis?.status === "synthesized"
+            view.synthesis?.status === "synthesized"
               ? "foundry"
               : "deterministic",
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(result.synthesis?.status === "degraded"
+      setStage(view.synthesis?.status === "degraded"
         || (
-          result.policy_status === "fallback"
-          && result.synthesis?.status !== "synthesized"
+          view.policyStatus === "fallback"
+          && view.synthesis?.status !== "synthesized"
         )
         ? "fallback"
-        : result.status === "partial"
+        : result.fact_status === "partial"
           ? "partial"
           : "idle");
     } catch (reason) {

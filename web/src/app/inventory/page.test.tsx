@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
 
-const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } = vi.hoisted(() => ({
+const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping, investigate } = vi.hoisted(() => ({
   os: vi.fn(),
   osGroup: vi.fn(),
   software: vi.fn(),
@@ -17,21 +17,19 @@ const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrat
   mappings: vi.fn(),
   approveMapping: vi.fn(),
   rejectMapping: vi.fn(),
+  investigate: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({ inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping } }));
+vi.mock("@/lib/services", () => ({
+  inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping },
+  copilotApi: { investigate },
+}));
 
 const { downloadCsv } = vi.hoisted(() => ({ downloadCsv: vi.fn() }));
 vi.mock("@/lib/csv", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/csv")>()),
   downloadCsv,
 }));
-
-const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
-vi.mock("@/lib/copilot/page-adapters", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/copilot/page-adapters")>("@/lib/copilot/page-adapters");
-  return { ...actual, investigateCanonical };
-});
 
 import InventoryPage from "./page";
 
@@ -76,7 +74,7 @@ const collection = {
 
 describe("Inventory OS tracer", () => {
   beforeEach(() => {
-    investigateCanonical.mockResolvedValue({
+    investigate.mockResolvedValue({
       data: {
         contract_version: "1",
         status: "partial",
@@ -351,30 +349,18 @@ describe("Inventory OS tracer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask Copilot about inventory" }));
     fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
 
-    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
-    const request = investigateCanonical.mock.calls[0][0];
-    expect(request).toMatchObject({
-      contract_version: "1",
-      requested_scope: {},
-      snapshot: {
-        version: "2",
-        page_kind: "inventory",
-        coverage: { visible_count: 1, total_count: 120, complete: false },
-      },
-      hint: {
-        specialist_id: "inventory_data_health",
-        tool: "inventory_resources",
-      },
+    await waitFor(() => expect(investigate).toHaveBeenCalled());
+    const [question, scope, options] = investigate.mock.calls[0];
+    expect(question).toBe("Review visible inventory health");
+    expect(scope).toEqual({});
+    expect(options).toMatchObject({
+      tool: "inventory_resources",
     });
-    expect(request.snapshot.evidence).toHaveLength(1);
-    expect(request.snapshot.evidence[0].data).toMatchObject({
-      os_name: "Windows Server",
-      os_version: "2099-preview",
-    });
+    expect(options).not.toHaveProperty("snapshot");
   });
 
   it("does not expose Copilot while inventory for a new scope is unresolved", async () => {
-    investigateCanonical.mockClear();
+    investigate.mockClear();
     const scopedInventory = new Promise<never>(() => undefined);
     os
       .mockResolvedValueOnce(envelope({
@@ -397,11 +383,11 @@ describe("Inventory OS tracer", () => {
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Ask Copilot about inventory" })).not.toBeInTheDocument();
     });
-    expect(investigateCanonical).not.toHaveBeenCalled();
+    expect(investigate).not.toHaveBeenCalled();
   });
 
   it("uses the server-derived effective scope when RBAC narrows the browser request", async () => {
-    investigateCanonical.mockClear();
+    investigate.mockClear();
     os.mockResolvedValue({
       ...envelope({
         ...collection,
@@ -419,11 +405,8 @@ describe("Inventory OS tracer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Ask Copilot about inventory" }));
     fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
 
-    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
-    expect(investigateCanonical.mock.calls[0][0].requested_scope).toEqual({
-      subscription: ["sub-a"],
-    });
-    expect(investigateCanonical.mock.calls[0][1]).toEqual({
+    await waitFor(() => expect(investigate).toHaveBeenCalledTimes(1));
+    expect(investigate.mock.calls[0][1]).toEqual({
       subscription: ["sub-a"],
     });
   });
@@ -642,8 +625,8 @@ describe("Inventory OS tracer", () => {
     );
   });
 
-  it("submits the raw ARM resource type selected by its friendly label", async () => {
-    investigateCanonical.mockClear();
+  it("keeps the selected raw ARM resource type out of the thin-client request", async () => {
+    investigate.mockClear();
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
@@ -662,11 +645,8 @@ describe("Inventory OS tracer", () => {
       name: /Review visible inventory health/,
     }));
 
-    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
-    expect(
-      investigateCanonical.mock.calls[0][0].snapshot.evidence[0]
-        .data.inventory_context.filters.resource_type,
-    ).toBe("microsoft.app/containerapps");
+    await waitFor(() => expect(investigate).toHaveBeenCalledTimes(1));
+    expect(investigate.mock.calls[0][2]).not.toHaveProperty("snapshot");
   });
 
   it("renders the drill-down inline beneath the group row it was opened from", async () => {
