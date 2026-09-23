@@ -1129,11 +1129,15 @@ def select_foundry_agent_class(
     The preview Agent Framework path does not provide a stable wire-level
     guarantee that the configured provider version is sent on every request.
     Once Terraform activates an exact provider ID, use the REST client whose
-    outbound ``agent_reference`` includes that ID. Unversioned legacy callers
-    may continue using the preview path while it remains enabled.
+    outbound ``agent_reference`` includes that ID. Executive synthesis also
+    uses the REST path because it requires the strict response contract and
+    bounded timeout supported by the Foundry responses endpoint. Unversioned
+    legacy callers may continue using the preview path while it remains enabled.
     """
 
     specialist = (specialist_id or "").strip().casefold()
+    if specialist == EXECUTIVE_SPECIALIST_ID:
+        return rest_agent_class
     version = (
         os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()
         if specialist

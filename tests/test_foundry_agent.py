@@ -859,6 +859,16 @@ def test_unversioned_runtime_may_use_preview_maf(monkeypatch) -> None:
     assert selected is MicrosoftAgentFrameworkFoundryAgent
 
 
+def test_executive_synthesis_uses_rest_path_instead_of_preview_maf(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FOUNDRY_EXECUTIVE_SUMMARY_AGENT_VERSION", raising=False)
+
+    selected = select_foundry_agent_class("executive_summary", prefer_maf=True)
+
+    assert selected is FoundryPromptAgent
+
+
 def test_version_pinning_required_disables_unversioned_legacy_agent(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
     monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
