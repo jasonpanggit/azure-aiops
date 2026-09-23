@@ -1794,3 +1794,75 @@ change is in scope.
   `used_retained_evidence` non-empty, named resources (e.g. `aiopsdemoacr`),
   concrete recommendations, `retained:` citation ids, zero console errors.
   On PASS, release the PR #281 API rollback hold per deployment policy.
+
+## PR #286 acceptance result (addendum)
+
+- Topology's authenticated Playwright re-run on `/network`: **PASS** for
+  Foundry synthesis itself. `synthesis.executive.status=synthesized`,
+  `mode=foundry`, `agent=aiops-executive-summary-agent`, empty
+  degraded/provider-error fields, 2 claims, named resources (e.g.
+  `acrsredemodevau0qhc`, `aiops-demo-openai`), concrete private
+  endpoint/NSG/route-table recommendations, 8 `retained:` refs, zero
+  console errors, UI no longer shows "Evidence-only fallback". Remaining
+  gap: `used_retained_evidence` populated internally but omitted from the
+  API response projection → follow-up PR #287.
+
+## PR #287 — fix(copilot): expose retained synthesis evidence in API response
+
+- Source: Topology handoff (`fix/copilot-retained-evidence-projection`,
+  head `3e55592ca9588613175ee0a0abd5c7448e14a5a4`, base
+  `187de7fed9d1819cda05dfbd441b65710354acf2` — confirmed exact match with
+  main HEAD prior to merge).
+- Root cause: `ExecutiveSynthesis.used_retained_evidence` was already
+  computed and populated internally (used for narration/claims), but the
+  inline dict literal building the API response's `synthesis` payload
+  omitted the key, so external callers/UI could not see which retained
+  evidence rows were actually used.
+- Fix: extracts the inline synthesis-dict construction into a new
+  `_executive_synthesis_payload()` helper and adds the missing
+  `used_retained_evidence` key to the projected dict. API-only change
+  (2 files: `src/operations/orchestration_service.py`,
+  `tests/test_network_retained_synthesis.py`; +1 assertion on the new
+  helper's output).
+- Independent validation (isolated worktree, not just owner report):
+  `pytest -p no:phoenix tests/test_network_retained_synthesis.py
+  tests/test_page_evidence_material_claims.py
+  tests/test_api_copilot_context_bridge.py
+  tests/test_foundry_narration_provider_selection.py
+  tests/test_foundry_agent.py` → 54/54 passed; `ruff check` clean;
+  `compileall` clean; `git diff --check` clean. GitHub Actions run failed
+  at workflow admission again (0 steps executed across all 3 jobs, 2-3s
+  completion) — same infrastructure/runner pattern as PR #286, treated as
+  non-executed per established policy.
+- Merge: squash-merged with a head-SHA guard
+  (`gh pr merge 287 --squash --match-head-commit
+  3e55592ca9588613175ee0a0abd5c7448e14a5a4`) as
+  `6b0241eff9f30c56400c2289dd38d94ee4c30350` on `main`.
+- Build: `az acr build` for `aiops-api` only (web unchanged), registry
+  `aiopsdevacrg6ludc`, run `cr11b`, tag
+  `copilot-retained-evidence-projection-6b0241eff-20260923T161631Z`,
+  digest `sha256:36354b89b64d55adfc781ed1d584ebf823b49fb74333de84dabc3c0956873531`,
+  built from the exact merge commit in an isolated worktree with explicit
+  `--build-arg AIOPS_SOURCE_REVISION=6b0241eff9f30c56400c2289dd38d94ee4c30350`.
+- Deploy: created `aiops-dev-api--pr287-36354b89` at 4 CPU / 8 GiB
+  (unchanged sizing), 0% traffic. Hit the same `api-d4` node-capacity
+  exhaustion pattern as PR #286 (4 active revisions again filled all
+  nodes). Resolved by deactivating the now-superseded
+  `aiops-dev-api--pr284-e7617629` (superseded by `pr286`, then by `pr287`;
+  not the designated rollback). Revision reached Healthy/RunningAtMaxScale
+  shortly after. Smoke-checked `/health` and `/ready` directly against the
+  revision FQDN → both 200. Promoted to 100% traffic
+  (`az containerapp ingress traffic set`).
+- Rollback preserved: `aiops-dev-api--pr281-7975c091-r1` remains Healthy,
+  Active, Traffic=0%, per Topology's explicit hold request.
+  `aiops-dev-api--pr286-03966666` (prior 100% revision, itself already
+  acceptance-PASSed for Foundry synthesis) also remains Healthy at 0% as
+  an additional fallback point between `pr281` and `pr287`.
+  `aiops-dev-api--pr284-e7617629` deactivated this entry (superseded twice
+  over) — no longer Active.
+- Next: awaiting Topology's final post-#287 authenticated acceptance
+  confirming `data.synthesis.executive.used_retained_evidence` is now
+  non-empty in the API response (in addition to the already-PASSed
+  foundry mode/agent/citations/console-error checks from PR #286). On
+  final PASS, release the PR #281 API rollback hold per deployment policy
+  — this closes out the PR #280→#287 Foundry topology-narration thread.
