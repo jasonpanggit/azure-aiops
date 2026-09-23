@@ -28,6 +28,7 @@ from operations.cve_response import (
 from operations.foundry_agent import (
     FoundryAgentError,
     FoundryCircuitOpenError,
+    FoundryResponseContractError,
     executive_synthesis_input,
     is_highest_risk_compliance_question,
     normalize_cited_findings,
@@ -865,6 +866,8 @@ def _narration_failure_details(exc: BaseException) -> tuple[str, str]:
     while current is not None and len(chain) < 8:
         chain.append(current)
         current = current.__cause__
+    if any(isinstance(item, FoundryResponseContractError) for item in chain):
+        return "contract_error", "response_contract"
     if any(isinstance(item, FoundryCircuitOpenError) for item in chain):
         return "foundry_circuit_open", "circuit_open"
     if any(isinstance(item, TimeoutError) for item in chain):
@@ -2904,13 +2907,22 @@ class OrchestrationService:
                     "Foundry narration timed out; deterministic cited evidence is "
                     "shown instead."
                     if caused_by_timeout
-                    else "Foundry narration provider is unavailable; deterministic "
-                    "cited evidence is shown instead."
+                    else (
+                        "Foundry narration failed response validation; deterministic "
+                        "cited evidence is shown instead."
+                        if error_reason == "response_contract"
+                        else "Foundry narration provider is unavailable; deterministic "
+                        "cited evidence is shown instead."
+                    )
                 ),
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
-                degraded_reason="timeout" if caused_by_timeout else "unavailable",
+                degraded_reason=(
+                    "timeout" if caused_by_timeout
+                    else "response_contract" if error_reason == "response_contract"
+                    else "unavailable"
+                ),
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
                 provider_error_class=error_class,
                 provider_error_reason=error_reason,

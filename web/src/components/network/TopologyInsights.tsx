@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import type { NetworkCopilotSelection } from "@/lib/copilot/page-adapters";
 import { copilotApi } from "@/lib/services";
 import type { CopilotContextResult, CopilotPageSnapshot } from "@/lib/types";
@@ -42,7 +43,7 @@ function deterministicSummary(result: CopilotContextResult): string {
     .filter((finding) => finding.status !== "denied")
     .map((finding) => (typeof finding.summary === "string" ? finding.summary.trim() : ""))
     .filter(Boolean);
-  return summaries.slice(0, 3).join(" ");
+  return summaries.slice(0, 3).join("\n\n");
 }
 
 /** Asynchronously narrates the bounded Network snapshot without delaying page content. */
@@ -99,7 +100,14 @@ export function TopologyInsights({
     || result?.synthesis?.text?.trim()
     || "";
   const fallback = result ? deterministicSummary(result) : "";
-  const grounded = result?.synthesis_mode === "foundry" && narration.length > 0;
+  const executive = result?.synthesis?.executive;
+  const claims = (Array.isArray(executive?.claims) ? executive.claims : [])
+    .filter((claim) => typeof claim.summary === "string" && claim.summary.trim());
+  const hasContent = claims.length > 0 || Boolean(narration || fallback);
+  const grounded = result?.synthesis_mode === "foundry"
+    && (!executive?.mode || executive.mode === "foundry")
+    && (claims.length > 0 || narration.length > 0);
+  const warning = executive?.warning || result?.synthesis?.warning || result?.warnings?.[0];
 
   return (
     <section className="topology-insights" aria-live="polite" aria-busy={loading}>
@@ -119,15 +127,48 @@ export function TopologyInsights({
       </div>
       {loading ? (
         <p>Reviewing the bounded topology evidence…</p>
-      ) : grounded ? (
+      ) : hasContent ? (
         <>
-          <strong>Grounded LLM insight</strong>
-          <p>{narration}</p>
-        </>
-      ) : narration || fallback ? (
-        <>
-          <strong>Evidence-only fallback</strong>
-          <p>{narration || fallback}</p>
+          <strong>{grounded ? "Grounded LLM insight" : "Evidence-only fallback"}</strong>
+          {grounded && executive?.agent && <p>Agent: {executive.agent}</p>}
+          {!grounded && warning && <p role="status">{warning}</p>}
+          {claims.length > 0 ? (
+            <ol className="topology-insights-findings" aria-label="Topology findings">
+              {claims.map((claim, index) => (
+                <li key={`${claim.finding_id}-${index}`}>
+                  <MarkdownLite text={claim.summary} />
+                  {claim.next_check && (
+                    <div>
+                      <strong>Next read-only check</strong>
+                      <MarkdownLite text={claim.next_check} />
+                    </div>
+                  )}
+                  {Array.isArray(claim.uncertainty) && claim.uncertainty.length > 0 && (
+                    <div>
+                      <strong>Uncertainty</strong>
+                      <ul>
+                        {claim.uncertainty.map((item, itemIndex) => (
+                          <li key={itemIndex}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {Array.isArray(claim.evidence_refs) && claim.evidence_refs.length > 0 && (
+                    <details>
+                      <summary>Cited evidence ({claim.evidence_refs.length})</summary>
+                      <ul>
+                        {claim.evidence_refs.map((ref, refIndex) => (
+                          <li key={refIndex}><code>{ref}</code></li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <MarkdownLite text={narration || fallback} />
+          )}
         </>
       ) : (
         <>

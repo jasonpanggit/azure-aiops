@@ -149,6 +149,10 @@ class FoundryAgentError(RuntimeError):
     """The Foundry agent could not produce an answer."""
 
 
+class FoundryResponseContractError(FoundryAgentError):
+    """A returned answer failed local normalization or contract validation."""
+
+
 class FoundryAgentNotConfigured(FoundryAgentError):
     """No Foundry agent is configured for this deployment."""
 
@@ -251,12 +255,15 @@ def parse_specialist_findings(
     evidence_refs: set[str],
     resource_ids: set[str] | None = None,
     agent_id: str = "network",
+    allow_remediation_summary: bool = False,
 ) -> list[dict[str, Any]]:
     """Validate the small, cited contract emitted by a specialist.
 
     Foundry is an untrusted narrator. This parser deliberately accepts no
     prose wrapper and requires every claim to point at evidence supplied by the
     local orchestrator. Each agent has domain-specific required fields.
+    Executive synthesis may describe remediation in its summary; this never
+    authorizes execution and its next check must still be read-only.
     """
     contract = _agent_contract(agent_id)
     required = contract["required"]
@@ -311,8 +318,14 @@ def parse_specialist_findings(
         if not isinstance(finding["summary"], str) or not finding["summary"].strip():
             raise FoundryAgentError(f"{agent_id} finding summary is required")
         
-        # Reject mutation instructions
-        text_values = json.dumps(finding, ensure_ascii=False).casefold()
+        # Describing remediation is not executing it. Only the executive
+        # narrative gets this exception; next_check and uncertainty stay strict.
+        mutation_fields = finding
+        if allow_remediation_summary and agent_id == EXECUTIVE_SPECIALIST_ID:
+            mutation_fields = {
+                key: value for key, value in finding.items() if key != "summary"
+            }
+        text_values = json.dumps(mutation_fields, ensure_ascii=False).casefold()
         if any(word in text_values for word in _MUTATION_WORDS):
             raise FoundryAgentError(f"{agent_id} specialist output contains mutation instructions")
         
@@ -573,11 +586,15 @@ def validate_executive_synthesis(
     partially accepted.
     """
 
-    return parse_specialist_findings(
-        text,
-        evidence_refs=set(evidence_refs),
-        agent_id=EXECUTIVE_SPECIALIST_ID,
-    )
+    try:
+        return parse_specialist_findings(
+            text,
+            evidence_refs=set(evidence_refs),
+            agent_id=EXECUTIVE_SPECIALIST_ID,
+            allow_remediation_summary=True,
+        )
+    except (FoundryAgentError, TypeError, ValueError) as exc:
+        raise FoundryResponseContractError(str(exc)) from exc
 
 
 class _TokenProvider:
@@ -1497,7 +1514,12 @@ class FoundryCoordinatorSynthesisAgent:
             "contain exactly finding_id, evidence_refs, confidence, uncertainty, "
             "freshness, actionable, next_check, summary. Answer the operator "
             "question directly, consolidate duplicate findings, and cite only "
-            "evidence_refs present in context. Do not propose mutation.\n\n"
+            "evidence_refs present in context. In summary, describe the observed "
+            "issue and remediation recommended by the cited evidence, for human "
+            "review only; never claim a change was performed. Keep next_check "
+            "strictly read-only (inspect, verify, or review); it must not instruct "
+            "the operator to create, update, delete, modify, execute, apply, or "
+            "remediate anything. Use one concise finding per material issue.\n\n"
             f"OPERATOR QUESTION:\n{question}"
         )
         answer = self.agent.answer(
@@ -1506,8 +1528,14 @@ class FoundryCoordinatorSynthesisAgent:
             max_output_tokens=3_000,
             timeout_seconds=timeout_seconds,
         )
+        try:
+            normalized = _normalize_coordinator_findings(answer.text)
+        except (FoundryAgentError, TypeError, ValueError) as exc:
+            raise FoundryResponseContractError(
+                "Executive synthesis failed response normalization"
+            ) from exc
         return AgentAnswer(
-            text=_normalize_coordinator_findings(answer.text),
+            text=normalized,
             agent_name=answer.agent_name,
             model=answer.model,
             grounded=answer.grounded,

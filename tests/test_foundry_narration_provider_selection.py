@@ -9,6 +9,7 @@ from operations.foundry_agent import (
     FoundryAgentError,
     FoundryCircuitOpenError,
     FoundryCoordinatorSynthesisAgent,
+    FoundryResponseContractError,
 )
 from operations.orchestration_service import _narration_failure_details
 
@@ -62,4 +63,8 @@ def test_provider_failure_diagnostics_use_only_controlled_categories() -> None:
     assert _narration_failure_details(FoundryCircuitOpenError("sensitive")) == (
         "foundry_circuit_open",
         "circuit_open",
+    )
+    assert _narration_failure_details(FoundryResponseContractError("sensitive")) == (
+        "contract_error",
+        "response_contract",
     )

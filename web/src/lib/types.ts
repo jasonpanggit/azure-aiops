@@ -3379,11 +3379,34 @@ export interface CopilotContextFinding {
   evidence_refs: string[]; confidence: Confidence; uncertainty: string[]; stale: boolean;
   next_check: string; actionable: boolean;
 }
+/** Citation-validated executive finding; recommendations never authorize execution. */
+export interface CopilotExecutiveClaim {
+  finding_id: string;
+  summary: string;
+  evidence_refs: string[];
+  confidence: string;
+  freshness: string;
+  uncertainty: string[];
+  next_check: string;
+  actionable: boolean;
+}
+
+/** Executive diagnostics are distinct from the legacy planner's fallback status. */
+export interface CopilotExecutiveSynthesis {
+  mode?: "foundry" | "deterministic";
+  status?: string;
+  agent?: string;
+  warning?: string;
+  degraded_reason?: string;
+  provider_error_reason?: string;
+  claims?: CopilotExecutiveClaim[];
+}
+
 export interface CopilotContextResult {
   page_kind: CopilotPageKind; page_id: string; snapshot_hash: string; stages: string[];
   selected_agents?: AutonomousAgent[]; orchestration?: AgentOrchestrationDecision;
   findings: CopilotContextFinding[]; tool_calls: Array<{ tool: string; arguments: Record<string, unknown>; status: CopilotSnapshotStatus; data: unknown; evidence: EvidenceItem[]; warning: string; }>;
   synthesis_mode: "foundry" | "deterministic"; synthesis_agent: string;
-  synthesis: { mode?: "foundry" | "deterministic"; narration?: string; warning?: string; text?: string; agent_name?: string; model?: string; grounded?: boolean } | null;
+  synthesis: { mode?: "foundry" | "deterministic"; narration?: string; warning?: string; text?: string; agent_name?: string; model?: string; grounded?: boolean; executive?: CopilotExecutiveSynthesis } | null;
   warnings: string[]; ledger_id?: string;
 }

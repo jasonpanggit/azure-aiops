@@ -30,6 +30,21 @@ The existing AIOps Azure Resource Graph connector provides:
 
 See `docs/architecture.md` for architecture diagram and `IMPLEMENTATION_SUMMARY.md` for verification results.
 
+### Network topology insights
+
+**Refresh insights** requests a new review of the current bounded Network page
+snapshot; it does not run a subscription sync. Executive findings show the
+observed issue, evidence-backed remediation for human review, a read-only next
+check, uncertainty, and expandable citation IDs. Describing a remediation does
+not authorize or perform it.
+
+When narration cannot be used, the panel retains deterministic evidence and
+displays the executive warning. For diagnostics, inspect
+`data.synthesis.executive`, not the legacy planner's `fallback_reason`.
+`provider_error_reason=response_contract` means a returned answer failed local
+validation; it is distinct from a provider outage. Citation closure and
+read-only next-check validation still apply.
+
 ## Important Azure MCP boundary
 
 The preinstalled Azure MCP executable is used for Azure subscription discovery. Its current command surface does not provide a general arbitrary Azure Resource Graph query operation. The five required ARG queries therefore use the installed Azure CLI command `az graph query`. This is a narrow subprocess adapter—not a custom Azure SDK wrapper—and is isolated behind `AzureCliArgClient` so it can be replaced if Azure MCP adds arbitrary ARG support.
