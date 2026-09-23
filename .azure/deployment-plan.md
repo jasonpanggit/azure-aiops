@@ -1711,3 +1711,86 @@ change is in scope.
   narration now names specific retained resources (e.g. `aiopsdemoacr`)
   with `retained:` citation ids and recommendations, zero console errors. On
   PASS, release the PR #281 API rollback hold per deployment policy.
+
+## PR #284 acceptance result (addendum)
+
+- Topology's authenticated Playwright re-run on `/network`: **FAIL (partial
+  improvement)**. Retained-network deterministic path confirmed working
+  (narration names `aiopsdemoacr` and other concrete resources with
+  recommendations), but `synthesis.mode=deterministic` (not `foundry`),
+  no executive agent identity returned, `used_retained_evidence=[]`,
+  `policy_status=fallback`, `fallback_reason=planner_unavailable`. Zero
+  JS console errors (one unrelated DevTools accessibility-only notice).
+  Rollback hold on `aiops-dev-api--pr281-7975c091-r1` kept in place per
+  policy; no deployment mutation from that acceptance report alone.
+  Root cause traced by Topology to preview MAF transport degradation for
+  the unversioned `executive_summary` specialist → follow-up PR #286.
+
+## PR #286 — fix(agent): force executive_summary onto stable Foundry REST transport
+
+- Source: Topology handoff (`fix/network-foundry-admission`,
+  head `290fa7f5a89528ad66ec06723d11a4254b1b40ee`, base
+  `fd2d9243d818a1bda2df6fee42737fdbaeeaf78d` — confirmed exact match with
+  main HEAD prior to merge).
+- Root cause (evidenced): live `/network` nested synthesis diagnostics
+  showed `provider_error_class=foundry_agent_error` for the unversioned
+  `executive_summary` specialist when routed through the preview MAF
+  (Microsoft Agent Framework) transport; the identical call — same agent
+  identity, prompt, and citation-closed retained evidence — succeeded via
+  the stable Foundry Responses REST adapter. Production's
+  `select_foundry_agent_class()` was defaulting unversioned specialists to
+  the preview MAF path, which was degraded for this specific specialist.
+- Fix: adds a narrow early-return branch in `select_foundry_agent_class()`
+  — `if specialist == EXECUTIVE_SPECIALIST_ID: return rest_agent_class` —
+  forcing only `executive_summary` onto the stable REST transport while
+  preserving MAF for all other unversioned specialists. API-only change
+  (2 files: `src/operations/foundry_agent.py`,
+  `tests/test_foundry_agent.py`; +1 new test).
+- Independent validation (isolated worktree, not just owner report):
+  `pytest -p no:phoenix tests/test_foundry_agent.py` → 45/45 passed;
+  broader related set (`test_foundry_agent.py` +
+  `test_network_retained_synthesis.py` + `test_page_evidence_material_claims.py`
+  + `test_api_copilot_context_bridge.py` +
+  `test_foundry_narration_provider_selection.py`) → 54/54 passed, no
+  regressions. `ruff check` clean, `compileall` clean on both touched
+  files. GitHub Actions run failed at workflow admission (0 steps, 2-4s
+  completion) — treated as infrastructure per established policy; not a
+  test-evidence gate.
+- Merge: squash-merged with a head-SHA guard
+  (`gh pr merge 286 --squash --match-head-commit
+  290fa7f5a89528ad66ec06723d11a4254b1b40ee`) as
+  `b685627da80ef3ce993abf87bc052bb9fc4e35af` on `main`.
+- Build: `az acr build` for `aiops-api` only (web unchanged), registry
+  `aiopsdevacrg6ludc`, run `cr11a`, tag
+  `network-foundry-admission-b685627da-20260923T155206Z`, digest
+  `sha256:0396666685315d496f83710f5d4999732a7a308fd76068692580d51e832afd7c`,
+  built from the exact merge commit in an isolated worktree with explicit
+  `--build-arg AIOPS_SOURCE_REVISION=b685627da80ef3ce993abf87bc052bb9fc4e35af`.
+- Deploy: created `aiops-dev-api--pr286-03966666` at 4 CPU / 8 GiB
+  (unchanged sizing), 0% traffic. Revision initially stuck
+  `Activating`/`health:None` with an empty replica (`containers: []`,
+  `runningState:NotRunning`) — root-caused as `api-d4` workload-profile
+  node-capacity exhaustion: 4 active revisions (`pr281`, `pr282`, `pr284`,
+  `pr286`) at 4 CPU each had filled all available nodes even after raising
+  `maximumCount` to 4. Resolved by deactivating the superseded
+  `aiops-dev-api--pr282-e2314f5d-r1` (already superseded by `pr284`, not the
+  designated rollback — `pr281` is) to free a node. Revision then passed
+  through a transient `ActivationFailed`/`Unhealthy` state (platform
+  `Deployment Progress Deadline Exceeded` at container-start time, per
+  Topology's corroborating platform-log evidence) before reaching
+  Healthy/RunningAtMaxScale — confirmed a scheduling-delay artifact, not a
+  code or image defect. Smoke-checked `/health` and `/ready` directly
+  against the revision FQDN → both 200. Promoted to 100% traffic
+  (`az containerapp ingress traffic set`).
+- Rollback preserved: `aiops-dev-api--pr281-7975c091-r1` remains Healthy,
+  Active, Traffic=0%, per Topology's explicit hold request — Network
+  narration thread acceptance (PR #280/#281/#282/#283/#284/#286) has not
+  yet fully PASSed as of this entry.
+  `aiops-dev-api--pr282-e2314f5d-r1` deactivated this entry (superseded,
+  capacity-freeing decision) — no longer Active; `pr284` remains Active at
+  0% as an additional fallback point between `pr281` and `pr286`.
+- Next: awaiting Topology's authenticated Playwright re-run confirming
+  `synthesis.mode=foundry`, executive agent identity present,
+  `used_retained_evidence` non-empty, named resources (e.g. `aiopsdemoacr`),
+  concrete recommendations, `retained:` citation ids, zero console errors.
+  On PASS, release the PR #281 API rollback hold per deployment policy.
