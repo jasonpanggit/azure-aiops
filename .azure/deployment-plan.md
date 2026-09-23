@@ -1866,3 +1866,34 @@ change is in scope.
   foundry mode/agent/citations/console-error checks from PR #286). On
   final PASS, release the PR #281 API rollback hold per deployment policy
   — this closes out the PR #280→#287 Foundry topology-narration thread.
+
+## PR #287 final acceptance — Foundry topology-narration thread CLOSED
+
+- Topology's final authenticated Playwright re-run on `/network` against
+  `aiops-dev-api--pr287-36354b89` at 100% traffic: **PASS**.
+  `data.synthesis.executive.status=synthesized`,
+  `reason=operations_copilot_coordinator`, `mode=foundry`,
+  `agent=aiops-executive-summary-agent`; `warning`/`degraded_reason`/
+  `provider_error_class`/`provider_error_reason` all empty. 4 claims,
+  5 `retained:` claim refs, and `used_retained_evidence` now contains
+  5 rows/IDs (the field PR #287 exposed). Narration names concrete
+  resources (`demo-vnet-private-endpoints-nsg-australiaeast`,
+  `demo-vnet-AzureBastionSubnet-nsg-australiaeast`,
+  `acrsredemodevau0qhc`, `aiops-demo-openai`, `container-apps`,
+  `aiops-dev-vnet`) with concrete NSG/private-endpoint/route-table/
+  firewall recommendations. UI shows "Grounded LLM insight" (not
+  "Evidence-only fallback"). Zero browser console errors.
+- **Rollback hold released**: `aiops-dev-api--pr281-7975c091-r1`
+  deactivated per Topology's explicit release instruction and
+  deployment policy — this closes the entire PR #280 → #281 → #282 →
+  #283 → #284 → #286 → #287 Foundry topology-narration fix chain.
+  `aiops-dev-api--pr286-03966666` retained Active/Healthy at 0% as the
+  immediate rollback point (already itself acceptance-PASSed for Foundry
+  synthesis mode/agent/citations, superseded only by the
+  `used_retained_evidence` exposure fix in #287).
+- Final API revision state: `pr286` (Healthy, 0%, immediate rollback),
+  `pr287` (Healthy, 100%, live). All prior revisions (`pr281`, `pr282`,
+  `pr284`) deactivated.
+- Web: unchanged throughout this entire thread (API-only fixes, per
+  Topology's explicit rollout constraints on #281/#284/#286/#287; #282/
+  #283 were the only paired API+web releases in this chain).
