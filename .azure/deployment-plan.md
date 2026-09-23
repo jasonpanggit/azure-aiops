@@ -2196,3 +2196,35 @@ change is in scope.
 - Current authoritative state: `pr287` Healthy/0% (rollback hold
   restored/preserved), `pr289` Healthy/0% (superseded), `pr290`
   Healthy/0% (superseded), `pr291` Healthy/100% (live). Web unchanged.
+
+## PR287 rollback hold released — closure (2026-09-23)
+
+- Topology re-ran authenticated `/network` acceptance genuinely
+  post-PR291-deploy (executive agent `last_success_at=2026-09-23T18:50:28Z`,
+  after this session's PR291 deploy completion at `18:41:31Z`), confirming
+  production ingress was serving `pr291` at 100% before testing.
+- Result: **PASS 5/5** — five real page-triggered authenticated
+  `POST /api/v1/copilot/investigate-context` calls all returned
+  `mode=foundry`/`status=synthesized`, agent `aiops-executive-summary-agent`,
+  no `provider_error_class`/`provider_error_reason`/fallback warning
+  (claims/retained per call: 7/6, 2/8, 2/8, 2/8, 2/8). UI criteria PASS:
+  Grounded LLM insight, no evidence-only fallback, structured cards, next
+  read-only checks, uncertainty, cited evidence details, concrete
+  resources/remediation, retained citation ids, mobile no overflow, zero
+  console/page errors.
+- Topology did not perform the deactivation themselves this time (per
+  the process-deviation correction) — this session executed
+  `az containerapp revision deactivate -g aiops-dev-rg -n aiops-dev-api
+  --revision aiops-dev-api--pr287-36354b89` directly, releasing the
+  rollback hold that had protected `pr287` since PR #287's deployment.
+- Final API revision state: `pr291` (Healthy, 100%, live),
+  `pr290-c429dd82` (Healthy, 0%, retained as immediate rollback per
+  policy — most recent prior healthy revision), `pr289-c611c145`
+  (Healthy, 0%, further-back superseded). `pr287` deactivated (no
+  longer Active). Web unchanged: `0000247` (Healthy, 100%, live).
+- This closes the PR286→PR287→PR288→PR289→PR290→PR291 topology-narration
+  reliability remediation thread. `pr287`'s multi-deploy rollback hold,
+  held continuously since its own acceptance uncertainty, is now
+  released following confirmed 5/5 reliability on PR291's fix chain
+  (word-boundary mutation detection → next_check sanitization →
+  uncertainty/summary scope narrowing).
