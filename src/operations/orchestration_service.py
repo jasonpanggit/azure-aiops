@@ -817,6 +817,28 @@ class OrchestrationTurn:
     synthesis: ExecutiveSynthesis
 
 
+def _executive_synthesis_payload(
+    synthesis: ExecutiveSynthesis,
+) -> dict[str, Any]:
+    """Project executive synthesis diagnostics into the API response."""
+
+    return {
+        "status": synthesis.status,
+        "reason": synthesis.reason,
+        "domain_count": synthesis.domain_count,
+        "claims": synthesis.claims,
+        "warning": synthesis.warning,
+        "mode": synthesis.mode,
+        "narration": synthesis.narration,
+        "agent": synthesis.agent,
+        "degraded_reason": synthesis.degraded_reason,
+        "narration_budget_seconds": synthesis.narration_budget_seconds,
+        "provider_error_class": synthesis.provider_error_class,
+        "provider_error_reason": synthesis.provider_error_reason,
+        "used_retained_evidence": synthesis.used_retained_evidence,
+    }
+
+
 def _narration_fallback_warning(
     *,
     narrator_state: str,
@@ -1827,20 +1849,7 @@ class OrchestrationService:
             citations=self._deduplicate_citations(citations),
             thread_id=thread.thread_id,
             thread_revision=thread.revision + 1,
-            synthesis={
-                "status": synthesis.status,
-                "reason": synthesis.reason,
-                "domain_count": synthesis.domain_count,
-                "claims": synthesis.claims,
-                "warning": synthesis.warning,
-                "mode": synthesis.mode,
-                "narration": synthesis.narration,
-                "agent": synthesis.agent,
-                "degraded_reason": synthesis.degraded_reason,
-                "narration_budget_seconds": synthesis.narration_budget_seconds,
-                "provider_error_class": synthesis.provider_error_class,
-                "provider_error_reason": synthesis.provider_error_reason,
-            },
+            synthesis=_executive_synthesis_payload(synthesis),
         )
         return OrchestrationTurn(
             result=self._record_turn(
