@@ -2291,3 +2291,67 @@ change is in scope.
 - Final state: single active API revision
   `aiops-dev-api--pr293-0a854bd3` (100%, Healthy); single active web revision
   `aiops-dev-web--0000248` (100%, Running).
+
+## API Fabric readiness hotfix — PR #295 follow-up (2026-09-24)
+
+- Trigger: after PR #295 merged, production API readiness became sensitive to
+  transient Fabric/OneLake capacity failures. The live PR293 API revision had
+  Fabric enabled, but `/ready` could return degraded/503 because
+  `exposure_query` was classified as a process-readiness-required provider.
+  Route-level behavior already fails closed, so Fabric-backed data availability
+  should remain visible without making the API process unroutable.
+- Source change: commit
+  `56dd66146271aec40bbc3315ff3ae50ccc6c2bff`
+  (`fix(api): keep Fabric outages from blocking readiness`) changes
+  `src/api/runtime.py` so Fabric-backed providers, including
+  `exposure_query`, are optional for process readiness. Tests in
+  `tests/test_api_runtime.py` assert that `exposure_query` remains configured
+  and observable while aggregate readiness stays `ready`.
+- Process deviation: the hotfix was accidentally committed and pushed directly
+  to `main` instead of going through a PR branch. The diff was exactly
+  `src/api/runtime.py` and `tests/test_api_runtime.py`, and the deviation was
+  accepted only because production readiness was actively impacted. Future
+  source changes should return to the normal branch/PR path.
+- Local validation before rollout:
+  - `pytest -p no:phoenix -q tests/test_api_runtime.py
+    tests/test_api_providers.py` => 94/94 passed.
+  - `ruff check src/api/runtime.py tests/test_api_runtime.py` => clean.
+  - `python3 -m compileall src/api/runtime.py tests/test_api_runtime.py` =>
+    clean.
+  - `git diff --check` => clean.
+- Build:
+  - ACR run `cr11k`.
+  - Image:
+    `aiopsdevacrg6ludc.azurecr.io/aiops-api:fabric-readiness-56dd6614-20260924T170000Z`.
+  - Digest:
+    `sha256:a64627c0fd44e5492d5c4fd449f3987dabd1f9b5543b554967fa6963c3c4f68f`.
+- Candidate cleanup: the first candidate revision
+  `aiops-dev-api--pr295-readiness-56dd6614` unexpectedly inherited
+  `AIOPS_ENABLE_FABRIC=false`; it was deactivated before any traffic was moved.
+  The corrected candidate explicitly set `AIOPS_ENABLE_FABRIC=true`.
+- Deployment:
+  - Correct API revision:
+    `aiops-dev-api--pr295-readiness-fabric-on`.
+  - Image:
+    `aiops-api:fabric-readiness-56dd6614-20260924T170000Z`.
+  - `AIOPS_SOURCE_REVISION=56dd66146271aec40bbc3315ff3ae50ccc6c2bff`.
+  - `AIOPS_ENABLE_FABRIC=true` preserved.
+  - `AIOPS_ENABLE_FABRIC_IQ=false` preserved.
+  - CPU/memory preserved at 4.0 CPU / 8Gi.
+  - Revision-scoped `/health` and `/ready` returned `status=ok` and
+    `readiness=ready` before promotion.
+  - Promoted to 100% traffic, then prior active revision
+    `aiops-dev-api--pr293-0a854bd3` was deactivated to satisfy the user's
+    single-active-API-revision request.
+- Post-deploy public validation:
+  - API `/health`: `status=ok`, `readiness=ready`.
+  - API `/ready`: `status=ok`, `readiness=ready`.
+  - Required `copilot` provider: configured, required, `ready`, loaded.
+  - `exposure_query`: configured, `required=false`, `ready`, loaded.
+  - `fabric_iq`: configured, `required=false`, loading/not loaded; Fabric IQ
+    remains disabled by environment flag.
+- Final API state: exactly one active API revision,
+  `aiops-dev-api--pr295-readiness-fabric-on`, `Healthy`,
+  `RunningAtMaxScale`, 100% traffic, image digest
+  `sha256:a64627c0fd44e5492d5c4fd449f3987dabd1f9b5543b554967fa6963c3c4f68f`,
+  Fabric enabled, Fabric IQ disabled.
