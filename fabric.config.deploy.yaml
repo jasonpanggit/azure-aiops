@@ -23,6 +23,15 @@ fabric:
     max_evidence_rows: 50000
     max_output_items: 100
     max_serialized_bytes: 1000000
+  # Proposal-only semantic evolution. Deterministic profiling, candidate
+  # compilation, and shadow monitoring run after each successful sync;
+  # adapter stays "noop" (no AI-generated proposals) until a grounding
+  # adapter is explicitly configured and reviewed. Structural, destructive,
+  # identity, cardinality, and scope-widening changes are never
+  # auto-applied regardless of adapter.
+  ops_semantic_evolution:
+    enabled: true
+    adapter: noop
   auth:
     mode: managed_identity
     tenant_id: "ffc83107-fcc0-4d2e-8798-d582da36505e"
