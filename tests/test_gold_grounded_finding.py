@@ -88,12 +88,7 @@ def test_parse_gold_grounded_findings_skips_prose_and_parses_json_lines() -> Non
     assert findings[0].degraded is False
 
 
-def test_parse_gold_grounded_findings_returns_degraded_after_retry_budget_exhausted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sleeps: list[float] = []
-    monkeypatch.setattr("fabric_pipelines.gold_grounding_contract.time.sleep", lambda seconds: sleeps.append(seconds))
-
+def test_parse_gold_grounded_findings_fails_closed_on_malformed_evidence() -> None:
     lines = [
         "{bad json line",
         '{"finding_id":"missing-citations","resource_ids":["/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"],"citations":[],"scope_ok":true,"summary":"x"}',
@@ -104,10 +99,4 @@ def test_parse_gold_grounded_findings_returns_degraded_after_retry_budget_exhaus
         tool_call_id="tool-1",
     )
 
-    assert len(findings) == 1
-    degraded = findings[0]
-    assert degraded.degraded is True
-    assert degraded.degraded_reason == "unparseable Gold evidence"
-    assert degraded.citations
-    assert degraded.resource_ids[0].startswith("/subscriptions/")
-    assert sleeps == [0.5, 1.0]
+    assert findings == []
