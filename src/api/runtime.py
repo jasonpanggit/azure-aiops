@@ -3905,11 +3905,11 @@ def _build_provider_runtime(
     exposure_query_enabled = (
         _fabric_exposure_query_enabled() if use_fabric else False
     )
-    core_readiness_providers = (
-        {"exposure_query"}
-        if use_fabric and exposure_query_enabled
-        else set()
-    )
+    # Fabric-backed reads are independently guarded at their route boundary.
+    # A transient Fabric capacity or OneLake outage must keep the affected
+    # provider visibly unavailable without making the API process itself
+    # unroutable.
+    core_readiness_providers: set[str] = set()
     specs = {
         name: ProviderSpec(
             loader=loader,

@@ -566,7 +566,7 @@ fabric:
     assert health["readiness"] == "ready"
 
 
-def test_exposure_query_failure_blocks_process_readiness(
+def test_exposure_query_failure_remains_visible_without_blocking_process_readiness(
     monkeypatch,
 ) -> None:
     import api.runtime as runtime_module
@@ -587,9 +587,9 @@ def test_exposure_query_failure_blocks_process_readiness(
     providers = runtime_module._build_provider_runtime(object())
     health = providers.refresh(force=True)
 
-    assert providers.specs["exposure_query"].required is True
+    assert providers.specs["exposure_query"].required is False
     assert health["providers"]["exposure_query"]["state"] == "unavailable"
-    assert health["readiness"] == "degraded"
+    assert health["readiness"] == "ready"
 
 
 @pytest.mark.parametrize(
@@ -717,7 +717,7 @@ def test_exposure_generation_window_reads_api_home_pointer(
     assert set(window.retained_generations) == {"exposure-gold-6"}
 
 
-def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
+def test_fabric_providers_keep_exposure_optional_without_snapshot_preflight(
     monkeypatch,
 ) -> None:
     import api.runtime as runtime_module
@@ -759,7 +759,7 @@ def test_fabric_providers_share_generation_cache_key_without_snapshot_preflight(
 
     assert isinstance(semantic, ProviderValue)
     assert semantic.ontology_version == "semantic-generation-7"
-    assert providers.specs["exposure_query"].required is True
+    assert providers.specs["exposure_query"].required is False
     assert providers.specs["exposure_read_port"].required is False
     assert providers.specs["remediation_catalog"].required is False
     assert providers.specs["remediation"].required is False
