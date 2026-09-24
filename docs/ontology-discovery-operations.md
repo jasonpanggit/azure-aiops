@@ -243,3 +243,25 @@ resolved at runtime by the coordinator identity. The other two fixture members
 remain synthetic to exercise bounded retry and fairness behavior. In
 validation, both coordinator and publisher Jobs are manual-only so scheduled
 executions cannot race the evidence sequence.
+# Bounded semantic evolution
+
+Semantic evolution is an advisory, proposal-only extension of ontology
+discovery. It is disabled by default (`fabric.ops_semantic_evolution.enabled:
+false`). Profiles and evidence are pinned to one immutable source generation.
+Only additive descriptions, synonyms/classifications, columns, relationships,
+hierarchies, and measures may be proposed; identity, cardinality, destructive
+changes, and scope widening are rejected.
+
+Reviewed proposals are stored through `OntologyRunStore` and only accepted
+proposals are compiled into a deterministic local candidate definition. The
+pipeline writes `semantic-candidate.json`, `semantic-profile.json`, and
+`semantic-monitoring.json` atomically to the configured local artifact root.
+It never acquires tokens, mutates Fabric, or publishes a semantic model.
+
+The optional Gold grounding adapter is fail-closed and generation-pinned. Its
+default allowlist is `gold_exposure_facts`,
+`gold_container_exposure_current`, `gold_container_exposure_coverage`,
+`ontology_entities`, `ontology_relationships`, `ontology_health`,
+`ontology_business_context`, and `ontology_compliance_context`. Sync invokes
+the advisory callback only after immutable publication finalization; callback
+failures are logged and do not fail publication.

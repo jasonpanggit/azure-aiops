@@ -235,6 +235,36 @@ class SemanticRuntimeConfig:
     max_serialized_bytes: int = 1_000_000
 
 
+SEMANTIC_EVOLUTION_GOLD_ALLOWLIST = (
+    "gold_exposure_facts",
+    "gold_container_exposure_current",
+    "gold_container_exposure_coverage",
+    "ontology_entities",
+    "ontology_relationships",
+    "ontology_health",
+    "ontology_business_context",
+    "ontology_compliance_context",
+)
+
+
+@dataclass(frozen=True)
+class SemanticEvolutionRuntimeConfig:
+    """Default-off, proposal-only semantic evolution controls."""
+
+    enabled: bool = False
+    artifact_root: Path | None = None
+    adapter: str = "noop"
+    gold_table_allowlist: tuple[str, ...] = SEMANTIC_EVOLUTION_GOLD_ALLOWLIST
+
+    def validate(self) -> None:
+        if self.adapter not in {"noop", "gold_grounding"}:
+            raise ValueError("fabric.ops_semantic_evolution.adapter must be noop or gold_grounding")
+        if not self.gold_table_allowlist:
+            raise ValueError("fabric.ops_semantic_evolution.gold_table_allowlist must not be empty")
+        if len(set(self.gold_table_allowlist)) != len(self.gold_table_allowlist):
+            raise ValueError("fabric.ops_semantic_evolution.gold_table_allowlist must be unique")
+
+
 @dataclass(frozen=True)
 class LifecycleRuntimeConfig:
     enabled: bool = True
@@ -329,6 +359,9 @@ class FabricRuntimeConfig:
         default_factory=OperationsAgentRuntimeConfig
     )
     semantic: SemanticRuntimeConfig = field(default_factory=SemanticRuntimeConfig)
+    ops_semantic_evolution: SemanticEvolutionRuntimeConfig = field(
+        default_factory=SemanticEvolutionRuntimeConfig
+    )
     lifecycle: LifecycleRuntimeConfig = field(default_factory=LifecycleRuntimeConfig)
     incident_causality: IncidentCausalityRuntimeConfig = field(
         default_factory=IncidentCausalityRuntimeConfig
@@ -521,6 +554,26 @@ class FabricRuntimeConfig:
         remediation_enabled = remediation_payload.get("enabled", True)
         if not isinstance(remediation_enabled, bool):
             raise TypeError("fabric.remediation.enabled must be boolean")
+        raw_semantic_evolution = fabric.get("ops_semantic_evolution", {})
+        if raw_semantic_evolution is False:
+            semantic_evolution_payload = {"enabled": False}
+        elif isinstance(raw_semantic_evolution, dict):
+            semantic_evolution_payload = raw_semantic_evolution
+        else:
+            raise TypeError("fabric.ops_semantic_evolution must be a mapping or false")
+        semantic_evolution_enabled = semantic_evolution_payload.get("enabled", False)
+        if not isinstance(semantic_evolution_enabled, bool):
+            raise TypeError("fabric.ops_semantic_evolution.enabled must be boolean")
+        semantic_evolution_adapter = semantic_evolution_payload.get("adapter", "noop")
+        if not isinstance(semantic_evolution_adapter, str):
+            raise TypeError("fabric.ops_semantic_evolution.adapter must be a string")
+        semantic_evolution_allowlist = semantic_evolution_payload.get(
+            "gold_table_allowlist", SEMANTIC_EVOLUTION_GOLD_ALLOWLIST
+        )
+        if not isinstance(semantic_evolution_allowlist, (list, tuple)) or not all(
+            isinstance(value, str) and value.strip() for value in semantic_evolution_allowlist
+        ):
+            raise TypeError("fabric.ops_semantic_evolution.gold_table_allowlist must be list[str]")
         lifecycle_catalog = lifecycle_payload.get("catalog_path")
         config = cls(
             auth=FabricAuthConfig.from_mapping(fabric.get("auth") or {}),
@@ -650,6 +703,18 @@ class FabricRuntimeConfig:
                     1_000_000,
                 ),
             ),
+            ops_semantic_evolution=SemanticEvolutionRuntimeConfig(
+                enabled=semantic_evolution_enabled,
+                artifact_root=(
+                    _resolve_path(config_path.parent, semantic_evolution_payload["artifact_root"])
+                    if semantic_evolution_payload.get("artifact_root")
+                    else None
+                ),
+                adapter=semantic_evolution_adapter,
+                gold_table_allowlist=tuple(
+                    sorted({value.strip() for value in semantic_evolution_allowlist}, key=str.casefold)
+                ),
+            ),
             lifecycle=LifecycleRuntimeConfig(
                 enabled=lifecycle_enabled,
                 catalog_path=(
@@ -733,6 +798,7 @@ class FabricRuntimeConfig:
             raise ValueError("fabric.registration_attempts must be positive")
         if self.write_workers < 1:
             raise ValueError("fabric.write_workers must be positive")
+        self.ops_semantic_evolution.validate()
         if (
             self.exposure.enabled
             and not self.exposure.rollback_mode

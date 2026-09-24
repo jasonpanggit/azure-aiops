@@ -71,6 +71,40 @@ def test_build_definition_is_deterministic_for_same_table_set() -> None:
     assert a == b
 
 
+def test_build_definition_compiles_reviewed_metadata_deterministically() -> None:
+    definition = build_semantic_model_definition(
+        "aiops_gold_semantic_model",
+        ["gold_patch_risk", "gold_incident_summary"],
+        semantic_metadata={
+            "descriptions": {"gold_patch_risk": "Patch posture"},
+            "relationships": [
+                {
+                    "from": "gold_incident_summary",
+                    "to": "gold_patch_risk",
+                    "name": "incident_patch",
+                }
+            ],
+            "proposal_ids": ["proposal-b", "proposal-a"],
+        },
+    )
+
+    model = _decode_part(definition, "model.bim")["model"]
+    assert model["relationships"][0]["name"] == "incident_patch"
+    assert model["annotations"][-1] == {
+        "name": "aiops.semanticProposalIds",
+        "value": "proposal-a,proposal-b",
+    }
+
+
+def test_build_definition_rejects_reviewed_metadata_unknown_table() -> None:
+    with pytest.raises(ValueError, match="unknown table"):
+        build_semantic_model_definition(
+            "aiops_gold_semantic_model",
+            ["gold_patch_risk"],
+            semantic_metadata={"descriptions": {"gold_missing": "Nope"}},
+        )
+
+
 class _Token:
     token = "token"
     expires_on = 4_102_444_800

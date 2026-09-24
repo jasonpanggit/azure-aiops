@@ -33,6 +33,46 @@ class FabricRuntimeMode(Enum):
     PUBLISH = "publish"
 
 
+def _semantic_evolution_callback(config: FabricRuntimeConfig, root: Path | None):
+    """Build the default-off local-only semantic evolution callback."""
+    if not config.ops_semantic_evolution.enabled:
+        return None
+    from ontology_discovery.semantic_evolution import (
+        GenerationPinnedProfile,
+        SemanticEvolutionBatch,
+    )
+    from ontology_discovery.semantic_evolution_pipeline import (
+        ProfileArtifactStore,
+        SemanticEvolutionPipeline,
+    )
+
+    store = ProfileArtifactStore(
+        config.ops_semantic_evolution.artifact_root
+        or root / "semantic_evolution"
+    )
+    pipeline = SemanticEvolutionPipeline(store)
+
+    def callback(*, source_generation_id: str, run_id: str, table_rows: dict, versions: dict) -> None:
+        tables = tuple(
+            sorted(
+                set(table_rows).intersection(config.ops_semantic_evolution.gold_table_allowlist),
+                key=str.casefold,
+            )
+        )
+        if not tables:
+            return
+        profile = GenerationPinnedProfile(
+            profile_id=f"SEP-{run_id}",
+            source_generation_id=source_generation_id,
+            semantic_model_name="Operational_Context_Semantic",
+            tables=tables,
+            profile_version="1",
+        )
+        pipeline.run(batch=SemanticEvolutionBatch(profile=profile), gold_tables=tables)
+
+    return callback
+
+
 def _select_factory_kwargs(
     factory: Callable[..., Any], snapshot: dict[str, Any]
 ) -> dict[str, Any]:
@@ -467,6 +507,9 @@ def build_runtime(
             lifecycle_catalog=lifecycle_catalog,
             remediation_decision_reader=remediation_repository.decisions.list,
             remediation_plan_reader=remediation_repository.ontology_projection,
+            semantic_evolution_callback=_semantic_evolution_callback(
+                config, Path(config.local_onelake_root) / "Files"
+            ),
         )
         return FabricRuntime(
             config,
@@ -540,6 +583,9 @@ def build_runtime(
             credential,
             config,
             mode=mode,
+        ),
+        semantic_evolution_callback=_semantic_evolution_callback(
+            config, config.ops_semantic_evolution.artifact_root or Path("semantic_evolution")
         ),
     )
     return FabricRuntime(

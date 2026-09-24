@@ -623,6 +623,7 @@ class FabricSyncService:
         clock=time.monotonic,
         sql_reader=None,
         publication_checkpoint_store: PublicationCheckpointStore | None = None,
+        semantic_evolution_callback: Callable[..., None] | None = None,
     ) -> None:
         # ``source_root`` is normally a local disk path (CLI/manual sync), but
         # the API-triggered refresh path (``inventory_orchestration.
@@ -673,6 +674,7 @@ class FabricSyncService:
         # watermarks) are pushed down to the Lakehouse SQL endpoint instead of
         # materializing whole Delta tables. Writes always go through Delta.
         self.sql_reader = sql_reader
+        self.semantic_evolution_callback = semantic_evolution_callback
         self.publication_checkpoints = (
             publication_checkpoint_store
             or PublicationCheckpointStore(
@@ -2128,6 +2130,24 @@ class FabricSyncService:
                 publication_plan,
                 outcome=_sync_result_document(final_result),
             )
+            if self.semantic_evolution_callback is not None:
+                try:
+                    self.semantic_evolution_callback(
+                        source_generation_id=source_run_id,
+                        run_id=run_id,
+                        table_rows={
+                            name: rows for name, rows in publish_items
+                        },
+                        versions={
+                            name: result.version
+                            for name, result in table_results.items()
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - advisory work is best effort.
+                    _LOGGER.warning(
+                        "semantic_evolution_callback_failed",
+                        extra={"error_code": "SEMANTIC_EVOLUTION_CALLBACK_FAILED"},
+                    )
             assert_lock_held()
             _notify_stage_progress(
                 stage_progress_callback,

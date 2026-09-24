@@ -64,6 +64,7 @@ def build_semantic_model_definition(
     *,
     generation: GenerationSelection | None = None,
     table_aliases: Mapping[str, CompatibilityAlias] | None = None,
+    semantic_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     semantic_model_name = _validate_name(display_name, "display_name")
     tables = _normalize_gold_tables(gold_tables)
@@ -75,6 +76,25 @@ def build_semantic_model_definition(
             for table in tables
         ]
 
+    metadata = _normalize_semantic_metadata(semantic_metadata or {}, tables)
+    annotations = []
+    if generation is not None:
+        annotations.append(
+            {
+                "name": "aiops.ontologyGeneration",
+                "value": (
+                    f"{generation.compatibility_alias_version}:"
+                    f"{generation.generation_id}"
+                ),
+            }
+        )
+    if metadata["proposal_ids"]:
+        annotations.append(
+            {
+                "name": "aiops.semanticProposalIds",
+                "value": ",".join(metadata["proposal_ids"]),
+            }
+        )
     model_bim = {
         "name": semantic_model_name,
         "compatibilityLevel": 1605,
@@ -94,30 +114,23 @@ def build_semantic_model_definition(
                             },
                         }
                     ],
+                    **metadata["tables"].get(table_name, {}),
                 }
                 for table_name in tables
             ],
-            **(
-                {
-                    "annotations": [
-                        {
-                            "name": "aiops.ontologyGeneration",
-                            "value": (
-                                f"{generation.compatibility_alias_version}:"
-                                f"{generation.generation_id}"
-                            ),
-                        }
-                    ]
-                }
-                if generation is not None
-                else {}
-            ),
+            **({"relationships": metadata["relationships"]} if metadata["relationships"] else {}),
+            **({"roles": metadata["roles"]} if metadata["roles"] else {}),
+            **({"measures": metadata["measures"]} if metadata["measures"] else {}),
+            **({"annotations": annotations} if annotations else {}),
         },
     }
     definition_pbism = {
         "version": "1.0",
         "semanticModel": {"name": semantic_model_name, "storageMode": "DirectLake"},
-        "tables": [{"name": table_name} for table_name in tables],
+        "tables": [
+            {"name": table_name, **metadata["tables"].get(table_name, {})}
+            for table_name in tables
+        ],
     }
     platform = {
         "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/platformProperties/1.0.0/schema.json",
@@ -134,6 +147,65 @@ def build_semantic_model_definition(
             {"path": ".platform", "payload": _b64(platform), "payloadType": "InlineBase64"},
         ]
     }
+
+
+def _normalize_semantic_metadata(
+    metadata: Mapping[str, Any], tables: list[str]
+) -> dict[str, Any]:
+    """Validate and deterministically normalize reviewed additive metadata."""
+    allowed = {"descriptions", "synonyms", "classifications", "columns",
+               "relationships", "hierarchies", "measures", "proposal_ids"}
+    unknown = set(metadata) - allowed
+    if unknown:
+        raise ValueError(f"semantic_metadata contains unsupported fields: {sorted(unknown)}")
+    table_set = set(tables)
+    result: dict[str, Any] = {
+        "tables": {},
+        "relationships": [],
+        "roles": [],
+        "measures": [],
+        "proposal_ids": [],
+    }
+    for name in ("descriptions", "synonyms", "classifications", "columns"):
+        values = metadata.get(name, {})
+        if values is None:
+            continue
+        if not isinstance(values, Mapping):
+            raise TypeError(f"semantic_metadata.{name} must be a mapping")
+        for table, value in sorted(values.items(), key=lambda item: str(item[0]).casefold()):
+            table_name = str(table)
+            if table_name not in table_set:
+                raise ValueError(f"semantic metadata references unknown table {table_name!r}")
+            result["tables"].setdefault(table_name, {})
+            key = {"descriptions": "description", "synonyms": "synonyms",
+                   "classifications": "classifications", "columns": "columns"}[name]
+            result["tables"][table_name][key] = value
+    for name, target in (("relationships", "relationships"), ("hierarchies", "roles"), ("measures", "measures")):
+        values = metadata.get(name, ())
+        if values is None:
+            continue
+        if not isinstance(values, (list, tuple)):
+            raise TypeError(f"semantic_metadata.{name} must be a sequence")
+        normalized = []
+        for value in values:
+            if not isinstance(value, Mapping):
+                raise TypeError(f"semantic_metadata.{name} entries must be mappings")
+            item = dict(value)
+            refs = [item.get(key) for key in ("from", "to", "table", "source", "target")]
+            for ref in refs:
+                if ref is not None and str(ref) not in table_set:
+                    raise ValueError(f"semantic metadata references unknown table {ref!r}")
+            normalized.append(item)
+        result[target] = sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+    proposal_ids = metadata.get("proposal_ids", ())
+    if proposal_ids is not None:
+        if not isinstance(proposal_ids, (list, tuple)):
+            raise TypeError("semantic_metadata.proposal_ids must be a sequence")
+        result["proposal_ids"] = sorted({str(value) for value in proposal_ids})
+    return result
 
 
 def _bound_alias_name(

@@ -76,6 +76,21 @@ def _service(tmp_path: Path) -> FabricSyncService:
     )
 
 
+def test_semantic_evolution_callback_is_optional_and_retained(tmp_path: Path) -> None:
+    callback = lambda **kwargs: None
+    service = FabricSyncService(
+        source_root=tmp_path / "source",
+        onelake=OneLakeWriter(
+            "workspace", "lakehouse", local_root=tmp_path / "lakehouse"
+        ),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+        semantic_evolution_callback=callback,
+    )
+
+    assert service.semantic_evolution_callback is callback
+
+
 def _container_source_snapshot(
     root: Path,
     *,
