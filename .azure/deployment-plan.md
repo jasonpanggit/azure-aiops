@@ -2355,3 +2355,52 @@ change is in scope.
   `RunningAtMaxScale`, 100% traffic, image digest
   `sha256:a64627c0fd44e5492d5c4fd449f3987dabd1f9b5543b554967fa6963c3c4f68f`,
   Fabric enabled, Fabric IQ disabled.
+
+## PR #298 — stop hourly inventory refresh wiping entity-derived tables (2026-09-29)
+
+- Change: `fix(inventory): stop hourly refresh wiping entity-derived tables`
+  (head `f2f38ca0d2298c3b62998f59c4d1e1f8434aedd2`, 6 files). The hourly
+  Fabric pipeline "Inventory Refresh" (`d879af68-e020-4c6f-941e-aa9967544b13`)
+  POSTs to the API `/api/v1/inventory/refresh`; the API replayed an
+  inventory-only combined generation through the full Fabric sync, overwriting
+  every entity-derived bronze/silver/ontology table with 0 rows while reporting
+  `completed`. The fix replays an entities-aware combined snapshot (inventory
+  datasets pinned) and adds two pre-commit guards in `src/fabric/sync_service.py`
+  that abort a collapsed entity projection over live inventory.
+- CI: backend/frontend/security-scan failed in ~2s (known billing/admission
+  infra failure, not test evidence).
+- Independent local validation (worktree at `f2f38ca0d`, 0 behind main):
+  `tests/test_fabric_sync_service.py`, `test_inventory_refresh_multi_connection.py`,
+  `test_inventory_refresh_cli.py`, `test_inventory_refresh_endpoint.py`,
+  `test_inventory_refresh_pipeline_script.py`, `test_onboarding_activation.py`,
+  `test_api_runtime.py` => all passed; Ruff clean; `git diff --check` clean.
+  Reviewed `_RefreshedConnectionSources` shim against
+  `publish_combined_snapshot` (uses only `registry.get` and
+  `sync_coordinator.connection_output_dir`).
+- Merge: admin-merged with `--match-head-commit`, merge commit
+  `8e7785406155b06e208053f11f8bd2c5decdf4f8`. This build also ships
+  previously merged-but-undeployed #296/#297 (ops semantic evolution enabled in
+  baked `fabric.config.deploy.yaml`, adapter `noop`, no live semantic-model
+  publish).
+- Build: ACR run `cr11n` (first attempt `cr11m` failed only on the missing
+  `AIOPS_SOURCE_REVISION` build-arg guard), image
+  `aiopsdevacrg6ludc.azurecr.io/aiops-api:inventory-wipe-fix-8e778540-20260929T012826Z`,
+  digest `sha256:c6463b9206c20d80c9749cc4b1b546bdb7c5b8b7f7ac86a467c84f631ffb6108`.
+- Deploy: revision `aiops-dev-api--pr298-8e778540` copied from
+  `aiops-dev-api--pr295-readiness-fabric-on` with explicit
+  `AIOPS_ENABLE_FABRIC=true`, `AIOPS_ENABLE_FABRIC_IQ=false`,
+  `AIOPS_SOURCE_REVISION=8e778540…`, 4.0 CPU / 8Gi. Revision-scoped and public
+  `/health` and `/ready` returned 200 `ok`/`ready`. Promoted to 100%; prior
+  revision deactivated (single active API revision).
+- Live condition at deploy: Fabric capacity `aiopsdevcapg6ludc` (F4,
+  `6616292a-d806-4f20-91c0-5e035fa3c1b4`) is **Paused**. OneLake returns
+  404 "capacity is currently not available", so `inventory`, `exposure_query`,
+  `exposure_read_port`, and `fabric_iq` providers are unavailable (optional;
+  readiness unaffected). The prior revision was serving a pre-outage in-memory
+  inventory cache; the new revision cannot reload it until capacity resumes.
+  The hourly pipeline cannot run while paused, so no further wipes occur.
+- Pending: recovery verification (`bronze_resources` > 0 rows,
+  `ontology_entities` advancing past v108 / 133 rows in lakehouse
+  `6317eaf6-e597-4b4e-a07d-c53027c01feb`) is blocked until the capacity is
+  resumed and the first hourly run completes on this revision. Capacity resume
+  was not performed (cost/ownership decision).
