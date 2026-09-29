@@ -16,6 +16,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class _RefreshedConnectionRoots:
+    def __init__(self, roots: dict[str, str]) -> None:
+        self._roots = roots
+
+    def connection_output_dir(self, connection: Any) -> str:
+        return self._roots[connection.connection_id]
+
+
+class _RefreshedConnectionSources:
+    """Point the combined-snapshot merge at the roots just refreshed."""
+
+    def __init__(self, registry: Any, roots: dict[str, str]) -> None:
+        self.registry = registry
+        self.sync_coordinator = _RefreshedConnectionRoots(roots)
+
+
 def run_inventory_refresh_all_connections(
     config_path: str,
     *,
@@ -117,6 +133,7 @@ def run_inventory_refresh_all_connections(
     )
     inventory_publication: dict[str, Any] | None = None
     fabric_publication: dict[str, Any] | None = None
+    entities_manifest: dict[str, Any] | None = None
     if fabric_config_path:
         # Two distinct table families are produced from the same combined
         # snapshot and both are required for a complete lakehouse:
@@ -130,11 +147,37 @@ def run_inventory_refresh_all_connections(
             source_run_id=str(combined_manifest["runId"]),
         )
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
+        from onboarding.activation import publish_combined_snapshot
         from storage.datasets import DatasetStore
 
         combined_store = DatasetStore(config.output_dir)
-        combined_generation = combined_store.generation_path(
+        inventory_generation = combined_store.generation_path(
             str(combined_manifest["runId"])
+        )
+        if inventory_generation is None:
+            raise RuntimeError("Combined inventory snapshot was not published")
+        pinned_inventory = combined_store.read_datasets(
+            [
+                name
+                for name in combined_manifest.get("datasets") or {}
+                if name != "ontology/ontology"
+            ],
+            generation=inventory_generation,
+        )
+        # `combined_manifest` carries only the narrow inventory datasets. The
+        # full sync projects every bronze/silver/ontology table from
+        # `entities/*`, so replaying it overwrites that family with zero rows
+        # on every run. Replay an entities-aware generation merged from the
+        # exact connection roots refreshed above, with the inventory datasets
+        # pinned to the combined generation rather than carried forward.
+        entities_manifest = publish_combined_snapshot(
+            _RefreshedConnectionSources(registry, connection_output_dirs),
+            succeeded,
+            config.output_dir,
+            pinned_datasets=pinned_inventory,
+        )
+        combined_generation = combined_store.generation_path(
+            str(entities_manifest["runId"])
         )
         if combined_generation is None:
             raise RuntimeError("Combined inventory snapshot was not published")
@@ -152,7 +195,7 @@ def run_inventory_refresh_all_connections(
             }
         )
         publication = runtime.service.sync(
-            replay_source_run_id=str(combined_manifest["runId"]),
+            replay_source_run_id=str(entities_manifest["runId"]),
             requested_scope={"subscription": requested_subscriptions},
         )
         fabric_publication = {
@@ -166,6 +209,7 @@ def run_inventory_refresh_all_connections(
         "status": "completed" if len(succeeded) == len(connections) else "partial",
         "connections": connection_results,
         "combined_manifest": combined_manifest,
+        "entities_manifest": entities_manifest,
         "inventory_publication": inventory_publication,
         "fabric_publication": fabric_publication,
     }

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 import pyarrow as pa
+from deltalake import DeltaTable
 
 from fabric_pipelines import (
     change_pipeline,
@@ -222,6 +223,15 @@ _FABRIC_STAGE_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 _MAX_PROGRESS_COUNT = 2_147_483_647
+# Manifest dataset-name prefix for the typed entity files every inventory
+# generation carries. A generation published without them (e.g. the combined
+# inventory activation path, which emits only `inventory/*`) projects to zero
+# rows for every entity-derived table.
+_ENTITY_DATASET_PREFIX = "entities/"
+# `bronze_resources` is a 1:1 typed passthrough of the Resource,
+# VirtualMachine and ArcServer entity files, so it is empty if and only if the
+# entity projection collapsed. It is the cheapest reliable witness for that.
+_ENTITY_PROJECTION_WITNESS = "bronze_resources"
 _EXPOSURE_GOLD_INPUT_TABLES = (
     "gold_exposure_current",
     "silver_exposure_observations",
@@ -945,6 +955,7 @@ class FabricSyncService:
                     source_generation_id=source_run_id,
                 )
             )
+            self._assert_entity_projection_intact(snapshot, datasets)
             _notify_stage_progress(
                 stage_progress_callback,
                 "dataset_mapping",
@@ -1827,6 +1838,8 @@ class FabricSyncService:
                     )
                 if write_error is not None:
                     raise write_error
+
+            self._assert_no_wholesale_inventory_wipe(datasets, table_results)
 
             catalog = _catalog_metadata(
                 datasets,
@@ -3695,6 +3708,153 @@ class FabricSyncService:
         if not fs.exists(f"{candidate}/manifest.json"):
             raise ValueError(f"Source snapshot has no manifest: {candidate}")
         return candidate
+
+    def _assert_no_wholesale_inventory_wipe(
+        self,
+        datasets: Mapping[str, list[dict[str, Any]]],
+        table_results: Mapping[str, DeltaWriteResult],
+    ) -> None:
+        """Fail the run if this publication deleted inventory and added none.
+
+        Defence in depth behind ``_assert_entity_projection_intact``. That
+        preflight inspects the source generation as a whole; this catches a
+        projection that collapsed *after* the manifest looked healthy.
+
+        The condition is deliberately narrow - every entity-derived table that
+        changed must have removed rows and added none - because a single table
+        legitimately emptying (a tenant really did lose its last Defender
+        assessment) must not fail a publication. Raising here, before
+        ``data_committed``, lets ``_rollback`` restore the prior versions.
+        """
+
+        removed = 0
+        added = 0
+        wiped: list[str] = []
+        for table_name, result in table_results.items():
+            if not table_name.startswith(("bronze_", "silver_")):
+                continue
+            removed += result.rows_removed
+            added += result.rows_added
+            if result.rows_removed > 0 and result.rows_added == 0:
+                wiped.append(table_name)
+
+        if not wiped or added > 0 or removed <= 0:
+            return
+        if any(datasets.get(name) for name in wiped):
+            # Rows were projected for at least one of these tables, so the
+            # deletions are a real snapshot change rather than a collapse.
+            return
+        raise ValueError(
+            "Publication removed "
+            f"{removed} inventory rows across {len(wiped)} tables and added "
+            "none, which indicates a collapsed source projection rather than "
+            "a snapshot change: " + ", ".join(sorted(wiped)[:10])
+        )
+
+    def _live_witness_row_count(self) -> int | None:
+        """Row count of the entity-projection witness table already in Fabric.
+
+        Metadata only - reads Delta add-action statistics rather than the data.
+        Returns ``None`` when the count cannot be established, so callers can
+        distinguish "nothing there" from "could not tell".
+        """
+
+        try:
+            layer, _, table = _ENTITY_PROJECTION_WITNESS.partition("_")
+            uri = self.onelake.table_uri(layer, table)
+            refresh = getattr(self.delta, "_refresh_storage_options", None)
+            if callable(refresh):
+                refresh()
+            if not self.delta.exists(uri):
+                return 0
+            actions = pa.table(
+                DeltaTable(
+                    str(uri),
+                    storage_options=self.delta.storage_options,
+                ).get_add_actions(flatten=True)
+            )
+            if "num_records" not in actions.column_names:
+                return None
+            return sum(value or 0 for value in actions.column("num_records").to_pylist())
+        except Exception:  # noqa: BLE001 - never block a publication on a probe
+            return None
+
+    def _assert_entity_projection_intact(
+        self,
+        snapshot: Path | str,
+        datasets: Mapping[str, list[dict[str, Any]]],
+    ) -> None:
+        """Refuse to publish a collapsed entity projection over live inventory.
+
+        Publishing an empty projection is destructive *and* silent. OVERWRITE
+        tables are rewritten with nothing; SNAPSHOT_MERGE tables have every
+        unmatched row deleted by ``when_not_matched_by_source_delete()``. The
+        run still reports ``completed`` because the only publication gate,
+        ``_required_table_version``, checks that a Delta version exists - not
+        that it advanced, nor that any row survived.
+
+        The test is *loss*, not shape. Partial generations are legitimate -
+        an exposure-only or inventory-only publication into a root that holds
+        no entity data destroys nothing. This only fails when an empty
+        projection would overwrite inventory that is currently live in Fabric.
+
+        Runs *before* the first write on purpose: a post-write version or
+        ``rows_removed`` comparison can only describe damage already done.
+        """
+
+        if datasets.get(_ENTITY_PROJECTION_WITNESS):
+            return  # Projection carries entity rows - the healthy path.
+
+        live_rows = self._live_witness_row_count()
+        if not live_rows:
+            # Nothing live to overwrite (absent, empty, or unreadable table).
+            return
+
+        try:
+            manifest = self._read_manifest(snapshot)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            # A snapshot whose manifest cannot be read is rejected downstream
+            # by the resolver; do not convert that into a projection error.
+            return
+
+        declared = manifest.get("datasets")
+        if not isinstance(declared, Mapping):
+            # Pre-manifest-detail generations carry no per-dataset row counts,
+            # so there is nothing to compare the projection against.
+            return
+
+        entity_datasets = {
+            name: detail
+            for name, detail in declared.items()
+            if str(name).startswith(_ENTITY_DATASET_PREFIX)
+        }
+        if not entity_datasets:
+            raise ValueError(
+                "Source generation declares no entity datasets, so publishing "
+                f"it would overwrite or delete the {live_rows} inventory rows "
+                f"currently live in Fabric (snapshot={snapshot}, "
+                f"table={_ENTITY_PROJECTION_WITNESS})"
+            )
+
+        source_entity_rows = 0
+        for detail in entity_datasets.values():
+            if isinstance(detail, Mapping):
+                try:
+                    source_entity_rows += int(detail.get("rowCount") or 0)
+                except (TypeError, ValueError):
+                    continue
+        if source_entity_rows <= 0:
+            # The tenant genuinely reports no entities. That is a real snapshot
+            # change, not a collapse; ``_assert_no_wholesale_inventory_wipe``
+            # still catches the pathological form of it after the write.
+            return
+
+        raise ValueError(
+            "Entity projection is empty while the source generation holds "
+            f"{source_entity_rows} entity rows: publishing would overwrite or "
+            f"delete {live_rows} live inventory rows in Fabric "
+            f"(snapshot={snapshot}, table={_ENTITY_PROJECTION_WITNESS})"
+        )
 
     def _read_manifest(self, snapshot: Path | str) -> dict[str, Any]:
         if self._source_root_is_remote:
