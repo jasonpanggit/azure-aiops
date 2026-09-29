@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any
 
 import pytest
+from deltalake import DeltaTable
 from test_container_image_exposure import REGISTRY, _granular_image_row
 from test_incremental_sync import FIXTURE, _source_snapshot
 
@@ -3196,3 +3197,136 @@ def test_dedicated_publisher_rejects_identity_override_from_request_factory() ->
         assert "identity" in str(exc).lower()
     else:
         raise AssertionError("coordinator identity substitution must be denied")
+
+
+def _truncate_entity_files(source: Path) -> None:
+    """Empty every entity file while leaving the manifest row counts intact.
+
+    Reproduces a collapsed projection: the generation still advertises entity
+    rows, but the publisher reads nothing from them.
+    """
+    generation = Path(str(DatasetStore(source).current_generation()))
+    for path in (generation / "entities").glob("*.jsonl"):
+        path.write_text("")
+
+
+def test_sync_refuses_to_publish_a_collapsed_entity_projection(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _source_snapshot(source)
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=lakehouse),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+    )
+    service.sync(requested_scope={"subscription": ["sub-1"]})
+    before = DeltaTable(str(lakehouse / "Tables/bronze_resources")).to_pyarrow_table().num_rows
+    assert before > 0
+
+    _truncate_entity_files(source)
+
+    with pytest.raises(ValueError) as excinfo:
+        service.sync(requested_scope={"subscription": ["sub-1"]})
+
+    assert "entity projection is empty" in str(excinfo.value).lower()
+    after = DeltaTable(str(lakehouse / "Tables/bronze_resources")).to_pyarrow_table().num_rows
+    assert after == before, "a starved publication must not wipe live inventory"
+
+
+def _generation_with_manifest(root: Path, datasets: dict[str, int]) -> Path:
+    """Build a minimal generation whose manifest declares the given row counts."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_text(
+        json.dumps({"datasets": {name: {"rowCount": rows} for name, rows in datasets.items()}})
+    )
+    return root
+
+
+def test_entity_projection_guard_rejects_a_generation_without_entity_datasets(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    snapshot = _generation_with_manifest(
+        tmp_path / "inventory-only",
+        {"inventory/patch_assessment": 12},
+    )
+    service._live_witness_row_count = lambda: 5000  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError) as excinfo:
+        service._assert_entity_projection_intact(snapshot, {"bronze_resources": []})
+
+    assert "no entity datasets" in str(excinfo.value).lower()
+
+
+def test_entity_projection_guard_allows_a_partial_generation_over_empty_tables(
+    tmp_path: Path,
+) -> None:
+    """An exposure-only publication into a lakehouse with no live inventory."""
+    service = _service(tmp_path)
+    snapshot = _generation_with_manifest(
+        tmp_path / "exposure-only",
+        {"exposure/workload_observations": 3},
+    )
+    service._live_witness_row_count = lambda: 0  # type: ignore[method-assign]
+
+    service._assert_entity_projection_intact(snapshot, {"bronze_resources": []})
+
+
+def test_entity_projection_guard_allows_a_genuinely_empty_tenant(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    snapshot = _generation_with_manifest(
+        tmp_path / "empty-tenant",
+        {"entities/Resource": 0, "entities/VirtualMachine": 0},
+    )
+    service._live_witness_row_count = lambda: 42  # type: ignore[method-assign]
+
+    service._assert_entity_projection_intact(snapshot, {"bronze_resources": []})
+
+
+def test_entity_projection_guard_allows_a_healthy_projection(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    snapshot = _generation_with_manifest(
+        tmp_path / "healthy",
+        {"entities/Resource": 7},
+    )
+
+    service._assert_entity_projection_intact(
+        snapshot,
+        {"bronze_resources": [{"resource_id": "r1"}]},
+    )
+
+
+def test_wholesale_wipe_guard_allows_a_real_snapshot_deletion(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    service._assert_no_wholesale_inventory_wipe(
+        {"bronze_resources": [{"resource_id": "r1"}], "silver_vm_inventory": []},
+        {
+            "bronze_resources": DeltaWriteResult(
+                rows_processed=1, rows_added=1, rows_removed=4
+            ),
+            "silver_vm_inventory": DeltaWriteResult(
+                rows_processed=0, rows_added=0, rows_removed=2
+            ),
+        },
+    )
+
+
+def test_wholesale_wipe_guard_fails_a_collapsed_publication(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        service._assert_no_wholesale_inventory_wipe(
+            {"bronze_resources": [], "silver_vm_inventory": []},
+            {
+                "bronze_resources": DeltaWriteResult(
+                    rows_processed=0, rows_added=0, rows_removed=9
+                ),
+                "silver_vm_inventory": DeltaWriteResult(
+                    rows_processed=0, rows_added=0, rows_removed=3
+                ),
+            },
+        )
+
+    assert "collapsed source projection" in str(excinfo.value).lower()

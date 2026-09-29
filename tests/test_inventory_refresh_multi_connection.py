@@ -68,6 +68,7 @@ class FakePipeline:
         *,
         fail: bool = False,
         resource_rows: list[dict[str, Any]] | None = None,
+        entity_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         from storage.datasets import DatasetStore
 
@@ -75,14 +76,21 @@ class FakePipeline:
         self._rows = rows
         self._fail = fail
         self._resource_rows = resource_rows or []
+        self._entity_rows = entity_rows
 
     def refresh(self):
         if self._fail:
             raise RuntimeError("acquisition boom")
         from dataclasses import dataclass
 
+        entities = (
+            {"entities/Resource": self._entity_rows}
+            if self._entity_rows is not None
+            else {}
+        )
         manifest = self.store.publish(
             {
+                **entities,
                 "inventory/os_observations": self._rows,
                 "inventory/source_status": [
                     {"source_type": "azure_vm", "state": "ready"}
@@ -244,10 +252,12 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         "conn-a": FakePipeline(
             tmp_path / "connections" / "conn-a",
             [{"resource_id": "/subscriptions/aaa/vm1", "connection_id": "conn-a"}],
+            entity_rows=[{"id": "/subscriptions/aaa/vm1", "connection_id": "conn-a"}],
         ),
         "conn-b": FakePipeline(
             tmp_path / "connections" / "conn-b",
             [{"resource_id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
+            entity_rows=[{"id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
         ),
     }
     calls: list[Path | str] = []
@@ -325,10 +335,24 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
 
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]
     assert calls == [tmp_path / "compat"]
-    assert replay_calls == [result["combined_manifest"]["runId"]]
+    # The full sync must replay the entities-aware generation, never the
+    # inventory-only combined manifest: its empty `entities/*` projection
+    # would overwrite every bronze/silver/ontology table with zero rows.
+    entities_run_id = str(result["entities_manifest"]["runId"])
+    assert entities_run_id != result["combined_manifest"]["runId"]
+    assert replay_calls == [entities_run_id]
     assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
     store = DatasetStore(tmp_path / "compat")
-    expected_generation = Path(
-        store.generation_path(str(result["combined_manifest"]["runId"])) or ""
-    )
+    expected_generation = Path(store.generation_path(entities_run_id) or "")
     assert (expected_generation / "manifest.json").is_file()
+    replayed = store.read_datasets(
+        ["entities/Resource", "inventory/os_observations"],
+        generation=expected_generation,
+    )
+    assert sorted(row["id"] for row in replayed["entities/Resource"]) == [
+        "/subscriptions/aaa/vm1",
+        "/subscriptions/bbb/vm2",
+    ]
+    assert sorted(
+        row["resource_id"] for row in replayed["inventory/os_observations"]
+    ) == ["/subscriptions/aaa/vm1", "/subscriptions/bbb/vm2"]

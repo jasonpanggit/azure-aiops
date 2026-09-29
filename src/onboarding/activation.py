@@ -484,13 +484,16 @@ def publish_combined_snapshot(
     target_root: str | Path,
     *,
     reuse_unchanged: bool = False,
+    pinned_datasets: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Publish one isolated, deduplicated snapshot from synced connections.
 
     Full activation intentionally creates a new combined generation by
     default so code-only mapper and projection changes are republished.
     Dedicated readers may opt into source-run reuse when downstream work is
-    independently generation-aware.
+    independently generation-aware. ``pinned_datasets`` are written verbatim
+    so callers can bind them to one exact generation instead of relying on
+    carry-forward from whatever generation is current at publish time.
     """
     if not connection_ids:
         raise ValueError("At least one subscription connection is required")
@@ -619,6 +622,7 @@ def publish_combined_snapshot(
             name: [rows[key] for key in sorted(rows)]
             for name, rows in exposure_rows.items()
         },
+        **dict(pinned_datasets or {}),
     }
     return target_store.publish(
         datasets,
