@@ -237,3 +237,33 @@ def test_refresh_status_latest_alias(
     assert latest.status_code == 200
     assert latest.json()["result"] == {"status": "completed"}
     assert latest.json()["run_id"] == response.json()["run_id"]
+
+
+def test_refresh_latest_alias_advertises_canonical_run_location(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Polling an alias must not append the run id to the alias path."""
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("output_dir: " + str(tmp_path / "out"), encoding="utf-8")
+    monkeypatch.setenv("AIOPS_ARG_CONFIG", str(config_path))
+    release = threading.Event()
+
+    def _blocking(*_args: object, **_kwargs: object) -> dict[str, object]:
+        release.wait(timeout=10)
+        return {"status": "completed"}
+
+    with patch(
+        "api.inventory_orchestration.run_inventory_refresh_all_connections",
+        side_effect=_blocking,
+    ):
+        trigger = client.post("/api/v1/inventory/refresh", headers=_auth())
+        run_id = trigger.json()["run_id"]
+        latest = client.get("/api/v1/inventory/refresh/latest", headers=_auth())
+        release.set()
+        _await_terminal(client, run_id)
+
+    assert latest.status_code == 202
+    assert latest.headers["location"].endswith(f"/api/v1/inventory/refresh/{run_id}")
+    assert latest.headers["location"] == trigger.headers["location"]
+    assert client.get(latest.headers["location"], headers=_auth()).status_code == 200
