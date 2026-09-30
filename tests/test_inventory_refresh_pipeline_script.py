@@ -186,3 +186,13 @@ def test_create_schedule_posts_once_when_no_schedule_exists() -> None:
     assert len(client.posts) == 1
     assert client.posts[0][1]["enabled"] is True
     assert client.posts[0][1]["configuration"]["interval"] == 60
+
+
+def test_pipeline_content_polls_the_async_refresh_by_default() -> None:
+    script = _load_script()
+
+    content = script.build_pipeline_content("https://api", "secret", "conn")
+
+    activity = content["properties"]["activities"][0]
+    assert activity["typeProperties"]["disableAsyncPattern"] is False
+    assert activity["policy"]["timeout"] == "0.03:00:00"

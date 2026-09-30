@@ -157,7 +157,7 @@ def build_pipeline_content(
     trigger_secret: str,
     connection_id: str,
     *,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = 3 * 60 * 60,
 ) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -192,6 +192,11 @@ def build_pipeline_content(
                         "relativeUrl": "/api/v1/inventory/refresh",
                         "method": "POST",
                         "httpRequestTimeout": request_timeout,
+                        # The endpoint answers 202 + Location and the activity
+                        # polls it until the refresh finishes, so the activity
+                        # outcome is the refresh outcome. The activity policy
+                        # timeout therefore bounds the whole refresh.
+                        "disableAsyncPattern": False,
                         "headers": {
                             "Content-Type": "application/json",
                             "x-aiops-trigger-secret": trigger_secret,
@@ -330,7 +335,7 @@ def main() -> int:
     parser.add_argument("--api-url", required=True, help="Base URL of the deployed API (e.g. https://aiops-dev-api.<region>.azurecontainerapps.io)")
     parser.add_argument("--trigger-secret", required=True, help="Value of AIOPS_REFRESH_TRIGGER_SECRET on the API")
     parser.add_argument("--display-name", default="Inventory Refresh")
-    parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument("--timeout-seconds", type=int, default=3 * 60 * 60)
     parser.add_argument(
         "--schedule-interval-minutes",
         type=int,

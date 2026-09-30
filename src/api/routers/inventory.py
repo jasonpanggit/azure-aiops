@@ -7,7 +7,7 @@ import os
 import re
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
@@ -23,6 +23,7 @@ from intelligence.inventory.narrative import build_inventory_narrative
 from intelligence.inventory.read_port import InventoryReadPort
 from intelligence.inventory.service import InventoryService
 
+from .. import inventory_refresh_runs
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
@@ -84,12 +85,28 @@ def _lifecycle_evidence(service: InventoryService) -> Evidence:
     )
 
 
+def _authorize_trigger(request: Request) -> None:
+    """Authorize a system-to-system refresh caller via the shared trigger secret."""
+
+    expected = os.environ.get("AIOPS_REFRESH_TRIGGER_SECRET", "").strip()
+    if not expected:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "AIOPS_REFRESH_TRIGGER_SECRET is not configured for this deployment",
+            {"capability": "inventory", "provider_state": "unconfigured"},
+        )
+    provided = request.headers.get("x-aiops-trigger-secret", "")
+    if not hmac.compare_digest(provided, expected):
+        raise ApiError(ErrorCode.UNAUTHENTICATED, "Invalid trigger secret")
+
+
 @router.post(
     "/inventory/refresh",
+    status_code=202,
     summary="Trigger an inventory acquisition/publication run",
 )
-def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
-    """Run inventory refresh across all registered subscriptions synchronously.
+def trigger_inventory_refresh(request: Request, response: Response) -> dict[str, Any]:
+    """Start an inventory refresh across all registered subscriptions.
 
     Inventory remains the sole owner of acquisition/normalization/publication;
     this endpoint only exposes an authenticated trigger over
@@ -107,17 +124,19 @@ def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
     interactive/gateway-authenticated user -- minting and refreshing an Entra
     app-role token for that one activity adds real operational fragility for
     no security benefit over a dedicated, rotatable trigger secret.
+
+    The run executes on a worker thread and this returns ``202`` immediately
+    with a ``run_id``. A full refresh outlives every HTTP client -- Container
+    Apps terminates an ingress request at a fixed 240 seconds -- so a
+    synchronous response could never report success, and the hourly Fabric
+    pipeline failed with a stream timeout on every otherwise-healthy run.
+    Poll ``GET /inventory/refresh/{run_id}`` for the outcome. Runs are
+    single-flight: a trigger arriving while one is still publishing adopts
+    that run rather than stacking a second acquisition on top of it -- and
+    still answers ``202`` with that run's ``Location``, so an overlapping
+    scheduled run waits on the in-flight outcome instead of succeeding early.
     """
-    expected = os.environ.get("AIOPS_REFRESH_TRIGGER_SECRET", "").strip()
-    if not expected:
-        raise ApiError(
-            ErrorCode.PROVIDER_UNAVAILABLE,
-            "AIOPS_REFRESH_TRIGGER_SECRET is not configured for this deployment",
-            {"capability": "inventory", "provider_state": "unconfigured"},
-        )
-    provided = request.headers.get("x-aiops-trigger-secret", "")
-    if not hmac.compare_digest(provided, expected):
-        raise ApiError(ErrorCode.UNAUTHENTICATED, "Invalid trigger secret")
+    _authorize_trigger(request)
 
     config_path = os.environ.get("AIOPS_ARG_CONFIG", "").strip()
     if not config_path:
@@ -127,22 +146,93 @@ def trigger_inventory_refresh(request: Request) -> dict[str, Any]:
             {"capability": "inventory", "provider_state": "unconfigured"},
         )
     fabric_config_path = os.environ.get("AIOPS_FABRIC_CONFIG", "").strip()
-    from api.inventory_orchestration import (
-        run_inventory_refresh_all_connections,
-    )
 
-    try:
-        result = run_inventory_refresh_all_connections(
+    def _run() -> dict[str, Any]:
+        from api.inventory_orchestration import (
+            run_inventory_refresh_all_connections,
+        )
+
+        return run_inventory_refresh_all_connections(
             config_path,
             fabric_config_path=fabric_config_path,
         )
-    except Exception as exc:
+
+    run, adopted = inventory_refresh_runs.start_refresh(_run)
+    _set_poll_headers(request, response, run["run_id"])
+    return {**run, "adopted_existing_run": adopted}
+
+
+_TERMINAL_STATUS_CODES = {"succeeded": 200, "failed": 500}
+_POLL_INTERVAL_SECONDS = "30"
+
+
+def _set_poll_headers(request: Request, response: Response, run_id: str) -> None:
+    """Advertise the asynchronous request-reply contract a Web activity follows.
+
+    A Fabric/ADF Web activity that receives ``202`` with a ``Location`` header
+    keeps polling that URL until it stops answering ``202``, and then takes the
+    final status code as the activity outcome. That is what lets the pipeline
+    report the *real* refresh result instead of succeeding on the trigger.
+    """
+
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    path = request.url.path.rstrip("/")
+    if not path.endswith(f"/{run_id}"):
+        path = f"{path}/{run_id}"
+    response.headers["Location"] = f"{proto}://{host}{path}"
+    response.headers["Retry-After"] = _POLL_INTERVAL_SECONDS
+
+
+def _trigger_authorized(request: Request) -> bool:
+    try:
+        _authorize_trigger(request)
+    except ApiError:
+        return False
+    return True
+
+
+@router.get(
+    "/inventory/refresh/{run_id}",
+    summary="Inventory refresh run status",
+)
+def inventory_refresh_status(request: Request, response: Response, run_id: str) -> dict[str, Any]:
+    """Report a background refresh run's status, result or failure.
+
+    Answers ``202`` while the run is in progress (re-advertising ``Location``),
+    ``200`` once it succeeds and ``500`` once it fails, so a polling Web
+    activity fails exactly when the refresh fails.
+
+    A run id is an unguessable UUID that only the authorized trigger ever
+    learns, so it doubles as a capability for status polling: Web activity
+    async polling is not guaranteed to replay the trigger's custom headers.
+    Without the trigger secret only the lifecycle fields are returned; the
+    result payload, error detail and the ``latest``/``current`` aliases still
+    require it.
+    """
+
+    authorized = _trigger_authorized(request)
+    if run_id in {"latest", "current"}:
+        _authorize_trigger(request)
+        run = inventory_refresh_runs.latest_run()
+    else:
+        run = inventory_refresh_runs.get_run(run_id)
+    if run is None:
+        if not authorized:
+            _authorize_trigger(request)
         raise ApiError(
-            ErrorCode.INTERNAL,
-            f"Inventory refresh failed: {exc}",
-            {"capability": "inventory"},
-        ) from exc
-    return result
+            ErrorCode.NOT_FOUND,
+            "Unknown inventory refresh run",
+            {"capability": "inventory", "run_id": run_id},
+        )
+    if run["status"] == "running":
+        response.status_code = 202
+        _set_poll_headers(request, response, run["run_id"])
+    else:
+        response.status_code = _TERMINAL_STATUS_CODES.get(run["status"], 200)
+    if not authorized:
+        return {key: run[key] for key in ("run_id", "status", "started_at", "finished_at", "duration_seconds")}
+    return run
 
 
 @router.get("/inventory/os", summary="Grouped operating-system inventory")
