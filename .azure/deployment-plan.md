@@ -2404,3 +2404,30 @@ change is in scope.
   `6317eaf6-e597-4b4e-a07d-c53027c01feb`) is blocked until the capacity is
   resumed and the first hourly run completes on this revision. Capacity resume
   was not performed (cost/ownership decision).
+
+## PR #300 — async inventory refresh endpoint (2026-09-30)
+
+- Merge: `1e1b751b160f33cb16481cf6c43653beb5801f8b` (admin merge, `--match-head-commit`;
+  GitHub Actions blocked by billing, local validation: inventory refresh
+  endpoint/pipeline_script/multi_connection/cli, api_runtime, fabric_sync_service
+  tests pass; Ruff and `git diff --check` clean).
+- Build: ACR run `cr11p`, `aiops-api:inventory-refresh-async-1e1b751b-20260930T000724Z`,
+  digest `sha256:9c9b7d0d5ca105e69e8ea039ffb1331aa98c2d405c2d89d182de5b4347e0eba2`.
+- Deploy: revision `aiops-dev-api--pr300-1e1b751b` copied from pr298 with explicit
+  `AIOPS_ENABLE_FABRIC=true`, `AIOPS_ENABLE_FABRIC_IQ=false`, 4 CPU / 8Gi; promoted to
+  100%, pr298 deactivated (single active revision). `/health` and `/ready` 200.
+- ACA jobs: all 10 jobs moved to the same digest by the Fabric session via
+  `az containerapp job update --image` (image-only change). Future API deploys must
+  update jobs too (or set Terraform `api_image_digest`).
+- Fabric pipeline `d879af68-e020-4c6f-941e-aa9967544b13` re-pushed with
+  `push_inventory_refresh_pipeline.py`: activity timeout `0.03:00:00`,
+  `disableAsyncPattern=false`; hourly schedule `7309b4ec` unchanged.
+- Recovery verified: run `refresh-a4ec87fd-72ec-4788-be90-58f97d2bcf85` succeeded
+  (00:20:15Z–00:49:23Z, 1747.8s); scheduled pipeline job `c228873f` adopted it and
+  Completed. Entities generation `activation-13dc9994-72f3-4926-ad57-39ea36a60628`
+  (12,993 entity rows) published. SQL counts: `bronze_resources`=171,
+  `silver_vm_inventory`=2, `silver_server_inventory`=3, `ontology_entities`=1715.
+  This closes the PR #298 pending recovery verification.
+- Known follow-up (non-blocking): `GET /inventory/refresh/latest` while running sets
+  `Location` to `/refresh/latest/{run_id}`; pipeline polls the POST Location and is
+  unaffected.
