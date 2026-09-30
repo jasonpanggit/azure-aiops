@@ -173,14 +173,16 @@ def _set_poll_headers(request: Request, response: Response, run_id: str) -> None
     keeps polling that URL until it stops answering ``202``, and then takes the
     final status code as the activity outcome. That is what lets the pipeline
     report the *real* refresh result instead of succeeding on the trigger.
+
+    The URL is resolved from the status route rather than the current request
+    path, so polling an alias such as ``/inventory/refresh/latest`` advertises
+    the run's own canonical URL instead of appending the id to the alias.
     """
 
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
-    path = request.url.path.rstrip("/")
-    if not path.endswith(f"/{run_id}"):
-        path = f"{path}/{run_id}"
-    response.headers["Location"] = f"{proto}://{host}{path}"
+    target = request.url_for("inventory_refresh_status", run_id=run_id)
+    proto = request.headers.get("x-forwarded-proto", target.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", target.netloc))
+    response.headers["Location"] = f"{proto}://{host}{target.path}"
     response.headers["Retry-After"] = _POLL_INTERVAL_SECONDS
 
 
