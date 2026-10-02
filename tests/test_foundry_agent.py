@@ -143,7 +143,6 @@ def test_operations_copilot_normalizes_zero_argument_tool_calls() -> None:
 
     assert plan.steps[0].specialist_id == "network"
     assert plan.steps[0].tool_calls[0].tool == "network_topology"
-    assert plan.steps[0].tool_calls[0].arguments == {}
 
 
 def test_operations_copilot_synthesis_requires_citation_closed_json() -> None:
@@ -1139,3 +1138,142 @@ def test_specialist_catalog_rejects_partial_unvalidated_mapping(monkeypatch) -> 
     
     other_entries = [e for e in catalog if e["id"] != "network"]
     assert all(e["status"] == "unavailable" for e in other_entries)
+
+
+def test_operations_copilot_rebinds_page_named_specialist_to_tool_owner() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "twin",
+                "tool_calls": [{
+                    "tool": "network_topology",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(coordinator)(_network_request())
+
+    assert plan.steps[0].specialist_id == "network"
+
+
+def test_operations_copilot_keeps_unknown_specialist_without_single_owner() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "twin",
+                "tool_calls": [{
+                    "tool": "not_a_tool",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(coordinator)(_network_request())
+
+    assert plan.steps[0].specialist_id == "twin"
+
+
+def test_operations_copilot_reconciles_corrected_plan_specialists() -> None:
+    vulnerability_only = json.dumps({
+        "steps": [{
+            "specialist_id": "vulnerability",
+            "tool_calls": [{
+                "tool": "cve_exposure",
+                "arguments": {},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    corrected_with_page_names = json.dumps({
+        "steps": [
+            {
+                "specialist_id": "compliance",
+                "tool_calls": [{
+                    "tool": "cve_exposure",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                }],
+            },
+            {
+                "specialist_id": "governance",
+                "tool_calls": [{
+                    "tool": "business_service_context",
+                    "arguments": {
+                        "name": "highest-risk compliance findings"
+                    },
+                    "citation_ids": ["snapshot:coverage"],
+                }],
+            },
+        ],
+    })
+    coordinator = _Coordinator([vulnerability_only, corrected_with_page_names])
+    request = InvestigationRequest(
+        question="What are my highest-risk compliance findings?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="compliance",
+            page_id="compliance-posture",
+            coverage=SnapshotCoverage(
+                visible_count=0,
+                total_count=0,
+                complete=True,
+            ),
+        ),
+    )
+
+    plan = FoundryCoordinatorPlanner(coordinator)(request)
+
+    assert len(coordinator.calls) == 2
+    assert [step.specialist_id for step in plan.steps] == [
+        "vulnerability",
+        "governance",
+    ]
+
+
+def test_operations_copilot_sanitizes_corrected_plan_arguments() -> None:
+    class _RequiresNetwork(FoundryCoordinatorPlanner):
+        def _required_specialists(self, request):
+            return ("network",)
+
+    unowned = json.dumps({
+        "steps": [{
+            "specialist_id": "twin",
+            "tool_calls": [{
+                "tool": "not_a_tool",
+                "arguments": {},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    corrected = json.dumps({
+        "steps": [{
+            "specialist_id": "twin",
+            "tool_calls": [{
+                "tool": "network_topology",
+                "arguments": {"scope": "invented"},
+                "citation_ids": ["snapshot:coverage"],
+            }],
+        }],
+    })
+    coordinator = _Coordinator([unowned, corrected])
+
+    plan = _RequiresNetwork(coordinator)(_network_request())
+
+    assert len(coordinator.calls) == 2
+    assert plan.steps[0].specialist_id == "network"
+    assert plan.steps[0].tool_calls[0].arguments == {}

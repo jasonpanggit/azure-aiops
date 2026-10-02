@@ -10463,3 +10463,114 @@ def test_canonical_multi_agent_ledger_action_confers_no_execution_authority(
     )
     assert updated["mutation_authorized"] is False
     assert updated["outcome"] != "executed"
+
+
+def test_connections_page_public_result_excludes_inventory_tool_results():
+    calls: list[str] = []
+    request = InvestigationRequest(
+        question="Show inventory resources and data health.",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="connections",
+            page_id="connections",
+            coverage=SnapshotCoverage(visible_count=1, total_count=1, complete=True),
+            evidence=[
+                SnapshotEvidence(
+                    evidence_id="inventory:visible",
+                    source="connections-page",
+                    status="ok",
+                    observed_at="2026-09-01T00:00:00Z",
+                    data={"visible": 1},
+                )
+            ],
+        ),
+    )
+
+    def execute(name, arguments, *, context, scope):
+        calls.append(name)
+        return _result()
+
+    result = OrchestrationService(
+        planner=lambda _request: _candidate(),
+        executor=execute,
+    ).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
+    )
+
+    assert calls == ["inventory_resources"]
+    assert all(
+        item.get("tool") != "inventory_resources" for item in result.tool_results
+    )
+    assert not any(
+        citation.citation_id.startswith("tool:") for citation in result.citations
+    )
+
+
+def test_governance_configuration_only_evidence_skips_executive_narration():
+    request = InvestigationRequest(
+        question="Who owns the payments business service and what approvals apply?",
+        requested_scope={"subscription": ["sub-a"]},
+        snapshot=EvidenceSnapshotV2(
+            page_kind="governance",
+            page_id="governance",
+            coverage=SnapshotCoverage(visible_count=0, total_count=0, complete=True),
+        ),
+    )
+    candidate = CandidatePlan.model_validate({
+        "steps": [
+            SpecialistStep(
+                specialist_id="governance",
+                tool_calls=[
+                    ToolCallCandidate(
+                        tool="business_service_context",
+                        arguments={"name": "payments"},
+                    )
+                ],
+            )
+        ],
+        "estimated_tokens": 500,
+        "max_wall_seconds": 5,
+    })
+
+    def execute(name, arguments, *, context, scope):
+        return ToolResult(
+            status=STATUS_OK,
+            data={"business_service": "payments", "owner": "Operator role"},
+            evidence=(
+                Evidence(
+                    source_engine="semantic.SemanticEngine",
+                    source_table="ontology_entities",
+                    confidence="high",
+                ),
+            ),
+        )
+
+    class Coordinator:
+        calls = 0
+
+        def answer(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("narrator must not run on configuration-only evidence")
+
+    coordinator = Coordinator()
+    result = OrchestrationService(
+        planner=lambda _request: candidate,
+        executor=execute,
+        executive_agent=coordinator,
+        always_synthesize=True,
+    ).execute(
+        request,
+        context=object(),
+        principal_subject="operator-a",
+        effective_scope=Scope({"subscription": ["sub-a"]}),
+        route_authority=route_authority_for_test(request),
+    )
+
+    assert result.selected_tools == ["business_service_context"]
+    assert coordinator.calls == 0
+    assert result.synthesis["status"] == "degraded"
+    assert result.synthesis["degraded_reason"] == "no_substantive_evidence"

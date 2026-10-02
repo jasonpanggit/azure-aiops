@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -970,6 +970,89 @@ def snapshot_claim_freshness(snapshot: EvidenceSnapshotV2) -> str:
     return "partial"
 
 
+_INVENTORY_EXCLUDED_PAGES = frozenset({"connections", "connections_fabric"})
+
+
+def _drop_page_irrelevant_results(
+    page_kind: str | None,
+    tool_results: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Drop specialist results that answer a different question than the page.
+
+    Connections pages publish their own registry/fabric truth; a tenant
+    inventory result's empty 0/0 coverage contradicts what the operator sees.
+    """
+
+    if page_kind not in _INVENTORY_EXCLUDED_PAGES:
+        return list(tool_results)
+    return [
+        item
+        for item in tool_results
+        if str(item.get("tool") or "") != "inventory_resources"
+    ]
+
+
+# Tools whose results describe configuration, ownership, or schema metadata
+# rather than observed operational state. They remain citable, but on their own
+# they are not a basis for an executive narrative.
+_CONFIGURATION_ONLY_TOOLS = frozenset(
+    {
+        "application_context",
+        "business_service_context",
+        "fabric_iq_policy_context",
+        "get_ontology_vocabulary",
+    }
+)
+
+
+def _configuration_only_call_ids(
+    tool_results: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    """Return the call ids of results produced by configuration-only tools."""
+
+    call_ids: set[str] = set()
+    for result in tool_results:
+        if not isinstance(result, Mapping):
+            continue
+        tool = str(result.get("tool") or "")
+        if tool not in _CONFIGURATION_ONLY_TOOLS:
+            continue
+        specialist_id = str(result.get("specialist_id") or "")
+        call_ids.add(str(result.get("call_id") or f"{specialist_id}:{tool}"))
+    return frozenset(call_ids)
+
+
+def _has_substantive_findings(
+    findings: Sequence[Mapping[str, Any]],
+    retained_evidence: Sequence[Mapping[str, Any]] = (),
+    *,
+    configuration_finding_ids: Collection[str] = (),
+) -> bool:
+    """Whether any finding carries current observed evidence, not metadata.
+
+    Unavailable, failed, or empty specialist results, page coverage counters,
+    and configuration-only tool results describe what could not be observed or
+    how the estate is configured; narrating over them only produces low-value
+    claims about configuration rather than state.
+    """
+
+    configuration_ids = set(configuration_finding_ids)
+    for finding in findings:
+        if str(finding.get("status") or "") != STATUS_OK:
+            continue
+        if str(finding.get("finding_id") or "") in configuration_ids:
+            continue
+        refs = [str(ref) for ref in finding.get("evidence_refs") or []]
+        if any(not ref.endswith(":coverage") for ref in refs):
+            return True
+    return any(
+        str(item.get("status") or STATUS_OK) == STATUS_OK
+        and not str(item.get("source") or "").endswith(":coverage")
+        and str(item.get("source") or "") not in _CONFIGURATION_ONLY_TOOLS
+        for item in retained_evidence
+    )
+
+
 def _complete_empty_page_kind(
     snapshot: EvidenceSnapshotV2,
 ) -> str | None:
@@ -1582,6 +1665,26 @@ class OrchestrationService:
                     break
             if budget_exhausted:
                 break
+
+        page_relevant_results = _drop_page_irrelevant_results(
+            page_snapshot.page_kind,
+            tool_results,
+        )
+        if len(page_relevant_results) != len(tool_results):
+            relevant_call_ids = {
+                str(item.get("call_id") or "") for item in page_relevant_results
+            }
+            dropped_prefixes = tuple(
+                f"tool:{item.get('call_id')}:"
+                for item in tool_results
+                if str(item.get("call_id") or "") not in relevant_call_ids
+            )
+            tool_results = [dict(item) for item in page_relevant_results]
+            citations = [
+                citation
+                for citation in citations
+                if not citation.citation_id.startswith(dropped_prefixes)
+            ]
 
         connection_rows = [
             item
@@ -2357,6 +2460,10 @@ class OrchestrationService:
             str(item.get("status") or "") == STATUS_UNAVAILABLE
             for item in tool_results
         )
+        tool_results = _drop_page_irrelevant_results(
+            snapshot.page_kind if snapshot is not None else None,
+            tool_results,
+        )
         findings = normalize_cited_findings(
             tool_results,
             selected_resource_ids=selected_resource_ids,
@@ -2784,6 +2891,28 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if not deterministic_claims and not _has_substantive_findings(
+            findings,
+            current_retained_evidence,
+            configuration_finding_ids=_configuration_only_call_ids(tool_results),
+        ):
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was skipped because no specialist "
+                    "returned current observed evidence; only configuration "
+                    "or coverage metadata was available."
+                ),
+                claims=[],
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+                degraded_reason="no_substantive_evidence",
             )
             self._record_synthesis_metric(synthesis)
             return synthesis
