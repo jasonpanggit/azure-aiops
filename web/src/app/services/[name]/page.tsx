@@ -134,6 +134,7 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
 
       <CopilotInsights
         snapshot={serviceCopilot.snapshot}
+        ready={!context.loading && !risk.loading && !impact.loading}
         requestedScope={serviceCopilot.requestedScope}
         contextLabel={name}
         onOpenCopilot={() => setCopilotOpen(true)}

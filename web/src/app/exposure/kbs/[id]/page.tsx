@@ -604,6 +604,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
 
       <CopilotInsights
         snapshot={kbCopilot.snapshot}
+        ready={!detail.loading}
         requestedScope={kbCopilot.requestedScope}
         contextLabel={data?.kb_id ?? kbId}
         onOpenCopilot={() => setCopilotOpen(true)}

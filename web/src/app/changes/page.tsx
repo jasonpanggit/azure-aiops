@@ -80,6 +80,7 @@ export default function ChangesPage() {
 
       <CopilotInsights
         snapshot={changesCopilot.snapshot}
+        ready={!incidents.loading}
         requestedScope={changesCopilot.requestedScope}
         contextLabel="Change intelligence"
         onOpenCopilot={() => setCopilotOpen(true)}

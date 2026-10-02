@@ -614,6 +614,7 @@ export default function PatchPrioritiesPage() {
 
       <CopilotInsights
         snapshot={patchCopilot.snapshot}
+        ready={!section.loading}
         requestedScope={patchCopilot.requestedScope}
         contextLabel="Patch priorities"
         onOpenCopilot={() => setCopilotOpen(true)}

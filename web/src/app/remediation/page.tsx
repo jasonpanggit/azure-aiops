@@ -1364,6 +1364,7 @@ function RemediationContent() {
 
         <CopilotInsights
           snapshot={remediationCopilot.snapshot}
+          ready={!plans.loading && !handoffs.loading}
           requestedScope={remediationCopilot.requestedScope}
           contextLabel={workflow?.plan.title ?? "Remediation"}
           onOpenCopilot={() => setCopilotOpen(true)}
@@ -1408,6 +1409,13 @@ function RemediationContent() {
         evidence={plans.data?.evidence ?? []}
         knowledgeVersion={plans.data?.knowledge_version}
         warnings={plans.data?.warnings ?? []}
+      />
+      <CopilotInsights
+        snapshot={remediationCopilot.snapshot}
+        ready={!plans.loading}
+        requestedScope={remediationCopilot.requestedScope}
+        contextLabel={workflow?.plan.title ?? "Remediation"}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {(requestedResource || fromCve || fromKb || fromIncident) && (

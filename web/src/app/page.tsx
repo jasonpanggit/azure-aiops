@@ -122,6 +122,7 @@ export default function Home() {
 
       <CopilotInsights
         snapshot={overviewCopilot.snapshot}
+        ready={!loading}
         requestedScope={overviewCopilot.requestedScope}
         contextLabel="Operations overview"
         onOpenCopilot={() => setCopilotOpen(true)}

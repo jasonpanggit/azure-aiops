@@ -207,6 +207,7 @@ export default function FinOpsPage() {
 
       <CopilotInsights
         snapshot={finopsCopilot.snapshot}
+        ready={!loading}
         requestedScope={finopsCopilot.requestedScope}
         contextLabel="Financial accountability"
         onOpenCopilot={() => setCopilotOpen(true)}

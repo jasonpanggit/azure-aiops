@@ -208,6 +208,7 @@ export default function PreDeploymentPage() {
 
       <CopilotInsights
         snapshot={predeployCopilot.snapshot}
+        ready={!history.loading}
         requestedScope={predeployCopilot.requestedScope}
         contextLabel="Pre-deployment assessment"
         onOpenCopilot={() => setCopilotOpen(true)}

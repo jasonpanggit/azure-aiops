@@ -383,6 +383,7 @@ export default function ConnectionsPage() {
 
       <CopilotInsights
         snapshot={connectionsCopilot.snapshot}
+        ready={!connections.loading}
         requestedScope={connectionsCopilot.requestedScope}
         contextLabel="Data & integrations"
         onOpenCopilot={() => setCopilotOpen(true)}

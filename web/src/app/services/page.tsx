@@ -133,6 +133,7 @@ export default function ServicesPage() {
 
       <CopilotInsights
         snapshot={servicesCopilot.snapshot}
+        ready={!connections.loading && !incidents.loading}
         requestedScope={servicesCopilot.requestedScope}
         contextLabel="Services"
         onOpenCopilot={() => setCopilotOpen(true)}

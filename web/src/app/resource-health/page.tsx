@@ -575,6 +575,7 @@ export default function ResourceHealthPage() {
 
       <CopilotInsights
         snapshot={resourceHealthCopilot.snapshot}
+        ready={!inventoryLoading}
         requestedScope={resourceHealthCopilot.requestedScope}
         contextLabel="Resource health"
         onOpenCopilot={() => setCopilotOpen(true)}

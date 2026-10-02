@@ -204,6 +204,7 @@ export default function OperationalTwinPage() {
 
       <CopilotInsights
         snapshot={twinCopilot.snapshot}
+        ready={!loading}
         requestedScope={twinCopilot.requestedScope}
         contextLabel="Operational twin"
         onOpenCopilot={() => setCopilotOpen(true)}

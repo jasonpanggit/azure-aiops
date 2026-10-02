@@ -84,6 +84,7 @@ export default function SituationsPage() {
 
       <CopilotInsights
         snapshot={situationsCopilot.snapshot}
+        ready={envelope !== null || Boolean(error)}
         requestedScope={situationsCopilot.requestedScope}
         contextLabel="Situations queue"
         onOpenCopilot={() => setCopilotOpen(true)}

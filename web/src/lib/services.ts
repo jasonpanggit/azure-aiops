@@ -604,11 +604,13 @@ export function buildCopilotSnapshot(input: CopilotPageSnapshotInput): CopilotPa
 export function investigateCanonical(
   request: CanonicalCopilotRequest,
   scope: ScopeSelection,
+  signal?: AbortSignal,
 ): Promise<Envelope<CanonicalCopilotResult>> {
   return apiRequest<CanonicalCopilotResult>("/copilot/investigations", {
     method: "POST",
     query: scopeToSearchParams(scope),
     body: request,
+    signal,
   });
 }
 
