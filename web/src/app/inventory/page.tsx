@@ -40,6 +40,7 @@ import type {
   SoftwareInventoryMachine,
   SoftwareMapping,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 type InventoryTab = "os" | "software" | "azure";
 
@@ -1087,6 +1088,13 @@ export default function InventoryPage() {
             />
           )
         }
+      />
+
+      <CopilotInsights
+        snapshot={copilotContext.snapshot}
+        requestedScope={copilotContext.requestedScope}
+        contextLabel="Inventory and data health"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <div role="tablist" aria-label="Inventory views" className="tab-list">

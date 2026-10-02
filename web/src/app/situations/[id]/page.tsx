@@ -18,6 +18,7 @@ import type {
   Envelope,
   SituationAuditEvent,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 function allEvidence(situation: DurableSituation): DurableEvidence[] {
   return situation.evidence ?? [];
@@ -194,6 +195,13 @@ export default function SituationDetailPage({ params }: { params: { id: string }
             {saved && <span role="status">Local view saved</span>}
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={situationCopilot.snapshot}
+        requestedScope={situationCopilot.requestedScope}
+        contextLabel={record.title || record.situation_id}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <section className="card" aria-label="Situation identity">

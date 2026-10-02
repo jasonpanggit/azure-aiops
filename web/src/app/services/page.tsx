@@ -18,6 +18,7 @@ import { useScope } from "@/lib/scope-context";
 import { connectionsApi, operationsApi } from "@/lib/services";
 import { buildServicesCopilotContext } from "@/lib/copilot/page-adapters";
 import { rankSituations } from "@/lib/situations";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 interface ServiceRow {
   name: string;
@@ -128,6 +129,13 @@ export default function ServicesPage() {
         title="Which services need attention?"
         description="Compare business services by ownership, scope, active situations, and evidence coverage before opening a service brief."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about services" />}
+      />
+
+      <CopilotInsights
+        snapshot={servicesCopilot.snapshot}
+        requestedScope={servicesCopilot.requestedScope}
+        contextLabel="Services"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar
         evidence={[...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])]}

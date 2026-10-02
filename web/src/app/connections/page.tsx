@@ -21,6 +21,7 @@ import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type SubscriptionConnection, type SyncState } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const SYNC_POLL_INTERVAL_MS = 1500;
 // Discovery + merge + ontology + Fabric publish can take well past 10 minutes
@@ -378,6 +379,13 @@ export default function ConnectionsPage() {
           ) : null}
           </div>
         }
+      />
+
+      <CopilotInsights
+        snapshot={connectionsCopilot.snapshot}
+        requestedScope={connectionsCopilot.requestedScope}
+        contextLabel="Data & integrations"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <div role="tablist" aria-label="Data & integrations views" className="tab-list">

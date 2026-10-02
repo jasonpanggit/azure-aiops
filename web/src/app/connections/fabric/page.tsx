@@ -13,6 +13,7 @@ import { buildFabricMedallionCopilotContext } from "@/lib/copilot/page-adapters"
 import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, fabricMedallionApi } from "@/lib/services";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 /** Per-subscription Fabric medallion workbench. */
 export default function FabricMedallionPage() {
@@ -157,6 +158,13 @@ function FabricMedallionPageContent() {
             </button>
           </div>
         }
+      />
+
+      <CopilotInsights
+        snapshot={fabricCopilot.snapshot}
+        requestedScope={fabricCopilot.requestedScope}
+        contextLabel="Fabric medallion"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <section className="card fabric-subscription-picker" aria-label="Subscription selection">

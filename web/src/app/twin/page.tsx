@@ -21,6 +21,7 @@ import type {
   TwinSnapshot,
   TwinTraversal,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const SCENARIOS = [
   "firewall_failure",
@@ -199,6 +200,13 @@ export default function OperationalTwinPage() {
             </button>
           </div>
         }
+      />
+
+      <CopilotInsights
+        snapshot={twinCopilot.snapshot}
+        requestedScope={twinCopilot.requestedScope}
+        contextLabel="Operational twin"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {error ? <StatePanel title="Twin unavailable" message={error} tone="error" /> : null}

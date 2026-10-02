@@ -12,6 +12,7 @@ import { situationsApi } from "@/lib/services";
 import { buildSituationsCopilotContext } from "@/lib/copilot/page-adapters";
 import { rankDurableSituations, type SituationPriority } from "@/lib/situations";
 import type { DurableSituation, Envelope } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 /** Triage queue for ranked, service-aware operational Situations. */
 export default function SituationsPage() {
@@ -79,6 +80,13 @@ export default function SituationsPage() {
             <span>Remediation handoff is future-phase and read-only</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={situationsCopilot.snapshot}
+        requestedScope={situationsCopilot.requestedScope}
+        contextLabel="Situations queue"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {envelope && (

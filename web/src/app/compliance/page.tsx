@@ -19,6 +19,7 @@ import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { complianceApi, isCanonicalAzureResourceId, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 type ViolationType =
   | "firewall_bypass"
@@ -513,6 +514,13 @@ export default function CompliancePage() {
         description="Compare discovered Azure architecture with the active policy pack, then inspect each finding, owner, exception, and source evidence."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about posture" />}
         metadata={<><span>{policy.name}</span><span>{violations.length} evaluated violations</span><span>{exceptions.filter(isExceptionActive).length} active exceptions</span></>}
+      />
+
+      <CopilotInsights
+        snapshot={complianceCopilot.snapshot}
+        requestedScope={complianceCopilot.requestedScope}
+        contextLabel="Security posture"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar evidence={evidence} knowledgeVersion={topology.data?.knowledge_version} warnings={[...(topology.data?.warnings ?? []), ...(gaps.data?.warnings ?? []), ...(findings.data?.warnings ?? []), ...(exposures.data?.warnings ?? []), ...(policyDeviations.data?.warnings ?? []), ...(securityDeviations.data?.warnings ?? [])]} />

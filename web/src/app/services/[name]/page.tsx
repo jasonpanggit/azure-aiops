@@ -13,6 +13,7 @@ import { contextApi } from "@/lib/services";
 import { buildServiceDetailCopilotContext, type ServiceDependencyObservation } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import type { CopilotFreshnessStatusV2, SemanticContext } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const DEPENDENCY_SECTION_KEYS = [
   "impacted_resources",
@@ -129,6 +130,13 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
         title={name}
         description="What is affected in this business capability, which evidence supports it, and where ownership or dependency context is still missing."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label={`Ask Copilot about ${name}`} />}
+      />
+
+      <CopilotInsights
+        snapshot={serviceCopilot.snapshot}
+        requestedScope={serviceCopilot.requestedScope}
+        contextLabel={name}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar
         evidence={[...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])]}

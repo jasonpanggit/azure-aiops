@@ -76,6 +76,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
   return {
     ...actual,
     buildCopilotSnapshot: actual.buildCopilotSnapshot,
+    investigateCanonical: vi.fn(() => new Promise(() => undefined)),
     connectionsApi: {
       create,
       get: getConnection,

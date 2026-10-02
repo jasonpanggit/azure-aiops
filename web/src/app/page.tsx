@@ -21,6 +21,7 @@ import type {
   SubscriptionConnection,
   VulnerabilitySummary,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 interface DashboardState {
   situations?: Envelope<import("@/lib/types").DurableSituation[]>;
@@ -117,6 +118,13 @@ export default function Home() {
             </Link>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={overviewCopilot.snapshot}
+        requestedScope={overviewCopilot.requestedScope}
+        contextLabel="Operations overview"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {loading ? (

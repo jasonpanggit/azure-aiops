@@ -48,6 +48,7 @@ import type {
   ExposurePage,
   KbDetail,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 interface KbFindingRow extends ExposureFinding {
   cve_id?: string;
@@ -599,6 +600,13 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
             </>
           ) : undefined
         }
+      />
+
+      <CopilotInsights
+        snapshot={kbCopilot.snapshot}
+        requestedScope={kbCopilot.requestedScope}
+        contextLabel={data?.kb_id ?? kbId}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar
         evidence={common.envelope?.evidence ?? detail.envelope?.evidence}

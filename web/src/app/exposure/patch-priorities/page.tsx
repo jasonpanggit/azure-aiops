@@ -44,6 +44,7 @@ import type {
   ExposurePage,
   ExposureSort,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 export interface PatchExposureFinding extends ExposureFinding {
   weakness_kind?: string;
@@ -609,6 +610,13 @@ export default function PatchPrioritiesPage() {
             label="Ask Copilot about patch priorities"
           />
         }
+      />
+
+      <CopilotInsights
+        snapshot={patchCopilot.snapshot}
+        requestedScope={patchCopilot.requestedScope}
+        contextLabel="Patch priorities"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {section.restart.required && (

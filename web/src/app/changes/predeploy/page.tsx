@@ -22,6 +22,7 @@ import { predeployApi } from "@/lib/services";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import type { ChangeAssessment, Envelope } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const SOURCE_LABELS: Record<string, string> = {
   terraform_plan: "Terraform plan (JSON)",
@@ -203,6 +204,13 @@ export default function PreDeploymentPage() {
             label="Ask Copilot about this assessment"
           />
         }
+      />
+
+      <CopilotInsights
+        snapshot={predeployCopilot.snapshot}
+        requestedScope={predeployCopilot.requestedScope}
+        contextLabel="Pre-deployment assessment"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <form className="card" onSubmit={submit}>
