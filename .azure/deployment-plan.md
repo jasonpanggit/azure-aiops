@@ -2431,3 +2431,26 @@ change is in scope.
 - Known follow-up (non-blocking): `GET /inventory/refresh/latest` while running sets
   `Location` to `/refresh/latest/{run_id}`; pipeline polls the POST Location and is
   unaffected.
+
+## PR #303 — Operations Copilot page insights (2026-10-02)
+
+- Merge: `7c9eb66297fb482ef84841fabe1f913d3c078172`, web-only. Local
+  validation: 842/842 web tests, `npm run lint:fix`, `tsc --noEmit`,
+  `npm run build`, and `git diff --check` passed. GitHub security scan passed;
+  CI backend failed on two pre-existing unused `noqa` directives in
+  `src/onboarding/sync.py`, while CI frontend tests lacked Python `fastapi`.
+- Build: exact merge-commit `web/` archive, ACR run `cr11r`, tag
+  `aiops-web:copilot-page-insights-7c9eb6629-20261002T012034Z`, digest
+  `sha256:cbbe6750f301289b46dbd9b6aec3493f17635d521fe9890fadfc3b779bcaebaa`;
+  Entra public build arguments were taken from the existing local configuration.
+  An earlier ACR run `cr11q` selected the wrong Dockerfile and failed before
+  producing an image; it was not deployed.
+- Deploy: `aiops-dev-web--0000249` uses the immutable digest, Healthy and
+  Running with 100% traffic in Single revision mode. Previous revision
+  `0000248` is at 0%. API remains `aiops-dev-api--pr300-1e1b751b` at 100%;
+  no API, Network, APIM, MCP, or job configuration was changed.
+- Public route checks returned HTTP 200 for `/`, `/exposure`, `/situations`,
+  `/network`, and `/api/config`. Authenticated browser rendering of the
+  insights panel remains **unverified**: the browser stopped at organizational
+  MFA approval. The image is the one built from the locally tested source,
+  but HTTP 200 alone does not prove the panel rendered for a signed-in user.
