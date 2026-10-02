@@ -4033,6 +4033,14 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       actionable: false,
       mutation_authorized: false,
     });
+    const summaryRows = rowByClaim(context, "identity_summary");
+    expect(summaryRows.length).toBe(1);
+    expect(summaryRows[0].data).toMatchObject({
+      principal_count: 42,
+      privileged_principal_count: 3,
+      stale_assignment_count: 5,
+      assignment_count: 120,
+    });
     expect(rowByClaim(context, "subscription_owner").length).toBe(1);
     expect(rowByClaim(context, "stale_access").length).toBe(1);
     expect(rowByClaim(context, "spn_credential").length).toBe(1);

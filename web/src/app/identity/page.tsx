@@ -167,6 +167,7 @@ export default function IdentityPage() {
 
       <CopilotInsights
         snapshot={identityCopilot.snapshot}
+        ready={!loading}
         requestedScope={identityCopilot.requestedScope}
         contextLabel="Access governance"
         onOpenCopilot={() => setCopilotOpen(true)}

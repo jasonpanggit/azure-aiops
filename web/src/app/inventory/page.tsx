@@ -1092,6 +1092,7 @@ export default function InventoryPage() {
 
       <CopilotInsights
         snapshot={copilotContext.snapshot}
+        ready={!inventory.loading}
         requestedScope={copilotContext.requestedScope}
         contextLabel="Inventory and data health"
         onOpenCopilot={() => setCopilotOpen(true)}

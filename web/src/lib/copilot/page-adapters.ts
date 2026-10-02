@@ -5338,7 +5338,23 @@ function governanceCoreInput(input: GovernanceCopilotPageInput): CoreCopilotAdap
 
 function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterInput {
   const selectedId = input.selectedPrincipalId ?? null;
+  const summary = input.summary ?? null;
   const records: CoreCopilotRecord[] = [
+    ...(summary ? [{
+      identity: "identity-summary",
+      namespace: "identity",
+      kind: "identity_summary",
+      source: "identity/summary",
+      observedAt: input.observedAt,
+      priority: -1,
+      data: {
+        principal_count: summary.principal_count,
+        privileged_principal_count: summary.privileged_principal_count,
+        stale_assignment_count: summary.stale_assignment_count,
+        non_human_principal_count: summary.non_human_principal_count,
+        assignment_count: summary.assignment_count,
+      },
+    }] : []),
     // Principals are non-ARM domain identities; the principal id is redacted
     // from every scope-validated Azure resource field (T-11-29).
     ...input.principals.slice(0, 50).map((principal, index) => ({

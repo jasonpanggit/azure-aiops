@@ -518,6 +518,7 @@ export default function CompliancePage() {
 
       <CopilotInsights
         snapshot={complianceCopilot.snapshot}
+        ready={!loading}
         requestedScope={complianceCopilot.requestedScope}
         contextLabel="Security posture"
         onOpenCopilot={() => setCopilotOpen(true)}

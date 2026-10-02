@@ -27,7 +27,14 @@ export interface InsightState {
   narration: string;
   findings: string[];
   warning: string;
+  /** Lowest claim confidence reported by synthesis, when any claims were cited. */
+  confidence?: string;
+  /** Specialists the coordinator actually ran for this turn. */
+  specialists?: string[];
 }
+
+/** Debounce window that coalesces snapshot churn while page queries settle. */
+export const INSIGHT_DEBOUNCE_MS = 400;
 
 export interface CopilotInsightsProps {
   snapshot: CopilotInsightSnapshot;
@@ -36,6 +43,11 @@ export interface CopilotInsightsProps {
   question?: string;
   focusCopy?: string;
   onOpenCopilot?: () => void;
+  /**
+   * False while the page's primary data is still loading. The panel waits for
+   * a settled snapshot instead of synthesizing over partial early evidence.
+   */
+  ready?: boolean;
 }
 
 function defaultInsightQuestion(contextLabel?: string): string {
@@ -53,8 +65,32 @@ function hasEvidence(snapshot: CopilotInsightSnapshot | null | undefined): boole
   return snapshot.version === "2" && (snapshot.coverage?.total_count ?? 0) > 0;
 }
 
+const CONFIDENCE_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
+
+function lowestConfidence(values: Array<string | undefined>): string | undefined {
+  const known = values
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => Boolean(value) && value! in CONFIDENCE_RANK);
+  if (known.length === 0) return undefined;
+  return known.reduce((lowest, value) => (
+    CONFIDENCE_RANK[value] < CONFIDENCE_RANK[lowest] ? value : lowest
+  ));
+}
+
 /** Maps a canonical turn onto a display state, preferring Foundry narration. */
 export function interpretInsightResult(result: CanonicalCopilotResult): InsightState {
+  const base = interpretInsightKind(result);
+  const synthesis = (result.synthesis ?? null) as NarratedSynthesis | null;
+  const confidence = lowestConfidence((synthesis?.claims ?? []).map((claim) => claim.confidence));
+  const specialists = (result.selected_specialists ?? []).filter(Boolean);
+  return {
+    ...base,
+    ...(confidence ? { confidence } : {}),
+    ...(specialists.length ? { specialists } : {}),
+  };
+}
+
+function interpretInsightKind(result: CanonicalCopilotResult): InsightState {
   const synthesis = (result.synthesis ?? null) as NarratedSynthesis | null;
   const narration = synthesis?.narration?.trim() ?? "";
   const claims = (synthesis?.claims ?? [])
@@ -94,11 +130,13 @@ async function investigateInsight(
   snapshot: CopilotInsightSnapshot,
   question: string,
   requestedScope: ScopeSelection,
+  signal: AbortSignal,
 ): Promise<InsightState> {
   const canonical = normalizeCopilotSnapshotV2(snapshot);
   const envelope = await investigateCanonical(
     { contract_version: "1", question, requested_scope: requestedScope, snapshot: canonical },
     requestedScope,
+    signal,
   );
   return interpretInsightResult(envelope.data);
 }
@@ -118,6 +156,7 @@ export function CopilotInsights({
   question: questionOverride,
   focusCopy,
   onOpenCopilot,
+  ready = true,
 }: CopilotInsightsProps) {
   const [result, setResult] = useState<InsightState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -136,6 +175,14 @@ export function CopilotInsights({
 
   useEffect(() => {
     const generation = ++requestGeneration.current;
+    if (!ready) {
+      setResult(null);
+      setLoading(true);
+      setError("");
+      return () => {
+        requestGeneration.current += 1;
+      };
+    }
     if (!evidenceAvailable) {
       setResult({
         kind: "unavailable",
@@ -151,24 +198,29 @@ export function CopilotInsights({
     }
     const submitted = JSON.parse(snapshotJson) as CopilotInsightSnapshot;
     const scope = JSON.parse(scopeJson) as ScopeSelection;
+    const controller = new AbortController();
     setLoading(true);
     setError("");
-    investigateInsight(submitted, question, scope)
-      .then((next) => {
-        if (requestGeneration.current === generation) setResult(next);
-      })
-      .catch((reason: unknown) => {
-        if (requestGeneration.current !== generation) return;
-        setResult(null);
-        setError(reason instanceof Error ? reason.message : "Operations Copilot insights are unavailable.");
-      })
-      .finally(() => {
-        if (requestGeneration.current === generation) setLoading(false);
-      });
+    const timer = setTimeout(() => {
+      investigateInsight(submitted, question, scope, controller.signal)
+        .then((next) => {
+          if (requestGeneration.current === generation) setResult(next);
+        })
+        .catch((reason: unknown) => {
+          if (controller.signal.aborted || requestGeneration.current !== generation) return;
+          setResult(null);
+          setError(reason instanceof Error ? reason.message : "Operations Copilot insights are unavailable.");
+        })
+        .finally(() => {
+          if (requestGeneration.current === generation) setLoading(false);
+        });
+    }, INSIGHT_DEBOUNCE_MS);
     return () => {
       requestGeneration.current += 1;
+      clearTimeout(timer);
+      controller.abort();
     };
-  }, [evidenceAvailable, question, refreshGeneration, scopeJson, snapshotJson]);
+  }, [evidenceAvailable, question, ready, refreshGeneration, scopeJson, snapshotJson]);
 
   const badge = result ? BADGES[result.kind] : BADGES.unavailable;
 
@@ -179,7 +231,7 @@ export function CopilotInsights({
         <span>{focusCopy || `Grounded in ${contextLabel || "the current page"}.`}</span>
       </div>
       {loading ? (
-        <p>Analyzing authoritative page evidence…</p>
+        <p>{ready ? "Analyzing authoritative page evidence…" : "Waiting for page evidence to load…"}</p>
       ) : result?.kind === "llm" ? (
         <>
           <StatusBadge label={badge.label} tone={badge.tone} compact />
@@ -203,6 +255,14 @@ export function CopilotInsights({
       {!loading && result?.warning && (result.kind === "llm" || result.findings.length > 0) && (
         <small>{result.warning}</small>
       )}
+      {!loading && result && (result.confidence || result.specialists?.length) ? (
+        <small className="copilot-insights-provenance">
+          {[
+            result.confidence ? `Synthesis confidence: ${result.confidence}` : "",
+            result.specialists?.length ? `Specialists: ${result.specialists.join(", ")}` : "",
+          ].filter(Boolean).join(" · ")}
+        </small>
+      ) : null}
       <div className="button-row">
         <button type="button" className="button-secondary" onClick={refresh}>
           Refresh insights

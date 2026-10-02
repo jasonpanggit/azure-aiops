@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCopilotSnapshot } from "@/lib/services";
 import type { CanonicalCopilotResult } from "@/lib/types";
 import { CopilotInsights, interpretInsightResult } from "./CopilotInsights";
@@ -107,5 +107,58 @@ describe("CopilotInsights", () => {
       synthesis: { status: "skipped", reason: "", domain_count: 0, claims: [], warning: "" },
     }));
     expect(state.kind).toBe("unavailable");
+  });
+
+  describe("readiness, debounce and provenance", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("waits for page readiness before requesting an insight", async () => {
+      investigateCanonical.mockResolvedValue({
+        data: result({ synthesis: { status: "synthesized", reason: "", narration: "Ready insight.", domain_count: 1, claims: [], warning: "" } as never }),
+      });
+      const { rerender } = render(<CopilotInsights snapshot={snapshot} ready={false} />);
+      expect(screen.getByText(/Waiting for page evidence to load/)).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(investigateCanonical).not.toHaveBeenCalled();
+      rerender(<CopilotInsights snapshot={snapshot} ready />);
+      expect(await screen.findByText("Ready insight.")).toBeInTheDocument();
+      expect(investigateCanonical).toHaveBeenCalledTimes(1);
+    });
+
+    it("coalesces snapshot churn into one request and aborts superseded ones", async () => {
+      vi.useFakeTimers();
+      investigateCanonical.mockResolvedValue({
+        data: result({ synthesis: { status: "synthesized", reason: "", narration: "Final.", domain_count: 1, claims: [], warning: "" } as never }),
+      });
+      const next = (count: number) => buildCopilotSnapshot({
+        pageKind: "remediation", pageId: "remediation", scope: {},
+        evidence: [{ evidence_id: "remediation:visible:0", section: "remediation", status: "ok", data: { plan_count: count } }],
+      });
+      const { rerender } = render(<CopilotInsights snapshot={next(1)} />);
+      await act(async () => { vi.advanceTimersByTime(100); });
+      rerender(<CopilotInsights snapshot={next(2)} />);
+      await act(async () => { vi.advanceTimersByTime(100); });
+      rerender(<CopilotInsights snapshot={next(3)} />);
+      await act(async () => { vi.advanceTimersByTime(500); });
+      expect(investigateCanonical).toHaveBeenCalledTimes(1);
+      const [request, , signal] = investigateCanonical.mock.calls[0];
+      expect(request.snapshot.evidence[0].data.plan_count).toBe(3);
+      expect(signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("reports the lowest synthesis claim confidence and selected specialists", () => {
+      const state = interpretInsightResult(result({
+        selected_specialists: ["vulnerability", "patch"],
+        synthesis: {
+          status: "synthesized", reason: "", domain_count: 2, warning: "",
+          claims: [
+            { finding_id: "a", summary: "A", evidence_refs: [], confidence: "high", freshness: "", uncertainty: [] },
+            { finding_id: "b", summary: "B", evidence_refs: [], confidence: "medium", freshness: "", uncertainty: [] },
+          ],
+        },
+      }));
+      expect(state.confidence).toBe("medium");
+      expect(state.specialists).toEqual(["vulnerability", "patch"]);
+    });
   });
 });

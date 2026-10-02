@@ -822,6 +822,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
 
       <CopilotInsights
         snapshot={cveCopilot.snapshot}
+        ready={!common.loading && !findings.loading}
         requestedScope={cveCopilot.requestedScope}
         contextLabel={data?.cve.cve_id ?? "CVE detail"}
         onOpenCopilot={() => setCopilotOpen(true)}

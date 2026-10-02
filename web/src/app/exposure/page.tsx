@@ -346,6 +346,7 @@ export default function ExposurePage() {
 
       <CopilotInsights
         snapshot={exposureCopilot.snapshot}
+        ready={!facets.loading}
         requestedScope={exposureCopilot.requestedScope}
         contextLabel="Vulnerability exposure"
         onOpenCopilot={() => setCopilotOpen(true)}

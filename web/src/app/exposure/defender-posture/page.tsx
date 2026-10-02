@@ -279,6 +279,7 @@ export default function DefenderPosturePage() {
 
       <CopilotInsights
         snapshot={defenderCopilot.snapshot}
+        ready={!section.loading && !facets.loading}
         requestedScope={defenderCopilot.requestedScope}
         contextLabel="Defender posture"
         onOpenCopilot={() => setCopilotOpen(true)}

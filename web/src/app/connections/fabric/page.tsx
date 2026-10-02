@@ -162,6 +162,7 @@ function FabricMedallionPageContent() {
 
       <CopilotInsights
         snapshot={fabricCopilot.snapshot}
+        ready={!connections.loading}
         requestedScope={fabricCopilot.requestedScope}
         contextLabel="Fabric medallion"
         onOpenCopilot={() => setCopilotOpen(true)}

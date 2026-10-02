@@ -188,6 +188,7 @@ export default function GovernancePage() {
 
       <CopilotInsights
         snapshot={governanceCopilot.snapshot}
+        ready={!audiences.loading && !kinds.loading && !settings.loading}
         requestedScope={governanceCopilot.requestedScope}
         contextLabel="Enterprise governance"
         onOpenCopilot={() => setCopilotOpen(true)}
