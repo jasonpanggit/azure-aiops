@@ -2454,3 +2454,32 @@ change is in scope.
   insights panel remains **unverified**: the browser stopped at organizational
   MFA approval. The image is the one built from the locally tested source,
   but HTTP 200 alone does not prove the panel rendered for a signed-in user.
+
+## PR #305 — Operations Copilot insights accuracy (2026-10-02)
+
+- Merge: `2871bab9df70c163590b189d33a5567f36d0b08d`, web-only. Local
+  validation: 845/845 web tests, `npm run lint:fix`, `tsc --noEmit`,
+  `npm run build`, and `git diff --check` passed. GitHub security scan passed;
+  backend CI failed on unchanged unused `noqa` directives and frontend CI
+  lacked Python `fastapi` and `opentelemetry` dependencies for its parity tests.
+- Build: exact merge-commit `web/` archive, ACR run `cr11s`, tag
+  `aiops-web:copilot-insights-accuracy-2871bab9-20261002T070012Z`, digest
+  `sha256:30f12ec34ce718632d3d925fbd1a9bd9e425510317aee1831c10f3393d42008f`.
+- Deploy: `aiops-dev-web--0000250` uses the immutable digest, Healthy and
+  Running at 100% traffic; `0000249` is at 0%. `/`, `/identity`,
+  `/remediation`, `/network`, and `/api/config` returned HTTP 200. API remains
+  `aiops-dev-api--pr300-1e1b751b` at 100% on its previous image; no API,
+  Network, APIM, MCP, or job deployment/configuration change was made.
+- Authenticated browser smoke: `/`, `/identity`, and `/remediation` each
+  displayed "Waiting for page evidence to load…" before leaving the loading
+  state. Home then displayed deterministic cited findings with
+  `Synthesis confidence: medium` and network/vulnerability/patch/incident
+  specialists. Identity displayed deterministic cited findings with
+  `Synthesis confidence: medium` and `identity_access` specialist. On both,
+  Foundry narration failed response validation and the UI explicitly showed
+  deterministic evidence instead. Remediation displayed `Insight unavailable`
+  because `remediation_opportunities` was unavailable and its visible subset
+  incomplete; it showed `Specialists: remediation` but no confidence line or
+  fabricated insight. Thus the rendering and fail-closed states are verified,
+  but a successful remediation insight with confidence provenance is **not**
+  verified against live complete evidence.
