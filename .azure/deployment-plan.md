@@ -2483,3 +2483,45 @@ change is in scope.
   fabricated insight. Thus the rendering and fail-closed states are verified,
   but a successful remediation insight with confidence provenance is **not**
   verified against live complete evidence.
+
+## PR #307 — Copilot backend accuracy (2026-10-02)
+
+- Merge: `b1dda04c10f19bd85b656c60712e506de36b9e1c`, backend-only, including
+  the already-merged #302 polling-header correction. The revised PR head
+  `7caf1c2fa450df0a62bc00d5648d534ddf005204` addressed review findings
+  around corrected plans, public connections results, and substantive evidence.
+  Changed-file Ruff, diff check, and 27 selected regressions passed. Broader
+  Copilot tests required a process-local compatibility shim for an outdated
+  authorization test fixture; excluding four independently existing failures,
+  the rest passed. GitHub security scan passed; backend CI failed on two
+  unchanged unused `noqa` directives and frontend CI lacked Python dependencies.
+  Neither failing CI job is counted as passing validation.
+- Build: exact merge-commit source archive, ACR run `cr11t`, image
+  `aiops-api:copilot-accuracy-b1dda04c-20261002T0746Z`, immutable digest
+  `sha256:c8a799a390c97fa2894d7c95b1fdf628207526ac2eea8dee8033c734357fe46f`.
+- Cutover waited for in-process inventory refresh
+  `refresh-b026e3ca-fdf8-4243-90cc-d49fcb6d5c84` to return HTTP 200 at
+  08:01:45Z. The new revision `aiops-dev-api--pr307-b1dda04c` copied the
+  previous revision's configuration, changing only image and
+  `AIOPS_SOURCE_REVISION`. Dedicated `api-d4` scheduling initially reported
+  insufficient capacity, then autoscaled within its existing 0–4-node limit;
+  no profile setting or quota was changed. Its replica became Running/Healthy,
+  revision-specific `/health` and `/ready` returned 200, and canary traffic
+  was staged at 10% before promotion to 100%. It retains 4 CPU / 8 GiB.
+  Prior `aiops-dev-api--pr300-1e1b751b` remains Active/Healthy at 0% for
+  rollback. The rollout mode and retired runtime authorization gate are
+  unchanged; no new protected-tree enablement was performed.
+- All ten ACA jobs moved from the #300 image to the same #307 immutable
+  digest; each before/after job template, configuration, identity, and tags
+  was compared, with only its image differing. API `/health` and `/ready`
+  returned 200 on the public and revision-specific hosts. Unauthenticated
+  `/api/v1/copilot/tools` returned the expected 401, not an API error.
+  Web `aiops-dev-web--0000250` still serves the #305 digest at 100%, and
+  `/`, `/identity`, `/remediation`, and `/network` return 200. Azure MCP
+  `aiops-dev-azure-mcp--0000100` remains at 100%; no web, Network, APIM, MCP,
+  Fabric, Terraform state, or RBAC change was made.
+- Live authenticated F4/F5/F6 and Foundry narration outcomes have **not**
+  been exercised after this deployment. Local regressions verify the
+  fail-closed behavior, but public health/401 probes do not establish an
+  authenticated Copilot result. Phase 4 digest-to-workload traversal,
+  qualified 100k benchmark, and canary/rollback exercise remain deferred.
