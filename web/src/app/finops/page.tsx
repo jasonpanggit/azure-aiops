@@ -19,6 +19,7 @@ import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const DIMENSIONS = [
   "subscription",
@@ -202,6 +203,13 @@ export default function FinOpsPage() {
             <span>Billed spend is not real-time — refresh via Connections &gt; Sync now</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={finopsCopilot.snapshot}
+        requestedScope={finopsCopilot.requestedScope}
+        contextLabel="Financial accountability"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar

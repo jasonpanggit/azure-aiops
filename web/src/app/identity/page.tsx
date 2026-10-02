@@ -19,6 +19,7 @@ import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 function rotationTone(status: string): "critical" | "warning" | "success" | "neutral" {
   if (status === "expired") return "critical";
@@ -162,6 +163,13 @@ export default function IdentityPage() {
             <span>Scope-limited to your subscriptions</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={identityCopilot.snapshot}
+        requestedScope={identityCopilot.requestedScope}
+        contextLabel="Access governance"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar

@@ -38,6 +38,7 @@ import type {
   ExposureFacets,
   ExposureFinding,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const OVERVIEW_FACETS = [
   "severity",
@@ -341,6 +342,13 @@ export default function ExposurePage() {
             <span>Generation-pinned Fabric SQL</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={exposureCopilot.snapshot}
+        requestedScope={exposureCopilot.requestedScope}
+        contextLabel="Vulnerability exposure"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar

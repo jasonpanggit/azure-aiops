@@ -54,6 +54,7 @@ import { usePollingBackoff } from "./polling";
 
 import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./blockers";
 import type { WorkflowStep } from "./blockers";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const COMPLIANCE_FINDING_TYPES = new Set([
   "firewall_bypass",
@@ -1359,6 +1360,13 @@ function RemediationContent() {
               <span>Execution transition disabled</span>
             </>
           }
+        />
+
+        <CopilotInsights
+          snapshot={remediationCopilot.snapshot}
+          requestedScope={remediationCopilot.requestedScope}
+          contextLabel={workflow?.plan.title ?? "Remediation"}
+          onOpenCopilot={() => setCopilotOpen(true)}
         />
         {handoffError && (
           <p className="callout callout-warning" role="alert">{handoffError}</p>

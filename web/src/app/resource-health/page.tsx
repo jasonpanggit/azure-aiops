@@ -25,6 +25,7 @@ import type {
   ResourceHealthSnapshot,
   ResourceUtilization,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const MAX_ACTIVE_HEALTH_REQUESTS = 6;
 const SUPPORTED_RESOURCE_TYPES = new Set([
@@ -570,6 +571,13 @@ export default function ResourceHealthPage() {
             </button>
           </div>
         }
+      />
+
+      <CopilotInsights
+        snapshot={resourceHealthCopilot.snapshot}
+        requestedScope={resourceHealthCopilot.requestedScope}
+        contextLabel="Resource health"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {unavailableMetrics.length > 0 ? (

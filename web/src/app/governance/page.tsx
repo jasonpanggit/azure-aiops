@@ -18,6 +18,7 @@ import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import type { AccessReviewPack, AuditExportPack } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 type Tab = "reviews" | "exports" | "settings";
 
@@ -183,6 +184,13 @@ export default function GovernancePage() {
             <span>Scope-limited to your subscriptions</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={governanceCopilot.snapshot}
+        requestedScope={governanceCopilot.requestedScope}
+        contextLabel="Enterprise governance"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar

@@ -15,6 +15,7 @@ import { formatDateTime, relativeTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { operationsApi } from "@/lib/services";
 import type { IncidentTimelineEvent } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 function sourceLink(event: IncidentTimelineEvent): string | null {
   for (const key of ["source_url", "source_link", "deep_link", "url"]) {
@@ -75,6 +76,13 @@ export default function ChangesPage() {
             <Link className="button button-secondary" href="/changes/predeploy">Assess a proposed change</Link>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={changesCopilot.snapshot}
+        requestedScope={changesCopilot.requestedScope}
+        contextLabel="Change intelligence"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar evidence={incidents.data?.evidence} knowledgeVersion={incidents.data?.knowledge_version} warnings={incidents.data?.warnings} />
       {incidents.error ? (

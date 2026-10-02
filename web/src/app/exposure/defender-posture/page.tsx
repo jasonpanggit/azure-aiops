@@ -29,6 +29,7 @@ import { useScope } from "@/lib/scope-context";
 import { vulnerabilityApi } from "@/lib/services";
 import { buildDefenderPostureCopilotContext } from "@/lib/copilot/page-adapters";
 import type { ExposureFacets, ExposureFinding, ExposurePage } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 interface DefenderExposureFinding extends ExposureFinding {
   weakness_kind?: string;
@@ -274,6 +275,13 @@ export default function DefenderPosturePage() {
             <span>Review only. Nothing executes from Exposure.</span>
           </>
         }
+      />
+
+      <CopilotInsights
+        snapshot={defenderCopilot.snapshot}
+        requestedScope={defenderCopilot.requestedScope}
+        contextLabel="Defender posture"
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar

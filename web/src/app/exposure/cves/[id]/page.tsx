@@ -66,6 +66,7 @@ import type {
   ExposureOverview,
   ExposurePage,
 } from "@/lib/types";
+import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 interface CveFindingRow extends ExposureFinding {
   server_id?: string;
@@ -817,6 +818,13 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
             </>
           ) : undefined
         }
+      />
+
+      <CopilotInsights
+        snapshot={cveCopilot.snapshot}
+        requestedScope={cveCopilot.requestedScope}
+        contextLabel={data?.cve.cve_id ?? "CVE detail"}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar
         evidence={common.envelope?.evidence ?? catalog.envelope?.evidence}

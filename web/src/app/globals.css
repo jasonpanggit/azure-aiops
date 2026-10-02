@@ -879,6 +879,50 @@ textarea:focus-visible {
   margin-bottom: 22px;
 }
 
+.copilot-insights {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 18px;
+  padding: 16px 18px;
+  background:
+    linear-gradient(135deg, rgb(15 108 189 / 7%), rgb(40 178 192 / 4%)),
+    var(--color-surface);
+}
+
+.copilot-insights-heading,
+.copilot-insights-narration,
+.copilot-insights > p,
+.copilot-insights > small {
+  grid-column: 1 / -1;
+}
+
+.copilot-insights-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.copilot-insights-heading span,
+.copilot-insights > small {
+  color: var(--color-text-secondary);
+}
+
+.copilot-insights-narration {
+  min-width: 0;
+}
+
+.copilot-insights .button-row {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+
+
+.copilot-insights-findings {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .page-header-copy {
   max-width: 800px;
 }
