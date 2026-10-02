@@ -1139,3 +1139,51 @@ def test_specialist_catalog_rejects_partial_unvalidated_mapping(monkeypatch) -> 
     
     other_entries = [e for e in catalog if e["id"] != "network"]
     assert all(e["status"] == "unavailable" for e in other_entries)
+
+
+def test_operations_copilot_rebinds_page_named_specialist_to_tool_owner() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "twin",
+                "tool_calls": [{
+                    "tool": "network_topology",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(coordinator)(_network_request())
+
+    assert plan.steps[0].specialist_id == "network"
+
+
+def test_operations_copilot_keeps_unknown_specialist_without_single_owner() -> None:
+    coordinator = _Coordinator([
+        json.dumps({
+            "steps": [{
+                "specialist_id": "twin",
+                "tool_calls": [{
+                    "tool": "not_a_tool",
+                    "arguments": {},
+                    "citation_ids": ["snapshot:coverage"],
+                    "mutation": False,
+                }],
+                "depends_on": [],
+            }],
+            "estimated_tokens": 0,
+            "max_wall_seconds": 30,
+            "mutation_intent": False,
+        })
+    ])
+
+    plan = FoundryCoordinatorPlanner(coordinator)(_network_request())
+
+    assert plan.steps[0].specialist_id == "twin"

@@ -970,6 +970,52 @@ def snapshot_claim_freshness(snapshot: EvidenceSnapshotV2) -> str:
     return "partial"
 
 
+_INVENTORY_EXCLUDED_PAGES = frozenset({"connections", "connections_fabric"})
+
+
+def _drop_page_irrelevant_results(
+    page_kind: str | None,
+    tool_results: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Drop specialist results that answer a different question than the page.
+
+    Connections pages publish their own registry/fabric truth; a tenant
+    inventory result's empty 0/0 coverage contradicts what the operator sees.
+    """
+
+    if page_kind not in _INVENTORY_EXCLUDED_PAGES:
+        return list(tool_results)
+    return [
+        item
+        for item in tool_results
+        if str(item.get("tool") or "") != "inventory_resources"
+    ]
+
+
+def _has_substantive_findings(
+    findings: Sequence[Mapping[str, Any]],
+    retained_evidence: Sequence[Mapping[str, Any]] = (),
+) -> bool:
+    """Whether any finding carries current observed evidence, not metadata.
+
+    Unavailable, failed, or empty specialist results and page coverage
+    counters describe what could not be observed; narrating over them only
+    produces low-value claims about configuration rather than state.
+    """
+
+    for finding in findings:
+        if str(finding.get("status") or "") != STATUS_OK:
+            continue
+        refs = [str(ref) for ref in finding.get("evidence_refs") or []]
+        if any(not ref.endswith(":coverage") for ref in refs):
+            return True
+    return any(
+        str(item.get("status") or STATUS_OK) == STATUS_OK
+        and not str(item.get("source") or "").endswith(":coverage")
+        for item in retained_evidence
+    )
+
+
 def _complete_empty_page_kind(
     snapshot: EvidenceSnapshotV2,
 ) -> str | None:
@@ -2357,6 +2403,10 @@ class OrchestrationService:
             str(item.get("status") or "") == STATUS_UNAVAILABLE
             for item in tool_results
         )
+        tool_results = _drop_page_irrelevant_results(
+            snapshot.page_kind if snapshot is not None else None,
+            tool_results,
+        )
         findings = normalize_cited_findings(
             tool_results,
             selected_resource_ids=selected_resource_ids,
@@ -2784,6 +2834,27 @@ class OrchestrationService:
                 used_retained_evidence=[
                     dict(item) for item in current_retained_evidence
                 ],
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
+        if not deterministic_claims and not _has_substantive_findings(
+            findings,
+            current_retained_evidence,
+        ):
+            synthesis = ExecutiveSynthesis(
+                status="degraded",
+                reason=decision.reason,
+                domain_count=decision.domain_count,
+                warning=(
+                    "Executive synthesis was skipped because no specialist "
+                    "returned current observed evidence; only configuration "
+                    "or coverage metadata was available."
+                ),
+                claims=[],
+                used_retained_evidence=[
+                    dict(item) for item in current_retained_evidence
+                ],
+                degraded_reason="no_substantive_evidence",
             )
             self._record_synthesis_metric(synthesis)
             return synthesis

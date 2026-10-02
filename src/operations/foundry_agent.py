@@ -29,7 +29,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from copy import deepcopy
@@ -1276,6 +1276,12 @@ def _json_object_from_answer(text: str) -> dict[str, Any]:
     return payload
 
 
+_EXECUTIVE_CONFIDENCE_VALUES = frozenset({"high", "medium", "low", "unknown"})
+_EXECUTIVE_FRESHNESS_VALUES = frozenset(
+    {"fresh", "stale", "partial", "unavailable", "unknown"}
+)
+
+
 def _normalize_coordinator_findings(text: str) -> str:
     """Normalize benign drift and remove unsafe executive next-check wording."""
 
@@ -1295,9 +1301,20 @@ def _normalize_coordinator_findings(text: str) -> str:
                 "Operations Copilot coordinator finding is not an object"
             )
         normalized = {key: row.get(key) for key in required}
+        finding_id = normalized.get("finding_id")
+        if not isinstance(finding_id, str) or not finding_id.strip():
+            normalized["finding_id"] = f"exec-{len(findings) + 1}"
         evidence_refs = normalized.get("evidence_refs")
         if isinstance(evidence_refs, str):
             normalized["evidence_refs"] = [evidence_refs]
+        if isinstance(normalized.get("evidence_refs"), list):
+            normalized["evidence_refs"] = list(
+                dict.fromkeys(
+                    str(ref).strip()
+                    for ref in normalized["evidence_refs"]
+                    if isinstance(ref, (str, int)) and str(ref).strip()
+                )
+            )
         uncertainty = normalized.get("uncertainty")
         if isinstance(uncertainty, str):
             normalized["uncertainty"] = (
@@ -1305,6 +1322,12 @@ def _normalize_coordinator_findings(text: str) -> str:
             )
         elif uncertainty is None:
             normalized["uncertainty"] = []
+        elif isinstance(uncertainty, list):
+            normalized["uncertainty"] = [
+                str(value).strip()
+                for value in uncertainty
+                if value is not None and str(value).strip()
+            ]
         normalized["actionable"] = (
             normalized.get("actionable")
             if isinstance(normalized.get("actionable"), bool)
@@ -1315,7 +1338,15 @@ def _normalize_coordinator_findings(text: str) -> str:
                 normalized[key] = normalized[key].strip().casefold()
         if normalized.get("freshness") == "current":
             normalized["freshness"] = "unknown"
+        if normalized.get("confidence") not in _EXECUTIVE_CONFIDENCE_VALUES:
+            normalized["confidence"] = "unknown"
+        if normalized.get("freshness") not in _EXECUTIVE_FRESHNESS_VALUES:
+            normalized["freshness"] = "unknown"
         next_check = normalized.get("next_check")
+        if not isinstance(next_check, str) or not next_check.strip():
+            normalized["next_check"] = _SAFE_EXECUTIVE_NEXT_CHECK
+        elif len(next_check) > 240:
+            normalized["next_check"] = next_check[:237].rstrip() + "..."
         if (
             isinstance(next_check, str)
             and _MUTATION_WORD_PATTERN.search(next_check)
@@ -1325,7 +1356,50 @@ def _normalize_coordinator_findings(text: str) -> str:
             # as the operator's next read-only check.
             normalized["next_check"] = _SAFE_EXECUTIVE_NEXT_CHECK
         findings.append(normalized)
+        if len(findings) >= MAX_SYNTHESIS_FINDINGS:
+            break
     return json.dumps({"findings": findings}, ensure_ascii=False)
+
+
+def _resolve_finding_id_citations(text: str, context: Any) -> str:
+    """Expand citations of an input finding_id to that finding's own refs.
+
+    Models frequently cite the input ``finding_id`` instead of its
+    ``evidence_refs``. That alias resolves deterministically to references the
+    specialists already published, so it is expanded rather than rejected.
+    Any other unknown reference is left intact for citation closure to reject.
+    """
+
+    if not isinstance(context, Mapping):
+        return text
+    aliases: dict[str, list[str]] = {}
+    known: set[str] = set()
+    for finding in context.get("findings") or []:
+        if not isinstance(finding, Mapping):
+            continue
+        refs = [str(ref) for ref in finding.get("evidence_refs") or [] if ref]
+        known.update(refs)
+        finding_id = str(finding.get("finding_id") or "")
+        if finding_id and refs:
+            aliases[finding_id] = refs
+    for item in context.get("retained_evidence") or []:
+        if isinstance(item, Mapping) and item.get("evidence_id"):
+            known.add(str(item["evidence_id"]))
+    if not aliases:
+        return text
+    payload = json.loads(text)
+    for finding in payload.get("findings") or []:
+        refs = finding.get("evidence_refs")
+        if not isinstance(refs, list):
+            continue
+        resolved: list[str] = []
+        for ref in refs:
+            if isinstance(ref, str) and ref not in known and ref in aliases:
+                resolved.extend(aliases[ref])
+            else:
+                resolved.append(ref)
+        finding["evidence_refs"] = list(dict.fromkeys(resolved))
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def is_highest_risk_compliance_question(
@@ -1340,6 +1414,42 @@ def is_highest_risk_compliance_question(
         and "highest risk" in normalized
         and "compliance" in normalized
     )
+
+
+def _reconcile_planner_specialists(
+    plan: CandidatePlan,
+    allowed_specialists: Mapping[str, Sequence[str]],
+) -> CandidatePlan:
+    """Map planner-invented specialist IDs onto the page's reviewed owners.
+
+    The coordinator sometimes names a step after the page (``twin``,
+    ``patch_priorities``) instead of an allowed specialist. When exactly one
+    allowed specialist grants every tool in that step, rebind the step to it;
+    otherwise leave the step unchanged so deterministic policy rejects it.
+    """
+
+    if not allowed_specialists:
+        return plan
+    steps = []
+    changed = False
+    for step in plan.steps:
+        if step.specialist_id in allowed_specialists:
+            steps.append(step)
+            continue
+        tools = {call.tool for call in step.tool_calls}
+        owners = [
+            specialist_id
+            for specialist_id, granted in allowed_specialists.items()
+            if tools and tools.issubset(set(granted))
+        ]
+        if len(owners) != 1:
+            steps.append(step)
+            continue
+        steps.append(step.model_copy(update={"specialist_id": owners[0]}))
+        changed = True
+    if not changed:
+        return plan
+    return plan.model_copy(update={"steps": steps})
 
 
 class FoundryCoordinatorPlanner:
@@ -1471,6 +1581,7 @@ class FoundryCoordinatorPlanner:
                 ]
             }
         )
+        plan = _reconcile_planner_specialists(plan, allowed_specialists)
         selected = {step.specialist_id for step in plan.steps}
         missing = [
             specialist_id
@@ -1531,7 +1642,9 @@ class FoundryCoordinatorSynthesisAgent:
             "contain exactly finding_id, evidence_refs, confidence, uncertainty, "
             "freshness, actionable, next_check, summary. Answer the operator "
             "question directly, consolidate duplicate findings, and cite only "
-            "evidence_refs present in context. In summary, describe the observed "
+            "evidence_refs present in context: copy each citation verbatim from a "
+            "finding's evidence_refs or a retained_evidence evidence_id, and never "
+            "cite a finding_id as an evidence ref. In summary, describe the observed "
             "issue and remediation recommended by the cited evidence, for human "
             "review only; never claim a change was performed. Keep next_check "
             "strictly read-only (inspect, verify, or review); it must not instruct "
@@ -1546,7 +1659,10 @@ class FoundryCoordinatorSynthesisAgent:
             timeout_seconds=timeout_seconds,
         )
         try:
-            normalized = _normalize_coordinator_findings(answer.text)
+            normalized = _resolve_finding_id_citations(
+                _normalize_coordinator_findings(answer.text),
+                context,
+            )
         except (FoundryAgentError, TypeError, ValueError) as exc:
             raise FoundryResponseContractError(
                 "Executive synthesis failed response normalization"
