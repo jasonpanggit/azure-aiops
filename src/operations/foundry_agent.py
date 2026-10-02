@@ -1561,27 +1561,29 @@ class FoundryCoordinatorPlanner:
                     "Operations Copilot coordinator returned an invalid candidate plan"
                 ) from exc
 
-        plan = request_plan(planning_question)
-        plan = plan.model_copy(
-            update={
-                "steps": [
-                    step.model_copy(
-                        update={
-                            "tool_calls": [
-                                call.model_copy(update={"arguments": {}})
-                                if not tool_schemas.get(call.tool, {}).get(
-                                    "properties"
-                                )
-                                else call
-                                for call in step.tool_calls
-                            ]
-                        }
-                    )
-                    for step in plan.steps
-                ]
-            }
-        )
-        plan = _reconcile_planner_specialists(plan, allowed_specialists)
+        def normalize_plan(candidate: CandidatePlan) -> CandidatePlan:
+            sanitized = candidate.model_copy(
+                update={
+                    "steps": [
+                        step.model_copy(
+                            update={
+                                "tool_calls": [
+                                    call.model_copy(update={"arguments": {}})
+                                    if not tool_schemas.get(call.tool, {}).get(
+                                        "properties"
+                                    )
+                                    else call
+                                    for call in step.tool_calls
+                                ]
+                            }
+                        )
+                        for step in candidate.steps
+                    ]
+                }
+            )
+            return _reconcile_planner_specialists(sanitized, allowed_specialists)
+
+        plan = normalize_plan(request_plan(planning_question))
         selected = {step.specialist_id for step in plan.steps}
         missing = [
             specialist_id
@@ -1594,7 +1596,7 @@ class FoundryCoordinatorPlanner:
                 f"missing required specialists: {', '.join(missing)}. Return "
                 "one corrected complete candidate."
             )
-            plan = request_plan(correction)
+            plan = normalize_plan(request_plan(correction))
             selected = {step.specialist_id for step in plan.steps}
             missing = [
                 specialist_id

@@ -6,6 +6,7 @@ from operations.foundry_agent import (
     _resolve_finding_id_citations,
 )
 from operations.orchestration_service import (
+    _configuration_only_call_ids,
     _drop_page_irrelevant_results,
     _has_substantive_findings,
 )
@@ -114,4 +115,34 @@ def test_observed_evidence_is_substantive():
     )
     assert not _has_substantive_findings(
         [], [{"status": "failed", "source": "network_topology"}]
+    )
+
+
+def test_configuration_only_tool_findings_are_not_substantive():
+    tool_results = [
+        {"tool": "business_service_context", "call_id": "call-1"},
+        {"tool": "get_ontology_vocabulary", "specialist_id": "governance"},
+        {"tool": "network_topology", "call_id": "call-3"},
+    ]
+    configuration_ids = _configuration_only_call_ids(tool_results)
+    assert configuration_ids == {"call-1", "governance:get_ontology_vocabulary"}
+    findings = [{
+        "finding_id": "call-1",
+        "status": STATUS_OK,
+        "evidence_refs": ["tool:call-1:0"],
+    }]
+    assert _has_substantive_findings(findings)
+    assert not _has_substantive_findings(
+        findings, configuration_finding_ids=configuration_ids
+    )
+    assert not _has_substantive_findings(
+        [], [{"status": STATUS_OK, "source": "business_service_context"}]
+    )
+    assert _has_substantive_findings(
+        findings + [{
+            "finding_id": "call-3",
+            "status": STATUS_OK,
+            "evidence_refs": ["tool:call-3:0"],
+        }],
+        configuration_finding_ids=configuration_ids,
     )
