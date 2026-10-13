@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -20,8 +20,25 @@ import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
-import { ApiError, type SubscriptionConnection, type SyncState } from "@/lib/types";
+import { ApiError, type ConnectionCreateRequest, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+
+const EMPTY_FORM = {
+  connectionId: "",
+  name: "",
+  subscriptionId: "",
+  tenantId: "",
+  clientId: "",
+  clientSecret: "",
+  businessService: "",
+  application: "",
+  environment: "",
+  owner: "",
+  supportTeam: "",
+  criticality: "medium",
+  region: "",
+  costCenter: "",
+};
 
 const SYNC_POLL_INTERVAL_MS = 1500;
 // Discovery + merge + ontology + Fabric publish can take well past 10 minutes
@@ -65,6 +82,9 @@ function readableSyncStage(stage: string | null | undefined): string {
 export default function ConnectionsPage() {
   const { scope } = useScope();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [runningAction, setRunningAction] = useState("");
@@ -205,6 +225,73 @@ export default function ConnectionsPage() {
     };
   }, [pollSyncState, rows]);
 
+  function update(key: keyof typeof form, value: string) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function onboard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setActionError("");
+    setActionMessage("");
+    const payload: ConnectionCreateRequest = {
+      connection_id: form.connectionId.trim().toLowerCase(),
+      name: form.name.trim(),
+      subscription_id: form.subscriptionId.trim(),
+      tenant_id: form.tenantId.trim(),
+      credential: {
+        kind: "service_principal",
+        client_id: form.clientId.trim(),
+        tenant_id: form.tenantId.trim(),
+        client_secret: form.clientSecret,
+      },
+      metadata: {
+        business_service: form.businessService.trim(),
+        application: form.application.trim(),
+        environment: form.environment.trim(),
+        project_owner: form.owner.trim(),
+        support_team: form.supportTeam.trim(),
+        criticality: form.criticality,
+        region: form.region.trim(),
+        cost_center: form.costCenter.trim(),
+      },
+    };
+    try {
+      const result = await connectionsApi.create(payload);
+      const { validation, initial_sync: initialSync } = result.data;
+      if (!validation.passed) {
+        setActionError(`Validation failed: ${validation.health.details ?? validation.failed_required?.join(", ") ?? "required access checks did not pass"}`);
+      } else if (initialSync.status.toLowerCase() === "failed") {
+        setActionError(initialSync.sync_state.message ?? "Initial sync failed.");
+      } else {
+        setActionMessage(
+          validation.status === "degraded"
+            ? "Subscription connection validated with optional checks degraded. Initial sync queued."
+            : "Subscription connection validated. Initial sync queued."
+        );
+        setSyncProgress({ connectionId: result.data.connection_id, state: initialSync.sync_state });
+        const finalState = await pollSyncState(result.data.connection_id);
+        setSyncProgress(null);
+        if (finalState.status.toLowerCase() === "failed") {
+          setActionError(finalState.message ?? finalState.stage_message ?? "Initial sync failed.");
+        } else {
+          setActionMessage(
+            validation.status === "degraded"
+              ? "Subscription connection validated with optional checks degraded. Initial sync completed."
+              : "Subscription connection validated and initial sync completed."
+          );
+        }
+      }
+      setForm(EMPTY_FORM);
+      setShowOnboarding(false);
+      setRefreshKey((value) => value + 1);
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Unable to create subscription connection.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function deleteConnection(connection: SubscriptionConnection) {
     if (!window.confirm(`Delete subscription connection "${connection.name}"? This removes it from the registry.`)) {
       return;
@@ -316,6 +403,18 @@ export default function ConnectionsPage() {
               onClick={() => setCopilotOpen(true)}
               label="Ask Copilot about data health"
             />
+            {tab === "subscriptions" && (
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => setShowOnboarding(true)}
+                disabled={submitting}
+                aria-expanded={showOnboarding}
+                aria-controls="subscription-onboarding-form"
+              >
+                Add subscription connection
+              </button>
+            )}
             {tab === "fabric-medallion" ? (
             <div className="page-header-actions-group">
               <select 
@@ -447,12 +546,45 @@ export default function ConnectionsPage() {
         aria-labelledby="subscriptions-tab"
         tabIndex={0}
       >
+        {showOnboarding && (
+          <form id="subscription-onboarding-form" className="card onboarding-form" onSubmit={onboard} aria-busy={submitting}>
+            <div className="card-header">
+              <div><h2>Onboard an Azure subscription</h2><p>Enter the service principal secret once. The API stores it in Azure Key Vault and AIOps keeps only the Key Vault reference.</p></div>
+            </div>
+            <div className="card-body">
+              <h3>Azure connection</h3>
+              <div className="form-grid">
+                <FormField label="Connection ID" value={form.connectionId} onChange={(value) => update("connectionId", value)} required />
+                <FormField label="Display name" value={form.name} onChange={(value) => update("name", value)} required />
+                <FormField label="Subscription ID" value={form.subscriptionId} onChange={(value) => update("subscriptionId", value)} required />
+                <FormField label="Tenant ID" value={form.tenantId} onChange={(value) => update("tenantId", value)} required />
+                <FormField label="Service principal client ID" value={form.clientId} onChange={(value) => update("clientId", value)} required />
+                <FormField label="Client secret" value={form.clientSecret} onChange={(value) => update("clientSecret", value)} type="password" autoComplete="new-password" required />
+              </div>
+              <h3 className="form-section-title">Business context</h3>
+              <div className="form-grid">
+                <FormField label="Business service" value={form.businessService} onChange={(value) => update("businessService", value)} />
+                <FormField label="Application" value={form.application} onChange={(value) => update("application", value)} />
+                <FormField label="Environment" value={form.environment} onChange={(value) => update("environment", value)} />
+                <FormField label="Project owner" value={form.owner} onChange={(value) => update("owner", value)} />
+                <FormField label="Support team" value={form.supportTeam} onChange={(value) => update("supportTeam", value)} />
+                <label className="form-field"><span>Criticality</span><select className="form-control" value={form.criticality} onChange={(event) => update("criticality", event.target.value)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+                <FormField label="Region" value={form.region} onChange={(value) => update("region", value)} />
+                <FormField label="Cost center" value={form.costCenter} onChange={(value) => update("costCenter", value)} />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="button" onClick={() => setShowOnboarding(false)} disabled={submitting}>Close onboarding form</button>
+                <button type="submit" className="button button-primary" disabled={submitting}>{submitting ? "Onboarding…" : "Add subscription"}</button>
+              </div>
+            </div>
+          </form>
+        )}
         {connections.error ? (
           <StatePanel title="Connection health is unavailable" message={connections.error.message} tone="error" />
         ) : connections.loading ? (
           <StatePanel title="Loading subscription coverage" message="Checking health, sync state, freshness, and metadata." tone="loading" />
         ) : rows.length === 0 ? (
-          <StatePanel title="No subscriptions onboarded" message="Complete the onboarding form above to establish operational coverage." />
+          <StatePanel title="No subscriptions onboarded" message="Select Add subscription connection to open the onboarding form and establish operational coverage." />
         ) : (
           <div className="card connection-table">
             <TableColumnFilters
@@ -565,5 +697,35 @@ export default function ConnectionsPage() {
         starterQuestions={connectionsCopilot.starterQuestions}
       />
     </div>
+  );
+}
+
+function FormField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  autoComplete,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  autoComplete?: string;
+  required?: boolean;
+}) {
+  return (
+    <label className="form-field">
+      <span>{label}{required ? " *" : ""}</span>
+      <input
+        className="form-control"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        type={type}
+        autoComplete={autoComplete}
+        required={required}
+      />
+    </label>
   );
 }

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
@@ -669,6 +669,125 @@ describe("Connections page Fabric Medallion tab", () => {
     fabricDataset.mockReset();
     list.mockResolvedValue({ ...emptyEnvelope, data: [connection] });
     mockFabricHealth();
+  });
+
+  it.each([{ rows: [] }, { rows: [connection] }])("opens and closes existing subscription onboarding with $rows.length connections", async ({ rows }) => {
+    list.mockResolvedValue({ ...emptyEnvelope, data: rows });
+    renderConnectionsPage();
+    await screen.findByText(rows.length ? "Production" : "No subscriptions onboarded");
+
+    const action = screen.getByRole("button", { name: "Add subscription connection" });
+    expect(screen.queryByRole("heading", { name: "Onboard an Azure subscription" })).not.toBeInTheDocument();
+    fireEvent.click(action);
+    expect(screen.getByRole("heading", { name: "Onboard an Azure subscription" })).toBeInTheDocument();
+    for (const label of ["Connection ID", "Display name", "Subscription ID", "Tenant ID", "Service principal client ID", "Client secret"]) {
+      expect(screen.getByLabelText(`${label} *`)).toBeRequired();
+    }
+    expect(screen.getByLabelText("Client secret *")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("Client secret *")).toHaveAttribute("autocomplete", "new-password");
+    fireEvent.click(screen.getByRole("button", { name: "Close onboarding form" }));
+    expect(screen.queryByLabelText("Client secret *")).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Fabric Medallion" }));
+    expect(screen.queryByRole("button", { name: "Add subscription connection" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Subscriptions" }));
+    expect(screen.getByRole("button", { name: "Add subscription connection" })).toBeInTheDocument();
+  });
+
+  async function fillOnboarding() {
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
+    const form = within(screen.getByRole("heading", { name: "Onboard an Azure subscription" }).closest("form")!);
+    const fields = {
+      "Connection ID *": " NEW-CONNECTION ",
+      "Display name *": " New subscription ",
+      "Subscription ID *": connection.subscription_id,
+      "Tenant ID *": connection.tenant_id,
+      "Service principal client ID *": "00000000-0000-0000-0000-000000000003",
+      "Client secret *": " test-only-secret ",
+      "Business service": " Payments ",
+      "Application": " Checkout ",
+      "Environment": " dev ",
+      "Project owner": " Owner ",
+      "Support team": " SRE ",
+      "Region": " australiaeast ",
+      "Cost center": " CC01 ",
+    };
+    for (const [label, value] of Object.entries(fields)) {
+      fireEvent.change(form.getByLabelText(label), { target: { value } });
+    }
+    fireEvent.change(form.getByLabelText("Criticality"), { target: { value: "high" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Add subscription$/ }));
+    });
+  }
+
+  it("submits the existing create contract, polls initial sync, refreshes and clears the form", async () => {
+    create.mockResolvedValue(envelope({
+      connection_id: "new-connection",
+      validation: { passed: true, status: "healthy", health: {} },
+      initial_sync: { status: "queued", sync_state: { status: "queued" } },
+    }));
+    health.mockResolvedValue(envelope({
+      connections: [{ connection_id: "new-connection", sync: { status: "succeeded", record_count: 1 } }],
+    }));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding();
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      connection_id: "new-connection",
+      name: "New subscription",
+      subscription_id: connection.subscription_id,
+      tenant_id: connection.tenant_id,
+      credential: {
+        kind: "service_principal",
+        client_id: "00000000-0000-0000-0000-000000000003",
+        tenant_id: connection.tenant_id,
+        client_secret: " test-only-secret ",
+      },
+      metadata: {
+        business_service: "Payments", application: "Checkout", environment: "dev",
+        project_owner: "Owner", support_team: "SRE", criticality: "high",
+        region: "australiaeast", cost_center: "CC01",
+      },
+    }));
+    expect(create).toHaveBeenCalledTimes(1);
+    await screen.findByText("Subscription connection validated and initial sync completed.");
+    expect(health).toHaveBeenCalledWith("new-connection");
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByLabelText("Client secret *")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
+    expect(screen.getByLabelText("Client secret *")).toHaveValue("");
+  });
+
+  it("reports a create error and keeps the existing form available for retry", async () => {
+    create.mockRejectedValue(new Error("Write access denied"));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding();
+    await screen.findByText("Write access denied");
+    expect(screen.getByLabelText("Connection ID *")).toHaveValue(" NEW-CONNECTION ");
+    expect(screen.getByRole("button", { name: /^Add subscription$/ })).toBeEnabled();
+    expect(health).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { passed: false, syncStatus: "not_started", message: "Validation failed: Reader access missing" },
+    { passed: true, syncStatus: "failed", message: "Initial sync could not start" },
+  ])("reports lifecycle failure without polling: $syncStatus", async ({ passed, syncStatus, message }) => {
+    create.mockResolvedValue(envelope({
+      connection_id: "new-connection",
+      validation: { passed, status: passed ? "healthy" : "failed", health: { details: "Reader access missing" } },
+      initial_sync: { status: syncStatus, sync_state: { status: syncStatus, message: "Initial sync could not start" } },
+    }));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding();
+    await screen.findByText(message);
+    expect(health).not.toHaveBeenCalled();
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByLabelText("Client secret *")).not.toBeInTheDocument();
   });
 
   it("switches between Subscriptions and Fabric Medallion panels without rewriting subscription content", async () => {
