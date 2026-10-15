@@ -106,7 +106,13 @@ def test_coordinator_identity_is_distinct_and_has_no_publisher_capability() -> N
         "identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]"
         in job
     )
-    assert "identity = azurerm_user_assigned_identity.ontology_coordinator.id" in job
+    assert (
+        "identity             = var.enable_role_assignments ? "
+        "azurerm_user_assigned_identity.ontology_coordinator.id : null"
+    ) in job
+    assert (
+        'password_secret_name = var.enable_role_assignments ? null : "acr-password"'
+    ) in job
     assert "azurerm_user_assigned_identity.apps" not in job
     assert "ontology_publisher" not in job
     assert "PUBLISHER" not in job
@@ -128,7 +134,8 @@ def test_validation_coordinator_has_read_only_azure_scope() -> None:
     ):
         assignment = _resource(terraform, "azurerm_role_assignment", name)
         assert (
-            'for_each = var.ontology_discovery_environment == "validation"'
+            'for_each = var.enable_role_assignments && '
+            'var.ontology_discovery_environment == "validation"'
             in assignment
         )
         assert f'role_definition_name = "{role}"' in assignment
