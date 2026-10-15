@@ -390,3 +390,25 @@ The legacy page-anchored planners and v1 reads are **retained through Phase 11**
 Deletion is a **separate, separately reviewed post-promotion change** that may only
 proceed after **zero v1 requests for 30 consecutive days**. This plan does not
 delete any legacy planner and does not schedule that retirement.
+## Replacement-subscription infrastructure checks
+
+After recreating the subscription, model deployment alone does not restore
+the Agents page. Preserve its validated candidate/promotion contract:
+
+- Set `enable_apim` in the environment's Terraform inputs and review a saved
+  plan for the gateway, native Operations/Azure MCP routes and Entra policies.
+- Set `enable_foundry_role_assignments` when an Owner deployer must restore
+  project-scoped runtime and knowledge-search grants without enabling
+  unrelated subscription-wide execution permissions.
+- Set `enable_mcp_role_assignments` for the MCP identities' read-only Azure
+  and vault grants. Terraform adds the Foundry project identity to API gateway
+  grants as a subscription-scoped reader; existing browser grants are retained.
+- Restore governed knowledge search before specialist candidate publication.
+  Publish candidates with the existing Terraform provisioner, validate actual
+  provider version IDs, then use a separate reviewed activation plan.
+
+Keep deterministic execution and the existing Network default until the
+candidate tools and agent invocation pass live checks. Legacy agent-name
+environment variables are not proof of a deployed or activated agent. A
+Foundry permission denial must be resolved and checked on the data plane;
+an ARM role assignment appearing in a list is not sufficient evidence.

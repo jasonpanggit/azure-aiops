@@ -4,7 +4,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  apim_name     = coalesce(var.apim_name, "${local.base}-apim")
+  apim_name     = coalesce(var.apim_name, "${local.base}-apim-${local.suffix}")
   apim_api_name = "${local.base}-mcp"
   # Foundry agents reach APIM's native MCP API, which now terminates on the
   # private ACA MCP relay before reaching the governed Operations executor.

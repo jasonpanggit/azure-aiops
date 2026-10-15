@@ -38,8 +38,14 @@ def run_inventory_refresh_all_connections(
     fabric_config_path: str = "",
     registry_root: str = "",
     connection_id: str = "",
+    discovery_output_dirs: dict[str, str] | None = None,
+    require_all_connections: bool = False,
 ) -> dict[str, Any]:
-    """Refresh, merge, and optionally publish registered connections."""
+    """Refresh, merge, and optionally publish registered connections.
+
+    Scheduled publishers require every connection to succeed before replacing
+    shared datasets; API callers retain the existing partial-refresh behavior.
+    """
     from onboarding.config import ConnectorConfig
     from onboarding.credentials import CredentialResolver, default_secret_provider
     from onboarding.registry import ConnectionRegistry
@@ -56,6 +62,10 @@ def run_inventory_refresh_all_connections(
         connections = registry.list(include_disabled=False)
     if not connections:
         raise RuntimeError("No active subscription connections are registered")
+    if discovery_output_dirs is not None and set(discovery_output_dirs) != {
+        connection.connection_id for connection in connections
+    }:
+        raise RuntimeError("Registered connections changed after full discovery")
 
     resolver = CredentialResolver(provider=default_secret_provider())
     connection_output_dirs: dict[str, str] = {}
@@ -118,9 +128,11 @@ def run_inventory_refresh_all_connections(
     ]
     if not succeeded:
         return {"status": "failed", "connections": connection_results}
+    if require_all_connections and len(succeeded) != len(connections):
+        return {"status": "partial", "connections": connection_results}
 
     from fabric.config import FabricRuntimeConfig
-    from fabric.runtime import build_runtime
+    from fabric.runtime import FabricRuntimeMode, build_runtime
     from intelligence.inventory.combine import (
         publish_combined_inventory_snapshot,
         republish_combined_snapshot_to_fabric,
@@ -171,7 +183,9 @@ def run_inventory_refresh_all_connections(
         # exact connection roots refreshed above, with the inventory datasets
         # pinned to the combined generation rather than carried forward.
         entities_manifest = publish_combined_snapshot(
-            _RefreshedConnectionSources(registry, connection_output_dirs),
+            _RefreshedConnectionSources(
+                registry, discovery_output_dirs or connection_output_dirs
+            ),
             succeeded,
             config.output_dir,
             pinned_datasets=pinned_inventory,
@@ -185,7 +199,8 @@ def run_inventory_refresh_all_connections(
             dataclasses.replace(
                 fabric_config,
                 source_data_root=config.output_dir,
-            )
+            ),
+            mode=FabricRuntimeMode.PUBLISH,
         )
         requested_subscriptions = sorted(
             {

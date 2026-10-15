@@ -75,7 +75,10 @@ class ConnectorConfig:
         # Divergent roots silently split the registry in two: connections get
         # registered under one prefix and looked up under another.
         raw_output_dir = str(
-            storage.get("output_dir") or os.environ.get("AIOPS_HOME") or "./data"
+            os.environ.get("AIOPS_CONNECTOR_OUTPUT_DIR")
+            or storage.get("output_dir")
+            or os.environ.get("AIOPS_HOME")
+            or "./data"
         )
         if is_onelake_uri(raw_output_dir):
             output_dir: Path | str = raw_output_dir

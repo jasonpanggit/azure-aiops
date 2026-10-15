@@ -61,7 +61,13 @@ def test_prefetch_job_reuses_apps_runtime_contract() -> None:
     )
 
     assert "identity_ids = [azurerm_user_assigned_identity.apps.id]" in job
-    assert "identity = azurerm_user_assigned_identity.apps.id" in job
+    registry = _block(job, "registry")
+    assert _assignment(registry, "identity") == (
+        "var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null"
+    )
+    assert _assignment(registry, "password_secret_name") == (
+        'var.enable_role_assignments ? null : "acr-password"'
+    )
     assert (
         "image  = var.deploy_images ? local.api_image : local.placeholder_image" in job
     )

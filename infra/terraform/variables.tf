@@ -49,6 +49,30 @@ variable "deployer_object_id" {
   default     = ""
 }
 
+variable "enable_role_assignments" {
+  description = "Whether to create Azure RBAC role assignments. Requires User Access Administrator or Owner privileges."
+  type        = bool
+  default     = true
+}
+
+variable "enable_connection_secret_role_assignment" {
+  description = "Create only the vault-scoped Secrets Officer grant needed for subscription onboarding when broad role assignment provisioning is disabled. Requires Owner or User Access Administrator."
+  type        = bool
+  default     = false
+}
+
+variable "enable_foundry_role_assignments" {
+  description = "Create scoped Foundry runtime, deployment and knowledge-search grants without enabling unrelated Azure role assignments. Requires Owner or User Access Administrator."
+  type        = bool
+  default     = false
+}
+
+variable "enable_mcp_role_assignments" {
+  description = "Create scoped MCP reader/monitoring/vault grants without enabling unrelated execution permissions. Requires Owner or User Access Administrator."
+  type        = bool
+  default     = false
+}
+
 # ---------------------------------------------------------------------------
 # Naming and placement
 # ---------------------------------------------------------------------------
@@ -865,6 +889,12 @@ variable "agent_orchestration_mode" {
 
 variable "enable_fabric_iq" {
   description = "Enable optional governed Fabric IQ enrichment. Identity remains owned by InventoryReadPort."
+  type        = bool
+  default     = false
+}
+
+variable "enable_fabric_ontology_item" {
+  description = "Publish the Fabric Ontology item after its managed source tables and definition have been verified. Does not disable deterministic ontology table publication."
   type        = bool
   default     = false
 }

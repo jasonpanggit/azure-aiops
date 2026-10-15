@@ -93,7 +93,18 @@ def test_sre_principals_receive_no_premature_gateway_grants() -> None:
 
     assert "effective_api_gateway_grants_json" not in sre_terraform
     assert "sre_agent_api_gateway_grants" not in sre_terraform
-    assert "value = var.entra_grants_json" in container_apps
+    assert (
+        "value = jsonencode(merge(jsondecode(var.entra_grants_json), "
+        "local.foundry_mcp_gateway_grants))"
+    ) in container_apps
+    assert "sre_agent_api_gateway_grants" not in container_apps
+    foundry = _read(REPO_ROOT / "infra" / "terraform" / "foundry.tf")
+    gateway_grants = foundry.split("foundry_mcp_gateway_grants =", 1)[1].split(
+        "foundry_azure_mcp_connection_name", 1
+    )[0]
+    assert "azurerm_cognitive_account_project.ops.identity[0].principal_id" in gateway_grants
+    assert 'role  = "reader"' in gateway_grants
+    assert "sre_agent" not in gateway_grants
 
 
 def test_sre_patch_execution_is_default_off_and_trigger_url_is_secret_safe() -> None:

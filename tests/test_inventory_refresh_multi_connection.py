@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from onboarding.credentials import CredentialResolver, EnvironmentSecretProvider
 from onboarding.registry import ConnectionRegistry
 from onboarding.service import SubscriptionOnboardingService
@@ -115,8 +117,9 @@ class FakePipeline:
         return Result(manifest=manifest)
 
 
+@pytest.mark.parametrize("require_all_connections", [False, True])
 def test_refresh_all_connections_merges_successful_connections_and_isolates_failure(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, require_all_connections: bool
 ) -> None:
     from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
@@ -158,13 +161,19 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     )
 
     result = run_inventory_refresh_all_connections(
-        str(config_path), registry_root=str(tmp_path)
+        str(config_path), registry_root=str(tmp_path),
+        require_all_connections=require_all_connections,
     )
 
     assert result["status"] == "partial"
     assert result["connections"]["conn-a"]["status"] == "completed"
     assert result["connections"]["conn-b"]["status"] == "failed"
     assert "acquisition boom" in result["connections"]["conn-b"]["error"]
+    if require_all_connections:
+        assert not (tmp_path / "compat").exists()
+        assert "combined_manifest" not in result
+        assert "fabric_publication" not in result
+        return
 
     from storage.datasets import DatasetStore
 
@@ -233,8 +242,24 @@ def test_refresh_all_connections_preserves_remote_store_uri(
     assert captured_roots == expected_roots
 
 
+def test_refresh_rejects_registry_changes_after_discovery(tmp_path: Path) -> None:
+    from api.inventory_orchestration import run_inventory_refresh_all_connections
+
+    _build_registry(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"storage:\n  output_dir: {tmp_path / 'compat'}\n")
+    with pytest.raises(RuntimeError, match="Registered connections changed"):
+        run_inventory_refresh_all_connections(
+            str(config_path),
+            registry_root=str(tmp_path),
+            discovery_output_dirs={"conn-a": str(tmp_path / "discovery")},
+        )
+    assert not (tmp_path / "compat").exists()
+
+
+@pytest.mark.parametrize("separate_discovery", [False, True])
 def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, separate_discovery: bool
 ) -> None:
     from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
@@ -260,6 +285,18 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             entity_rows=[{"id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
         ),
     }
+    discovery_roots = {}
+    if separate_discovery:
+        for connection_id, pipeline in pipelines.items():
+            discovery_root = tmp_path / "full-discovery" / connection_id
+            DatasetStore(discovery_root).publish(
+                {"entities/Resource": pipeline._entity_rows},
+                {},
+                {"runId": "discovery", "status": "completed"},
+                ontology={},
+            )
+            pipeline._entity_rows = None
+            discovery_roots[connection_id] = str(discovery_root)
     calls: list[Path | str] = []
     replay_calls: list[str] = []
     scope_calls: list[dict[str, list[str]] | None] = []
@@ -324,13 +361,14 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     )
     monkeypatch.setattr(
         "fabric.runtime.build_runtime",
-        lambda config: FakeRuntime(config.source_data_root),
+        lambda config, *, mode: FakeRuntime(config.source_data_root),
     )
 
     result = run_inventory_refresh_all_connections(
         str(config_path),
         fabric_config_path="fabric.yaml",
         registry_root=str(tmp_path),
+        discovery_output_dirs=discovery_roots or None,
     )
 
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]

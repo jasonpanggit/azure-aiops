@@ -506,7 +506,7 @@ locals {
   # it carries the unique suffix.
   foundry_subdomain = "${var.name_prefix}-${var.environment}-ai-${local.suffix}"
 
-  foundry_project_name = "${local.base}-ops"
+  foundry_project_name = "${local.base}-ops-${local.suffix}"
 
   # Data-plane endpoint the API calls to invoke the prompt agent. The project
   # resource exports an endpoints map, but the key has moved between provider
@@ -530,7 +530,13 @@ locals {
 
   # Second native MCP surface: the standalone Azure MCP Server, onboarded in
   # apim.tf as azapi_resource.azure_mcp_server at path "azure-mcp".
-  foundry_azure_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+  foundry_azure_mcp_server_url = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+  foundry_mcp_gateway_grants = var.enable_apim ? {
+    (azurerm_cognitive_account_project.ops.identity[0].principal_id) = [{
+      role  = "reader"
+      scope = { subscription = sort(tolist(local.azure_mcp_subscriptions)) }
+    }]
+  } : {}
   foundry_azure_mcp_connection_name = "${local.base}-azure-mcp"
 
   # Knowledge base: Azure AI Search service/index name and the Foundry
@@ -761,7 +767,7 @@ resource "azapi_resource" "foundry_ai_search_connection" {
 # though document ingestion (which authenticates as the deployer instead)
 # already succeeded.
 resource "azurerm_role_assignment" "search_cognitive_services_openai_user" {
-  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_cognitive_account.foundry.id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = azurerm_search_service.knowledge[0].identity[0].principal_id
@@ -772,7 +778,7 @@ resource "azurerm_role_assignment" "search_cognitive_services_openai_user" {
 # the agent runtime uses when calling out to a connected Azure AI Search
 # service on the caller's behalf.
 resource "azurerm_role_assignment" "foundry_search_index_data_contributor" {
-  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  count                            = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                            = azurerm_search_service.knowledge[0].id
   role_definition_name             = "Search Index Data Contributor"
   principal_id                     = azurerm_cognitive_account.foundry.identity[0].principal_id
@@ -780,7 +786,7 @@ resource "azurerm_role_assignment" "foundry_search_index_data_contributor" {
 }
 
 resource "azurerm_role_assignment" "foundry_search_service_contributor" {
-  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  count                            = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                            = azurerm_search_service.knowledge[0].id
   role_definition_name             = "Search Service Contributor"
   principal_id                     = azurerm_cognitive_account.foundry.identity[0].principal_id
@@ -794,7 +800,7 @@ resource "azurerm_role_assignment" "foundry_search_service_contributor" {
 # with "Access denied. Check your permissions or managed identity access to
 # the search service" even though the account identity is fully authorized.
 resource "azurerm_role_assignment" "foundry_project_search_index_data_contributor" {
-  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  count                            = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                            = azurerm_search_service.knowledge[0].id
   role_definition_name             = "Search Index Data Contributor"
   principal_id                     = azurerm_cognitive_account_project.ops.identity[0].principal_id
@@ -802,7 +808,7 @@ resource "azurerm_role_assignment" "foundry_project_search_index_data_contributo
 }
 
 resource "azurerm_role_assignment" "foundry_project_search_service_contributor" {
-  count                            = var.enable_foundry_knowledge_search ? 1 : 0
+  count                            = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                            = azurerm_search_service.knowledge[0].id
   role_definition_name             = "Search Service Contributor"
   principal_id                     = azurerm_cognitive_account_project.ops.identity[0].principal_id
@@ -814,14 +820,14 @@ resource "azurerm_role_assignment" "foundry_project_search_service_contributor" 
 # below), since it runs the indexing script's REST calls under its own
 # credentials, not the Foundry account's identity.
 resource "azurerm_role_assignment" "deployer_search_index_data_contributor" {
-  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_search_service.knowledge[0].id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = local.deployer_object_id
 }
 
 resource "azurerm_role_assignment" "deployer_search_service_contributor" {
-  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_search_service.knowledge[0].id
   role_definition_name = "Search Service Contributor"
   principal_id         = local.deployer_object_id
@@ -832,7 +838,7 @@ resource "azurerm_role_assignment" "deployer_search_service_contributor" {
 # project endpoint) from the indexing script to vectorize each document
 # chunk before upserting it into the search index.
 resource "azurerm_role_assignment" "deployer_cognitive_services_openai_user" {
-  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_cognitive_account.foundry.id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = local.deployer_object_id
@@ -842,7 +848,7 @@ resource "azurerm_role_assignment" "deployer_cognitive_services_openai_user" {
 # require this role in addition to the more specific OpenAI role above --
 # management roles (Owner/Contributor) do not grant data-plane access.
 resource "azurerm_role_assignment" "deployer_cognitive_services_user" {
-  count                = var.enable_foundry_knowledge_search ? 1 : 0
+  count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_cognitive_account.foundry.id
   role_definition_name = "Cognitive Services User"
   principal_id         = local.deployer_object_id
@@ -897,6 +903,7 @@ resource "terraform_data" "foundry_knowledge_index" {
 # ---------------------------------------------------------------------------
 
 resource "azurerm_role_assignment" "apps_foundry_user" {
+  count                            = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
   scope                            = azurerm_cognitive_account_project.ops.id
   role_definition_name             = "Foundry Agent Consumer"
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
@@ -906,6 +913,7 @@ resource "azurerm_role_assignment" "apps_foundry_user" {
 # The Responses API used by prompt agents requires the project runtime data
 # action in addition to the legacy agent interaction action above.
 resource "azurerm_role_assignment" "apps_foundry_runtime_user" {
+  count                            = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
   scope                            = azurerm_cognitive_account_project.ops.id
   role_definition_name             = "Foundry Project Runtime User"
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
@@ -915,6 +923,7 @@ resource "azurerm_role_assignment" "apps_foundry_runtime_user" {
 # The deploying principal creates the prompt agent through the data plane after
 # apply, which is a management operation on the project.
 resource "azurerm_role_assignment" "deployer_foundry_manager" {
+  count                = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
   scope                = azurerm_cognitive_account_project.ops.id
   role_definition_name = "Foundry Project Manager"
   principal_id         = local.deployer_object_id

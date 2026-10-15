@@ -7,6 +7,7 @@
 
 # APIM API for MCP proxy
 resource "azurerm_api_management_api" "mcp_proxy" {
+  count               = var.enable_apim ? 1 : 0
   name                = "mcp-proxy-api"
   resource_group_name = azurerm_resource_group.main.name
   api_management_name = azurerm_api_management.main[0].name
@@ -26,8 +27,9 @@ resource "azurerm_api_management_api" "mcp_proxy" {
 
 # APIM Operation: POST /mcp-proxy/tool
 resource "azurerm_api_management_api_operation" "mcp_proxy_tool" {
+  count               = var.enable_apim ? 1 : 0
   operation_id        = "execute-tool"
-  api_name            = azurerm_api_management_api.mcp_proxy.name
+  api_name            = azurerm_api_management_api.mcp_proxy[0].name
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
   display_name        = "Execute MCP Tool"
@@ -69,8 +71,9 @@ resource "azurerm_api_management_api_operation" "mcp_proxy_tool" {
 
 # APIM Operation: GET /mcp-proxy/health
 resource "azurerm_api_management_api_operation" "mcp_proxy_health" {
+  count               = var.enable_apim ? 1 : 0
   operation_id        = "health-check"
-  api_name            = azurerm_api_management_api.mcp_proxy.name
+  api_name            = azurerm_api_management_api.mcp_proxy[0].name
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
   display_name        = "Health Check"
@@ -96,8 +99,9 @@ resource "azurerm_api_management_api_operation" "mcp_proxy_health" {
 
 # APIM Operation: GET /mcp-proxy/subscriptions
 resource "azurerm_api_management_api_operation" "mcp_proxy_subscriptions" {
+  count               = var.enable_apim ? 1 : 0
   operation_id        = "list-subscriptions"
-  api_name            = azurerm_api_management_api.mcp_proxy.name
+  api_name            = azurerm_api_management_api.mcp_proxy[0].name
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
   display_name        = "List Onboarded Subscriptions"
@@ -118,7 +122,8 @@ resource "azurerm_api_management_api_operation" "mcp_proxy_subscriptions" {
 
 # Apply MCP proxy inbound policy
 resource "azurerm_api_management_api_policy" "mcp_proxy_inbound" {
-  api_name            = azurerm_api_management_api.mcp_proxy.name
+  count               = var.enable_apim ? 1 : 0
+  api_name            = azurerm_api_management_api.mcp_proxy[0].name
   api_management_name = azurerm_api_management.main[0].name
   resource_group_name = azurerm_resource_group.main.name
 
@@ -135,6 +140,6 @@ resource "azurerm_api_management_api_policy" "mcp_proxy_inbound" {
 }
 
 output "mcp_proxy_endpoint" {
-  value       = "${azurerm_api_management.main[0].gateway_url}/mcp-proxy"
+  value       = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/mcp-proxy" : ""
   description = "APIM endpoint for specialist agents to call MCP tools"
 }

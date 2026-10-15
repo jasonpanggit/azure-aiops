@@ -24,6 +24,28 @@ resource "azurerm_user_assigned_identity" "ontology_publisher" {
   tags                = local.tags
 }
 
+resource "fabric_workspace_role_assignment" "ontology_coordinator_connections" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ops[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_coordinator.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+resource "fabric_workspace_role_assignment" "ontology_publisher_tables" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ops[0].id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_user_assigned_identity.ontology_publisher.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
 # Durable coordinator state is isolated from both production and RBAC canaries.
 resource "fabric_workspace" "ontology_discovery_state" {
   count = var.enable_fabric ? 1 : 0

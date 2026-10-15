@@ -12,9 +12,9 @@
 locals {
   fabric_workspace_name = coalesce(var.fabric_workspace_name, "${local.base}-ops")
 
-  # Service principals must be identified by object ID here; an application ID
-  # is accepted by the API but grants nothing.
-  fabric_admins = distinct(concat([local.deployer_object_id], var.fabric_capacity_admins))
+  # Users require UPNs; service principals require object IDs. Explicit admins
+  # also support CLI user deployment, whose object ID is not a valid user UPN.
+  fabric_admins = length(var.fabric_capacity_admins) > 0 ? distinct(var.fabric_capacity_admins) : [local.deployer_object_id]
 }
 
 resource "azurerm_fabric_capacity" "main" {
@@ -36,7 +36,7 @@ resource "azurerm_fabric_capacity" "main" {
 }
 
 resource "azurerm_role_assignment" "fabric_capacity_reader_apps" {
-  count = var.enable_fabric ? 1 : 0
+  count = var.enable_fabric && var.enable_role_assignments ? 1 : 0
 
   scope                            = azurerm_fabric_capacity.main[0].id
   role_definition_name             = "Reader"
