@@ -406,6 +406,10 @@ the Agents page. Preserve its validated candidate/promotion contract:
 - Restore governed knowledge search before specialist candidate publication.
   Publish candidates with the existing Terraform provisioner, validate actual
   provider version IDs, then use a separate reviewed activation plan.
+- With an Azure CLI deployer, leave Terraform `client_id` and `client_secret`
+  empty. All Foundry/index provisioners select `azure_cli` authentication and
+  use the current CLI identity; their scoped deployer grants must name that
+  identity. Configured service principals retain `client_credentials` mode.
 
 Keep deterministic execution and the existing Network default until the
 candidate tools and agent invocation pass live checks. Legacy agent-name

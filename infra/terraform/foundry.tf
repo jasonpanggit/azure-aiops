@@ -9,6 +9,8 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  foundry_deployment_auth_mode = var.client_id == "" ? "azure_cli" : "client_credentials"
+
   # ---------------------------------------------------------------------------
   # Specialist manifest: the one committed source of truth
   #
@@ -874,6 +876,7 @@ resource "terraform_data" "foundry_knowledge_index" {
 
     environment = {
       SEARCH_SERVICE_NAME     = azurerm_search_service.knowledge[0].name
+      FOUNDRY_AUTH_MODE       = local.foundry_deployment_auth_mode
       SEARCH_INDEX_NAME       = var.foundry_knowledge_index_name
       KNOWLEDGE_DOCS_DIR      = "${path.module}/../knowledge"
       FOUNDRY_OPENAI_ENDPOINT = local.foundry_openai_endpoint
@@ -1041,6 +1044,7 @@ resource "terraform_data" "foundry_agent" {
 
     environment = {
       FOUNDRY_PROJECT_ENDPOINT = local.foundry_project_endpoint
+      FOUNDRY_AUTH_MODE        = local.foundry_deployment_auth_mode
       FOUNDRY_AGENT_NAME       = var.foundry_agent_name
       FOUNDRY_AGENT_MODEL      = azurerm_cognitive_deployment.chat.name
       FOUNDRY_AGENT_PROMPT     = local.agent_instructions
@@ -1120,6 +1124,7 @@ resource "terraform_data" "foundry_coordinator_candidate" {
 
     environment = {
       FOUNDRY_PROJECT_ENDPOINT           = local.foundry_project_endpoint
+      FOUNDRY_AUTH_MODE                  = local.foundry_deployment_auth_mode
       FOUNDRY_AGENT_NAME                 = var.foundry_agent_name
       FOUNDRY_AGENT_MODEL                = azurerm_cognitive_deployment.chat.name
       FOUNDRY_AGENT_PROMPT               = local.agent_instructions
@@ -1162,6 +1167,7 @@ resource "terraform_data" "foundry_ontology_curator_agent" {
 
     environment = {
       FOUNDRY_PROJECT_ENDPOINT            = local.foundry_project_endpoint
+      FOUNDRY_AUTH_MODE                   = local.foundry_deployment_auth_mode
       FOUNDRY_AGENT_NAME                  = local.ontology_curator_agent_name
       FOUNDRY_AGENT_VERSION               = local.ontology_curator_agent_version
       FOUNDRY_AGENT_MODEL                 = var.foundry_model_name
