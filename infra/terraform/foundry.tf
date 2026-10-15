@@ -530,7 +530,13 @@ locals {
 
   # Second native MCP surface: the standalone Azure MCP Server, onboarded in
   # apim.tf as azapi_resource.azure_mcp_server at path "azure-mcp".
-  foundry_azure_mcp_server_url      = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+  foundry_azure_mcp_server_url = var.enable_apim ? "${azurerm_api_management.main[0].gateway_url}/azure-mcp" : null
+  foundry_mcp_gateway_grants = var.enable_apim ? {
+    (azurerm_cognitive_account_project.ops.identity[0].principal_id) = [{
+      role  = "reader"
+      scope = { subscription = sort(tolist(local.azure_mcp_subscriptions)) }
+    }]
+  } : {}
   foundry_azure_mcp_connection_name = "${local.base}-azure-mcp"
 
   # Knowledge base: Azure AI Search service/index name and the Foundry

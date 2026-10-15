@@ -212,7 +212,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_API_GATEWAY_GRANTS"
-        value = var.entra_grants_json
+        value = jsonencode(merge(jsondecode(var.entra_grants_json), local.foundry_mcp_gateway_grants))
       }
 
       # The browser calls the API cross-origin from the web app's own domain.

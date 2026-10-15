@@ -167,7 +167,7 @@ resource "azurerm_user_assigned_identity" "azure_mcp" {
 # vast majority of @azure/mcp's read/list tools (resource inventory, configs,
 # topology, etc.) without granting any write/control-plane access.
 resource "azurerm_role_assignment" "azure_mcp_reader" {
-  for_each = var.enable_role_assignments ? local.azure_mcp_subscriptions : toset([])
+  for_each = var.enable_role_assignments || var.enable_mcp_role_assignments ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Reader"
@@ -178,7 +178,7 @@ resource "azurerm_role_assignment" "azure_mcp_reader" {
 # Monitor, Log Analytics) that plain Reader does not grant data-plane access
 # to.
 resource "azurerm_role_assignment" "azure_mcp_monitoring_reader" {
-  for_each = var.enable_role_assignments ? local.azure_mcp_subscriptions : toset([])
+  for_each = var.enable_role_assignments || var.enable_mcp_role_assignments ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Monitoring Reader"

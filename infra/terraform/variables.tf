@@ -67,6 +67,12 @@ variable "enable_foundry_role_assignments" {
   default     = false
 }
 
+variable "enable_mcp_role_assignments" {
+  description = "Create scoped MCP reader/monitoring/vault grants without enabling unrelated execution permissions. Requires Owner or User Access Administrator."
+  type        = bool
+  default     = false
+}
+
 # ---------------------------------------------------------------------------
 # Naming and placement
 # ---------------------------------------------------------------------------

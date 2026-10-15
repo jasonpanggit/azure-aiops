@@ -136,7 +136,7 @@ resource "azurerm_user_assigned_identity" "mcp_server" {
 
 # Role: Reader on each onboarded subscription (allows tool calls with resolved SPN)
 resource "azurerm_role_assignment" "mcp_server_reader" {
-  for_each = var.enable_role_assignments ? toset(var.onboarded_subscriptions) : toset([])
+  for_each = var.enable_role_assignments || var.enable_mcp_role_assignments ? toset(var.onboarded_subscriptions) : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Reader"
@@ -145,7 +145,7 @@ resource "azurerm_role_assignment" "mcp_server_reader" {
 
 # Role: Key Vault Secrets User (allows reading SPN credentials from AKV)
 resource "azurerm_role_assignment" "mcp_server_akv_secrets_user" {
-  count                = var.enable_role_assignments ? 1 : 0
+  count                = var.enable_role_assignments || var.enable_mcp_role_assignments ? 1 : 0
   scope                = azurerm_key_vault.main.id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.mcp_server.principal_id

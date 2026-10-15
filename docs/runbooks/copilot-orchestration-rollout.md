@@ -400,6 +400,9 @@ the Agents page. Preserve its validated candidate/promotion contract:
 - Set `enable_foundry_role_assignments` when an Owner deployer must restore
   project-scoped runtime and knowledge-search grants without enabling
   unrelated subscription-wide execution permissions.
+- Set `enable_mcp_role_assignments` for the MCP identities' read-only Azure
+  and vault grants. Terraform adds the Foundry project identity to API gateway
+  grants as a subscription-scoped reader; existing browser grants are retained.
 - Restore governed knowledge search before specialist candidate publication.
   Publish candidates with the existing Terraform provisioner, validate actual
   provider version IDs, then use a separate reviewed activation plan.
