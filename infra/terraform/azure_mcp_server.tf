@@ -24,15 +24,25 @@ resource "azurerm_container_app" "azure_mcp" {
     identity_ids = [azurerm_user_assigned_identity.azure_mcp.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.azure_mcp.id
+    server               = azurerm_container_registry.main.login_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.azure_mcp.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   template {
     container {
       name   = "azure-mcp"
-      image  = "${azurerm_container_registry.main.login_server}/azure-mcp:${var.image_tag}"
+      image  = var.deploy_images ? "${azurerm_container_registry.main.login_server}/azure-mcp:${var.image_tag}" : local.placeholder_image
       cpu    = "0.5"
       memory = "1Gi"
 
@@ -157,7 +167,7 @@ resource "azurerm_user_assigned_identity" "azure_mcp" {
 # vast majority of @azure/mcp's read/list tools (resource inventory, configs,
 # topology, etc.) without granting any write/control-plane access.
 resource "azurerm_role_assignment" "azure_mcp_reader" {
-  for_each = local.azure_mcp_subscriptions
+  for_each = var.enable_role_assignments ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Reader"
@@ -168,7 +178,7 @@ resource "azurerm_role_assignment" "azure_mcp_reader" {
 # Monitor, Log Analytics) that plain Reader does not grant data-plane access
 # to.
 resource "azurerm_role_assignment" "azure_mcp_monitoring_reader" {
-  for_each = local.azure_mcp_subscriptions
+  for_each = var.enable_role_assignments ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Monitoring Reader"
@@ -176,6 +186,7 @@ resource "azurerm_role_assignment" "azure_mcp_monitoring_reader" {
 }
 
 resource "azurerm_role_assignment" "azure_mcp_acr_pull" {
+  count                = var.enable_role_assignments ? 1 : 0
   scope                = azurerm_container_registry.main.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.azure_mcp.principal_id

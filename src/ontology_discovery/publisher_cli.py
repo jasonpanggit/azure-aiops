@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from fabric.auth import FabricAuthConfig
 from fabric.config import FabricRuntimeConfig
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
-from fabric.runtime import build_runtime
+from fabric.runtime import FabricRuntimeMode, build_runtime
 from onboarding.registry import ConnectionRegistry
 from ontology.ontology_validator import OntologyValidator
 from storage.datasets import DatasetStore
@@ -131,7 +131,7 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
             raise ValueError(
                 "publisher and Fabric roots must be explicit and pairwise distinct"
             )
-    fabric = build_runtime(fabric_config)
+    fabric = build_runtime(fabric_config, mode=FabricRuntimeMode.PUBLISH)
     dataset = DatasetStore(config.roots["publication"])
     publication = dataset.authoritative_publisher(
         publisher_identity=config.publisher_client_id,

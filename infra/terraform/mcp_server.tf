@@ -17,15 +17,25 @@ resource "azurerm_container_app" "mcp_server" {
     identity_ids = [azurerm_user_assigned_identity.mcp_server.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.mcp_server.id
+    server               = azurerm_container_registry.main.login_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.mcp_server.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   template {
     container {
       name   = "mcp-server"
-      image  = "${azurerm_container_registry.main.login_server}/mcp-server:${var.image_tag}"
+      image  = var.deploy_images ? "${azurerm_container_registry.main.login_server}/mcp-server:${var.image_tag}" : local.placeholder_image
       cpu    = "0.5"
       memory = "1Gi"
 
@@ -126,7 +136,7 @@ resource "azurerm_user_assigned_identity" "mcp_server" {
 
 # Role: Reader on each onboarded subscription (allows tool calls with resolved SPN)
 resource "azurerm_role_assignment" "mcp_server_reader" {
-  for_each = toset(var.onboarded_subscriptions)
+  for_each = var.enable_role_assignments ? toset(var.onboarded_subscriptions) : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Reader"
@@ -135,6 +145,7 @@ resource "azurerm_role_assignment" "mcp_server_reader" {
 
 # Role: Key Vault Secrets User (allows reading SPN credentials from AKV)
 resource "azurerm_role_assignment" "mcp_server_akv_secrets_user" {
+  count                = var.enable_role_assignments ? 1 : 0
   scope                = azurerm_key_vault.main.id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.mcp_server.principal_id
@@ -142,6 +153,7 @@ resource "azurerm_role_assignment" "mcp_server_akv_secrets_user" {
 
 # Role: AcrPull (allows pulling mcp-server image from registry)
 resource "azurerm_role_assignment" "mcp_server_acr_pull" {
+  count                = var.enable_role_assignments ? 1 : 0
   scope                = azurerm_container_registry.main.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.mcp_server.principal_id

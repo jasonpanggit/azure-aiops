@@ -46,6 +46,12 @@ resource "random_password" "apim_gateway_assertion" {
   special = false
 }
 
+resource "random_password" "exposure_cursor" {
+  for_each = var.enable_role_assignments ? toset([]) : toset(["active", "previous"])
+  length   = 64
+  special  = false
+}
+
 data "azurerm_client_config" "current" {}
 
 resource "azurerm_resource_group" "main" {
@@ -64,10 +70,8 @@ resource "azurerm_container_registry" "main" {
   location            = azurerm_resource_group.main.location
   sku                 = "Basic"
 
-  # Container apps pull with a managed identity and images are pushed with the
-  # deploying principal's Entra token, so the shared admin account is never
-  # needed and is left disabled.
-  admin_enabled = false
+  # Contributor-only bootstrap explicitly opts out of role assignments.
+  admin_enabled = !var.enable_role_assignments
 
   tags = local.tags
 }
@@ -89,6 +93,7 @@ resource "azurerm_user_assigned_identity" "apps" {
 }
 
 resource "azurerm_role_assignment" "acr_pull" {
+  count                = var.enable_role_assignments ? 1 : 0
   scope                = azurerm_container_registry.main.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.apps.principal_id
@@ -151,6 +156,7 @@ resource "azurerm_key_vault" "main" {
 }
 
 resource "azurerm_role_assignment" "kv_deployer" {
+  count = var.enable_role_assignments ? 1 : 0
   # The deploying principal needs data-plane access to write the secret below;
   # subscription Owner alone does not grant it under RBAC authorization.
   scope                = azurerm_key_vault.main.id
@@ -159,6 +165,7 @@ resource "azurerm_role_assignment" "kv_deployer" {
 }
 
 resource "azurerm_role_assignment" "kv_apps" {
+  count = var.enable_role_assignments || var.enable_connection_secret_role_assignment ? 1 : 0
   scope = azurerm_key_vault.main.id
   # Needs write (Secrets Officer) not just read (Secrets User): the API
   # stores submitted onboarding client secrets in Key Vault at request time,
@@ -172,6 +179,7 @@ resource "azurerm_role_assignment" "kv_apps" {
 # grant at the application resource-group boundary so the governed execution
 # identity can patch the managed VM estate it serves.
 resource "azurerm_role_assignment" "apps_virtual_machine_contributor" {
+  count                            = var.enable_role_assignments ? 1 : 0
   scope                            = azurerm_resource_group.main.id
   role_definition_name             = "Virtual Machine Contributor"
   principal_id                     = azurerm_user_assigned_identity.apps.principal_id
@@ -181,7 +189,7 @@ resource "azurerm_role_assignment" "apps_virtual_machine_contributor" {
 # The execution identity may only read and update Defender pricing resources.
 # It cannot issue arbitrary ARM writes or mutate protected workloads.
 resource "azurerm_role_definition" "apps_defender_configuration" {
-  count = var.enable_defender_configuration_execution ? 1 : 0
+  count = var.enable_defender_configuration_execution && var.enable_role_assignments ? 1 : 0
 
   name  = "${local.base}-defender-configuration-operator"
   scope = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
@@ -200,7 +208,7 @@ resource "azurerm_role_definition" "apps_defender_configuration" {
 }
 
 resource "azurerm_role_assignment" "apps_defender_configuration" {
-  count = var.enable_defender_configuration_execution ? 1 : 0
+  count = var.enable_defender_configuration_execution && var.enable_role_assignments ? 1 : 0
 
   scope                            = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
   role_definition_id               = azurerm_role_definition.apps_defender_configuration[0].role_definition_resource_id

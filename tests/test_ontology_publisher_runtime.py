@@ -488,7 +488,10 @@ def test_runtime_builder_passes_only_publisher_identity_to_fabric(
     class Fabric:
         service = object()
 
-    def capture(config):
+    def capture(config, *, mode):
+        from fabric.runtime import FabricRuntimeMode
+
+        assert mode is FabricRuntimeMode.PUBLISH
         captured.append(config)
         return Fabric()
 

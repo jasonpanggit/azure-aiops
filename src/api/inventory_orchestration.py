@@ -38,6 +38,7 @@ def run_inventory_refresh_all_connections(
     fabric_config_path: str = "",
     registry_root: str = "",
     connection_id: str = "",
+    discovery_output_dirs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Refresh, merge, and optionally publish registered connections."""
     from onboarding.config import ConnectorConfig
@@ -120,7 +121,7 @@ def run_inventory_refresh_all_connections(
         return {"status": "failed", "connections": connection_results}
 
     from fabric.config import FabricRuntimeConfig
-    from fabric.runtime import build_runtime
+    from fabric.runtime import FabricRuntimeMode, build_runtime
     from intelligence.inventory.combine import (
         publish_combined_inventory_snapshot,
         republish_combined_snapshot_to_fabric,
@@ -171,7 +172,9 @@ def run_inventory_refresh_all_connections(
         # exact connection roots refreshed above, with the inventory datasets
         # pinned to the combined generation rather than carried forward.
         entities_manifest = publish_combined_snapshot(
-            _RefreshedConnectionSources(registry, connection_output_dirs),
+            _RefreshedConnectionSources(
+                registry, discovery_output_dirs or connection_output_dirs
+            ),
             succeeded,
             config.output_dir,
             pinned_datasets=pinned_inventory,
@@ -185,7 +188,8 @@ def run_inventory_refresh_all_connections(
             dataclasses.replace(
                 fabric_config,
                 source_data_root=config.output_dir,
-            )
+            ),
+            mode=FabricRuntimeMode.PUBLISH,
         )
         requested_subscriptions = sorted(
             {

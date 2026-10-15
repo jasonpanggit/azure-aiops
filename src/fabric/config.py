@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -374,8 +376,15 @@ class FabricRuntimeConfig:
 
     @classmethod
     def load(cls, path: str | Path) -> FabricRuntimeConfig:
+        """Load a config file or the complete Terraform-supplied JSON override."""
         config_path = Path(path).expanduser().resolve()
-        payload = yaml.safe_load(config_path.read_text()) or {}
+        runtime_json = os.environ.get("AIOPS_FABRIC_CONFIG_JSON", "")
+        if runtime_json:
+            payload = json.loads(runtime_json)
+            if not isinstance(payload, dict) or not isinstance(payload.get("fabric"), dict):
+                raise ValueError("AIOPS_FABRIC_CONFIG_JSON must contain a fabric object")
+        else:
+            payload = yaml.safe_load(config_path.read_text()) or {}
         fabric = payload.get("fabric") or {}
         source = _resolve_source_root(
             config_path.parent,

@@ -1,5 +1,31 @@
 # Ontology discovery shadow operations
 
+## Deterministic inventory publication
+
+Connection **Sync** saves connection-scoped discovery, not published Fabric
+tables. The Terraform-managed `${base}-inventory-publication` Container Apps
+Job runs full discovery for every active registered connection, refreshes
+inventory, merges the exact discovery roots with the refreshed inventory,
+and publishes both inventory contract tables and deterministic graph tables.
+It is independent of the proposal-only Foundry curator described below.
+
+Enable `enable_inventory_publication_job` with a reviewed immutable API image.
+Keep `inventory_publication_schedule = ""` for initial manual execution.
+Terraform supplies the OneLake home/registry roots, managed identity,
+vault-scoped secret-read grant and `AIOPS_FABRIC_CONFIG_JSON`; the complete
+JSON configuration overrides baked configuration and derives replacement
+workspace/lakehouse/capacity IDs from resources. It contains no credentials.
+Malformed overrides fail closed rather than falling back to deleted resources.
+
+Back up and checksum-migrate existing local connection state before switching
+the API roots. Run the job manually, wait for terminal success, verify both
+table families and inventory API readback, then enable a UTC cron through a
+separate Terraform plan. A started execution or successful discovery count is
+not publication evidence. Preserve the previous API revision and source data
+until durable readback is verified. Keep Fabric IQ/Data Agent grounding off
+unless separately validated; `enable_fabric_ontology_item` controls only the
+separate Fabric Ontology item, not deterministic ontology table publication.
+
 Phase 13 operates only in **shadow mode**. Model-derived relationships may be
 reviewed and measured, but they must remain absent from authoritative
 candidates, immutable stages, the active generation, exports, and all

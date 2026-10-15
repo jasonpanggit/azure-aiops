@@ -418,9 +418,11 @@ capture_apim_snapshot() {
 # confirm what is actually running matches the tag that was just deployed.
 report_running_images() {
   command -v az >/dev/null 2>&1 || return 0
-  local tfvars="${tf_dir}/terraform.tfvars" expected rg
+  local tfvars="${tf_dir}/terraform.tfvars" expected expected_digest expected_web_digest rg
   [[ -f "${tfvars}" ]] || return 0
   expected="$(awk -F'=' '/^[ \t]*image_tag[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
+  expected_digest="$(awk -F'=' '/^[ \t]*api_image_digest[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
+  expected_web_digest="$(awk -F'=' '/^[ \t]*web_image_digest[ \t]*=/ {gsub(/[ \t"]/,"",$2); print $2}' "${tfvars}" | tail -1)"
   [[ -n "${expected}" ]] || return 0
   rg="$(terraform output -raw resource_group_name 2>/dev/null || true)"
   [[ -n "${rg}" ]] || return 0
@@ -437,7 +439,7 @@ report_running_images() {
     report=""
     while IFS=$'\t' read -r name image; do
       [[ -n "${name}" ]] || continue
-      if [[ "${image}" == *":${expected}" ]]; then
+      if [[ "${image}" == *":${expected}" || ( -n "${expected_digest}" && "${image}" == *"@${expected_digest}" ) || ( -n "${expected_web_digest}" && "${image}" == *"@${expected_web_digest}" ) ]]; then
         report+="  ok    ${name} -> ${image##*/}"$'\n'
       else
         report+="  DRIFT ${name} -> ${image##*/}"$'\n'
@@ -625,6 +627,10 @@ apply_api_authorization_release() {
 }
 
 publish_governed_remediation_catalog() {
+  if [[ "${AIOPS_SKIP_FABRIC_PUBLISH:-false}" == "true" || "${AIOPS_SKIP_FABRIC_PUBLISH:-false}" == "1" ]]; then
+    echo "deploy: skipping governed remediation catalog publication (AIOPS_SKIP_FABRIC_PUBLISH=true)"
+    return 0
+  fi
   local python="${AIOPS_PYTHON:-${repo_root}/.venv/bin/python}"
   local fabric_config="${AIOPS_FABRIC_CONFIG:-${repo_root}/fabric.config.yaml}"
 

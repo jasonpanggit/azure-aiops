@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from onboarding.credentials import CredentialResolver, EnvironmentSecretProvider
 from onboarding.registry import ConnectionRegistry
 from onboarding.service import SubscriptionOnboardingService
@@ -233,8 +235,9 @@ def test_refresh_all_connections_preserves_remote_store_uri(
     assert captured_roots == expected_roots
 
 
+@pytest.mark.parametrize("separate_discovery", [False, True])
 def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, separate_discovery: bool
 ) -> None:
     from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
@@ -260,6 +263,18 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             entity_rows=[{"id": "/subscriptions/bbb/vm2", "connection_id": "conn-b"}],
         ),
     }
+    discovery_roots = {}
+    if separate_discovery:
+        for connection_id, pipeline in pipelines.items():
+            discovery_root = tmp_path / "full-discovery" / connection_id
+            DatasetStore(discovery_root).publish(
+                {"entities/Resource": pipeline._entity_rows},
+                {},
+                {"runId": "discovery", "status": "completed"},
+                ontology={},
+            )
+            pipeline._entity_rows = None
+            discovery_roots[connection_id] = str(discovery_root)
     calls: list[Path | str] = []
     replay_calls: list[str] = []
     scope_calls: list[dict[str, list[str]] | None] = []
@@ -324,13 +339,14 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     )
     monkeypatch.setattr(
         "fabric.runtime.build_runtime",
-        lambda config: FakeRuntime(config.source_data_root),
+        lambda config, *, mode: FakeRuntime(config.source_data_root),
     )
 
     result = run_inventory_refresh_all_connections(
         str(config_path),
         fabric_config_path="fabric.yaml",
         registry_root=str(tmp_path),
+        discovery_output_dirs=discovery_roots or None,
     )
 
     assert result["fabric_publication"]["fabricTables"] == ["metadata_source_status"]

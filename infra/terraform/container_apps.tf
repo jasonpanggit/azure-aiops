@@ -115,11 +115,19 @@ resource "azurerm_container_app" "api" {
 
   workload_profile_name = "api-d4"
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server = local.registry_server
-    # Must be a user-assigned identity that is also on the app's identity
-    # block; a system-assigned identity cannot be referenced here.
-    identity = azurerm_user_assigned_identity.apps.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   dynamic "secret" {
@@ -138,19 +146,18 @@ resource "azurerm_container_app" "api" {
     }
   }
 
-  # Versionless references let Key Vault rotation publish a new active or
-  # previous version without placing key material in Terraform configuration
-  # or state. The existing user-assigned app identity resolves both values.
   secret {
     name                = "cursor-active"
-    identity            = azurerm_user_assigned_identity.apps.id
-    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-active"
+    value               = var.enable_role_assignments ? null : random_password.exposure_cursor["active"].result
+    identity            = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    key_vault_secret_id = var.enable_role_assignments ? "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-active" : null
   }
 
   secret {
     name                = "cursor-previous"
-    identity            = azurerm_user_assigned_identity.apps.id
-    key_vault_secret_id = "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-previous"
+    value               = var.enable_role_assignments ? null : random_password.exposure_cursor["previous"].result
+    identity            = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    key_vault_secret_id = var.enable_role_assignments ? "${azurerm_key_vault.main.vault_uri}secrets/exposure-cursor-previous" : null
   }
 
   dynamic "secret" {
@@ -220,7 +227,20 @@ resource "azurerm_container_app" "api" {
       # which does not survive a revision.
       env {
         name  = "AIOPS_HOME"
-        value = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
+        value = local.onelake_aiops_home
+      }
+
+      env {
+        name  = "AIOPS_CONNECTOR_OUTPUT_DIR"
+        value = local.onelake_aiops_home
+      }
+
+      dynamic "env" {
+        for_each = var.enable_fabric ? [1] : []
+        content {
+          name  = "AIOPS_FABRIC_CONFIG_JSON"
+          value = jsonencode({ fabric = local.fabric_runtime_config })
+        }
       }
 
       # The API receives exactly four ontology roots. It may read connection,
@@ -248,12 +268,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_RUNTIME_MODE"
-        value = "production"
-      }
-
-      env {
-        name  = "AIOPS_API_AUTH"
-        value = "gateway"
+        value = var.enable_fabric ? "production" : "demo"
       }
 
       env {
@@ -715,7 +730,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AIOPS_FABRIC_CONFIG"
-        value = "/app/fabric.config.yaml"
+        value = var.enable_fabric ? "/app/fabric.config.yaml" : ""
       }
 
       liveness_probe {
@@ -787,9 +802,19 @@ resource "azurerm_container_app_job" "exposure_enrichment" {
     identity_ids = [azurerm_user_assigned_identity.apps.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.apps.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   dynamic "secret" {
@@ -872,9 +897,19 @@ resource "azurerm_container_app_job" "exposure_prefetch" {
     identity_ids = [azurerm_user_assigned_identity.apps.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.apps.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   dynamic "secret" {
@@ -968,9 +1003,19 @@ resource "azurerm_container_app_job" "patch_publication" {
     identity_ids = [azurerm_user_assigned_identity.ontology_publisher.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.ontology_publisher.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.ontology_publisher.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   schedule_trigger_config {
@@ -1056,9 +1101,19 @@ resource "azurerm_container_app" "web" {
 
   workload_profile_name = "Consumption"
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.apps.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.apps.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   ingress {

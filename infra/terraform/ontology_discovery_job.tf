@@ -43,6 +43,7 @@ resource "azurerm_user_assigned_identity" "ontology_coordinator" {
 }
 
 resource "azurerm_role_assignment" "ontology_coordinator_acr_pull" {
+  count                            = var.enable_role_assignments ? 1 : 0
   scope                            = azurerm_container_registry.main.id
   role_definition_name             = "AcrPull"
   principal_id                     = azurerm_user_assigned_identity.ontology_coordinator.principal_id
@@ -50,6 +51,7 @@ resource "azurerm_role_assignment" "ontology_coordinator_acr_pull" {
 }
 
 resource "azurerm_role_assignment" "ontology_coordinator_key_vault_secrets" {
+  count                            = var.enable_role_assignments ? 1 : 0
   scope                            = azurerm_key_vault.main.id
   role_definition_name             = "Key Vault Secrets User"
   principal_id                     = azurerm_user_assigned_identity.ontology_coordinator.principal_id
@@ -57,7 +59,7 @@ resource "azurerm_role_assignment" "ontology_coordinator_key_vault_secrets" {
 }
 
 resource "azurerm_role_assignment" "ontology_coordinator_validation_reader" {
-  for_each = var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
+  for_each = var.enable_role_assignments && var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Reader"
@@ -65,7 +67,7 @@ resource "azurerm_role_assignment" "ontology_coordinator_validation_reader" {
 }
 
 resource "azurerm_role_assignment" "ontology_coordinator_validation_monitoring_reader" {
-  for_each = var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
+  for_each = var.enable_role_assignments && var.ontology_discovery_environment == "validation" ? local.azure_mcp_subscriptions : toset([])
 
   scope                = "/subscriptions/${each.value}"
   role_definition_name = "Monitoring Reader"
@@ -73,6 +75,7 @@ resource "azurerm_role_assignment" "ontology_coordinator_validation_monitoring_r
 }
 
 resource "azurerm_role_assignment" "ontology_publisher_acr_pull" {
+  count                            = var.enable_role_assignments ? 1 : 0
   scope                            = azurerm_container_registry.main.id
   role_definition_name             = "AcrPull"
   principal_id                     = azurerm_user_assigned_identity.ontology_publisher.principal_id
@@ -97,9 +100,19 @@ resource "azurerm_container_app_job" "ontology_discovery" {
     identity_ids = [azurerm_user_assigned_identity.ontology_coordinator.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.ontology_coordinator.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.ontology_coordinator.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   dynamic "schedule_trigger_config" {
@@ -194,6 +207,11 @@ resource "azurerm_container_app_job" "ontology_discovery" {
         name  = "AIOPS_CONFIG_PATH"
         value = "/app/config.yaml"
       }
+
+      env {
+        name  = "AIOPS_CONNECTOR_OUTPUT_DIR"
+        value = local.ontology_connection_home
+      }
     }
   }
 
@@ -232,9 +250,19 @@ resource "azurerm_container_app_job" "ontology_publisher" {
     identity_ids = [azurerm_user_assigned_identity.ontology_publisher.id]
   }
 
+  dynamic "secret" {
+    for_each = var.enable_role_assignments ? [] : [1]
+    content {
+      name  = "acr-password"
+      value = azurerm_container_registry.main.admin_password
+    }
+  }
+
   registry {
-    server   = local.registry_server
-    identity = azurerm_user_assigned_identity.ontology_publisher.id
+    server               = local.registry_server
+    identity             = var.enable_role_assignments ? azurerm_user_assigned_identity.ontology_publisher.id : null
+    username             = var.enable_role_assignments ? null : azurerm_container_registry.main.admin_username
+    password_secret_name = var.enable_role_assignments ? null : "acr-password"
   }
 
   dynamic "schedule_trigger_config" {
@@ -264,7 +292,7 @@ resource "azurerm_container_app_job" "ontology_publisher" {
 
       env {
         name  = "AIOPS_RUNTIME_MODE"
-        value = "production"
+        value = var.enable_fabric ? "production" : "validation"
       }
       env {
         name  = "AIOPS_IDENTITY_CLASS"
@@ -288,7 +316,14 @@ resource "azurerm_container_app_job" "ontology_publisher" {
       }
       env {
         name  = "AIOPS_FABRIC_CONFIG"
-        value = "/app/fabric.config.yaml"
+        value = var.enable_fabric ? "/app/fabric.config.yaml" : ""
+      }
+      dynamic "env" {
+        for_each = var.enable_fabric ? [1] : []
+        content {
+          name  = "AIOPS_FABRIC_CONFIG_JSON"
+          value = jsonencode({ fabric = local.fabric_publisher_runtime_config })
+        }
       }
       env {
         name  = "AZURE_CLIENT_ID"
