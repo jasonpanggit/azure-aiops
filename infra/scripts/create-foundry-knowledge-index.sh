@@ -18,6 +18,9 @@
 #   FOUNDRY_OPENAI_ENDPOINT  https://<account>.openai.azure.com (Cognitive Services account, not the project endpoint)
 #   FOUNDRY_EMBEDDING_MODEL  Embedding model deployment name
 #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#                            required for client_credentials authentication
+# Optional:
+#   FOUNDRY_AUTH_MODE        client_credentials (default) or azure_cli
 #
 # Documents are plain text/markdown files. Each is chunked (~2000 chars, on
 # paragraph boundaries where possible), embedded with the Foundry embedding
@@ -28,13 +31,31 @@
 set -euo pipefail
 
 for var in SEARCH_SERVICE_NAME SEARCH_INDEX_NAME KNOWLEDGE_DOCS_DIR \
-           FOUNDRY_OPENAI_ENDPOINT FOUNDRY_EMBEDDING_MODEL \
-           AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+           FOUNDRY_OPENAI_ENDPOINT FOUNDRY_EMBEDDING_MODEL; do
   if [[ -z "${!var:-}" ]]; then
     echo "create-foundry-knowledge-index: ${var} is required" >&2
     exit 1
   fi
 done
+
+auth_mode="${FOUNDRY_AUTH_MODE:-client_credentials}"
+case "${auth_mode}" in
+  client_credentials)
+    : "${AZURE_TENANT_ID:?required for client_credentials authentication}"
+    : "${AZURE_CLIENT_ID:?required for client_credentials authentication}"
+    : "${AZURE_CLIENT_SECRET:?required for client_credentials authentication}"
+    ;;
+  azure_cli)
+    if ! command -v az >/dev/null 2>&1; then
+      echo "create-foundry-knowledge-index: az is required for azure_cli authentication" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "create-foundry-knowledge-index: unsupported FOUNDRY_AUTH_MODE '${auth_mode}'" >&2
+    exit 1
+    ;;
+esac
 
 SEARCH_ENDPOINT="https://${SEARCH_SERVICE_NAME}.search.windows.net"
 SEARCH_API_VERSION="2024-07-01"
@@ -43,23 +64,27 @@ SEARCH_API_VERSION="2024-07-01"
 # plane (index/document management), one scoped to the Cognitive Services
 # data plane (to call the embedding deployment directly). They are different
 # resources and cannot share a token.
-search_token=$(curl -sS --fail-with-body \
-  -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'grant_type=client_credentials' \
-  --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
-  --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
-  --data-urlencode 'scope=https://search.azure.com/.default' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+get_token() {
+  if [[ "${auth_mode}" == "azure_cli" ]]; then
+    az account get-access-token --resource "$1" --query accessToken --output tsv
+  else
+    curl -sS --fail-with-body \
+      -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode 'grant_type=client_credentials' \
+      --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
+      --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
+      --data-urlencode "scope=$1/.default" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+  fi
+}
 
-foundry_token=$(curl -sS --fail-with-body \
-  -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'grant_type=client_credentials' \
-  --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
-  --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
-  --data-urlencode 'scope=https://cognitiveservices.azure.com/.default' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+search_token="$(get_token https://search.azure.com)"
+foundry_token="$(get_token https://cognitiveservices.azure.com)"
+if [[ -z "${search_token}" || -z "${foundry_token}" ]]; then
+  echo "create-foundry-knowledge-index: authentication returned an empty token" >&2
+  exit 1
+fi
 
 echo "create-foundry-knowledge-index: upserting index '${SEARCH_INDEX_NAME}' on ${SEARCH_ENDPOINT}"
 
