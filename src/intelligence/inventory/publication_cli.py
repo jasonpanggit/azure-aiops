@@ -39,6 +39,7 @@ def main() -> int:
         fabric_config_path=config["AIOPS_FABRIC_CONFIG"],
         registry_root=config["AIOPS_CONNECTION_HOME"],
         discovery_output_dirs=discovery_roots,
+        require_all_connections=True,
     )
     publication = result.get("fabric_publication") or {}
     summary = {

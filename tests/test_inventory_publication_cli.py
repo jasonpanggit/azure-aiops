@@ -45,6 +45,7 @@ def test_inventory_job_reports_publication_result(
         assert path == "/app/config.yaml"
         assert kwargs["registry_root"] == "abfss://workspace/root"
         assert kwargs["fabric_config_path"] == "/app/fabric.yaml"
+        assert kwargs["require_all_connections"] is True
         assert kwargs["discovery_output_dirs"] == {
             "test": "abfss://workspace/root/connections/test"
         }
