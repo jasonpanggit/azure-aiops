@@ -5,6 +5,24 @@
  * Server loads subscription connections from registry and resolves SPNs from AKV.
  */
 
+variable "operations_mcp_api_revision_suffix" {
+  description = "Optional same-app API revision for protected Operations MCP acceptance before API traffic cutover. Empty keeps the main API endpoint."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.operations_mcp_api_revision_suffix == "" ||
+      can(regex("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$", var.operations_mcp_api_revision_suffix))
+    )
+    error_message = "The Operations MCP API revision must be an empty value or a lowercase alphanumeric/hyphen revision suffix, not a URL or hostname."
+  }
+}
+
+locals {
+  operations_mcp_api_host = var.operations_mcp_api_revision_suffix == "" ? local.api_fqdn : "${local.base}-api--${var.operations_mcp_api_revision_suffix}.${azurerm_container_app_environment.main.default_domain}"
+}
+
 resource "azurerm_container_app" "mcp_server" {
   name                         = "${local.base}-mcp-server"
   container_app_environment_id = azurerm_container_app_environment.main.id
@@ -64,7 +82,7 @@ resource "azurerm_container_app" "mcp_server" {
       # remain the single source of truth.
       env {
         name  = "AIOPS_OPERATIONS_MCP_URL"
-        value = "${local.api_base_url}/api/v1/mcp"
+        value = "https://${local.operations_mcp_api_host}/api/v1/mcp"
       }
 
       env {

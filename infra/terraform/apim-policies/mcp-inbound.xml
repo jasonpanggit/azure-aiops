@@ -15,6 +15,10 @@
       if (string.IsNullOrEmpty(token) || !token.TryParseJwt(out jwt)) {
         return context.RequestId.ToString();
       }
+      var preferredUsername = jwt.Claims.GetValueOrDefault(&quot;preferred_username&quot;, new string[0]);
+      var upn = jwt.Claims.GetValueOrDefault(&quot;upn&quot;, new string[0]);
+      if (preferredUsername.Length > 0 &amp;&amp; !string.IsNullOrWhiteSpace(preferredUsername[0])) { return preferredUsername[0].Trim(); }
+      if (upn.Length > 0 &amp;&amp; !string.IsNullOrWhiteSpace(upn[0])) { return upn[0].Trim(); }
       var oid = jwt.Claims.GetValueOrDefault(&quot;oid&quot;, new string[0]);
       var appid = jwt.Claims.GetValueOrDefault(&quot;azp&quot;, jwt.Claims.GetValueOrDefault(&quot;appid&quot;, new string[0]));
       if (oid.Length > 0) { return oid[0]; }

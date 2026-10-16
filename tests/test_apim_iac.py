@@ -1,4 +1,9 @@
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 TF = ROOT / "infra" / "terraform"
@@ -32,6 +37,67 @@ def test_apim_policy_validates_token_limits_and_replaces_identity_headers():
     assert "client_secret" not in policy
     assert "remediation" not in policy
 
+
+def test_apim_validated_user_identity_matches_direct_entra_subject_precedence():
+    policy = (TF / "apim-policies" / "mcp-inbound.xml").read_text()
+    inbound = ET.fromstring(policy).find("inbound")
+    assert inbound is not None
+    elements = list(inbound)
+    validation = next(i for i, element in enumerate(elements) if element.tag == "validate-azure-ad-token")
+    identity_index = next(
+        i for i, element in enumerate(elements)
+        if element.tag == "set-variable" and element.get("name") == "aiopsCallerId"
+    )
+    assert validation < identity_index
+    expression = elements[identity_index].get("value", "")
+    assert (
+        expression.index("return preferredUsername[0].Trim()")
+        < expression.index("return upn[0].Trim()")
+        < expression.index("return oid[0]")
+        < expression.index("return appid[0]")
+    )
+    assert "!string.IsNullOrWhiteSpace(preferredUsername[0])" in expression
+    assert "!string.IsNullOrWhiteSpace(upn[0])" in expression
+    direct = (ROOT / "src/api/auth.py").read_text()
+    assert (
+        direct.index('claims.get("preferred_username")')
+        < direct.index('claims.get("upn")')
+        < direct.index('claims.get("oid")')
+    )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "valid"),
+    [
+        ("", True), ("0000007", True), ("candidate-1", True),
+        ("foreign.example.com", False), ("https://foreign.example", False),
+        ("../0000007", False), ("-invalid", False), ("invalid-", False),
+        ("a" * 65, False),
+    ],
+)
+def test_operations_mcp_revision_selector_rejects_foreign_hosts(tmp_path, suffix, valid):
+    terraform = shutil.which("terraform")
+    if terraform is None:
+        pytest.skip("Terraform CLI is required for executable HCL regression")
+    source = (TF / "mcp_server.tf").read_text()
+    variable = source.split("\nlocals {", 1)[0].split(
+        'variable "operations_mcp_api_revision_suffix"', 1
+    )[1]
+    (tmp_path / "main.tf").write_text(
+        'variable "operations_mcp_api_revision_suffix"' + variable
+    )
+    result = subprocess.run(
+        [terraform, "plan", "-input=false", "-no-color", f"-var=operations_mcp_api_revision_suffix={suffix}"],
+        cwd=tmp_path,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert (result.returncode == 0) is valid, result.stderr
+    if not valid:
+        assert "not a URL or hostname" in result.stderr
+    assert 'default     = ""' in variable
+    assert 'https://${local.operations_mcp_api_host}/api/v1/mcp' in source
+    assert '${local.base}-api--${var.operations_mcp_api_revision_suffix}.' in source
+    assert '${azurerm_container_app_environment.main.default_domain}' in source
 
 def test_outputs_are_identifiers_only_and_smoke_script_does_not_persist_token():
     outputs = (TF / "outputs.tf").read_text()

@@ -437,6 +437,14 @@ the Agents page. Preserve its validated candidate/promotion contract:
   Empty rejected-version history in a restored project is compared by its
   JSON value, not Terraform's inferred empty-list type. An absent, malformed
   or different history still fails the coordinator activation gate.
+  Before API traffic cutover, `operations_mcp_api_revision_suffix` can point
+  the protected Operations MCP relay at an accepted zero-traffic revision of
+  the same API app. Empty restores the main API URL. Only a revision suffix
+  is accepted, never an arbitrary host or URL. Preserve JWT validation,
+  gateway assertions and claim stripping; validate protected initialize,
+  tools/list and a real read before specialist parity. APIM resolves validated
+  user principals in the same preferred_username/upn/oid order as direct API
+  authentication; managed identities continue to use oid.
   Coordinator publication and its live validator both support
   `FOUNDRY_AUTH_MODE=azure_cli` without storing client credentials.
   `foundry_coordinator_rejected_versions` preserves the historical default
