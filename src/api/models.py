@@ -310,6 +310,31 @@ class RemediationDecisionRequest(ApiModel):
     )
 
 
+class RolloutTargetRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    plan_id: str = Field(min_length=1, max_length=200)
+    preview_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    selected_patch_ids: list[str] = Field(default_factory=list, max_length=1000)
+    wave: int = Field(ge=1, le=5)
+
+
+class RolloutCreateRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=120)
+    window_start: str = Field(min_length=1, max_length=64)
+    window_end: str = Field(min_length=1, max_length=64)
+    require_reconciled_evidence: bool = True
+    targets: list[RolloutTargetRequest] = Field(min_length=1, max_length=20)
+    expected_revision: int = Field(ge=0, le=9007199254740991)
+
+
+class RolloutControlRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action: Literal["open", "pause", "resume", "retire"]
+    wave: int = Field(default=0, ge=0, le=5)
+    expected_revision: int = Field(ge=0, le=9007199254740991)
+
+
 class SupersedeExecutionRequest(ApiModel):
     """Operator-supplied audit reason for replacing an exhausted execution.
 

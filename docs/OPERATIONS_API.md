@@ -31,9 +31,69 @@ after navigation cannot start execution. Already submitted provider work is not
 cancelled by navigation. Foreign-plan execution responses surface an explicit
 error instead of being attached to the selected workflow.
 
-This summary is not backend-enforced multi-target rollout planning. Maintenance
-windows, waves and stop conditions require their own approved snapshot-bound
-execution contract; deferred container execution remains disabled.
+The summary also discloses immutable rollout identity, wave and terms digest
+when present. Deferred container execution remains disabled.
+
+## Governed remediation rollouts
+
+The on-demand Remediation rollout planner declares exact existing patch or
+supported Defender-configuration plans. It is not a scheduler or batch executor.
+Each target still requires its own current role approvals and explicit Run.
+
+`GET /api/v1/remediation/rollouts` reads retained terms and execution progress
+without generating plans or acquiring Azure providers. All nine requested scope
+dimensions apply to every member; partial rollouts are never disclosed.
+`can_manage` independently reflects the narrowed operate grant.
+`POST /api/v1/remediation/rollouts` takes the reviewed collection revision,
+title, aware `window_start`/`window_end`, `require_reconciled_evidence` and
+1-20 targets (`plan_id`, `preview_snapshot_hash`, `selected_patch_ids`, `wave`).
+The server rebuilds and validates every current snapshot, derives scope metadata,
+and retains exact selected updates, action versions and base snapshot hashes.
+Waves must be contiguous from 1, at most 5; targets and plans cannot repeat.
+The positive submission window is at most 24 hours, start-inclusive/end-exclusive.
+
+Each approved snapshot incorporates `{rollout_id, terms_hash, wave}`; the terms
+digest covers every member and immutable setting. Pre-rollout approvals become
+stale for every required role. Reopening a subset target uses retained update IDs
+only as inputs to fresh source validation, never as substitute evidence.
+Legacy snapshots without rollouts retain their original hashes.
+
+`POST /api/v1/remediation/rollouts/{id}/admission` takes the exact record revision
+and `action: open|pause|resume|retire`. Only `open` takes a positive `wave`; it can open
+only the next wave. All prior-wave targets must have recorded provider success
+and, by default, `reconciled_clean` refreshed evidence. A failed/cancelled target
+stops new submissions until explicit bounded recovery succeeds. Retry retains
+the original execution identity and still requires an open window/wave and
+unpaused admission. Reapproval cannot create a second rollout execution.
+Claim/retry admission is checked under the shared durable execution-document
+lock/CAS, and checked again immediately before provider dispatch.
+
+Pause or window expiry prevents new submission, not cancellation of operations
+already sent to a provider. Opening a wave never submits targets automatically.
+Admission races detected after claim are recorded failures, not success.
+The durable document schema is 2.6.0, with legacy `rollouts: []`, a maximum of
+100 declarations and 1 MiB of serialized rollout terms; bounds reject without
+eviction. Storage corruption/failure is surfaced, never an empty successful read.
+
+V1 terms cannot be edited, deleted or extended. `retire` irreversibly closes
+an unstarted or provider-succeeded rollout, under the same claim lock, only when
+every existing member execution has recorded provider success. Active, failed,
+cancelled or unknown history cannot be retired/reassigned. Retired terms and
+execution evidence stay retained and old approvals remain blocked,
+including pre-rollout approvals. Fresh source previews can declare replacement
+terms for those same deterministic plan IDs; new approvals must bind the new
+rollout identity. Retirement cannot race a claim into duplicate authority.
+Only successful execution history from explicitly retired terms can enter a new
+rollout; legacy unbound history remains excluded. Failed/cancelled targets cannot
+have their submission window renewed in V1; after expiry they require operator escalation,
+not a fabricated new plan ID or silent bypass. These declarations are shared within authorized
+scope, not personal bookmarks, and are not an immutable operator-event ledger.
+
+The SRE write-skill output version remains 1.0 for historical execution
+verification compatibility. The expanded optional rollout input has a new
+exact source SHA-256 and matching trigger manifest; release must publish these
+matching artifacts before treating new dispatch as live-ready. Source checks
+do not attest publication, production execution or rollback readiness.
 
 ## Shared advisory access-review campaigns
 

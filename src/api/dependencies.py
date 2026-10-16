@@ -109,6 +109,7 @@ class ApiContext:
     situation_notes_store: SituationNotesStore | None = None
     situation_deadline_store: SituationDeadlineStore | None = None
     execution_record_reader: Callable[[], list[dict[str, Any]]] | None = None
+    rollout_store_provider: Callable[[], Any] | None = None
     inventory_export_store: InventoryExportStore | None = None
     overview_history_store: OverviewHistoryStore | None = None
     service_portfolio_store: ServicePortfolioStore | None = None

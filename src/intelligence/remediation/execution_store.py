@@ -15,6 +15,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -24,6 +25,17 @@ from typing import Any
 from storage.locking import RunLock
 
 from .approval_decisions import RevisionedDocumentStore
+from .rollout import (
+    MAX_ROLLOUTS,
+    RolloutError,
+    RolloutRecord,
+    RolloutTerms,
+    assert_admission,
+    assert_binding,
+    bind_snapshot,
+    member_for_plan,
+    progress,
+)
 
 EXECUTION_STATUS_QUEUED = "queued"
 EXECUTION_STATUS_RUNNING = "running"
@@ -73,7 +85,7 @@ class ExecutionLockContended(RuntimeError):
 class RemediationExecutionStore:
     """Revisioned execution records with cross-process claim serialization."""
 
-    _SCHEMA_VERSION = "2.5.0"
+    _SCHEMA_VERSION = "2.6.0"
 
     def __init__(
         self,
@@ -96,6 +108,127 @@ class RemediationExecutionStore:
         self._memory: dict[str, Any] | None = None
         self._lock = threading.RLock()
         self._lock_root = self._resolve_lock_root()
+
+    def rollout_collection(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Read immutable terms and stored execution progress without acquisition."""
+        with self._lock:
+            state = self._read_state()
+            return {
+                "revision": state["revision"],
+                "rollouts": [
+                    progress(RolloutRecord.model_validate(row), state["executions"], now or datetime.now(UTC))
+                    for row in state["rollouts"]
+                ],
+            }
+
+    def create_rollout(
+        self, terms: RolloutTerms, *, expected_revision: int, actor: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Atomically reserve fresh targets; declarations are not execution authority."""
+        moment = now or datetime.now(UTC)
+        with self._claim_lock():
+            state = self._read_state()
+            if state["revision"] != expected_revision:
+                raise RolloutError("rollout_revision_conflict", "Reload the rollout collection before saving")
+            if len(state["rollouts"]) >= MAX_ROLLOUTS:
+                raise RolloutError("rollout_store_full", "The retained rollout collection is full")
+            if datetime.fromisoformat(terms.window_end) <= moment:
+                raise RolloutError("rollout_window_closed", "A new rollout requires a window that has not ended")
+            for member in terms.members:
+                if member_for_plan(state["rollouts"], member.plan_id, include_retired=False) is not None:
+                    raise RolloutError("rollout_plan_bound", "This plan already has immutable rollout terms; generate a new plan")
+                retired_ids = {row["rollout_id"] for row in state["rollouts"] if row["retired"]}
+                if any(
+                    row.get("plan_id") == member.plan_id and (
+                        row.get("status") != "succeeded"
+                        or ((row.get("execution_snapshot") or {}).get("rollout") or {}).get("rollout_id") not in retired_ids
+                    )
+                    for row in state["executions"]
+                ):
+                    raise RolloutError("rollout_plan_already_started", "Existing execution history must be successful and belong to explicitly retired terms")
+            record = RolloutRecord(
+                rollout_id="RMO-" + uuid.uuid4().hex, terms=terms, terms_hash=terms.digest(),
+                revision=0, opened_wave=0, paused=False, created_by=actor,
+                created_at=moment.isoformat(), updated_by=actor, updated_at=moment.isoformat(),
+            )
+            state["rollouts"].append(record.model_dump())
+            self._persist_advanced(state, moment.isoformat())
+            return progress(record, state["executions"], moment)
+
+    def control_rollout(
+        self, rollout_id: str, *, expected_revision: int, action: str,
+        wave: int, actor: str, now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """CAS explicit wave opening or pause/resume; never dispatch provider work."""
+        moment = now or datetime.now(UTC)
+        with self._claim_lock():
+            state = self._read_state()
+            index = next((i for i, row in enumerate(state["rollouts"]) if row["rollout_id"] == rollout_id), None)
+            if index is None:
+                raise RolloutError("rollout_not_found", "Rollout not found")
+            record = RolloutRecord.model_validate(state["rollouts"][index])
+            if record.revision != expected_revision:
+                raise RolloutError("rollout_revision_conflict", "Reload these rollout terms before changing admission")
+            if record.retired:
+                raise RolloutError("rollout_retired", "Retired terms cannot be reopened")
+            updated = record.model_dump()
+            if action == "open":
+                if record.paused or wave != record.opened_wave + 1:
+                    raise RolloutError("rollout_wave_order", "Resume first and open exactly the next wave")
+                if wave > max(member.wave for member in record.terms.members):
+                    raise RolloutError("rollout_wave_order", "There is no later target wave")
+                updated["opened_wave"] = wave
+                candidate = RolloutRecord.model_validate(updated)
+                assert_admission(candidate, wave, state["executions"], moment)
+            elif action in {"pause", "resume"}:
+                updated["paused"] = action == "pause"
+            elif action == "retire":
+                plans = {member.plan_id for member in record.terms.members}
+                if any(row.get("plan_id") in plans and row.get("status") != "succeeded" for row in state["executions"]):
+                    raise RolloutError("rollout_already_started", "Retirement requires unstarted targets or recorded provider success; active, failed or cancelled history needs bounded recovery")
+                updated.update(retired=True, paused=True)
+            else:
+                raise RolloutError("rollout_action_invalid", "Unknown rollout admission action")
+            updated.update(revision=record.revision + 1, updated_by=actor, updated_at=moment.isoformat())
+            record = RolloutRecord.model_validate(updated)
+            state["rollouts"][index] = record.model_dump()
+            self._persist_advanced(state, moment.isoformat())
+            return progress(record, state["executions"], moment)
+
+    def bind_rollout_snapshot(self, plan_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Include current immutable terms in a freshly acquired action snapshot."""
+        with self._lock:
+            return bind_snapshot(self._read_state()["rollouts"], plan_id, snapshot)
+
+    def rollout_patch_selection(self, plan_id: str) -> list[str] | None:
+        """Recover declared IDs as inputs to fresh validation, never as evidence."""
+        with self._lock:
+            found = member_for_plan(self._read_state()["rollouts"], plan_id, include_retired=False)
+            return list(found[1].patch_ids) if found is not None else None
+
+    def validate_rollout_binding(self, plan_id: str, snapshot: dict[str, Any]) -> None:
+        """Reject approvals that predate or alter a target's immutable terms."""
+        with self._lock:
+            assert_binding(self._read_state()["rollouts"], plan_id, snapshot)
+
+    def check_rollout_admission(
+        self, plan_id: str, snapshot: dict[str, Any], *,
+        now: datetime | None = None, recovery: bool = False,
+    ) -> None:
+        """Recheck admission immediately before a provider continuation."""
+        with self._lock:
+            self._assert_rollout(self._read_state(), plan_id, snapshot, now=now, recovery=recovery)
+
+    @staticmethod
+    def _assert_rollout(
+        state: dict[str, Any], plan_id: str, snapshot: dict[str, Any], *,
+        now: datetime | None = None, recovery: bool = False,
+    ) -> None:
+        found = assert_binding(state["rollouts"], plan_id, snapshot)
+        if found is not None:
+            record, member = found
+            assert_admission(record, member.wave, state["executions"], now or datetime.now(UTC), recovery=recovery)
 
     def create_or_get(
         self,
@@ -150,6 +283,15 @@ class RemediationExecutionStore:
             )
             if related is not None:
                 return copy.deepcopy(related), False
+            if snapshot := execution_snapshot.get("rollout"):
+                existing_member = next((
+                    row for row in state["executions"]
+                    if row.get("plan_id") == plan_id
+                    and (row.get("execution_snapshot") or {}).get("rollout") == snapshot
+                ), None)
+                if existing_member is not None:
+                    return copy.deepcopy(existing_member), False
+            self._assert_rollout(state, plan_id, execution_snapshot, now=now)
             if len(state["executions"]) >= self.max_executions:
                 raise ValueError("Remediation execution store is full")
             snapshot = copy.deepcopy(execution_snapshot)
@@ -407,6 +549,7 @@ class RemediationExecutionStore:
             if submitted_attempt_count(record) >= max_attempts:
                 raise ExecutionClaimConflict("max_attempts_exceeded", record)
             snapshot = copy.deepcopy(record.get("execution_snapshot") or {})
+            self._assert_rollout(state, str(record["plan_id"]), snapshot, now=now, recovery=True)
             number = int(record.get("attempt_count") or 0) + 1
             attempt = _new_attempt(
                 number=number,
@@ -670,14 +813,30 @@ class RemediationExecutionStore:
         return {
             "revision": _nonnegative_int(payload.get("revision", 0)),
             "executions": [_with_defaults(item) for item in executions],
+            "rollouts": self._validated_rollouts(payload.get("rollouts", [])),
             "updated_at": str(payload.get("updated_at") or ""),
         }
 
+    @staticmethod
+    def _validated_rollouts(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list) or len(value) > MAX_ROLLOUTS:
+            raise ValueError("Stored rollouts must be a bounded collection")
+        if len(json.dumps(value, ensure_ascii=False).encode()) > 1024 * 1024:
+            raise ValueError("Retained rollout declarations exceed one MiB")
+        records = [RolloutRecord.model_validate(row).model_dump() for row in value]
+        plans = [member["plan_id"] for record in records if not record["retired"] for member in record["terms"]["members"]]
+        identities = [record["rollout_id"] for record in records]
+        if len(set(plans)) != len(plans) or len(set(identities)) != len(identities):
+            raise ValueError("Stored rollout identities or target bindings are duplicated")
+        return records
+
     def _write_state(self, state: dict[str, Any], *, expected_revision: int) -> None:
+        self._validated_rollouts(state["rollouts"])
         payload = {
             "schema_version": self._SCHEMA_VERSION,
             "revision": state["revision"],
             "executions": state["executions"],
+            "rollouts": state["rollouts"],
             "updated_at": state["updated_at"],
         }
         if self.document_store is not None:
@@ -1099,7 +1258,7 @@ def _timestamp(now: datetime | None = None) -> str:
 
 
 def _initial_state() -> dict[str, Any]:
-    return {"revision": 0, "executions": [], "updated_at": ""}
+    return {"revision": 0, "executions": [], "rollouts": [], "updated_at": ""}
 
 
 def _nonnegative_int(value: Any) -> int:

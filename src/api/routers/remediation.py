@@ -10,10 +10,14 @@ that the web UI already calls.
 
 from __future__ import annotations
 
+import hmac
+import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
+from pydantic import ValidationError
 
 from intelligence.governance.audit import (
     ExposureAuditUnavailable,
@@ -35,6 +39,7 @@ from intelligence.remediation.approval_gate import (
 )
 from intelligence.remediation.execution_service import RemediationExecutionError
 from intelligence.remediation.execution_store import execution_scope_attributes
+from intelligence.remediation.rollout import RolloutError, RolloutMember, RolloutTerms
 from intelligence.vulnerability.exposure_contracts import (
     EXPOSURE_CONTRACT_VERSION,
 )
@@ -53,12 +58,121 @@ from ..dependencies import (
 )
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, Evidence, envelope
-from ..models import ExposureReviewHandoffRequest, SupersedeExecutionRequest
+from ..models import (
+    ExposureReviewHandoffRequest,
+    RolloutControlRequest,
+    RolloutCreateRequest,
+    SupersedeExecutionRequest,
+)
 from ..scope import Scope, scope_attributes
 from .operations import _HIDDEN, _filter_rows, _filter_scoped, _require
 from .patching import _service as _patching_service
 
 router = APIRouter(prefix="/api/v1/remediation", tags=["remediation"])
+
+def _rollout_storage(operation: Callable[[], Any]) -> Any:
+    try:
+        return operation()
+    except RolloutError:
+        raise
+    except (OSError, ValueError, RuntimeError) as exc:
+        logging.getLogger(__name__).exception("Durable rollout storage failed")
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable rollout storage is unavailable; reload before any further write") from exc
+
+
+def _rollout_store(context: Context) -> Any:
+    provider = context.rollout_store_provider
+    if provider is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable rollout storage is not configured")
+    return _rollout_storage(provider)
+
+
+def _rollout_visible(row: dict[str, Any], scope: Scope) -> bool:
+    return all(scope.matches(member["scope_attributes"]) for member in row["terms"]["members"])
+
+
+def _rollout_manageable(context: Context, principal: Any, scope: Scope, row: dict[str, Any]) -> bool:
+    try:
+        write_scope = context.authorizer.effective_scope(principal, "operate", scope)
+    except ApiError:
+        return False
+    return _rollout_visible(row, write_scope)
+
+
+@router.get("/rollouts", summary="Read authorized retained rollout terms and stored progress")
+def list_rollouts(context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
+    stored = _rollout_storage(_rollout_store(context).rollout_collection)
+    rows = [
+        {**row, "can_manage": _rollout_manageable(context, principal, scope, row)}
+        for row in stored["rollouts"] if _rollout_visible(row, scope)
+    ]
+    return envelope({"revision": stored["revision"], "rollouts": rows}, evidence=_evidence("rollouts"), scope=scope.to_dict())
+
+
+@router.post("/rollouts", summary="Reserve immutable exact-target rollout declarations, not execution")
+def create_rollout(
+    payload: RolloutCreateRequest, context: Context, scope: ReadScope,
+    principal: OperatePrincipal,
+) -> dict[str, Any]:
+    write_scope = context.authorizer.effective_scope(principal, "operate", scope)
+    store = _rollout_store(context)
+    if _rollout_storage(store.rollout_collection)["revision"] != payload.expected_revision:
+        raise ApiError(ErrorCode.CONFLICT, "Reload the rollout collection before saving")
+    service = _execution_service(context, write_scope)
+    members = []
+    for target in payload.targets:
+        plan = _get_scoped_plan(context, write_scope, target.plan_id)
+        try:
+            snapshot = service.build_execution_snapshot(plan, scope=write_scope, selected_patch_ids=target.selected_patch_ids or None)
+        except ExecutionSnapshotError as exc:
+            raise ApiError(ErrorCode.CONFLICT, str(exc), {"reason": exc.reason}) from exc
+        if not hmac.compare_digest(snapshot["snapshot_hash"], target.preview_snapshot_hash):
+            raise ApiError(ErrorCode.CONFLICT, "A selected target changed since preview", {"reason": "stale_execution_preview"})
+        members.append(RolloutMember(
+            plan_id=target.plan_id, target_id=snapshot["target_id"],
+            action_version=snapshot["action_version"], snapshot_hash=snapshot["snapshot_hash"],
+            patch_ids=list(snapshot["patch_ids"]),
+            wave=target.wave, scope_attributes={
+                **scope_attributes(plan.get("resource") or {}), **scope_attributes(plan),
+            },
+        ))
+    try:
+        terms = RolloutTerms(
+            title=payload.title.strip(), window_start=payload.window_start,
+            window_end=payload.window_end, require_reconciled_evidence=payload.require_reconciled_evidence,
+            members=members,
+        )
+        row = _rollout_storage(lambda: store.create_rollout(terms, expected_revision=payload.expected_revision, actor=principal.subject))
+    except ValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Invalid rollout terms; use unique targets, contiguous waves and an aware window of at most 24 hours") from exc
+    except RolloutError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc), {"reason": exc.reason}) from exc
+    return envelope({**row, "can_manage": True}, evidence=_evidence(row["rollout_id"]), scope=write_scope.to_dict())
+
+
+@router.post("/rollouts/{rollout_id}/admission", summary="Explicitly open a wave or pause/resume admissions")
+def control_rollout(
+    rollout_id: str, payload: RolloutControlRequest, context: Context,
+    scope: ReadScope, principal: OperatePrincipal,
+) -> dict[str, Any]:
+    write_scope = context.authorizer.effective_scope(principal, "operate", scope)
+    store = _rollout_store(context)
+    row = next((
+        row for row in _rollout_storage(store.rollout_collection)["rollouts"]
+        if row["rollout_id"] == rollout_id and _rollout_visible(row, write_scope)
+    ), None)
+    if row is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "Rollout not found")
+    if (payload.action == "open") != (payload.wave > 0):
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Only wave opening takes an explicit positive wave")
+    try:
+        result = _rollout_storage(lambda: store.control_rollout(
+            rollout_id, expected_revision=payload.expected_revision, actor=principal.subject,
+            action=payload.action, wave=payload.wave,
+        ))
+    except RolloutError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc), {"reason": exc.reason}) from exc
+    return envelope({**result, "can_manage": True}, evidence=_evidence(rollout_id), scope=write_scope.to_dict())
 
 
 def _plan_resource_key(row: dict[str, Any]) -> str:
@@ -450,13 +564,18 @@ def preview_plan(
                 plan,
                 _patching_service(context, scope),
                 scope=scope,
-                selected_patch_ids=patch_id or None,
+                selected_patch_ids=patch_id or (
+                    context.rollout_store_provider().rollout_patch_selection(plan_id)
+                    if context.rollout_store_provider is not None else None
+                ),
             )
-        except ExecutionSnapshotError as exc:
+            if context.rollout_store_provider is not None:
+                execution_snapshot = context.rollout_store_provider().bind_rollout_snapshot(plan_id, execution_snapshot)
+        except (ExecutionSnapshotError, RolloutError) as exc:
             raise ApiError(
                 ErrorCode.CONFLICT,
                 str(exc),
-                {"reason": exc.reason, **exc.details},
+                {"reason": exc.reason, **getattr(exc, "details", {})},
             ) from exc
         operation = execution_snapshot["operation"]
     elif action_id in DEFENDER_CONFIGURATION_ACTION_IDS:

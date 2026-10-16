@@ -1008,6 +1008,7 @@ export interface RemediationAvailablePatch {
 }
 
 export interface RemediationExecutionSnapshot {
+  rollout?: { rollout_id: string; terms_hash: string; wave: number };
   snapshot_kind?: "defender_configuration";
   target_id: string;
   patch_ids: string[];

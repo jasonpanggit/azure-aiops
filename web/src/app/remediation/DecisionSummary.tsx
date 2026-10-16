@@ -51,6 +51,10 @@ export function DecisionSummary({ workflow, canRun, businessReady, pending, onNa
           <div><dt>Plan</dt><dd><code>{workflow.plan.plan_id}</code></dd></div>
           <div><dt>Action version</dt><dd><code>{snapshot?.action_version || workflow.plan.action_version || "Not reported"}</code></dd></div>
           <div><dt>Snapshot hash</dt><dd><code>{snapshot?.snapshot_hash || "Not reported"}</code></dd></div>
+          {snapshot?.rollout && <>
+            <div><dt>Approved rollout binding</dt><dd><code>{snapshot.rollout.rollout_id}</code>, wave {snapshot.rollout.wave}</dd></div>
+            <div><dt>Immutable rollout terms</dt><dd><code>{snapshot.rollout.terms_hash}</code></dd></div>
+          </>}
         </dl>
         {snapshot?.patch_ids.length ? <ul>{snapshot.patch_ids.map(id => <li key={id}><code>{id}</code></li>)}</ul> : <p>No update identifiers in this preview. Configuration actions may have none.</p>}
       </details>

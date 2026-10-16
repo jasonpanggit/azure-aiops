@@ -56,6 +56,7 @@ import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./
 import type { WorkflowStep } from "./blockers";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { RemediationVerificationInbox } from "@/components/RemediationVerificationInbox";
+import { RemediationRollouts } from "@/components/RemediationRollouts";
 import { DecisionSummary } from "./DecisionSummary";
 
 const COMPLIANCE_FINDING_TYPES = new Set([
@@ -692,6 +693,7 @@ function RemediationContent() {
 
 function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelection }) {
   const searchParams = useSearchParams();
+  const requestedPlanId = searchParams.get("plan_id") ?? "";
   const requestedResource = searchParams.get("resource_key") ?? searchParams.get("resource") ?? "";
   const fromCve = searchParams.get("cve") ?? "";
   const fromKb = searchParams.get("kb") ?? "";
@@ -823,10 +825,14 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
       setSelectedPlanId("");
       return;
     }
+    if (requestedPlanId) {
+      setSelectedPlanId(planRows.some(plan => plan.plan_id === requestedPlanId) ? requestedPlanId : "");
+      return;
+    }
     if (selectedPlanId && planRows.some((plan) => plan.plan_id === selectedPlanId)) return;
     const contextual = planRows.find((plan) => resourceMatches(plan, requestedResource));
     setSelectedPlanId((contextual ?? planRows[0]).plan_id);
-  }, [complianceReview, planRows, requestedResource, selectedPlanId]);
+  }, [complianceReview, planRows, requestedResource, requestedPlanId, selectedPlanId]);
 
   useEffect(() => {
     if (!selectedPlanId) {
@@ -928,6 +934,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
       !approvedSnapshot
       || !currentSnapshot
       || !currentSnapshot.available_patches
+      || currentSnapshot.rollout
       || approvedSnapshot.action_version !== workflow.plan.action_version
     ) {
       return;
@@ -1247,7 +1254,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     ) ?? null;
   const previewPatchIds = workflow?.preview?.execution_snapshot?.patch_ids ?? [];
   const requestedPatchIds = selectedPatchIds
-    ?? workflow?.preview?.execution_snapshot?.available_patches?.map(row => row.patch_id);
+    ?? (workflow?.preview?.execution_snapshot?.rollout
+      ? previewPatchIds
+      : workflow?.preview?.execution_snapshot?.available_patches?.map(row => row.patch_id));
   const patchBindingCurrent = !requestedPatchIds || (
     requestedPatchIds.length === previewPatchIds.length
     && requestedPatchIds.every(id => previewPatchIds.includes(id))
@@ -1472,7 +1481,10 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
-      {!complianceReview && <RemediationVerificationInbox scope={effectiveScope} />}
+      {!complianceReview && <>
+        <RemediationRollouts scope={effectiveScope} workflow={workflowLoading ? null : workflow} onChanged={() => setWorkflowRefresh(value => value + 1)} />
+        <RemediationVerificationInbox scope={effectiveScope} />
+      </>}
 
       {(requestedResource || fromCve || fromKb || fromIncident) && (
         <div className="callout remediation-handoff remediation-handoff-context">
@@ -1642,7 +1654,16 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
             ) : workflowError ? (
               <StatePanel title="Workflow unavailable" message={workflowError} tone="error" />
             ) : !workflow ? (
-              <StatePanel title="Select a fix" message="Choose a generated plan to begin." />
+              requestedPlanId ? (
+                <>
+                  <StatePanel title="Requested plan unavailable" message="The exact linked plan is absent from the current authorized results. No replacement plan has been selected." tone="partial" />
+                  <Link className="button button-secondary" href={(() => {
+                    const query = new URLSearchParams(searchParams.toString());
+                    query.delete("plan_id");
+                    return `/remediation${query.size ? `?${query}` : ""}`;
+                  })()}>Clear exact plan selection</Link>
+                </>
+              ) : <StatePanel title="Select a fix" message="Choose a generated plan to begin." />
             ) : (
               <>
                 <DecisionSummary
@@ -1767,7 +1788,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                             </div>
                             {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                               <StatusBadge
-                                label={`${selectedPatchIds?.length ?? workflow.preview.execution_snapshot.available_patches.length} selected`}
+                                label={`${selectedPatchIds?.length ?? (workflow.preview.execution_snapshot.rollout ? workflow.preview.execution_snapshot.patch_ids.length : workflow.preview.execution_snapshot.available_patches.length)} selected`}
                                 tone="info"
                                 compact
                               />
@@ -1776,7 +1797,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                           {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                             <>
                               <p className="remediation-patch-mode-line">
-                                {selectedPatchIds === null
+                                {workflow.preview.execution_snapshot.rollout
+                                  ? `${workflow.preview.execution_snapshot.patch_ids.length} patches fixed by the immutable rollout. A different selection requires a newly generated plan.`
+                                  : selectedPatchIds === null
                                   ? `All ${workflow.preview.execution_snapshot.available_patches.length} eligible patches are selected.`
                                   : `${selectedPatchIds.length} of ${workflow.preview.execution_snapshot.available_patches.length} patches explicitly selected.`}
                                 {patchRevalidating ? (
@@ -1788,7 +1811,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                               <ul className="remediation-patch-list">
                                 {workflow.preview.execution_snapshot.available_patches.map((patch) => {
                                   const allPatchIds = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
-                                  const checked = selectedPatchIds === null || selectedPatchIds.includes(patch.patch_id);
+                                  const checked = selectedPatchIds === null
+                                    ? !workflow.preview!.execution_snapshot!.rollout || workflow.preview!.execution_snapshot!.patch_ids.includes(patch.patch_id)
+                                    : selectedPatchIds.includes(patch.patch_id);
                                   const classification = patchClassification(patch);
                                   return (
                                     <li key={patch.patch_id} className="remediation-patch-item">
@@ -1796,6 +1821,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                                         <input
                                           type="checkbox"
                                           checked={checked}
+                                          disabled={Boolean(workflow.preview?.execution_snapshot?.rollout)}
                                           onChange={(event) => {
                                             const current = selectedPatchIds === null ? allPatchIds : selectedPatchIds;
                                             const next = event.target.checked

@@ -331,6 +331,46 @@ describe("Governed remediation workflow", () => {
     expect(await screen.findByText("Evidence and audit history")).toBeInTheDocument();
   });
 
+  it("does not substitute another plan when an exact linked plan is unavailable", async () => {
+    searchParams.current = new URLSearchParams({ plan_id: "absent-plan", subscription: "sub-1", region: "west", resource_key: TARGET });
+    renderPage();
+    expect(await screen.findByText("Requested plan unavailable")).toBeVisible();
+    const clear = screen.getByRole("link", { name: "Clear exact plan selection" });
+    const query = new URL(clear.getAttribute("href")!, "http://localhost").searchParams;
+    expect(query.has("plan_id")).toBe(false);
+    expect(query.get("subscription")).toBe("sub-1");
+    expect(query.get("region")).toBe("west");
+    expect(query.get("resource_key")).toBe(TARGET);
+    expect(workflow).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("retains and locks a rollout's exact subset without silently selecting all available updates", async () => {
+    const current = workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Selected security update" },
+        { patch_id: "KB600002", title: "Unselected update" },
+      ],
+    });
+    workflow.mockResolvedValue(envelope({
+      ...current, preview: { ...current.preview, execution_snapshot: {
+        ...current.preview.execution_snapshot,
+        rollout: { rollout_id: "RMO-" + "a".repeat(32), terms_hash: "b".repeat(64), wave: 1 },
+      } },
+    }));
+    searchParams.current = new URLSearchParams({ plan_id: "plan-1", resource_key: TARGET, step: "review" });
+    renderPage();
+    const boxes = await screen.findAllByRole("checkbox");
+    expect(boxes[0]).toBeChecked();
+    expect(boxes[1]).not.toBeChecked();
+    expect(boxes[0]).toBeDisabled();
+    expect(boxes[1]).toBeDisabled();
+    expect(screen.getByText(/1 patches fixed by the immutable rollout/)).toBeVisible();
+    expect(workflow).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    expect(screen.queryByText(/Review the pending update selection/)).not.toBeInTheDocument();
+  });
+
   it("keeps exact read-time decision context across all five steps without mutations", async () => {
     searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
     renderPage();

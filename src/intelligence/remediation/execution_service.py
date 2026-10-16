@@ -16,7 +16,10 @@ from typing import Any
 
 from api.scope import scope_attributes
 from intelligence.remediation.action_catalog import EXECUTABLE_ACTION_IDS
-from intelligence.remediation.approval_decisions import execution_snapshot_hash
+from intelligence.remediation.approval_decisions import (
+    ExecutionSnapshotError,
+    execution_snapshot_hash,
+)
 from intelligence.remediation.approval_gate import (
     is_self_approval,
     requirement_satisfaction,
@@ -40,6 +43,7 @@ from .execution_store import (
     submitted_attempt_count,
 )
 from .execution_verifier import ExecutionVerificationUnavailable, ExecutionVerifier
+from .rollout import RolloutError
 
 # Patch recovery and the small code-authored Defender configuration catalog
 # are the only execution families. All other recommendations remain review-only.
@@ -226,20 +230,23 @@ class RemediationExecutionService:
             rollback_guidance = list(
                 (plan.get("rollback_plan") or {}).get("rollback_actions") or []
             )
-            record, claimed = self._store.create_or_get(
-                plan_id,
-                requested_by=requested_by,
-                approved_by=str(decision.get("approver") or ""),
-                approval_decision_id=str(decision.get("decision_id") or ""),
-                approval_decided_at=str(decision.get("decided_at") or ""),
-                execution_snapshot=snapshot,
-                rollback_guidance=rollback_guidance,
-                scope_attributes={
-                    **scope_attributes(plan.get("resource") or {}),
-                    **scope_attributes(plan),
-                },
-                now=self._now(),
-            )
+            try:
+                record, claimed = self._store.create_or_get(
+                    plan_id,
+                    requested_by=requested_by,
+                    approved_by=str(decision.get("approver") or ""),
+                    approval_decision_id=str(decision.get("decision_id") or ""),
+                    approval_decided_at=str(decision.get("decided_at") or ""),
+                    execution_snapshot=snapshot,
+                    rollback_guidance=rollback_guidance,
+                    scope_attributes={
+                        **scope_attributes(plan.get("resource") or {}),
+                        **scope_attributes(plan),
+                    },
+                    now=self._now(),
+                )
+            except RolloutError as exc:
+                raise RemediationExecutionError(str(exc), reason=exc.reason) from exc
             execution_id = record["execution_id"]
             if not claimed:
                 return self.execution_view(record)
@@ -329,7 +336,7 @@ class RemediationExecutionService:
                 details={"plan_id": plan_id, "expires_at": decision.get("expires_at")},
             )
         validate_business_eligibility(plan)
-        self._validated_execution_snapshot(plan, decision)
+        validated_snapshot = self._validated_execution_snapshot(plan, decision)
 
         # Per-role approval_requirements satisfaction (Phase 03.5, D-01):
         # the single "some decision exists" check above is not sufficient
@@ -355,7 +362,7 @@ class RemediationExecutionService:
             requirements,
             decisions_for_plan,
             current_action_version=current_action_version,
-            current_snapshot_hash="",
+            current_snapshot_hash=str(validated_snapshot["snapshot_hash"]) if "rollout" in validated_snapshot else "",
             policy_version=self._policy_version_resolver(),
             now=self._now(),
         )
@@ -446,17 +453,43 @@ class RemediationExecutionService:
             )
 
     def build_execution_snapshot(
-        self, plan: dict[str, Any], *, scope: Any = None
+        self, plan: dict[str, Any], *, scope: Any = None,
+        selected_patch_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build the exact current action for preview and approval."""
         from intelligence.remediation.approval_decisions import build_execution_snapshot
 
-        return build_execution_snapshot(
+        snapshot = build_execution_snapshot(
             plan,
             self._patching,
             configuration_adapter=self._defender_configuration,
             scope=scope,
+            selected_patch_ids=selected_patch_ids if selected_patch_ids is not None else (
+                self._store.rollout_patch_selection(str(plan["plan_id"])) if self._store is not None else None
+            ),
         )
+        return self.bind_rollout_snapshot(str(plan["plan_id"]), snapshot)
+
+    def bind_rollout_snapshot(self, plan_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Attach current server-owned rollout terms to a new preview/approval."""
+        if self._store is None:
+            return snapshot
+        try:
+            return self._store.bind_rollout_snapshot(plan_id, snapshot)
+        except RolloutError as exc:
+            raise ExecutionSnapshotError(str(exc), reason=exc.reason) from exc
+
+    def _check_rollout(
+        self, plan_id: str, snapshot: dict[str, Any], *, recovery: bool = False,
+    ) -> None:
+        if self._store is None:
+            if "rollout" in snapshot:
+                raise RemediationExecutionError("Rollout storage is unavailable", reason="store_not_configured")
+            return
+        try:
+            self._store.check_rollout_admission(plan_id, snapshot, now=self._now(), recovery=recovery)
+        except RolloutError as exc:
+            raise RemediationExecutionError(str(exc), reason=exc.reason) from exc
 
     def allow_self_approval(self) -> bool:
         """Public read of the gate's current self-approval policy.
@@ -476,12 +509,15 @@ class RemediationExecutionService:
         decision: dict[str, Any],
         requested_by: str,
         execution_id: str | None,
+        recovery: bool = False,
     ) -> dict[str, Any]:
         plan_id = str(plan.get("plan_id") or "")
         action_id = str(plan.get("action_id") or plan.get("opportunity_type") or "")
         intended_provider = self._intended_provider(action_id)
         try:
+            self._check_rollout(plan_id, decision.get("execution_snapshot") or {}, recovery=recovery)
             target, patch_ids = self._resolve_target(plan, decision)
+            self._check_rollout(plan_id, decision.get("execution_snapshot") or {}, recovery=recovery)
         except RemediationExecutionError as exc:
             # Target and allowlist revalidation happens after the durable
             # attempt claim. Persist that refusal as a terminal attempt rather
@@ -545,7 +581,7 @@ class RemediationExecutionService:
                                 "subscription_id",
                                 "approver",
                                 "snapshot_hash",
-                            )
+                            ) + (("rollout",) if "rollout" in (decision.get("execution_snapshot") or {}) else ())
                         },
                     },
                 )
@@ -795,6 +831,8 @@ class RemediationExecutionService:
                 now=self._now(),
                 **schedule_fields,
             )
+        except RolloutError as exc:
+            raise RemediationExecutionError(str(exc), reason=exc.reason) from exc
         except ExecutionClaimConflict as exc:
             raise RemediationExecutionError(
                 "Another lifecycle operation already claimed this execution",
@@ -813,6 +851,7 @@ class RemediationExecutionService:
         return self._submit_and_record(
             plan=plan,
             decision=immutable_decision,
+            recovery=True,
             requested_by=str(record.get("requested_by") or ""),
             execution_id=execution_id,
         )
@@ -1018,6 +1057,7 @@ class RemediationExecutionService:
             # finalizes any self-approval (requested_by="" guarantees the
             # set is always empty) -- this is a pure, non-mutating read.
             self._resolve_target(plan, decision)
+            self._check_rollout(plan_id, decision.get("execution_snapshot") or {})
         except RemediationExecutionError as exc:
             return {"executable": False, "ineligibility_reason": exc.reason}
         return {"executable": True, "ineligibility_reason": ""}
@@ -1140,6 +1180,7 @@ class RemediationExecutionService:
                 reason="provider_review_not_approvable",
                 details={"execution_id": execution_id},
             )
+        self._check_rollout(str(record["plan_id"]), record.get("execution_snapshot") or {})
         try:
             approve_review(record, requested_by=requested_by)
         except ExecutionVerificationUnavailable as exc:
@@ -2045,6 +2086,13 @@ class RemediationExecutionService:
                 reason="execution_snapshot_invalid",
                 details={"plan_id": plan_id},
             )
+        if self._store is not None:
+            try:
+                self._store.validate_rollout_binding(plan_id, snapshot)
+            except RolloutError as exc:
+                raise RemediationExecutionError(str(exc), reason=exc.reason) from exc
+        elif "rollout" in snapshot:
+            raise RemediationExecutionError("Rollout storage is unavailable", reason="store_not_configured")
         return snapshot
 
     def _resolve_target(
@@ -2062,6 +2110,10 @@ class RemediationExecutionService:
                     reason=exc.reason,
                     details={"plan_id": plan.get("plan_id")},
                 ) from exc
+            try:
+                current = self.bind_rollout_snapshot(str(plan["plan_id"]), current)
+            except ExecutionSnapshotError as exc:
+                raise RemediationExecutionError(str(exc), reason=exc.reason) from exc
             current["snapshot_hash"] = execution_snapshot_hash(current)
             if not hmac.compare_digest(
                 str(current["snapshot_hash"]), str(snapshot.get("snapshot_hash") or "")
@@ -2343,6 +2395,8 @@ def _supersede_eligibility(record: dict[str, Any]) -> str:
     still be running against the provider. Returns ``""`` when eligible,
     else the specific ineligibility reason.
     """
+    if (record.get("execution_snapshot") or {}).get("rollout"):
+        return "rollout_requires_new_plan"
     status = str(record.get("status") or "")
     if status not in {"failed", "cancelled"}:
         return "execution_active"

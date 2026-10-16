@@ -362,6 +362,8 @@ def configuration_snapshot_hash(snapshot: dict[str, Any]) -> str:
             "desired_properties",
         )
     }
+    if "rollout" in snapshot:
+        canonical["rollout"] = snapshot["rollout"]
     return hashlib.sha256(_stable_json(canonical).encode()).hexdigest()
 
 

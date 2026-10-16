@@ -5840,6 +5840,7 @@ def build_context() -> ApiContext:
         situation_notes_store=_situation_notes_store(),
         situation_deadline_store=_situation_deadline_store(),
         execution_record_reader=lambda: _remediation_execution_store().list_all(),
+        rollout_store_provider=_remediation_execution_store,
         inventory_export_store=_inventory_export_store(),
         overview_history_store=_overview_history_store(),
         service_portfolio_store=_service_portfolio_store(),

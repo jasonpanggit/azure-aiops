@@ -41,6 +41,8 @@ def execution_snapshot_hash(snapshot: dict[str, Any]) -> str:
 
         return configuration_snapshot_hash(snapshot)
     canonical = {field: snapshot.get(field) for field in _SNAPSHOT_FIELDS}
+    if "rollout" in snapshot:
+        canonical["rollout"] = snapshot["rollout"]
     serialized = json.dumps(
         canonical,
         ensure_ascii=False,

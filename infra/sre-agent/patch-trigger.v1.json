@@ -30,7 +30,7 @@
       "name": "aiops-install-selected-patches-v1",
       "version": "1.0",
       "artifact": "SKILL.md",
-      "raw_sha256": "2a4fec5c3959046670a5ea326b728e7ab8b840a654b9d5f040ea4af64dd1ce75",
+      "raw_sha256": "3f2327e2b27fc76627dbd4f99f55c7f3fe453e79cdb049c0ec54d5784b5a4ec6",
       "tools": [
         "RunAzCliWriteCommands"
       ],
@@ -188,6 +188,34 @@
                 "type": "string",
                 "minLength": 64,
                 "maxLength": 64
+              },
+              "rollout": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "rollout_id",
+                  "terms_hash",
+                  "wave"
+                ],
+                "properties": {
+                  "rollout_id": {
+                    "type": "string",
+                    "pattern": "^RMO-[a-f0-9]{32}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "terms_hash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "minLength": 64,
+                    "maxLength": 64
+                  },
+                  "wave": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5
+                  }
+                }
               }
             }
           }
@@ -216,7 +244,7 @@
             "name": "aiops-install-selected-patches-v1",
             "version": "1.0",
             "artifact": "SKILL.md",
-            "raw_sha256": "2a4fec5c3959046670a5ea326b728e7ab8b840a654b9d5f040ea4af64dd1ce75",
+            "raw_sha256": "3f2327e2b27fc76627dbd4f99f55c7f3fe453e79cdb049c0ec54d5784b5a4ec6",
             "tools": [
               "RunAzCliWriteCommands"
             ],

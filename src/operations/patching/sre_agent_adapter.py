@@ -44,7 +44,7 @@ SRE_PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 SRE_PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 SRE_PATCH_WRITE_SKILL_VERSION = "1.0"
 SRE_PATCH_WRITE_SKILL_SHA256 = (
-    "2a4fec5c3959046670a5ea326b728e7ab8b840a654b9d5f040ea4af64dd1ce75"
+    "3f2327e2b27fc76627dbd4f99f55c7f3fe453e79cdb049c0ec54d5784b5a4ec6"
 )
 SRE_PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 SRE_PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"
@@ -238,6 +238,16 @@ def sre_agent_patch_envelope_contract() -> dict[str, object]:
                                 "minLength": 64,
                                 "maxLength": 64,
                             },
+                            "rollout": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["rollout_id", "terms_hash", "wave"],
+                                "properties": {
+                                    "rollout_id": {"type": "string", "pattern": "^RMO-[a-f0-9]{32}$", "minLength": 36, "maxLength": 36},
+                                    "terms_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$", "minLength": 64, "maxLength": 64},
+                                    "wave": {"type": "integer", "minimum": 1, "maximum": 5},
+                                },
+                            },
                         },
                     },
                 },
@@ -341,6 +351,12 @@ def _validate_contract_value(value: object, schema: Mapping[str, object]) -> Non
             _raise_envelope_drift()
         if isinstance(maximum, int) and len(value) > maximum:
             _raise_envelope_drift()
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
+            _raise_envelope_drift()
+    elif schema_type == "integer":
+        if type(value) is not int or value < schema.get("minimum", value) or value > schema.get("maximum", value):
+            _raise_envelope_drift()
     elif schema_type == "array":
         if not isinstance(value, list):
             _raise_envelope_drift()
@@ -366,14 +382,14 @@ def _validate_contract_value(value: object, schema: Mapping[str, object]) -> Non
             not isinstance(required, list)
             or not isinstance(properties, Mapping)
             or schema.get("additionalProperties") is not False
-            or set(value) != set(required)
-            or set(properties) != set(required)
+            or not set(required) <= set(value) <= set(properties)
         ):
             _raise_envelope_drift()
         for field, child_schema in properties.items():
             if not isinstance(child_schema, Mapping):
                 _raise_envelope_drift()
-            _validate_contract_value(value.get(field), child_schema)
+            if field in value:
+                _validate_contract_value(value[field], child_schema)
 
 
 def _approved_snapshot_hash(snapshot: Mapping[str, object]) -> str:
@@ -381,6 +397,8 @@ def _approved_snapshot_hash(snapshot: Mapping[str, object]) -> str:
         field: snapshot.get(field)
         for field in SRE_PATCH_APPROVED_SNAPSHOT_IDENTITY_FIELDS
     }
+    if "rollout" in snapshot:
+        canonical["rollout"] = snapshot["rollout"]
     encoded = json.dumps(
         canonical,
         ensure_ascii=False,
@@ -901,7 +919,10 @@ class SreAgentPatchExecutionAdapter:
         snapshot = raw.get("execution_snapshot")
         if not isinstance(snapshot, Mapping):
             _raise_envelope_drift()
-        if set(snapshot) != set(SRE_PATCH_APPROVED_SNAPSHOT_FIELDS):
+        expected = set(SRE_PATCH_APPROVED_SNAPSHOT_FIELDS)
+        if "rollout" in snapshot:
+            expected.add("rollout")
+        if set(snapshot) != expected:
             _raise_envelope_drift()
         decided_at = _approval_time(raw.get("decided_at"), "decided_at")
         expires_at = _approval_time(raw.get("expires_at"), "expires_at")

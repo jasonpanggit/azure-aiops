@@ -9835,3 +9835,19 @@ body.topology-fullscreen-open {
 .remediation-decision-disclosures summary { cursor: pointer; min-height: 44px; padding-block: 0.625rem; }
 .remediation-decision-disclosures li { margin-block: 0.5rem; }
 .remediation-decision-boundary { font-size: 0.875rem; color: var(--color-text-secondary); }
+
+.remediation-rollouts { margin-block-start: 18px; }
+.remediation-rollouts .card-body { display: grid; gap: 16px; min-width: 0; }
+.remediation-rollouts .card-body > p { max-width: 75ch; }
+.remediation-rollouts .card-header { flex-wrap: wrap; gap: 12px; }
+.remediation-rollouts details { min-width: 0; }
+.remediation-rollouts summary { min-height: 44px; padding-block: 12px; cursor: pointer; }
+.remediation-rollouts fieldset { display: grid; gap: 12px; margin-block: 16px; padding: 16px; border: 1px solid var(--color-border); }
+.remediation-rollouts :is(button, input:not([type="checkbox"]), select, .button) { min-height: 44px; max-width: 100%; }
+.remediation-rollouts :is(input:not([type="checkbox"]), select) { font-size: 1rem; }
+.remediation-rollouts button:disabled { opacity: 0.55; cursor: not-allowed; }
+.remediation-rollouts code { overflow-wrap: anywhere; }
+.remediation-rollout-targets { display: grid; gap: 16px; padding-inline-start: 24px; }
+.remediation-rollout-targets li { min-width: 0; }
+.remediation-rollout-record { border-block-start: 1px solid var(--color-border); padding-block-start: 16px; }
+.remediation-rollout-controls { display: flex; flex-wrap: wrap; gap: 12px; }
