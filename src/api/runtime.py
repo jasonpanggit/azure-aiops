@@ -4539,6 +4539,13 @@ def _settings_store() -> EnterpriseSettingsStore:
     return EnterpriseSettingsStore(documents)
 
 
+def _compliance_policy_store():
+    """Use durable scope-exact documents in both local and deployed runs."""
+    from intelligence.governance.compliance_policy import CompliancePolicyStore
+
+    return CompliancePolicyStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 #: Module-level so every provider closure that builds a NetworkIntelligenceService
 #: (local, fabric, hybrid) shares one store and observes the same edits.
 _NETWORK_POLICY_STORE: NetworkDesignPolicyStore | None = None
@@ -5709,6 +5716,7 @@ def build_context() -> ApiContext:
         governance_provider=lambda: providers.get("governance", optional=True),
         governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
+        compliance_policy_store=_compliance_policy_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

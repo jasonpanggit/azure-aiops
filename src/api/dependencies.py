@@ -89,6 +89,7 @@ class ApiContext:
     # Enterprise settings are a user-submitted mutation rather than a snapshot
     # projection, so like risk exceptions they use a direct store handle.
     settings_store: Any | None = None
+    compliance_policy_store: Any | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

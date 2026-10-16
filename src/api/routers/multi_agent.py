@@ -660,6 +660,25 @@ def apply_action(
     ledger = ledger_store().get(ledger_id, principal.subject)
     if ledger is None or not _ledger_is_visible_in_scope(ledger, scope):
         raise _not_found(ledger_id)
+    if payload.action in {"accept_finding", "reject_finding"}:
+        finding_id = payload.payload.get("finding_id")
+        reason = payload.payload.get("reason")
+        findings = [
+            finding
+            for run in ledger.get("agent_runs") or []
+            for finding in run.get("findings") or []
+        ] + list(ledger.get("findings") or [])
+        if (
+            not isinstance(finding_id, str)
+            or not any(finding.get("finding_id") == finding_id for finding in findings)
+            or not isinstance(reason, str)
+            or not reason.strip()
+            or len(reason) > 1000
+        ):
+            raise ApiError(
+                ErrorCode.INVALID_REQUEST,
+                "Select a finding in this ledger and provide a reason of 1 to 1000 characters",
+            )
     ledger = ledger_store().record_decision(
         ledger_id, principal.subject, payload.action, payload.payload
     )

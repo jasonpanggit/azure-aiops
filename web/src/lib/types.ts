@@ -1008,6 +1008,41 @@ export interface FabricLayerCounts {
   total: number;
 }
 
+/** Scope-exact architecture assessment policy, distinct from provider policy. */
+export interface ComplianceDesignPolicy {
+  name: string;
+  requiredHubRouting: boolean;
+  firewallInspectionRequired: boolean;
+  environmentIsolationRequired: boolean;
+  allowedPorts: string;
+  privateEndpointRequiredFor: string;
+  requiredDnsZones: string;
+  loggingRequired: boolean;
+  ownerTag: string;
+  allowCrossSubscriptionPeering: boolean;
+}
+
+/** Durable server decisions; only active, unexpired records affect assessment. */
+export interface CompliancePolicyState {
+  revision: number;
+  policy_revision: number;
+  scope: Record<string, string[]>;
+  policy: ComplianceDesignPolicy;
+  exceptions: Array<{
+    exception_id: string;
+    violationId: string;
+    owner: string;
+    reason: string;
+    expiresAt: string;
+    approved_by: string;
+    approved_at: string;
+    revoked_at: string;
+    policy_revision: number;
+    active: boolean;
+  }>;
+  audit: Array<{ revision: number; actor: string; at: string; action: string; reason: string }>;
+}
+
 export interface FabricDataset {
   table_name: string;
   availability: string;

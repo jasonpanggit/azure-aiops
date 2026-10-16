@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { exposures, gaps, ruleFindings, topology, policyDeviations, securityDeviations, configurationDrift, complianceSummary, buildComplianceCopilotContext } = vi.hoisted(() => ({
+const { designPolicy, saveDesignPolicy, decideException, exposures, gaps, ruleFindings, topology, policyDeviations, securityDeviations, configurationDrift, complianceSummary, buildComplianceCopilotContext } = vi.hoisted(() => ({
+  designPolicy: vi.fn(), saveDesignPolicy: vi.fn(), decideException: vi.fn(),
   exposures: vi.fn(),
   gaps: vi.fn(),
   ruleFindings: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("@/lib/services", async () => {
     networkApi: { topology, gaps, ruleFindings },
     vulnerabilityApi: { exposures },
     complianceApi: {
+      designPolicy, saveDesignPolicy, decideException,
       policyDeviations,
       securityDeviations,
       configurationDrift,
@@ -49,6 +51,16 @@ const envelope = <T,>(data: T) => ({
 });
 
 const PRIVATE_ENDPOINT_TARGET = "/subscriptions/sub-1/resourceGroups/rg-network/providers/Microsoft.Network/privateEndpoints/cosmos-pe";
+const savedPolicy = {
+  revision: 0, policy_revision: 0, scope: {}, exceptions: [], audit: [],
+  policy: {
+    name: "Approved hub-spoke landing-zone baseline", requiredHubRouting: true,
+    firewallInspectionRequired: true, environmentIsolationRequired: true,
+    allowedPorts: "443, 1433, 5671", privateEndpointRequiredFor: "microsoft.sql, microsoft.storage, microsoft.keyvault, microsoft.web",
+    requiredDnsZones: "privatelink.database.windows.net, privatelink.blob.core.windows.net, privatelink.vaultcore.azure.net",
+    loggingRequired: true, ownerTag: "owner", allowCrossSubscriptionPeering: false,
+  },
+};
 
 function renderPage() {
   return render(
@@ -62,6 +74,12 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    designPolicy.mockResolvedValue(envelope(savedPolicy));
+    saveDesignPolicy.mockImplementation((_revision, policy) => Promise.resolve(envelope({ ...savedPolicy, revision: 1, policy_revision: 1, policy })));
+    decideException.mockImplementation(body => Promise.resolve(envelope({
+      ...savedPolicy, revision: 2,
+      exceptions: [{ ...body, active: true, revoked_at: "", approved_by: "authenticated-admin" }],
+    })));
     topology.mockResolvedValue(envelope({
       topology: {
         hubs: [],
@@ -157,8 +175,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
   it("passes evaluated violations and governed evidence to the pure adapter", async () => {
     renderPage();
 
-    await waitFor(() => expect(buildComplianceCopilotContext).toHaveBeenCalled());
-    expect(buildComplianceCopilotContext).toHaveBeenLastCalledWith(
+    await waitFor(() => expect(buildComplianceCopilotContext).toHaveBeenLastCalledWith(
       expect.objectContaining({
         scope: {},
         policyName: "Approved hub-spoke landing-zone baseline",
@@ -169,7 +186,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
         ]),
         governedDeviations: [],
       }),
-    );
+    ));
   });
 
   it("hands a canonical network finding to remediation as bounded review context", async () => {
@@ -262,15 +279,46 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     expect(screen.getByRole("button", { name: "Ask Copilot about posture" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Payroll landing-zone policy" } });
-    expect(window.localStorage.getItem("aiops.architecture-policy.v1")).toContain("Payroll landing-zone policy");
+    expect(window.localStorage.getItem("aiops.architecture-policy.v1")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Policy change reason"), { target: { value: "Reviewed by architecture board" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save policy revision" }));
+    await waitFor(() => expect(saveDesignPolicy).toHaveBeenCalledWith(0, expect.objectContaining({ name: "Payroll landing-zone policy" }), "Reviewed by architecture board", {}));
+    await screen.findByText(/Policy saved/);
 
     fireEvent.change(screen.getByLabelText("Exception owner"), { target: { value: "Network CAB" } });
     fireEvent.change(screen.getByLabelText("Risk acceptance reason"), { target: { value: "Temporary migration exception" } });
-    fireEvent.change(screen.getByLabelText("Expires at"), { target: { value: "2026-12-31" } });
+    fireEvent.change(screen.getByLabelText("Expires at (00:00 UTC)"), { target: { value: "2026-12-31" } });
     fireEvent.click(screen.getByRole("button", { name: "Accept selected risk" }));
 
-    await waitFor(() => expect(window.localStorage.getItem("aiops.architecture-exceptions.v1")).toContain("Temporary migration exception"));
-    expect(screen.getByText("Accepted risk")).toBeInTheDocument();
+    await waitFor(() => expect(decideException).toHaveBeenCalledWith(expect.objectContaining({
+      expected_revision: 1, action: "accept", violationId: "public-sql-1",
+      reason: "Temporary migration exception", expiresAt: "2026-12-31T00:00:00Z",
+    }), {}));
+    expect(await screen.findByText("Accepted risk")).toBeInTheDocument();
+    expect(window.localStorage.getItem("aiops.architecture-exceptions.v1")).toBeNull();
+  });
+
+  it("never treats browser-local acceptance as approved and surfaces unavailable storage", async () => {
+    window.localStorage.setItem("aiops.architecture-exceptions.v1", JSON.stringify([{ violationId: "gap-1", expiresAt: "2099-01-01" }]));
+    designPolicy.mockRejectedValueOnce(new Error("Durable policy unavailable"));
+    renderPage();
+    expect(await screen.findByText(/Durable policy unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText("No policy violations")).not.toBeInTheDocument();
+    expect(screen.queryByText("Accepted risk")).not.toBeInTheDocument();
+    expect(screen.queryByText("Accepted risk")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accept selected risk" })).toBeDisabled();
+    expect(screen.getByText(/Posture score unavailable until/)).toBeInTheDocument();
+  });
+
+  it("retains a rejected draft and shows revision conflicts rather than reporting a save", async () => {
+    saveDesignPolicy.mockRejectedValueOnce(new Error("Policy changed; reload and review"));
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Policy pack name")).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Uncommitted draft" } });
+    fireEvent.change(screen.getByLabelText("Policy change reason"), { target: { value: "Review" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save policy revision" }));
+    expect(await screen.findByText("Policy changed; reload and review")).toBeInTheDocument();
+    expect(screen.getByLabelText("Policy pack name")).toHaveValue("Uncommitted draft");
   });
 
   it("deduplicates repeated topology resources before rendering violations", async () => {

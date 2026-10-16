@@ -213,6 +213,28 @@ describe("ResourceHealthPage inventory-first hydration", () => {
     mocks.scope.current = { subscription: ["sub-a"] };
   });
 
+  it("filters coverage states without starting new hydration requests and explains absent metrics", async () => {
+    const rows = [inventoryResource(1), inventoryResource(2)];
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(rows));
+    const harness = installDeferredHealthMock();
+    render(<ResourceHealthPage />);
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    const result = healthEnvelope(rows[0]);
+    result.data.resources[0].unavailable_metrics = ["memory_percent", "disk_free_percent"];
+    await act(async () => {
+      harness.settle(harness.calls[0], { value: result });
+      harness.settle(harness.calls[1], { error: new Error("Metrics permission denied") });
+    });
+    expect(screen.getByText(/1 of 2 resources returned health evidence/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Health state"), { target: { value: "failed" } });
+    expect(screen.queryByText("vm-1")).not.toBeInTheDocument();
+    expect(screen.getByText("vm-2")).toBeInTheDocument();
+    expect(harness.calls).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText("Health state"), { target: { value: "healthy" } });
+    expect(screen.getByText("Missing metric diagnostics")).toBeInTheDocument();
+    expect(screen.getByText(/checks to perform, not confirmed causes/)).toBeInTheDocument();
+  });
+
   it("shows a friendly resource-type pill on every resource card", async () => {
     const virtualMachine = inventoryResource(1);
     const containerApp: FlatInventoryResource = {

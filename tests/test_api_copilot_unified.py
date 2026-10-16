@@ -7320,7 +7320,7 @@ def test_action_on_old_ledger_projects_version_in_canonical_mode(
         "agent_runs": [],
         "reconciliation": {},
         "synthesis": {},
-        "human_controls": {"available_actions": ["accept_finding"]},
+        "human_controls": {"available_actions": ["assign_owner"]},
         "decisions": [],
         "approvals": [],
         "outcome": "",
@@ -7335,7 +7335,7 @@ def test_action_on_old_ledger_projects_version_in_canonical_mode(
 
     response = client.post(
         "/api/v1/agents/investigations/mai-oldaction001/actions?subscription=sub-a",
-        json={"action": "accept_finding", "payload": {}},
+        json={"action": "assign_owner", "payload": {"owner": "Platform"}},
         headers=HEADERS,
     )
 

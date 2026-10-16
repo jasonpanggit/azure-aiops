@@ -54,6 +54,44 @@ capacity-scoped assignment. This does not enable other role assignments or
 change Container Apps registry authentication. Without this permission, the
 capacity health remains unknown rather than reporting a healthy capacity.
 
+### Portal assessment and readiness controls
+
+The Connections readiness journey reads inventory, medallion layers, ontology
+pointer state, and consumer capabilities independently for the selected connection.
+Discovery records, inventory resources, and healthy dataset counts are different
+units. Inventory's `query_version` is a query contract version, not proof of a
+publication generation. Missing/stale stages remain explicit; sync success does
+not establish Fabric publication or portal-wide readiness.
+
+`GET /api/v1/compliance/design-policy` returns a revisioned architecture
+assessment policy, exception decisions, and audit for the **exact effective
+scope**. There is no inheritance between scope combinations. A missing document
+returns revision-zero defaults; a missing store or unreadable document is an
+error, not a reset. The runtime stores these documents under
+`AIOPS_HOME/state/compliance/` using OneLake ETag compare-and-swap (atomic local
+documents in local development). No new infrastructure or identity is required.
+
+`PUT /api/v1/compliance/design-policy` accepts `expected_revision`, a complete
+`policy`, and a nonblank `reason`. It requires write authorization over the
+entire scope. `POST /api/v1/compliance/design-policy/exceptions` accepts
+`expected_revision`, `action` (`accept` or `revoke`), `violationId`, `owner`,
+`reason`, and `expiresAt` (future ISO timestamp with timezone for acceptance).
+Exception decisions require both write and approve authorization. The server
+records the authenticated principal, not the owner text, as the approver.
+Conflicting revisions return HTTP 409; reload and review before retrying.
+Expired, revoked, or prior-policy exceptions do not reduce the assessment score.
+These are operator-declared architecture-assessment findings, not provider-side
+policy exemptions or remediation approvals. Browser-local policy/exception
+preferences are deliberately not imported as governed decisions. The audit is
+append-only through this API and stops further writes at 10,000 entries until
+administratively archived; no history is silently discarded.
+
+Agent finding accept/reject actions require an explicit finding in the current
+ledger and a reason (1–1000 characters). Twin traversal and scenario analysis
+require an explicitly selected observed resource; no first resource is chosen
+automatically. Resource Health distinguishes still-loading, failed, and unknown
+coverage from healthy observations, retaining the six-request hydration bound.
+
 For local browser testing, run the API and web app separately. The API must be
 running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must
 match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be

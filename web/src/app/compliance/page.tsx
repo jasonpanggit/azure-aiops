@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -18,7 +18,7 @@ import { buildComplianceCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { complianceApi, isCanonicalAzureResourceId, networkApi, vulnerabilityApi } from "@/lib/services";
-import type { ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
+import type { ComplianceDesignPolicy, CompliancePolicyState, ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 type ViolationType =
@@ -35,25 +35,8 @@ type ViolationType =
 
 type Severity = "critical" | "high" | "medium" | "low";
 
-interface DesignPolicy {
-  name: string;
-  requiredHubRouting: boolean;
-  firewallInspectionRequired: boolean;
-  environmentIsolationRequired: boolean;
-  allowedPorts: string;
-  privateEndpointRequiredFor: string;
-  requiredDnsZones: string;
-  loggingRequired: boolean;
-  ownerTag: string;
-  allowCrossSubscriptionPeering: boolean;
-}
-
-interface PolicyException {
-  violationId: string;
-  owner: string;
-  reason: string;
-  expiresAt: string;
-}
+type DesignPolicy = ComplianceDesignPolicy;
+type PolicyException = CompliancePolicyState["exceptions"][number];
 
 interface Violation {
   id: string;
@@ -71,8 +54,6 @@ interface Violation {
   evidence: unknown;
 }
 
-const POLICY_KEY = "aiops.architecture-policy.v1";
-const EXCEPTION_KEY = "aiops.architecture-exceptions.v1";
 const COMPLIANCE_REVIEW_TITLE_MAX = 200;
 const COMPLIANCE_REVIEW_RECOMMENDATION_MAX = 1_000;
 
@@ -88,25 +69,6 @@ const DEFAULT_POLICY: DesignPolicy = {
   ownerTag: "owner",
   allowCrossSubscriptionPeering: false,
 };
-
-function loadPolicy(): DesignPolicy {
-  if (typeof window === "undefined") return DEFAULT_POLICY;
-  try {
-    return { ...DEFAULT_POLICY, ...JSON.parse(window.localStorage.getItem(POLICY_KEY) || "{}") };
-  } catch {
-    return DEFAULT_POLICY;
-  }
-}
-
-function loadExceptions(): PolicyException[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(EXCEPTION_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 function includesAny(text: string, terms: string[]): boolean {
   const lower = text.toLowerCase();
@@ -384,7 +346,7 @@ function remediationFor(type: ViolationType): string {
 }
 
 function isExceptionActive(exception: PolicyException): boolean {
-  return Boolean(exception.expiresAt) && Date.parse(exception.expiresAt) > Date.now();
+  return exception.active && !exception.revoked_at && Date.parse(exception.expiresAt) > Date.now();
 }
 
 function scoreFor(violations: Violation[], exceptions: PolicyException[]): number {
@@ -397,6 +359,35 @@ function scoreFor(violations: Violation[], exceptions: PolicyException[]): numbe
 
 export default function CompliancePage() {
   const { scope } = useScope();
+  return <ComplianceWorkspace key={JSON.stringify(scope)} />;
+}
+
+function ComplianceWorkspace() {
+  const { scope } = useScope();
+  const policyRead = useApi(() => complianceApi.designPolicy(scope), [scope]);
+  const [policyState, setPolicyState] = useState<CompliancePolicyState | null>(null);
+  const [policyDraft, setPolicyDraft] = useState<DesignPolicy>(DEFAULT_POLICY);
+  const [policyReason, setPolicyReason] = useState("");
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyError, setPolicyError] = useState("");
+  const [policyNotice, setPolicyNotice] = useState("");
+  const [, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const nextExpiry = policyState?.exceptions
+      .filter(item => item.active && !item.revoked_at)
+      .map(item => Date.parse(item.expiresAt))
+      .filter(at => at > Date.now())
+      .sort((a, b) => a - b)[0];
+    if (!nextExpiry) return;
+    const timer = setTimeout(() => setExpiryTick(tick => tick + 1), Math.min(nextExpiry - Date.now() + 1, 2_147_483_647));
+    return () => clearTimeout(timer);
+  });
+  useEffect(() => {
+    if (policyRead.data) {
+      setPolicyState(policyRead.data.data);
+      setPolicyDraft(policyRead.data.data.policy);
+    }
+  }, [policyRead.data]);
   const topology = useApi(() => networkApi.topology(scope), [scope]);
   const gaps = useApi(() => networkApi.gaps(scope), [scope]);
   const findings = useApi(() => networkApi.ruleFindings(scope), [scope]);
@@ -405,13 +396,14 @@ export default function CompliancePage() {
   const securityDeviations = useApi(() => complianceApi.securityDeviations(scope), [scope]);
   const drift = useApi(() => complianceApi.configurationDrift(scope), [scope]);
   const summary = useApi(() => complianceApi.summary(scope), [scope]);
-  const [policy, setPolicy] = useState<DesignPolicy>(() => loadPolicy());
-  const [exceptions, setExceptions] = useState<PolicyException[]>(() => loadExceptions());
+  const policy = policyState?.policy ?? DEFAULT_POLICY;
+  const exceptions = policyState?.exceptions ?? [];
   const [selectedId, setSelectedId] = useState("");
   const [exceptionDraft, setExceptionDraft] = useState({ owner: "", reason: "", expiresAt: "" });
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   const violations = useMemo(() => {
+    if (!policyState) return [];
     const allowedPorts = asCsv(policy.allowedPorts);
     const rows = [
       ...(gaps.data?.data.gaps ?? []).map(fromGap),
@@ -420,7 +412,7 @@ export default function CompliancePage() {
       ...fromPeerings(topology.data?.data.topology ?? null, policy),
     ];
     return attachVulnerabilityContext(dedupeViolations(rows), exposures.data?.data ?? []);
-  }, [gaps.data, findings.data, topology.data, exposures.data, policy]);
+  }, [gaps.data, findings.data, topology.data, exposures.data, policy, policyState]);
   const selected = violations.find((violation) => violation.id === selectedId) ?? violations[0] ?? null;
   const acceptedIds = new Set(exceptions.filter(isExceptionActive).map((item) => item.violationId));
   const activeViolations = violations.filter((violation) => !acceptedIds.has(violation.id));
@@ -451,6 +443,7 @@ export default function CompliancePage() {
   }, [activeViolations]);
   const loading = topology.loading || gaps.loading || findings.loading || exposures.loading;
   const error = topology.error ?? gaps.error ?? findings.error ?? exposures.error;
+  const assessmentReady = Boolean(policyState) && !policyRead.loading && !policyRead.error && !loading && !error;
   const evidence = [
     ...(topology.data?.evidence ?? []),
     ...(gaps.data?.evidence ?? []),
@@ -491,19 +484,48 @@ export default function CompliancePage() {
   });
 
   function savePolicy(next: DesignPolicy) {
-    setPolicy(next);
-    window.localStorage.setItem(POLICY_KEY, JSON.stringify(next));
+    setPolicyDraft(next);
+    setPolicyNotice("");
   }
 
-  function acceptRisk() {
-    if (!selected || !exceptionDraft.owner.trim() || !exceptionDraft.reason.trim() || !exceptionDraft.expiresAt) return;
-    const next = [
-      { violationId: selected.id, owner: exceptionDraft.owner.trim(), reason: exceptionDraft.reason.trim(), expiresAt: exceptionDraft.expiresAt },
-      ...exceptions.filter((item) => item.violationId !== selected.id),
-    ];
-    setExceptions(next);
-    window.localStorage.setItem(EXCEPTION_KEY, JSON.stringify(next));
-    setExceptionDraft({ owner: "", reason: "", expiresAt: "" });
+  async function persistPolicy() {
+    if (!policyState || policyBusy) return;
+    setPolicyBusy(true);
+    setPolicyError("");
+    setPolicyNotice("");
+    try {
+      const result = await complianceApi.saveDesignPolicy(policyState.revision, policyDraft, policyReason.trim(), scope);
+      setPolicyState(result.data);
+      setPolicyDraft(result.data.policy);
+      setPolicyReason("");
+      setPolicyNotice("Policy saved. Previous exceptions require review against this policy revision.");
+    } catch (error) {
+      setPolicyError(error instanceof Error ? error.message : "Policy could not be saved.");
+    } finally { setPolicyBusy(false); }
+  }
+
+  async function acceptRisk(action: "accept" | "revoke" = "accept") {
+    if (!selected || !policyState || policyBusy) return;
+    const expiry = Date.parse(`${exceptionDraft.expiresAt}T00:00:00Z`);
+    if (!exceptionDraft.owner.trim() || !exceptionDraft.reason.trim() || (action === "accept" && (!Number.isFinite(expiry) || expiry <= Date.now()))) {
+      setPolicyError("Provide an owner, reason, and future expiry for acceptance.");
+      return;
+    }
+    setPolicyBusy(true);
+    setPolicyError("");
+    setPolicyNotice("");
+    try {
+      const result = await complianceApi.decideException({
+        expected_revision: policyState.revision, action, violationId: selected.id,
+        owner: exceptionDraft.owner.trim(), reason: exceptionDraft.reason.trim(),
+        expiresAt: action === "accept" ? `${exceptionDraft.expiresAt}T00:00:00Z` : "",
+      }, scope);
+      setPolicyState(result.data);
+      setExceptionDraft({ owner: "", reason: "", expiresAt: "" });
+      setPolicyNotice(action === "accept" ? "Risk acceptance recorded by the authenticated approver." : "Risk acceptance revoked.");
+    } catch (error) {
+      setPolicyError(error instanceof Error ? error.message : "Risk decision could not be saved.");
+    } finally { setPolicyBusy(false); }
   }
 
   return (
@@ -513,18 +535,23 @@ export default function CompliancePage() {
         title="Which controls are out of alignment?"
         description="Compare discovered Azure architecture with the active policy pack, then inspect each finding, owner, exception, and source evidence."
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about posture" />}
-        metadata={<><span>{policy.name}</span><span>{violations.length} evaluated violations</span><span>{exceptions.filter(isExceptionActive).length} active exceptions</span></>}
+        metadata={<><span>{policyState ? policy.name : "Assessment policy unavailable"}</span><span>{assessmentReady ? `${violations.length} evaluated violations` : "Assessment incomplete"}</span><span>{policyState ? `${exceptions.filter(isExceptionActive).length} active exceptions` : "Exceptions unavailable"}</span></>}
       />
 
       <CopilotInsights
         snapshot={complianceCopilot.snapshot}
-        ready={!loading}
+        ready={assessmentReady}
         requestedScope={complianceCopilot.requestedScope}
         contextLabel="Security posture"
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar evidence={evidence} knowledgeVersion={topology.data?.knowledge_version} warnings={[...(topology.data?.warnings ?? []), ...(gaps.data?.warnings ?? []), ...(findings.data?.warnings ?? []), ...(exposures.data?.warnings ?? []), ...(policyDeviations.data?.warnings ?? []), ...(securityDeviations.data?.warnings ?? [])]} />
+      <p className="muted">Architecture assessment policy is stored for this exact scope. Browser-local policies and exceptions are not imported as approvals. These decisions never authorize remediation or change Azure policy.</p>
+      {policyRead.loading ? <StatePanel title="Loading governed assessment policy" message="Reading durable policy and exception decisions." tone="loading" /> : null}
+      {policyRead.error ? <StatePanel title="Governed assessment policy unavailable" message={`${policyRead.error.message}. No saved exceptions or healthy posture score are asserted.`} tone="error" /> : null}
+      {policyError ? <StatePanel title="Policy decision was not saved" message={policyError} tone="error" /> : null}
+      {policyNotice ? <p role="status">{policyNotice}</p> : null}
 
       <div className="predeploy-summary">
         <section className="card">
@@ -532,17 +559,17 @@ export default function CompliancePage() {
             <h2>Posture score</h2>
           </div>
           <div className="card-body risk-gauge-body">
-            <RiskGauge score={postureScore} invert detail="Accepted exceptions excluded from active penalty" />
+            {assessmentReady ? <RiskGauge score={postureScore} invert detail="Accepted exceptions excluded from active penalty" /> : <p>Posture score unavailable until policy and evidence load.</p>}
           </div>
         </section>
         <section className="metric-grid compliance-metrics">
-          <MetricCard label="Active violations" value={activeViolations.length} detail={`${violations.length - activeViolations.length} accepted by governed exception`} tone={activeViolations.length ? "warning" : "success"} />
-          <MetricCard label="Critical findings" value={activeViolations.filter((item) => item.severity === "critical").length} detail="Includes public exposure and any-any rules" tone={activeViolations.some((item) => item.severity === "critical") ? "critical" : "success"} />
+          <MetricCard label="Active violations" value={assessmentReady ? activeViolations.length : "—"} detail={assessmentReady ? `${violations.length - activeViolations.length} accepted by governed exception` : "Policy and evidence must load before assessment"} tone={!assessmentReady ? "default" : activeViolations.length ? "warning" : "success"} />
+          <MetricCard label="Critical findings" value={assessmentReady ? activeViolations.filter((item) => item.severity === "critical").length : "—"} detail="Includes public exposure and any-any rules" tone={!assessmentReady ? "default" : activeViolations.some((item) => item.severity === "critical") ? "critical" : "success"} />
           <MetricCard label="Open governed deviations" value={openGovernedDeviations.length} detail={changeSummary ? `${changeSummary.drifted_resource_count} drifted resources tracked by change intelligence` : "Policy and security baseline deviations"} tone={criticalGovernedCount ? "critical" : openGovernedDeviations.length ? "warning" : "success"} />
         </section>
       </div>
 
-      {activeViolations.length > 0 && (
+      {assessmentReady && activeViolations.length > 0 && (
         <div className="card dashboard-charts-row">
           <div className="chart-card">
             <h3 className="chart-card-title">Severity mix (active violations)</h3>
@@ -613,7 +640,7 @@ export default function CompliancePage() {
               </div>
             );
           })}
-          {violations.length === 0 && !loading ? <StatePanel title="No policy violations" message="Current discovered architecture satisfies the active policy pack." /> : null}
+          {violations.length === 0 && assessmentReady ? <StatePanel title="No policy violations" message="Current discovered architecture satisfies the active policy pack." /> : null}
         </div>
       </section>
 
@@ -666,31 +693,38 @@ export default function CompliancePage() {
             <div><h2>Policy administration</h2><p>Governed customer-specific policy pack for architecture compliance.</p></div>
             <StatusBadge label="Customer governed" tone="warning" />
           </div>
-          <div className="card-body compliance-policy-grid">
-            <label>Policy pack name<input value={policy.name} onChange={(event) => savePolicy({ ...policy, name: event.target.value })} /></label>
-            <label>Allowed ports<input value={policy.allowedPorts} onChange={(event) => savePolicy({ ...policy, allowedPorts: event.target.value })} /></label>
-            <label>Private endpoint required for<input value={policy.privateEndpointRequiredFor} onChange={(event) => savePolicy({ ...policy, privateEndpointRequiredFor: event.target.value })} /></label>
-            <label>Required DNS zones<input value={policy.requiredDnsZones} onChange={(event) => savePolicy({ ...policy, requiredDnsZones: event.target.value })} /></label>
-            <label>Owner tag<input value={policy.ownerTag} onChange={(event) => savePolicy({ ...policy, ownerTag: event.target.value })} /></label>
-            <label><input type="checkbox" checked={policy.requiredHubRouting} onChange={(event) => savePolicy({ ...policy, requiredHubRouting: event.target.checked })} /> Required hub routing</label>
-            <label><input type="checkbox" checked={policy.firewallInspectionRequired} onChange={(event) => savePolicy({ ...policy, firewallInspectionRequired: event.target.checked })} /> Firewall inspection required</label>
-            <label><input type="checkbox" checked={policy.environmentIsolationRequired} onChange={(event) => savePolicy({ ...policy, environmentIsolationRequired: event.target.checked })} /> Environment isolation required</label>
-            <label><input type="checkbox" checked={policy.loggingRequired} onChange={(event) => savePolicy({ ...policy, loggingRequired: event.target.checked })} /> Logging required</label>
-            <label><input type="checkbox" checked={policy.allowCrossSubscriptionPeering} onChange={(event) => savePolicy({ ...policy, allowCrossSubscriptionPeering: event.target.checked })} /> Allow cross-subscription peering</label>
-          </div>
+          <fieldset className="card-body compliance-policy-grid" disabled={!policyState || policyBusy}>
+            <legend>Policy draft (not applied until saved)</legend>
+            <label>Policy pack name<input value={policyDraft.name} onChange={(event) => savePolicy({ ...policyDraft, name: event.target.value })} /></label>
+            <label>Allowed ports<input value={policyDraft.allowedPorts} onChange={(event) => savePolicy({ ...policyDraft, allowedPorts: event.target.value })} /></label>
+            <label>Private endpoint required for<input value={policyDraft.privateEndpointRequiredFor} onChange={(event) => savePolicy({ ...policyDraft, privateEndpointRequiredFor: event.target.value })} /></label>
+            <label>Required DNS zones<input value={policyDraft.requiredDnsZones} onChange={(event) => savePolicy({ ...policyDraft, requiredDnsZones: event.target.value })} /></label>
+            <label>Owner tag<input value={policyDraft.ownerTag} onChange={(event) => savePolicy({ ...policyDraft, ownerTag: event.target.value })} /></label>
+            <label><input type="checkbox" checked={policyDraft.requiredHubRouting} onChange={(event) => savePolicy({ ...policyDraft, requiredHubRouting: event.target.checked })} /> Required hub routing</label>
+            <label><input type="checkbox" checked={policyDraft.firewallInspectionRequired} onChange={(event) => savePolicy({ ...policyDraft, firewallInspectionRequired: event.target.checked })} /> Firewall inspection required</label>
+            <label><input type="checkbox" checked={policyDraft.environmentIsolationRequired} onChange={(event) => savePolicy({ ...policyDraft, environmentIsolationRequired: event.target.checked })} /> Environment isolation required</label>
+            <label><input type="checkbox" checked={policyDraft.loggingRequired} onChange={(event) => savePolicy({ ...policyDraft, loggingRequired: event.target.checked })} /> Logging required</label>
+            <label><input type="checkbox" checked={policyDraft.allowCrossSubscriptionPeering} onChange={(event) => savePolicy({ ...policyDraft, allowCrossSubscriptionPeering: event.target.checked })} /> Allow cross-subscription peering</label>
+            <label>Policy change reason<textarea value={policyReason} maxLength={1000} onChange={event => setPolicyReason(event.target.value)} /></label>
+            <button type="button" disabled={!policyReason.trim()} onClick={persistPolicy}>Save policy revision</button>
+          </fieldset>
+          <div className="card-body"><button type="button" disabled={policyBusy} onClick={policyRead.refetch}>Reload saved policy</button><p>Revision {policyState?.revision ?? "unavailable"}. Reloading replaces the draft; review again after a conflict.</p></div>
         </section>
 
         <aside className="card">
           <div className="card-header">
             <div><h2>Exceptions and risk acceptance</h2><p>Approve temporary exceptions with owner, reason, and expiry.</p></div>
           </div>
-          <div className="card-body compliance-policy-grid">
+          <fieldset className="card-body compliance-policy-grid" disabled={!policyState || policyBusy}>
+            <legend>Authenticated server decision</legend>
             <label>Exception owner<input value={exceptionDraft.owner} onChange={(event) => setExceptionDraft({ ...exceptionDraft, owner: event.target.value })} /></label>
             <label>Risk acceptance reason<textarea rows={3} value={exceptionDraft.reason} onChange={(event) => setExceptionDraft({ ...exceptionDraft, reason: event.target.value })} /></label>
-            <label>Expires at<input type="date" value={exceptionDraft.expiresAt} onChange={(event) => setExceptionDraft({ ...exceptionDraft, expiresAt: event.target.value })} /></label>
-            <button type="button" className="button button-primary" disabled={!selected} onClick={acceptRisk}>Accept selected risk</button>
+            <label>Expires at (00:00 UTC)<input type="date" value={exceptionDraft.expiresAt} onChange={(event) => setExceptionDraft({ ...exceptionDraft, expiresAt: event.target.value })} /></label>
+            <button type="button" className="button button-primary" disabled={!selected} onClick={() => acceptRisk()}>Accept selected risk</button>
+            <button type="button" disabled={!selected || !acceptedIds.has(selected.id)} onClick={() => acceptRisk("revoke")}>Revoke selected acceptance</button>
             <StructuredData value={exceptions} />
-          </div>
+          </fieldset>
+          <details className="card-body"><summary>Policy and exception audit</summary><StructuredData value={policyState?.audit ?? []} /></details>
         </aside>
       </div>
 

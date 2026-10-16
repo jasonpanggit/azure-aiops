@@ -67,6 +67,7 @@ function renderPage() {
 
 describe("Operational Digital Twin workspace", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     graph.mockResolvedValue(envelope(snapshot));
     compare.mockResolvedValue(envelope({
       current_version: "v1",
@@ -100,6 +101,8 @@ describe("Operational Digital Twin workspace", () => {
     expect(await screen.findByRole("heading", { name: "Twin model" })).toBeInTheDocument();
     expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
     expect(screen.getByText(/prior state retained/)).toBeInTheDocument();
+    expect(scenario).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "resource:vm-payroll-1" } });
     expect(await screen.findByText("Traffic inspection and hub dependencies degrade.")).toBeInTheDocument();
     expect(screen.getByText(/Consequence: Payroll -> Payroll API/)).toBeInTheDocument();
     expect(screen.getByText("operational-twin-export")).toBeInTheDocument();
@@ -152,8 +155,27 @@ describe("Operational Digital Twin workspace", () => {
     }));
     scenario.mockRejectedValueOnce(new Error("scenario unavailable"));
     renderPage();
+    await screen.findByRole("option", { name: /payroll-vm/ });
+    fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "resource:vm-payroll-1" } });
     expect(await screen.findByText(/Scenario analysis is unavailable/)).toBeInTheDocument();
     expect(screen.getByText(/Risk evidence unavailable/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Scenario-weighted risk.*0/)).not.toBeInTheDocument();
+  });
+
+  it("targets only the explicitly selected resource and clears selection-bound results", async () => {
+    graph.mockResolvedValueOnce(envelope({ ...snapshot, entities: [
+      ...snapshot.entities,
+      { ...snapshot.entities[0], id: "resource:vm-second", name: "second-vm" },
+    ] }));
+    renderPage();
+    await screen.findByRole("option", { name: /second-vm/ });
+    expect(scenario).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "resource:vm-second" } });
+    await waitFor(() => expect(scenario).toHaveBeenCalledWith("firewall_failure", "vm-second", {}));
+    expect(traverse).toHaveBeenCalledWith("vm-second", {});
+    await screen.findByText("Traffic inspection and hub dependencies degrade.");
+    fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "" } });
+    expect(screen.queryByText("Traffic inspection and hub dependencies degrade.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Scenario")).toBeDisabled();
   });
 });
