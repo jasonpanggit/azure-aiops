@@ -354,8 +354,8 @@ locals {
     try(local.foundry_coordinator_artifact.model, "") == local.foundry_model_deployment_name &&
     try(local.foundry_coordinator_artifact.planning_probe, "") == "pass" &&
     try(local.foundry_coordinator_artifact.synthesis_probe, "") == "pass" &&
-    try(local.foundry_coordinator_artifact.supersedes_unusable_versions, []) == ["1", "2", "3", "4"] &&
-    !contains(["1", "2", "3", "4"], try(local.foundry_coordinator_artifact.provider_version_id, "")) &&
+    try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions), null) == var.foundry_coordinator_rejected_versions &&
+    !contains(var.foundry_coordinator_rejected_versions, try(local.foundry_coordinator_artifact.provider_version_id, "")) &&
     try(local.foundry_coordinator_artifact.validation_digest, "") == sha256(jsonencode(local.foundry_coordinator_validation_payload))
   )
 
@@ -1095,15 +1095,16 @@ resource "terraform_data" "foundry_coordinator_candidate" {
   count = var.create_foundry_agent && var.enable_foundry_coordinator_candidate_publish ? 1 : 0
 
   triggers_replace = {
-    endpoint         = local.foundry_project_endpoint
-    agent_name       = var.foundry_agent_name
-    model            = azurerm_cognitive_deployment.chat.name
-    instructions     = sha256(local.agent_instructions)
-    manifest_digest  = local.specialist_manifest_digest
-    activation_path  = local.foundry_coordinator_artifact_path
-    publisher        = filesha256("${path.module}/../scripts/publish-foundry-coordinator.sh")
-    validator        = filesha256("${path.module}/../../scripts/validate_foundry_coordinator.py")
-    runtime_verified = var.foundry_version_pinning_runtime_verified
+    endpoint          = local.foundry_project_endpoint
+    agent_name        = var.foundry_agent_name
+    model             = azurerm_cognitive_deployment.chat.name
+    instructions      = sha256(local.agent_instructions)
+    manifest_digest   = local.specialist_manifest_digest
+    activation_path   = local.foundry_coordinator_artifact_path
+    publisher         = filesha256("${path.module}/../scripts/publish-foundry-coordinator.sh")
+    validator         = filesha256("${path.module}/../../scripts/validate_foundry_coordinator.py")
+    runtime_verified  = var.foundry_version_pinning_runtime_verified
+    rejected_versions = jsonencode(var.foundry_coordinator_rejected_versions)
   }
 
   lifecycle {
@@ -1123,16 +1124,17 @@ resource "terraform_data" "foundry_coordinator_candidate" {
     interpreter = ["/bin/bash", "-c"]
 
     environment = {
-      FOUNDRY_PROJECT_ENDPOINT           = local.foundry_project_endpoint
-      FOUNDRY_AUTH_MODE                  = local.foundry_deployment_auth_mode
-      FOUNDRY_AGENT_NAME                 = var.foundry_agent_name
-      FOUNDRY_AGENT_MODEL                = azurerm_cognitive_deployment.chat.name
-      FOUNDRY_AGENT_PROMPT               = local.agent_instructions
-      FOUNDRY_COORDINATOR_RECORD         = local.foundry_coordinator_artifact_path
-      FOUNDRY_SPECIALIST_MANIFEST_DIGEST = local.specialist_manifest_digest
-      AZURE_TENANT_ID                    = var.tenant_id
-      AZURE_CLIENT_ID                    = var.client_id
-      AZURE_CLIENT_SECRET                = var.client_secret
+      FOUNDRY_PROJECT_ENDPOINT                   = local.foundry_project_endpoint
+      FOUNDRY_AUTH_MODE                          = local.foundry_deployment_auth_mode
+      FOUNDRY_AGENT_NAME                         = var.foundry_agent_name
+      FOUNDRY_AGENT_MODEL                        = azurerm_cognitive_deployment.chat.name
+      FOUNDRY_AGENT_PROMPT                       = local.agent_instructions
+      FOUNDRY_COORDINATOR_RECORD                 = local.foundry_coordinator_artifact_path
+      FOUNDRY_SPECIALIST_MANIFEST_DIGEST         = local.specialist_manifest_digest
+      FOUNDRY_COORDINATOR_REJECTED_VERSIONS_JSON = jsonencode(var.foundry_coordinator_rejected_versions)
+      AZURE_TENANT_ID                            = var.tenant_id
+      AZURE_CLIENT_ID                            = var.client_id
+      AZURE_CLIENT_SECRET                        = var.client_secret
     }
   }
 

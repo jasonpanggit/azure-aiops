@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -43,6 +44,23 @@ def _request_json(
 
 
 def _token() -> str:
+    mode = os.environ.get("FOUNDRY_AUTH_MODE", "client_credentials")
+    if mode == "azure_cli":
+        result = subprocess.run(
+            [
+                "az", "account", "get-access-token",
+                "--scope", "https://ai.azure.com/.default",
+                "--query", "accessToken", "--output", "tsv",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode or not result.stdout.strip():
+            raise RuntimeError("Azure CLI Foundry token acquisition failed")
+        return result.stdout.strip()
+    if mode != "client_credentials":
+        raise ValueError(f"Unsupported Foundry authentication mode: {mode}")
     body = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
@@ -113,11 +131,25 @@ def main() -> int:
     parser.add_argument("--expected-model", required=True)
     parser.add_argument("--manifest-digest", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--rejected-versions-json",
+        default='["1","2","3","4"]',
+        help="Reviewed unusable provider versions in this target project.",
+    )
     args = parser.parse_args()
 
+    rejected_versions = json.loads(args.rejected_versions_json)
+    if (
+        not isinstance(rejected_versions, list)
+        or any(not isinstance(value, str) or not value.strip() for value in rejected_versions)
+        or len(set(rejected_versions)) != len(rejected_versions)
+    ):
+        raise ValueError("Rejected coordinator versions must be distinct nonempty strings")
+    version = args.provider_version_id.rsplit(":", 1)[-1]
+    if not version or version in rejected_versions:
+        raise ValueError("Coordinator provider version is empty or explicitly rejected")
     token = _token()
     endpoint = args.endpoint.rstrip("/")
-    version = args.provider_version_id.rsplit(":", 1)[-1]
     metadata = _request_json(
         (
             f"{endpoint}/agents/{args.agent_name}/versions/{version}"
@@ -223,7 +255,7 @@ def main() -> int:
         "model": args.expected_model,
         "planning_probe": "pass",
         "synthesis_probe": "pass",
-        "supersedes_unusable_versions": ["1", "2", "3", "4"],
+        "supersedes_unusable_versions": rejected_versions,
     }
     artifact["validation_digest"] = _validation_digest(artifact)
     _atomic_write(Path(args.out), artifact)
