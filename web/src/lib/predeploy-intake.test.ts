@@ -5,7 +5,7 @@ describe("bounded local artifact intake", () => {
   it.each(["terraform_plan", "bicep_what_if", "arm_diff", "github_pull_request", "azure_devops"])("preserves unknowns for %s", source => {
     expect(inspectArtifact(source, "{}").payload).toEqual({});
   });
-  it.each(["password", "CLIENT_SECRET", "access-token", "privateKey", "connection_string", "Authorization", "accountKey", "sas"])("redacts %s explicitly", key => {
+  it.each(["password", "CLIENT_SECRET", "access-token", "privateKey", "connection_string", "Authorization", "accountKey", "sas", "api_key", "sharedKey", "credentials"])("redacts %s explicitly", key => {
     const inspected = inspectArtifact("terraform_plan", JSON.stringify({ settings: { [key]: "fixture-private-value" } }));
     expect(inspected.detectedSensitiveValues).toBe(1);
     expect(inspected.redactedText).not.toContain("fixture-private-value");

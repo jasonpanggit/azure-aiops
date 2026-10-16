@@ -18,7 +18,7 @@ MAX_CHANGES = 500
 REDACTED = "[REDACTED]"
 _CREDENTIAL = re.compile(
     r"password|passwd|secret|token|privatekey|connectionstring|authorization|"
-    r"accesskey|accountkey|clientkey|sharedaccesssignature|^sas$"
+    r"accesskey|accountkey|clientkey|apikey|sharedkey|credential|sharedaccesssignature|^sas$"
 )
 
 

@@ -18,7 +18,7 @@ function object(value: unknown): value is JsonObject {
 }
 
 function sensitiveName(value: string): boolean {
-  return /password|passwd|secret|token|privatekey|connectionstring|authorization|accesskey|accountkey|clientkey|sharedaccesssignature|^sas$/
+  return /password|passwd|secret|token|privatekey|connectionstring|authorization|accesskey|accountkey|clientkey|apikey|sharedkey|credential|sharedaccesssignature|^sas$/
     .test(value.toLowerCase().replace(/[^a-z0-9]/g, ""));
 }
 

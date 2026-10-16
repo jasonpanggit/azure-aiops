@@ -20,7 +20,7 @@ def test_sources_keep_unknown_fragments_and_empty_artifacts(source):
 
 @pytest.mark.parametrize("key", [
     "password", "CLIENT_SECRET", "access-token", "privateKey", "connection_string",
-    "Authorization", "accountKey", "sas",
+    "Authorization", "accountKey", "sas", "api_key", "sharedKey", "credentials",
 ])
 def test_known_sensitive_keys_are_rejected_without_echoing_values(key):
     with pytest.raises(ValueError, match="redacted locally") as error:
