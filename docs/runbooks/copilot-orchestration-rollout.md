@@ -416,3 +416,23 @@ candidate tools and agent invocation pass live checks. Legacy agent-name
 environment variables are not proof of a deployed or activated agent. A
 Foundry permission denial must be resolved and checked on the data plane;
 an ARM role assignment appearing in a list is not sufficient evidence.
+
+## Terraform API revision staging
+
+Before changing an existing API image or durable-storage configuration, set
+`api_traffic_revision` to the full, healthy revision name currently serving
+traffic. Review the saved plan: that revision must retain 100% traffic while
+the new template creates a zero-traffic candidate. Preserve existing secrets,
+browser grants, CPU/memory and unrelated workloads. Verify the candidate
+through its revision-specific endpoint, including authenticated inventory
+reads. Only after acceptance, generate and review a separate Terraform plan
+setting `api_traffic_revision = ""` to promote latest. Roll back by pinning the
+previous healthy revision through Terraform; do not assume the old revision
+remains valid after incompatible storage changes.
+
+For an existing Contributor-bootstrap deployment, import both live cursor keys
+into their `random_password.exposure_cursor` state addresses before applying.
+Never print the import values or commit them. Imported length/special metadata
+is retained to prevent an incidental credential rotation during restoration;
+new keys still use 64 characters without special characters. Intentional
+rotation requires an explicitly reviewed `-replace` plan and matching key IDs.
