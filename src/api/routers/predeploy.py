@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from pydantic import ValidationError
 
 # Imported from submodules rather than the package root: the package __init__
 # imports modules that import ``api``, so routing through it here would make
@@ -14,6 +16,15 @@ from intelligence.predeploy.intake import inspect_artifact
 from intelligence.predeploy.models import CHANGE_SOURCES
 from intelligence.predeploy.service import SOURCE_ENGINE, PreDeploymentImpactService
 from intelligence.predeploy.simulation import SIMULATION_DOMAINS
+from operations.predeploy_history import (
+    AssessmentReceipt,
+    PredeployHistoryStore,
+    ReceiptRemoval,
+    RetentionRequest,
+    assessment_receipt,
+    compare_receipts,
+)
+from storage.onelake_documents import DocumentConflictError
 
 from ..artifact_request import ArtifactRoute
 from ..dependencies import Context, CurrentPrincipal, Page, ReadScope, WritePrincipal
@@ -113,7 +124,6 @@ def assess_change(
         network_review=review,
         reviewed_by=principal.subject,
     )
-    assessment["submitted_by"] = getattr(principal, "subject", "")
     return envelope(
         assessment,
         evidence=_evidence(assessment),
@@ -128,6 +138,102 @@ def _review_visible(assessment: dict | None, principal: CurrentPrincipal, scope:
             and assessment.get("scope") == scope.to_dict()
         )
     )
+
+
+def _history_store(context: Context) -> PredeployHistoryStore:
+    if context.predeploy_history_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable assessment receipts are unavailable")
+    return context.predeploy_history_store
+
+
+def _history_call(operation: Callable[[], dict]) -> dict:
+    try:
+        return operation()
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except KeyError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained assessment was not found in this personal scope") from exc
+    except ValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Assessment receipt or comparison exceeds its supported bounds") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Assessment history operation was not confirmed; reload before retrying") from exc
+
+
+def _history_response(data: dict, scope: Scope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="operations.predeploy_history", source_table="state/predeploy-history",
+            timestamp=str(data.get("updated_at", "")), confidence="unknown",
+        ),
+        warnings=["Personal exact-scope historical analysis receipts, not raw artifacts, full analysis, verified revision lineage, runtime outcomes or deployment authority."],
+    )
+
+
+@router.get("/changes/retained-assessments")
+def retained_assessments(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Recover personal receipts without invoking current inventory or analysis providers."""
+    data = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    return _history_response(data, scope)
+
+
+@router.post("/changes/retained-assessments", status_code=201)
+def retain_assessment(
+    payload: RetentionRequest, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Retain only the owned exact-scope server analysis matching the reviewed artifact."""
+    store = _history_store(context)
+    assessment = _service(context).get_assessment(payload.assessment_id)
+    if (
+        assessment is None or assessment.get("submitted_by") != principal.subject
+        or assessment.get("scope") != scope.to_dict()
+        or not _review_visible(assessment, principal, scope)
+    ):
+        raise ApiError(ErrorCode.NOT_FOUND, "Owned assessment is unavailable in this exact scope; it may have expired")
+    if (assessment.get("artifact") or {}).get("sha256") != payload.artifact_sha256:
+        raise ApiError(ErrorCode.CONFLICT, "Assessment artifact changed; review it again before retaining")
+    def capture() -> dict:
+        try:
+            receipt = assessment_receipt(assessment)
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("Current assessment summary schema is invalid") from exc
+        return store.append(
+            principal.subject, scope.to_dict(), payload.expected_revision, receipt,
+        )
+
+    data = _history_call(capture)
+    return _history_response(data, scope)
+
+
+@router.post("/changes/retained-assessments/remove")
+def remove_retained_assessment(
+    payload: ReceiptRemoval, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly remove a personal receipt; never delete source changes or assessments."""
+    data = _history_call(lambda: _history_store(context).remove(
+        principal.subject, scope.to_dict(), payload.expected_revision, payload.assessment_id,
+    ))
+    return _history_response(data, scope)
+
+
+@router.get("/changes/retained-assessments/compare")
+def compare_retained_assessments(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    baseline_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")],
+    candidate_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")],
+) -> dict:
+    """Compare explicitly selected historical summaries, without current source acquisition."""
+    state = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    selected = {row["assessment_id"]: row for row in state["receipts"]}
+    if baseline_id not in selected or candidate_id not in selected:
+        raise ApiError(ErrorCode.NOT_FOUND, "Both retained assessments must belong to this exact personal scope")
+    data = _history_call(lambda: compare_receipts(
+        AssessmentReceipt.model_validate(selected[baseline_id]),
+        AssessmentReceipt.model_validate(selected[candidate_id]),
+    ))
+    return _history_response(data, scope)
 
 
 @router.get("/changes/assessments", summary="List pre-deployment assessments")

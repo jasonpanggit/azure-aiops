@@ -19,6 +19,7 @@ from network.history import NetworkHistoryStore
 from network.intents import NetworkIntentStore
 from onboarding.service import SubscriptionOnboardingService
 from operations.overview_history import OverviewHistoryStore
+from operations.predeploy_history import PredeployHistoryStore
 from operations.resource_health_history import ResourceHealthHistoryStore
 from operations.saved_views import SavedViewStore
 from operations.service_portfolio import ServicePortfolioStore
@@ -106,6 +107,7 @@ class ApiContext:
     network_intent_store: NetworkIntentStore | None = None
     network_history_store: NetworkHistoryStore | None = None
     saved_view_store: SavedViewStore | None = None
+    predeploy_history_store: PredeployHistoryStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

@@ -4581,6 +4581,13 @@ def _saved_view_store():
     return SavedViewStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _predeploy_history_store():
+    """Retain explicit exact-scope assessment receipts on the existing durable root."""
+    from operations.predeploy_history import PredeployHistoryStore
+
+    return PredeployHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _network_intent_store():
     """Persist personal connectivity suites on the existing durable document root."""
     from network.intents import NetworkIntentStore
@@ -5781,6 +5788,7 @@ def build_context() -> ApiContext:
         network_intent_store=_network_intent_store(),
         network_history_store=_network_history_store(),
         saved_view_store=_saved_view_store(),
+        predeploy_history_store=_predeploy_history_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

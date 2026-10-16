@@ -560,6 +560,53 @@ redacted markers compare equal. History remains bounded process-local state;
 durable revision comparisons and CI review contracts are not established by
 this intake receipt.
 
+### Retained predeploy review receipts and declared comparisons
+
+`GET /api/v1/changes/retained-assessments` recovers personal receipts from the
+existing local/OneLake root at `state/predeploy-history/`, keyed by authenticated
+subject and exact effective nine-dimension scope. Recovery does not acquire
+current inventory or analysis providers. Normal read authorization is required;
+unconfigured/corrupt/unavailable storage fails explicitly, never as an empty
+fallback. A valid scope with no document yet returns an empty revision-zero
+collection.
+
+Admin `POST` to that route requires only `assessment_id`, reviewed
+`artifact_sha256` and `expected_revision`. The server retrieves its current
+assessment and rechecks submission ownership, exact scope and exact artifact
+digest. Unavailable/evicted/foreign source assessments return 404; changed digests
+or stale/concurrent revisions return 409. Receipt validation/size failures
+return 400; unconfirmed storage writes return 503 and require explicit reload.
+No caller-supplied observations, actors, scopes, full analysis or artifact
+payloads are accepted. Receipt contents cannot be replaced.
+
+Receipts retain independent aware assessment/retention times, normalized
+declared identity/action/property-name rows, risk/verdict/confidence/unknowns,
+represented impact identities, traversal limits, and an optional Network review
+digest. They exclude raw artifacts, before/after property bags, complete
+simulation/evidence reports and execution authority. Up to 20 receipts,
+256 KiB per receipt and 4 MiB per collection are supported, measured against the
+serialized document, without silent truncation or automatic eviction.
+Admin `POST /changes/retained-assessments/remove` takes `assessment_id` and
+`expected_revision` for explicit deletion; source assessments/artifacts remain
+unchanged. Create-only/ETag CAS protects both first capture and later mutations.
+
+`GET /changes/retained-assessments/compare?baseline_id=...&candidate_id=...`
+requires two explicitly selected different receipts of the same source format
+in the same personal scope. It returns both receipts, digest equality,
+declared-row additions/removals, represented impacted-identity differences and
+a signed risk-score difference. Row comparison preserves duplicate multiplicity
+but ignores source-array positions and property-name ordering. It neither
+reacquires current providers nor proves revision lineage, actual configuration
+changes, applied fixes or runtime reliability. Identical input may produce
+different analysis at different observation times or engine versions.
+
+The portal exposes on-demand recovery, explicit retention/deletion and unselected
+comparison selectors. Scope changes abort pending work and remount the panel;
+failed/uncertain mutations clear reviewed collection state and require reload
+before explicit retry, with no automatic replay. Recent assessment history
+remains separately labeled process-local; only explicit receipts survive process
+restart. CI review contracts remain a separate feature.
+
 ### Search exploration and durable queue bookmarks
 
 `GET /api/v1/search/capabilities` requires the normal read authorization and

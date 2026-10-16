@@ -9260,6 +9260,61 @@ body.topology-fullscreen-open {
   scroll-margin-top: 76px;
 }
 
+.predeploy-history,
+.predeploy-history-comparison {
+  scroll-margin-top: 76px;
+}
+
+.predeploy-history-body,
+.predeploy-history-comparison {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.predeploy-history-body p {
+  max-width: 72ch;
+  margin: 0;
+}
+
+.predeploy-history-body > button {
+  justify-self: start;
+}
+
+.predeploy-history-list {
+  display: grid;
+  gap: 16px;
+  padding-left: 20px;
+}
+
+.predeploy-history-selectors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+
+.predeploy-history-selectors .form-control {
+  width: 100%;
+  min-width: 0;
+}
+
+.predeploy-history-comparison .data-table {
+  min-width: 760px;
+}
+
+.predeploy-history-comparison th:first-child {
+  min-width: 150px;
+}
+
+.predeploy-history-comparison th:nth-child(3) {
+  min-width: 90px;
+}
+
+.predeploy-history-comparison th:last-child {
+  min-width: 140px;
+}
+
 .predeploy-intake {
   display: grid;
   gap: 12px;
@@ -9399,7 +9454,8 @@ body.topology-fullscreen-open {
 @media (max-width: 700px) {
   .saved-views .card-header,
   .network-review-context .card-header,
-  .predeploy-artifact .card-header {
+  .predeploy-artifact .card-header,
+  .predeploy-history .card-header {
     flex-direction: column;
     gap: 8px;
   }

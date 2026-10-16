@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 
 import BlastRadiusGraph from "@/components/predeploy/BlastRadiusGraph";
 import { NetworkReviewContext } from "@/components/predeploy/NetworkReviewContext";
+import { RetainedAssessments } from "@/components/predeploy/RetainedAssessments";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -344,6 +345,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
       </form>
 
       {error && <StatePanel title="Assessment failed" message={error} tone="error" />}
+      <RetainedAssessments scope={scope} current={assessment ?? null} />
 
       {assessment && risk && cab && blast && (
         <>

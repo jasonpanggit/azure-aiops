@@ -119,6 +119,7 @@ class PreDeploymentImpactService:
 
         assessment = {
             "assessment_id": uuid.uuid4().hex,
+            "submitted_by": reviewed_by,
             "artifact": artifact,
             "assessed_at": _now(),
             "change": change.to_dict(),

@@ -2070,6 +2070,29 @@ export const governanceApi = {
 
 /** Pre-deployment change risk and impact assessment. */
 export const predeployApi = {
+  /** Provider-free personal exact-scope receipt recovery. */
+  retained: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Retain only server-owned analysis matching the reviewed source digest and collection revision. */
+  retain: (scope: ScopeSelection, assessmentId: string, artifactSha256: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { assessment_id: assessmentId, artifact_sha256: artifactSha256, expected_revision: expectedRevision },
+    }),
+  /** Explicitly remove a receipt, not its source assessment or artifact. */
+  removeRetained: (scope: ScopeSelection, assessmentId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments/remove", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { assessment_id: assessmentId, expected_revision: expectedRevision },
+    }),
+  /** Compare two authorized retained summaries without current provider acquisition. */
+  compareRetained: (scope: ScopeSelection, baselineId: string, candidateId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("candidate_id", candidateId);
+    return apiRequest<import("./predeploy-history").AssessmentComparison>("/changes/retained-assessments/compare", { query, signal });
+  },
   sources: (scope: ScopeSelection = {}) => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources", {
     query: scopeToSearchParams(scope),
   }),
