@@ -129,8 +129,25 @@ class CompliancePolicyStore:
         at = now.isoformat()
         if len(state["audit"]) >= 10000:
             raise ValueError("Compliance audit requires archival before more decisions")
+        policy_audit: dict[str, Any] = {}
         if isinstance(change, PolicyChange):
-            state["policy"] = change.policy.model_dump()
+            next_policy = change.policy.model_dump()
+            policy_diff = [
+                {"field": field, "before": state["policy"][field], "after": next_policy[field]}
+                for field in DesignPolicy.model_fields
+                if state["policy"][field] != next_policy[field]
+            ]
+            if not policy_diff and state["policy_revision"] > 0:
+                raise ValueError("Policy has no changes; edit a field before saving")
+            invalidated_exception_ids = [
+                item["exception_id"] for item in self._view(state)["exceptions"] if item["active"]
+            ]
+            policy_audit = {
+                "previous_policy_revision": state["policy_revision"],
+                "policy_diff": policy_diff,
+                "invalidated_exception_ids": invalidated_exception_ids,
+            }
+            state["policy"] = next_policy
             state["policy_revision"] += 1
             action = "replace_policy"
         else:
@@ -163,6 +180,7 @@ class CompliancePolicyStore:
             "revision": state["revision"], "actor": actor, "at": at,
             "action": action, "reason": change.reason,
             "change": change.model_dump(exclude={"expected_revision"}),
+            **policy_audit,
         })
         if snapshot.exists:
             self.documents.replace_if_match(name, state, expected_etag=snapshot.etag)

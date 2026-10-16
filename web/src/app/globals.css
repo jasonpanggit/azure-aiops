@@ -5208,6 +5208,45 @@ body.topology-fullscreen-open {
   border-radius: var(--radius-sm);
 }
 
+.compliance-policy-explanation,
+.compliance-policy-audit-entry {
+  overflow-wrap: anywhere;
+}
+
+.compliance-policy-explanation p,
+.compliance-policy-audit-entry p {
+  max-width: 75ch;
+  line-height: 1.6;
+}
+
+.compliance-policy-explanation .data-table td {
+  max-width: 24rem;
+  overflow-wrap: anywhere;
+}
+
+.compliance-policy-audit-entry + .compliance-policy-audit-entry {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.compliance-domain-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.compliance-domain-filter select {
+  min-height: 36px;
+  max-width: 100%;
+  color: var(--color-text);
+  font: inherit;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
 .opportunity-list > article {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);

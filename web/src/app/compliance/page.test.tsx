@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
@@ -319,6 +319,96 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save policy revision" }));
     expect(await screen.findByText("Policy changed; reload and review")).toBeInTheDocument();
     expect(screen.getByLabelText("Policy pack name")).toHaveValue("Uncommitted draft");
+  });
+
+  it("previews draft field and finding changes without changing current evidence or saving", async () => {
+    renderPage();
+    await screen.findByText(/Same-evidence preview/);
+    fireEvent.click(screen.getByLabelText("Logging required"));
+    const explanation = screen.getByRole("region", { name: "Policy change explanation" });
+    expect(within(explanation).getByText(/draft changes 1 field/)).toBeInTheDocument();
+    expect(within(explanation).getByText(/0 added, 1 removed, 0 reclassified/)).toBeInTheDocument();
+    expect(within(explanation).getByText(/does not validate actual log delivery/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Missing logging evidence/ })).toBeInTheDocument();
+    expect(saveDesignPolicy).not.toHaveBeenCalled();
+    expect(decideException).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("Required hub routing"));
+    expect(within(explanation).getByText(/does not re-evaluate routes/)).toBeInTheDocument();
+    expect(within(explanation).getByText(/1 removed/)).toBeInTheDocument();
+  });
+
+  it("shows partial framework associations, exact provider controls and explicit unmapped evidence", async () => {
+    const row = { deviation_id: "dev-1", kind: "policy", observed_at: "2026-10-16T06:00:00Z", severity: "high",
+      control: "NS-1", status: "open", resource: "resource-1", application: "", business_service: "",
+      environment: "", business_criticality: "", subscription: "sub-1" };
+    policyDeviations.mockResolvedValue({ ...envelope([row, { ...row, deviation_id: "dev-2", control: "CIS 1.2" }]),
+      pagination: { offset: 0, limit: 2, total: 101, next_offset: 2 } });
+    renderPage();
+    await screen.findByText(/2 loaded \/ 101 reported/);
+    const framework = screen.getByRole("region", { name: "Framework evidence coverage" });
+    expect(within(framework).getByText(/not a control audit/)).toBeInTheDocument();
+    expect(within(framework).getByText("Unmapped provider controls (1)")).toBeInTheDocument();
+    expect(within(framework).getAllByText("Not assessed").length).toBeGreaterThan(0);
+    fireEvent.click(within(framework).getByRole("link", { name: "Review LT findings" }));
+    expect(screen.getByRole("combobox", { name: "Local finding domain" })).toHaveValue("LT");
+    expect(screen.getByRole("button", { name: /Missing logging evidence/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Any-any NSG rule/ })).not.toBeInTheDocument();
+    expect(within(framework).getByRole("link", { name: "MCSB v1 catalog and mapping limitations" })).toHaveAttribute("href",
+      "https://learn.microsoft.com/en-us/security/benchmark/azure/overview-mcsb-v1");
+  });
+
+  it("does not turn unavailable providers into zero deviations, no drift or passed framework coverage", async () => {
+    policyDeviations.mockRejectedValue(new Error("Policy evidence unavailable"));
+    securityDeviations.mockRejectedValue(new Error("Security evidence unavailable"));
+    configurationDrift.mockRejectedValue(new Error("Drift evidence unavailable"));
+    renderPage();
+    await screen.findByText("Configuration drift unavailable");
+    expect(screen.queryByText("No configuration drift")).not.toBeInTheDocument();
+    expect(screen.queryByText("No open governed deviations in loaded pages")).not.toBeInTheDocument();
+    expect(screen.getByText("Governed evidence incomplete")).toBeInTheDocument();
+    const framework = screen.getByRole("region", { name: "Framework evidence coverage" });
+    expect(within(framework).getAllByText("Unavailable")).toHaveLength(12);
+    expect(within(framework).getAllByText("Evidence incomplete").length).toBeGreaterThan(0);
+  });
+
+  it("requires actual field changes after initial policy application before allowing another save", async () => {
+    designPolicy.mockResolvedValue(envelope({ ...savedPolicy, revision: 5, policy_revision: 2 }));
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Policy pack name")).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Policy change reason"), { target: { value: "Review" } });
+    expect(screen.getByRole("button", { name: "Save policy revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "Changed title" } });
+    expect(screen.getByRole("button", { name: "Save policy revision" })).toBeEnabled();
+  });
+
+  it("distinguishes recorded server diffs from historical unreported changes", async () => {
+    designPolicy.mockResolvedValue(envelope({
+      ...savedPolicy, audit: [
+        { revision: 1, actor: "old-admin", at: "2026-10-15T06:00:00Z", action: "replace_policy", reason: "Historical" },
+        { revision: 2, actor: "current-admin", at: "2026-10-16T06:00:00Z", action: "replace_policy", reason: "Changed logging",
+          policy_diff: [{ field: "loggingRequired", before: true, after: false }], invalidated_exception_ids: ["exception-1"] },
+      ],
+    }));
+    renderPage();
+    await screen.findByText("Logging required: true → false");
+    expect(screen.getByText("Historical field differences were not recorded for this revision.")).toBeInTheDocument();
+    expect(screen.getByText("Historical exception invalidation count unreported.")).toBeInTheDocument();
+    expect(screen.getByText("1 active exceptions invalidated by this save.")).toBeInTheDocument();
+  });
+
+  it("ignores a stale reload response after a newer policy save", async () => {
+    let complete: (value: unknown) => void = () => { throw new Error("Reload has not started"); };
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Policy pack name")).toBeEnabled());
+    designPolicy.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    fireEvent.change(screen.getByLabelText("Policy pack name"), { target: { value: "New saved policy" } });
+    fireEvent.change(screen.getByLabelText("Policy change reason"), { target: { value: "Review" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reload saved policy" }));
+    await waitFor(() => expect(designPolicy).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Save policy revision" }));
+    await screen.findByText(/Policy saved/);
+    await act(async () => { complete(envelope(savedPolicy)); });
+    expect(screen.getByLabelText("Policy pack name")).toHaveValue("New saved policy");
   });
 
   it("deduplicates repeated topology resources before rendering violations", async () => {

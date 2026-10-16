@@ -159,3 +159,53 @@ def test_routes_validate_shape_ports_and_no_spoofed_approver(tmp_path):
     assert client.put(path, headers=_headers(), json=body).status_code == 400
     payload = {**_accept(1).model_dump(), "approved_by": "forged-admin"}
     assert client.post(f"{path}/exceptions", headers=_headers(), json=payload).status_code == 400
+
+
+def test_policy_audit_records_exact_before_after_and_only_active_invalidations(tmp_path):
+    store = _store(tmp_path)
+    accepted = store.update({}, _accept(), "approver")
+    exception_id = accepted["exceptions"][0]["exception_id"]
+    changed = store.update({}, PolicyChange(
+        expected_revision=1, policy=DesignPolicy(name="Metadata-only revision"), reason="Clearer pack name",
+    ), "policy-admin")
+    audit = changed["audit"][-1]
+    assert audit["actor"] == "policy-admin"
+    assert audit["previous_policy_revision"] == 0
+    assert audit["policy_diff"] == [{"field": "name", "before": DesignPolicy().name, "after": "Metadata-only revision"}]
+    assert audit["invalidated_exception_ids"] == [exception_id]
+    assert not changed["exceptions"][0]["active"]
+    assert _store(tmp_path).read({})["audit"][-1] == audit
+    next_change = store.update({}, PolicyChange(
+        expected_revision=2, policy=DesignPolicy(name="Metadata-only revision", loggingRequired=False), reason="Review logging intent",
+    ), "policy-admin")
+    assert next_change["audit"][-1]["invalidated_exception_ids"] == []
+    assert next_change["audit"][-1]["policy_diff"] == [{"field": "loggingRequired", "before": True, "after": False}]
+
+
+def test_noop_after_initial_application_does_not_rotate_policy_or_invalidate_risk(tmp_path):
+    store = _store(tmp_path)
+    applied = store.update({}, PolicyChange(expected_revision=0, policy=DesignPolicy(), reason="Apply defaults"), "admin")
+    assert applied["policy_revision"] == 1
+    assert applied["audit"][0]["policy_diff"] == []
+    store.update({}, _accept(1), "approver")
+    with pytest.raises(ValueError, match="no changes"):
+        store.update({}, PolicyChange(expected_revision=2, policy=DesignPolicy(), reason="Accidental duplicate save"), "admin")
+    current = store.read({})
+    assert current["revision"] == 2
+    assert current["policy_revision"] == 1
+    assert current["exceptions"][0]["active"]
+    assert len(current["audit"]) == 2
+
+
+def test_historical_audit_is_not_backfilled_with_fabricated_field_differences(tmp_path):
+    store = _store(tmp_path)
+    store.update({}, PolicyChange(expected_revision=0, policy=DesignPolicy(name="Old stored pack"), reason="Historical save"), "admin")
+    name = store._name({})
+    snapshot = store.documents.read_snapshot(name)
+    for key in ("policy_diff", "invalidated_exception_ids", "previous_policy_revision"):
+        snapshot.payload["audit"][0].pop(key)
+    store.documents.replace_if_match(name, snapshot.payload, expected_etag=snapshot.etag)
+    historical = _store(tmp_path).read({})["audit"][0]
+    assert "policy_diff" not in historical
+    assert "invalidated_exception_ids" not in historical
+    assert historical["reason"] == "Historical save"

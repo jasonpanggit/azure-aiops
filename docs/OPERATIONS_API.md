@@ -201,11 +201,47 @@ Exception decisions require both write and approve authorization. The server
 records the authenticated principal, not the owner text, as the approver.
 Conflicting revisions return HTTP 409; reload and review before retrying.
 Expired, revoked, or prior-policy exceptions do not reduce the assessment score.
+New policy saves record exact `policy_diff` field/before/after values,
+`previous_policy_revision`, and the IDs of currently active exceptions
+invalidated by that save. Metadata-only changes also invalidate exceptions.
+Old audit entries are not backfilled with invented differences or counts.
+The first explicit default-policy application may have an empty diff;
+subsequent no-op replacements return 400 without incrementing revisions,
+invalidating decisions, or appending an audit entry.
 These are operator-declared architecture-assessment findings, not provider-side
 policy exemptions or remediation approvals. Browser-local policy/exception
 preferences are deliberately not imported as governed decisions. The audit is
 append-only through this API and stops further writes at 10,000 entries until
 administratively archived; no history is silently discarded.
+
+The Compliance policy editor explains each draft field's actual evaluator
+boundary and previews added/removed/reclassified findings against the **same
+loaded observations**. It does not infer a historical cause or pretend to
+compare retained evidence generations. Declared hub-routing/environment
+intents have no connected local evaluator; server Network design gaps remain
+independent. The projected heuristic score invalidates prior exceptions just
+as a save would, but is neither an approval nor benchmark coverage.
+Late reloads cannot replace a newer saved policy/decision revision.
+
+The framework view pins its advisory catalog to
+[Microsoft cloud security benchmark v1](https://learn.microsoft.com/en-us/security/benchmark/azure/overview-mcsb-v1),
+not the separately published v2 preview. Known local finding types associate
+with broad NS/AM/LT domains; exact provider `DOMAIN-number` control-ID formats
+are candidate domain associations only. Ambiguous/custom/CIS/ISO labels
+remain explicitly unmapped; no cross-framework equivalence is guessed.
+All 12 v1 domains remain visible. No mapped evidence means **not assessed**,
+never passed. Counts are distinct loaded observations (including pagination
+limits), not evaluated-control denominators or complete-estate totals.
+Risk acceptance remains evidence, never successful compliance coverage.
+Mapped rows link to local findings or provider references and the official
+domain guidance; missing/loading/error sources withhold conformance claims.
+Unavailable governed/drift sources no longer render healthy empty states.
+
+Public-access findings require an explicitly enabled observed
+`public_network_access`/`publicNetworkAccess` setting; the word "public" in
+serialized metadata, disabled/missing settings, or contradictory values do
+not establish exposure. This setting does not itself prove reachability.
+Unjoined CVE observations are labeled scope-level context, not resource links.
 
 Agent finding accept/reject actions require an explicit finding in the current
 ledger and a reason (1–1000 characters). Twin traversal and scenario analysis

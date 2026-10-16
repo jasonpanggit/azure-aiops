@@ -1105,7 +1105,12 @@ export interface CompliancePolicyState {
     policy_revision: number;
     active: boolean;
   }>;
-  audit: Array<{ revision: number; actor: string; at: string; action: string; reason: string }>;
+  audit: Array<{
+    revision: number; actor: string; at: string; action: string; reason: string;
+    previous_policy_revision?: number;
+    policy_diff?: Array<{ field: keyof ComplianceDesignPolicy; before: string | boolean; after: string | boolean }>;
+    invalidated_exception_ids?: string[];
+  }>;
 }
 
 export interface FabricDataset {

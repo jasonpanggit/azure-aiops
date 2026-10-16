@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -20,6 +20,7 @@ import { useScope } from "@/lib/scope-context";
 import { complianceApi, isCanonicalAzureResourceId, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { ComplianceDesignPolicy, CompliancePolicyState, ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { compareAssessment, explainPolicyChanges, findingDomain, frameworkEvidence, hasExplicitPublicAccess, policyFieldLabel } from "@/lib/compliance-explanation";
 
 type ViolationType =
   | "firewall_bypass"
@@ -181,13 +182,13 @@ function fromTopology(topology: NetworkTopology | null, policy: DesignPolicy): V
         evidence: resource,
       });
     }
-    if (includesAny(details, ["publicnetworkaccess\":\"enabled", "public_ip", "internetfacing", "public"])) {
+    if (hasExplicitPublicAccess(resource.details ?? {})) {
       rows.push({
         id: `public-${resource.id}`,
         type: "public_paas_exposure",
         severity: "critical",
         title: "Public PaaS exposure",
-        detail: `${resource.name} has public exposure indicators in discovered configuration.`,
+        detail: `${resource.name} reports public network access explicitly enabled. This setting alone does not establish internet reachability.`,
         resource: resource.id,
         application: resource.application,
         businessService: resource.business_service,
@@ -281,7 +282,7 @@ function fromPeerings(topology: NetworkTopology | null, policy: DesignPolicy): V
 function attachVulnerabilityContext(violations: Violation[], exposures: VulnerabilityExposure[]): Violation[] {
   const exposure = exposures[0];
   if (!exposure) return violations;
-  const context = `${exposure.cve_id}: ${exposure.affected_server_count} affected servers, ${exposure.reachable_server_count} reachable`;
+  const context = `Scope-level context, not a resource link: ${exposure.cve_id}: ${exposure.affected_server_count} affected servers, ${exposure.reachable_server_count} reachable`;
   return violations.map((violation) => ({
     ...violation,
     vulnerabilityExposure: violation.vulnerabilityExposure === "Not directly linked"
@@ -371,6 +372,7 @@ function ComplianceWorkspace() {
   const [policyBusy, setPolicyBusy] = useState(false);
   const [policyError, setPolicyError] = useState("");
   const [policyNotice, setPolicyNotice] = useState("");
+  const latestPolicyRevision = useRef(-1);
   const [, setExpiryTick] = useState(0);
   useEffect(() => {
     const nextExpiry = policyState?.exceptions
@@ -384,6 +386,8 @@ function ComplianceWorkspace() {
   });
   useEffect(() => {
     if (policyRead.data) {
+      if (policyRead.data.data.revision < latestPolicyRevision.current) return;
+      latestPolicyRevision.current = policyRead.data.data.revision;
       setPolicyState(policyRead.data.data);
       setPolicyDraft(policyRead.data.data.policy);
     }
@@ -401,19 +405,22 @@ function ComplianceWorkspace() {
   const [selectedId, setSelectedId] = useState("");
   const [exceptionDraft, setExceptionDraft] = useState({ owner: "", reason: "", expiresAt: "" });
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [domainFilter, setDomainFilter] = useState("all");
 
-  const violations = useMemo(() => {
+  function evaluatePolicy(candidate: DesignPolicy): Violation[] {
     if (!policyState) return [];
-    const allowedPorts = asCsv(policy.allowedPorts);
+    const allowedPorts = asCsv(candidate.allowedPorts);
     const rows = [
       ...(gaps.data?.data.gaps ?? []).map(fromGap),
       ...(findings.data?.data.findings ?? []).map((finding) => fromRule(finding, allowedPorts)),
-      ...fromTopology(topology.data?.data.topology ?? null, policy),
-      ...fromPeerings(topology.data?.data.topology ?? null, policy),
+      ...fromTopology(topology.data?.data.topology ?? null, candidate),
+      ...fromPeerings(topology.data?.data.topology ?? null, candidate),
     ];
     return attachVulnerabilityContext(dedupeViolations(rows), exposures.data?.data ?? []);
-  }, [gaps.data, findings.data, topology.data, exposures.data, policy, policyState]);
-  const selected = violations.find((violation) => violation.id === selectedId) ?? violations[0] ?? null;
+  }
+  const violations = evaluatePolicy(policy);
+  const visibleViolations = domainFilter === "all" ? violations : violations.filter(row => findingDomain(row.type) === domainFilter);
+  const selected = visibleViolations.find((violation) => violation.id === selectedId) ?? visibleViolations[0] ?? null;
   const acceptedIds = new Set(exceptions.filter(isExceptionActive).map((item) => item.violationId));
   const activeViolations = violations.filter((violation) => !acceptedIds.has(violation.id));
   const postureScore = scoreFor(violations, exceptions);
@@ -463,6 +470,15 @@ function ComplianceWorkspace() {
   const driftRows = drift.data?.data ?? [];
   const governedLoading = policyDeviations.loading || securityDeviations.loading || drift.loading || summary.loading;
   const governedError = policyDeviations.error ?? securityDeviations.error ?? drift.error ?? summary.error;
+  const draftChanges = policyState ? explainPolicyChanges(policy, policyDraft) : [];
+  const draftViolations = evaluatePolicy(policyDraft);
+  const draftImpact = compareAssessment(violations, draftViolations);
+  const framework = frameworkEvidence(
+    assessmentReady ? violations : [], acceptedIds, [
+      ...(!policyDeviations.error ? policyDeviations.data?.data ?? [] : []),
+      ...(!securityDeviations.error ? securityDeviations.data?.data ?? [] : []),
+    ],
+  );
   const changeSummary = summary.data?.data.summary;
   const complianceCopilot = buildComplianceCopilotContext({
     scope,
@@ -495,6 +511,11 @@ function ComplianceWorkspace() {
     setPolicyNotice("");
     try {
       const result = await complianceApi.saveDesignPolicy(policyState.revision, policyDraft, policyReason.trim(), scope);
+      if (result.data.revision < latestPolicyRevision.current) {
+        setPolicyError("A newer policy revision was already loaded. Reload the saved policy before deciding.");
+        return;
+      }
+      latestPolicyRevision.current = result.data.revision;
       setPolicyState(result.data);
       setPolicyDraft(result.data.policy);
       setPolicyReason("");
@@ -520,6 +541,11 @@ function ComplianceWorkspace() {
         owner: exceptionDraft.owner.trim(), reason: exceptionDraft.reason.trim(),
         expiresAt: action === "accept" ? `${exceptionDraft.expiresAt}T00:00:00Z` : "",
       }, scope);
+      if (result.data.revision < latestPolicyRevision.current) {
+        setPolicyError("A newer policy decision was already loaded. Reload the saved policy before deciding.");
+        return;
+      }
+      latestPolicyRevision.current = result.data.revision;
       setPolicyState(result.data);
       setExceptionDraft({ owner: "", reason: "", expiresAt: "" });
       setPolicyNotice(action === "accept" ? "Risk acceptance recorded by the authenticated approver." : "Risk acceptance revoked.");
@@ -565,7 +591,7 @@ function ComplianceWorkspace() {
         <section className="metric-grid compliance-metrics">
           <MetricCard label="Active violations" value={assessmentReady ? activeViolations.length : "—"} detail={assessmentReady ? `${violations.length - activeViolations.length} accepted by governed exception` : "Policy and evidence must load before assessment"} tone={!assessmentReady ? "default" : activeViolations.length ? "warning" : "success"} />
           <MetricCard label="Critical findings" value={assessmentReady ? activeViolations.filter((item) => item.severity === "critical").length : "—"} detail="Includes public exposure and any-any rules" tone={!assessmentReady ? "default" : activeViolations.some((item) => item.severity === "critical") ? "critical" : "success"} />
-          <MetricCard label="Open governed deviations" value={openGovernedDeviations.length} detail={changeSummary ? `${changeSummary.drifted_resource_count} drifted resources tracked by change intelligence` : "Policy and security baseline deviations"} tone={criticalGovernedCount ? "critical" : openGovernedDeviations.length ? "warning" : "success"} />
+          <MetricCard label="Open governed deviations" value={governedLoading || governedError ? "—" : openGovernedDeviations.length} detail={governedLoading || governedError ? "Governed evidence incomplete" : changeSummary ? `${changeSummary.drifted_resource_count} drifted resources tracked by change intelligence; deviations count loaded pages` : "Policy/security deviations in loaded pages, not global totals"} tone={governedLoading || governedError ? "default" : criticalGovernedCount ? "critical" : openGovernedDeviations.length ? "warning" : "success"} />
         </section>
       </div>
 
@@ -590,19 +616,56 @@ function ComplianceWorkspace() {
       {loading ? <StatePanel title="Evaluating architecture posture" message="Comparing discovered subscriptions, VNets, routes, peerings, rules, private endpoints, and shared services to policy." tone="loading" /> : null}
 
 
-      <section className="card compliance-violations-panel">
+      <section className="card" aria-label="Framework evidence coverage">
+        <div className="card-header"><div><h2>Framework evidence coverage</h2>
+          <p>Advisory MCSB v1 domain associations, not a control audit, regulatory certification, or pass percentage.</p></div></div>
+        <div className="card-body">
+          <p>Local heuristic types map only to broad domains. Exact provider control-ID formats are candidate associations, not verified benchmark evaluations.
+            {" "}Accepted risk remains observed evidence; it never makes a domain pass. Domains without mapped evidence are not assessed.</p>
+          <p className="muted">Counts describe loaded observations only. Policy deviations: {policyDeviations.error ? "unavailable" : policyDeviations.loading ? "loading" : `${policyDeviations.data?.data.length ?? 0} loaded / ${policyDeviations.data?.pagination?.total ?? "unreported"} reported`}.
+            {" "}Security deviations: {securityDeviations.error ? "unavailable" : securityDeviations.loading ? "loading" : `${securityDeviations.data?.data.length ?? 0} loaded / ${securityDeviations.data?.pagination?.total ?? "unreported"} reported`}.
+            {" "}Local assessment: {assessmentReady ? "loaded evidence only; topology may be bounded" : "incomplete; counts withheld"}.</p>
+          <a href="https://learn.microsoft.com/en-us/security/benchmark/azure/overview-mcsb-v1" target="_blank" rel="noreferrer">MCSB v1 catalog and mapping limitations</a>
+          <div className="data-table-wrap"><table className="data-table">
+            <caption>Partial domain mapping of loaded findings; zero does not mean compliant</caption>
+            <thead><tr><th>Domain</th><th>Local findings</th><th>Accepted</th><th>Provider deviations</th><th>Evidence state</th></tr></thead>
+            <tbody>{framework.domains.map(domain => <tr key={domain.id}>
+              <td><a href={`https://learn.microsoft.com/en-us/security/benchmark/azure/mcsb-${domain.path}`} target="_blank" rel="noreferrer">{domain.id} · {domain.name}</a></td>
+              <td>{assessmentReady ? domain.local.length : "—"}{domain.local.length > 0 && <>{" "}<a href="#compliance-findings" onClick={() => { setDomainFilter(domain.id); setSelectedId(domain.local[0].id); }}>Review {domain.id} findings</a></>}</td>
+              <td>{assessmentReady ? domain.acceptedCount : "—"}</td>
+              <td>{policyDeviations.error && securityDeviations.error ? "Unavailable" : policyDeviations.loading || securityDeviations.loading || policyDeviations.error || securityDeviations.error ? `${domain.governed.length} loaded; incomplete` : domain.governed.length}</td>
+              <td>{domain.local.length + domain.governed.length > 0 ? "Advisory mapped evidence" : !assessmentReady || !policyDeviations.data || !securityDeviations.data || policyDeviations.error || securityDeviations.error ? "Evidence incomplete" : "Not assessed"}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <details><summary>Unmapped provider controls ({framework.unmapped.length})</summary>
+            <p>Labels without a supported exact domain/control identifier are not guessed into a framework.</p>
+            {framework.unmapped.length ? <StructuredData value={framework.unmapped} /> : <p>No unmapped controls in the currently loaded rows. Missing or unqueried pages remain unknown.</p>}
+          </details>
+          <details><summary>Mapped provider evidence references</summary>
+            <StructuredData value={framework.domains.filter(domain => domain.governed.length).map(domain => ({ domain: domain.id, candidate_control_evidence: domain.governed }))} />
+          </details>
+        </div>
+      </section>
+
+      <section className="card compliance-violations-panel" id="compliance-findings">
         <div className="card-header">
           <div><h2>Violations</h2><p>Business-context posture findings with evidence, remediation, and exception state. Select a violation to expand its details inline.</p></div>
         </div>
+        <label className="card-body compliance-domain-filter">Local finding domain
+          <select aria-label="Local finding domain" value={domainFilter} onChange={event => setDomainFilter(event.target.value)}>
+            <option value="all">All local domains</option>
+            {framework.domains.map(domain => <option value={domain.id} key={domain.id}>{domain.id} · {domain.name}</option>)}
+          </select>
+        </label>
         <div className="compliance-list">
-          {violations.length > 0 ? (
+          {visibleViolations.length > 0 ? (
             <div className="compliance-list-header" aria-hidden="true">
               <span>Severity</span>
               <span>Finding</span>
               <span>Status</span>
             </div>
           ) : null}
-          {violations.map((violation) => {
+          {visibleViolations.map((violation) => {
             const isSelected = selected?.id === violation.id;
             return (
               <div key={violation.id} className="compliance-row-group">
@@ -640,7 +703,7 @@ function ComplianceWorkspace() {
               </div>
             );
           })}
-          {violations.length === 0 && assessmentReady ? <StatePanel title="No policy violations" message="Current discovered architecture satisfies the active policy pack." /> : null}
+          {visibleViolations.length === 0 && assessmentReady ? <StatePanel title="No findings in loaded evidence" message="No local heuristic findings match this domain and policy in the loaded observations. This is not a complete control audit or compliance certification." /> : null}
         </div>
       </section>
 
@@ -669,7 +732,7 @@ function ComplianceWorkspace() {
                 <StatusBadge label={row.status} tone={row.status?.toLowerCase() === "open" ? "critical" : "warning"} compact />
               </div>
             ))}
-            {openGovernedDeviations.length === 0 && !governedLoading ? <StatePanel title="No open governed deviations" message="Change intelligence reports no open policy or security baseline deviations for this scope." /> : null}
+            {openGovernedDeviations.length === 0 && !governedLoading && !governedError ? <StatePanel title="No open governed deviations in loaded pages" message="No open policy or security baseline deviations are present in the loaded rows. Unqueried pages are not assessed." /> : null}
           </div>
         </section>
 
@@ -680,8 +743,8 @@ function ComplianceWorkspace() {
           <div className="card-body compliance-detail">
             {driftRows.length > 0 ? (
               <StructuredData value={driftRows} />
-            ) : (
-              <StatePanel title={drift.loading ? "Loading drift data" : "No configuration drift"} message={drift.loading ? "Evaluating configuration drift." : "All tracked resources match their expected configuration."} tone={drift.loading ? "loading" : undefined} />
+            ) : drift.error ? <StatePanel title="Configuration drift unavailable" message={drift.error.message} tone="error" /> : (
+              <StatePanel title={drift.loading ? "Loading drift data" : "No drift rows in loaded evidence"} message={drift.loading ? "Evaluating configuration drift." : "No drift rows were returned in this page; absent rows do not establish complete baseline conformance."} tone={drift.loading ? "loading" : undefined} />
             )}
           </div>
         </aside>
@@ -693,6 +756,34 @@ function ComplianceWorkspace() {
             <div><h2>Policy administration</h2><p>Governed customer-specific policy pack for architecture compliance.</p></div>
             <StatusBadge label="Customer governed" tone="warning" />
           </div>
+          <section className="card-body compliance-policy-explanation" aria-label="Policy change explanation">
+            <h3>Policy change explanation</h3>
+            {policyState ? <>
+              <p>Saved policy revision {policyState.policy_revision}, decision revision {policyState.revision}. The draft changes {draftChanges.length} field{draftChanges.length === 1 ? "" : "s"}.
+                {" "}Preview compares both policies against the same currently loaded observations, not historical evidence or an inferred root cause.</p>
+              {policyState.policy_revision === 0 && !draftChanges.length && <p>Saving applies the displayed default assessment policy as its first explicit policy revision.</p>}
+              {draftChanges.length > 0 && <div className="data-table-wrap"><table className="data-table">
+                <caption>Draft field differences; not yet saved</caption>
+                <thead><tr><th>Field</th><th>Saved</th><th>Draft</th><th>Actual evaluation boundary</th></tr></thead>
+                <tbody>{draftChanges.map(change => <tr key={change.field}>
+                  <th scope="row">{change.label}</th><td>{String(change.before)}</td><td>{String(change.after)}</td><td>{change.effect}</td>
+                </tr>)}</tbody>
+              </table></div>}
+              <p>{exceptions.filter(isExceptionActive).length} currently active exceptions would require review after a policy save, including metadata-only changes.</p>
+              {assessmentReady ? <>
+                <p>Same-evidence preview: {draftImpact.added.length} added, {draftImpact.removed.length} removed, {draftImpact.changed.length} reclassified local findings.
+                  {" "}Current heuristic score {postureScore}; projected score {scoreFor(draftViolations, [])} after invalidating prior exceptions. These scores are not benchmark coverage.</p>
+                <details><summary>Inspect draft finding changes</summary>
+                  <ul>{[
+                    ...draftImpact.added.map(row => ({ action: "Added", row })),
+                    ...draftImpact.removed.map(row => ({ action: "Removed", row })),
+                    ...draftImpact.changed.map(row => ({ action: "Reclassified", row })),
+                  ].slice(0, 50).map(({ action, row }) => <li key={`${action}:${row.id}`}>{action}: {row.title} · {row.resource} · {row.severity}</li>)}</ul>
+                  <p>Showing up to 50 changes in loaded observations. Draft findings are advisory and are not remediation approvals.</p>
+                </details>
+              </> : <p>Impact preview unavailable until the assessment policy and evidence finish loading successfully.</p>}
+            </> : <p>Saved policy unavailable; no policy difference or impact is asserted.</p>}
+          </section>
           <fieldset className="card-body compliance-policy-grid" disabled={!policyState || policyBusy}>
             <legend>Policy draft (not applied until saved)</legend>
             <label>Policy pack name<input value={policyDraft.name} onChange={(event) => savePolicy({ ...policyDraft, name: event.target.value })} /></label>
@@ -706,7 +797,7 @@ function ComplianceWorkspace() {
             <label><input type="checkbox" checked={policyDraft.loggingRequired} onChange={(event) => savePolicy({ ...policyDraft, loggingRequired: event.target.checked })} /> Logging required</label>
             <label><input type="checkbox" checked={policyDraft.allowCrossSubscriptionPeering} onChange={(event) => savePolicy({ ...policyDraft, allowCrossSubscriptionPeering: event.target.checked })} /> Allow cross-subscription peering</label>
             <label>Policy change reason<textarea value={policyReason} maxLength={1000} onChange={event => setPolicyReason(event.target.value)} /></label>
-            <button type="button" disabled={!policyReason.trim()} onClick={persistPolicy}>Save policy revision</button>
+            <button className="button button-primary" type="button" disabled={!policyReason.trim() || (!draftChanges.length && policyState?.policy_revision !== 0)} onClick={persistPolicy}>Save policy revision</button>
           </fieldset>
           <div className="card-body"><button type="button" disabled={policyBusy} onClick={policyRead.refetch}>Reload saved policy</button><p>Revision {policyState?.revision ?? "unavailable"}. Reloading replaces the draft; review again after a conflict.</p></div>
         </section>
@@ -725,6 +816,15 @@ function ComplianceWorkspace() {
             <StructuredData value={exceptions} />
           </fieldset>
           <details className="card-body"><summary>Policy and exception audit</summary><StructuredData value={policyState?.audit ?? []} /></details>
+          <details className="card-body"><summary>Saved policy change explanations</summary>
+            {policyState?.audit.filter(entry => entry.action === "replace_policy").map(entry => <section key={entry.revision} className="compliance-policy-audit-entry">
+              <h3>Decision revision {entry.revision}</h3>
+              <p>{entry.actor} · {entry.at} · {entry.reason}</p>
+              {entry.policy_diff ? <ul>{entry.policy_diff.map(change => <li key={change.field}>{policyFieldLabel(change.field)}: {String(change.before)} → {String(change.after)}</li>)}</ul> : <p>Historical field differences were not recorded for this revision.</p>}
+              <p>{entry.invalidated_exception_ids ? `${entry.invalidated_exception_ids.length} active exceptions invalidated by this save.` : "Historical exception invalidation count unreported."}</p>
+              <p>This audit records a policy change, not a historical evidence comparison or execution approval.</p>
+            </section>)}
+          </details>
         </aside>
       </div>
 
