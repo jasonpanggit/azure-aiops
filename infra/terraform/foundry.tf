@@ -955,6 +955,37 @@ resource "azurerm_role_assignment" "apps_foundry_prompt_runtime" {
   skip_service_principal_aad_check = true
 }
 
+# Account-level OpenAI authorization does not inherit a project assignment.
+# Keep this grant separate so agent-definition reads remain project-scoped.
+resource "azurerm_role_definition" "apps_foundry_response_runtime" {
+  count = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
+
+  name        = "${local.base}-foundry-response-runtime"
+  scope       = azurerm_resource_group.main.id
+  description = "Create and read OpenAI Responses without managing agents or models."
+
+  permissions {
+    actions     = []
+    not_actions = []
+    data_actions = [
+      "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
+      "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
+    ]
+    not_data_actions = []
+  }
+
+  assignable_scopes = [azurerm_resource_group.main.id]
+}
+
+resource "azurerm_role_assignment" "apps_foundry_response_runtime" {
+  count = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
+
+  scope                            = azurerm_cognitive_account.foundry.id
+  role_definition_id               = azurerm_role_definition.apps_foundry_response_runtime[0].role_definition_resource_id
+  principal_id                     = azurerm_user_assigned_identity.apps.principal_id
+  skip_service_principal_aad_check = true
+}
+
 # The deploying principal creates the prompt agent through the data plane after
 # apply, which is a management operation on the project.
 resource "azurerm_role_assignment" "deployer_foundry_manager" {

@@ -407,6 +407,13 @@ the Agents page. Preserve its validated candidate/promotion contract:
   mutation, model deployment, key access or role management. Verify a real
   pinned call from that identity; built-in runtime-role presence alone is
   not sufficient.
+  The separate `apps_foundry_response_runtime` custom role grants only
+  `OpenAI/responses/read`/`write` on the Foundry account, because account-level
+  OpenAI authorization does not inherit a project assignment. It grants no
+  agent-definition read or mutation, response deletion or management actions.
+  Its Responses access covers the account, not just one project. Review this
+  boundary before enabling the scoped restoration gate; require actual API
+  identity invocation before activating candidates or promoting traffic.
 - Set `enable_mcp_role_assignments` for the MCP identities' read-only Azure
   and vault grants. Terraform adds the Foundry project identity to API gateway
   grants as a subscription-scoped reader; existing browser grants are retained.
