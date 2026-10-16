@@ -342,6 +342,17 @@ and execution evidence. The current index, when both required inputs exist, is
 explicitly heuristic: `min(100, critical_count * 20 + visible_incidents * 12)`.
 It is not measured risk, probability, reliability or a historical trend.
 
+The portal's Twin entity explorer searches only the already-loaded scoped
+snapshot, across entity name, ID and kind, with type filtering and a disclosed
+30-result list. Focusing a node draws up to 12 directly linked neighbors and
+32 incident relationships, preserving source/target arrows and disclosing the
+full loaded-neighborhood counts. Keyboard node navigation and textual
+relationship details use the same loaded evidence. It neither fetches a wider
+estate nor infers missing dependencies. Focusing/searching does not run a
+scenario: **Use focused resource for review** is the separate explicit action.
+Refresh/scope replacement clears graph focus; graph fingerprints are not
+ordered durable revisions.
+
 Fabric capacity health probes the configured platform subscription even when
 the page filters customer inventory to another subscription. Managed-identity
 deployments use the Terraform-configured Fabric identity for this read-only

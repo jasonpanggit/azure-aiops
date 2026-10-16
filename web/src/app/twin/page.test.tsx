@@ -188,4 +188,14 @@ describe("Operational Digital Twin workspace", () => {
     expect(screen.queryByText("Traffic inspection and hub dependencies degrade.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Scenario")).toBeDisabled();
   });
+
+  it("connects graph focus to the resource selector only after explicit review intent", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Explore payroll-vm, resource:vm-payroll-1" }));
+    expect(scenario).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Resource for impact analysis")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Use focused resource for review" }));
+    await waitFor(() => expect(scenario).toHaveBeenCalledWith("firewall_failure", "vm-payroll-1", {}));
+    expect(screen.getByLabelText("Resource for impact analysis")).toHaveValue("resource:vm-payroll-1");
+  });
 });

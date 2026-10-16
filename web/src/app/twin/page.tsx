@@ -10,6 +10,7 @@ import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { EntityGraph } from "@/components/twin/EntityGraph";
 import { useScope } from "@/lib/scope-context";
 import { twinApi } from "@/lib/services";
 import { buildTwinCopilotContext } from "@/lib/copilot/page-adapters";
@@ -264,7 +265,7 @@ export default function OperationalTwinPage() {
           <div className="card-header">
             <h2>Heuristic current index</h2>
           </div>
-          <div className="card-body risk-gauge-body">
+          <div className="card-body twin-current-index">
             {observedRisk === null ? <p className="muted">Risk evidence unavailable; no healthy score is asserted.</p> : <RiskGauge score={observedRisk} label="Heuristic index" detail="Not measured risk or reliability" />}
             <p className="muted">min(100, critical vulnerabilities × 20 + visible incidents × 12). A single current index is not a historical trend.</p>
           </div>
@@ -275,6 +276,8 @@ export default function OperationalTwinPage() {
           <MetricCard label="Observations" value={snapshot?.data.timeline.length ?? "—"} detail="Events, not verified changes" />
         </section>
       </div>
+
+      {snapshot ? <EntityGraph key={snapshot.data.version} snapshot={snapshot.data} onSelectResource={setSelectedResourceId} /> : null}
 
       <section className="workspace-grid twin-grid">
         <section className="card">
