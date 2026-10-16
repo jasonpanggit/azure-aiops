@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,52 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 coordinator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coordinator)
+
+
+@pytest.mark.parametrize(
+    ("history", "rejected", "expected"),
+    [
+        ([], [], True),
+        (["1", "2"], ["1", "2"], True),
+        (["2", "1"], ["1", "2"], False),
+        (["1"], [], False),
+        (None, [], False),
+        ("invalid", [], False),
+    ],
+)
+def test_coordinator_history_comparison_uses_values_not_empty_list_types(
+    tmp_path, history, rejected, expected
+):
+    terraform = shutil.which("terraform")
+    if terraform is None:
+        pytest.skip("Terraform CLI is required for executable HCL regression")
+    source = (ROOT / "infra/terraform/foundry.tf").read_text()
+    expression = next(
+        line.strip().removesuffix(" &&")
+        for line in source.splitlines()
+        if "try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions)" in line
+    )
+    (tmp_path / "main.tf").write_text(
+        'variable "foundry_coordinator_rejected_versions" {\n'
+        "  type = list(string)\n"
+        f"  default = {json.dumps(rejected)}\n"
+        "}\n"
+        "locals {\n"
+        '  foundry_coordinator_artifact = jsondecode(file("${path.module}/artifact.json"))\n'
+        "}\n"
+    )
+    artifact = {} if history is None else {"supersedes_unusable_versions": history}
+    (tmp_path / "artifact.json").write_text(json.dumps(artifact))
+    result = subprocess.run(
+        [terraform, "console", "-no-color"],
+        cwd=tmp_path,
+        input=expression + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == str(expected).lower()
 
 
 def test_dedicated_agent_endpoint_is_default_off_and_wired_to_api():
@@ -256,6 +303,6 @@ def test_terraform_binds_configured_rejections_to_publish_and_activation():
     assert "FOUNDRY_COORDINATOR_REJECTED_VERSIONS_JSON" in terraform
     assert "!contains(var.foundry_coordinator_rejected_versions," in terraform
     assert (
-        "try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions), null)"
-        " == var.foundry_coordinator_rejected_versions"
+        "jsonencode(try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions), null))"
+        " == jsonencode(var.foundry_coordinator_rejected_versions)"
     ) in terraform
