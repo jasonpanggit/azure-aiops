@@ -8,6 +8,7 @@ from operations.foundry_agent import (
     SPECIALIST_IDS,
     AgentAnswer,
     FoundryAgentError,
+    FoundryAgentNotConfigured,
     FoundryCoordinatorPlanner,
     FoundryCoordinatorSynthesisAgent,
     FoundryPromptAgent,
@@ -866,11 +867,107 @@ def test_versioned_rest_agent_sends_exact_provider_version(monkeypatch) -> None:
     answer = agent.answer(question="What changed?", context={"findings": []})
 
     assert answer.text == "Pinned response"
+    assert captured["path"] == "/openai/v1/responses"
+    assert captured["versioned"] is False
     assert captured["payload"]["agent_reference"] == {
         "type": "agent_reference",
         "name": "network-agent",
         "version": "provider-version-42",
     }
+
+
+@pytest.mark.parametrize("budget", [None, 0.25])
+def test_dedicated_endpoint_preserves_pin_path_encoding_and_budget(monkeypatch, budget):
+    captured = {}
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="network/agent",
+        agent_version="provider-version-42",
+        use_agent_endpoint=True,
+    )
+
+    def fake_post(path, payload, *, versioned=True, timeout_seconds=None):
+        captured.update(
+            path=path, payload=payload, versioned=versioned, timeout=timeout_seconds
+        )
+        return {"output_text": "Pinned response", "model": "test"}
+
+    monkeypatch.setattr(agent, "_post", fake_post)
+    answer = agent.answer(
+        question="What changed?", context={}, timeout_seconds=budget
+    )
+
+    assert captured["path"] == (
+        "/agents/network%2Fagent/endpoint/protocols/openai/responses"
+        "?api-version=2025-11-15-preview"
+    )
+    assert captured["payload"]["agent_reference"] == {
+        "type": "agent_reference",
+        "name": "network/agent",
+        "version": "provider-version-42",
+    }
+    assert captured["versioned"] is False
+    assert captured["timeout"] == budget
+    assert answer.agent_version == "provider-version-42"
+
+
+@pytest.mark.parametrize("version", ["", " ", "@latest"])
+def test_dedicated_endpoint_rejects_unpinned_constructor(version):
+    with pytest.raises(FoundryAgentNotConfigured, match="immutable agent version"):
+        FoundryPromptAgent(
+            project_endpoint="https://example",
+            agent_name="network-agent",
+            agent_version=version,
+            use_agent_endpoint=True,
+        )
+
+
+@pytest.mark.parametrize("version", ["", "@latest"])
+def test_dedicated_endpoint_from_env_fails_closed_without_pin(monkeypatch, caplog, version):
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "operations-copilot")
+    monkeypatch.setenv("FOUNDRY_USE_AGENT_ENDPOINTS", "true")
+    monkeypatch.setenv("FOUNDRY_AGENT_VERSION", version)
+    monkeypatch.delenv("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", raising=False)
+
+    assert select_foundry_agent_class(prefer_maf=True) is FoundryPromptAgent
+    assert FoundryPromptAgent.from_env() is None
+    assert "missing immutable version" in caplog.text
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_dedicated_endpoint_from_env_is_opt_in(monkeypatch, enabled):
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_NAME", "network-agent")
+    monkeypatch.setenv("FOUNDRY_NETWORK_AGENT_VERSION", "42")
+    monkeypatch.setenv("FOUNDRY_USE_AGENT_ENDPOINTS", enabled)
+
+    agent = FoundryPromptAgent.from_env("network")
+
+    assert agent is not None
+    assert agent.use_agent_endpoint is (enabled == "true")
+    assert agent.agent_version == "42"
+
+
+def test_dedicated_endpoint_failure_does_not_fallback_to_project_or_model(monkeypatch):
+    paths = []
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example",
+        agent_name="network-agent",
+        agent_version="42",
+        use_agent_endpoint=True,
+    )
+
+    def reject(path, payload, *, versioned=True):
+        paths.append(path)
+        raise FoundryAgentError("Pinned endpoint rejected the request")
+
+    monkeypatch.setattr(agent, "_post", reject)
+    with pytest.raises(FoundryAgentError, match="Pinned endpoint rejected"):
+        agent.answer(question="What changed?", context={})
+
+    assert len(paths) == 1
+    assert "/agents/network-agent/endpoint/" in paths[0]
 
 
 def test_versioned_runtime_uses_rest_path_instead_of_preview_maf(monkeypatch) -> None:

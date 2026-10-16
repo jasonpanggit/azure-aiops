@@ -857,6 +857,12 @@ variable "foundry_version_pinning_runtime_verified" {
   default     = false
 }
 
+variable "foundry_use_agent_endpoints" {
+  description = "Opt in to dedicated Foundry agent consumer endpoints with explicit immutable version references. Requires a runtime image supporting FOUNDRY_USE_AGENT_ENDPOINTS."
+  type        = bool
+  default     = false
+}
+
 variable "foundry_coordinator_activation_artifact" {
   description = "Path to the validated Operations Copilot coordinator activation artifact. A publish apply writes it; a later reviewed apply activates it."
   type        = string

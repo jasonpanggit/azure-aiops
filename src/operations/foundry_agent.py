@@ -28,6 +28,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -57,10 +58,12 @@ ENV_TIMEOUT = "FOUNDRY_TIMEOUT_SECONDS"
 ENV_MAX_RETRIES = "FOUNDRY_MAX_RETRIES"
 ENV_CIRCUIT_THRESHOLD = "FOUNDRY_CIRCUIT_BREAKER_THRESHOLD"
 ENV_CIRCUIT_RESET_SECONDS = "FOUNDRY_CIRCUIT_BREAKER_RESET_SECONDS"
+ENV_AGENT_ENDPOINTS = "FOUNDRY_USE_AGENT_ENDPOINTS"
 
 # The Foundry "projects (new)" data plane is versioned with the literal string
 # `v1`, not a date. See the Microsoft quickstart sample for prompt agents.
 DEFAULT_API_VERSION = "v1"
+AGENT_ENDPOINT_API_VERSION = "2025-11-15-preview"
 _SPECIALIST_MANIFEST = load_specialist_manifest()
 SPECIALIST_IDS = _SPECIALIST_MANIFEST.specialist_ids
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -99,6 +102,10 @@ def _version_pinning_required() -> bool:
         os.environ.get("AIOPS_FOUNDRY_VERSION_PINNING_REQUIRED", "").strip().casefold()
         in _TRUE_ENV_VALUES
     )
+
+
+def _agent_endpoints_enabled() -> bool:
+    return os.environ.get(ENV_AGENT_ENDPOINTS, "").strip().casefold() in _TRUE_ENV_VALUES
 
 # Entra scope for the Foundry data plane. Distinct from the ARM scope: an ARM
 # token is rejected by the agents endpoint.
@@ -654,6 +661,10 @@ class FoundryPromptAgent:
     image free of an extra dependency whose only use would be two HTTP calls.
     The wire contract is small and stable, and every failure is translated into
     a :class:`FoundryAgentError` the router can degrade on.
+
+    ``use_agent_endpoint`` opts into the dedicated consumer route. It requires
+    an explicit provider version, which remains in every request rather than
+    relying on the endpoint's mutable version selector.
     """
 
     def __init__(
@@ -670,12 +681,18 @@ class FoundryPromptAgent:
         sleep: Callable[[float], None] = time.sleep,
         specialist_id: str = "network",
         agent_version: str = "",
+        use_agent_endpoint: bool = False,
     ) -> None:
         endpoint = str(project_endpoint or "").strip().rstrip("/")
         name = str(agent_name or "").strip()
+        version = str(agent_version or "").strip()
         if not endpoint or not name:
             raise FoundryAgentNotConfigured(
                 "A Foundry project endpoint and agent name are both required"
+            )
+        if use_agent_endpoint and version in {"", "@latest"}:
+            raise FoundryAgentNotConfigured(
+                "A dedicated Foundry agent endpoint requires an immutable agent version"
             )
         self.project_endpoint = endpoint
         self.agent_name = name
@@ -687,7 +704,8 @@ class FoundryPromptAgent:
         self._breaker = circuit_breaker or _CircuitBreaker()
         self._sleep = sleep
         self.specialist_id = specialist_id
-        self.agent_version = agent_version
+        self.agent_version = version
+        self.use_agent_endpoint = use_agent_endpoint
 
     @classmethod
     def from_env(cls, specialist_id: str | None = None) -> FoundryPromptAgent | None:
@@ -711,7 +729,16 @@ class FoundryPromptAgent:
             if specialist
             else os.environ.get("FOUNDRY_AGENT_VERSION", "").strip()
         )
-        if _version_pinning_required() and not agent_version:
+        use_agent_endpoint = _agent_endpoints_enabled()
+        if (
+            (_version_pinning_required() and not agent_version)
+            or (use_agent_endpoint and agent_version in {"", "@latest"})
+        ):
+            if use_agent_endpoint:
+                _LOGGER.warning(
+                    "Dedicated Foundry agent endpoint unavailable: missing immutable version for %s",
+                    agent_name,
+                )
             return None
         try:
             timeout = float(os.environ.get(ENV_TIMEOUT, "") or DEFAULT_TIMEOUT_SECONDS)
@@ -747,6 +774,7 @@ class FoundryPromptAgent:
             ),
             specialist_id=specialist or "network",
             agent_version=agent_version,
+            use_agent_endpoint=use_agent_endpoint,
         )
 
     def _post_once(
@@ -893,13 +921,20 @@ class FoundryPromptAgent:
             payload["agent_reference"]["version"] = self.agent_version
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max(1, int(max_output_tokens))
+        path = "/openai/v1/responses"
+        if self.use_agent_endpoint:
+            name = urllib.parse.quote(self.agent_name, safe="")
+            path = (
+                f"/agents/{name}/endpoint/protocols/openai/responses"
+                f"?api-version={AGENT_ENDPOINT_API_VERSION}"
+            )
         if timeout_seconds is None:
-            response = self._post("/openai/v1/responses", payload, versioned=False)
+            response = self._post(path, payload, versioned=False)
         else:
             budget = max(0.001, timeout_seconds)
             future = _FOUNDRY_CALL_EXECUTOR.submit(
                 self._post,
-                "/openai/v1/responses",
+                path,
                 payload,
                 versioned=False,
                 timeout_seconds=budget,
@@ -1161,7 +1196,7 @@ def select_foundry_agent_class(
     """
 
     specialist = (specialist_id or "").strip().casefold()
-    if specialist == EXECUTIVE_SPECIALIST_ID:
+    if specialist == EXECUTIVE_SPECIALIST_ID or _agent_endpoints_enabled():
         return rest_agent_class
     version = (
         os.environ.get(f"FOUNDRY_{specialist.upper()}_AGENT_VERSION", "").strip()

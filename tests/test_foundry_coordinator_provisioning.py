@@ -21,6 +21,18 @@ coordinator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coordinator)
 
 
+def test_dedicated_agent_endpoint_is_default_off_and_wired_to_api():
+    variables = (ROOT / "infra/terraform/variables.tf").read_text()
+    option = variables.split('variable "foundry_use_agent_endpoints" {', 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert re.search(r"type\s*=\s*bool", option)
+    assert re.search(r"default\s*=\s*false", option)
+    apps = (ROOT / "infra/terraform/container_apps.tf").read_text()
+    assert "for_each = var.foundry_use_agent_endpoints ? [1] : []" in apps
+    assert 'name  = "FOUNDRY_USE_AGENT_ENDPOINTS"' in apps
+
+
 def test_prompt_runtime_role_grants_only_project_reads_and_response_execution():
     terraform = (ROOT / "infra/terraform/foundry.tf").read_text()
     role = terraform.split(
