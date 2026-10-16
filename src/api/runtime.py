@@ -492,6 +492,11 @@ def _governance_source_degradation(row: Mapping[str, Any]) -> str:
     return ""
 
 
+def _governance_connection_home() -> str:
+    """Use the durable connection boundary, retaining the local validation root."""
+    return os.environ.get(ENV_CONNECTION_HOME, "").strip() or str(aiops_home())
+
+
 def _load_governance_generation_snapshot(
     scope: Scope,
 ) -> GovernanceSnapshot | None:
@@ -514,7 +519,7 @@ def _load_governance_generation_snapshot(
         )
     )
     cache_key = (
-        str(aiops_home()),
+        _governance_connection_home(),
         ("generation", *connection_signature),
     )
     return _ttl_cached_value(
@@ -577,7 +582,7 @@ def _build_governance_generation_snapshot(
     for connection in connections:
         store = DatasetStore(
             _connection_dataset_dir(
-                str(aiops_home()),
+                _governance_connection_home(),
                 str(connection.get("connection_id") or ""),
             )
         )
@@ -4477,8 +4482,9 @@ def _governance_connections() -> list[dict[str, Any]]:
     need the secret itself, so a Key Vault outage cannot break this view.
     """
     try:
-        onboarding = _onboarding_service()
-        connections = onboarding.registry.list(include_disabled=True)
+        connections = ConnectionRegistry(_governance_connection_home()).list(
+            include_disabled=True
+        )
     except Exception:
         _LOGGER.exception("governance_connection_load_failed")
         return []

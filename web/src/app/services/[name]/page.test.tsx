@@ -88,6 +88,12 @@ describe("Service detail independent degradation", () => {
     });
   });
 
+  it("preserves an already-decoded name containing a literal percent sign", async () => {
+    render(<ScopeProvider><ServiceDetailPage params={{ name: "Demo 50% rollout" }} /></ScopeProvider>);
+    await waitFor(() => expect(mocks.businessService).toHaveBeenCalledWith("Demo 50% rollout", {}));
+    expect(screen.getByRole("heading", { name: "Demo 50% rollout" })).toBeInTheDocument();
+  });
+
   it("keeps all sections visible and passes explicit degradation into Copilot", async () => {
     renderPage();
 

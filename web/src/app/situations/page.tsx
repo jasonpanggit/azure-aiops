@@ -25,6 +25,10 @@ export default function SituationsPage() {
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
+    setPage(0);
+  }, [scope]);
+
+  useEffect(() => {
     let active = true;
     setError("");
     setEnvelope(null);

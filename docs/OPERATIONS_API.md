@@ -21,6 +21,7 @@ When no context is supplied, one is assembled from the environment:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AIOPS_HOME` | `~/.aiops` | Connection registry and dataset root. |
+| `AIOPS_CONNECTION_HOME` | `AIOPS_HOME` in local validation | Explicit durable connection registry and per-connection generation root. Required as a distinct OneLake URI in production. Governance reads this boundary, not the general state root, without resolving connection secrets. |
 | `AIOPS_API_AUTH` | `token` | `token` or `gateway` (upstream-asserted identity). |
 | `AIOPS_API_TOKENS` | — | Required when `AIOPS_API_AUTH=token`. JSON: `{"<token>": {"subject": "...", "grants": [{"role": "admin"}]}}`. |
 | `AIOPS_API_GATEWAY_GRANTS` | — | Required when `AIOPS_API_AUTH=gateway`. JSON: `{"user@contoso.com": [{"role": "reader", "scope": {"subscription": ["..."]}}]}`. |
@@ -36,6 +37,12 @@ connection's synced `current/` dataset on each call (via
 once a connection has synced successfully. If no connection has synced any
 data yet, the provider returns `None` and routes report `upstream_unavailable`
 rather than implying an empty estate.
+
+The request-time operational twin and live VM/server search resolve an
+unrestricted authorized scope through active onboarded connections, just as
+the Network page does. They do not require selecting a subscription first.
+Semantic-only searches still report deferred semantic providers explicitly;
+this does not enable full semantic hydration or optional Data Agent grounding.
 
 For local browser testing, run the API and web app separately. The API must be
 running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must

@@ -50,7 +50,7 @@ function collectDependencies(...contexts: (SemanticContext | undefined)[]): Serv
 
 /** Business service operating view with semantic context, risk, and blast radius. */
 export default function ServiceDetailPage({ params }: { params: { name: string } }) {
-  const name = decodeURIComponent(params.name);
+  const name = params.name;
   const { scope } = useScope();
   const context = useApi(() => contextApi.businessService(name, scope), [name, scope]);
   const risk = useApi(() => contextApi.risk(name, scope), [name, scope]);

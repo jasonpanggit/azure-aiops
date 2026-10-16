@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -94,31 +94,34 @@ function SearchPageContent() {
   const [envelope, setEnvelope] = useState<Envelope<SearchResult> | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const requestId = useRef(0);
+  const initialQuery = params.get("q") || "";
 
-  // Other pages (e.g. Identity) deep-link here with a principal or
-  // credential identifier via ?q=; run that search once on arrival.
-  useEffect(() => {
-    const initial = params.get("q");
-    if (initial?.trim()) {
-      runSearch(initial);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function runSearch(value = query) {
+  const runSearch = useCallback(async (value: string) => {
     if (!value.trim()) return;
+    const id = ++requestId.current;
     setQuery(value);
     setLoading(true);
     setError("");
     setEnvelope(null);
     try {
-      setEnvelope(await contextApi.search(value, scope));
+      const result = await contextApi.search(value, scope);
+      if (id === requestId.current) setEnvelope(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Search failed");
+      if (id === requestId.current) setError(reason instanceof Error ? reason.message : "Search failed");
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
-  }
+  }, [scope]);
+
+  useEffect(() => {
+    setEnvelope(null);
+    setError("");
+    setLoading(false);
+    setQuery(initialQuery);
+    if (initialQuery.trim()) void runSearch(initialQuery);
+    return () => { requestId.current += 1; };
+  }, [initialQuery, runSearch]);
 
   return (
     <div className="page-container">
@@ -134,10 +137,10 @@ function SearchPageContent() {
             aria-label="Operational search intent"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => event.key === "Enter" && runSearch()}
+            onKeyDown={(event) => event.key === "Enter" && runSearch(query)}
             placeholder="Find production applications, failed patches, or missing ownership"
           />
-          <button type="button" className="button button-primary" onClick={() => runSearch()} disabled={loading || !query.trim()}>
+          <button type="button" className="button button-primary" onClick={() => runSearch(query)} disabled={loading || !query.trim()}>
             {loading ? "Finding records…" : "Find authorized records"}
           </button>
         </div>

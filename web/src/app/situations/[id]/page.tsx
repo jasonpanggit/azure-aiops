@@ -30,7 +30,7 @@ function linkedEntities(situation: DurableSituation) {
 
 export default function SituationDetailPage({ params }: { params: { id: string } }) {
   const { scope } = useScope();
-  const situationId = decodeURIComponent(params.id);
+  const situationId = params.id;
   const [situation, setSituation] = useState<Envelope<DurableSituation> | null>(null);
   const [audit, setAudit] = useState<Envelope<SituationAuditEvent[]> | null>(null);
   const [auditError, setAuditError] = useState("");

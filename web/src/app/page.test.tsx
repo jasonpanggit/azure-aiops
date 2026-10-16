@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
@@ -131,5 +131,18 @@ describe("Overview Copilot adapter integration", () => {
         }),
       ),
     );
+  });
+
+  it("does not assert healthy posture or a clean queue when a source fails", async () => {
+    mocks.situations.mockRejectedValueOnce(new Error("provider unavailable"));
+    mocks.connections.mockRejectedValueOnce(new Error("registry unavailable"));
+    render(<ScopeProvider><Home /></ScopeProvider>);
+
+    expect(await screen.findByLabelText("Posture score unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Operational posture is not assessed/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Situation evidence unavailable" })).toBeInTheDocument();
+    expect(screen.queryByText("No active situations in this scope")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Posture score 100 out of 100")).not.toBeInTheDocument();
+    expect(screen.getByText("Connection coverage is unavailable.")).toBeInTheDocument();
   });
 });

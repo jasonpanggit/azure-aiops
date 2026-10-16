@@ -35,7 +35,7 @@ def _resolve(
 
 
 def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
-    subscription_ids = live_subscription_ids(context, scope)
+    subscription_ids = live_subscription_ids(context, scope, default_all=True)
     source_errors: list[dict[str, str]] = []
     generation = None
     resolver_provider = getattr(context, "generation_resolver_provider", None)

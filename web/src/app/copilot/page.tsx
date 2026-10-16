@@ -57,6 +57,13 @@ function CopilotContent() {
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    setTurns([]);
+    setLoading(false);
+    return () => { requestId.current += 1; };
+  }, [scope]);
 
   const starterPrompts = useMemo(
     () =>
@@ -68,7 +75,8 @@ function CopilotContent() {
 
   async function ask(value = question) {
     const nextQuestion = value.trim();
-    if (!nextQuestion) return;
+    if (!nextQuestion || loading) return;
+    const id = ++requestId.current;
     setQuestion("");
     setLoading(true);
     try {
@@ -78,6 +86,7 @@ function CopilotContent() {
       const envelope = await askCanonicalInvestigation(nextQuestion, scope, {
         sessionId: ROOT_COPILOT_SESSION,
       });
+      if (id !== requestId.current) return;
       const view = toCanonicalInvestigationView(envelope.data);
       if (view.threadId && view.threadRevision) {
         threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision });
@@ -98,12 +107,13 @@ function CopilotContent() {
         },
       ]);
     } catch (reason) {
+      if (id !== requestId.current) return;
       setTurns((current) => [
         ...current,
         { question: nextQuestion, error: reason instanceof Error ? reason.message : "Copilot could not answer this request." },
       ]);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }
 
@@ -141,7 +151,7 @@ function CopilotContent() {
               <p>Copilot uses the same governed knowledge and operating scope as the rest of the workbench.</p>
               <div className="copilot-prompts">
                 {starterPrompts.map((prompt) => (
-                  <button type="button" key={prompt} onClick={() => ask(prompt)}>
+                  <button type="button" key={prompt} disabled={loading} onClick={() => ask(prompt)}>
                     {prompt}
                     <span>→</span>
                   </button>

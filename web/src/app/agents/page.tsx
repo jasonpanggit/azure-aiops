@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -22,36 +22,60 @@ export default function MultiAgentInvestigationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [owner, setOwner] = useState("Service owner");
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
+  const requestId = useRef(0);
 
   useEffect(() => {
     let active = true;
+    setCatalog([]);
+    setCatalogLoading(true);
+    setCatalogError("");
+    setLedger(null);
+    setError("");
+    setLoading(false);
     multiAgentApi.catalog(scope).then((result) => {
       if (active) setCatalog(result.data.agents);
-    }).catch(() => {
-      if (active) setCatalog([]);
+    }).catch((reason: unknown) => {
+      if (active) setCatalogError(reason instanceof Error ? reason.message : "Agent catalog could not be loaded.");
+    }).finally(() => {
+      if (active) setCatalogLoading(false);
     });
     return () => {
       active = false;
+      requestId.current += 1;
     };
   }, [scope]);
 
   async function runInvestigation() {
     const nextObjective = objective.trim();
-    if (!nextObjective) return;
+    if (!nextObjective || loading) return;
+    const id = ++requestId.current;
     setLoading(true);
     setError("");
     try {
-      setLedger(await multiAgentApi.investigate(nextObjective, scope));
+      const result = await multiAgentApi.investigate(nextObjective, scope);
+      if (id === requestId.current) setLedger(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Investigation could not start.");
+      if (id === requestId.current) setError(reason instanceof Error ? reason.message : "Investigation could not start.");
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }
 
   async function applyAction(action: string, payload: Record<string, unknown> = {}) {
-    if (!ledger) return;
-    setLedger(await multiAgentApi.action(ledger.data.ledger_id, action, payload, scope));
+    if (!ledger || loading) return;
+    const id = ++requestId.current;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await multiAgentApi.action(ledger.data.ledger_id, action, payload, scope);
+      if (id === requestId.current) setLedger(result);
+    } catch (reason) {
+      if (id === requestId.current) setError(reason instanceof Error ? reason.message : "Investigation action could not be completed.");
+    } finally {
+      if (id === requestId.current) setLoading(false);
+    }
   }
 
   const evidence = ledger?.data.agent_runs.flatMap((run) => run.evidence) ?? [];
@@ -80,6 +104,7 @@ export default function MultiAgentInvestigationPage() {
       />
 
       {error ? <StatePanel title="Investigation unavailable" message={error} tone="error" /> : null}
+      {catalogError ? <StatePanel title="Agent catalog unavailable" message={catalogError} tone="error" /> : null}
       {loading ? <StatePanel title="Running deterministic specialist plans" message="Selecting specialist definitions, running governed local tools, reconciling evidence, and preparing synthesis." tone="loading" /> : null}
 
       <section className="card">
@@ -90,7 +115,9 @@ export default function MultiAgentInvestigationPage() {
           </div>
           <StatusBadge label="Human controlled" tone="info" />
           <StatusBadge
-            label={configuredAgents
+            label={catalogLoading ? "Loading Foundry status"
+              : catalogError ? "Foundry status unknown"
+              : configuredAgents
               ? `${configuredAgents} Foundry active`
               : inactiveCandidates
               ? `${inactiveCandidates} Foundry available - inactive · deterministic fallback`
@@ -232,12 +259,12 @@ export default function MultiAgentInvestigationPage() {
                   <input value={owner} onChange={(event) => setOwner(event.target.value)} />
                 </label>
                 <div className="mode-toggle">
-                  <button type="button" onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
-                  <button type="button" onClick={() => applyAction("accept_finding", { finding_id: findings[0]?.finding_id ?? "" })}>Accept finding</button>
-                  <button type="button" onClick={() => applyAction("reject_finding", { finding_id: findings[0]?.finding_id ?? "", reason: "Insufficient evidence" })}>Reject finding</button>
-                  <button type="button" onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
-                  <button type="button" onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
-                  <button type="button" onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
+                  <button type="button" disabled={loading} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
+                  <button type="button" disabled={loading || !findings.length} onClick={() => applyAction("accept_finding", { finding_id: findings[0]?.finding_id ?? "" })}>Accept finding</button>
+                  <button type="button" disabled={loading || !findings.length} onClick={() => applyAction("reject_finding", { finding_id: findings[0]?.finding_id ?? "", reason: "Insufficient evidence" })}>Reject finding</button>
+                  <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
+                  <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
+                  <button type="button" disabled={loading} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
                 </div>
                 <StructuredData value={{ decisions: ledger.data.decisions, approvals: ledger.data.approvals, stop_reason: ledger.data.stop_reason }} />
               </div>
