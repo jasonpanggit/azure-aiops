@@ -1865,6 +1865,19 @@ export interface ConnectionValidationReport {
   health: ConnectionHealthDetail;
 }
 
+/** Advisory read-only access probes, never a credential store or sync receipt. */
+export interface ConnectionPreflightReport {
+  connection_id: string;
+  subscription_id: string;
+  checked_at: string;
+  status: string;
+  passed: boolean;
+  advisory_only: true;
+  persisted: false;
+  sync_started: false;
+  checks: Array<{ name: string; passed: boolean; required: boolean; skipped: boolean; detail: string; remediation: string | null }>;
+}
+
 export interface ConnectionSyncResult {
   connection_id: string;
   status: string;

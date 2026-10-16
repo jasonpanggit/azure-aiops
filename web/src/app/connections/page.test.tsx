@@ -29,6 +29,7 @@ beforeEach(() => { navigation.query = ""; navigation.push.mockClear(); });
 
 const {
   create,
+  preflight,
   fabricCapabilities,
   fabricDataset,
   fabricGovernance,
@@ -55,6 +56,7 @@ const {
   updateConnection,
 } = vi.hoisted(() => ({
   create: vi.fn(),
+  preflight: vi.fn(),
   fabricCapabilities: vi.fn(),
   fabricDataset: vi.fn(),
   fabricGovernance: vi.fn(),
@@ -89,6 +91,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
     investigateCanonical: vi.fn(() => new Promise(() => undefined)),
     connectionsApi: {
       create,
+      preflight,
       get: getConnection,
       health,
       list,
@@ -729,6 +732,7 @@ describe("Connections page Ontology automation tab", () => {
 describe("Connections page Fabric Medallion tab", () => {
   beforeEach(() => {
     create.mockReset();
+    preflight.mockReset();
     getConnection.mockReset();
     health.mockReset();
     list.mockReset();
@@ -769,7 +773,7 @@ describe("Connections page Fabric Medallion tab", () => {
     expect(screen.getByRole("button", { name: "Add subscription connection" })).toBeInTheDocument();
   });
 
-  async function fillOnboarding() {
+  async function fillOnboarding(submit = true) {
     fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
     const form = within(screen.getByRole("heading", { name: "Onboard an Azure subscription" }).closest("form")!);
     const fields = {
@@ -791,10 +795,85 @@ describe("Connections page Fabric Medallion tab", () => {
       fireEvent.change(form.getByLabelText(label), { target: { value } });
     }
     fireEvent.change(form.getByLabelText("Criticality"), { target: { value: "high" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^Add subscription$/ }));
-    });
+    if (submit) {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Add subscription$/ }));
+      });
+    }
   }
+
+  const previewReport = {
+    connection_id: "new-connection", subscription_id: connection.subscription_id,
+    checked_at: "2026-10-16T06:00:00Z", passed: true, status: "degraded",
+    advisory_only: true, persisted: false, sync_started: false,
+    checks: [{ name: "arg_read", passed: true, required: true, skipped: false, detail: "read 1 row(s)", remediation: null },
+      { name: "advisor_read", passed: false, required: false, skipped: false, detail: "Access probe failed", remediation: "Review Reader access" }],
+  };
+
+  it("previews access without creating, storing or syncing and invalidates the report on edits", async () => {
+    preflight.mockResolvedValue(envelope(previewReport));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    await screen.findByRole("heading", { name: "Required access checks passed" });
+    expect(preflight).toHaveBeenCalledWith(expect.objectContaining({
+      connection_id: "new-connection", credential: expect.objectContaining({ client_secret: " test-only-secret " }),
+    }));
+    expect(screen.getByRole("region", { name: "Connection access preview" })).toHaveTextContent("advisor read: Failed");
+    expect(screen.getByText(/Preview is advisory/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+    expect(sync).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Service principal client ID *"), { target: { value: "new-client" } });
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+  });
+
+  it("discards an in-flight preview when its submitted fields change", async () => {
+    let finish: (result: TestEnvelope<typeof previewReport>) => void = () => { throw new Error("preview not started"); };
+    preflight.mockReturnValue(new Promise<TestEnvelope<typeof previewReport>>((resolve) => { finish = resolve; }));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    const form = screen.getByRole("heading", { name: "Onboard an Azure subscription" }).closest("form")!;
+    fireEvent.change(within(form).getByLabelText("Environment"), { target: { value: "staging" } });
+    await act(async () => { finish(envelope(previewReport)); });
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview connection access" })).toBeEnabled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("shows preview errors and clears secret memory when the form closes", async () => {
+    preflight.mockRejectedValue(new Error("Read-only preflight unavailable"));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    await screen.findByText("Read-only preflight unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Close onboarding form" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
+    expect(screen.getByLabelText("Client secret *")).toHaveValue("");
+    expect(screen.queryByText("Read-only preflight unavailable")).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("clears preflight and submitted secret when current scope changes", async () => {
+    let finish: (result: TestEnvelope<typeof previewReport>) => void = () => { throw new Error("preview not started"); };
+    preflight.mockReturnValue(new Promise<TestEnvelope<typeof previewReport>>((resolve) => { finish = resolve; }));
+    function ScopedPage() {
+      const { setScope } = useScope();
+      return <><button type="button" onClick={() => setScope({ subscription: ["sub-b"] })}>Change preview scope</button><ConnectionsPage /></>;
+    }
+    render(<ScopeProvider><ScopedPage /></ScopeProvider>);
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change preview scope" }));
+    await act(async () => { finish(envelope(previewReport)); });
+    expect(screen.getByLabelText("Client secret *")).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
 
   it("submits the existing create contract, polls initial sync, refreshes and clears the form", async () => {
     create.mockResolvedValue(envelope({

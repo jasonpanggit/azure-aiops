@@ -63,6 +63,22 @@ units. Inventory's `query_version` is a query contract version, not proof of a
 publication generation. Missing/stale stages remain explicit; sync success does
 not establish Fabric publication or portal-wide readiness.
 
+`POST /api/v1/subscription-connections/preflight` accepts the proposed create
+payload with a one-time SPN secret and authorizes registry-write access over
+its complete proposed subscription/business scope before probing anything.
+It runs the seven incumbent fixed read-only access checks with a request-local
+credential resolver. It does not write Key Vault, registry or health documents,
+grant permissions, create a connection, start a sync or publish data. Stored
+secret references and non-SPN credential kinds are not accepted on this path.
+Missing runtime wiring returns 503, not an optimistic readiness result.
+
+The response marks `advisory_only=true`, `persisted=false` and
+`sync_started=false`; required failures and optional degradation stay distinct.
+Failed probe details never echo SDK exception text or submitted credentials.
+Preview is explicitly advisory in the onboarding form, is discarded on edits
+or scope changes, and does not replace the fresh validation performed by
+**Add subscription**. Closing the form clears the entered secret.
+
 `GET /api/v1/inventory/resources` supports optional `q` (name, identity or type),
 `family`, `resource_type`, and `resource_group` filters. Scope is enforced before
 facets, filtering, totals and pagination. Type/group/query matching is

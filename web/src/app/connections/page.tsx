@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
@@ -22,7 +22,7 @@ import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
-import { ApiError, type ConnectionCreateRequest, type SubscriptionConnection, type SyncState } from "@/lib/types";
+import { ApiError, type ConnectionCreateRequest, type ConnectionPreflightReport, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { ConnectionReadiness } from "@/components/ConnectionReadiness";
 
@@ -42,6 +42,20 @@ const EMPTY_FORM = {
   region: "",
   costCenter: "",
 };
+
+function connectionPayload(form: typeof EMPTY_FORM): ConnectionCreateRequest {
+  return {
+    connection_id: form.connectionId.trim().toLowerCase(),
+    name: form.name.trim(), subscription_id: form.subscriptionId.trim(), tenant_id: form.tenantId.trim(),
+    credential: { kind: "service_principal", client_id: form.clientId.trim(), tenant_id: form.tenantId.trim(), client_secret: form.clientSecret },
+    metadata: {
+      business_service: form.businessService.trim(), application: form.application.trim(),
+      environment: form.environment.trim(), project_owner: form.owner.trim(),
+      support_team: form.supportTeam.trim(), criticality: form.criticality,
+      region: form.region.trim(), cost_center: form.costCenter.trim(),
+    },
+  };
+}
 
 const SYNC_POLL_INTERVAL_MS = 1500;
 // Discovery + merge + ontology + Fabric publish can take well past 10 minutes
@@ -100,6 +114,10 @@ function ConnectionsPageContent() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [preflight, setPreflight] = useState<ConnectionPreflightReport | null>(null);
+  const [preflightError, setPreflightError] = useState("");
+  const [checkingPreflight, setCheckingPreflight] = useState(false);
+  const preflightRequest = useRef(0);
   const [actionError, setActionError] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [runningAction, setRunningAction] = useState("");
@@ -117,6 +135,16 @@ function ConnectionsPageContent() {
     loading: false,
   });
   const scopeKey = JSON.stringify(scope);
+  const currentScope = useRef(scopeKey);
+  currentScope.current = scopeKey;
+  useEffect(() => {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
+    setForm(EMPTY_FORM);
+  }, [scopeKey]);
+  useEffect(() => () => { preflightRequest.current += 1; }, []);
   const connections = useApi(async () => ({
     ...await connectionsApi.list(scope), requestedScopeKey: scopeKey,
   }), [scope, refreshKey]);
@@ -273,36 +301,49 @@ function ConnectionsPageContent() {
   }, [pollSyncState, rows]);
 
   function update(key: keyof typeof form, value: string) {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function closeOnboarding() {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
+    setForm(EMPTY_FORM);
+    setShowOnboarding(false);
+  }
+
+  async function previewConnection() {
+    const request = ++preflightRequest.current;
+    const requestedScope = scopeKey;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(true);
+    try {
+      const result = await connectionsApi.preflight(connectionPayload(form));
+      if (request === preflightRequest.current && requestedScope === currentScope.current) setPreflight(result.data);
+    } catch (reason) {
+      if (request === preflightRequest.current && requestedScope === currentScope.current) {
+        setPreflightError(reason instanceof Error ? reason.message : "Connection access preview failed.");
+      }
+    } finally {
+      if (request === preflightRequest.current && requestedScope === currentScope.current) setCheckingPreflight(false);
+    }
   }
 
   async function onboard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setCheckingPreflight(false);
     setSubmitting(true);
     setActionError("");
     setActionMessage("");
-    const payload: ConnectionCreateRequest = {
-      connection_id: form.connectionId.trim().toLowerCase(),
-      name: form.name.trim(),
-      subscription_id: form.subscriptionId.trim(),
-      tenant_id: form.tenantId.trim(),
-      credential: {
-        kind: "service_principal",
-        client_id: form.clientId.trim(),
-        tenant_id: form.tenantId.trim(),
-        client_secret: form.clientSecret,
-      },
-      metadata: {
-        business_service: form.businessService.trim(),
-        application: form.application.trim(),
-        environment: form.environment.trim(),
-        project_owner: form.owner.trim(),
-        support_team: form.supportTeam.trim(),
-        criticality: form.criticality,
-        region: form.region.trim(),
-        cost_center: form.costCenter.trim(),
-      },
-    };
+    const payload = connectionPayload(form);
     try {
       const result = await connectionsApi.create(payload);
       const { validation, initial_sync: initialSync } = result.data;
@@ -329,8 +370,7 @@ function ConnectionsPageContent() {
           );
         }
       }
-      setForm(EMPTY_FORM);
-      setShowOnboarding(false);
+      closeOnboarding();
       setRefreshKey((value) => value + 1);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : "Unable to create subscription connection.");
@@ -638,9 +678,23 @@ function ConnectionsPageContent() {
                 <FormField label="Cost center" value={form.costCenter} onChange={(value) => update("costCenter", value)} />
               </div>
               <div className="form-actions">
-                <button type="button" className="button" onClick={() => setShowOnboarding(false)} disabled={submitting}>Close onboarding form</button>
+                <button type="button" className="button" onClick={closeOnboarding} disabled={submitting}>Close onboarding form</button>
+                <button type="button" className="button" disabled={submitting || checkingPreflight} onClick={(event) => {
+                  if (event.currentTarget.form?.reportValidity()) void previewConnection();
+                }}>{checkingPreflight ? "Checking access…" : "Preview connection access"}</button>
                 <button type="submit" className="button button-primary" disabled={submitting}>{submitting ? "Onboarding…" : "Add subscription"}</button>
               </div>
+              <p className="muted">Preview is advisory: it does not store the secret, create a connection, grant roles, or start a sync. Add subscription validates again before queuing work.</p>
+              {preflightError && <StatePanel title="Connection preview unavailable" message={preflightError} tone="error" />}
+              {preflight && <section aria-label="Connection access preview">
+                <h3>{preflight.passed ? "Required access checks passed" : "Required access checks failed"}</h3>
+                <p className="muted">Checked {formatDateTime(preflight.checked_at)} · {preflight.status}. This is not a publication or readiness certificate.</p>
+                <ul>{preflight.checks.map((check) => <li key={check.name}>
+                  <strong>{check.name.replaceAll("_", " ")}: {check.skipped ? "Skipped" : check.passed ? "Passed" : "Failed"}</strong>
+                  {` · ${check.required ? "Required" : "Optional"} · ${check.detail}`}
+                  {!check.passed && check.remediation && <p>{check.remediation}</p>}
+                </li>)}</ul>
+              </section>}
             </div>
           </form>
         )}

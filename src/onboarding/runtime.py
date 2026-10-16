@@ -60,6 +60,21 @@ def build_onboarding_service(
             config, connection, credential_resolver
         )
     )
+
+    def preflight_validator(isolated_resolver: CredentialResolver) -> ConnectionValidator:
+        return ConnectionValidator(
+            probe=ArgConnectionProbe(
+                resolver=isolated_resolver,
+                arg_client_factory=(
+                    (lambda _connection: arg_client)
+                    if arg_client is not None
+                    else lambda connection: build_connection_arg_client(
+                        config, connection, isolated_resolver
+                    )
+                ),
+            )
+        )
+
     coordinator = ConnectionSyncCoordinator(
         config.output_dir,
         ingestion_factory=lambda connection: build_connection_ingestion(
@@ -79,6 +94,7 @@ def build_onboarding_service(
         sync_coordinator=coordinator,
         resolver=credential_resolver,
         secret_writer=secret_writer,
+        preflight_validator_factory=preflight_validator,
     )
     return service
 

@@ -163,6 +163,9 @@ export const connectionsApi = {
 
   create: (payload: ConnectionCreateRequest) =>
     apiRequest<ConnectionCreateResult>("/subscription-connections", { method: "POST", body: payload }),
+  /** Probe a proposed connection without storing its secret or starting a sync. */
+  preflight: (payload: ConnectionCreateRequest) =>
+    apiRequest<import("./types").ConnectionPreflightReport>("/subscription-connections/preflight", { method: "POST", body: payload }),
 
   update: (id: string, payload: ConnectionUpdateRequest) =>
     apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`, {
