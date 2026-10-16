@@ -930,10 +930,12 @@ resource "azurerm_role_definition" "apps_foundry_prompt_runtime" {
 
   name        = "${local.base}-foundry-prompt-runtime"
   scope       = azurerm_resource_group.main.id
-  description = "Read project agents and deployments and invoke Responses without managing agents."
+  description = "Read project metadata, agents and deployments and invoke Responses without managing agents."
 
   permissions {
-    actions     = []
+    actions = [
+      "Microsoft.CognitiveServices/accounts/projects/read",
+    ]
     not_actions = []
     data_actions = [
       "Microsoft.CognitiveServices/accounts/AIServices/agents/read",

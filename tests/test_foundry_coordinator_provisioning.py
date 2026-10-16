@@ -34,7 +34,13 @@ def test_prompt_runtime_role_grants_only_project_reads_and_response_execution():
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
     ]
-    assert re.search(r"\n\s+actions\s*=\s*\[\]", role)
+    actions = re.search(r"(?<!data_)actions\s*=\s*\[(.*?)\]", role, re.DOTALL)
+    assert actions is not None
+    assert re.findall(r'"([^"]+)"', actions[1]) == [
+        "Microsoft.CognitiveServices/accounts/projects/read",
+    ]
+    assert re.search(r"\n\s+not_actions\s*=\s*\[\]", role)
+    assert re.search(r"\n\s+not_data_actions\s*=\s*\[\]", role)
     assert "assignable_scopes = [azurerm_resource_group.main.id]" in role
     assert "var.enable_role_assignments || var.enable_foundry_role_assignments" in role
 
