@@ -1332,7 +1332,7 @@ fabric:
 
         config = fabric_medallion_router._capacity_config(
             object(),
-            Scope.unrestricted(),
+            Scope({"subscription": {"customer-subscription"}}),
         )
 
         assert config == {
@@ -1342,6 +1342,41 @@ fabric:
             "workspace_id": "workspace-config",
             "lakehouse_id": "lakehouse-config",
         }
+
+    def test_fabric_capacity_probe_uses_configured_user_assigned_identity(
+        self, fabric_medallion_capabilities_client, monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        from api.routers import fabric_medallion as fabric_medallion_router
+        from fabric.config import FabricAuthConfig
+
+        auth = FabricAuthConfig(
+            mode="managed_identity",
+            managed_identity_client_id="apps-identity",
+        )
+        credential = object()
+        monkeypatch.setattr(
+            fabric_medallion_router, "_runtime_config",
+            lambda: SimpleNamespace(auth=auth),
+        )
+
+        def build(config):
+            assert config is auth
+            return credential
+
+        def probe(**kwargs):
+            assert kwargs["credential"] is credential
+            assert kwargs["subscription_id"] == SUB_A
+            return {"state": "healthy", "raw_state": "Active", "sku": "F4"}
+
+        monkeypatch.setattr(fabric_medallion_router, "build_credential", build)
+        monkeypatch.setattr(fabric_medallion_router, "check_capacity_state", probe)
+        response = fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/capabilities", headers=_auth(ADMIN_TOKEN),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["capacity"]["sku"] == "F4"
 
     def test_fabric_medallion_router_routes_are_get_only(self):
         from api.routers import fabric_medallion as fabric_medallion_router

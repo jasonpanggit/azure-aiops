@@ -359,12 +359,11 @@ def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, 
 def _capacity_config(context: Context, scope: Scope) -> dict[str, str]:
     config = _runtime_config()
     scope_subscriptions = scope.to_dict().get("subscription") or []
-    subscription_id = str(scope_subscriptions[0] if scope_subscriptions else "")
-    if not subscription_id:
-        subscription_id = str(
-            getattr(getattr(config, "capacity", None), "subscription_id", "")
-            or os.environ.get("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "")
-        ).strip()
+    subscription_id = str(
+        getattr(getattr(config, "capacity", None), "subscription_id", "")
+        or os.environ.get("AIOPS_FABRIC_CAPACITY_SUBSCRIPTION_ID", "")
+        or (scope_subscriptions[0] if scope_subscriptions else "")
+    ).strip()
     return {
         "subscription_id": subscription_id,
         "resource_group": str(
@@ -629,11 +628,18 @@ def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str,
 def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]:
     config = _capacity_config(context, scope)
     source_rows = _scoped_source_rows(context, scope)
+    runtime_config = _runtime_config()
+    capacity_credential = (
+        build_credential(runtime_config.auth)
+        if runtime_config is not None and runtime_config.auth.mode == "managed_identity"
+        else None
+    )
 
     raw_capacity = check_capacity_state(
         subscription_id=str(config.get("subscription_id") or ""),
         resource_group=str(config.get("resource_group") or ""),
         capacity_name=str(config.get("capacity_name") or ""),
+        credential=capacity_credential,
     )
     capacity = dict(raw_capacity)
     capacity.setdefault("status", str(raw_capacity.get("state") or "unknown"))
