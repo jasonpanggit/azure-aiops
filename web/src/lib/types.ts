@@ -2717,6 +2717,76 @@ export interface NetworkIntentSuite {
   runs: NetworkIntentRun[];
 }
 
+/** Safe version-one retained node fields, not raw configuration or complete inventory. */
+export interface RetainedTopologyNode {
+  id: string;
+  name: string;
+  entity_type: string;
+  role: string;
+  subscription_id: string;
+  resource_group: string;
+  location: string;
+  connection_id: string;
+  environment: string;
+  business_service: string;
+  application: string;
+  owner: string;
+}
+
+/** Directed observed relationship with both endpoints in the retained projection. */
+export interface RetainedTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  relationship_type: string;
+  label: string;
+  peering: {
+    is_bidirectional: boolean;
+    local_state: string;
+    remote_state: string;
+    allow_forwarded_traffic: boolean;
+    allow_gateway_transit: boolean;
+    use_remote_gateways: boolean;
+  } | null;
+}
+
+/** One explicit server-acquired summary; repeated source timestamps are not independent. */
+export interface RetainedTopologyCapture {
+  capture_id: string;
+  started_at: string;
+  finished_at: string;
+  source_observed_at: string;
+  nodes: RetainedTopologyNode[];
+  edges: RetainedTopologyEdge[];
+  omitted_boundary_peering_count: number;
+  dropped_relationship_count: number;
+}
+
+/** Latest five safe projections for one exact principal/effective scope. */
+export interface NetworkTopologyHistory {
+  schema_version: number;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  captures: RetainedTopologyCapture[];
+}
+
+/** Paginated differences describe retained observations, never lifecycle or causation. */
+export interface NetworkTopologyComparison {
+  baseline_id: string;
+  target_id: string;
+  changes: {
+    kind: "node" | "edge";
+    id: string;
+    change: "added" | "no_longer_observed" | "changed";
+    changed_fields: string[];
+    before: RetainedTopologyNode | RetainedTopologyEdge | null;
+    after: RetainedTopologyNode | RetainedTopologyEdge | null;
+  }[];
+  total: number;
+  counts: Record<"added" | "no_longer_observed" | "changed", number>;
+}
+
 export interface HubDependents {
   hub_vnet_id: string;
   hub_name: string;

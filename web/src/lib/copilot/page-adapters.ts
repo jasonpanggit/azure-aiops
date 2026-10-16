@@ -1701,7 +1701,7 @@ export interface NetworkCopilotSelection {
 /** Already-loaded Network envelopes and active page state. */
 export interface NetworkCopilotPageInput {
   scope: ScopeSelection;
-  tab: "flow" | "topology" | "gaps" | "rules" | "policy" | "intents";
+  tab: "flow" | "topology" | "gaps" | "rules" | "policy" | "intents" | "history";
   gapOffset: number;
   gapLimit: number;
   findingOffset: number;

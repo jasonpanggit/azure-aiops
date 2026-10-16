@@ -2,6 +2,8 @@ import { apiRequest, resolveApiBaseUrl } from "./api-client";
 import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
 import type {
+  NetworkTopologyHistory,
+  NetworkTopologyComparison,
   NetworkIntentSuite,
   NetworkIntentTest,
   BusinessMetadata,
@@ -1482,6 +1484,33 @@ export const networkApi = {
     method: "POST", query: scopeToSearchParams(scope), signal: options.signal,
     body: { expected_revision: expectedRevision },
   }),
+
+  /** Read retained safe topology projections, never implicitly capture current data. */
+  topologyHistory: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<NetworkTopologyHistory>("/network/topology/history", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+
+  /** Retain one currently authorized server projection at the reviewed revision. */
+  captureTopology: (
+    scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkTopologyHistory>("/network/topology/history", {
+    method: "POST", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision },
+  }),
+
+  /** Compare only the selected retained captures with bounded server paging. */
+  compareTopology: (
+    scope: ScopeSelection, baselineId: string, targetId: string, offset = 0,
+    options: { signal?: AbortSignal } = {},
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("target_id", targetId);
+    query.set("offset", String(offset)); query.set("limit", "50");
+    return apiRequest<NetworkTopologyComparison>("/network/topology/history/compare", {
+      query, signal: options.signal,
+    });
+  },
 
   /** "Which spokes bypass the firewall?" */
   firewallBypass: (scope: ScopeSelection = {}) =>

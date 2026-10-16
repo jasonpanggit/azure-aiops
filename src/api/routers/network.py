@@ -27,6 +27,13 @@ from network.design import (
 )
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
+from network.history import (
+    UUID_PATTERN,
+    CaptureRequest,
+    TopologyCapture,
+    compare_captures,
+    topology_capture,
+)
 from network.intents import (
     IntentResult,
     IntentRun,
@@ -234,6 +241,93 @@ def _network_scope(scope: Scope) -> NetworkScope:
     a caller can never widen their view by choosing a network route.
     """
     return NetworkScope.from_dimensions(scope.dimensions)
+
+
+def _history_store(context: Context):
+    if context.network_history_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable topology history is unavailable")
+    return context.network_history_store
+
+
+def _history_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="network.retained_topology",
+            source_table="state/network-history", confidence="unknown",
+        ),
+        warnings=[
+            "Retained summary projections, not continuous topology, resource lifecycle or live connectivity evidence.",
+            "Rules, tags, arbitrary properties and boundary peering identities are not retained. Source generation and complete estate coverage are unreported.",
+            "Repeated source observation times do not prove independent observations; differences do not establish cause.",
+        ],
+    )
+
+
+@router.get("/topology/history")
+def retained_topology(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Read the personal exact-effective-scope retained history without provider acquisition."""
+    return _history_response(_history_store(context).read(principal.subject, scope.to_dict()), scope)
+
+
+@router.post("/topology/history", status_code=201)
+def capture_topology(
+    payload: CaptureRequest, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly retain one bounded currently authorized topology projection."""
+    store = _history_store(context)
+    if store.read(principal.subject, scope.to_dict())["revision"] != payload.expected_revision:
+        raise ApiError(ErrorCode.CONFLICT, "Topology history changed; reload before capturing")
+    started = datetime.now(UTC).isoformat()
+    service = _service(context, scope)
+    try:
+        topology = service.analyze().topology.to_dict(detail="summary")
+        capture = topology_capture(
+            topology, service.snapshot.observed_at, started, datetime.now(UTC).isoformat(),
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Topology projection could not be retained; check provider coverage or narrow the scope. No capture was saved.",
+        ) from exc
+    try:
+        data = store.append(principal.subject, scope.to_dict(), payload.expected_revision, capture)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _history_response(data, scope)
+
+
+@router.get("/topology/history/compare")
+def compare_topology(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope, page: Page,
+    baseline_id: Annotated[str, Query(pattern=UUID_PATTERN)],
+    target_id: Annotated[str, Query(pattern=UUID_PATTERN)],
+) -> dict:
+    """Compare two retained projections without acquiring or trusting browser topology."""
+    history = _history_store(context).read(principal.subject, scope.to_dict())
+    by_id = {row["capture_id"]: (index, row) for index, row in enumerate(history["captures"])}
+    if baseline_id not in by_id or target_id not in by_id:
+        raise ApiError(ErrorCode.NOT_FOUND, "Topology capture is not retained in this personal scope")
+    previous_index, previous = by_id[baseline_id]
+    current_index, current = by_id[target_id]
+    if previous_index >= current_index:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Select two distinct captures in capture order")
+    changes = compare_captures(
+        TopologyCapture.model_validate(previous), TopologyCapture.model_validate(current),
+    )
+    response = _history_response({
+        "baseline_id": baseline_id, "target_id": target_id,
+        "changes": changes[page.offset:page.offset + page.limit],
+        "total": len(changes),
+        "counts": {
+            state: sum(row["change"] == state for row in changes)
+            for state in ("added", "no_longer_observed", "changed")
+        },
+    }, scope)
+    response["pagination"] = page.to_dict(len(changes))
+    return response
 
 
 def _evidence(

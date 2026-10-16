@@ -9164,3 +9164,81 @@ body.topology-fullscreen-open {
   display: block;
   margin-top: 6px;
 }
+
+.network-history {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  scroll-margin-top: 76px;
+}
+
+.network-history h2,
+.network-history h3,
+.network-history p {
+  margin: 0;
+}
+
+.network-history p {
+  max-width: 75ch;
+}
+
+.network-history-heading,
+.network-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.network-history-heading {
+  justify-content: space-between;
+}
+
+.network-history-selectors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  align-items: end;
+  gap: 16px;
+}
+
+.network-history-selectors label,
+.network-history-receipts {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.network-history .button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.network-history-table {
+  overflow-x: auto;
+}
+
+.network-history-table table {
+  min-width: 700px;
+}
+
+.network-history-table td {
+  max-width: 420px;
+  overflow-wrap: anywhere;
+}
+
+.network-history-table td span {
+  display: block;
+  margin-top: 6px;
+}
+
+.network-history-fields div {
+  margin-bottom: 12px;
+}
+
+.network-history-fields dt {
+  font-weight: 600;
+}
+
+.network-history-fields dd {
+  margin: 4px 0 0;
+}

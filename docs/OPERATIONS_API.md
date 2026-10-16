@@ -887,6 +887,8 @@ Served by `NetworkIntelligenceService` over the ontology snapshot.
 | `/api/v1/network/summary` | Dashboard card payload |
 | `/api/v1/network/intents` | GET personal saved connectivity expectations/receipts; PUT replace reviewed declarations |
 | `/api/v1/network/intents/run` | POST explicitly analyze the saved reviewed suite against current scoped configuration |
+| `/api/v1/network/topology/history` | GET personal exact-scope retained projections; POST explicitly capture reviewed history revision |
+| `/api/v1/network/topology/history/compare` | GET paginated fixed-field differences between two retained captures |
 
 **Saved connectivity tests** are personal reader state, not global design policy,
 deployment approvals or infrastructure execution. The server keys documents by
@@ -919,6 +921,33 @@ repeated snapshot observation times do not prove independent acquisitions.
 No time-based expiry, historical backfill, continuous coverage, compliance or
 observed-reachability claim is made. Personal suite contents are not added to
 the current Network Copilot snapshot.
+
+**Topology history** retains the latest five explicit server-acquired summary
+projections on the existing document root at `state/network-history/`, keyed by
+exact principal and effective nine-dimension scope. GET does not acquire current
+Network data. POST accepts only `expected_revision`, resolves one currently
+authorized Network service and captures its untruncated summary. Truncation,
+invalid projection, provider or storage failures do not append. Concurrent/stale
+writes return409 under create-only/ETag CAS. Each capture has aware acquisition
+start/finish times and reported source observation time (empty means unreported).
+Schema one retains fixed node metadata, directed typed relationships and peering
+configuration flags. It excludes raw rules, tags, arbitrary properties and
+boundary peering identities; withheld boundary peerings and source-dropped
+relationships have explicit counts. The bounds are1500 nodes/6000 edges per
+capture and2MiB for the serialized five-capture document. Exceeding a bound fails
+explicitly without truncation; narrow the scope instead.
+
+Comparison requires two distinct retained `baseline_id`/`target_id` UUIDs in
+capture order. It reads no new provider, compares exact fixed fields, and uses
+standard `offset`/`limit` pagination with overall added/no-longer-observed/changed
+counts. Expired, foreign-principal or different-scope IDs return404; same/reversed
+captures return400. "No longer observed" means absent from a later projection,
+not deletion. Source generation, complete estate coverage, lifecycle and causation
+are unreported. Repeated source timestamps do not prove independent observations;
+zero differences do not establish unchanged infrastructure. No background
+collection, historical backfill, time expiry, packet probing, execution approval
+or infrastructure mutation occurs. Personal retained contents are not added to
+the Network Copilot context.
 
 Three properties are load-bearing:
 

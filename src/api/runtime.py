@@ -4581,6 +4581,13 @@ def _network_intent_store():
     return NetworkIntentStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _network_history_store():
+    """Persist explicit scoped topology projections on the existing durable root."""
+    from network.history import NetworkHistoryStore
+
+    return NetworkHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _resource_health_history_store():
     """Retain personal utilization receipts on the existing durable root."""
     from operations.resource_health_history import ResourceHealthHistoryStore
@@ -5765,6 +5772,7 @@ def build_context() -> ApiContext:
         service_portfolio_store=_service_portfolio_store(),
         resource_health_history_store=_resource_health_history_store(),
         network_intent_store=_network_intent_store(),
+        network_history_store=_network_history_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,
