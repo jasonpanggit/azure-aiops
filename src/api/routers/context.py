@@ -250,10 +250,14 @@ def search(
             scope=scope.to_dict(),
             warnings=warnings,
         )
-    subscription_ids = live_subscription_ids(context, scope)
     normalized_query = q.casefold().strip()
     live_search = normalized_query.startswith("show list of") and (
         "vm" in normalized_query or "server" in normalized_query
+    )
+    subscription_ids = (
+        live_subscription_ids(context, scope, default_all=True)
+        if live_search and context.hybrid_search_provider is not None
+        else []
     )
     if context.hybrid_search_provider is not None and subscription_ids and live_search:
         result = context.hybrid_search_provider(q, subscription_ids)

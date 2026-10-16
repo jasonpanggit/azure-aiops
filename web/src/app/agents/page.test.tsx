@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
 
 const { action, catalog, investigate } = vi.hoisted(() => ({
   action: vi.fn(),
@@ -65,10 +65,16 @@ const ledger = {
   mutation_authorized: false,
 };
 
+function ScopeSwitcher() {
+  const { setScope } = useScope();
+  return <button onClick={() => setScope({ subscription: ["sub-b"] })}>Switch scope</button>;
+}
+
 function renderPage() {
   return render(
     <ScopeProvider>
       <MultiAgentInvestigationPage />
+      <ScopeSwitcher />
     </ScopeProvider>
   );
 }
@@ -82,6 +88,35 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
       status: "human_review_in_progress",
       decisions: [{ at: "2026-01-01T10:05:00Z", action: actionName, payload }],
     })));
+  });
+
+  it("distinguishes catalog failures from confirmed Foundry unavailability", async () => {
+    catalog.mockRejectedValueOnce(new Error("Catalog request denied"));
+    renderPage();
+    expect(await screen.findByText("Catalog request denied")).toBeInTheDocument();
+    expect(screen.getByText("Foundry status unknown")).toBeInTheDocument();
+    expect(screen.queryByText("Foundry unavailable · deterministic fallback")).not.toBeInTheDocument();
+  });
+
+  it("rejects an investigation response belonging to a previous scope", async () => {
+    let resolve!: (value: ReturnType<typeof envelope<typeof ledger>>) => void;
+    investigate.mockImplementationOnce(() => new Promise(value => { resolve = value; }));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Run deterministic investigation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Switch scope" }));
+    await act(async () => { resolve(envelope(ledger)); });
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeEnabled();
+  });
+
+  it("surfaces failed operator actions and retains the investigation for retry", async () => {
+    action.mockRejectedValueOnce(new Error("Owner assignment denied"));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Run deterministic investigation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Assign owner" }));
+    expect(await screen.findByText("Owner assignment denied")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Assign owner" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Specialist plan activity" })).toBeInTheDocument();
   });
 
   it("runs agents, shows evidence-backed synthesis, and records human decisions", async () => {

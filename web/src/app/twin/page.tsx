@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -58,31 +58,48 @@ export default function OperationalTwinPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [detailErrors, setDetailErrors] = useState<string[]>([]);
+  const [copyError, setCopyError] = useState("");
+  const loadedScope = useRef<typeof scope | null>(null);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError("");
+    loadedScope.current = null;
+    setSnapshot(null);
+    setComparison(null);
+    setScenario(null);
+    setTraversal(null);
+    setExported(null);
+    setDetailErrors([]);
+    setCopyError("");
     Promise.allSettled([twinApi.graph(scope), twinApi.compare(scope)]).then(([graphResult, compareResult]) => {
       if (!active) return;
       if (graphResult.status === "fulfilled") {
+        loadedScope.current = scope;
         setSnapshot(graphResult.value);
       } else {
         setError(graphResult.reason instanceof Error ? graphResult.reason.message : "Unable to load operational twin");
       }
       if (compareResult.status === "fulfilled") setComparison(compareResult.value);
+      else setDetailErrors(["Temporal comparison is unavailable."]);
       setLoading(false);
     });
     return () => {
       active = false;
     };
-  }, [scope]);
+  }, [scope, refresh]);
 
   const selectedResource = useMemo(() => firstResource(snapshot), [snapshot]);
 
   useEffect(() => {
-    if (!selectedResource) return;
+    if (!selectedResource || loadedScope.current !== scope) return;
     let active = true;
+    setScenario(null);
+    setTraversal(null);
+    setExported(null);
     Promise.allSettled([
       twinApi.scenario(scenarioType, selectedResource, scope),
       twinApi.traverse(selectedResource, scope),
@@ -92,6 +109,10 @@ export default function OperationalTwinPage() {
       if (scenarioResult.status === "fulfilled") setScenario(scenarioResult.value);
       if (traversalResult.status === "fulfilled") setTraversal(traversalResult.value);
       if (exportResult.status === "fulfilled") setExported(exportResult.value);
+      const labels = ["Scenario analysis", "Business traversal", "Twin export"];
+      const errors = [scenarioResult, traversalResult, exportResult]
+        .flatMap((result, index) => result.status === "rejected" ? [`${labels[index]} is unavailable.`] : []);
+      setDetailErrors(current => [...current.filter(message => message.startsWith("Temporal")), ...errors]);
     });
     return () => {
       active = false;
@@ -101,7 +122,6 @@ export default function OperationalTwinPage() {
   const observedRisk = snapshot?.source_status?.live_operational_sources === "unavailable"
     ? null
     : riskScore(snapshot);
-  const risk = observedRisk ?? 0;
 
   // Read-only contextual Copilot over the already-loaded request-time twin.
   // Entity/relationship/temporal/scenario/traversal identities keep provenance
@@ -185,15 +205,22 @@ export default function OperationalTwinPage() {
         actions={
           <div className="twin-header-actions" aria-label="Twin actions">
             <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about the twin" />
-            <button className="button" type="button" onClick={() => void twinApi.graph(scope).then(setSnapshot)}>
+            <button className="button" type="button" disabled={loading} onClick={() => setRefresh(current => current + 1)}>
               Refresh current state
             </button>
             <button
               className="button"
               type="button"
-              onClick={() => {
+              disabled={loading || !snapshot}
+              onClick={async () => {
+                setCopyError("");
                 const payload = JSON.stringify(exported?.data ?? snapshot?.data ?? {}, null, 2);
-                if (typeof navigator !== "undefined") void navigator.clipboard?.writeText(payload);
+                try {
+                  if (!navigator.clipboard) throw new Error("Clipboard is unavailable in this browser.");
+                  await navigator.clipboard.writeText(payload);
+                } catch (reason) {
+                  setCopyError(reason instanceof Error ? reason.message : "Unable to copy twin export.");
+                }
               }}
             >
               Copy export
@@ -211,6 +238,8 @@ export default function OperationalTwinPage() {
       />
 
       {error ? <StatePanel title="Twin unavailable" message={error} tone="error" /> : null}
+      {detailErrors.length ? <StatePanel title="Some twin evidence is unavailable" message={detailErrors.join(" ")} tone="error" /> : null}
+      {copyError ? <StatePanel title="Export not copied" message={copyError} tone="error" /> : null}
       {loading ? <StatePanel title="Loading twin" message="Composing live operational state with semantic graph context." tone="loading" /> : null}
       {snapshot ? (
         <EvidenceBar
@@ -228,7 +257,7 @@ export default function OperationalTwinPage() {
             <h2>Risk trend</h2>
           </div>
           <div className="card-body risk-gauge-body">
-            <RiskGauge score={risk} label="Scenario-weighted risk" detail="Current twin risk signal" />
+            {observedRisk === null ? <p className="muted">Risk evidence unavailable; no healthy score is asserted.</p> : <RiskGauge score={observedRisk} label="Scenario-weighted risk" detail="Current twin risk signal" />}
           </div>
         </section>
         <section className="metric-grid" aria-label="Twin summary">
@@ -308,8 +337,8 @@ export default function OperationalTwinPage() {
           </select>
           <p className="panel-lead">{scenario?.data.likely_impact ?? "Select a scenario to estimate impact."}</p>
           <div className="split-kpis">
-            <MetricCard label="Risk delta" value={scenario?.data.risk_delta ?? 0} detail="Estimated change" />
-            <MetricCard label="Impacted" value={scenario?.data.impacted_entities.length ?? 0} detail="Related twin entities" />
+            <MetricCard label="Risk delta" value={scenario?.data.risk_delta ?? "—"} detail="Estimated change" />
+            <MetricCard label="Impacted" value={scenario?.data.impacted_entities.length ?? "—"} detail="Related twin entities" />
           </div>
           </div>
         </section>

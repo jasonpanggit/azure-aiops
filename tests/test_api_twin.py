@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import ClassVar
 
 from fastapi.testclient import TestClient
@@ -148,6 +149,30 @@ def _client(tmp_path) -> TestClient:
         remediation_provider=lambda: _Remediation(),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
+
+
+def test_default_twin_scope_uses_active_connection_live_providers(tmp_path):
+    client = _client(tmp_path)
+    context = client.app.state.context
+    context.onboarding.registry.list = lambda **_kwargs: [
+        SimpleNamespace(subscription_id="sub-prod", connection_id="conn-prod", is_active=True),
+        SimpleNamespace(subscription_id="sub-disabled", connection_id="conn-disabled", is_active=False),
+    ]
+    calls = []
+
+    def network(subscriptions):
+        calls.append(subscriptions)
+        return _Network()
+
+    context.hybrid_network_provider = network
+    context.network_provider = lambda: None
+    response = client.get("/api/v1/twin/graph", headers=_auth())
+    assert response.status_code == 200, response.text
+    assert calls == [["sub-prod"]]
+    assert any(
+        entity["name"] == "payroll-vm"
+        for entity in response.json()["data"]["entities"]
+    )
 
 
 def _auth() -> dict[str, str]:

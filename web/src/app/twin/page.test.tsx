@@ -133,4 +133,27 @@ describe("Operational Digital Twin workspace", () => {
       "semantic unavailable",
     );
   });
+
+  it("reports failed refreshes without retaining the prior snapshot or export", async () => {
+    renderPage();
+    expect(await screen.findByText("operational-twin-export")).toBeInTheDocument();
+    graph.mockRejectedValueOnce(new Error("Twin refresh unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh current state" }));
+    expect(await screen.findByText("Twin refresh unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("operational-twin-export")).not.toBeInTheDocument();
+    expect(screen.queryByText("payroll-vm")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy export" })).toBeDisabled();
+    expect(screen.getByText(/Risk evidence unavailable/)).toBeInTheDocument();
+  });
+
+  it("does not turn absent risk or failed supplemental reads into zero-risk evidence", async () => {
+    graph.mockResolvedValueOnce(envelope({
+      ...snapshot, temporal: { ...snapshot.temporal, risk_trend: [] },
+    }));
+    scenario.mockRejectedValueOnce(new Error("scenario unavailable"));
+    renderPage();
+    expect(await screen.findByText(/Scenario analysis is unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/Risk evidence unavailable/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Scenario-weighted risk.*0/)).not.toBeInTheDocument();
+  });
 });

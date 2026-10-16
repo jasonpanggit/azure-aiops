@@ -162,6 +162,11 @@ describe("durable Situation detail", () => {
     expect(audit).toHaveBeenCalledWith("situation://one", {});
   });
 
+  it("preserves literal percent characters in already-decoded route IDs", async () => {
+    render(<ScopeProvider><SituationDetailPage params={{ id: "situation://50% rollout" }} /></ScopeProvider>);
+    await waitFor(() => expect(get).toHaveBeenCalledWith("situation://50% rollout", {}));
+  });
+
   it("opens and closes the evidence drawer with Escape and keeps local save separate", async () => {
     render(<ScopeProvider><SituationDetailPage params={{ id: "situation://one" }} /></ScopeProvider>);
     fireEvent.click(await screen.findByRole("button", { name: "View evidence details" }));

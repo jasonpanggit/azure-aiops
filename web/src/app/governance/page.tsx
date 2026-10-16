@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -63,6 +63,15 @@ export default function GovernancePage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    setPack(null);
+    setPackLabel("");
+    setBusy("");
+    setActionError("");
+    return () => { requestId.current += 1; };
+  }, [scope]);
 
   const [settingsRefresh, setSettingsRefresh] = useState(0);
   const audiences = useApi(() => governanceApi.accessReviewKinds(), []);
@@ -73,19 +82,23 @@ export default function GovernancePage() {
   );
 
   async function generate(label: string, loader: () => Promise<{ data: unknown }>) {
+    if (busy) return;
+    const id = ++requestId.current;
     setBusy(label);
     setActionError("");
     try {
       const response = await loader();
+      if (id !== requestId.current) return;
       setPack(response.data as AccessReviewPack | AuditExportPack);
       setPackLabel(label);
     } catch (error) {
+      if (id !== requestId.current) return;
       setPack(null);
       setActionError(
         error instanceof Error ? error.message : "The pack could not be generated.",
       );
     } finally {
-      setBusy("");
+      if (id === requestId.current) setBusy("");
     }
   }
 
@@ -100,7 +113,7 @@ export default function GovernancePage() {
   // in local state until explicitly saved, so a background refetch never
   // clobbers unsaved operator input.
   const settingsVersion = currentSettings ? JSON.stringify(currentSettings) : "";
-  useMemo(() => {
+  useEffect(() => {
     if (!currentSettings) return;
     setDraft(
       Object.fromEntries(

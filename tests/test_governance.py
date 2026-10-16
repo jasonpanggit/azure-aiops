@@ -1004,9 +1004,11 @@ def _publish_governance_generation(
     )
 
 
+@pytest.mark.parametrize("separate_connection_root", [False, True])
 def test_raw_connection_generation_serves_every_governance_section_without_ontology(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    separate_connection_root: bool,
 ) -> None:
     home = tmp_path / "aiops"
     connection = _connection(
@@ -1048,7 +1050,12 @@ def test_raw_connection_generation_serves_every_governance_section_without_ontol
         ],
     }
     _publish_governance_generation(home, connection, datasets)
-    monkeypatch.setattr(api_runtime, "aiops_home", lambda: home)
+    monkeypatch.setattr(
+        api_runtime, "aiops_home",
+        lambda: tmp_path / "unrelated-home" if separate_connection_root else home,
+    )
+    if separate_connection_root:
+        monkeypatch.setenv(api_runtime.ENV_CONNECTION_HOME, str(home))
     monkeypatch.setattr(api_runtime, "_governance_connections", lambda: [connection])
 
     principals = {
@@ -1088,6 +1095,31 @@ def test_raw_connection_generation_serves_every_governance_section_without_ontol
             "empty results are not proven clean" in warning
             for warning in response.json().get("warnings", [])
         )
+
+
+def test_governance_registry_uses_connection_boundary_without_resolving_secrets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    root = tmp_path / "durable-connections"
+    calls = []
+
+    class Registry:
+        def __init__(self, home):
+            calls.append(home)
+
+        def list(self, *, include_disabled):
+            assert include_disabled is True
+            return [{"connection_id": "durable-connection", "subscription_id": "sub-a"}]
+
+    monkeypatch.setenv(api_runtime.ENV_CONNECTION_HOME, str(root))
+    monkeypatch.setattr(api_runtime, "ConnectionRegistry", Registry)
+    monkeypatch.setattr(
+        api_runtime, "_onboarding_service",
+        lambda *_args, **_kwargs: pytest.fail("Governance must not resolve credentials"),
+    )
+
+    assert api_runtime._governance_connections()[0]["connection_id"] == "durable-connection"
+    assert calls == [str(root)]
 
 
 def test_active_empty_governance_generation_is_not_reported_as_unsynced(

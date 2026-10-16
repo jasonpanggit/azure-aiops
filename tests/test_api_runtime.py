@@ -1409,9 +1409,11 @@ def test_network_page_connection_scope_reaches_selected_connection_factory(
     assert selected_connections == ["conn-b"]
 
 
+@pytest.mark.parametrize("query_scope", [{}, {"subscription": "sub-a"}])
 def test_scoped_live_search_does_not_require_deferred_semantic_graph(
     monkeypatch,
     tmp_path,
+    query_scope,
 ) -> None:
     home = tmp_path / "aiops"
     ConnectionRegistry(home).add(
@@ -1455,7 +1457,7 @@ def test_scoped_live_search_does_not_require_deferred_semantic_graph(
 
     response = client.get(
         "/api/v1/search",
-        params={"q": "show list of VMs", "subscription": "sub-a"},
+        params={"q": "show list of VMs", **query_scope},
         headers={
             "Authorization": f"Bearer {next(iter(json.loads(TOKENS)))}"
         },
