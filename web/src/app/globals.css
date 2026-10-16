@@ -9793,3 +9793,22 @@ body.topology-fullscreen-open {
     gap: 8px;
   }
 }
+.governance-retained {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+  min-width: 0;
+}
+.governance-retained h3 { font-size: 1.125rem; margin: 0 0 0.5rem; }
+.governance-retained h4 { font-size: 1rem; margin: 0 0 0.5rem; }
+.governance-retained p { max-width: 72ch; margin: 0.5rem 0 0.75rem; overflow-wrap: anywhere; }
+.governance-retained-content { margin-top: 1.25rem; }
+.governance-retained-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; margin: 1.25rem 0; }
+.governance-retained-actions label { display: grid; gap: 0.375rem; max-width: 100%; }
+.governance-retained select { min-height: 44px; max-width: 100%; color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: 6px; padding: 0.5rem; }
+.governance-retained .button { min-height: 44px; white-space: normal; margin: 0.25rem 0.5rem 0.25rem 0; }
+.governance-retained-list { list-style: none; padding: 0; }
+.governance-retained-list > li { padding: 1.25rem 0; border-bottom: 1px solid var(--color-border); }
+.governance-retained-review { margin: 1.5rem 0; padding: 1rem 0; border-block: 1px solid var(--color-border-strong); }
+.governance-retained-hash { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.governance-retained-preview { max-height: 28rem; overflow: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--color-surface); color: var(--color-text); padding: 1rem; border: 1px solid var(--color-border); }

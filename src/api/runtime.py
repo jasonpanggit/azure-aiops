@@ -4538,6 +4538,13 @@ def _settings_store() -> EnterpriseSettingsStore:
     return EnterpriseSettingsStore(OneLakeDocumentStore(str(root)))
 
 
+def _retained_audit_export_store():
+    """Retain personal exact-scope audit packs without new cloud resources."""
+    from intelligence.governance.retained_exports import RetainedAuditExportStore
+
+    return RetainedAuditExportStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _compliance_policy_store():
     """Use durable scope-exact documents in both local and deployed runs."""
     from intelligence.governance.compliance_policy import CompliancePolicyStore
@@ -5820,6 +5827,7 @@ def build_context() -> ApiContext:
         governance_provider=lambda: providers.get("governance", optional=True),
         governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
+        retained_audit_export_store=_retained_audit_export_store(),
         compliance_policy_store=_compliance_policy_store(),
         situation_notes_store=_situation_notes_store(),
         situation_deadline_store=_situation_deadline_store(),

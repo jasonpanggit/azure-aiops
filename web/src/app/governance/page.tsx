@@ -20,6 +20,7 @@ import { useColumnFilters } from "@/lib/table-column-filters";
 import type { AccessReviewPack, AuditExportPack } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { EDITABLE_POLICY_SECTIONS, GovernanceSettingsEditor } from "@/components/GovernanceSettingsEditor";
+import { GovernanceRetainedExports } from "@/components/GovernanceRetainedExports";
 
 type Tab = "reviews" | "exports" | "settings";
 
@@ -278,6 +279,7 @@ export default function GovernancePage() {
                 ))}
               </div>
             )}
+            <GovernanceRetainedExports scope={scope} />
           </div>
         </section>
       )}

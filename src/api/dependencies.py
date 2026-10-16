@@ -14,6 +14,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Query, Request
 
+from intelligence.governance.retained_exports import RetainedAuditExportStore
 from intelligence.inventory.exports import InventoryExportStore
 from network.history import NetworkHistoryStore
 from network.intents import NetworkIntentStore
@@ -101,6 +102,7 @@ class ApiContext:
     # Enterprise settings are a user-submitted mutation rather than a snapshot
     # projection, so like risk exceptions they use a direct store handle.
     settings_store: Any | None = None
+    retained_audit_export_store: RetainedAuditExportStore | None = None
     compliance_policy_store: Any | None = None
     situation_notes_store: SituationNotesStore | None = None
     situation_deadline_store: SituationDeadlineStore | None = None

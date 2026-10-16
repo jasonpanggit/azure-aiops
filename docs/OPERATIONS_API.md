@@ -9,6 +9,42 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Personal retained audit evidence
+
+`GET /api/v1/governance/exports/retained` recovers metadata for the authenticated
+subject's **exact effective nine-dimensional read scope**. `POST` explicitly
+generates current server evidence with `{kind, expected_revision}` and retains
+its standard-redacted JSON. It never accepts client-supplied packs or silently
+captures a prior preview. The seven existing export kinds are supported.
+Source failures and partial-evidence warnings retain their existing meaning;
+capture is not an atomic cross-source snapshot or certification.
+
+`GET /exports/retained/{export_id}` returns its immutable content string and
+manifest independently of live evidence providers. SHA-256 and byte count cover
+the **exact downloaded UTF-8 content**, including the final newline, not a
+reserialized preview or collection wrapper. The portal verifies both before
+enabling download. Integrity is not cryptographic authenticity or freshness.
+Generated/captured/observed times are distinct; unknown observations stay unknown.
+Recovery remains available even if current export-kind metadata is unavailable.
+Retained content is not added to the source-only Governance Copilot.
+
+Readers may capture and remove their own copies; this grants no administration
+or execution authority. Standard recursive secret-key redaction is **not
+comprehensive DLP**; recognized secret-reference pointers may remain, and access
+and resource details can be sensitive. Existing `AIOPS_HOME` local/OneLake storage
+uses `state/governance-exports/<subject-and-scope-hash>.json`, with strict
+512-KiB content, 10-capture and 6-MiB serialized collection limits. Oversized/full
+requests are rejected without truncation or eviction. No jobs, scheduler,
+automatic expiry, legal hold or shared campaign are introduced.
+
+`POST /exports/retained/remove` requires `{export_id, expected_revision}` and
+removes only the reviewed stored copy; it cannot revoke downloaded files.
+Capture/removal use paired ETag/revision CAS and create-only initial writes.
+Stale writes return 409; corrupt/unavailable storage returns safe 503, never an
+empty success. Unconfirmed UI writes lock mutations until explicit reload and a
+new action, with no automatic replay. Scope/tab/close/unmount changes abort and
+discard late UI results; abort does not prove a server write was cancelled.
+
 ## Reviewed enterprise-wide settings
 
 `GET /api/v1/governance/settings` retains the existing effective policy sections

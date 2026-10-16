@@ -2040,6 +2040,28 @@ export type { Envelope };
  * global scope so the API applies subscription isolation server-side.
  */
 export const governanceApi = {
+  /** Recover personal exact-scope metadata without acquiring live evidence. */
+  retainedExports: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly generate a current pack and retain its standard-redacted bytes. */
+  captureExport: (scope: ScopeSelection, kind: import("./audit-exports").AuditCaptureKind, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { kind, expected_revision: expectedRevision },
+    }),
+  /** Read immutable content independently of current providers. */
+  retainedExport: (scope: ScopeSelection, exportId: string, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureDetail>(`/governance/exports/retained/${encodeURIComponent(exportId)}`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Remove only the reviewed stored copy; downloaded copies cannot be revoked. */
+  removeExport: (scope: ScopeSelection, exportId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained/remove", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { export_id: exportId, expected_revision: expectedRevision },
+    }),
   finopsSummary: (scope: ScopeSelection = {}) =>
     apiRequest<FinOpsSummary>("/governance/finops/summary", {
       query: scopeToSearchParams(scope),

@@ -17,6 +17,8 @@ Two properties hold across every route here:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
@@ -31,6 +33,15 @@ from intelligence.governance import (
     SettingsValidationError,
     SpnGovernanceEngine,
     default_settings,
+)
+from intelligence.governance.retained_exports import (
+    MAX_CAPTURES,
+    AuditCaptureNotFoundError,
+    AuditCaptureRemoval,
+    AuditCaptureRequest,
+    AuditCaptureRequestError,
+    AuditKind,
+    RetainedAuditExportStore,
 )
 from intelligence.governance.settings import MAX_SETTINGS_REVISION, SettingsChange
 from storage.onelake_documents import DocumentConflictError
@@ -322,17 +333,91 @@ def export_kinds() -> dict[str, Any]:
     )
 
 
+@contextmanager
+def _retained_exports(context: Context) -> Iterator[RetainedAuditExportStore]:
+    store = context.retained_audit_export_store
+    if store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Retained audit export storage is unavailable")
+    try:
+        yield store
+    except ApiError:
+        raise
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Audit exports changed; reload before another action") from exc
+    except AuditCaptureNotFoundError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained audit export not found") from exc
+    except AuditCaptureRequestError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except Exception as exc:
+        _LOGGER.warning("Retained audit export operation unavailable (%s)", type(exc).__name__)
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Retained audit export operation could not be confirmed; reload before another action",
+        ) from exc
+
+
+def _retained_envelope(data: dict[str, Any], scope: Scope) -> dict[str, Any]:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="intelligence.governance.RetainedAuditExportStore",
+            source_table="retained_audit_exports", confidence=CONFIDENCE_UNKNOWN,
+        ),
+    )
+
+
+@router.get("/exports/retained", summary="Recover personal exact-scope audit captures")
+def retained_audit_exports(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _retained_exports(context) as store:
+        result = store.read(principal.subject, scope.to_dict())
+    return _retained_envelope(result, scope)
+
+
+@router.post("/exports/retained", status_code=201, summary="Generate and retain current audit evidence")
+def capture_audit_export(
+    payload: AuditCaptureRequest, context: Context,
+    principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _retained_exports(context) as store:
+        current = store.read(principal.subject, scope.to_dict())
+        if current["revision"] != payload.expected_revision:
+            raise DocumentConflictError("Audit exports changed")
+        if len(current["captures"]) >= MAX_CAPTURES:
+            raise AuditCaptureRequestError("Audit export collection is full; explicitly remove a capture")
+        document = audit_export(payload.kind, context, scope)
+        result = store.capture(
+            principal.subject, scope.to_dict(), payload.expected_revision,
+            document=document,
+        )
+    return _retained_envelope(result, scope)
+
+
+@router.get("/exports/retained/{export_id}", summary="Recover exact retained audit JSON")
+def retained_audit_export(
+    export_id: str, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _retained_exports(context) as store:
+        result = store.detail(principal.subject, scope.to_dict(), export_id)
+    return _retained_envelope(result, scope)
+
+
+@router.post("/exports/retained/remove", summary="Remove one reviewed personal audit capture")
+def remove_audit_export(
+    payload: AuditCaptureRemoval, context: Context,
+    principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _retained_exports(context) as store:
+        result = store.remove(
+            principal.subject, scope.to_dict(), payload.expected_revision, payload.export_id,
+        )
+    return _retained_envelope(result, scope)
+
+
 @router.get("/exports/{kind}", summary="Generate an audit evidence pack")
 def audit_export(
-    kind: Literal[
-        "subscription_onboarding",
-        "network_design",
-        "firewall_nsg",
-        "vulnerability_exposure",
-        "identity",
-        "remediation",
-        "executive",
-    ],
+    kind: AuditKind,
     context: Context,
     scope: ReadScope,
 ) -> dict[str, Any]:
