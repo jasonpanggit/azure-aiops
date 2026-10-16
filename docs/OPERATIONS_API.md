@@ -34,6 +34,40 @@ error instead of being attached to the selected workflow.
 The summary also discloses immutable rollout identity, wave and terms digest
 when present. Deferred container execution remains disabled.
 
+## Copilot exact historical reads and unconfirmed outcomes
+
+`GET /copilot/threads/{thread_id}/history` requires an exact `thr-` plus 32
+lowercase hex server ID, current read authorization, original principal and
+scope containment. Missing/foreign/expired/wider selections return the same 404.
+Configured store failure returns 503 rather than empty success. It uses the
+existing thread document and retained latest 12 turns; no new history index.
+Memory-only storage is identified explicitly. Existing 1 hour idle/24 hour absolute
+retention still applies.
+
+Unlike legacy session history, this exact read does not write, renew expiry,
+narrow the stored scope, run maintenance or change logical/storage revision.
+All copied retained turns/evidence/citations are stamped historical, and turns
+outside current narrowed scope are withheld. No providers, tools or models run.
+The response reports retained thread identity/revision and storage durability;
+it is not evidence of current source state, resumed work or execution authority.
+
+The Copilot page exposes on-demand history for its latest server handle or
+`/copilot?thread_id=<exact-id>` with all nine scoped bookmark dimensions.
+Pinned history is review-only: it cannot attach itself to active continuity or
+submit new questions. Reload only rereads the exact history. Malformed/wider
+bookmarks fail before acquisition; mismatched response identities fail visibly.
+Leaving historical review preserves scope. A `q` bookmark now prefills a draft
+instead of automatically submitting it, including after reload/scope changes.
+
+Stop waiting aborts only the browser request, never provider execution.
+Transport errors and interrupted waits retain the submitted question, disclose
+unknown server outcome and block further submissions until the operator
+explicitly enables a deliberate new question. They never retry automatically.
+An initial interrupted request may have no returned thread handle; no history
+or successful cancellation is fabricated. Scope changes discard local drafts
+and reject late responses. This does not implement server job cancellation or
+durable admission/progress for Agents.
+
 ## Agents retained investigation links
 
 `/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger

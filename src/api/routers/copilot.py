@@ -2476,6 +2476,36 @@ def investigate_canonical(
     )
 
 
+@router.get("/copilot/threads/{thread_id}/history", summary="Read exact retained historical turns")
+def retained_thread_history(
+    thread_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Read one exact owned thread, without executing or renewing its lifetime."""
+    if not re.fullmatch(r"thr-[a-f0-9]{32}", thread_id):
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found")
+    try:
+        data = investigation_thread_store().read_snapshot(
+            thread_id, principal.subject, scope,
+        )
+    except ThreadNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found") from exc
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation history is temporarily unavailable",
+        ) from exc
+    return envelope(
+        data, scope=scope.to_dict(),
+        warnings=[
+            (
+                "Retained historical observations, not current evidence or resumed "
+                "execution. Reading does not renew retention, rerun tools, change "
+                "the active thread or authorize an operational action."
+            )
+        ],
+    )
+
+
 @router.get("/copilot/history/{session_id}", summary="Bounded conversation history")
 def history(session_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
     """Prior turns for one caller's session -- never visible to another principal."""

@@ -135,6 +135,71 @@ def _turn(marker: str = "one") -> dict[str, Any]:
 # Durability
 # ---------------------------------------------------------------------------
 
+def test_snapshot_is_historical_detached_and_does_not_renew_or_write() -> None:
+    documents, clock = FakeDocuments(), FakeClock()
+    store = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = store.create("operator-a", BROAD)
+    store.append(thread.thread_id, "operator-a", BROAD, _turn())
+    before = deepcopy(documents.documents)
+    documents.fail_writes = True
+    clock.advance(IDLE_TTL_SECONDS - 1)
+    snapshot = InvestigationThreadStore(documents=documents, clock=clock).read_snapshot(
+        thread.thread_id, "operator-a", BROAD,
+    )
+    assert snapshot["durability"] == "durable"
+    assert snapshot["thread_revision"] == 1
+    assert snapshot["observation_status"] == OBSERVATION_HISTORICAL
+    turn = snapshot["turns"][0]
+    assert turn["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["tool_results"][0]["evidence"][0]["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["citations"][0]["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["retained_at"] == "1970-01-12T13:46:40+00:00"
+    turn["question"] = "mutated copy"
+    assert documents.documents == before
+    assert store.read_snapshot(thread.thread_id, "operator-a", BROAD)["turns"][0]["question"] == _turn()["question"]
+    assert not documents.deleted
+    assert not documents.list_calls[1:]
+    clock.advance(2)
+    with pytest.raises(ThreadNotFound):
+        store.read_snapshot(thread.thread_id, "operator-a", BROAD)
+    assert documents.documents == before
+    assert not documents.deleted
+
+
+def test_snapshot_narrowing_withholds_entire_old_payload_without_narrowing_record() -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", BROAD)
+    store.append(thread.thread_id, "operator-a", BROAD, _turn("secret"))
+    snapshot = store.read_snapshot(thread.thread_id, "operator-a", SUB_A)
+    restricted = snapshot["turns"][0]
+    assert restricted["status"] == "historical_scope_restricted"
+    assert "question" not in restricted
+    assert "snapshot_id" not in restricted
+    assert "retained_at" not in restricted
+    assert restricted["tool_results"] == restricted["citations"] == []
+    # A review read must not permanently narrow the thread.
+    assert store.read_snapshot(thread.thread_id, "operator-a", BROAD)["turns"][0]["snapshot_id"] == "snap-secret"
+    assert snapshot["durability"] == "memory_only"
+
+
+@pytest.mark.parametrize(
+    ("subject", "scope"), [("operator-b", SUB_A), ("operator-a", SUB_B), ("operator-a", BROAD)],
+)
+def test_snapshot_denies_foreign_or_wider_reads(subject: str, scope: Scope) -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", SUB_A)
+    with pytest.raises(ThreadNotFound):
+        store.read_snapshot(thread.thread_id, subject, scope)
+
+
+def test_snapshot_storage_failure_is_not_empty_history() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.fail_reads = True
+    with pytest.raises(ThreadStoreUnavailable):
+        store.read_snapshot(thread.thread_id, "operator-a", SUB_A)
+
 
 def test_thread_survives_process_restart() -> None:
     documents = FakeDocuments()

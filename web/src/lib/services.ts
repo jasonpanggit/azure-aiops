@@ -763,6 +763,11 @@ export interface CopilotToolSpec {
 }
 
 export const copilotApi = {
+  /** Read exact authorized historical turns without renewing or executing a thread. */
+  retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<import("./types").RetainedCopilotHistory>(`/copilot/threads/${encodeURIComponent(threadId)}/history`, {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
   /**
    * Asks the Operations Copilot. The API grounds an Azure AI Foundry prompt
    * agent on governed context, so `answer` is a narration of `results` — never
@@ -833,10 +838,11 @@ export const ROOT_COPILOT_SESSION = "aiops-root-copilot";
 export function askCanonicalInvestigation(
   question: string,
   scope: ScopeSelection = {},
-  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown> } = {},
+  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal } = {},
 ): Promise<Envelope<CopilotInvestigation>> {
   return apiRequest<CopilotInvestigation>("/copilot/investigate", {
     method: "POST",
+    signal: options.signal,
     query: scopeToSearchParams(scope),
     body: {
       question,

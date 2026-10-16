@@ -25,6 +25,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from api.scope import Scope
@@ -523,6 +524,8 @@ class InvestigationThreadStore:
         principal_subject: str,
         current_scope: Scope,
         now: float,
+        *,
+        maintenance: bool = True,
     ) -> InvestigationThread:
         """Return a thread only after every current-turn gate passes."""
 
@@ -537,21 +540,24 @@ class InvestigationThreadStore:
         # the reason is what makes an aged-out thread distinguishable in
         # telemetry even though the caller only ever sees not-found.
         expiry = self._expiry_reason(record, now) if record is not None else ""
-        self._sweep(now)
+        if maintenance:
+            self._sweep(now)
         if record is None:
             raise ThreadNotFound(reason="missing")
         if expiry:
-            self._threads.pop(thread_id, None)
-            self._forget_document(
-                thread_id,
-                expected_revision=record.storage_revision,
-            )
+            if maintenance:
+                self._threads.pop(thread_id, None)
+                self._forget_document(
+                    thread_id,
+                    expected_revision=record.storage_revision,
+                )
             raise ThreadNotFound(reason=expiry)
         if record.principal_subject != principal_subject:
             raise ThreadNotFound(reason="principal_mismatch")
         if not scope_within(current_scope, record.scope):
             raise ThreadNotFound(reason="scope_widened")
-        self._maybe_sweep_durable(now)
+        if maintenance:
+            self._maybe_sweep_durable(now)
         return record
 
     def _age_retained_turns(self, record: InvestigationThread) -> None:
@@ -672,6 +678,34 @@ class InvestigationThreadStore:
             self._threads.move_to_end(thread_id)
             self._persist(record)
             return record
+
+    def read_snapshot(
+        self,
+        thread_id: str,
+        principal_subject: str,
+        current_scope: Scope,
+    ) -> dict[str, Any]:
+        """Read historical turns without renewing TTL, narrowing state or writing."""
+        with self._lock:
+            record = self._resolve(
+                thread_id, principal_subject, current_scope, self._clock(),
+                maintenance=False,
+            )
+            historical = deepcopy(record)
+            self._age_retained_turns(historical)
+            turns = self._project_history(historical, current_scope)
+            for payload, turn in zip(turns, historical.turns, strict=True):
+                if payload.get("status") != "historical_scope_restricted":
+                    payload["retained_at"] = datetime.fromtimestamp(
+                        turn.recorded_at, UTC,
+                    ).isoformat()
+            return {
+                "thread_id": record.thread_id,
+                "thread_revision": record.revision,
+                "durability": record.durability,
+                "observation_status": OBSERVATION_HISTORICAL,
+                "turns": turns,
+            }
 
     def history(
         self,

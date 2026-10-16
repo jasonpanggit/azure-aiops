@@ -3778,6 +3778,20 @@ export interface CanonicalCopilotToolResult {
   evidence: unknown[];
   warning: string;
 }
+/** Exact owned history remains historical even if it was the latest retained turn. */
+export interface RetainedCopilotHistory {
+  thread_id: string;
+  thread_revision: number;
+  durability: "durable" | "memory_only";
+  observation_status: "historical";
+  turns: Array<Record<string, unknown> & {
+    question?: string;
+    status?: string;
+    observation_status: "historical";
+    retained_at?: string;
+  }>;
+}
+
 export interface CanonicalCopilotResult {
   contract_version: "1";
   status: CopilotSnapshotStatusV2;

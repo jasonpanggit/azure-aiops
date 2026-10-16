@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -8,7 +9,10 @@ import { MarkdownLite } from "@/components/ui/MarkdownLite";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { StatePanel } from "@/components/ui/StatePanel";
+import { CopilotHistory } from "@/components/CopilotHistory";
 import { useScope } from "@/lib/scope-context";
+import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import {
   askCanonicalInvestigation,
   toCanonicalInvestigationView,
@@ -51,19 +55,38 @@ export default function CopilotPage() {
 
 function CopilotContent() {
   const { scope } = useScope();
+  const continuity = useOptionalThreadContinuity();
+  const search = useSearchParams();
+  let effectiveScope: ScopeSelection;
+  try { effectiveScope = scopedBookmark(search, scope); }
+  catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    return <main className="page-container"><StatePanel title="Copilot bookmark unavailable" message={error.message} tone="error" /><Link className="button" href="/copilot">Clear Copilot bookmark</Link></main>;
+  }
+  const threadId = search.get("thread_id") ?? "";
+  const valid = !search.has("thread_id") || (search.getAll("thread_id").length === 1 && /^thr-[a-f0-9]{32}$/.test(threadId));
+  const query = scopeToSearchParams(effectiveScope);
+  if (!valid) return <main className="page-container"><StatePanel title="Copilot bookmark unavailable" message="Use one exact server-issued thread identifier." tone="error" /><Link className="button" href={`/copilot${query.size ? `?${query}` : ""}`}>Clear historical thread selection</Link></main>;
+  return <CopilotWorkspace key={`${JSON.stringify(effectiveScope)}:${threadId}:${continuity?.generation ?? 0}`} scope={effectiveScope} pinnedThreadId={threadId} />;
+}
+
+function CopilotWorkspace({ scope, pinnedThreadId }: { scope: ScopeSelection; pinnedThreadId: string }) {
   const searchParams = useSearchParams();
   const threadContinuity = useOptionalThreadContinuity();
   const contextLabel = searchParams.get("situation") ?? searchParams.get("service");
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
+  const [recovery, setRecovery] = useState("");
+  const [lastThreadId, setLastThreadId] = useState("");
   const requestId = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const submittedQuestion = useRef("");
 
-  useEffect(() => {
-    setTurns([]);
-    setLoading(false);
-    return () => { requestId.current += 1; };
-  }, [scope]);
+  useEffect(() => () => {
+    requestId.current += 1;
+    activeRequest.current?.abort();
+  }, []);
 
   const starterPrompts = useMemo(
     () =>
@@ -75,8 +98,11 @@ function CopilotContent() {
 
   async function ask(value = question) {
     const nextQuestion = value.trim();
-    if (!nextQuestion || loading) return;
+    if (!nextQuestion || loading || pinnedThreadId || recovery) return;
     const id = ++requestId.current;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    submittedQuestion.current = nextQuestion;
     setQuestion("");
     setLoading(true);
     try {
@@ -85,12 +111,16 @@ function CopilotContent() {
       // principal-scoped thread with the workspace and drawer.
       const envelope = await askCanonicalInvestigation(nextQuestion, scope, {
         sessionId: ROOT_COPILOT_SESSION,
+        signal: controller.signal,
       });
       if (id !== requestId.current) return;
       const view = toCanonicalInvestigationView(envelope.data);
       if (view.threadId && view.threadRevision) {
-        threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision });
+        if (threadContinuity && !threadContinuity.acceptServerState(
+          { threadId: view.threadId, threadRevision: view.threadRevision }, threadContinuity.generation,
+        )) return;
       }
+      if (view.threadId) setLastThreadId(view.threadId);
       setTurns((current) => [
         ...current,
         {
@@ -108,6 +138,8 @@ function CopilotContent() {
       ]);
     } catch (reason) {
       if (id !== requestId.current) return;
+      setQuestion(nextQuestion);
+      setRecovery("The request did not return a confirmed result. The server may still have completed it. Review retained history before deliberately submitting another question; nothing is retried automatically.");
       setTurns((current) => [
         ...current,
         { question: nextQuestion, error: reason instanceof Error ? reason.message : "Copilot could not answer this request." },
@@ -117,16 +149,18 @@ function CopilotContent() {
     }
   }
 
-  const prefillQuestion = searchParams.get("q");
-  const autoAsked = useRef(false);
+  function stopWaiting() {
+    requestId.current += 1;
+    activeRequest.current?.abort();
+    setQuestion(submittedQuestion.current);
+    setLoading(false);
+    setRecovery("Stopped waiting in this browser. This does not cancel provider work: the server outcome is unknown. Review retained history before deliberately submitting another question.");
+  }
 
+  const prefillQuestion = searchParams.get("q");
   useEffect(() => {
-    if (prefillQuestion && !autoAsked.current) {
-      autoAsked.current = true;
-      ask(prefillQuestion);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefillQuestion]);
+    if (prefillQuestion && !pinnedThreadId) setQuestion(prefillQuestion);
+  }, [prefillQuestion, pinnedThreadId]);
 
   return (
     <div className="page-container copilot-page">
@@ -142,6 +176,10 @@ function CopilotContent() {
         }
       />
 
+      <CopilotHistory threadId={pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} />
+      {pinnedThreadId ? <StatePanel title="Historical review only" message="New questions are disabled while an exact historical thread is selected. Leave historical review to use the current active conversation; this read does not attach or resume the selected thread." /> : null}
+      {recovery ? <StatePanel title="Request outcome unconfirmed" message={recovery} tone="partial" action={<button className="button" onClick={() => setRecovery("")}>I reviewed the outcome; enable a deliberate new question</button>} /> : null}
+
       <div className="copilot-layout">
         <section className="copilot-thread">
           {turns.length === 0 && (
@@ -151,7 +189,7 @@ function CopilotContent() {
               <p>Copilot uses the same governed knowledge and operating scope as the rest of the workbench.</p>
               <div className="copilot-prompts">
                 {starterPrompts.map((prompt) => (
-                  <button type="button" key={prompt} disabled={loading} onClick={() => ask(prompt)}>
+                  <button type="button" key={prompt} disabled={loading || Boolean(pinnedThreadId) || Boolean(recovery)} onClick={() => ask(prompt)}>
                     {prompt}
                     <span>→</span>
                   </button>
@@ -243,6 +281,8 @@ function CopilotContent() {
 
       <div className="copilot-composer">
         <textarea
+          aria-label="Copilot question"
+          disabled={Boolean(pinnedThreadId)}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
@@ -254,9 +294,9 @@ function CopilotContent() {
           placeholder="Ask about applications, ownership, failed patches, critical infrastructure, or business service context"
           rows={2}
         />
-        <button type="button" className="button button-primary" onClick={() => ask()} disabled={loading || !question.trim()}>
+        {loading ? <button type="button" className="button" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="button" className="button button-primary" onClick={() => ask()} disabled={Boolean(pinnedThreadId) || Boolean(recovery) || !question.trim()}>
           Ask Copilot
-        </button>
+        </button>}
       </div>
     </div>
   );

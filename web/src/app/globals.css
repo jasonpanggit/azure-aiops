@@ -9863,6 +9863,13 @@ body.topology-fullscreen-open {
 .agents-readiness-list { list-style: none; padding: 0; }
 .agents-readiness-list li { padding-block: 16px; border-block-end: 1px solid var(--color-border); }
 .agents-readiness-list strong { margin-inline-end: 12px; }
+.copilot-history { min-width: 0; overflow-wrap: anywhere; margin-block-end: 20px; }
+.copilot-history summary { padding: 16px 20px; min-height: 44px; cursor: pointer; font-weight: 600; }
+.copilot-history .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; }
+.copilot-history .button, .copilot-composer .button { min-height: 44px; }
+.copilot-history-list { padding-inline-start: 20px; }
+.copilot-history-list > li { padding-block: 16px; border-block-end: 1px solid var(--color-border); }
+.copilot-thinking { flex-wrap: wrap; }
 @media (max-width: 780px) {
   .agents-workspace .card-header { flex-wrap: wrap; }
   .agents-workspace .card-header > div:first-child { flex-basis: 100%; }
