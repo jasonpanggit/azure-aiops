@@ -1,16 +1,23 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { useScope } from "@/lib/scope-context";
 
-const { list } = vi.hoisted(() => ({ list: vi.fn() }));
+const { list, handoff, downloadJson, navigation } = vi.hoisted(() => ({
+  list: vi.fn(), handoff: vi.fn(), downloadJson: vi.fn(), navigation: { query: "", replace: vi.fn() },
+}));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: navigation.replace }),
+  useSearchParams: () => new URLSearchParams(navigation.query),
+}));
+vi.mock("@/lib/download-json", () => ({ downloadJson }));
 
 vi.mock("@/lib/services", async () => {
   const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
     buildCopilotSnapshot: actual.buildCopilotSnapshot,
     copilotEvidenceRows: () => [],
-    situationsApi: { list },
+    situationsApi: { list, handoff },
   };
 });
 
@@ -58,6 +65,8 @@ describe("durable Situation queue", () => {
   beforeEach(() => {
     list.mockReset();
     list.mockResolvedValue(response());
+    handoff.mockReset(); downloadJson.mockReset();
+    navigation.query = ""; navigation.replace.mockClear();
   });
 
   it("shows loading while the durable queue request is pending", () => {
@@ -149,5 +158,62 @@ describe("durable Situation queue", () => {
     action.addEventListener("click", (event) => event.preventDefault(), { once: true });
     fireEvent.click(action);
     expect(action).toHaveAttribute("href", "/situations/situation%3A%2F%2Fp1");
+  });
+
+  it("restores a bookmarked server-filtered page and browser history without granting scope", async () => {
+    navigation.query = "q=database&priority=P1&assigned_owner=SRE&lifecycle_state=open&older_than_hours=24&sort=oldest&page=2&subscription=forged";
+    const view = render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({}, "database", "P1", 25, 25, {
+      owner: "SRE", lifecycle_state: "open", older_than_hours: 24, sort: "oldest",
+    }));
+    navigation.query = "sort=newest";
+    view.rerender(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({}, "", "", 0, 25, {
+      owner: "", lifecycle_state: "", older_than_hours: null, sort: "newest",
+    }));
+    expect(screen.getByLabelText("Assigned owner")).toHaveValue("");
+  });
+
+  it("persists server triage controls into a canonical bookmark", async () => {
+    render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    await screen.findByText("Database unavailable");
+    fireEvent.change(screen.getByLabelText("Assigned owner"), { target: { value: "SRE" } });
+    fireEvent.change(screen.getByLabelText("Observed age"), { target: { value: "24" } });
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({}, "", "", 0, 25, {
+      owner: "SRE", lifecycle_state: "", older_than_hours: 24, sort: "default",
+    }));
+    expect(navigation.replace).toHaveBeenLastCalledWith("/situations?assigned_owner=SRE&older_than_hours=24", { scroll: false });
+  });
+
+  it("exports only explicitly selected evidence versions and clears selection on filters", async () => {
+    handoff.mockResolvedValue({ data: { artifact: { situations: rows }, sha256: "digest", count: 1 } });
+    render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Database unavailable for handoff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export selected handoff (1/25)" }));
+    await waitFor(() => expect(handoff).toHaveBeenCalledWith({}, [{ situation_id: "situation://p1", run_id: "run-1" }]));
+    await waitFor(() => expect(downloadJson).toHaveBeenCalledWith("situation-handoff.json", expect.objectContaining({ count: 1 })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "P2" })));
+    expect(screen.getByRole("button", { name: "Export selected handoff (0/25)" })).toBeDisabled();
+  });
+
+  it("rejects changed evidence explicitly instead of downloading stale selections", async () => {
+    handoff.mockRejectedValue(new Error("Situation evidence changed; reload before exporting"));
+    render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Database unavailable for handoff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export selected handoff (1/25)" }));
+    expect(await screen.findByText("Handoff export is unavailable")).toBeInTheDocument();
+    expect(downloadJson).not.toHaveBeenCalled();
+  });
+
+  it("discards a completed export after scope changes", async () => {
+    let finish: ((value: unknown) => void) | undefined;
+    handoff.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    render(<ScopeProvider><ScopeHarness /><SituationsPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Database unavailable for handoff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export selected handoff (1/25)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
+    await act(async () => finish?.({ data: { artifact: {}, sha256: "digest", count: 1 } }));
+    await screen.findByRole("button", { name: "Export selected handoff (0/25)" });
+    expect(downloadJson).not.toHaveBeenCalled();
   });
 });

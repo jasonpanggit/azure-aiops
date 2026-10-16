@@ -490,9 +490,20 @@ export const SUPPORTED_SEARCH_PHRASES = [
 ] as const;
 
 export const contextApi = {
-  search: (q: string, scope: ScopeSelection = {}) => {
+  /** Inspect configuration prerequisites without hydrating deferred providers. */
+  searchCapabilities: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").SearchCapabilities>("/search/capabilities", { query: scopeToSearchParams(scope) }),
+  search: (q: string, scope: ScopeSelection = {}, exploration?: {
+    offset: number; limit: number; entity_type: string; source: string;
+  }) => {
     const query = scopeToSearchParams(scope);
     query.set("q", q);
+    if (exploration) {
+      query.set("offset", String(exploration.offset));
+      query.set("limit", String(exploration.limit));
+      if (exploration.entity_type) query.set("entity_type", exploration.entity_type);
+      if (exploration.source) query.set("source", exploration.source);
+    }
     return apiRequest<SearchResult>("/search", { query });
   },
 
@@ -1917,14 +1928,27 @@ export const predeployApi = {
 
 /** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
 export const situationsApi = {
-  list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100) => {
+  list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100, triage?: {
+    owner: string; lifecycle_state: string; older_than_hours: number | null; sort: "default" | "oldest" | "newest";
+  }) => {
     const params = scopeToSearchParams(scope);
     if (query) params.set("q", query);
     if (priority) params.set("priority", priority);
     params.set("offset", String(offset));
     params.set("limit", String(limit));
+    if (triage) {
+      if (triage.owner) params.set("assigned_owner", triage.owner);
+      if (triage.lifecycle_state) params.set("lifecycle_state", triage.lifecycle_state);
+      if (triage.older_than_hours !== null) params.set("older_than_hours", String(triage.older_than_hours));
+      if (triage.sort !== "default") params.set("sort", triage.sort);
+    }
     return apiRequest<import("./types").DurableSituation[]>("/situations", { query: params });
   },
+  /** Reauthorize a bounded selection of exact evidence runs for read-only handoff. */
+  handoff: (scope: ScopeSelection, selections: Array<{ situation_id: string; run_id: string }>) =>
+    apiRequest<{ artifact: Record<string, unknown>; sha256: string; count: number }>("/situations/handoff", {
+      method: "POST", query: scopeToSearchParams(scope), body: { selections },
+    }),
   get: (id: string, scope: ScopeSelection = {}) =>
     apiRequest<import("./types").DurableSituation>(`/situations/${encodeURIComponent(id)}`, {
       query: scopeToSearchParams(scope),

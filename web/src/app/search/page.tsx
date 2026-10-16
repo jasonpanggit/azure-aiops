@@ -2,15 +2,16 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
-import { contextApi, SUPPORTED_SEARCH_PHRASES } from "@/lib/services";
-import type { Envelope, SearchResult } from "@/lib/types";
+import { contextApi } from "@/lib/services";
+import { scopeToSearchParams } from "@/lib/scope";
+import type { Envelope, SearchCapabilities, SearchResult } from "@/lib/types";
 
 type SearchRecord = Record<string, unknown>;
 
@@ -89,13 +90,49 @@ export default function SearchPage() {
 
 function SearchPageContent() {
   const params = useSearchParams();
+  const router = useRouter();
   const { scope } = useScope();
   const [query, setQuery] = useState(params.get("q") || "");
   const [envelope, setEnvelope] = useState<Envelope<SearchResult> | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [capabilities, setCapabilities] = useState<SearchCapabilities | null>(null);
+  const [capabilityError, setCapabilityError] = useState("");
   const requestId = useRef(0);
-  const initialQuery = params.get("q") || "";
+  const initialQuery = (params.get("q") || "").slice(0, 512);
+  const entityType = (params.get("entity_type") || "").slice(0, 128);
+  const sourceFilter = (params.get("source") || "").slice(0, 256);
+  const requestedOffset = Number(params.get("offset") ?? 0);
+  const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 && requestedOffset <= 100000 ? requestedOffset : 0;
+
+  useEffect(() => {
+    let active = true;
+    setCapabilities(null);
+    setCapabilityError("");
+    contextApi.searchCapabilities(scope)
+      .then(result => { if (active) setCapabilities(result.data); })
+      .catch((reason: unknown) => {
+        if (active) setCapabilityError(reason instanceof Error ? reason.message : "Search readiness is unavailable");
+      });
+    return () => { active = false; };
+  }, [scope]);
+
+  function navigateSearch(value: string, patch: { entityType?: string; source?: string; offset?: number } = {}) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const next = scopeToSearchParams(scope);
+    next.set("q", trimmed.slice(0, 512));
+    const nextType = patch.entityType ?? entityType;
+    const nextSource = patch.source ?? sourceFilter;
+    if (nextType) next.set("entity_type", nextType);
+    if (nextSource) next.set("source", nextSource);
+    if (patch.offset) next.set("offset", String(patch.offset));
+    if (trimmed === initialQuery && nextType === entityType && nextSource === sourceFilter && (patch.offset ?? 0) === offset) {
+      void runSearch(trimmed);
+      return;
+    }
+    router.push(`/search?${next.toString()}`, { scroll: false });
+  }
 
   const runSearch = useCallback(async (value: string) => {
     if (!value.trim()) return;
@@ -105,14 +142,14 @@ function SearchPageContent() {
     setError("");
     setEnvelope(null);
     try {
-      const result = await contextApi.search(value, scope);
+      const result = await contextApi.search(value, scope, { offset, limit: 25, entity_type: entityType, source: sourceFilter });
       if (id === requestId.current) setEnvelope(result);
     } catch (reason) {
       if (id === requestId.current) setError(reason instanceof Error ? reason.message : "Search failed");
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [scope]);
+  }, [scope, offset, entityType, sourceFilter]);
 
   useEffect(() => {
     setEnvelope(null);
@@ -137,21 +174,28 @@ function SearchPageContent() {
             aria-label="Operational search intent"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => event.key === "Enter" && runSearch(query)}
+            onKeyDown={(event) => event.key === "Enter" && !event.nativeEvent.isComposing && navigateSearch(query, { entityType: "", source: "" })}
+            maxLength={512}
             placeholder="Find production applications, failed patches, or missing ownership"
           />
-          <button type="button" className="button button-primary" onClick={() => runSearch(query)} disabled={loading || !query.trim()}>
+          <button type="button" className="button button-primary" onClick={() => navigateSearch(query, { entityType: "", source: "" })} disabled={loading || !query.trim()}>
             {loading ? "Finding records…" : "Find authorized records"}
           </button>
         </div>
-        <div className="search-suggestions">
-          <span>Try</span>
-          {SUPPORTED_SEARCH_PHRASES.slice(0, 5).map((phrase) => (
-            <button type="button" key={phrase} onClick={() => runSearch(phrase)}>
-              {phrase}
-            </button>
-          ))}
-        </div>
+        <p>Bookmark or share the submitted URL. Results are fetched again using the current authorized scope; the URL never grants access.</p>
+        {capabilityError ? <StatePanel title="Search readiness is unavailable" message={capabilityError} tone="error" /> : !capabilities
+          ? <p role="status">Checking search prerequisites...</p>
+          : <div>
+            {(["live", "semantic"] as const).map(mode => <div key={mode} className="search-suggestions">
+              <span>{mode === "live" ? "Live resource search" : "Semantic intents"}: {capabilities[mode].state}</span>
+              {capabilities[mode].phrases.map(phrase => <button
+                type="button" key={phrase} disabled={!capabilities[mode].can_query}
+                onClick={() => navigateSearch(phrase, { entityType: "", source: "" })}
+              >{phrase}</button>)}
+              <span>{capabilities[mode].prerequisite}</span>
+            </div>)}
+            <p>Exact identity lookup: {capabilities.identity.state}. {capabilities.identity.prerequisite}</p>
+          </div>}
       </div>
 
       {envelope && (
@@ -174,9 +218,21 @@ function SearchPageContent() {
         <section className="search-results">
           <div className="section-heading">
             <div>
-              <h2>{recordsFrom(envelope.data).length} authorized records</h2>
+              <h2>{envelope.pagination?.total ?? recordsFrom(envelope.data).length} matching authorized records</h2>
               <p>Interpreted as <StatusBadge label={envelope.data.intent} tone="info" compact /></p>
+              <p>Facets and totals cover {envelope.data.represented_count ?? recordsFrom(envelope.data).length} represented provider records, not an estate-wide inventory.
+                {envelope.data.truncated ? " The source result is truncated; refine the search before treating coverage as complete." : ""}</p>
             </div>
+            {envelope.data.facets && <div className="queue-toolbar">
+              <label>Entity type<select value={entityType} onChange={event => navigateSearch(initialQuery, { entityType: event.target.value })}>
+                <option value="">All represented types</option>
+                {Object.entries(envelope.data.facets.entity_type).map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
+              </select></label>
+              <label>Source<select value={sourceFilter} onChange={event => navigateSearch(initialQuery, { source: event.target.value })}>
+                <option value="">All represented sources</option>
+                {Object.entries(envelope.data.facets.source).map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
+              </select></label>
+            </div>}
           </div>
           {recordsFrom(envelope.data).length === 0 ? (
             <StatePanel title="No authorized records found" message="The request was understood, but no entities matched the current operating scope." />
@@ -215,6 +271,12 @@ function SearchPageContent() {
               })}
             </div>
           )}
+          {envelope.pagination && <div className="table-footer">
+            <span>{recordsFrom(envelope.data).length} loaded of {envelope.pagination.total} matching represented records</span>
+            <button type="button" className="button" disabled={offset === 0} onClick={() => navigateSearch(initialQuery, { offset: Math.max(0, offset - 25) })}>Previous results</button>
+            <button type="button" className="button" disabled={envelope.pagination.next_offset === null}
+              onClick={() => navigateSearch(initialQuery, { offset: envelope.pagination?.next_offset ?? 0 })}>Next results</button>
+          </div>}
         </section>
       )}
     </div>

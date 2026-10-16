@@ -12,10 +12,14 @@ import { useTablePagination } from "@/lib/use-table-pagination";
 export interface SituationTableProps {
   situations: SituationSummary[];
   compact?: boolean;
+  selectedIds?: ReadonlySet<string>;
+  onSelect?: (id: string) => void;
+  showFilters?: boolean;
+  paginate?: boolean;
 }
 
 /** Ranked Situation queue optimized for fast operational scanning. */
-export function SituationTable({ situations, compact = false }: SituationTableProps) {
+export function SituationTable({ situations, compact = false, selectedIds, onSelect, showFilters = true, paginate = true }: SituationTableProps) {
   const { filteredRows, filters, resetFilters } = useColumnFilters(situations, [
     { id: "priority", label: "Priority", getValues: (situation) => situation.priority },
     { id: "status", label: "Status", getValues: (situation) => situation.status },
@@ -30,16 +34,17 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
 
   return (
     <>
-      <TableColumnFilters
+      {showFilters && <TableColumnFilters
         filters={filters}
         onReset={resetFilters}
         resultCount={filteredRows.length}
         totalCount={situations.length}
-      />
+      />}
       <div className="table-scroll">
       <table className="operations-table">
         <thead>
           <tr>
+            {onSelect && <th>Select for handoff</th>}
             <th>Priority</th>
             <th>Situation</th>
             <th>Business impact</th>
@@ -50,8 +55,13 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
           </tr>
         </thead>
         <tbody>
-          {situationPaging.pageRows.map((situation) => (
+          {(paginate ? situationPaging.pageRows : filteredRows).map((situation) => (
             <tr key={situation.id}>
+              {onSelect && <td><input type="checkbox"
+                aria-label={`Select ${situation.title} for handoff`}
+                checked={selectedIds?.has(situation.id) ?? false}
+                onChange={() => onSelect(situation.id)}
+              /></td>}
               <td>
                 <StatusBadge
                   label={situation.priority}
@@ -108,7 +118,7 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
         </tbody>
       </table>
       </div>
-      <TablePagination
+      {paginate && <TablePagination
         total={situationPaging.total}
         pageRows={situationPaging.pageRows.length}
         page={situationPaging.page}
@@ -116,7 +126,7 @@ export function SituationTable({ situations, compact = false }: SituationTablePr
         pageSize={situationPaging.pageSize}
         onPageSizeChange={situationPaging.setPageSize}
         label="situations"
-      />
+      />}
     </>
   );
 }

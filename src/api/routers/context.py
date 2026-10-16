@@ -9,6 +9,7 @@ projection of the knowledge layer rather than a second source of truth.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 from uuid import UUID
 
@@ -224,6 +225,71 @@ def _respond(
     )
 
 
+@router.get("/search/capabilities", summary="Inspect supported search prerequisites")
+def search_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Describe current search modes without hydrating deferred providers."""
+    semantic_state = "configured" if context.semantic_provider is not None else "unavailable"
+    semantic_queryable = context.semantic_provider is not None
+    if context.provider_runtime is not None:
+        semantic = context.provider_runtime.health(refresh=False).get("providers", {}).get("semantic", {})
+        semantic_state = str(semantic.get("state") or "unavailable")
+        semantic_queryable = bool(semantic.get("loaded"))
+    live = context.hybrid_search_provider is not None and bool(live_subscription_ids(context, scope, default_all=True))
+    return envelope({
+        "live": {
+            "state": "configured" if live else "unavailable",
+            "can_query": live,
+            "phrases": ["show list of VMs"],
+            "prerequisite": "An authorized active subscription connection and live resource provider.",
+        },
+        "semantic": {
+            "state": semantic_state,
+            "can_query": semantic_queryable,
+            "phrases": [
+                "production applications", "applications owned by <owner>",
+                "servers with failed patches", "resources missing ownership",
+                "applications missing ownership",
+                "resources related to business service <name>", "critical infrastructure",
+            ],
+            "prerequisite": "A loaded, published semantic snapshot; configured does not prove live reachability.",
+        },
+        "identity": {
+            "state": "configured" if context.governance_generation_provider or context.governance_provider else "unavailable",
+            "prerequisite": "An exact principal GUID or managed-identity resource ID and authorized governance evidence.",
+        },
+    }, scope=scope.to_dict())
+
+
+def _search_exploration(
+    result: dict[str, Any], *, offset: int, limit: int | None, entity_type: str, source: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Facet and page only already-authorized provider results, not estate totals."""
+    if limit is None and not (offset or entity_type or source):
+        return result, None
+    limit = limit or 25
+    key = "results" if isinstance(result.get("results"), list) else "items"
+    rows = result.get(key) or []
+    types = Counter(str(row.get("entity_type") or row.get("entityType") or row.get("kind") or row.get("type") or "Operational record") for row in rows)
+    sources = Counter(str(row.get("source") or row.get("source_engine") or row.get("source_table") or "Unreported") for row in rows)
+    filtered = [
+        row for row in rows
+        if (not entity_type or str(row.get("entity_type") or row.get("entityType") or row.get("kind") or row.get("type") or "Operational record") == entity_type)
+        and (not source or str(row.get("source") or row.get("source_engine") or row.get("source_table") or "Unreported") == source)
+    ]
+    total = len(filtered)
+    # Never expose another unpaged collection from a mixed-provider payload.
+    visible = {name: value for name, value in result.items() if name not in {"items", "results"}}
+    visible.update({
+        key: filtered[offset:offset + limit], "count": total,
+        "facets": {"entity_type": dict(sorted(types.items())), "source": dict(sorted(sources.items()))},
+        "represented_count": len(rows), "aggregate_basis": "authorized_provider_results",
+    })
+    return visible, {
+        "offset": offset, "limit": limit, "total": total,
+        "next_offset": offset + limit if offset + limit < total else None,
+    }
+
+
 @router.get("/search", summary="Search operational context")
 def search(
     context: Context,
@@ -241,14 +307,22 @@ def search(
             "supported list rather than an empty result set."
         ),
     ),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    entity_type: str = Query(default="", max_length=128),
+    source: str = Query(default="", max_length=256),
 ) -> dict[str, Any]:
     if _is_identity_identifier(q):
         result, evidence, warnings = _identity_identifier_search(context, scope, q)
+        result, pagination = _search_exploration(
+            _scoped(result, scope), offset=offset, limit=limit, entity_type=entity_type, source=source,
+        )
         return envelope(
             result,
             evidence=evidence,
             scope=scope.to_dict(),
             warnings=warnings,
+            pagination=pagination,
         )
     normalized_query = q.casefold().strip()
     live_search = normalized_query.startswith("show list of") and (
@@ -264,6 +338,9 @@ def search(
     else:
         result = context.semantic().search(q)
     visible = _scoped(result, scope)
+    visible, pagination = _search_exploration(
+        visible, offset=offset, limit=limit, entity_type=entity_type, source=source,
+    )
     return envelope(
         visible,
         evidence=_evidence(
@@ -275,6 +352,7 @@ def search(
         ),
         scope=scope.to_dict(),
         knowledge_version=str(result.get("knowledge_version") or ""),
+        pagination=pagination,
     )
 
 

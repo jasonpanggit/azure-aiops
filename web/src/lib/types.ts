@@ -1911,6 +1911,16 @@ export interface SearchResult {
   live_observed_at?: string;
   source_status?: Record<string, string>;
   truncated?: boolean;
+  facets?: { entity_type: Record<string, number>; source: Record<string, number> };
+  represented_count?: number;
+  aggregate_basis?: "authorized_provider_results";
+}
+
+/** Search readiness is reported independently; configuration is not a successful probe. */
+export interface SearchCapabilities {
+  live: { state: string; can_query: boolean; phrases: string[]; prerequisite: string };
+  semantic: { state: string; can_query: boolean; phrases: string[]; prerequisite: string };
+  identity: { state: string; prerequisite: string };
 }
 
 export interface DependencyGraphNode {

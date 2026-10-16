@@ -98,6 +98,64 @@ match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be
 rejected with `401`. CORS preflight requests from the default Next.js origins
 are enabled by default.
 
+### Search exploration and durable queue bookmarks
+
+`GET /api/v1/search/capabilities` requires the normal read authorization and
+reports configured live, semantic, and exact-identity search prerequisites.
+It inspects provider health without loading deferred semantic providers.
+Configuration readiness is not a successful upstream probe.
+
+`GET /api/v1/search` retains its unpaged shape when no exploration options are
+supplied. Optional `offset` (0-100000), `limit` (1-100), `entity_type` (128
+characters), and `source` (256 characters) enable exploration; a filter or
+offset without a limit uses 25. Authorization precedes facets, filtering,
+counts, and paging. `represented_count` and `aggregate_basis` describe the
+authorized results represented by that provider response, **not estate-wide
+totals**. Source truncation remains explicit; paging cannot recover omitted
+provider results. Search URLs retain query, facets, offset, and current scope
+as navigation context, never as an authorization grant.
+
+`GET /api/v1/situations` additionally accepts `assigned_owner` and
+`lifecycle_state` (case-insensitive exact matches), `older_than_hours`
+(0-87600), and `sort` (`default`, `oldest`, or `newest`). These operate on
+the complete authorized Situation collection before pagination. Default
+ordering is priority, then newest observed start; unknown or timezone-less
+starts sort last and do not satisfy an age filter. `assigned_owner` is
+deliberately distinct from the global `owner` scope dimension. Observed
+age is not overdue status: no SLA deadline is inferred.
+
+`POST /api/v1/situations/handoff` is a **read-only** authenticated export,
+not approval, execution, or a durable export job. Supply `selections`, one
+to 25 unique `{situation_id, run_id}` objects from the reviewed queue.
+Every Situation is reauthorized and its run must still match: invisible
+or missing selections fail the entire request with 404; changed runs
+return 409. Unknown fields, duplicate IDs, missing runs, more than 25
+selections, or a canonical artifact larger than 2 MiB are rejected.
+The response contains the selected brief fields, only visible linked
+evidence IDs, effective scope, export time, and a SHA-256 integrity digest.
+The digest covers the artifact serialized as Python
+`json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
+then UTF-8 encoded; `canonicalization` states that contract. It is an
+integrity checksum, not a signed attestation or complete evidence bundle.
+
+Situation triage URLs restore search, priority, `assigned_owner`, lifecycle
+state, supported observed-age presets, sort, and page; history navigation
+reruns the authorized read. Filter, page, or scope changes clear selected
+handoff rows and invalidate in-flight downloads.
+
+Connections URLs restore `tab` and `connection` without starting another
+sync. A bookmarked connection is usable only after it is present in the
+current authorized active list; unavailable selections do not silently
+fall back to a different connection. Existing server sync-run recovery
+continues independently of URL navigation.
+
+The legacy `/vulnerabilities` route translates historical parameter names
+through the shared Exposure allowlist; canonical names win regardless
+of input order. Cursors, unrecognized keys, external origins, and invalid
+values do not cross the redirect. Migration logs contain only a count,
+allowlisted translated parameter names, and the number of discarded keys,
+never query values, connection IDs, or unknown raw parameter names.
+
 For local testing, start the web app and API from `web/` in separate terminals:
 
 ```bash

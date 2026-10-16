@@ -20,6 +20,13 @@ import type {
 // The readiness journey has its own independent contract and failure tests.
 vi.mock("@/components/ConnectionReadiness", () => ({ ConnectionReadiness: () => null }));
 
+const navigation = vi.hoisted(() => ({ query: "", push: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(navigation.query),
+  useRouter: () => ({ push: navigation.push }),
+}));
+beforeEach(() => { navigation.query = ""; navigation.push.mockClear(); });
+
 const {
   create,
   fabricCapabilities,
@@ -516,6 +523,70 @@ describe("Connections page Ontology automation tab", () => {
       expect(ontologyEvaluation).toHaveBeenCalledWith(connection.connection_id, expectedScope);
       expect(ontologyEvaluations).toHaveBeenCalledWith(connection.connection_id, expectedScope);
     });
+  });
+
+  it("restores a bookmarked non-default connection only after authorized rows arrive", async () => {
+    const second = { ...connection, connection_id: "other", name: "Other authorized", subscription_id: "sub-b" };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+    navigation.query = "tab=ontology-automation&connection=other";
+    renderConnectionsPage();
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("other", {}));
+    expect(ontologyStatus).not.toHaveBeenCalledWith(connection.connection_id, {});
+    expect(await screen.findByRole("combobox", { name: "Connection" })).toHaveValue("other");
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("does not read a forged connection or silently select the first authorized connection", async () => {
+    navigation.query = "tab=ontology-automation&connection=forged";
+    renderConnectionsPage();
+    expect(await screen.findByText("Bookmarked connection is unavailable in this scope")).toBeInTheDocument();
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Connection" }), { target: { value: connection.connection_id } });
+    expect(navigation.push).toHaveBeenLastCalledWith("/connections?tab=ontology-automation&connection=prod", { scroll: false });
+  });
+
+  it("restores tab and selection on URL history changes without starting discovery", async () => {
+    const view = renderConnectionsPage();
+    expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
+    navigation.query = "tab=ontology-automation&connection=prod";
+    view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    navigation.query = "";
+    view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
+    expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it.each(["prod" + "x".repeat(257), "prod\u0000"])("does not reinterpret malformed bookmarks as another authorized connection (%s)", async value => {
+    navigation.query = `tab=ontology-automation&connection=${encodeURIComponent(value)}`;
+    renderConnectionsPage();
+    await screen.findByText("Bookmarked connection is unavailable in this scope");
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+  });
+
+  it("does not read a former-scope connection while the next authorized list is loading", async () => {
+    navigation.query = "tab=ontology-automation&connection=prod";
+    function ScopedPage() {
+      const { setScope } = useScope();
+      return <><button onClick={() => setScope({ subscription: ["sub-b"] })}>Change scope</button><ConnectionsPage /></>;
+    }
+    const view = render(<ScopeProvider><ScopedPage /></ScopeProvider>);
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    ontologyStatus.mockClear();
+    ontologyRuns.mockClear();
+    ontologyProposals.mockClear();
+    list.mockImplementationOnce(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({ subscription: ["sub-b"] }));
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+    view.unmount();
   });
 
   it("uses only server eligibility and preserves stale evaluation evidence with the disabled reason", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -19,6 +20,7 @@ import { useApi } from "@/hooks/useApi";
 import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
+import { scopeToSearchParams } from "@/lib/scope";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type ConnectionCreateRequest, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -81,7 +83,19 @@ function readableSyncStage(stage: string | null | undefined): string {
 
 /** Subscription connections and Fabric Medallion data-confidence operating view. */
 export default function ConnectionsPage() {
+  return <Suspense fallback={null}><ConnectionsPageContent /></Suspense>;
+}
+
+function ConnectionsPageContent() {
   const { scope } = useScope();
+  const params = useSearchParams();
+  const router = useRouter();
+  const requestedTab = params.get("tab");
+  const urlTab = requestedTab === "fabric-medallion" || requestedTab === "ontology-automation" ? requestedTab : "subscriptions";
+  const rawConnectionId = params.get("connection") || "";
+  const hasRequestedConnection = Boolean(rawConnectionId);
+  const requestedConnectionId = rawConnectionId.length <= 256 && !/[\u0000-\u001f\u007f]/.test(rawConnectionId)
+    ? rawConnectionId : "";
   const [refreshKey, setRefreshKey] = useState(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -90,23 +104,26 @@ export default function ConnectionsPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [runningAction, setRunningAction] = useState("");
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
-  const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">("subscriptions");
+  const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">(urlTab);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
   const [ontologyRefreshKey, setOntologyRefreshKey] = useState(0);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
-  const [selectedOntologyConnectionId, setSelectedOntologyConnectionId] = useState("");
-  const [readinessConnectionId, setReadinessConnectionId] = useState("");
+  const [selectedOntologyConnectionId, setSelectedOntologyConnectionId] = useState(requestedConnectionId);
+  const [readinessConnectionId, setReadinessConnectionId] = useState(requestedConnectionId);
   const [ontologyStatus, setOntologyStatus] = useState<OntologyStatusState>({
     data: null,
     error: null,
     loading: false,
   });
-  const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
-  const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
+  const scopeKey = JSON.stringify(scope);
+  const connections = useApi(async () => ({
+    ...await connectionsApi.list(scope), requestedScopeKey: scopeKey,
+  }), [scope, refreshKey]);
+  const rows = useMemo(() => connections.data?.requestedScopeKey === scopeKey ? connections.data.data : [], [connections.data, scopeKey]);
   const activeConnections = useMemo(() => rows.filter((connection) => connection.is_active), [rows]);
   const readinessConnection = activeConnections.find(connection => connection.connection_id === readinessConnectionId)
-    ?? activeConnections[0];
+    ?? (readinessConnectionId || hasRequestedConnection ? undefined : activeConnections[0]);
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "health", label: "Health", getValues: (connection) => connection.health_status },
     { id: "sync", label: "Sync", getValues: (connection) => connection.sync_status || "unknown" },
@@ -116,15 +133,41 @@ export default function ConnectionsPage() {
   ]);
   const rowsPaging = useTablePagination(filteredRows);
 
+  function continueWorkflow(nextTab: typeof tab, connectionId: string) {
+    setTab(nextTab);
+    setReadinessConnectionId(connectionId);
+    setSelectedOntologyConnectionId(connectionId);
+    setSelectedSubscriptionId(activeConnections.find(connection => connection.connection_id === connectionId)?.subscription_id ?? "");
+    const next = scopeToSearchParams(scope);
+    if (nextTab !== "subscriptions") next.set("tab", nextTab);
+    if (connectionId) next.set("connection", connectionId);
+    const query = next.toString();
+    router.push(`/connections${query ? `?${query}` : ""}`, { scroll: false });
+  }
+
   useEffect(() => {
-    // Set default subscription when switching to fabric-medallion tab
+    setTab(urlTab);
+    setReadinessConnectionId(requestedConnectionId);
+    setSelectedOntologyConnectionId(requestedConnectionId);
+    setSelectedSubscriptionId("");
+  }, [urlTab, requestedConnectionId]);
+
+  useEffect(() => {
+    if (hasRequestedConnection) {
+      setSelectedSubscriptionId(activeConnections.find(connection => connection.connection_id === requestedConnectionId)?.subscription_id ?? "");
+      return;
+    }
     if (tab === "fabric-medallion" && !selectedSubscriptionId && rows.length > 0) {
       setSelectedSubscriptionId(rows[0].subscription_id);
     }
-  }, [tab, selectedSubscriptionId, rows]);
+  }, [tab, selectedSubscriptionId, rows, requestedConnectionId, activeConnections, hasRequestedConnection]);
 
   useEffect(() => {
     if (tab !== "ontology-automation") return;
+    if (hasRequestedConnection) {
+      setSelectedOntologyConnectionId(activeConnections.some(connection => connection.connection_id === requestedConnectionId) ? requestedConnectionId : "");
+      return;
+    }
     if (
       selectedOntologyConnectionId &&
       !activeConnections.some((connection) => connection.connection_id === selectedOntologyConnectionId)
@@ -135,11 +178,11 @@ export default function ConnectionsPage() {
     if (!selectedOntologyConnectionId && activeConnections.length > 0) {
       setSelectedOntologyConnectionId(activeConnections[0].connection_id);
     }
-  }, [activeConnections, selectedOntologyConnectionId, tab]);
+  }, [activeConnections, selectedOntologyConnectionId, tab, requestedConnectionId, hasRequestedConnection]);
 
   useEffect(() => {
     let cancelled = false;
-    if (tab !== "ontology-automation" || !selectedOntologyConnectionId) {
+    if (tab !== "ontology-automation" || !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId)) {
       setOntologyStatus({ data: null, error: null, loading: false });
       return () => {
         cancelled = true;
@@ -163,7 +206,7 @@ export default function ConnectionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab]);
+  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab, activeConnections]);
 
   /** Polls connection health until the background sync reaches a terminal stage. */
   const pollSyncState = useCallback(async (
@@ -334,7 +377,7 @@ export default function ConnectionsPage() {
 
   async function runOntologyDiscovery() {
     const scheduler = ontologyStatus.data?.data.scheduler;
-    if (!selectedOntologyConnectionId || !scheduler?.can_run_now) return;
+    if (!selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) || !scheduler?.can_run_now) return;
     setActionError("");
     setActionMessage("");
     setRunningAction(`ontology-run:${selectedOntologyConnectionId}`);
@@ -425,7 +468,7 @@ export default function ConnectionsPage() {
                 name="subscriptionId"
                 className="form-control"
                 value={selectedSubscriptionId}
-                onChange={(e) => setSelectedSubscriptionId(e.target.value)}
+                onChange={(event) => continueWorkflow(tab, activeConnections.find(connection => connection.subscription_id === event.target.value)?.connection_id ?? "")}
                 disabled={rows.length === 0}
               >
                 <option value="">Select a subscription</option>
@@ -451,7 +494,7 @@ export default function ConnectionsPage() {
                   name="ontologyConnectionId"
                   className="form-control"
                   value={selectedOntologyConnectionId}
-                  onChange={(event) => setSelectedOntologyConnectionId(event.target.value)}
+                  onChange={(event) => continueWorkflow(tab, event.target.value)}
                   disabled={activeConnections.length === 0}
                 >
                   <option value="">Select a connection</option>
@@ -500,7 +543,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "subscriptions"}
           aria-controls="subscriptions-panel"
           tabIndex={tab === "subscriptions" ? 0 : -1}
-          onClick={() => setTab("subscriptions")}
+          onClick={() => continueWorkflow("subscriptions", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Subscriptions
         </button>
@@ -511,7 +554,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "fabric-medallion"}
           aria-controls="fabric-medallion-panel"
           tabIndex={tab === "fabric-medallion" ? 0 : -1}
-          onClick={() => setTab("fabric-medallion")}
+          onClick={() => continueWorkflow("fabric-medallion", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Fabric Medallion
         </button>
@@ -522,7 +565,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "ontology-automation"}
           aria-controls="ontology-automation-panel"
           tabIndex={tab === "ontology-automation" ? 0 : -1}
-          onClick={() => setTab("ontology-automation")}
+          onClick={() => continueWorkflow("ontology-automation", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Ontology automation
         </button>
@@ -530,12 +573,21 @@ export default function ConnectionsPage() {
 
       {tab === "subscriptions" && readinessConnection ? <>
         <label>Connection readiness scope
-          <select value={readinessConnection.connection_id} onChange={event => setReadinessConnectionId(event.target.value)}>
+          <select value={readinessConnection.connection_id} onChange={event => continueWorkflow(tab, event.target.value)}>
             {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
           </select>
         </label>
         <ConnectionReadiness key={`${JSON.stringify(scope)}:${readinessConnection.connection_id}`} connection={readinessConnection} scope={scope} refreshKey={refreshKey} />
       </> : null}
+
+      {hasRequestedConnection && !connections.loading && !connections.error && !activeConnections.some(connection => connection.connection_id === requestedConnectionId)
+        ? <StatePanel title="Bookmarked connection is unavailable in this scope" message="Select another authorized connection. This bookmark will not silently target a different subscription." /> : null}
+      {tab === "subscriptions" && !readinessConnection && activeConnections.length > 0 ? <label>Connection readiness scope
+        <select value="" onChange={event => continueWorkflow(tab, event.target.value)}>
+          <option value="">Select an authorized connection</option>
+          {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
+        </select>
+      </label> : null}
 
       {(actionError || actionMessage || syncProgress) && (
         <div className={`callout ${actionError ? "callout-critical" : syncProgress?.state.status.toLowerCase() === "failed" ? "callout-critical" : "callout-info"}`} role="status">
@@ -658,7 +710,7 @@ export default function ConnectionsPage() {
         )}
       </section>}
 
-      {tab === "fabric-medallion" && (!selectedSubscriptionId ? (
+      {tab === "fabric-medallion" && (!selectedSubscriptionId || !activeConnections.some(connection => connection.subscription_id === selectedSubscriptionId) ? (
         <section id="fabric-medallion-panel" role="tabpanel" aria-labelledby="fabric-medallion-tab" tabIndex={0}>
           <StatePanel 
             title="Select a subscription" 
@@ -682,7 +734,7 @@ export default function ConnectionsPage() {
             tone="empty"
           />
         </section>
-      ) : !selectedOntologyConnectionId ? (
+      ) : !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) ? (
         <section id="ontology-automation-panel" role="tabpanel" aria-labelledby="ontology-automation-tab" tabIndex={0}>
           <StatePanel
             title="Select a connection to view ontology automation"
