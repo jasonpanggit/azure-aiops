@@ -41,6 +41,7 @@ from intelligence.vulnerability.exposure_contracts import (
 from operations.defender_configuration import DEFENDER_CONFIGURATION_ACTION_IDS
 from operations.patching.adapters import PatchExecutionUnavailable
 from operations.patching.service import PatchValidationError
+from operations.remediation_notifications import verification_notifications
 
 from ..dependencies import (
     Context,
@@ -1133,6 +1134,40 @@ def execution_diagnostics(context: Context, principal: OperatePrincipal) -> dict
         evidence=_execution_evidence("diagnostics"),
         scope=write_scope.to_dict(),
     )
+
+
+@router.get("/verification-inbox", summary="Read latest authorized stored execution outcomes")
+def verification_inbox(
+    context: Context, scope: ReadScope, page: Page,
+    kind: str = Query("", pattern="^(|attention|complete|cancelled)$"),
+) -> dict[str, Any]:
+    """Read without polling providers, regenerating plans, acknowledging or executing."""
+    try:
+        if context.execution_record_reader is None:
+            raise RuntimeError("Stored execution reader is unavailable")
+        records = context.execution_record_reader()
+        if not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
+            raise ValueError("Stored execution collection is invalid")
+        visible = [row for row in records if scope.matches(execution_scope_attributes(row))]
+        notifications = verification_notifications(visible)
+    except (ValueError, TypeError, RuntimeError, OSError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Stored verification notifications could not be confirmed") from exc
+    filtered = [row for row in notifications if not kind or row["kind"] == kind]
+    limit = min(page.limit, 50)
+    return envelope({
+        "notifications": filtered[page.offset:page.offset + limit],
+        "authorized_execution_count": len(visible),
+        "latest_outcome_count": len(notifications), "read_only": True,
+        "boundary": "Latest stored outcome per execution; no provider polling, current clearance, delivery receipt or execution authority.",
+    }, evidence=Evidence(
+        source_engine="intelligence.RemediationExecutionStore",
+        source_table="remediation_executions",
+        timestamp=max((row["recorded_at"] or "" for row in notifications), default=""),
+        confidence="unknown",
+    ), scope=scope.to_dict(), pagination={
+        "offset": page.offset, "limit": limit, "total": len(filtered),
+        "next_offset": page.offset + limit if page.offset + limit < len(filtered) else None,
+    })
 
 
 @router.get("/executions/{execution_id}", summary="Poll a remediation plan execution")

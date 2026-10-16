@@ -5671,6 +5671,23 @@ body.topology-fullscreen-open {
 .situation-response-deadline dd { margin: 4px 0 12px; }
 .situation-deadline-controls { display: flex; flex-wrap: wrap; gap: 12px; }
 .situation-deadline-cell { min-width: 220px; width: 250px; }
+.remediation-verification-inbox .card-body { display: grid; gap: 16px; }
+.remediation-verification-inbox p { max-width: 75ch; }
+.remediation-inbox-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.remediation-inbox-controls select { min-width: 0; max-width: 100%; }
+.remediation-verification-inbox button:disabled { opacity: .55; cursor: not-allowed; }
+.remediation-notification-list { list-style: none; padding: 0; margin: 0; }
+.remediation-notification-list li { padding-block: 20px; border-bottom: 1px solid var(--color-border); }
+.remediation-notification-list h3 { margin-block: 12px 8px; }
+.remediation-notification-facts { display: flex; flex-wrap: wrap; gap: 16px 32px; }
+.remediation-notification-list dd { margin: 4px 0 12px; overflow-wrap: anywhere; }
+.remediation-notification-list code { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .remediation-verification-inbox .card-header { flex-wrap: wrap; }
+  .remediation-inbox-controls > label { width: 100%; min-width: 0; }
+  .remediation-inbox-controls select { width: 100%; }
+  .remediation-verification-inbox .button, .remediation-inbox-controls select { min-height: 44px; }
+}
 @media (max-width: 600px) {
   .situation-response-deadline .card-header { flex-wrap: wrap; }
   .situation-response-deadline .button, .situation-response-deadline input { min-height: 44px; }

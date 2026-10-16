@@ -1334,6 +1334,13 @@ export interface RemediationWorkflow {
 }
 
 export const remediationApi = {
+  /** Read stored outcome notifications without polling providers or changing verification. */
+  notifications: (scope: ScopeSelection, kind: "" | "attention" | "complete" | "cancelled" = "", offset = 0, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset)); query.set("limit", "25");
+    if (kind) query.set("kind", kind);
+    return apiRequest<import("./remediation-notifications").RemediationNotificationInbox>("/remediation/verification-inbox", { query, signal });
+  },
   exposureHandoffs: (scope: ScopeSelection = {}) =>
     apiRequest<ExposureHandoffCollection>("/remediation/exposure-handoffs", {
       query: scopeToSearchParams(scope),

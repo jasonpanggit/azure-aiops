@@ -55,6 +55,7 @@ import { usePollingBackoff } from "./polling";
 import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./blockers";
 import type { WorkflowStep } from "./blockers";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { RemediationVerificationInbox } from "@/components/RemediationVerificationInbox";
 
 const COMPLIANCE_FINDING_TYPES = new Set([
   "firewall_bypass",
@@ -1417,6 +1418,8 @@ function RemediationContent() {
         contextLabel={workflow?.plan.title ?? "Remediation"}
         onOpenCopilot={() => setCopilotOpen(true)}
       />
+
+      {!complianceReview && <RemediationVerificationInbox scope={effectiveScope} />}
 
       {(requestedResource || fromCve || fromKb || fromIncident) && (
         <div className="callout remediation-handoff remediation-handoff-context">

@@ -117,6 +117,45 @@ reload after declaration changes. Source-only Copilot deliberately excludes
 these administrator annotations. Nothing here certifies a contractual SLA,
 response completion, live source status or execution approval.
 
+## Read-only remediation verification inbox
+
+`GET /api/v1/remediation/verification-inbox?kind=attention&offset=0&limit=25`
+projects the **latest stored outcome per authorized execution**, not an event
+delivery system. Optional `kind` is `attention`, `complete` or `cancelled`.
+Authorization uses the execution's own durable attributes across all nine
+requested dimensions, with the existing subscription-only immutable-target
+fallback for legacy records. Filtering precedes counts, sorting and pagination;
+missing constrained metadata fails closed. At most 50 outcomes are returned
+per page, newest aware stored update first, missing update times last.
+
+The runtime reader accesses only the existing durable execution store. It does
+not construct the execution provider (whose factory can regenerate plans),
+require the original plan to still exist, contact Azure, poll verification,
+reconcile evidence, acknowledge or mutate a record. Missing reader, invalid
+authorized records or unavailable storage return safe503, not empty success.
+The existing execution store's retention/capacity applies; this endpoint adds
+no new persistence, scheduler, delivery history or cloud infrastructure.
+
+Only bounded execution/plan/target identifiers, record revision, fixed
+interpretation, source status, reconciliation status and recorded update time
+are returned. Provider messages, errors, job URLs, desired properties, requests,
+credentials and raw evidence are excluded. Notification identity is a stable
+digest of execution identity and stored revision; it does not invent an event
+time or claim an immutable transition history. Unknown reconciliation remains
+unknown. In-progress records are not completion notices; ambiguous submission,
+failed execution and absent/incomplete reconciliation require review.
+Only succeeded records with recorded `reconciled_clean` get the complete
+classification, never a claim of current vulnerability clearance or successful
+whole rollout. Cancellation is distinct from rollback or proven no provider
+effect.
+
+The on-demand Remediation inbox supports explicit refresh, server outcome
+filters/paging and recorded-identifier inspection. Scope/close/filter/page
+changes discard old observations and abort late results. No automatic polling,
+personal unread/read receipts, email/webhook/browser-notification delivery,
+execution action or Copilot ingestion is implied. The inbox does not replace
+governed rollout, provider verification or evidence reconciliation.
+
 ## Portal scoped bookmarks
 
 The shared shell restores all nine repeated scope dimensions from each page URL
