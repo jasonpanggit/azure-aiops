@@ -21,6 +21,37 @@ export interface EvidenceItem {
   freshness_source_family?: string;
 }
 
+/** Explicit server captures, private to the exact caller/effective scope. */
+export interface OverviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: OverviewObservation[];
+}
+
+/** Capture time is collection time, not an assertion that all source data was fresh. */
+export interface OverviewObservation {
+  observation_id: string;
+  captured_at: string;
+  formula_version: "overview-v1";
+  critical_situations: number;
+  exposed_findings: number;
+  network_gaps: number;
+  sources: Array<{
+    id: "situations" | "network" | "exposure";
+    started_at: string;
+    finished_at: string;
+    observed_at: string[];
+    source_tables: string[];
+    knowledge_version: string;
+    loaded: number | null;
+    total: number | null;
+    partial: boolean;
+    warning_count: number;
+  }>;
+}
+
 export interface RemediationDecision {
   decision_id: string;
   plan_id: string;

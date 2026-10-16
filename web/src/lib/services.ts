@@ -148,6 +148,17 @@ async function listAllConnections(scope: ScopeSelection): Promise<Envelope<Subsc
 // Subscription connections
 // ---------------------------------------------------------------------------
 
+export const overviewApi = {
+  /** Recover exact-caller/scope observations without resolving active source providers. */
+  history: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").OverviewHistory>("/overview/history", { query: scopeToSearchParams(scope) }),
+  /** Capture fresh server reads, never client-supplied metrics, using history CAS. */
+  capture: (scope: ScopeSelection, expected_revision: number) =>
+    apiRequest<import("./types").OverviewHistory>("/overview/history", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision },
+    }),
+};
+
 export const connectionsApi = {
   list: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);

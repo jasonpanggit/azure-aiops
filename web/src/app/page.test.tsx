@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   network: vi.fn(),
   vulnerabilities: vi.fn(),
   connections: vi.fn(),
+  history: vi.fn(),
   buildOverviewCopilotContext: vi.fn(),
 }));
 
@@ -16,6 +17,7 @@ vi.mock("@/lib/services", () => ({
   networkApi: { summary: mocks.network },
   vulnerabilityApi: { summary: mocks.vulnerabilities },
   connectionsApi: { list: mocks.connections },
+  overviewApi: { history: mocks.history },
   buildCopilotSnapshot: vi.fn((input) => input),
   copilotEvidenceRows: vi.fn(() => []),
 }));
@@ -81,6 +83,7 @@ describe("Overview Copilot adapter integration", () => {
       reachable_server_count: 0,
     }));
     mocks.connections.mockResolvedValue(envelope([]));
+    mocks.history.mockResolvedValue(envelope({ revision: 0, observations: [] }));
     mocks.buildOverviewCopilotContext.mockReturnValue({
       requestedScope: {},
       snapshot: {

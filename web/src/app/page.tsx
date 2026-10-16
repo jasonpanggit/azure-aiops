@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { SituationTable } from "@/components/SituationTable";
 import { OverviewEvidence } from "@/components/OverviewEvidence";
+import { OverviewHistory } from "@/components/OverviewHistory";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -254,6 +255,8 @@ function OverviewWorkspace() {
             { id: "network", label: "Network", path: "/network", envelope: state.network },
             { id: "connections", label: "Connections", path: "/connections", envelope: state.connections, loadedRows: state.connections?.data.length },
           ]} />
+
+          <OverviewHistory scope={scope} />
 
           <section className="dashboard-section">
             <div className="section-heading">

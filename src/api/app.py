@@ -37,6 +37,7 @@ from .routers import (
     network,
     ontology_discovery,
     operations,
+    overview,
     patching,
     planned,
     twin,
@@ -363,6 +364,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(network.router)
     app.include_router(ontology_discovery.router)
     app.include_router(operations.router)
+    app.include_router(overview.router)
     app.include_router(patching.router)
     app.include_router(planned.router)
     app.include_router(remediation_routes.router)

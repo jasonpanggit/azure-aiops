@@ -16,6 +16,7 @@ from fastapi import Depends, Query, Request
 
 from intelligence.inventory.exports import InventoryExportStore
 from onboarding.service import SubscriptionOnboardingService
+from operations.overview_history import OverviewHistoryStore
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
 from situations.notes import SituationNotesStore
@@ -94,6 +95,7 @@ class ApiContext:
     compliance_policy_store: Any | None = None
     situation_notes_store: SituationNotesStore | None = None
     inventory_export_store: InventoryExportStore | None = None
+    overview_history_store: OverviewHistoryStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

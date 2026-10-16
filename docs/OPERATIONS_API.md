@@ -35,8 +35,43 @@ freshness, resource health, or estate completeness. Review links select only
 active connections; disabled rows link to the registry without an invalid
 readiness bookmark. A scope change remounts the workspace immediately so old
 observations are not scored or passed to Copilot under a new scope.
-Retained Overview snapshots/history are a separate unfinished contract; no
-synthetic trend or browser-cached history is presented.
+### Retained Overview observations
+
+`GET /api/v1/overview/history` recovers only the current principal's exact
+effective-scope history. `POST` to the same route accepts only
+`{"expected_revision": 0}` (using the revision returned by the prior read);
+it performs fresh server-side Situation (first 100 priority-ranked rows),
+Network summary, and vulnerability summary reads through the same authorized
+composers used by the current cards. It never accepts submitted counts.
+Every source must succeed and validate before an atomic append. This is
+sequential collection, **not an atomic cross-source or generation-pinned
+snapshot**. Capture receipt time and each collection's start/end are separate
+from the underlying reported source observation times. Missing source times
+and knowledge versions remain unreported, not inferred.
+
+Storage uses the existing `AIOPS_HOME` local/OneLake root at
+`state/overview-history/<sha256([principal,effective_scope])>.json`.
+The strict versioned document retains the latest **30** explicit observations,
+at most **256 KiB including serialization**. Appending observation 31 removes
+observation 1; there is no time-based expiry, scheduled capture, historical
+backfill, or continuous monitoring guarantee. Only the three aggregate
+formula inputs and bounded provenance/extents/warning counts are retained,
+not raw resources, credentials, or customer-entered claims. Revision/ETag
+conflicts return 409 without overwriting another capture. Reads reauthorize
+but do not require the live providers; failed acquisitions leave the stored
+history unchanged. Missing durable composition returns 503 and corrupt
+retained state fails explicitly rather than returning an empty history.
+The caller must retain permission to exactly the same scope to read it;
+broader/narrower scope selections do not implicitly include other histories.
+
+The portal requires two chronologically ordered retained observations for
+arithmetic count/heuristic-score comparisons and exposes both source extents,
+collection/source times, query versions, and provenance. It does not label a
+delta as new/resolved resources, cause, verified improvement, complete-estate
+growth, or same-population comparison. A captured observation and the live
+cards are separate reads; capture does not silently replace the current cards.
+Scope changes immediately discard the prior comparison and late responses.
+No raw history is cached in browser storage.
 
 ## Running
 
