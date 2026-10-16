@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -8,6 +10,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
+import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { multiAgentApi } from "@/lib/services";
 import type { AutonomousAgent, Envelope, MultiAgentLedger } from "@/lib/types";
 
@@ -15,7 +18,26 @@ const DEFAULT_OBJECTIVE = "Review current scoped risk and recommend a governed n
 
 /** Human-controlled multi-agent investigation command surface. */
 export default function MultiAgentInvestigationPage() {
+  return <Suspense fallback={<StatePanel title="Preparing investigation" message="Reading the scoped investigation bookmark." tone="loading" />}><ScopedAgents /></Suspense>;
+}
+
+function ScopedAgents() {
   const { scope } = useScope();
+  const search = useSearchParams();
+  let effectiveScope: ScopeSelection;
+  try { effectiveScope = scopedBookmark(search, scope); }
+  catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    return <main className="page-container"><StatePanel title="Investigation bookmark unavailable" message={error.message} tone="error" /><Link className="button" href="/agents">Clear investigation bookmark</Link></main>;
+  }
+  const ledgerId = search.get("ledger_id") ?? "";
+  const valid = !search.has("ledger_id") || (search.getAll("ledger_id").length === 1 && /^[A-Za-z0-9_-]{1,128}$/.test(ledgerId));
+  const query = scopeToSearchParams(effectiveScope);
+  if (!valid) return <main className="page-container"><StatePanel title="Investigation bookmark unavailable" message="Use one exact retained ledger identifier of at most 128 letters, digits, hyphens or underscores." tone="error" /><Link className="button" href={`/agents${query.size ? `?${query}` : ""}`}>Clear retained ledger selection</Link></main>;
+  return <AgentsWorkspace key={`${JSON.stringify(effectiveScope)}::${ledgerId}`} scope={effectiveScope} ledgerId={ledgerId} />;
+}
+
+function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId: string }) {
   const [catalog, setCatalog] = useState<AutonomousAgent[]>([]);
   const [objective, setObjective] = useState(DEFAULT_OBJECTIVE);
   const [ledger, setLedger] = useState<Envelope<MultiAgentLedger> | null>(null);
@@ -26,6 +48,8 @@ export default function MultiAgentInvestigationPage() {
   const [decisionReason, setDecisionReason] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [reviewUncertain, setReviewUncertain] = useState(false);
+  const [reload, setReload] = useState(0);
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -37,7 +61,21 @@ export default function MultiAgentInvestigationPage() {
     setSelectedFindingId("");
     setDecisionReason("");
     setError("");
-    setLoading(false);
+    setReviewUncertain(false);
+    setLoading(Boolean(ledgerId));
+    if (ledgerId) {
+      const id = ++requestId.current;
+      multiAgentApi.ledger(ledgerId, scope).then(result => {
+        if (!active || id !== requestId.current) return;
+        if (result.data.ledger_id !== ledgerId) throw new Error("The response did not match the exact retained investigation. No replacement ledger was opened.");
+        setLedger(result);
+        setObjective(result.data.objective);
+      }).catch((reason: unknown) => {
+        if (active && id === requestId.current) setError(reason instanceof Error ? reason.message : "Retained investigation could not be read.");
+      }).finally(() => {
+        if (active && id === requestId.current) setLoading(false);
+      });
+    }
     multiAgentApi.catalog(scope).then((result) => {
       if (active) setCatalog(result.data.agents);
     }).catch((reason: unknown) => {
@@ -49,11 +87,11 @@ export default function MultiAgentInvestigationPage() {
       active = false;
       requestId.current += 1;
     };
-  }, [scope]);
+  }, [scope, ledgerId, reload]);
 
   async function runInvestigation() {
     const nextObjective = objective.trim();
-    if (!nextObjective || loading) return;
+    if (!nextObjective || loading || ledgerId) return;
     const id = ++requestId.current;
     setLoading(true);
     setError("");
@@ -70,13 +108,19 @@ export default function MultiAgentInvestigationPage() {
   }
 
   async function applyAction(action: string, payload: Record<string, unknown> = {}) {
-    if (!ledger || loading) return;
+    if (!ledger || loading || reviewUncertain) return;
     const id = ++requestId.current;
     setLoading(true);
     setError("");
     try {
       const result = await multiAgentApi.action(ledger.data.ledger_id, action, payload, scope);
-      if (id === requestId.current) setLedger(result);
+      if (id === requestId.current) {
+        if (result.data.ledger_id !== ledger.data.ledger_id) {
+          setReviewUncertain(true);
+          throw new Error("The action response did not match this retained investigation. Reload before further review.");
+        }
+        setLedger(result);
+      }
     } catch (reason) {
       if (id === requestId.current) setError(reason instanceof Error ? reason.message : "Investigation action could not be completed.");
     } finally {
@@ -85,6 +129,7 @@ export default function MultiAgentInvestigationPage() {
   }
 
   const evidence = ledger?.data.agent_runs.flatMap((run) => run.evidence) ?? [];
+  const reviewBlocked = loading || reviewUncertain;
   const findings = ledger?.data.agent_runs.flatMap((run) => run.findings) ?? [];
   const selectedFinding = findings.find((finding) => finding.finding_id === selectedFindingId);
   const activeAgents = ledger?.data.agent_runs.length ?? 0;
@@ -96,6 +141,10 @@ export default function MultiAgentInvestigationPage() {
   ).length;
   const deterministicDegraded = ledger?.data.activation?.mode
     !== "foundry";
+  const currentQuery = scopeToSearchParams(scope);
+  const newInvestigationHref = `/agents${currentQuery.size ? `?${currentQuery}` : ""}`;
+  const retainedQuery = new URLSearchParams(currentQuery);
+  if (ledger) retainedQuery.set("ledger_id", ledger.data.ledger_id);
 
   return (
     <main className="page-container agents-workspace" aria-label="Multi-Agent Autonomous Investigation">
@@ -104,15 +153,21 @@ export default function MultiAgentInvestigationPage() {
         title="What can evidence reconciliation answer?"
         description="Select specialist definitions and run governed local tools; Foundry activation status is shown explicitly and never inferred."
         actions={
-          <button className="button button-primary" type="button" onClick={runInvestigation} disabled={loading || !objective.trim()}>
+          <button className="button button-primary" type="button" onClick={runInvestigation} disabled={loading || Boolean(ledgerId) || !objective.trim()}>
             Run deterministic investigation
           </button>
         }
       />
 
+      {ledgerId || ledger ? <section className="callout agents-continuation" aria-label="Retained investigation continuation">
+        <p>{ledgerId ? `Opening retained ledger ${ledgerId}.` : `Retained ledger ${ledger?.data.ledger_id}.`} Reading or reopening does not rerun tools, resume provider execution, or authorize an operational change.</p>
+        <div className="button-row">
+          {ledgerId ? <><button className="button" disabled={loading} onClick={() => setReload(value => value + 1)}>Reload retained investigation</button><Link className="button" href={newInvestigationHref}>Start a different investigation</Link></> : <Link className="button" href={`/agents?${retainedQuery}`}>Open retained investigation</Link>}
+        </div>
+      </section> : null}
       {error ? <StatePanel title="Investigation unavailable" message={error} tone="error" /> : null}
       {catalogError ? <StatePanel title="Agent catalog unavailable" message={catalogError} tone="error" /> : null}
-      {loading ? <StatePanel title="Running deterministic specialist plans" message="Selecting specialist definitions, running governed local tools, reconciling evidence, and preparing synthesis." tone="loading" /> : null}
+      {loading ? <StatePanel title={ledgerId ? "Loading retained investigation" : "Running deterministic specialist plans"} message={ledgerId ? "Reading the exact retained ledger under current authorization; no tools are restarted." : "Selecting specialist definitions, running governed local tools, reconciling evidence, and preparing synthesis."} tone="loading" /> : null}
 
       <section className="card">
         <div className="card-header">
@@ -135,7 +190,7 @@ export default function MultiAgentInvestigationPage() {
         <div className="card-body agents-objective">
           <label>
             Investigation objective
-            <textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={3} />
+            <textarea value={objective} readOnly={Boolean(ledgerId)} onChange={(event) => setObjective(event.target.value)} rows={3} />
           </label>
           <div className="entity-pill-row" aria-label="Available specialized agents">
             {catalog.map((agent) => {
@@ -259,11 +314,11 @@ export default function MultiAgentInvestigationPage() {
             </section>
 
             <section className="card">
-              <div className="card-header"><div><h2>Human-in-the-loop controls</h2><p>Operator decisions are appended to the ledger audit trail.</p></div></div>
+              <div className="card-header"><div><h2>Human-in-the-loop controls</h2><p>Operator decisions are appended to the ledger audit trail. Stop records a review decision; it does not cancel an in-flight provider call.</p></div></div>
               <div className="card-body agents-controls">
                 <label>
                   Finding to review
-                  <select value={selectedFinding?.finding_id ?? ""} disabled={loading} onChange={(event) => {
+                  <select value={selectedFinding?.finding_id ?? ""} disabled={reviewBlocked} onChange={(event) => {
                     setSelectedFindingId(event.target.value);
                     setDecisionReason("");
                   }}>
@@ -282,19 +337,19 @@ export default function MultiAgentInvestigationPage() {
                 ) : null}
                 <label>
                   Finding decision reason
-                  <textarea value={decisionReason} maxLength={1000} disabled={loading} onChange={(event) => setDecisionReason(event.target.value)} rows={2} />
+                  <textarea value={decisionReason} maxLength={1000} disabled={reviewBlocked} onChange={(event) => setDecisionReason(event.target.value)} rows={2} />
                 </label>
                 <label>
                   Owner
-                  <input value={owner} onChange={(event) => setOwner(event.target.value)} />
+                  <input value={owner} disabled={reviewBlocked} onChange={(event) => setOwner(event.target.value)} />
                 </label>
                 <div className="mode-toggle">
-                  <button type="button" disabled={loading} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
-                  <button type="button" disabled={loading || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("accept_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Accept finding</button>
-                  <button type="button" disabled={loading || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("reject_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Reject finding</button>
-                  <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
-                  <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
-                  <button type="button" disabled={loading} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
+                  <button type="button" disabled={reviewBlocked} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
+                  <button type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("accept_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Accept finding</button>
+                  <button type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("reject_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Reject finding</button>
+                  <button type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
+                  <button type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
+                  <button type="button" disabled={reviewBlocked} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
                 </div>
                 <StructuredData value={{ decisions: ledger.data.decisions, approvals: ledger.data.approvals, stop_reason: ledger.data.stop_reason }} />
               </div>

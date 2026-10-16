@@ -2545,6 +2545,7 @@ textarea:focus-visible {
 
 .agents-workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
@@ -9851,3 +9852,11 @@ body.topology-fullscreen-open {
 .remediation-rollout-targets li { min-width: 0; }
 .remediation-rollout-record { border-block-start: 1px solid var(--color-border); padding-block-start: 16px; }
 .remediation-rollout-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.agents-continuation { overflow-wrap: anywhere; }
+.agents-continuation .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.agents-continuation :is(button, .button) { min-height: 44px; }
+@media (max-width: 780px) {
+  .agents-workspace .card-header { flex-wrap: wrap; }
+  .agents-workspace .card-header > div:first-child { flex-basis: 100%; }
+}

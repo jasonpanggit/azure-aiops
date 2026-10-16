@@ -34,6 +34,25 @@ error instead of being attached to the selected workflow.
 The summary also discloses immutable rollout identity, wave and terms digest
 when present. Deferred container execution remains disabled.
 
+## Agents retained investigation links
+
+`/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger
+under all nine scoped bookmark dimensions. Wider/invalid bookmarks are rejected
+before acquisition; the API independently reauthorizes the entire stored scope.
+The continuation link retains the effective page scope without changing global
+context. Reopening/reloading uses the existing ledger GET and never starts a new
+investigation, reruns tools or implies provider execution resumed.
+An unavailable or mismatched ledger is an explicit error, not a replacement run.
+URL/scope changes discard old responses and review drafts.
+
+Pinned investigations expose explicit reload and a scoped link to start a
+different investigation; the Run control cannot silently overwrite the pin.
+The objective stays read-only while pinned. Existing owner/finding review
+actions still target that exact retained ledger under current authorization.
+The existing Stop action records a review decision; it is not cancellation of
+an in-flight provider call. Asynchronous run admission, durable progress and
+actual provider cancellation are separate unfinished contracts.
+
 ## Governed remediation rollouts
 
 The on-demand Remediation rollout planner declares exact existing patch or
