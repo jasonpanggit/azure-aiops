@@ -402,7 +402,8 @@ the Agents page. Preserve its validated candidate/promotion contract:
   unrelated subscription-wide execution permissions.
   Named prompt-agent calls also require agent-definition reads and OpenAI
   Responses access. Terraform's `apps_foundry_prompt_runtime` custom role
-  grants only `AIServices/agents/read`, `AIServices/deployments/read` and
+  grants only project metadata `accounts/projects/read`,
+  `AIServices/agents/read`, `AIServices/deployments/read` and
   `OpenAI/responses/read`/`write`,
   assigned to the API identity at the project. It does not grant agent
   mutation, model deployment, key access or role management. Verify a real
@@ -413,7 +414,7 @@ the Agents page. Preserve its validated candidate/promotion contract:
   Foundry account, because account-level
   OpenAI authorization does not inherit a project assignment. It grants no
   agent-definition read or mutation, response deletion or management writes.
-  Exact account and deployment metadata reads cover the documented account
+  Exact account, project and deployment metadata reads cover the documented account
   Reader/project-access prerequisites without a wildcard Reader grant.
   Its Responses access covers the account, not just one project. Review this
   boundary before enabling the scoped restoration gate; require actual API
