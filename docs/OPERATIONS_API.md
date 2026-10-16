@@ -894,6 +894,15 @@ Three properties are load-bearing:
 - **Scope filters the snapshot, not just the classifications.** Counts,
   connection IDs and derived summaries are narrowed with the resources, so a
   scoped caller cannot infer the size of the estate beyond their grant.
+  Network REST reads, agent tools, Twin network projections and Governance
+  network packs share the same nine-dimension projection: connection,
+  subscription, environment, business service, application, owner, support
+  team, region and criticality. Missing metadata does not match a selected
+  dimension. Canonical `region` takes precedence over the native `location`
+  fallback without overwriting that location; support-team and criticality
+  metadata accept their canonical columns and tag aliases. Derived shared
+  services retain these attributes. Filtering is configuration analysis, not
+  a packet probe or a claim of observed reachability.
 - **`intended_design_declared: false` is reported, not silently passed.** With
   no design policy only structural gaps can be found, never conformance gaps.
 

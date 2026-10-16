@@ -63,16 +63,7 @@ def _composer(context: Context, scope: Scope) -> OperationalTwinComposer:
     if generation is not None and hasattr(network, "for_generation"):
         network = network.for_generation(generation)
     if network is not None and hasattr(network, "scoped"):
-        network = network.scoped(
-            NetworkScope(
-                connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-                subscription_ids=tuple(scope.dimensions.get("subscription", ())),
-                environments=tuple(scope.dimensions.get("environment", ())),
-                business_services=tuple(scope.dimensions.get("business_service", ())),
-                applications=tuple(scope.dimensions.get("application", ())),
-                owners=tuple(scope.dimensions.get("owner", ())),
-            )
-        )
+        network = network.scoped(NetworkScope.from_dimensions(scope.dimensions))
     vulnerability = (
         context.hybrid_vulnerability_provider(subscription_ids)
         if context.hybrid_vulnerability_provider is not None and subscription_ids

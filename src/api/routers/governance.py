@@ -466,16 +466,7 @@ def _network_sections(
         return {"topology": {}, "design_gaps": []}
     from network.service import NetworkScope
 
-    service = service.scoped(
-        NetworkScope(
-            connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-            subscription_ids=tuple(scope.dimensions.get("subscription", ())),
-            environments=tuple(scope.dimensions.get("environment", ())),
-            business_services=tuple(scope.dimensions.get("business_service", ())),
-            applications=tuple(scope.dimensions.get("application", ())),
-            owners=tuple(scope.dimensions.get("owner", ())),
-        )
-    )
+    service = service.scoped(NetworkScope.from_dimensions(scope.dimensions))
     if kind == "firewall_nsg":
         gaps = service.firewall_bypass_spokes()
         return {

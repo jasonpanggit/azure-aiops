@@ -117,6 +117,9 @@ class NetworkResource:
     owner: str = ""
     tags: dict[str, str] = field(default_factory=dict)
     properties: dict[str, Any] = field(default_factory=dict)
+    support_team: str = field(default="", kw_only=True)
+    region: str = field(default="", kw_only=True)
+    criticality: str = field(default="", kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "resource_id", _lower(self.resource_id))
@@ -125,6 +128,9 @@ class NetworkResource:
         object.__setattr__(self, "resource_group", _lower(self.resource_group))
         object.__setattr__(self, "location", _lower(self.location))
         object.__setattr__(self, "connection_id", _text(self.connection_id))
+        object.__setattr__(self, "support_team", _text(self.support_team))
+        object.__setattr__(self, "region", _lower(self.region or self.location))
+        object.__setattr__(self, "criticality", _text(self.criticality))
         object.__setattr__(self, "tags", {str(k): str(v) for k, v in _mapping(self.tags).items()})
         object.__setattr__(self, "properties", _mapping(self.properties))
 
@@ -141,6 +147,9 @@ class NetworkResource:
             "business_service": self.business_service,
             "application": self.application,
             "owner": self.owner,
+            "support_team": self.support_team,
+            "region": self.region,
+            "criticality": self.criticality,
             "tags": dict(self.tags),
         }
 

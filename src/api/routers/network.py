@@ -123,14 +123,7 @@ def _network_scope(scope: Scope) -> NetworkScope:
     The API scope is the authorization boundary; this keeps the two aligned so
     a caller can never widen their view by choosing a network route.
     """
-    return NetworkScope(
-        connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-        subscription_ids=tuple(scope.dimensions.get("subscription", ())),
-        environments=tuple(scope.dimensions.get("environment", ())),
-        business_services=tuple(scope.dimensions.get("business_service", ())),
-        applications=tuple(scope.dimensions.get("application", ())),
-        owners=tuple(scope.dimensions.get("owner", ())),
-    )
+    return NetworkScope.from_dimensions(scope.dimensions)
 
 
 def _evidence(
