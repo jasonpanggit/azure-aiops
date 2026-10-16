@@ -48,6 +48,9 @@ export function scopeToSearchParams(scope: ScopeSelection): URLSearchParams {
   return params;
 }
 
+/** A bookmark validation failure, distinct from unexpected rendering or provider errors. */
+export class ScopeBookmarkError extends Error {}
+
 /** Restore route scope only when it preserves or narrows every current selector constraint. */
 export function scopedBookmark(params: Pick<URLSearchParams, "getAll">, current: ScopeSelection): ScopeSelection {
   const result = { ...current };
@@ -56,11 +59,11 @@ export function scopedBookmark(params: Pick<URLSearchParams, "getAll">, current:
     if (!values.length) continue;
     const trimmed = values.map(value => value.trim());
     if (values.some(value => !value.trim() || /[\0\r\n]/.test(value))) {
-      throw new Error("The bookmarked scope contains an invalid value. Clear the bookmark or correct its scope.");
+      throw new ScopeBookmarkError("The bookmarked scope contains an invalid value. Clear the bookmark or correct its scope.");
     }
     const selected = new Set((current[dimension] ?? []).map(value => value.trim().toLowerCase()));
     if (selected.size && trimmed.some(value => !selected.has(value.toLowerCase()))) {
-      throw new Error("The bookmarked scope is outside the current selected scope. Clear the bookmark or change the operating context.");
+      throw new ScopeBookmarkError("The bookmarked scope is outside the current selected scope. Clear the bookmark or change the operating context.");
     }
     result[dimension] = Array.from(new Map(trimmed.map(value => [value.toLowerCase(), value])).values());
   }

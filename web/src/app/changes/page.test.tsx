@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(mocks.query),
+  usePathname: () => "/changes",
   useRouter: () => ({ push: mocks.push }),
 }));
 vi.mock("@/lib/services", async importOriginal => {
@@ -24,6 +25,7 @@ vi.mock("@/components/ui/CopilotDrawer", () => ({
 
 import ChangesPage from "./page";
 import { ChangeObservations } from "@/components/ChangeObservations";
+import { RouteScopeBoundary } from "@/components/RouteScopeBoundary";
 
 const row: ChangeObservation = {
   observation_id: "observed-1", change_id: "CHG-1", change_type: "Update",
@@ -51,7 +53,7 @@ function response(rows = [row], total = rows.length): Envelope<ChangeObservation
   };
 }
 function subject(scope: ScopeSelection = {}, children = <ChangeObservations />) {
-  return <ScopeProvider initialScope={scope}>{children}</ScopeProvider>;
+  return <ScopeProvider initialScope={scope}><RouteScopeBoundary>{children}</RouteScopeBoundary></ScopeProvider>;
 }
 function SwitchScope() {
   const { setScope } = useScope();
@@ -87,13 +89,13 @@ describe("Independent change observations", () => {
       { subscription: ["sub-1"], business_service: ["Checkout"] }, expect.any(Object), expect.any(AbortSignal),
     );
     expect(mocks.incidents).toHaveBeenCalledWith({ subscription: ["sub-1"], business_service: ["Checkout"] });
-    expect(screen.getByText(/Effective view scope:/)).toHaveTextContent("subscription: sub-1");
+    expect(screen.getByLabelText("Bookmarked page scope")).toHaveTextContent("Subscription: sub-1");
   });
 
   it("rejects a bookmark outside the selected context without reading either source", async () => {
     mocks.query = "subscription=other";
     render(subject({ subscription: ["selected"] }, <ChangesPage />));
-    expect(screen.getByRole("heading", { name: "Change bookmark scope unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Page bookmark scope unavailable" })).toBeInTheDocument();
     expect(mocks.observations).not.toHaveBeenCalled();
     expect(mocks.incidents).not.toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "Use current operating context" })).toHaveAttribute("href", "/changes?subscription=selected");

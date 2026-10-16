@@ -9,6 +9,28 @@ Azure AI Operations Workbench UI.
 Layer. No handler reads Fabric, ontology tables, or Azure Resource Graph
 directly.
 
+## Portal scoped bookmarks
+
+The shared shell restores all nine repeated scope dimensions from each page URL
+before mounting page data providers or contextual Copilot. The bookmark may
+narrow an unconstrained dimension or select a subset of the current global
+operating context. It cannot replace a selected value with an outside value,
+clear an existing constraint through omission, or treat blank/control-bearing
+values as an unscoped request. Invalid bookmarks withhold the page and expose
+a recovery link preserving non-scope query fields and the global selection.
+Bookmarks are not authorization; every backend read retains its own access and
+provider-capability checks.
+
+The global selector remains memory-only and unchanged by page bookmarks.
+A page-level notice distinguishes the effective bookmarked scope from that
+selector. Effective-scope changes remount page contents immediately, discarding
+loaded data and local drafts; ordinary non-scope filters do not remount the
+whole page. Copilot continuity observes this effective scope and retains its
+existing server-revalidation requirement on scope changes. No conversation or
+new authority is restored from a URL.
+Global selector/account controls and continuity sign-out handling remain active
+while an invalid bookmark withholds page data.
+
 ## Overview interpretation
 
 The Overview reads Situations and Connections at offset 0 / limit 100,

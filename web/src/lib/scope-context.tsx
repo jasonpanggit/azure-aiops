@@ -42,3 +42,10 @@ export function useScope(): ScopeContextValue {
   if (!ctx) throw new Error("useScope must be used within a ScopeProvider");
   return ctx;
 }
+
+/** Apply an effective page scope without replacing the user's global selector or its controls. */
+export function PageScopeProvider({ scope, children }: { scope: ScopeSelection; children: React.ReactNode }) {
+  const parent = useScope();
+  const value = useMemo(() => ({ ...parent, scope }), [parent, scope]);
+  return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
+}

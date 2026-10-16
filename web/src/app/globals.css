@@ -5397,9 +5397,29 @@ body.topology-fullscreen-open {
   margin-top: 18px;
 }
 
-.changes-scope-summary {
-  max-width: 75ch;
+.page-scope-notice {
+  width: min(100%, var(--content-max));
+  margin: 0 auto;
+  padding: 16px 32px 0;
+  font-size: 13px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.page-scope-notice p {
+  margin: 0 0 6px;
+  max-width: 75ch;
+}
+
+.page-scope-notice a {
+  color: var(--color-brand);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.page-scope-notice a:hover {
+  color: var(--color-brand-hover);
 }
 
 .change-observations {
@@ -6763,6 +6783,10 @@ body.topology-fullscreen-open {
 
   .page-container {
     padding: 22px 18px 38px;
+  }
+
+  .page-scope-notice {
+    padding-inline: 18px;
   }
 
   .page-header {

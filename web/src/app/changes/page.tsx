@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { useState } from "react";
 import { ChangeObservations } from "@/components/ChangeObservations";
 
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
@@ -14,8 +13,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { buildChangesCopilotContext, envelopeSourceStatus } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime, titleize } from "@/lib/format";
-import { ScopeProvider, useScope } from "@/lib/scope-context";
-import { scopedBookmark } from "@/lib/scope";
+import { useScope } from "@/lib/scope-context";
 import { operationsApi } from "@/lib/services";
 import type { IncidentTimelineEvent } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -31,22 +29,6 @@ function sourceLink(event: IncidentTimelineEvent): string | null {
 
 /** Independent change projection and separately sourced legacy incident associations. */
 export default function ChangesPage() {
-  return <Suspense fallback={<StatePanel title="Loading change intelligence" message="Restoring the authorized view." tone="loading" />}><ScopedChangesPage /></Suspense>;
-}
-
-function ScopedChangesPage() {
-  const { scope } = useScope();
-  const params = useSearchParams();
-  let selected;
-  try {
-    selected = scopedBookmark(params, scope);
-  } catch (error) {
-    return <div className="page-container"><StatePanel title="Change bookmark scope unavailable" message={error instanceof Error ? error.message : "The bookmarked scope is invalid."} tone="error" action={<Link className="button button-secondary" href={overviewHref("/changes", scope)}>Use current operating context</Link>} /></div>;
-  }
-  return <ScopeProvider key={JSON.stringify(selected)} initialScope={selected}><ChangesWorkspace /></ScopeProvider>;
-}
-
-function ChangesWorkspace() {
   const { scope } = useScope();
   const [copilotOpen, setCopilotOpen] = useState(false);
   const incidents = useApi(() => operationsApi.incidents(scope), [scope]);
@@ -97,8 +79,6 @@ function ChangesWorkspace() {
           </>
         }
       />
-      <p className="changes-scope-summary">Effective view scope: {Object.entries(scope).map(([key, values]) => `${key.replaceAll("_", " ")}: ${values?.join(", ")}`).join(" · ") || "Current authorized estate"}. Bookmarks can narrow, never broaden, the selected operating context; the API reauthorizes every read.</p>
-
       <ChangeObservations />
       <h2>Legacy incident timeline associations</h2>
       <p>Change-type events from at most 100 loaded incident report rows, not the durable Situation queue or the independent feed. The timeline Copilot uses only this report. No loaded association establishes causality or source completeness.</p>

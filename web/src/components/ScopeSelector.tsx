@@ -9,7 +9,7 @@ import {
   TagGroup,
 } from "@fluentui/react-components";
 import { FilterRegular } from "@fluentui/react-icons";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { buildScopeOptions, type ScopeOptions } from "@/lib/scope-options";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi } from "@/lib/services";
@@ -24,6 +24,7 @@ const DIMENSION = "subscription" as const;
  * connections rather than accepting unvalidated free text.
  */
 export function ScopeSelector() {
+  const subscriptionLabelId = useId();
   const { scope, setScope, clearScope } = useScope();
   const [open, setOpen] = useState(false);
   const [options, setOptions] = useState<ScopeOptions>(EMPTY_OPTIONS);
@@ -93,8 +94,9 @@ export function ScopeSelector() {
         </div>
 
         <label className="scope-select-field">
-          <span>Subscription</span>
+          <span id={subscriptionLabelId}>Subscription</span>
           <select
+            aria-labelledby={subscriptionLabelId}
             value=""
             disabled={loading || availableOptions.length === 0}
             onChange={(event) => addValue(event.target.value)}
