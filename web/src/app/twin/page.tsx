@@ -11,6 +11,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { EntityGraph } from "@/components/twin/EntityGraph";
+import { RetainedSnapshots } from "@/components/twin/RetainedSnapshots";
 import { useScope } from "@/lib/scope-context";
 import { twinApi } from "@/lib/services";
 import { buildTwinCopilotContext } from "@/lib/copilot/page-adapters";
@@ -278,6 +279,7 @@ export default function OperationalTwinPage() {
       </div>
 
       {snapshot ? <EntityGraph key={snapshot.data.version} snapshot={snapshot.data} onSelectResource={setSelectedResourceId} /> : null}
+      <RetainedSnapshots scope={scope} />
 
       <section className="workspace-grid twin-grid">
         <section className="card">

@@ -25,6 +25,7 @@ from operations.saved_views import SavedViewStore
 from operations.service_portfolio import ServicePortfolioStore
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
+from semantic.twin_history import TwinHistoryStore
 from situations.notes import SituationNotesStore
 
 from .auth import Authenticator
@@ -108,6 +109,7 @@ class ApiContext:
     network_history_store: NetworkHistoryStore | None = None
     saved_view_store: SavedViewStore | None = None
     predeploy_history_store: PredeployHistoryStore | None = None
+    twin_history_store: TwinHistoryStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

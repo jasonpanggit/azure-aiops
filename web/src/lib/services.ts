@@ -1823,6 +1823,32 @@ export const complianceApi = {
 };
 
 export const twinApi = {
+  /** Recover exact personal retained captures without current provider acquisition. */
+  snapshots: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots", { query: scopeToSearchParams(scope), signal }),
+  /** Explicitly capture a fresh server projection, not the previously displayed graph. */
+  captureSnapshot: (scope: ScopeSelection, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision }, signal,
+    }),
+  /** Explicit removal from a reviewed history revision; source observations are untouched. */
+  removeSnapshot: (scope: ScopeSelection, snapshotId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots/remove", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { snapshot_id: snapshotId, expected_revision: expectedRevision }, signal,
+    }),
+  /** Compare two owned same-scope captures without re-reading current providers. */
+  compareSnapshots: (scope: ScopeSelection, baselineId: string, candidateId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("candidate_id", candidateId);
+    return apiRequest<import("./twin-history").TwinCaptureComparison>("/twin/snapshots/compare", { query, signal });
+  },
+  /** Provider-free scenario pair bound to one exact immutable retained projection. */
+  retainedScenarios: (scope: ScopeSelection, snapshotId: string, left: string, right: string, target: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("left", left); query.set("right", right); query.set("target", target);
+    return apiRequest<import("./twin-history").TwinScenarioPair>(`/twin/snapshots/${encodeURIComponent(snapshotId)}/scenarios`, { query, signal });
+  },
   query: (q = "", scope: ScopeSelection = {}) => {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);

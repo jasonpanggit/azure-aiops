@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Path, Query
+from pydantic import ValidationError
 
 from network.service import NetworkScope
 from semantic.operational_twin import OperationalTwinComposer
+from semantic.twin_history import (
+    TwinCapture,
+    TwinCaptureRemoval,
+    TwinCaptureRequest,
+    TwinHistoryStore,
+    capture_projection,
+    compare_captures,
+)
+from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, ReadScope, live_subscription_ids
+from ..dependencies import (
+    Context,
+    CurrentPrincipal,
+    ReadScope,
+    WritePrincipal,
+    live_subscription_ids,
+)
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
@@ -214,3 +231,137 @@ def traverse(resource_id: str, context: Context, scope: ReadScope) -> dict[str, 
 def export(context: Context, scope: ReadScope) -> dict[str, Any]:
     data = _composer(context, scope).export()
     return _respond(data, scope)
+
+
+def _history_store(context: Context) -> TwinHistoryStore:
+    if context.twin_history_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Retained Twin snapshots are unavailable")
+    return context.twin_history_store
+
+
+def _history_call(operation: Callable[[], dict]) -> dict:
+    try:
+        return operation()
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Twin history changed; reload before continuing") from exc
+    except KeyError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained Twin snapshot was not found in this personal scope") from exc
+    except ValidationError as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Twin projection could not be confirmed against its retained schema") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Twin history operation was not confirmed; reload before retrying") from exc
+
+
+def _history_response(data: dict, scope: Scope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="semantic.twin_history", source_table="state/twin-history",
+            timestamp=str(data.get("updated_at", "")), confidence="unknown",
+        ),
+        warnings=["Personal exact-scope safe historical projections, not complete raw graphs, source authenticity, verified changes, causal impact or execution authority."],
+    )
+
+
+def _capture_by_id(history: dict, snapshot_id: str) -> TwinCapture:
+    row = next((row for row in history["captures"] if row["snapshot_id"] == snapshot_id), None)
+    if row is None:
+        raise KeyError(snapshot_id)
+    return TwinCapture.model_validate(row)
+
+
+@router.get("/snapshots", summary="Read personal retained Twin snapshots without current providers")
+def retained_snapshots(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Recover immutable safe captures only in the exact personal effective scope."""
+    return _history_response(_history_call(
+        lambda: _history_store(context).read(principal.subject, scope.to_dict())
+    ), scope)
+
+
+@router.post("/snapshots", status_code=201, summary="Capture a fresh server-composed Twin projection")
+def capture_snapshot(
+    payload: TwinCaptureRequest, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Capture fresh evidence, not a caller-supplied graph or an earlier displayed hash."""
+    def capture():
+        store = _history_store(context)
+        history = store.read(principal.subject, scope.to_dict())
+        if history["revision"] != payload.expected_revision:
+            raise DocumentConflictError("Twin history changed")
+        try:
+            receipt = capture_projection(_composer(context, scope).snapshot(), scope.to_dict())
+        except (KeyError, AttributeError) as exc:
+            raise RuntimeError("Current Twin composition could not be retained") from exc
+        return store.update(principal.subject, scope.to_dict(), payload.expected_revision, capture=receipt)
+
+    return _history_response(_history_call(capture), scope)
+
+
+@router.post("/snapshots/remove", summary="Explicitly remove one personal retained Twin snapshot")
+def remove_snapshot(
+    payload: TwinCaptureRemoval, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Remove only an identified capture from the reviewed revision; never evict silently."""
+    return _history_response(_history_call(lambda: _history_store(context).update(
+        principal.subject, scope.to_dict(), payload.expected_revision, remove=payload.snapshot_id,
+    )), scope)
+
+
+@router.get("/snapshots/compare", summary="Compare two selected safe retained Twin captures")
+def compare_snapshots(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    baseline_id: str = Query(pattern=r"^[0-9a-f]{32}$"),
+    candidate_id: str = Query(pattern=r"^[0-9a-f]{32}$"),
+) -> dict:
+    """Historical differences use no current provider or inferred previous revision."""
+    def compare():
+        history = _history_store(context).read(principal.subject, scope.to_dict())
+        return compare_captures(
+            _capture_by_id(history, baseline_id), _capture_by_id(history, candidate_id),
+        )
+
+    return _history_response(_history_call(compare), scope)
+
+
+@router.get("/snapshots/{snapshot_id}/scenarios", summary="Review two scenarios against one immutable retained graph")
+def retained_scenarios(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    snapshot_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
+    left: str = Query(min_length=1, max_length=64),
+    right: str = Query(min_length=1, max_length=64),
+    target: str = Query(min_length=1, max_length=2048),
+) -> dict:
+    """Both advisory projections share identical retained evidence and no current provider."""
+    def review():
+        if left == right:
+            raise ValueError("Select two different scenarios")
+        history = _history_store(context).read(principal.subject, scope.to_dict())
+        capture = _capture_by_id(history, snapshot_id)
+        projection = capture.projection
+        snapshot = {
+            "version": capture.snapshot_sha256,
+            "entities": [row.model_dump() for row in projection.entities],
+            "relationships": [row.model_dump() for row in projection.relationships],
+            "warnings": projection.warnings,
+        }
+        return {
+            "snapshot_id": capture.snapshot_id, "snapshot_sha256": capture.snapshot_sha256,
+            "composed_at": projection.composed_at, "authority": "none",
+            "left": OperationalTwinComposer.review_snapshot(snapshot, left, target),
+            "right": OperationalTwinComposer.review_snapshot(snapshot, right, target),
+            "interpretation": (
+                "Both reviews use the same bounded mapped neighborhood. Scenario names change review "
+                "questions, not measured outcomes. No causal failure propagation, calibrated risk delta, "
+                "runtime validation, deployment approval or execution is established."
+            ),
+        }
+
+    def guarded_review():
+        try:
+            return review()
+        except LookupError as exc:
+            raise KeyError("Retained target was not found") from exc
+
+    return _history_response(_history_call(guarded_review), scope)

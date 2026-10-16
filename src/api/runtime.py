@@ -4588,6 +4588,13 @@ def _predeploy_history_store():
     return PredeployHistoryStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _twin_history_store():
+    """Retain explicit personal Twin projections on the existing durable root."""
+    from semantic.twin_history import TwinHistoryStore
+
+    return TwinHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _network_intent_store():
     """Persist personal connectivity suites on the existing durable document root."""
     from network.intents import NetworkIntentStore
@@ -5789,6 +5796,7 @@ def build_context() -> ApiContext:
         network_history_store=_network_history_store(),
         saved_view_store=_saved_view_store(),
         predeploy_history_store=_predeploy_history_store(),
+        twin_history_store=_twin_history_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

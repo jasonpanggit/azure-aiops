@@ -1,8 +1,8 @@
 """Operational digital twin composition.
 
 The twin is a request-time projection over the durable semantic graph and live
-operational providers. It does not ask AIOps to snapshot mutable facts; instead
-it versions the current composed view and emits provenance for each contribution.
+operational providers. Explicit safe retained captures live in twin_history;
+composition alone does not create historical evidence.
 """
 
 from __future__ import annotations
@@ -13,6 +13,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
+
+SCENARIO_NARRATIVES = {
+    "firewall_failure": "Review inspection dependencies if the selected resource's firewall path fails.",
+    "route_change": "Review routing and inspection dependencies before changing the selected resource's path.",
+    "subscription_outage": "Review the selected resource's mapped dependencies for a hypothetical subscription outage.",
+    "cve_exploitation": "Review mapped dependencies; exploitability, reachability and compromise are not established.",
+    "patch_deployment": "Review mapped dependencies before patching; compatibility and risk reduction are not established.",
+    "architecture_remediation": "Review mapped dependencies before remediation; control improvement is not established.",
+}
 
 
 def _utc_now() -> str:
@@ -188,6 +197,7 @@ class OperationalTwinComposer:
             network_attributes = {**_as_dict(resource.get("details")), **resource}
             if not self._in_scope(network_attributes):
                 continue
+            dimensions = _scope_attributes(network_attributes)
             resource_id = str(resource.get("id") or resource.get("name") or "")
             entity = _entity(
                 "resource",
@@ -199,6 +209,10 @@ class OperationalTwinComposer:
                 business_service=resource.get("business_service", ""),
                 application=resource.get("application", ""),
                 owner=resource.get("owner", ""),
+                subscription_connection=dimensions.get("subscription_connection", ""),
+                support_team=dimensions.get("support_team", ""),
+                region=dimensions.get("region", ""),
+                criticality=dimensions.get("criticality", ""),
                 temporal_state={"composed_at": observed_at, "source": "network.topology"},
                 provenance=[{"source": "network.topology", "confidence": "high"}],
             )
@@ -377,23 +391,21 @@ class OperationalTwinComposer:
         }
 
     def scenario(self, scenario_type: str, target: str = "") -> dict[str, Any]:
-        narratives = {
-            "firewall_failure": "Review inspection dependencies if the selected resource's firewall path fails.",
-            "route_change": "Review routing and inspection dependencies before changing the selected resource's path.",
-            "subscription_outage": "Review the selected resource's mapped dependencies for a hypothetical subscription outage.",
-            "cve_exploitation": "Review mapped dependencies; exploitability, reachability and compromise are not established.",
-            "patch_deployment": "Review mapped dependencies before patching; compatibility and risk reduction are not established.",
-            "architecture_remediation": "Review mapped dependencies before remediation; control improvement is not established.",
-        }
-        if scenario_type not in narratives:
+        if scenario_type not in SCENARIO_NARRATIVES:
             raise ValueError("Select a supported Twin scenario")
-        snapshot = self.snapshot()
-        impacted, truncated = self._impacted(snapshot, target)
+        return self.review_snapshot(self.snapshot(), scenario_type, target)
+
+    @staticmethod
+    def review_snapshot(snapshot: dict[str, Any], scenario_type: str, target: str) -> dict[str, Any]:
+        """Review one server-composed or validated retained graph without provider reads."""
+        if scenario_type not in SCENARIO_NARRATIVES:
+            raise ValueError("Select a supported Twin scenario")
+        impacted, truncated = OperationalTwinComposer._impacted(snapshot, target)
         return {
             "scenario": scenario_type,
             "target": target,
             "version": snapshot["version"],
-            "likely_impact": narratives[scenario_type],
+            "likely_impact": SCENARIO_NARRATIVES[scenario_type],
             "risk_delta": None,
             "analysis_kind": "bounded_topology_review",
             "authority": "none",

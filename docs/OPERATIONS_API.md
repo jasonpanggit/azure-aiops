@@ -321,8 +321,8 @@ heuristic index rather than manufacturing a zero.
 
 `/twin/graph`, `/timeline`, `/compare` and `/export` do not invent historical
 revisions: prior versions/counts are `null`, change history/differences are empty,
-and `/compare` reports `comparison_available: false` until a real retained
-comparison is selected. Timeline observations are not detected changes.
+and `/compare` reports `comparison_available: false`; selected historical
+comparisons instead use `/snapshots/compare`. Timeline observations are not detected changes.
 `observed_at` on the graph is the legacy request composition timestamp;
 `observation_kind: request_time_composition` and envelope `composed_at` make
 that boundary explicit. Envelope `live_observed_at` is empty: composition time
@@ -350,6 +350,47 @@ full loaded-neighborhood counts. Keyboard node navigation and textual
 relationship details use the same loaded evidence. It neither fetches a wider
 estate nor infers missing dependencies. Focusing/searching does not run a
 scenario: **Use focused resource for review** is the separate explicit action.
+
+Personal retained Twin snapshots use the existing durable document root at
+`state/twin-history/<sha256(actor,effective-scope)>.json`. `GET /twin/snapshots`
+is reader-authorized, exact-scope and provider-free. `POST /twin/snapshots`
+requires an admin and only accepts `expected_revision`: it acquires a **fresh**
+server composition, not a client graph or the previously displayed graph.
+`POST /twin/snapshots/remove` requires admin, `snapshot_id` and the reviewed
+revision. Revision plus create-only/ETag CAS prevents silent overwrite; conflicts
+return 409, unknown/foreign captures 404 and invalid stored evidence 503, never
+an empty success. An unconfirmed write must be recovered by an explicit read
+before retrying; aborting the UI does not prove a server write was cancelled.
+
+Captures contain only safe entity/link declarations, allowlisted scope metadata
+and status/severity/type, source labels/confidence and coverage warnings. Raw
+tags, semantic attributes, arbitrary properties, incident narrative and entity
+timestamps are excluded. Aware composition/retention times, unique identities,
+retained endpoints, exact collection scope and canonical projection SHA-256
+are validated on recovery. The digest is consistency evidence, not a signature
+or source-authenticity proof. Limits are 10 captures, 5000 entities/20000 links,
+2 MiB per serialized capture and 12 MiB per serialized collection, measured
+using the document store's actual JSON format. Rejection is explicit; there is
+no truncation, automatic eviction or historical reconstruction.
+
+`GET /twin/snapshots/compare?baseline_id=...&candidate_id=...` requires two
+different owned captures in the exact effective scope. It compares actual safe
+entity/link declarations with added/removed and before/after changed fields,
+ignoring composition-time-only changes. Missing-provider coverage is retained:
+differences are not proof of applied changes, revision lineage or causal impact.
+`GET /twin/snapshots/{id}/scenarios?left=...&right=...&target=...` applies two
+different supported review questions to one exact retained resource and graph,
+without any current provider acquisition. Both reviews carry the same capture
+digest/time, bounded undirected neighborhood, `risk_delta: null` and
+`authority: none`. Scenario names change review questions, not simulated
+outcomes; identical related sets are expected.
+
+The portal opens this panel only on demand, has explicit capture/deletion,
+distinct snapshot selections, paginated safe before/after differences and a
+same-evidence scenario pair. Scope replacement/closure aborts in-flight UI work
+and suppresses late responses; no write/scenario is automatically replayed.
+Uncertain mutations clear usable history until explicit reload. Historical
+panel results are separate from current-state Copilot context.
 Refresh/scope replacement clears graph focus; graph fingerprints are not
 ordered durable revisions.
 
