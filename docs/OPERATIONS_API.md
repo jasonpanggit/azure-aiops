@@ -885,6 +885,40 @@ Served by `NetworkIntelligenceService` over the ontology snapshot.
 | `/api/v1/network/gaps` | Intended-design and structural gaps |
 | `/api/v1/network/rule-findings` | Firewall and NSG tightening analysis |
 | `/api/v1/network/summary` | Dashboard card payload |
+| `/api/v1/network/intents` | GET personal saved connectivity expectations/receipts; PUT replace reviewed declarations |
+| `/api/v1/network/intents/run` | POST explicitly analyze the saved reviewed suite against current scoped configuration |
+
+**Saved connectivity tests** are personal reader state, not global design policy,
+deployment approvals or infrastructure execution. The server keys documents by
+exact authenticated principal and effective nine-dimension scope, on the existing
+local/OneLake root at `state/network-intents/`. GET and PUT do not acquire Network
+providers. PUT requires `expected_revision` and the complete `tests` list (empty
+explicitly removes declarations). Each test requires stable lowercase slug
+`test_id` (max64), name (max80), source/destination (max512 each), port1–65535,
+`Tcp`/`Udp`, and an `allowed`/`denied` expectation. Up to20 tests are supported.
+Declarations are not proof of endpoint membership.
+
+POST accepts **only** `expected_revision`, resolves one currently authorized
+Network service, and batch-evaluates only the saved declarations. Any unresolved
+verdict, unknown or missing enforcement point yields `indeterminate`, never
+`match`; otherwise a configuration verdict either matches or mismatches the
+declared expectation. There are no packet probes, traffic observations,
+schedules, auto-fixes or execution grants. Foreign or unresolved endpoints cannot
+recover configuration outside the current scope. Receipts retain exact tested
+declarations, reviewed revision, aware acquisition times, reported snapshot
+observation time (empty means unreported), verdicts and evidence-gap counts;
+raw rules, provider errors and arbitrary property bags are not retained.
+
+Every successful save/run advances the revision under create-only/ETag CAS;
+stale/concurrent writes return409. Empty suites cannot run. Failed acquisitions
+or invalid provider results never append a success receipt. Corrupt/unavailable
+storage fails explicitly, not as empty history. The latest10 run receipts remain
+under a512KiB serialized-document bound. Editing/removing declarations does not
+rewrite receipts. Source generation and complete topology coverage are unreported;
+repeated snapshot observation times do not prove independent acquisitions.
+No time-based expiry, historical backfill, continuous coverage, compliance or
+observed-reachability claim is made. Personal suite contents are not added to
+the current Network Copilot snapshot.
 
 Three properties are load-bearing:
 

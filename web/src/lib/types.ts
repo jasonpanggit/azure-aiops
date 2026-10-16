@@ -2680,6 +2680,43 @@ export interface FlowResult {
   path_summary: string;
 }
 
+/** A personal declaration, not an infrastructure policy or approval. */
+export interface NetworkIntentTest {
+  test_id: string;
+  name: string;
+  source: string;
+  destination: string;
+  port: number;
+  protocol: "Tcp" | "Udp";
+  expected_verdict: "allowed" | "denied";
+}
+
+/** One immutable server-side configuration analysis, with no packet probing. */
+export interface NetworkIntentRun {
+  run_id: string;
+  reviewed_revision: number;
+  started_at: string;
+  finished_at: string;
+  source_observed_at: string;
+  results: {
+    test: NetworkIntentTest;
+    verdict: FlowVerdict;
+    unknown_count: number;
+    missing_enforcement_count: number;
+    outcome: "match" | "mismatch" | "indeterminate";
+  }[];
+}
+
+/** Bounded declarations and run receipts for the exact principal/effective scope. */
+export interface NetworkIntentSuite {
+  schema_version: number;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  tests: NetworkIntentTest[];
+  runs: NetworkIntentRun[];
+}
+
 export interface HubDependents {
   hub_vnet_id: string;
   hub_name: string;

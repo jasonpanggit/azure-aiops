@@ -15,6 +15,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Query, Request
 
 from intelligence.inventory.exports import InventoryExportStore
+from network.intents import NetworkIntentStore
 from onboarding.service import SubscriptionOnboardingService
 from operations.overview_history import OverviewHistoryStore
 from operations.resource_health_history import ResourceHealthHistoryStore
@@ -100,6 +101,7 @@ class ApiContext:
     overview_history_store: OverviewHistoryStore | None = None
     service_portfolio_store: ServicePortfolioStore | None = None
     resource_health_history_store: ResourceHealthHistoryStore | None = None
+    network_intent_store: NetworkIntentStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

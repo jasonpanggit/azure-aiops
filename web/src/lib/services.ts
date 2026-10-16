@@ -2,6 +2,8 @@ import { apiRequest, resolveApiBaseUrl } from "./api-client";
 import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
 import type {
+  NetworkIntentSuite,
+  NetworkIntentTest,
   BusinessMetadata,
   ChangeAssessment,
   ChangeObservationFeed,
@@ -1457,6 +1459,29 @@ export const networkApi = {
       { query },
     );
   },
+
+  /** Read personal saved declarations and receipts without current Network acquisition. */
+  intents: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<NetworkIntentSuite>("/network/intents", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+
+  /** Replace only reviewed declarations; this does not change network policy. */
+  saveIntents: (
+    scope: ScopeSelection, expectedRevision: number, tests: NetworkIntentTest[],
+    options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkIntentSuite>("/network/intents", {
+    method: "PUT", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision, tests },
+  }),
+
+  /** Explicitly analyze the saved reviewed suite, never browser-submitted results. */
+  runIntents: (
+    scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkIntentSuite>("/network/intents/run", {
+    method: "POST", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision },
+  }),
 
   /** "Which spokes bypass the firewall?" */
   firewallBypass: (scope: ScopeSelection = {}) =>

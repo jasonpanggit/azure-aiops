@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from datetime import UTC, datetime
 from time import perf_counter_ns
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Query, Request, Response
 from fastapi.routing import APIRoute
@@ -25,6 +27,13 @@ from network.design import (
 )
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
+from network.intents import (
+    IntentResult,
+    IntentRun,
+    IntentTest,
+    SuiteRevision,
+    SuiteUpdate,
+)
 from network.rule_engine import (
     SUPPORTED_OPERATORS,
     SUPPORTED_TARGET_NAMES,
@@ -33,9 +42,11 @@ from network.rule_engine import (
 )
 from network.service import NetworkIntelligenceService, NetworkScope
 from network.topology import TopologyDetail
+from storage.onelake_documents import DocumentConflictError
 
 from ..dependencies import (
     Context,
+    CurrentPrincipal,
     Page,
     ReadScope,
     WritePrincipal,
@@ -85,6 +96,105 @@ router = APIRouter(
 
 SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
+
+
+def _intent_store(context: Context):
+    if context.network_intent_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable connectivity suites are unavailable")
+    return context.network_intent_store
+
+
+def _intent_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="network.saved_configuration_intents",
+            source_table="state/network-intents",
+            timestamp=data["runs"][-1]["finished_at"] if data["runs"] else "",
+            confidence="unknown",
+        ),
+        warnings=[
+            "Personal declared expectations and explicit configuration-analysis receipts, not packet probes, live traffic, continuous monitoring or execution authorization.",
+            "Source generation and complete topology coverage are unreported. Repeated source observation times are not independent observations.",
+        ],
+    )
+
+
+@router.get("/intents")
+def connectivity_intents(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Read the exact personal/effective-scope suite without a provider acquisition."""
+    return _intent_response(_intent_store(context).read(principal.subject, scope.to_dict()), scope)
+
+
+@router.put("/intents")
+def save_connectivity_intents(
+    payload: SuiteUpdate, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Save declarations only; personal reader state does not alter infrastructure or policy."""
+    try:
+        data = _intent_store(context).update(
+            principal.subject, scope.to_dict(), payload.expected_revision, tests=payload.tests,
+        )
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _intent_response(data, scope)
+
+
+@router.post("/intents/run", status_code=201)
+def run_connectivity_intents(
+    payload: SuiteRevision, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Evaluate only the server-saved reviewed tests on one currently scoped configuration."""
+    store = _intent_store(context)
+    state = store.read(principal.subject, scope.to_dict())
+    if state["revision"] != payload.expected_revision:
+        raise ApiError(ErrorCode.CONFLICT, "Connectivity suite changed; reload before running")
+    tests = [IntentTest.model_validate(test) for test in state["tests"]]
+    if not tests:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Save at least one connectivity test before running")
+    started = datetime.now(UTC).isoformat()
+    service = _service(context, scope)
+    queries = [
+        FlowQuery(source=test.source, destination=test.destination, port=test.port, protocol=test.protocol)
+        for test in tests
+    ]
+    try:
+        flows = service.validate_flows(queries)
+        results = []
+        for test, query, flow in zip(tests, queries, flows, strict=True):
+            if flow.query != query or flow.verdict not in {"allowed", "denied", "indeterminate"}:
+                raise ValueError("Network provider returned a different connectivity query or verdict")
+            if flow.verdict != "indeterminate" and not (
+                flow.source_endpoint.resolved and flow.destination_endpoint.resolved
+            ):
+                raise ValueError("Network provider returned a decisive verdict for unresolved endpoints")
+            outcome = (
+                "indeterminate" if flow.verdict == "indeterminate" or flow.unknowns or flow.missing_enforcement_points
+                else "match" if flow.verdict == test.expected_verdict else "mismatch"
+            )
+            results.append(IntentResult(
+                test=test, verdict=flow.verdict, unknown_count=len(flow.unknowns),
+                missing_enforcement_count=len(flow.missing_enforcement_points), outcome=outcome,
+            ))
+        run = IntentRun(
+            run_id=str(uuid4()), reviewed_revision=payload.expected_revision,
+            started_at=started, finished_at=datetime.now(UTC).isoformat(),
+            source_observed_at=service.snapshot.observed_at, results=results,
+        )
+    except (ValueError, TypeError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Configuration analysis could not be retained; no run was saved",
+        ) from exc
+    try:
+        data = store.update(principal.subject, scope.to_dict(), payload.expected_revision, run=run)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _intent_response(data, scope)
 
 
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:

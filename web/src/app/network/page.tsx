@@ -12,6 +12,7 @@ import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import type { TopologyDetailLevel } from "@/components/network/TopologyWorkspace";
 import type { TopologySelection } from "@/components/network/TopologyGraph";
 import { TopologyInsights } from "@/components/network/TopologyInsights";
+import { ConnectivityIntents } from "@/components/network/ConnectivityIntents";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
@@ -40,7 +41,7 @@ import {
   MANUAL_ENDPOINT_VALUE,
 } from "./endpoint-options";
 
-type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
+type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy" | "intents";
 const NETWORK_PAGE_SIZE = 20;
 const GENERIC_TRUNCATION_WARNING =
   "Results are truncated; narrow the scope or use pagination for a complete view.";
@@ -359,6 +360,7 @@ export default function NetworkPage() {
             ["gaps", "Inspection gaps"],
             ["rules", "Rule findings"],
             ["policy", "Design policy"],
+            ["intents", "Saved connectivity tests"],
           ] as Array<[NetworkTab, string]>
         ).map(([value, label]) => (
           <button
@@ -374,6 +376,7 @@ export default function NetworkPage() {
         ))}
       </div>
 
+      {tab === "intents" && <ConnectivityIntents scope={scope} />}
       {tab === "flow" && (
         <TrafficFlowWorkspace
           scopeKey={scopeKey}

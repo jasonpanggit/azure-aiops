@@ -9096,3 +9096,71 @@ body.topology-fullscreen-open {
     width: 100%;
   }
 }
+.network-intents {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  scroll-margin-top: 76px;
+}
+
+.network-intents .button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.network-intents h2,
+.network-intents h3,
+.network-intents p {
+  margin: 0;
+}
+
+.network-intents p {
+  max-width: 75ch;
+}
+
+.network-intents-heading,
+.network-intents-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.network-intents-actions {
+  justify-content: flex-start;
+}
+
+.network-intents-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+}
+
+.network-intents label,
+.network-intents-receipts {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.network-intents-table {
+  overflow-x: auto;
+}
+
+.network-intents-table table {
+  min-width: 640px;
+}
+
+.network-intents-table td:first-child {
+  max-width: 420px;
+  overflow-wrap: anywhere;
+}
+
+.network-intents-table td span {
+  display: block;
+  margin-top: 6px;
+}
