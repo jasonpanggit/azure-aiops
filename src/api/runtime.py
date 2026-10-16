@@ -4533,10 +4533,9 @@ def _allow_self_approval() -> bool:
 
 
 def _settings_store() -> EnterpriseSettingsStore:
-    """Settings persisted to OneLake when available, in memory otherwise."""
+    """Persist enterprise settings through the same local/OneLake contract."""
     root = aiops_home()
-    documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-    return EnterpriseSettingsStore(documents)
+    return EnterpriseSettingsStore(OneLakeDocumentStore(str(root)))
 
 
 def _compliance_policy_store():

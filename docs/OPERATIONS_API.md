@@ -9,6 +9,44 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Reviewed enterprise-wide settings
+
+`GET /api/v1/governance/settings` retains the existing effective policy sections
+and adds `revision`, `persistent`, `can_write` and nullable `last_change`
+(server-attributed actor, reason and time). These are **enterprise-wide**
+declarations; inventory scope filters do not narrow their effect. Only a real
+unrestricted administrator write grant permits mutation. An unrestricted reader
+plus a subscription-scoped administrator cannot change global policy.
+The role/template document is not itself an authentication grant.
+
+`PATCH` now requires `{expected_revision, reason, changes}`. `changes` is a
+partial settings object; `reason` must be nonblank and at most 1200 characters.
+Legacy revision-free requests are rejected rather than silently overwriting.
+The merged policy is validated, including existing interdependent agent
+approval switches. Positive integer/boolean policy fields are type-checked;
+nonfinite JSON, corrupt saved settings, and unsafe revision values are rejected.
+The portal shows an explicit before/proposed comparison and reason, followed
+by a separate enterprise-wide confirmation. It sends only changed keys.
+
+`state/enterprise_settings.json` uses the existing `AIOPS_HOME` local/OneLake
+document root in both runtime modes. Missing documents start at revision zero
+with conservative defaults. Valid legacy partial documents retain their revision
+and are merged over current defaults, with no invented historical attribution.
+Corrupt/unavailable documents fail closed with 503, never editable defaults.
+The complete indented/sorted ASCII-escaped JSON plus newline is bounded to
+512 KiB, with safe-JavaScript integer revisions. Memory-only embedded/test
+stores are explicitly non-durable; the portal disables their editing.
+
+Writes compare the reviewed revision and the ETag read with that document;
+initial writes are create-only. Concurrent/stale writes return 409 without
+replay. Other unconfirmed writes return safe 503; the portal locks further
+attempts until an explicit reload and new review. Scope/tab/unmount changes
+abort and discard in-flight UI work, but aborting a request cannot prove that
+the server did not commit it. Reopening reads a fresh revision.
+Last change attribution is not a complete immutable audit history, access review
+campaign, rollout gate, or proof that all policy consumers applied a setting.
+The source-only Governance Copilot does not ingest local drafts or this review.
+
 ## Declared component request objectives
 
 `GET /api/v1/service-reliability/components?q=...&offset=0&limit=25`

@@ -106,6 +106,7 @@ import type {
   AccessReviewPack,
   AuditExportPack,
   EnterpriseSettings,
+  EnterpriseSettingsChange,
   OsInventoryCollection,
   OsInventoryDetail,
   InventoryNarrative,
@@ -2117,15 +2118,17 @@ export const governanceApi = {
       query: scopeToSearchParams(scope),
     }),
 
-  settings: (scope: ScopeSelection = {}) =>
+  settings: (scope: ScopeSelection = {}, signal?: AbortSignal) =>
     apiRequest<EnterpriseSettings>("/governance/settings", {
       query: scopeToSearchParams(scope),
+      signal,
     }),
 
-  updateSettings: (payload: Record<string, unknown>) =>
+  updateSettings: (payload: EnterpriseSettingsChange, signal?: AbortSignal) =>
     apiRequest<EnterpriseSettings>("/governance/settings", {
       method: "PATCH",
       body: payload,
+      signal,
     }),
 };
 

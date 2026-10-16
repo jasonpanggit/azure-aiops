@@ -16,9 +16,10 @@ Two properties hold across every route here:
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Query
 
 from intelligence.governance import (
     EXPORT_KINDS,
@@ -31,8 +32,10 @@ from intelligence.governance import (
     SpnGovernanceEngine,
     default_settings,
 )
+from intelligence.governance.settings import MAX_SETTINGS_REVISION, SettingsChange
+from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, ReadScope, WritePrincipal
+from ..dependencies import Context, CurrentPrincipal, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
 from ..evidence import (
     CONFIDENCE_HIGH,
@@ -49,6 +52,7 @@ from ..scope import Scope
 from .operations import _HIDDEN, _filter_scoped
 
 router = APIRouter(prefix="/api/v1/governance", tags=["governance"])
+_LOGGER = logging.getLogger(__name__)
 
 FINOPS_ENGINE = "intelligence.governance.FinOpsEngine"
 IDENTITY_ENGINE = "intelligence.governance.IdentityRiskEngine"
@@ -510,9 +514,18 @@ def _remediation_sections(
 
 
 @router.get("/settings", summary="Enterprise administration settings")
-def read_settings(context: Context, scope: ReadScope) -> dict[str, Any]:
+def read_settings(context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
     store = context.settings_store
-    settings = store.read() if store is not None else default_settings()
+    try:
+        settings = store.read_versioned() if store is not None else {
+            **default_settings(), "revision": 0, "last_change": None, "persistent": False,
+        }
+    except Exception as exc:
+        _LOGGER.warning("Enterprise settings read unavailable (%s)", type(exc).__name__)
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Enterprise settings could not be read") from exc
+    settings["can_write"] = settings["persistent"] and settings["revision"] < MAX_SETTINGS_REVISION and any(
+        grant.scope.is_unrestricted() for grant in principal.grants_for("write")
+    )
     return envelope(
         settings,
         evidence=Evidence(
@@ -522,8 +535,8 @@ def read_settings(context: Context, scope: ReadScope) -> dict[str, Any]:
         ),
         scope=scope.to_dict(),
         warnings=[]
-        if store is not None
-        else ["Settings are not persisted in this deployment; defaults are shown"],
+        if settings["persistent"]
+        else ["Settings persistence is unavailable; this is not a durable policy"],
     )
 
 
@@ -532,8 +545,13 @@ def update_settings(
     principal: WritePrincipal,
     context: Context,
     scope: ReadScope,
-    changes: Annotated[dict[str, Any], Body()],
+    change: SettingsChange,
 ) -> dict[str, Any]:
+    if not any(grant.scope.is_unrestricted() for grant in principal.grants_for("write")):
+        raise ApiError(
+            ErrorCode.FORBIDDEN,
+            "Enterprise-wide settings require an unrestricted administrator grant",
+        )
     store = context.settings_store
     if store is None:
         raise ApiError(
@@ -542,11 +560,23 @@ def update_settings(
             {"capability": "settings", "provider_state": "unavailable"},
         )
     try:
-        settings = store.update(changes)
+        settings = store.update(
+            change.changes, expected_revision=change.expected_revision,
+            reason=change.reason, actor=principal.subject,
+        )
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Settings changed; reload and review again") from exc
     except SettingsValidationError as exc:
         raise ApiError(
-            ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(changes)}
+            ErrorCode.INVALID_REQUEST, str(exc), {"section": sorted(change.changes)}
         ) from exc
+    except Exception as exc:
+        _LOGGER.warning("Enterprise settings write unavailable (%s)", type(exc).__name__)
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Settings save could not be confirmed; reload before reviewing another change",
+        ) from exc
+    settings["can_write"] = settings["persistent"] and settings["revision"] < MAX_SETTINGS_REVISION
     return envelope(
         settings,
         evidence=Evidence(

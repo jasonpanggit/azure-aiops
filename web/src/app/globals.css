@@ -5901,6 +5901,28 @@ body.topology-fullscreen-open {
   margin-top: 20px;
 }
 
+.governance-settings-editor { min-width: 0; margin-top: 24px; }
+.governance-settings-editor p { max-width: 75ch; overflow-wrap: anywhere; }
+.governance-settings-editor > p { margin-bottom: 12px; }
+.governance-settings-fields { min-width: 0; margin: 20px 0; padding: 0; border: 0; }
+.governance-settings-fields legend { font-weight: 600; }
+.governance-settings-reason { display: grid; gap: 8px; max-width: 65ch; margin-top: 24px; }
+.governance-settings-reason textarea { width: 100%; min-width: 0; padding: 10px; font: inherit; color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); }
+.governance-settings-editor .policy-editor-field { border-bottom: 1px solid var(--color-border); }
+.governance-settings-editor .policy-editor-field input[type="number"] { flex-shrink: 0; color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border-strong); }
+.governance-settings-review { margin-top: 24px; }
+.governance-settings-review .operations-table { min-width: 450px; }
+.governance-settings-review tbody th { font-size: 14px; font-weight: 500; color: var(--color-text); text-transform: none; letter-spacing: normal; }
+.governance-settings-editor .policy-editor-actions { flex-wrap: wrap; }
+.governance-settings-editor button:disabled { cursor: not-allowed; opacity: 0.6; }
+.governance-settings-editor input:disabled, .governance-settings-editor textarea:disabled { opacity: 0.65; }
+@media (max-width: 640px) {
+  .governance-settings-editor .policy-editor { grid-template-columns: minmax(0, 1fr); }
+  .governance-settings-editor .policy-editor-field { min-height: 44px; }
+  .governance-settings-editor input[type="number"], .governance-settings-editor textarea { min-height: 44px; font-size: 16px; }
+  .governance-settings-editor .button { min-height: 44px; white-space: normal; }
+}
+
 .connection-metrics {
   margin-top: 18px;
 }

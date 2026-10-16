@@ -3014,6 +3014,10 @@ export interface EnterpriseRole {
 }
 
 export interface EnterpriseSettings {
+  revision?: number;
+  persistent?: boolean;
+  can_write?: boolean;
+  last_change?: { actor: string; reason: string; recorded_at: string } | null;
   roles: EnterpriseRole[];
   taxonomies: Record<string, string[]>;
   onboarding_policy: Record<string, unknown>;
@@ -3025,6 +3029,12 @@ export interface EnterpriseSettings {
   [key: string]: unknown;
 }
 
+/** Explicit reviewed revision and reason for an enterprise-wide partial update. */
+export interface EnterpriseSettingsChange {
+  expected_revision: number;
+  reason: string;
+  changes: Record<string, Record<string, unknown>>;
+}
 // --------------------------------------------------------------------------
 // Pre-deployment change risk
 // --------------------------------------------------------------------------

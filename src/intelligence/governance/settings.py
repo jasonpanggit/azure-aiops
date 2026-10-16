@@ -10,18 +10,26 @@ Two deliberate choices:
   every admin request and written rarely, so a single revision-checked
   document gives cross-section consistency for free and avoids a partial
   configuration being observed mid-update.
-* **Validated on write, defaulted on read.** A settings document written by an
-  older build is merged over current defaults rather than rejected, so a
-  rollback or a forward deploy never leaves the admin surface unusable.
+* **Defaults only for absence.** Valid older documents are merged over current
+  defaults; corrupt or unavailable documents never become fresh defaults.
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import threading
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from storage.onelake_documents import DocumentConflictError, DocumentSnapshot
+
 SETTINGS_DOCUMENT = "state/enterprise_settings.json"
+MAX_SETTINGS_BYTES = 512 * 1024
+MAX_SETTINGS_REVISION = 9_007_199_254_740_991
 
 #: Retention is bounded rather than free-form: an unbounded value silently
 #: turns into "keep forever", which is a data-governance liability.
@@ -127,6 +135,43 @@ class SettingsValidationError(ValueError):
     """Raised when a settings update would produce an unusable configuration."""
 
 
+class SettingsChange(BaseModel):
+    """A reviewed, attributed enterprise-wide partial settings change."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_revision: int = Field(ge=0, lt=MAX_SETTINGS_REVISION)
+    changes: dict[str, Any] = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=1200)
+
+    @field_validator("reason")
+    @classmethod
+    def meaningful_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A change reason is required")
+        return value.strip()
+
+
+class _LastChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    actor: str = Field(min_length=1, max_length=320)
+    reason: str = Field(min_length=1, max_length=1200)
+    recorded_at: str
+
+    @field_validator("actor", "reason")
+    @classmethod
+    def meaningful_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Change attribution cannot be blank")
+        return value.strip()
+
+    @field_validator("recorded_at")
+    @classmethod
+    def aware_time(cls, value: str) -> str:
+        if datetime.fromisoformat(value).utcoffset() is None:
+            raise ValueError("Change time must have a timezone")
+        return value
+
+
 def validate_settings(settings: Mapping[str, Any]) -> None:
     """Reject updates that would break invariants callers depend on."""
     unknown = set(settings) - set(_VALID_SECTIONS)
@@ -134,6 +179,32 @@ def validate_settings(settings: Mapping[str, Any]) -> None:
         raise SettingsValidationError(
             f"Unknown settings sections: {', '.join(sorted(unknown))}"
         )
+
+    defaults = default_settings()
+    for section in _VALID_SECTIONS:
+        if section not in settings:
+            continue
+        value = settings[section]
+        if isinstance(defaults[section], dict):
+            if not isinstance(value, Mapping):
+                raise SettingsValidationError(f"{section} must be a mapping")
+            for key, expected in defaults[section].items():
+                if key not in value:
+                    continue
+                actual = value[key]
+                if isinstance(expected, bool) and type(actual) is not bool:
+                    raise SettingsValidationError(f"{section}.{key} must be a boolean")
+                if type(expected) is int and (
+                    type(actual) is not int or not 1 <= actual <= MAX_SETTINGS_REVISION
+                ):
+                    raise SettingsValidationError(f"{section}.{key} must be a positive integer")
+                if isinstance(expected, list) and (
+                    not isinstance(actual, list)
+                    or not all(isinstance(item, str) for item in actual)
+                ):
+                    raise SettingsValidationError(f"{section}.{key} must be a string list")
+        elif not isinstance(value, list):
+            raise SettingsValidationError(f"{section} must be a list")
 
     roles = settings.get("roles")
     if roles is not None:
@@ -214,39 +285,88 @@ class EnterpriseSettingsStore:
     """Reads and writes the enterprise settings document.
 
     ``documents`` is an :class:`~storage.onelake_documents.OneLakeDocumentStore`
-    or None. A None store keeps settings in process memory, which is correct
-    for a single-process local run and never reached in a deployed replica.
+    or None. None is explicitly non-durable test/embedded memory. Runtime
+    deployments and local runs both supply a document store.
     """
 
     def __init__(self, documents: Any = None) -> None:
         self._documents = documents
         self._memory: dict[str, Any] = {}
+        self._lock = threading.RLock()
 
     def read(self) -> dict[str, Any]:
-        if self._documents is None:
-            return _merge(default_settings(), self._memory)
-        payload = self._documents.read(SETTINGS_DOCUMENT)
-        stored = payload.get("settings")
-        return _merge(default_settings(), stored if isinstance(stored, Mapping) else {})
+        """Return effective settings, failing closed on invalid stored state."""
+        result = self.read_versioned()
+        return {key: result[key] for key in _VALID_SECTIONS}
 
-    def update(self, changes: Mapping[str, Any]) -> dict[str, Any]:
-        """Apply a partial update, returning the full effective settings."""
-        validate_settings(changes)
+    def _snapshot(self) -> DocumentSnapshot:
         if self._documents is None:
-            self._memory = _merge(_merge(default_settings(), self._memory), changes)
-            return copy.deepcopy(self._memory)
+            return DocumentSnapshot(copy.deepcopy(self._memory), "memory" if self._memory else None)
+        return self._documents.read_snapshot(SETTINGS_DOCUMENT)
 
-        payload = self._documents.read(SETTINGS_DOCUMENT)
-        stored = payload.get("settings")
-        stored = dict(stored) if isinstance(stored, Mapping) else {}
-        revision = int(payload.get("revision") or 0)
-        merged = _merge(_merge(default_settings(), stored), changes)
-        self._documents.write(
-            SETTINGS_DOCUMENT,
-            {"settings": merged, "revision": revision + 1},
-            expected_revision=revision,
+    def _effective(self, snapshot: DocumentSnapshot) -> dict[str, Any]:
+        payload = snapshot.payload
+        if not snapshot.exists:
+            return {**default_settings(), "revision": 0, "last_change": None,
+                    "persistent": self._documents is not None}
+        try:
+            revision = payload["revision"]
+            if (
+                type(revision) is not int or not 0 <= revision <= MAX_SETTINGS_REVISION
+                or not isinstance(payload["settings"], dict)
+                or len((json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()) > MAX_SETTINGS_BYTES
+            ):
+                raise ValueError("Invalid enterprise settings document")
+            settings = _merge(default_settings(), payload["settings"])
+            validate_settings(payload["settings"])
+            validate_settings(settings)
+            last = payload.get("last_change")
+            attribution = _LastChange.model_validate(last).model_dump() if last is not None else None
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Persisted enterprise settings are invalid") from exc
+        return {**settings, "revision": revision, "last_change": attribution,
+                "persistent": self._documents is not None}
+
+    def read_versioned(self) -> dict[str, Any]:
+        """Read settings and revision together; metadata is not policy."""
+        with self._lock:
+            return self._effective(self._snapshot())
+
+    def update(
+        self, changes: Mapping[str, Any], *, expected_revision: int,
+        reason: str, actor: str,
+    ) -> dict[str, Any]:
+        """Commit a reviewed partial update once, using storage ETag CAS."""
+        request = SettingsChange(
+            expected_revision=expected_revision, changes=dict(changes), reason=reason,
         )
-        return merged
+        attribution = _LastChange(
+            actor=actor, reason=request.reason, recorded_at=datetime.now(UTC).isoformat(),
+        ).model_dump()
+        with self._lock:
+            snapshot = self._snapshot()
+            current = self._effective(snapshot)
+            if current["revision"] != request.expected_revision:
+                raise DocumentConflictError("Settings changed; reload and review again")
+            validate_settings(request.changes)
+            merged = _merge({key: current[key] for key in _VALID_SECTIONS}, request.changes)
+            validate_settings(merged)
+            payload = {"settings": merged, "revision": current["revision"] + 1,
+                       "last_change": attribution}
+            try:
+                size = len((json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode())
+            except (TypeError, ValueError) as exc:
+                raise SettingsValidationError("Settings must contain finite JSON values") from exc
+            if size > MAX_SETTINGS_BYTES:
+                raise SettingsValidationError("Settings exceed the 512 KiB document limit")
+            if self._documents is None:
+                self._memory = copy.deepcopy(payload)
+            elif snapshot.exists:
+                self._documents.replace_if_match(SETTINGS_DOCUMENT, payload, expected_etag=snapshot.etag)
+            else:
+                self._documents.create_only(SETTINGS_DOCUMENT, payload)
+            return {**merged, "revision": payload["revision"], "last_change": attribution,
+                    "persistent": self._documents is not None}
 
 
 __all__ = [

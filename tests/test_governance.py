@@ -669,7 +669,10 @@ def test_default_settings_are_conservative():
 
 def test_settings_update_merges_over_defaults():
     store = EnterpriseSettingsStore()
-    result = store.update({"retention_policy": {"audit_log_days": 30}})
+    result = store.update(
+        {"retention_policy": {"audit_log_days": 30}},
+        expected_revision=0, reason="Review retention", actor="admin@example.com",
+    )
     assert result["retention_policy"]["audit_log_days"] == 30
     # Untouched keys in the same section survive the partial update.
     assert result["retention_policy"]["estate_snapshot_days"] == 365
@@ -2038,7 +2041,8 @@ def test_admin_can_update_settings(tmp_path):
     client = _client(tmp_path)
     response = client.patch(
         "/api/v1/governance/settings",
-        json={"retention_policy": {"audit_log_days": 30}},
+        json={"expected_revision": 0, "reason": "Review retention",
+              "changes": {"retention_policy": {"audit_log_days": 30}}},
         headers=_headers(ADMIN_TOKEN),
     )
     assert response.status_code == 200
@@ -2049,7 +2053,8 @@ def test_invalid_settings_update_is_rejected_with_a_clear_error(tmp_path):
     client = _client(tmp_path)
     response = client.patch(
         "/api/v1/governance/settings",
-        json={"retention_policy": {"audit_log_days": 999999}},
+        json={"expected_revision": 0, "reason": "Review retention",
+              "changes": {"retention_policy": {"audit_log_days": 999999}}},
         headers=_headers(ADMIN_TOKEN),
     )
     assert response.status_code == 400
