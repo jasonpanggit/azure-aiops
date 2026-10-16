@@ -685,7 +685,8 @@ class InventoryService:
             "warnings": _status_warnings({"paas": self.family_availability()["paas"]}),
         }
 
-    def resources(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def resources(self, scope: Scope, *, offset: int = 0, limit: int | None = 100) -> dict[str, Any]:
+        """Return normalized scoped observations; internal callers may request all rows."""
         rows = [
             {
                 "family": "os",
@@ -699,6 +700,10 @@ class InventoryService:
                 "subscription_id": row.subscription_id,
                 "resource_group": row.resource_group,
                 "environment": row.environment,
+                "source_type": row.source_type,
+                "observed_at": row.observed_at,
+                "os_name": row.os_name,
+                "os_version": row.os_version,
             }
             for row in self._scoped(scope)
         ]
@@ -706,7 +711,7 @@ class InventoryService:
         rows.sort(key=lambda row: (row["family"], row["resource_id"]))
         return {
             "data": {
-                "resources": rows[offset : offset + limit],
+                "resources": rows[offset : offset + limit if limit is not None else None],
                 "family_availability": self.family_availability(),
                 "requested_scope": scope.to_dict(),
                 "query_version": self.query_version,

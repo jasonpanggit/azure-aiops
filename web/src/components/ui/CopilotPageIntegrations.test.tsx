@@ -27,7 +27,8 @@ describe("integrated route launcher coverage (COP-02)", () => {
 
   it("keeps dedicated, redirect, and excluded routes free of an embedded launcher", () => {
     const nonIntegrated = routes.filter(([, disposition]) => disposition.kind !== "integrated");
-    expect(nonIntegrated).toHaveLength(5);
+    expect(nonIntegrated).toHaveLength(6);
+    expect(nonIntegrated.map(([route]) => route)).toContain("/inventory/assets");
     for (const [route] of nonIntegrated) {
       expect(
         routeSourceFor(route),

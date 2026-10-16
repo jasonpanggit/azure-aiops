@@ -433,11 +433,18 @@ export const inventoryApi = {
       { query },
     );
   },
-  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500) => {
+  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500, filters: import("./types").InventoryResourceQuery = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<import("./types").FlatResourceCollection>("/inventory/resources", { query });
+  },
+  /** Resolve an exact identity using the caller's current effective scope. */
+  asset: (resourceId: string, scope: ScopeSelection = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<{ resource: import("./types").InventoryAsset; generation_id: string; query_version: string }>("/inventory/asset", { query });
   },
   narrative: (scope: ScopeSelection = {}) =>
     apiRequest<InventoryNarrative>("/inventory/narrative", {

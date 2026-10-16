@@ -6962,6 +6962,22 @@ body.topology-fullscreen-open {
   border-radius: var(--radius-md);
 }
 
+.inventory-asset-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px 24px;
+}
+
+.inventory-asset-facts dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.inventory-asset-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .inventory-filters label {
   display: grid;
   min-width: 180px;

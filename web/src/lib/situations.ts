@@ -20,6 +20,7 @@ export function situationEntityHref(link: DurableSituationLink, scope: ScopeSele
   else if (link.entity_type === "CVE" && /^CVE-\d{4}-\d{4,}$/i.test(id)) path = `/exposure/cves/${encodeURIComponent(id)}`;
   else if (link.entity_type === "KB" && /^KB\d+$/i.test(id)) path = `/exposure/kbs/${encodeURIComponent(id)}`;
   else if (link.entity_type === "SubscriptionConnection") { path = "/connections"; params.set("connection", id); }
+  else if (link.entity_type === "Resource") { path = "/inventory/assets"; params.set("resource_id", id); }
   else if (["Application", "Environment", "Incident", "NetworkGap", "RemediationPlan"].includes(link.entity_type)) {
     path = "/investigate"; params.set("type", link.entity_type); params.set("value", id);
   } else return null;

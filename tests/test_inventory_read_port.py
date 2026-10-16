@@ -123,9 +123,15 @@ def test_api_cross_family_route_matches_read_port(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["resources"] == InventoryReadPort(service).list_resources(
+    internal = InventoryReadPort(service).list_resources(
         Scope.from_mapping({"subscription": ["sub-a"]}), limit=100
     )["resources"]
+    assert response.json()["data"]["resources"] == [
+        {"environment": "", **{key: value for key, value in row.items() if key not in {"tags", "properties", "tenant_id"}}}
+        for row in internal
+    ]
+    assert internal[1]["properties"] == {"secret": "internal"}
+    assert "internal" not in response.text
 
 
 def test_list_containment_returns_strict_parent_chain() -> None:

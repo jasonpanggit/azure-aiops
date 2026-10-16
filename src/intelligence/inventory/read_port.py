@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,12 +19,25 @@ class InventoryReadPort:
         *,
         family: str | None = None,
         resource_type: str | None = None,
+        query: str | None = None,
+        resource_group: str | None = None,
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
         _require_scope(scope)
-        result = self.service.resources(scope, offset=0, limit=10_000)
+        result = self.service.resources(scope, offset=0, limit=None)
         rows = list(result["data"]["resources"])
+        facets = {
+            key: [
+                {"value": value, "count": count}
+                for value, count in sorted(
+                    Counter(str(row.get(key) or "") for row in rows).items()
+                )
+                if value
+            ]
+            for key in ("family", "resource_type", "resource_group")
+        }
+        represented_count = len(rows)
         if family:
             rows = [row for row in rows if row.get("family") == family]
         if resource_type:
@@ -32,6 +46,20 @@ class InventoryReadPort:
                 row
                 for row in rows
                 if str(row.get("resource_type") or "").casefold() == wanted
+            ]
+        if resource_group:
+            rows = [
+                row for row in rows
+                if str(row.get("resource_group") or "").casefold() == resource_group.casefold()
+            ]
+        if query:
+            wanted_query = query.casefold()
+            rows = [
+                row for row in rows
+                if any(
+                    wanted_query in str(row.get(key) or "").casefold()
+                    for key in ("resource_name", "resource_id", "resource_type")
+                )
             ]
         grouped_result = (
             self.service.collection(scope, offset=0, limit=10_000)
@@ -65,14 +93,17 @@ class InventoryReadPort:
             "observed_at": self.service.observed_at,
             "query_version": self.service.query_version,
             "warnings": result["warnings"],
+            "facets": facets,
+            "represented_count": represented_count,
         }
 
     def get_resource(self, scope: Any, resource_id: str) -> dict[str, Any] | None:
+        """Resolve an exact authorized identity without a page-size cutoff."""
         _require_scope(scope)
         wanted = str(resource_id or "").casefold()
         if not wanted:
             return None
-        for row in self.list_resources(scope, limit=10_000)["resources"]:
+        for row in self.service.resources(scope, limit=None)["data"]["resources"]:
             if str(row.get("resource_id") or "").casefold() == wanted:
                 resolved = dict(row)
                 resolved["containment"] = self._containment_for(row)
@@ -84,7 +115,7 @@ class InventoryReadPort:
         in-process from existing observation data (no separate ResourceContainers
         acquisition path — ROADMAP success criterion 2)."""
         _require_scope(scope)
-        rows = self.list_resources(scope, limit=10_000)["resources"]
+        rows = self.service.resources(scope, limit=None)["data"]["resources"]
         containment: dict[str, dict[str, Any]] = {}
         for row in rows:
             subscription_id = str(row.get("subscription_id") or "").strip()

@@ -63,6 +63,37 @@ units. Inventory's `query_version` is a query contract version, not proof of a
 publication generation. Missing/stale stages remain explicit; sync success does
 not establish Fabric publication or portal-wide readiness.
 
+`GET /api/v1/inventory/resources` supports optional `q` (name, identity or type),
+`family`, `resource_type`, and `resource_group` filters. Scope is enforced before
+facets, filtering, totals and pagination. Type/group/query matching is
+case-insensitive; family is an exact canonical value. Facets and
+`represented_count` describe the entire authorized published resource
+projection before these filters, not the current page or complete estate.
+`family_availability.row_count` uses that same authorized observation grain,
+not installed-software counts. Source state remains acquisition metadata.
+Internal resource reads no longer silently stop at 10,000 rows.
+
+`GET /api/v1/inventory/asset?resource_id=...` resolves an exact case-insensitive
+identity within the effective scope. Missing and invisible identities return
+the same 404. Only normalized fields and observed containment are returned;
+raw provider properties, tags and inferred management-group ancestry are not
+exposed. The resource-list API uses the same field allowlist, while trusted
+internal adapters retain their lossless payloads. `generation_id` is the
+reported publication generation (empty means unreported); `query_version`
+remains a query contract. These are published observations, not live health.
+
+The Inventory **Explore assets** view (`/inventory/assets`) restores validated
+filters, page and exact resource bookmarks from its URL. Navigation preserves
+current scope but never grants access; asset reads reauthorize independently.
+Scope/query transitions immediately discard old facts. Resolved Situation
+Resource links use this same destination. Grouped-family filtering parity,
+pinned resumable export jobs and historical asset snapshots remain separate
+work; the existing browser CSV export is not such a job.
+This navigation drilldown is explicitly excluded from model-bound Copilot
+snapshots until a selected-asset evidence/tool contract is reviewed; the
+existing governed Inventory Copilot is unchanged on `/inventory`. It never
+substitutes a group snapshot for the selected asset.
+
 `GET /api/v1/compliance/design-policy` returns a revisioned architecture
 assessment policy, exception decisions, and audit for the **exact effective
 scope**. There is no inheritance between scope combinations. A missing document

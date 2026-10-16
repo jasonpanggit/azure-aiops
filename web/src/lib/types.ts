@@ -248,6 +248,36 @@ export interface FlatResourceCollection {
   family_availability: Record<string, InventoryFamilyAvailability>;
   requested_scope: Record<string, string[]>;
   query_version: string;
+  generation_id?: string;
+  facets?: Record<string, Array<{ value: string; count: number }>>;
+  represented_count?: number;
+  aggregate_basis?: "authorized_published_observations";
+}
+
+/** Normalized exact-identity details; raw provider properties/tags are excluded. */
+export interface InventoryAsset extends FlatInventoryResource {
+  location?: string;
+  sku?: string;
+  tier?: string;
+  runtime?: string;
+  provisioning_state?: string;
+  os_name?: string;
+  os_version?: string;
+  source_type?: string;
+  observed_at?: string;
+  containment: {
+    management_group_id: string | null;
+    subscription_id: string | null;
+    resource_group_id: string | null;
+  };
+}
+
+/** Filter the published authorized resource projection before server pagination. */
+export interface InventoryResourceQuery {
+  q?: string;
+  family?: string;
+  resource_type?: string;
+  resource_group?: string;
 }
 
 export interface InventoryNarrativeCitation {

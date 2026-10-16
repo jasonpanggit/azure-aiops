@@ -22,6 +22,7 @@ import {
   type InventoryCopilotRecord,
 } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
+import { scopeToSearchParams } from "@/lib/scope";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import type {
@@ -1074,9 +1075,10 @@ export default function InventoryPage() {
         eyebrow="Inventory"
         title="Inventory"
         description="Find authorized operating-system, installed-software, and Azure resource coverage across native Azure VMs, Arc-enabled servers, and platform services."
-        actions={copilotReady
-          ? <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />
-          : undefined}
+        actions={<>
+          <Link className="button" href={`/inventory/assets?${scopeToSearchParams(effectiveScope)}`}>Explore assets</Link>
+          {copilotReady && <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />}
+        </>}
         metadata={
           inventory.data && (
             <EvidenceBar

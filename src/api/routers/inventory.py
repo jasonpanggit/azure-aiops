@@ -7,7 +7,7 @@ import os
 import re
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
@@ -36,6 +36,17 @@ from ..models import (
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 _PAAS_GROUP_KEY = re.compile(r"^[^|/\\]{1,160}\|[^|/\\]{1,120}\|[^|/\\]{1,120}$")
+_ASSET_FIELDS = (
+    "family", "resource_id", "resource_name", "resource_type", "subscription_id",
+    "resource_group", "environment", "location", "sku", "tier", "runtime",
+    "provisioning_state", "os_name", "os_version", "source_type", "observed_at",
+    "query_version", "containment",
+)
+
+
+def _public_asset(row: dict[str, Any]) -> dict[str, Any]:
+    # Internal adapters retain raw properties/tags. Portal reads never expose them.
+    return {"environment": "", **{key: row[key] for key in _ASSET_FIELDS if key in row}}
 
 
 def _service(context: Context) -> InventoryService:
@@ -410,25 +421,67 @@ def paas_inventory_detail(
 
 
 @router.get("/inventory/resources", summary="Scoped cross-family inventory resources")
-def inventory_resources(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def inventory_resources(
+    context: Context,
+    scope: ReadScope,
+    page: Page,
+    family: str | None = Query(None, max_length=64),
+    resource_type: str | None = Query(None, max_length=256),
+    resource_group: str | None = Query(None, max_length=256),
+    q: str | None = Query(None, max_length=256),
+) -> dict[str, Any]:
+    """Filter the complete authorized published projection before pagination."""
     service = _service(context)
     result = InventoryReadPort(service).list_resources(
         scope,
         offset=page.offset,
         limit=page.limit,
+        family=family,
+        resource_type=resource_type,
+        resource_group=resource_group,
+        query=q,
     )
+    family_counts = {item["value"]: item["count"] for item in result["facets"]["family"]}
     return envelope(
         {
-            "resources": result["resources"],
-            "family_availability": result["family_availability"],
+            "resources": [_public_asset(row) for row in result["resources"]],
+            "family_availability": {
+                family: {**status, "row_count": family_counts.get(family, 0)}
+                for family, status in result["family_availability"].items()
+            },
             "requested_scope": scope.to_dict(),
             "query_version": service.query_version,
+            "generation_id": service.generation_id,
+            "facets": result["facets"],
+            "represented_count": result["represented_count"],
+            "aggregate_basis": "authorized_published_observations",
         },
         evidence=_resource_evidence(service),
         scope=scope.to_dict(),
         knowledge_version=service.query_version,
         warnings=result["warnings"],
         pagination=page.to_dict(result["total"]),
+    )
+
+
+@router.get("/inventory/asset", summary="Resolve an exact authorized asset identity")
+def inventory_asset(
+    context: Context,
+    scope: ReadScope,
+    resource_id: str = Query(..., min_length=1, max_length=2048),
+) -> dict[str, Any]:
+    """Expose only normalized inventory fields, not raw provider payloads."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in resource_id):
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Invalid resource identity")
+    service = _service(context)
+    row = InventoryReadPort(service).get_resource(scope, resource_id)
+    if row is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "No inventory asset matches this scope")
+    return envelope(
+        {"resource": _public_asset(row), "generation_id": service.generation_id, "query_version": service.query_version},
+        evidence=_resource_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=service.query_version,
     )
 
 

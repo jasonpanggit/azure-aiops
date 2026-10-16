@@ -44,6 +44,8 @@ describe("durable situation workbench adapter", () => {
         .toBe("/exposure/cves/CVE-2026-12345");
       expect(situationEntityHref({ ...link, entity_type: "SubscriptionConnection", entity_id: "prod" }, {}))
         .toBe("/connections?connection=prod");
+      expect(situationEntityHref({ ...link, entity_type: "Resource", entity_id: "/subscriptions/sub-a/resource & x" }, { subscription: ["sub-a"] }))
+        .toBe("/inventory/assets?subscription=sub-a&resource_id=%2Fsubscriptions%2Fsub-a%2Fresource+%26+x");
     });
     it.each([
       { quality: "unresolved" }, { quality: "degraded" }, { entity_type: "UnsupportedEntity" },

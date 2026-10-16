@@ -5084,14 +5084,15 @@ function routePathForFile(file: string): string {
   return relative_dir === "" ? "/" : `/${relative_dir}`;
 }
 
-describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
+describe("reviewed-route Copilot disposition gate (COP-02, COP-03)", () => {
   const discoveredRoutes = discoverRoutePageFiles(APP_DIR)
     .map(routePathForFile)
     .sort();
   const registeredRoutes = Object.keys(COPILOT_ROUTE_DISPOSITIONS).sort();
 
-  it("discovers exactly the 28 reviewed route files on disk", () => {
-    expect(discoveredRoutes).toHaveLength(28);
+  it("discovers the original 28 reviewed routes plus the inventory asset drilldown", () => {
+    expect(discoveredRoutes).toHaveLength(29);
+    expect(discoveredRoutes).toContain("/inventory/assets");
   });
 
   it("makes the registry route inventory equal the filesystem inventory exactly", () => {
@@ -5115,7 +5116,7 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     for (const route of registeredRoutes) {
       counts[COPILOT_ROUTE_DISPOSITIONS[route].kind] += 1;
     }
-    expect(counts).toEqual({ integrated: 23, dedicated: 3, redirect: 1, excluded: 1 });
+    expect(counts).toEqual({ integrated: 23, dedicated: 3, redirect: 1, excluded: 2 });
   });
 
   it("names /copilot, /investigate, and /agents as the dedicated surfaces", () => {
@@ -5136,15 +5137,17 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     expect(Object.prototype.hasOwnProperty.call(CORE_COPILOT_PAGE_ADAPTERS, "/vulnerabilities")).toBe(false);
   });
 
-  it("excludes /search as the single reasoned exclusion with a stable-evidence reason", () => {
+  it("excludes navigation-only search and asset drilldown until reviewed evidence contracts exist", () => {
     const excluded = registeredRoutes.filter(
       (route) => COPILOT_ROUTE_DISPOSITIONS[route].kind === "excluded",
     );
-    expect(excluded).toEqual(["/search"]);
+    expect(excluded).toEqual(["/inventory/assets", "/search"]);
     const disposition = COPILOT_ROUTE_DISPOSITIONS["/search"];
     expect(
       disposition.kind === "excluded" && /evidence/i.test(disposition.reason),
     ).toBe(true);
+    const assets = COPILOT_ROUTE_DISPOSITIONS["/inventory/assets"];
+    expect(assets.kind === "excluded" && /retained evidence snapshot.*selected-asset tool contract/i.test(assets.reason)).toBe(true);
   });
 
   it("anchors every integrated route on a declared Copilot page kind", () => {

@@ -139,7 +139,7 @@ export type CopilotRouteDisposition =
   | { kind: "excluded"; reason: string };
 
 /**
- * Exhaustive disposition for all 28 reviewed routes.
+ * Exhaustive disposition for all reviewed routes, including inventory drilldown.
  *
  * The Plan 11-16 filesystem gate compares these keys to
  * `web/src/app/**\/page.tsx` so no route can ship without exactly one reviewed
@@ -181,12 +181,17 @@ export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition>
   "/agents": { kind: "dedicated", surface: "multi-agent-investigation" },
   // 1 redirect -- the legacy collection alias is consolidated into Patch priorities.
   "/vulnerabilities": { kind: "redirect", target: "/exposure/patch-priorities" },
-  // 1 excluded -- pure navigation/query aggregation with no stable retained
-  // evidence snapshot contract in Phase 11.
+  // Navigation/query drilldowns require a reviewed retained-evidence contract
+  // before they may construct their own model-bound snapshots.
   "/search": {
     kind: "excluded",
     reason:
       "Navigation and query aggregation only; Phase 11 defines no stable retained evidence snapshot contract for search results, so results deep-link to eligible detail pages instead of being carried as Copilot evidence.",
+  },
+  "/inventory/assets": {
+    kind: "excluded",
+    reason:
+      "Read-only published-asset navigation; no reviewed retained evidence snapshot and selected-asset tool contract exists for this drilldown. Governed inventory Copilot remains on /inventory; raw asset responses must not be passed as model evidence.",
   },
 };
 
