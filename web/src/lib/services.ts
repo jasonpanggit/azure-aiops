@@ -1,6 +1,7 @@
 import { apiRequest, resolveApiBaseUrl } from "./api-client";
 import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
+import type { SavedView, SavedViewCollection } from "./saved-views";
 import type {
   NetworkReviewReference,
   NetworkFindingReview,
@@ -154,6 +155,19 @@ async function listAllConnections(scope: ScopeSelection): Promise<Envelope<Subsc
 // ---------------------------------------------------------------------------
 // Subscription connections
 // ---------------------------------------------------------------------------
+
+/** Personal exact-scope navigation preferences; mutations do not query source providers. */
+export const savedViewsApi = {
+  read: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<SavedViewCollection>("/saved-views", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+  replace: (scope: ScopeSelection, expectedRevision: number, views: SavedView[], options: { signal?: AbortSignal } = {}) =>
+    apiRequest<SavedViewCollection>("/saved-views", {
+      method: "PUT", query: scopeToSearchParams(scope), signal: options.signal,
+      body: { expected_revision: expectedRevision, views },
+    }),
+};
 
 export const overviewApi = {
   /** Recover exact-caller/scope observations without resolving active source providers. */

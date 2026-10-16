@@ -9281,7 +9281,101 @@ body.topology-fullscreen-open {
   cursor: not-allowed;
 }
 
+.saved-views {
+  scroll-margin-top: 76px;
+}
+
+.saved-views-body {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.saved-views-body > p {
+  max-width: 72ch;
+}
+
+.saved-views-body > .button {
+  justify-self: start;
+}
+
+.saved-views-form,
+.saved-views-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.saved-views-form .form-field {
+  flex: 1 1 240px;
+}
+
+.saved-views-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.saved-views-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.saved-views-list > li > div:first-child {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.saved-views-list a {
+  color: var(--color-info);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.saved-views-list dl {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.saved-views-list dl > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 140px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.saved-views-list dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.saved-views-list dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.saved-views .button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.situations-queue-toolbar {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.situations-queue-toolbar .segmented-control {
+  flex-shrink: 0;
+}
+
 @media (max-width: 700px) {
+  .saved-views .card-header,
   .network-review-context .card-header,
   .predeploy-artifact .card-header {
     flex-direction: column;

@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { SituationTable } from "@/components/SituationTable";
+import { SavedViews } from "@/components/SavedViews";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -42,6 +43,7 @@ function SituationsPageContent() {
   const [query, setQuery] = useState(urlQuery);
   const [priority, setPriority] = useState<"all" | SituationPriority>(urlPriority);
   const [page, setPage] = useState(urlPage);
+  const [reloadRevision, setReloadRevision] = useState(0);
   const [owner, setOwner] = useState(urlOwner);
   const [lifecycleState, setLifecycleState] = useState(urlState);
   const [age, setAge] = useState(urlAge);
@@ -82,7 +84,7 @@ function SituationsPageContent() {
     }
   }, [scope, updateView]);
 
-  const viewKey = JSON.stringify({ scope, query, priority, page, owner, lifecycleState, age, sort });
+  const viewKey = JSON.stringify({ scope, query, priority, page, owner, lifecycleState, age, sort, reloadRevision });
   useEffect(() => {
     exportRequest.current += 1;
     setSelectedIds(new Set()); setExportError(""); setExporting(false);
@@ -102,7 +104,7 @@ function SituationsPageContent() {
     return () => {
       active = false;
     };
-  }, [page, priority, query, scope, owner, lifecycleState, age, sort]);
+  }, [page, priority, query, scope, owner, lifecycleState, age, sort, reloadRevision]);
 
   const situations = useMemo(() => {
     const ranked = rankDurableSituations(envelope?.data ?? []);
@@ -184,7 +186,12 @@ function SituationsPageContent() {
         />
       )}
 
-      <div className="queue-toolbar">
+      <SavedViews scope={scope} atFirstPage={page === 0} onRestoreCurrent={() => setReloadRevision(value => value + 1)} current={{
+        kind: "situations", query, priority, assigned_owner: owner, lifecycle_state: lifecycleState,
+        older_than_hours: age === "24" ? 24 : age === "168" ? 168 : age === "720" ? 720 : null, sort,
+      }} />
+
+      <div className="queue-toolbar situations-queue-toolbar">
         <label className="search-field">
           <span>Search situations</span>
           <input

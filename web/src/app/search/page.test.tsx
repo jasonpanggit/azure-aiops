@@ -8,9 +8,11 @@ const mocks = vi.hoisted(() => ({
   query: "",
   push: vi.fn(),
   capabilities: vi.fn(),
+  views: vi.fn(),
 }));
 vi.mock("@/lib/services", () => ({
   contextApi: { search: mocks.search, searchCapabilities: mocks.capabilities },
+  savedViewsApi: { read: mocks.views },
 }));
 vi.mock("@/lib/scope-context", () => ({ useScope: () => ({ scope: mocks.scope }) }));
 vi.mock("next/navigation", () => ({
@@ -30,6 +32,10 @@ describe("Scoped operational search", () => {
     mocks.scope = {};
     mocks.query = "";
     mocks.search.mockResolvedValue(result("current result"));
+    mocks.views.mockResolvedValue({ data: {
+      schema_version: 1, actor: "reader", scope: {}, revision: 1, updated_at: "2026-10-16T12:00:00Z",
+      views: [{ kind: "search", view_id: "vm-view", name: "Saved VM query", query: "show list of VMs", entity_type: "", source: "" }],
+    } });
     mocks.capabilities.mockResolvedValue({ data: {
       live: { state: "configured", can_query: true, phrases: ["show list of VMs"], prerequisite: "Active connection required." },
       semantic: { state: "deferred", can_query: false, phrases: ["production applications"], prerequisite: "Published semantic snapshot required." },
@@ -112,6 +118,46 @@ describe("Scoped operational search", () => {
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Operational search intent" }), { key: "Enter" });
     expect((await screen.findAllByText("current result")).length).toBeGreaterThan(0);
     expect(mocks.search).toHaveBeenCalledTimes(attempts + 1);
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Situation", "Open situation", "/situations/"],
+    ["CVE", "Open exposure", "/exposure/cves/"],
+    ["BusinessService", "Open service", "/services/"],
+    ["VirtualMachine", "Open authorized context", "/investigate"],
+  ])("preserves all selected dimensions when opening %s", async (entityType, label, prefix) => {
+    mocks.scope = {
+      subscription: ["sub-a", "sub-b"], business_service: ["Payments"], application: ["Portal"],
+      environment: ["prod"], subscription_connection: ["conn-a"], owner: ["Platform"],
+      support_team: ["SRE"], region: ["eastus"], criticality: ["high"],
+    };
+    mocks.query = "q=first";
+    mocks.search.mockResolvedValue({ ...result("row"), data: {
+      ...result("row").data, results: [{ id: "record / & name", name: "Scoped row", entity_type: entityType }],
+    } });
+    render(<SearchPage />);
+    const link = await screen.findByRole("link", { name: new RegExp(label) });
+    const url = new URL(link.getAttribute("href")!, "http://127.0.0.1");
+    expect(url.pathname.startsWith(prefix)).toBe(true);
+    Object.entries(mocks.scope).forEach(([key, values]) => expect(url.searchParams.getAll(key)).toEqual(values));
+    if (entityType === "VirtualMachine") {
+      expect(url.searchParams.get("type")).toBe(entityType);
+      expect(url.searchParams.get("value")).toBe("record / & name");
+    } else expect(url.pathname).toBe(`${prefix}${encodeURIComponent("record / & name")}`);
+  });
+
+  it("reacquires evidence when restoring the already-current saved query", async () => {
+    mocks.query = "q=show+list+of+VMs";
+    render(<SearchPage />);
+    await screen.findAllByText("current result");
+    fireEvent.click(screen.getByRole("button", { name: "Open saved views" }));
+    const link = await screen.findByRole("link", { name: "Saved VM query" });
+    mocks.search.mockRejectedValueOnce(new Error("Current evidence could not be reacquired"));
+    fireEvent.click(link);
+    expect(await screen.findByText("Current evidence could not be reacquired")).toBeInTheDocument();
+    expect(mocks.search).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("current result")).not.toBeInTheDocument();
     expect(mocks.push).not.toHaveBeenCalled();
   });
 });

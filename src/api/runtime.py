@@ -4574,6 +4574,13 @@ def _service_portfolio_store():
     return ServicePortfolioStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _saved_view_store():
+    """Persist personal query preferences on the existing durable document root."""
+    from operations.saved_views import SavedViewStore
+
+    return SavedViewStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _network_intent_store():
     """Persist personal connectivity suites on the existing durable document root."""
     from network.intents import NetworkIntentStore
@@ -5773,6 +5780,7 @@ def build_context() -> ApiContext:
         resource_health_history_store=_resource_health_history_store(),
         network_intent_store=_network_intent_store(),
         network_history_store=_network_history_store(),
+        saved_view_store=_saved_view_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

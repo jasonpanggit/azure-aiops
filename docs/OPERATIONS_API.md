@@ -540,6 +540,44 @@ totals**. Source truncation remains explicit; paging cannot recover omitted
 provider results. Search URLs retain query, facets, offset, and current scope
 as navigation context, never as an authorization grant.
 
+`GET /api/v1/saved-views` and `PUT` to the same route retain **personal
+navigation preferences**, not Search results or Situation evidence. Normal
+read authorization is required on both operations; preferences are keyed by
+the authenticated subject and exact effective nine-dimension scope, on the
+existing local/OneLake root at `state/saved-views/`. Neither operation acquires
+Search, Situation, inventory, or Azure providers. Missing/corrupt/unavailable
+storage fails explicitly rather than returning an empty collection.
+
+PUT requires `expected_revision` and the complete `views` list. Create-only
+and ETag CAS prevent concurrent/stale replacement; conflicts return409.
+An empty list explicitly removes all views in this personal scope.
+Up to20 views combined and64KiB serialized state are supported. Each view
+has a distinct lowercase slug `view_id` (max64), nonblank `name` (max80),
+and a discriminating `kind`. Search views use `kind: "search"`, nonblank
+`query` (max512), `entity_type` (max128), and `source` (max256).
+Situation views use `kind: "situations"`, optional `query` (max256),
+`priority` (`all`/`P1`/`P2`/`P3`), `assigned_owner` (max256),
+`lifecycle_state` (max64), integer `older_than_hours` (24/168/720 or null),
+and `sort` (`default`/`oldest`/`newest`). Unknown fields, arbitrary URLs,
+submitted actors/scopes, results, handoff selections and execution fields
+are rejected. The server issues revision and aware update time.
+
+Both pages expose an on-demand named-view panel with explicit save,
+replace-current-filters, delete and reload. It preserves other view kinds
+when replacing the reviewed collection. Restoring constructs only an
+allowlisted first-page URL with every current scope dimension, then reacquires
+current authorized evidence. Source/permission changes may yield different
+results or unavailability. Restoring an already-current first-page view
+explicitly reacquires evidence even when no URL change occurs; restoring from
+a later page navigates back to the first. Queue reload also invalidates reviewed
+handoff selections. Scope changes remount the panel; aborted/late
+responses cannot restore the old collection. An uncertain update invalidates
+the collection and requires explicit reload/retry; it is never automatically
+replayed. Preferences provide no access grant, schedule, evidence retention,
+SLA, approval or execution authority. Do not place secrets in query text.
+Search result navigation also preserves every selected scope dimension,
+including repeated subscriptions, alongside its existing detail selector.
+
 `GET /api/v1/situations` additionally accepts `assigned_owner` and
 `lifecycle_state` (case-insensitive exact matches), `older_than_hours`
 (0-87600), and `sort` (`default`, `oldest`, or `newest`). These operate on

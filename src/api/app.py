@@ -40,6 +40,7 @@ from .routers import (
     overview,
     patching,
     planned,
+    saved_views,
     service_portfolio,
     twin,
     vulnerability,
@@ -369,6 +370,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(operations.router)
     app.include_router(overview.router)
     app.include_router(service_portfolio.router)
+    app.include_router(saved_views.router)
     app.include_router(patching.router)
     app.include_router(planned.router)
     app.include_router(remediation_routes.router)

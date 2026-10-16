@@ -9,8 +9,10 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
+import { SavedViews } from "@/components/SavedViews";
 import { contextApi } from "@/lib/services";
 import { scopeToSearchParams } from "@/lib/scope";
+import type { ScopeSelection } from "@/lib/scope";
 import type { Envelope, SearchCapabilities, SearchResult } from "@/lib/types";
 
 type SearchRecord = Record<string, unknown>;
@@ -30,21 +32,24 @@ function textValue(record: SearchRecord, keys: string[], fallback = "Not observe
   return fallback;
 }
 
-function navigationFor(record: SearchRecord): { href: string; label: string } {
+function navigationFor(record: SearchRecord, scope: ScopeSelection): { href: string; label: string } {
   const entityType = textValue(record, ["entity_type", "entityType", "kind", "type"], "record");
   const id = textValue(record, ["id", "resource_id", "principal_id", "incident_id", "name"], "");
   const encoded = encodeURIComponent(id);
   const normalized = entityType.toLowerCase();
+  const params = scopeToSearchParams(scope);
+  const scoped = (path: string, label: string) => ({ href: `${path}${params.size ? `?${params}` : ""}`, label });
   if (normalized.includes("incident") || normalized.includes("situation")) {
-    return { href: `/situations/${encoded}`, label: "Open situation" };
+    return scoped(`/situations/${encoded}`, "Open situation");
   }
   if (normalized.includes("vulnerability") || normalized.includes("cve")) {
-    return { href: `/exposure/cves/${encoded}`, label: "Open exposure" };
+    return scoped(`/exposure/cves/${encoded}`, "Open exposure");
   }
   if (normalized.includes("businessservice") || normalized.includes("business service")) {
-    return { href: `/services/${encoded}`, label: "Open service" };
+    return scoped(`/services/${encoded}`, "Open service");
   }
-  return { href: `/investigate?type=${encodeURIComponent(entityType)}&value=${encoded}`, label: "Open authorized context" };
+  params.set("type", entityType); params.set("value", id);
+  return scoped("/investigate", "Open authorized context");
 }
 
 function keyAttributes(record: SearchRecord): Array<[string, string]> {
@@ -198,6 +203,9 @@ function SearchPageContent() {
           </div>}
       </div>
 
+      <SavedViews scope={scope} current={{ kind: "search", query: initialQuery, entity_type: entityType, source: sourceFilter }}
+        atFirstPage={offset === 0} onRestoreCurrent={() => void runSearch(initialQuery)} />
+
       {envelope && (
         <EvidenceBar
           evidence={envelope.evidence}
@@ -242,7 +250,7 @@ function SearchPageContent() {
                 const entityType = textValue(result, ["entity_type", "entityType", "kind", "type"], "Operational record");
                 const title = textValue(result, ["title", "name", "display_name", "resource_name", "principal_id", "id"], "Untitled record");
                 const id = textValue(result, ["id", "resource_id", "principal_id", "incident_id"], "ID unavailable");
-                const navigation = navigationFor(result);
+                const navigation = navigationFor(result, scope);
                 const attributes = keyAttributes(result);
                 const source = textValue(result, ["source", "source_engine", "source_table"], envelope.evidence[0]?.source_engine ?? envelope.evidence[0]?.source_table ?? "Source unavailable");
                 const freshness = textValue(result, ["freshness", "observed_at", "live_observed_at", "timestamp"], envelope.evidence[0]?.freshness ?? envelope.evidence[0]?.timestamp ?? "Freshness unavailable");

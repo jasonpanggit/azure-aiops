@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { useScope } from "@/lib/scope-context";
 
-const { list, handoff, downloadJson, navigation } = vi.hoisted(() => ({
-  list: vi.fn(), handoff: vi.fn(), downloadJson: vi.fn(), navigation: { query: "", replace: vi.fn() },
+const { list, handoff, views, downloadJson, navigation } = vi.hoisted(() => ({
+  list: vi.fn(), handoff: vi.fn(), views: vi.fn(), downloadJson: vi.fn(), navigation: { query: "", replace: vi.fn() },
 }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: navigation.replace }),
@@ -18,6 +18,7 @@ vi.mock("@/lib/services", async () => {
     buildCopilotSnapshot: actual.buildCopilotSnapshot,
     copilotEvidenceRows: () => [],
     situationsApi: { list, handoff },
+    savedViewsApi: { read: views },
   };
 });
 
@@ -67,6 +68,24 @@ describe("durable Situation queue", () => {
     list.mockResolvedValue(response());
     handoff.mockReset(); downloadJson.mockReset();
     navigation.query = ""; navigation.replace.mockClear();
+    views.mockReset();
+    views.mockResolvedValue({ data: {
+      schema_version: 1, actor: "reader", scope: {}, revision: 1, updated_at: "2026-10-16T12:00:00Z",
+      views: [{ kind: "situations", view_id: "default-queue", name: "My queue", query: "", priority: "all",
+        assigned_owner: "", lifecycle_state: "", older_than_hours: null, sort: "default" }],
+    } });
+  });
+
+  it("reaquires a current saved queue and invalidates reviewed handoff selections", async () => {
+    render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Database unavailable for handoff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open saved views" }));
+    const link = await screen.findByRole("link", { name: "My queue" });
+    list.mockResolvedValueOnce(response([]));
+    fireEvent.click(link);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Export selected handoff (0/25)" })).toBeDisabled();
+    expect(screen.queryByText("Database unavailable")).not.toBeInTheDocument();
   });
 
   it("shows loading while the durable queue request is pending", () => {
