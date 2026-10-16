@@ -445,6 +445,14 @@ resource "azurerm_container_app" "api" {
       }
 
       dynamic "env" {
+        for_each = var.foundry_use_agent_endpoints ? [1] : []
+        content {
+          name  = "FOUNDRY_USE_AGENT_ENDPOINTS"
+          value = "true"
+        }
+      }
+
+      dynamic "env" {
         for_each = local.foundry_coordinator_activation.version == "" ? [] : [local.foundry_coordinator_activation.version]
         content {
           name  = "FOUNDRY_AGENT_VERSION"

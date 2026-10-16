@@ -423,6 +423,17 @@ the Agents page. Preserve its validated candidate/promotion contract:
   and vault grants. Terraform adds the Foundry project identity to API gateway
   grants as a subscription-scoped reader; existing browser grants are retained.
 - Restore governed knowledge search before specialist candidate publication.
+  For runtimes supporting dedicated consumer endpoints, opt in through
+  `foundry_use_agent_endpoints` (`FOUNDRY_USE_AGENT_ENDPOINTS=true`).
+  Requests use `/agents/{name}/endpoint/protocols/openai/responses` with API
+  version `2025-11-15-preview` and still send the exact immutable
+  `agent_reference.version`. Missing versions and `@latest` fail closed; there is no
+  direct-model or project-route fallback. The flag defaults off to preserve
+  existing deployments. Verify both a real pinned invocation and rejection
+  of a nonexistent version from the actual API identity before activation.
+  This consumer route uses the existing endpoint-interaction grant instead
+  of adding agent-management permissions for the legacy project proxy.
+  See [the Foundry endpoint model](https://learn.microsoft.com/azure/foundry/agents/how-to/migrate-agent-applications).
   Coordinator publication and its live validator both support
   `FOUNDRY_AUTH_MODE=azure_cli` without storing client credentials.
   `foundry_coordinator_rejected_versions` preserves the historical default
