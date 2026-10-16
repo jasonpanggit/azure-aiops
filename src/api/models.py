@@ -331,9 +331,9 @@ class ChangeAssessmentRequest(ApiModel):
 
     ``payload`` is the raw artifact from the source system (a Terraform JSON
     plan, a Bicep what-if result, an ARM diff, or a pull-request description).
-    It is accepted unvalidated by design: the ingestion layer is defensive and
-    reports what it could not read as declared unknowns, which is more useful
-    to a reviewer than a rejected submission.
+    Intake bounds structure and rejects detected unredacted credentials. Within
+    that boundary the ingestion layer remains defensive: unfamiliar intent is
+    reported as declared unknowns, not mistaken for a fully understood change.
     """
 
     source: str = Field(

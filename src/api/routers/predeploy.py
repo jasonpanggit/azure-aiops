@@ -10,10 +10,12 @@ from fastapi import APIRouter
 # imports modules that import ``api``, so routing through it here would make
 # ``import intelligence.predeploy`` fail whenever it is imported before ``api``.
 from intelligence.predeploy.discovery import project_discovered_resources
+from intelligence.predeploy.intake import inspect_artifact
 from intelligence.predeploy.models import CHANGE_SOURCES
 from intelligence.predeploy.service import SOURCE_ENGINE, PreDeploymentImpactService
 from intelligence.predeploy.simulation import SIMULATION_DOMAINS
 
+from ..artifact_request import ArtifactRoute
 from ..dependencies import Context, CurrentPrincipal, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
@@ -21,13 +23,13 @@ from ..models import ChangeAssessmentRequest
 from ..scope import Scope
 from .network import resolve_finding_review
 
-router = APIRouter(prefix="/api/v1", tags=["predeploy"])
+router = APIRouter(prefix="/api/v1", tags=["predeploy"], route_class=ArtifactRoute)
 
 # Assessments are user-submitted mutations rather than snapshot projections, so
 # like the settings and risk-exception stores they live in a module-level
 # handle rather than being rebuilt per request. Keeping them here also means an
 # assessment stays readable after the snapshot it was derived from is replaced,
-# which is what makes the audit trail meaningful.
+# but remains bounded process-local history, not a durable audit trail.
 _SERVICE = PreDeploymentImpactService()
 
 
@@ -88,6 +90,10 @@ def assess_change(
             f"Unsupported change source '{payload.source}'",
             details={"supported_sources": list(CHANGE_SOURCES)},
         )
+    try:
+        inspect_artifact(payload.source, payload.payload)
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
 
     # Assessment reads the estate, so it runs under the caller's *read* scope
     # even though submitting is a write. A caller must not be able to widen the

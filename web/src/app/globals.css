@@ -9260,6 +9260,28 @@ body.topology-fullscreen-open {
   scroll-margin-top: 76px;
 }
 
+.predeploy-intake {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.predeploy-intake p {
+  max-width: 72ch;
+  margin: 0;
+}
+
+.predeploy-intake > button {
+  justify-self: start;
+}
+
+.predeploy-intake > label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 72ch;
+}
+
 .network-review-context .card-body {
   display: grid;
   gap: 12px;

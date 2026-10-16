@@ -135,6 +135,7 @@ class ProposedChange:
     # unknowns downstream rather than being silently dropped, so a partially
     # readable plan can never masquerade as a fully understood one.
     ingestion_warnings: tuple[str, ...] = ()
+    withheld_value_count: int = 0
 
     def __post_init__(self) -> None:
         change_id = _text(self.change_id)

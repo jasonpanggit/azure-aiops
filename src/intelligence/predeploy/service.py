@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 from .blast_radius import DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, analyze_blast_radius
 from .cab import recommend
 from .ingestion import ingest
+from .intake import inspect_artifact
 from .models import DiscoveredResource, unrestricted_scope
 from .risk import score_change
 from .simulation import simulate
@@ -71,7 +73,17 @@ class PreDeploymentImpactService:
     ) -> dict[str, Any]:
         """Run the full pipeline for one submitted change."""
         effective_scope = scope or unrestricted_scope()
+        artifact = inspect_artifact(source, payload)
         change = ingest(source, payload, change_id=change_id or uuid.uuid4().hex)
+        if artifact["withheld_value_count"]:
+            change = replace(
+                change,
+                withheld_value_count=artifact["withheld_value_count"],
+                ingestion_warnings=(
+                    *change.ingestion_warnings,
+                    "Artifact values were withheld by redaction; their intent and impact remain unknown.",
+                ),
+            )
         resources = _coerce_resources(discovered)
 
         # Single scope boundary. Everything downstream sees only this list, so
@@ -107,6 +119,7 @@ class PreDeploymentImpactService:
 
         assessment = {
             "assessment_id": uuid.uuid4().hex,
+            "artifact": artifact,
             "assessed_at": _now(),
             "change": change.to_dict(),
             "state_comparison": comparison,

@@ -523,6 +523,43 @@ match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be
 rejected with `401`. CORS preflight requests from the default Next.js origins
 are enabled by default.
 
+### Predeploy artifact intake
+
+`POST /api/v1/changes/assess` retains its existing admin write authorization and
+authorized read scope. Intake now rejects malformed present source arrays,
+more than 500 entries per source change/file array, more than 24 nested levels
+(root level 0), more than 50,000 JSON values, object keys over 256 Unicode scalar
+characters, invalid Unicode, nonfinite numbers, and non-JavaScript-safe integers.
+Submitted JSON values serialized as compact UTF-8 must not exceed 2 MiB. The
+wire envelope is separately limited to 2 MiB + 16 KiB before JSON/model parsing;
+deeply nested and duplicate-key JSON is rejected before model validation.
+Missing
+source arrays and unfamiliar action/resource fragments still produce defensive
+ingestion unknowns; acceptance is not source-schema certification.
+
+Known credential-like keys, named environment values and Terraform
+`before_sensitive`/`after_sensitive` masks block assessment while detected
+values are present. The portal supports bounded local UTF-8 JSON file intake or
+paste, explicit local redaction to `[REDACTED]`, and a separate review checkbox.
+Editing the artifact, changing its source, starting a file read or changing
+scope invalidates that review. Late file reads cannot replace newer input.
+No inspection or redaction operation makes a network write. Detection is
+heuristic, not comprehensive DLP: users must remove secrets embedded in prose,
+patches or arbitrary values themselves. Nothing is automatically submitted.
+
+The server independently revalidates intake before acquiring source evidence.
+An `artifact` receipt on the assessment contains source, compact UTF-8 size,
+withheld-value count and SHA-256 of ASCII JSON with sorted keys, no whitespace
+and envelope `{"schema_version":1,"source":SOURCE,"payload":PAYLOAD}`.
+Its `canonicalization` is `python-json-ascii-sorted-v1`; this identifies the
+submitted JSON values and source, not original file bytes, source authenticity,
+or a release approval. Raw artifacts/before/after values are not retained in
+assessment history. Withheld values become declared unknowns, suppress
+confidence to low/unknown, and require advisory human review even when two
+redacted markers compare equal. History remains bounded process-local state;
+durable revision comparisons and CI review contracts are not established by
+this intake receipt.
+
 ### Search exploration and durable queue bookmarks
 
 `GET /api/v1/search/capabilities` requires the normal read authorization and

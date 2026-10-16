@@ -3176,6 +3176,15 @@ export interface CabRecommendation {
 }
 
 export interface ChangeAssessment {
+  artifact?: {
+    schema_version: number;
+    source: string;
+    sha256: string;
+    canonicalization: string;
+    utf8_bytes: number;
+    withheld_value_count: number;
+    interpretation: string;
+  };
   assessment_id: string;
   assessed_at: string;
   source_engine: string;

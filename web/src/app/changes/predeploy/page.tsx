@@ -25,6 +25,8 @@ import { predeployApi } from "@/lib/services";
 import { networkReviewBookmark } from "@/lib/network-review";
 import type { NetworkReviewBookmark } from "@/lib/network-review";
 import { scopeToSearchParams } from "@/lib/scope";
+import { ARTIFACT_MAX_BYTES, inspectArtifact } from "@/lib/predeploy-intake";
+import type { ArtifactInspection } from "@/lib/predeploy-intake";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import type { ChangeAssessment, Envelope, NetworkFindingReview } from "@/lib/types";
@@ -75,6 +77,11 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
 
   const [source, setSource] = useState("terraform_plan");
   const [artifact, setArtifact] = useState("");
+  const [inspection, setInspection] = useState<ArtifactInspection | null>(null);
+  const [artifactReviewed, setArtifactReviewed] = useState(false);
+  const [readingFile, setReadingFile] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
+  const fileRead = useRef(0);
   const [result, setResult] = useState<Envelope<ChangeAssessment> | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +90,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
   const [attachNetwork, setAttachNetwork] = useState(false);
   const [reviewAttempt, setReviewAttempt] = useState(0);
   const submittingRequest = useRef<AbortController | null>(null);
-  useEffect(() => () => submittingRequest.current?.abort(), []);
+  useEffect(() => () => { submittingRequest.current?.abort(); fileRead.current++; }, []);
   const linkedBlocked = bookmark.present && (!networkReview || !attachNetwork);
 
   const evidence = useMemo(() => result?.data.risk?.evidence ?? [], [result]);
@@ -119,19 +126,41 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
   ]);
   const historyPaging = useTablePagination(filteredHistoryRows);
 
+  function changeArtifact(text: string) {
+    fileRead.current++;
+    setReadingFile(false); setArtifact(text); setInspection(null);
+    setArtifactReviewed(false); setIntakeError(null);
+  }
+
+  function inspect() {
+    setArtifactReviewed(false); setIntakeError(null); setInspection(null);
+    try { setInspection(inspectArtifact(source, artifact)); }
+    catch (failure) { setIntakeError(failure instanceof Error ? failure.message : String(failure)); }
+  }
+
+  async function readFile(file: File | undefined) {
+    if (!file) return;
+    changeArtifact("");
+    if (file.size > ARTIFACT_MAX_BYTES) { setIntakeError("Artifact exceeds the 2 MiB UTF-8 limit."); return; }
+    const read = ++fileRead.current;
+    setReadingFile(true);
+    try {
+      const bytes = await file.arrayBuffer();
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (fileRead.current === read) changeArtifact(text);
+    } catch {
+      if (fileRead.current === read) { setIntakeError("Could not read UTF-8 JSON. Choose a valid JSON file again."); setReadingFile(false); }
+    }
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (submittingRequest.current) return;
     setError(null);
     if (linkedBlocked) { setError("Review and explicitly attach exact Network evidence, or remove the handoff before submitting a separate change."); return; }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = JSON.parse(artifact) as Record<string, unknown>;
-    } catch {
-      // Parsed locally so a malformed paste is corrected here rather than
-      // coming back as an opaque server-side rejection.
-      setError("The artifact is not valid JSON. Paste the raw plan or what-if output.");
+    if (!inspection || !artifactReviewed || inspection.detectedSensitiveValues || readingFile) {
+      setError("Inspect the artifact, redact detected sensitive values locally, then review it before assessment.");
       return;
     }
 
@@ -139,7 +168,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
     submittingRequest.current = controller;
     setSubmitting(true); setResult(null);
     try {
-      const response = await predeployApi.assess(source, payload, "", {
+      const response = await predeployApi.assess(source, inspection.payload, "", {
         scope, signal: controller.signal,
         ...(bookmark.reference && attachNetwork ? { networkReview: bookmark.reference } : {}),
       });
@@ -259,12 +288,15 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
       <form className="card predeploy-artifact" onSubmit={submit}>
         <div className="card-header">
           <h2>Submit a proposed change</h2>
-          <p>Paste a plan, what-if result, or pull request payload. Nothing is deployed.</p>
+          <p>Inspect a plan, what-if result, or pull request payload locally before sending it. Nothing is deployed.</p>
         </div>
         <div className="card-body form-grid">
           <label className="form-field">
             <span>Change source</span>
-            <select className="form-control" value={source} onChange={(event) => setSource(event.target.value)}>
+            <select className="form-control" value={source} disabled={submitting} onChange={(event) => {
+              fileRead.current++; setReadingFile(false); setSource(event.target.value);
+              setInspection(null); setArtifactReviewed(false); setIntakeError(null);
+            }}>
               {(sources.data?.data.sources ?? Object.keys(SOURCE_LABELS)).map((option) => (
                 <option key={option} value={option}>
                   {SOURCE_LABELS[option] ?? titleize(option)}
@@ -273,18 +305,38 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
             </select>
           </label>
           <label className="form-field form-span">
+            <span>Choose a JSON artifact (maximum 2 MiB)</span>
+            <input className="form-control" type="file" accept=".json,application/json" disabled={submitting}
+              onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void readFile(file); }} />
+          </label>
+          <label className="form-field form-span">
             <span>Change artifact (JSON)</span>
             <textarea
               className="form-control"
               value={artifact}
-              onChange={(event) => setArtifact(event.target.value)}
+              onChange={(event) => changeArtifact(event.target.value)}
+              disabled={submitting}
               placeholder={PLACEHOLDER}
               rows={10}
               spellCheck={false}
             />
           </label>
+          <div className="predeploy-intake form-span">
+            <p>Maximum 500 changes/files, 24 nesting levels and 50,000 values. Inspection recognizes common credential keys and Terraform sensitivity masks; it cannot detect every secret in prose, source code or arbitrary values. Review the full artifact yourself. File contents stay in this page until assessment; no raw artifact is retained in assessment history.</p>
+            <button type="button" className="button button-secondary" onClick={inspect} disabled={submitting || readingFile || !artifact.trim()}>Inspect artifact locally</button>
+            {readingFile && <p role="status">Reading local JSON file…</p>}
+            {intakeError && <p role="alert">{intakeError}</p>}
+            {inspection && <>
+              <p role="status">{inspection.bytes.toLocaleString()} UTF-8 bytes inspected. {inspection.detectedSensitiveValues} detected sensitive values; {inspection.withheldValues} withheld values.</p>
+              {inspection.detectedSensitiveValues > 0
+                ? <><p>Assessment is blocked. Replace detected values with explicit redaction markers locally, inspect the changed artifact, and review it again. Redacted configuration remains unknown.</p>
+                  <button type="button" className="button button-secondary" disabled={submitting} onClick={() => changeArtifact(inspection.redactedText)}>Redact detected values locally</button></>
+                : <label><input type="checkbox" checked={artifactReviewed} disabled={submitting}
+                    onChange={event => setArtifactReviewed(event.target.checked)} /> I reviewed this artifact and removed sensitive content. Redaction and declared configuration are not verified runtime evidence or deployment approval.</label>}
+            </>}
+          </div>
           <div className="form-actions">
-            <button type="submit" className="button button-primary" disabled={submitting || linkedBlocked || artifact.trim() === ""}>
+            <button type="submit" className="button button-primary" disabled={submitting || readingFile || linkedBlocked || !inspection || !artifactReviewed || inspection.detectedSensitiveValues > 0}>
               {submitting ? "Assessing…" : "Assess impact"}
             </button>
           </div>
@@ -295,6 +347,11 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
 
       {assessment && risk && cab && blast && (
         <>
+          {assessment.artifact && <div className="predeploy-intake">
+            <h2>Submitted artifact provenance</h2>
+            <p>SHA-256 <code>{assessment.artifact.sha256}</code></p>
+            <p>{assessment.artifact.utf8_bytes.toLocaleString()} canonical UTF-8 bytes; {assessment.artifact.withheld_value_count} withheld values. {assessment.artifact.interpretation}</p>
+          </div>}
           {assessment.network_review && <p className="network-review-result" role="status">
             Network finding {assessment.network_review.finding_id} retained with assessment {assessment.assessment_id}.
             {" "}Exact review digest: {assessment.network_review.reviewed_digest}. Advisory context only; the artifact-to-finding relationship is not verified.
