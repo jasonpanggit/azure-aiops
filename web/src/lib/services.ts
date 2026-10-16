@@ -1928,6 +1928,14 @@ export const predeployApi = {
 
 /** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
 export const situationsApi = {
+  /** Read exact-scope, server-attributed handover annotations. */
+  notes: (id: string, scope: ScopeSelection) =>
+    apiRequest<import("./types").SituationNotesState>(`/situations/${encodeURIComponent(id)}/notes`, { query: scopeToSearchParams(scope) }),
+  /** Append one annotation against a reviewed history revision and evidence run. */
+  appendNote: (id: string, scope: ScopeSelection, change: { expected_revision: number; evidence_run_id: string; text: string }) =>
+    apiRequest<import("./types").SituationNotesState>(`/situations/${encodeURIComponent(id)}/notes`, {
+      method: "POST", query: scopeToSearchParams(scope), body: change,
+    }),
   list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100, triage?: {
     owner: string; lifecycle_state: string; older_than_hours: number | null; sort: "default" | "oldest" | "newest";
   }) => {

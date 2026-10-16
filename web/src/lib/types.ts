@@ -2990,6 +2990,23 @@ export interface DurableEvidence {
   situation_id: string;
 }
 
+/** Exact-scope operator annotations and server-computed append eligibility. */
+export interface SituationNotesState {
+  schema_version: 1;
+  situation_id: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  can_append: boolean;
+  notes: Array<{
+    note_id: string;
+    revision: number;
+    evidence_run_id: string;
+    text: string;
+    actor: string;
+    created_at: string;
+  }>;
+}
+
 export interface DurableSourceStatus {
   source_family: string;
   run_id: string;

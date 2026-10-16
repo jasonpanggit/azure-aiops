@@ -17,6 +17,7 @@ from fastapi import Depends, Query, Request
 from onboarding.service import SubscriptionOnboardingService
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
+from situations.notes import SituationNotesStore
 
 from .auth import Authenticator
 from .errors import ApiError, ErrorCode
@@ -90,6 +91,7 @@ class ApiContext:
     # projection, so like risk exceptions they use a direct store handle.
     settings_store: Any | None = None
     compliance_policy_store: Any | None = None
+    situation_notes_store: SituationNotesStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

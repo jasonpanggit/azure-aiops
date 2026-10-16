@@ -19,6 +19,9 @@ import type {
   SituationAuditEvent,
 } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { SituationHandoverNotes } from "@/components/SituationHandoverNotes";
+import { SituationEvidenceTimeline } from "@/components/SituationEvidenceTimeline";
+import { situationEntityHref } from "@/lib/situations";
 
 function allEvidence(situation: DurableSituation): DurableEvidence[] {
   return situation.evidence ?? [];
@@ -30,7 +33,11 @@ function linkedEntities(situation: DurableSituation) {
 
 export default function SituationDetailPage({ params }: { params: { id: string } }) {
   const { scope } = useScope();
-  const situationId = params.id;
+  return <SituationDetailContent key={`${JSON.stringify(scope)}:${params.id}`} situationId={params.id} />;
+}
+
+function SituationDetailContent({ situationId }: { situationId: string }) {
+  const { scope } = useScope();
   const [situation, setSituation] = useState<Envelope<DurableSituation> | null>(null);
   const [audit, setAudit] = useState<Envelope<SituationAuditEvent[]> | null>(null);
   const [auditError, setAuditError] = useState("");
@@ -47,6 +54,8 @@ export default function SituationDetailPage({ params }: { params: { id: string }
     setAudit(null);
     setAuditError("");
     setError("");
+    setSelectedEvidence(null);
+    setSaved(false);
     Promise.allSettled([situationsApi.get(situationId, scope), situationsApi.audit(situationId, scope)])
       .then(([detail, events]) => {
         if (!active) return;
@@ -179,7 +188,7 @@ export default function SituationDetailPage({ params }: { params: { id: string }
       <PageHeader
         eyebrow="Durable situation brief"
         title={record.title}
-        description="Evidence-backed, authorized operational context. Read-only in Phase 1."
+        description="Evidence-backed, authorized operational context. Source records remain read-only; handover annotations are governed separately."
         actions={
           <>
             <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about this situation" />
@@ -277,22 +286,23 @@ export default function SituationDetailPage({ params }: { params: { id: string }
       <section className="card" aria-labelledby="links-heading">
         <div className="card-header"><div><h2 id="links-heading">Linked entities</h2><p>Bounded links are labelled and retain unresolved quality.</p></div></div>
         <div className="card-body">
-          <ul>{links.map((link) => <li key={link.link_id}><strong>{link.entity_type}</strong> <code>{link.entity_id}</code> · {link.relation} · {link.quality}</li>)}</ul>
+          <ul>{links.map(link => {
+            const href = situationEntityHref(link, scope);
+            return <li key={link.link_id}><strong>{link.entity_type}</strong> <code>{link.entity_id}</code> · {link.relation} · {link.quality}
+              {href ? <> · <Link href={href}>Open {link.entity_type} context</Link></>
+                : <span> · No verified supported destination</span>}
+            </li>;
+          })}</ul>
           {links.length === 0 && <p>No linked entities are visible in this scope.</p>}
         </div>
       </section>
 
-      <section className="card timeline-card" aria-labelledby="timeline-heading">
-        <div className="card-header"><div><h2 id="timeline-heading">Evidence timeline</h2><p>Exact observed timestamps from durable source records.</p></div></div>
-        <div className="card-body timeline">
-          {[...evidence].sort((left, right) => right.observed_at.localeCompare(left.observed_at)).map((item) => (
-            <div className="timeline-event" key={item.evidence_id}><time dateTime={item.observed_at}>{formatDateTime(item.observed_at)}</time><strong>{item.source_family}</strong><span>{item.assertion || item.source_object_id}</span></div>
-          ))}
-        </div>
-      </section>
+      <SituationHandoverNotes key={`notes:${JSON.stringify(scope)}:${record.situation_id}:${record.run_id}`}
+        scope={scope} situationId={record.situation_id} evidenceRunId={record.run_id} />
+      <SituationEvidenceTimeline key={`timeline:${JSON.stringify(scope)}:${record.situation_id}:${record.run_id}`} evidence={evidence} />
 
       <section className="card audit-boundary" aria-labelledby="audit-heading">
-        <div className="card-header"><div><h2 id="audit-heading">Audit history</h2><p>Recorded by the service; local collaboration remains separate under “Save view locally”.</p></div></div>
+        <div className="card-header"><div><h2 id="audit-heading">Audit history</h2><p>Source events recorded by the service. Handover annotations have their own server-attributed revision history; “Save view locally” stores only navigation preferences.</p></div></div>
         <div className="card-body">
         {auditError ? <p>Audit history unavailable from the service</p> : audit?.data.length ? audit.data.map((event) => (
             <article className="reasoning-card" key={event.event_id}>

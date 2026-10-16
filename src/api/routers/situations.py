@@ -10,7 +10,10 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..dependencies import Context, Page, ReadScope
+from situations.notes import NoteAppend, SituationNotesStore
+from storage.onelake_documents import DocumentConflictError
+
+from ..dependencies import Context, CurrentPrincipal, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
 
@@ -138,6 +141,49 @@ def situation_handoff(payload: HandoffRequest, context: Context, scope: ReadScop
         "artifact": artifact, "sha256": digest, "count": len(rows),
         "canonicalization": "Python json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=True), UTF-8",
     }, scope=scope.to_dict())
+
+
+def _notes_target(situation_id: str, context: Context, scope: ReadScope) -> tuple[dict[str, Any], SituationNotesStore]:
+    provider = _provider(context)
+    if provider is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Situation provider is unavailable")
+    row = provider.get(situation_id, scope)
+    if row is None:
+        raise _not_found(situation_id)
+    if context.situation_notes_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable Situation handover storage is unavailable")
+    return row, context.situation_notes_store
+
+
+@router.get("/situations/{situation_id:path}/notes", summary="Read exact-scope Situation handover notes")
+def situation_notes(situation_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict[str, Any]:
+    """Reauthorize the Situation on every read; annotations are not source evidence."""
+    _, store = _notes_target(situation_id, context, scope)
+    can_append = bool(principal.grants_for("operate")) and (
+        context.authorizer.effective_scope(principal, "operate", scope) == scope
+    )
+    return envelope({
+        **store.read(situation_id, scope.to_dict()), "can_append": can_append,
+    }, scope=scope.to_dict())
+
+
+@router.post("/situations/{situation_id:path}/notes", summary="Append an evidence-run-bound handover note")
+def append_situation_note(
+    situation_id: str, context: Context, scope: ReadScope, principal: OperatePrincipal, change: NoteAppend,
+) -> dict[str, Any]:
+    """Require operate rights across the entire read scope and pin the observed run."""
+    if context.authorizer.effective_scope(principal, "operate", scope) != scope:
+        raise ApiError(ErrorCode.FORBIDDEN, "The complete handover scope must be authorized")
+    row, store = _notes_target(situation_id, context, scope)
+    if str(row.get("run_id") or "") != change.evidence_run_id:
+        raise ApiError(ErrorCode.CONFLICT, "Situation evidence changed; reload before appending")
+    try:
+        state = store.append(situation_id, scope.to_dict(), change, principal.subject)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Handover notes changed; reload and review before retrying") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return envelope({**state, "can_append": True}, scope=scope.to_dict())
 
 
 @router.get("/situations/{situation_id:path}/audit", summary="Read situation audit history")

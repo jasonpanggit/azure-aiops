@@ -2,12 +2,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 
-const { get, audit } = vi.hoisted(() => ({ get: vi.fn(), audit: vi.fn() }));
+const { get, audit, notes } = vi.hoisted(() => ({ get: vi.fn(), audit: vi.fn(), notes: vi.fn() }));
 
 vi.mock("@/lib/services", async () => {
   const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
-    situationsApi: { get, audit },
+    situationsApi: { get, audit, notes },
     buildCopilotSnapshot: actual.buildCopilotSnapshot,
     copilotEvidenceRows: () => [],
   };
@@ -119,6 +119,8 @@ describe("durable Situation detail", () => {
   beforeEach(() => {
     get.mockReset();
     audit.mockReset();
+    notes.mockReset();
+    notes.mockResolvedValue({ data: { schema_version: 1, situation_id: "situation://one", scope: {}, revision: 0, can_append: false, notes: [] } });
     get.mockResolvedValue({ data: situation, evidence: [], scope: {} });
     audit.mockResolvedValue({
       data: [{

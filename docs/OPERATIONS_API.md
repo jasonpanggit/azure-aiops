@@ -156,6 +156,43 @@ values do not cross the redirect. Migration logs contain only a count,
 allowlisted translated parameter names, and the number of discarded keys,
 never query values, connection IDs, or unknown raw parameter names.
 
+### Situation handover annotations and observed comparisons
+
+`GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation
+and reads the exact effective-scope annotation history. Different scope
+combinations do not inherit notes. The response includes `can_append` only
+when the caller has operate rights over that **entire** scope.
+
+`POST` to the same route requires operator authorization and accepts
+`expected_revision`, `evidence_run_id`, and `text` (1-2000 nonblank
+characters). The run must match the current authorized Situation at
+request-time validation. The service records the authenticated actor,
+UTC timestamp, unique note ID, and next revision. Client-supplied actors,
+execution fields, and other unknown keys are rejected. Changed source runs
+or history revisions return 409, with no automatic replay. Reload and review
+the history before explicitly retrying; the UI retains unsent drafts.
+
+Histories use the existing local/OneLake document store under
+`AIOPS_HOME/state/situation-notes/`, with a SHA-256 name derived from the exact
+Situation identity and effective scope. Create-only/ETag replacement prevents
+lost concurrent appends. Missing storage and corrupt documents fail explicitly;
+only a genuinely absent document starts at revision zero. Histories are
+append-only through this API and capped at 200 notes; additional writes require
+administrative archival, not silent deletion. These annotations are not
+provider facts, source audit events, remediation approval, or execution
+authority. Do not enter secrets.
+
+Situation detail preserves unresolved link quality and enables navigation
+only for resolved identities with supported destinations. Links carry current
+scope as context; the destination still enforces authorization. Timeline source,
+quality, and observed-time filters operate only on returned authorized evidence.
+Two explicitly selected observations can be compared by assertion, trust facts,
+and resource-reference differences. References appearing in only one observation
+do **not** prove resources were created or deleted. Unknown/timezone-less times
+cannot establish chronology; equal instants are explicitly coincident. Sequence
+does not establish causation. Scope, Situation, or source-run changes reset
+local timeline state and handover drafts.
+
 For local testing, start the web app and API from `web/` in separate terminals:
 
 ```bash
