@@ -44,6 +44,11 @@ the Network page does. They do not require selecting a subscription first.
 Semantic-only searches still report deferred semantic providers explicitly;
 this does not enable full semantic hydration or optional Data Agent grounding.
 
+Fabric capacity health probes the configured platform subscription even when
+the page filters customer inventory to another subscription. Managed-identity
+deployments use the Terraform-configured Fabric identity for this read-only
+ARM request; the identity's capacity-scoped Reader assignment remains required.
+
 For local browser testing, run the API and web app separately. The API must be
 running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must
 match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be
