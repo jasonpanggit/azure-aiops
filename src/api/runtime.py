@@ -4545,6 +4545,13 @@ def _retained_audit_export_store():
     return RetainedAuditExportStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _access_campaign_store():
+    """Persist shared exact-scope review declarations without new cloud resources."""
+    from intelligence.governance.campaigns import AccessCampaignStore
+
+    return AccessCampaignStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _compliance_policy_store():
     """Use durable scope-exact documents in both local and deployed runs."""
     from intelligence.governance.compliance_policy import CompliancePolicyStore
@@ -5828,6 +5835,7 @@ def build_context() -> ApiContext:
         governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
         retained_audit_export_store=_retained_audit_export_store(),
+        access_campaign_store=_access_campaign_store(),
         compliance_policy_store=_compliance_policy_store(),
         situation_notes_store=_situation_notes_store(),
         situation_deadline_store=_situation_deadline_store(),

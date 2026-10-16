@@ -9,6 +9,60 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Shared advisory access-review campaigns
+
+`GET /api/v1/governance/access-campaigns` reads a shared workspace keyed by the
+complete effective nine-dimensional read scope, with current subject, manager
+capability, collection revision and server-evaluated deadline status. Unlike
+personal audit exports, authorized readers of that exact scope share campaigns.
+Current grants are reapplied on every request. A global reader plus scoped admin
+cannot manage a broader workspace; write authority must cover its entire scope.
+
+`POST` requires `{title, audience, reviewer_subject, due_at, expected_revision}`.
+Only managers may create campaigns. The existing service-owner/security/auditor
+builder composes a **new current source pack**; clients cannot upload evidence.
+The explicit reviewer is an exact authentication subject declaration, not
+directory validation or an access grant. A future timezone-aware deadline within
+365 days is required. No default reviewer, cadence, email or delivered reminder
+is inferred. Overdue status changes only when records are explicitly reloaded.
+
+`GET /access-campaigns/{campaign_id}` recovers canonical standard-key-redacted
+frozen source JSON, original provenance/warnings and immutable recommendations
+without acquiring current identity providers. Source SHA-256 covers its exact
+UTF-8 bytes; the portal verifies byte count, digest, identity and collection
+revision before allowing review. This proves integrity, not authenticity or
+freshness. Observed aggregated principal risk is **not complete effective access
+or individual-role recertification**. Key redaction is not comprehensive DLP.
+
+`POST /access-campaigns/decisions` requires `{campaign_id, principal_id,
+recommendation, reason, expected_revision}`. Only the actual assigned subject
+with current read authority may record `retain_recommended`,
+`revoke_recommended` or `investigate`, against a principal present in the frozen
+pack. Server actor/time are authoritative; recommendations cannot be replaced.
+An administrator cannot impersonate the reviewer. No Azure RBAC mutation,
+remediation approval or execution occurs.
+
+Managers explicitly `POST /access-campaigns/complete` or `/cancel` with
+`{campaign_id, reason, expected_revision}`. Completion requires every captured
+principal to have a recommendation, including unresolved investigation advice;
+it is not approval or certification. Cancellation preserves the captured source
+and recommendations. `POST /access-campaigns/remove` with `{campaign_id,
+expected_revision}` removes only a terminal stored copy, not downloaded records
+or source access. This mutable workspace is not an immutable legal archive.
+
+`state/access-campaigns/<scope-hash>.json` uses existing `AIOPS_HOME` documents,
+revision/ETag CAS and create-only initial writes, bounded to 10 campaigns,
+1-100 principals per campaign, 512-KiB source and 6-MiB serialized collection.
+No truncation, eviction, automatic expiry or infrastructure jobs are introduced.
+Stale/full work is rejected before live acquisition; CAS is rechecked after it.
+Corrupt/unavailable storage fails closed. The portal requires a fresh action
+review, locks uncertain mutations until reload with no replay, and discards
+late results on scope/tab/close/unmount changes. Acknowledged writes followed
+by recovery failure are distinguished from wholly unconfirmed requests.
+Point-in-time review downloads preserve the frozen source digest and recorded
+revision; they are not a checksum/certification of an entire audit history.
+Campaign drafts and records are not added to the source-only Governance Copilot.
+
 ## Personal retained audit evidence
 
 `GET /api/v1/governance/exports/retained` recovers metadata for the authenticated

@@ -34,6 +34,16 @@ from intelligence.governance import (
     SpnGovernanceEngine,
     default_settings,
 )
+from intelligence.governance.campaigns import (
+    AccessCampaignStore,
+    CampaignCreate,
+    CampaignDecision,
+    CampaignNotFoundError,
+    CampaignRemove,
+    CampaignRequestError,
+    CampaignReviewerError,
+    CampaignTransition,
+)
 from intelligence.governance.retained_exports import (
     MAX_CAPTURES,
     AuditCaptureNotFoundError,
@@ -56,6 +66,7 @@ from ..evidence import (
     envelope,
 )
 from ..governance_snapshot import GovernanceSnapshot
+from ..rbac import ACTION_WRITE
 from ..scope import Scope
 
 # Reuse the operations router's recursive scope filter so plan payloads are
@@ -294,6 +305,116 @@ def spn_credentials(context: Context, scope: ReadScope) -> dict[str, Any]:
         scope=scope.to_dict(),
         warnings=snapshot.warnings,
     )
+
+
+def _can_manage_campaigns(context: Context, principal: CurrentPrincipal, scope: Scope) -> bool:
+    try:
+        writable = context.authorizer.effective_scope(principal, ACTION_WRITE, scope)
+    except ApiError as exc:
+        if exc.code == ErrorCode.FORBIDDEN:
+            return False
+        raise
+    return writable.to_dict() == scope.to_dict()
+
+
+def _require_campaign_manager(context: Context, principal: CurrentPrincipal, scope: Scope) -> None:
+    if not _can_manage_campaigns(context, principal, scope):
+        raise ApiError(ErrorCode.FORBIDDEN, "Managing campaigns requires write authority over the entire selected read scope")
+
+
+@contextmanager
+def _campaigns(context: Context) -> Iterator[AccessCampaignStore]:
+    store = context.access_campaign_store
+    if store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Access campaign storage is unavailable")
+    try:
+        yield store
+    except ApiError:
+        raise
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Access campaigns changed; reload before another action") from exc
+    except CampaignNotFoundError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Access campaign not found") from exc
+    except CampaignReviewerError as exc:
+        raise ApiError(ErrorCode.FORBIDDEN, str(exc)) from exc
+    except CampaignRequestError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except Exception as exc:
+        _LOGGER.warning("Access campaign operation unavailable (%s)", type(exc).__name__)
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Access campaign operation could not be confirmed; reload before another action",
+        ) from exc
+
+
+def _campaign_envelope(data: dict[str, Any], context: Context, principal: CurrentPrincipal, scope: Scope) -> dict[str, Any]:
+    return envelope(
+        {**data, "current_subject": principal.subject,
+         "can_manage": _can_manage_campaigns(context, principal, scope)},
+        scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="intelligence.governance.AccessCampaignStore",
+            source_table="access_campaigns", confidence=CONFIDENCE_UNKNOWN,
+        ),
+    )
+
+
+@router.get("/access-campaigns", summary="Shared exact-scope advisory access campaigns")
+def access_campaigns(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict[str, Any]:
+    with _campaigns(context) as store:
+        data = store.read(scope.to_dict())
+    return _campaign_envelope(data, context, principal, scope)
+
+
+@router.post("/access-campaigns", status_code=201, summary="Create a frozen-source assigned access campaign")
+def create_access_campaign(
+    payload: CampaignCreate, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    _require_campaign_manager(context, principal, scope)
+    with _campaigns(context) as store:
+        store.preflight_create(scope.to_dict(), payload)
+        document = access_review(payload.audience, context, scope)
+        data = store.create(scope.to_dict(), payload, principal.subject, document)
+    return _campaign_envelope(data, context, principal, scope)
+
+
+@router.get("/access-campaigns/{campaign_id}", summary="Recover frozen access campaign evidence and recommendations")
+def access_campaign(
+    campaign_id: str, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _campaigns(context) as store:
+        data = store.detail(scope.to_dict(), campaign_id)
+    return _campaign_envelope(data, context, principal, scope)
+
+
+@router.post("/access-campaigns/decisions", summary="Record the assigned reviewer's source-bound recommendation")
+def decide_access_campaign(
+    payload: CampaignDecision, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    with _campaigns(context) as store:
+        data = store.decide(scope.to_dict(), payload, principal.subject)
+    return _campaign_envelope(data, context, principal, scope)
+
+
+@router.post("/access-campaigns/remove", summary="Explicitly remove a terminal campaign stored copy")
+def remove_access_campaign(
+    payload: CampaignRemove, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    _require_campaign_manager(context, principal, scope)
+    with _campaigns(context) as store:
+        data = store.remove(scope.to_dict(), payload)
+    return _campaign_envelope(data, context, principal, scope)
+
+
+@router.post("/access-campaigns/{action}", summary="Explicitly complete or cancel an advisory campaign")
+def close_access_campaign(
+    action: Literal["complete", "cancel"], payload: CampaignTransition,
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict[str, Any]:
+    _require_campaign_manager(context, principal, scope)
+    with _campaigns(context) as store:
+        data = store.transition(scope.to_dict(), payload, principal.subject, action)
+    return _campaign_envelope(data, context, principal, scope)
 
 
 @router.get("/access-reviews/{audience}", summary="Access review pack")

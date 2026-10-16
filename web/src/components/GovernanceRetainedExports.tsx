@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "@/hooks/useApi";
 import {
-  AUDIT_CAPTURE_KINDS, verifyAuditCapture,
+  AUDIT_CAPTURE_KINDS, downloadEvidenceJson, verifyAuditCapture,
   type AuditCaptureDetail, type AuditCaptureKind, type AuditCaptureManifest,
 } from "@/lib/audit-exports";
 import { formatDateTime, titleize } from "@/lib/format";
@@ -100,19 +100,11 @@ function Editor({ scope, initial, reload }: {
 
   function download() {
     if (!detail || busy) return;
-    let url: string | undefined;
-    let link: HTMLAnchorElement | undefined;
     try {
-      url = URL.createObjectURL(new Blob([detail.content], { type: "application/json;charset=utf-8" }));
-      link = document.createElement("a"); link.href = url;
-      link.download = `audit-evidence-${detail.manifest.export_id}.json`;
-      document.body.appendChild(link); link.click();
+      downloadEvidenceJson(detail.content, `audit-evidence-${detail.manifest.export_id}.json`);
       setNotice("Verified file handed to the browser. Check your downloads.");
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The browser could not start the download.");
-    } finally {
-      link?.remove();
-      if (url) URL.revokeObjectURL(url);
     }
   }
 

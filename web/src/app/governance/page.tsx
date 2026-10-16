@@ -21,6 +21,7 @@ import type { AccessReviewPack, AuditExportPack } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { EDITABLE_POLICY_SECTIONS, GovernanceSettingsEditor } from "@/components/GovernanceSettingsEditor";
 import { GovernanceRetainedExports } from "@/components/GovernanceRetainedExports";
+import { GovernanceCampaigns } from "@/components/GovernanceCampaigns";
 
 type Tab = "reviews" | "exports" | "settings";
 
@@ -227,6 +228,7 @@ export default function GovernancePage() {
                 ))}
               </div>
             )}
+            <GovernanceCampaigns scope={scope} />
           </div>
         </section>
       )}

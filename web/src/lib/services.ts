@@ -2040,6 +2040,24 @@ export type { Envelope };
  * global scope so the API applies subscription isolation server-side.
  */
 export const governanceApi = {
+  /** Recover shared exact-scope advisory campaign metadata under current grants. */
+  campaigns: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns", { query: scopeToSearchParams(scope), signal }),
+  /** Read frozen source and attributed recommendations without current providers. */
+  campaign: (scope: ScopeSelection, campaignId: string, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignDetail>(`/governance/access-campaigns/${encodeURIComponent(campaignId)}`, { query: scopeToSearchParams(scope), signal }),
+  /** Explicit assigned-source capture; only manager authority over the full scope suffices. */
+  createCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignCreate, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Record only the authenticated assigned reviewer's immutable recommendation. */
+  decideCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignDecisionRequest, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns/decisions", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Complete/cancel reviewed work, never Azure access or execution approvals. */
+  closeCampaign: (scope: ScopeSelection, action: "complete" | "cancel", body: import("./access-campaigns").CampaignClosure, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>(`/governance/access-campaigns/${action}`, { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Remove only a reviewed terminal stored copy; downloaded records remain. */
+  removeCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignAddress, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns/remove", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
   /** Recover personal exact-scope metadata without acquiring live evidence. */
   retainedExports: (scope: ScopeSelection, signal?: AbortSignal) =>
     apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained", {
