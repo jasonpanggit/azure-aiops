@@ -605,7 +605,87 @@ comparison selectors. Scope changes abort pending work and remount the panel;
 failed/uncertain mutations clear reviewed collection state and require reload
 before explicit retry, with no automatic replay. Recent assessment history
 remains separately labeled process-local; only explicit receipts survive process
-restart. CI review contracts remain a separate feature.
+restart.
+
+### Advisory predeploy CI review
+
+Reader `GET /changes/retained-assessments/{assessment_id}/review-contract`
+requires the exact reviewed `artifact_sha256` and effective scope. It exports
+only the authenticated subject's own retained receipt, independently of current
+inventory or process-local assessment availability. Missing/foreign scope is
+404, artifact mismatch 409, invalid digest 400 and unavailable storage 503.
+It neither retains nor changes anything.
+
+Version-one contracts include the retained receipt, exact scope, canonical
+receipt SHA-256 and whole-contract SHA-256. Canonical JSON uses sorted keys,
+ASCII escaping and compact separators, excluding only the digest field being
+calculated. `review_required` applies whenever the receipt has unknowns,
+non-high confidence, a non-approve verdict, non-Low risk, truncated traversal,
+business-service dependencies or destructive rows. Otherwise `advisory_clear`
+means only that these summary rules do not escalate: omitted approvals or
+conditions are not evaluated or satisfied. `deployment_authority` is always
+`none`. These are integrity hashes, **not signatures or deployment approvals**.
+The portal offers explicit per-receipt JSON export and reports download errors.
+
+The read-only CI client independently verifies a local inspected JSON artifact
+against that live authorized contract:
+
+```bash
+python scripts/predeploy-review.py \
+  --artifact reviewed-plan.json --source terraform_plan \
+  --assessment-id <retained-32-hex-id> \
+  --review-sha256 <reviewed-export-64-hex-review-sha256> \
+  --scope-json '{"subscription":["subscription-a","subscription-b"]}' \
+  --repository owner/repository > predeploy-review.json
+```
+
+Install the existing project `api` dependencies first. The runner must already
+have approved `AIOPS_PREDEPLOY_API_URL` (HTTPS origin, no path/userinfo/query)
+and `AIOPS_PREDEPLOY_REVIEW_TOKEN` configuration. The token needs reader access
+and **the same subject that owns the receipt**; a different pipeline identity
+does not inherit a human's personal history. No credentials or grants are
+created by this feature. Locally inspect/redact and explicitly retain the
+artifact analysis under the intended identity before running the check.
+
+Before contacting the API, the client checks a real clean tracked Git checkout,
+the GitHub/Azure DevOps commit environment when present, regular file, 2 MiB
+UTF-8 input, duplicate keys, structural/numeric/Unicode bounds and detected
+credentials. Only the canonical artifact digest and scope are sent in one GET,
+never raw input, artifact uploads or assessment writes. HTTPS verification stays
+on; redirects/proxies are disabled; network read timeout is 30 seconds and the
+uncompressed response is bounded at 512 KiB. The returned identity, source,
+scope and both evidence hashes must match, including the explicitly pinned
+`--review-sha256` from the reviewed export. A coherently re-created receipt
+with the same ID/artifact but changed evidence therefore still fails, requiring
+an explicit new review and pin. Errors identify the failed stage
+without echoing raw artifacts, tokens or provider error bodies; no retry occurs.
+
+Exit 0 is advisory-clear, 2 means human review is required, and 1 is an
+unconfirmed/invalid review. JSON reports bind the exact returned contract to the
+local Git commit and asserted repository label with a separate binding digest.
+This does **not** prove that the artifact was generated from that commit, verify
+remote repository identity or constitute an authenticated CI attestation.
+When `GITHUB_STEP_SUMMARY` is set, a fixed-format Markdown summary contains
+only disposition, validated identities and digests, not user-authored prose.
+Do not use any exit code as an infrastructure deployment permission.
+
+`.github/workflows/predeploy-review.yml` is manual and main-only, and remains
+disabled unless `AIOPS_PREDEPLOY_REVIEW_ENABLED=true`. It runs trusted main
+code, checks out the immutable event commit without persisted Git credentials,
+has contents-read permission, passes inputs as quoted environment values,
+and uploads only the report for seven days even when review is required.
+Configure the approved API origin variable and existing protected reader-token
+secret before enabling it; no hosted execution/configuration is claimed by
+source tests. There is no PR-target trigger, deployment, merge, PR comment,
+cloud credential or infrastructure permission in this workflow.
+
+Azure DevOps can call the same command on a trusted clean checkout, pass an
+explicit `organization/project/repository` label, and inject the same approved
+API configuration through its protected secret mechanism. `BUILD_SOURCEVERSION`
+must match HEAD. Preserve exit 2 as review-required, publish the JSON report on
+failure as well as success, and keep deployment approvals separate. The portal's
+downloaded contract is review material; the client re-fetches live authorized
+evidence rather than trusting an arbitrary offline JSON file.
 
 ### Search exploration and durable queue bookmarks
 

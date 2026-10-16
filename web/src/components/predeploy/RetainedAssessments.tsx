@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TablePagination } from "@/components/ui/TablePagination";
+import { downloadJson } from "@/lib/download-json";
 import { formatDateTime, titleize } from "@/lib/format";
 import { scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { predeployApi } from "@/lib/services";
 import { useTablePagination } from "@/lib/use-table-pagination";
-import type { AssessmentComparison, AssessmentHistory } from "@/lib/predeploy-history";
+import type { AssessmentComparison, AssessmentHistory, AssessmentReceipt } from "@/lib/predeploy-history";
 import type { Envelope } from "@/lib/types";
 
 interface Props {
@@ -125,8 +126,26 @@ function Panel({ scope, current }: Props) {
     }
   }
 
+  async function exportReview(receipt: AssessmentReceipt) {
+    if (!state || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await predeployApi.reviewContract(scope, receipt.assessment_id, receipt.artifact_sha256, controller.signal);
+      if (!controller.signal.aborted) {
+        downloadJson(`predeploy-ci-review-${receipt.assessment_id}.json`, response.data);
+        setNotice(`CI review contract exported: ${response.data.disposition}. This summary is not deployment approval or a signed CI attestation.`);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "CI review contract could not be exported.");
+    } finally {
+      if (!controller.signal.aborted) { request.current = null; setBusy(false); }
+    }
+  }
+
   return <div className="card-body predeploy-history-body" aria-busy={busy}>
-    <p>Up to 20 receipts, 256 KiB each and 4 MiB total. Retention is explicit; nothing is automatically evicted. Receipts preserve normalized declared rows and analysis summaries, not raw artifacts or full analysis. No current provider is contacted when recovering or comparing.</p>
+    <p>Up to 20 receipts, 256 KiB each and 4 MiB total. Retention is explicit; nothing is automatically evicted. Receipts preserve normalized declared rows and analysis summaries, not raw artifacts or full analysis. No current provider is contacted when recovering or comparing. Export a digest-bound CI review contract for a retained receipt; the read-only CI client separately checks the local artifact and checkout. The CI identity must own the same personal receipt.</p>
     {busy && <p role="status">Reading or updating retained assessment receipts...</p>}
     {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -147,8 +166,10 @@ function Panel({ scope, current }: Props) {
             <p>{row.unknowns.length} declared unknowns.</p>
             {row.unknowns.length > 0 && <ul>{row.unknowns.map((unknown, index) => <li key={index}>{unknown}</li>)}</ul>}
           </details>
-          <button type="button" className="button button-ghost" disabled={busy}
+          <div className="predeploy-history-actions"><button type="button" className="button button-ghost" disabled={busy}
             aria-label={`Delete retained assessment ${row.assessment_id}`} onClick={() => void mutate(row.assessment_id)}>Delete receipt</button>
+          <button type="button" className="button button-secondary" disabled={busy}
+            aria-label={`Export CI review contract ${row.assessment_id}`} onClick={() => void exportReview(row)}>Export CI review contract</button></div>
         </li>)}
       </ul>}
       <div className="predeploy-history-selectors">

@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RetainedAssessments } from "./RetainedAssessments";
 import type { AssessmentComparison, AssessmentHistory, AssessmentReceipt } from "@/lib/predeploy-history";
 
-const api = vi.hoisted(() => ({ retained: vi.fn(), retain: vi.fn(), removeRetained: vi.fn(), compareRetained: vi.fn() }));
+const api = vi.hoisted(() => ({ retained: vi.fn(), retain: vi.fn(), removeRetained: vi.fn(), compareRetained: vi.fn(), reviewContract: vi.fn() }));
 vi.mock("@/lib/services", () => ({ predeployApi: api }));
+const download = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/download-json", () => ({ downloadJson: download }));
 const scope = { subscription: ["a", "b"], region: ["eastus"] };
 const current = { assessment_id: "c".repeat(32), artifact: { sha256: "c".repeat(64) } };
 const receipt: AssessmentReceipt = {
@@ -139,5 +141,35 @@ describe("personal retained assessment receipts", () => {
     expect(screen.queryByText(/retained as a historical summary/)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(api.retain).toHaveBeenCalledTimes(1);
+  });
+
+  it("exports only the explicitly selected scoped receipt and surfaces download failures", async () => {
+    const contract = { disposition: "review_required", deployment_authority: "none" };
+    api.reviewContract.mockResolvedValue({ data: contract });
+    render(<RetainedAssessments scope={scope} current={null} />);
+    open();
+    const button = await screen.findByRole("button", { name: `Export CI review contract ${receipt.assessment_id}` });
+    fireEvent.click(button);
+    await screen.findByText(/CI review contract exported: review_required/);
+    expect(api.reviewContract).toHaveBeenCalledWith(scope, receipt.assessment_id, receipt.artifact_sha256, expect.any(AbortSignal));
+    expect(download).toHaveBeenCalledWith(`predeploy-ci-review-${receipt.assessment_id}.json`, contract);
+    expect(api.retain).not.toHaveBeenCalled();
+    expect(api.removeRetained).not.toHaveBeenCalled();
+    download.mockImplementationOnce(() => { throw new Error("Download blocked"); });
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Download blocked");
+  });
+
+  it("does not download a late CI response after scope changes", async () => {
+    let finish: (value: { data: { disposition: string } }) => void = () => {};
+    api.reviewContract.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const view = render(<RetainedAssessments scope={scope} current={null} />);
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: `Export CI review contract ${receipt.assessment_id}` }));
+    const signal: AbortSignal = api.reviewContract.mock.calls[0][3];
+    view.rerender(<RetainedAssessments scope={{ subscription: ["other"] }} current={null} />);
+    expect(signal.aborted).toBe(true);
+    await act(async () => finish({ data: { disposition: "review_required" } }));
+    expect(download).not.toHaveBeenCalled();
   });
 });

@@ -2070,6 +2070,14 @@ export const governanceApi = {
 
 /** Pre-deployment change risk and impact assessment. */
 export const predeployApi = {
+  /** Export only the exact scoped retained receipt matching the reviewed artifact. */
+  reviewContract: (scope: ScopeSelection, assessmentId: string, artifactSha256: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("artifact_sha256", artifactSha256);
+    return apiRequest<import("./predeploy-history").CIReviewContract>(
+      `/changes/retained-assessments/${encodeURIComponent(assessmentId)}/review-contract`, { query, signal },
+    );
+  },
   /** Provider-free personal exact-scope receipt recovery. */
   retained: (scope: ScopeSelection, signal?: AbortSignal) =>
     apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments", {

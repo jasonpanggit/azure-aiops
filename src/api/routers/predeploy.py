@@ -24,6 +24,7 @@ from operations.predeploy_history import (
     assessment_receipt,
     compare_receipts,
 )
+from operations.predeploy_review import review_contract
 from storage.onelake_documents import DocumentConflictError
 
 from ..artifact_request import ArtifactRoute
@@ -233,6 +234,23 @@ def compare_retained_assessments(
         AssessmentReceipt.model_validate(selected[baseline_id]),
         AssessmentReceipt.model_validate(selected[candidate_id]),
     ))
+    return _history_response(data, scope)
+
+
+@router.get("/changes/retained-assessments/{assessment_id}/review-contract")
+def retained_review_contract(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    assessment_id: str,
+    artifact_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+) -> dict:
+    """Export one exact owned receipt as advisory CI evidence, never execution authority."""
+    state = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    selected = next((row for row in state["receipts"] if row["assessment_id"] == assessment_id), None)
+    if selected is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained assessment was not found in this exact personal scope")
+    if selected["artifact_sha256"] != artifact_sha256:
+        raise ApiError(ErrorCode.CONFLICT, "Artifact digest differs from the retained review; inspect and assess it again")
+    data = _history_call(lambda: review_contract(AssessmentReceipt.model_validate(selected), scope.to_dict()))
     return _history_response(data, scope)
 
 

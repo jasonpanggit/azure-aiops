@@ -9294,6 +9294,13 @@ body.topology-fullscreen-open {
   gap: 12px;
 }
 
+.predeploy-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .predeploy-history-selectors .form-control {
   width: 100%;
   min-width: 0;

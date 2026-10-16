@@ -43,3 +43,16 @@ export interface AssessmentComparison {
   removed_impacted_resource_ids: string[];
   interpretation: string;
 }
+
+/** Digest-bound retained summary for advisory CI review, never execution approval. */
+export interface CIReviewContract {
+  schema_version: 1;
+  purpose: "predeploy-advisory-ci-review";
+  scope: Record<string, string[]>;
+  receipt: AssessmentReceipt;
+  receipt_sha256: string;
+  disposition: "review_required" | "advisory_clear";
+  deployment_authority: "none";
+  interpretation: string;
+  review_sha256: string;
+}
