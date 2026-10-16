@@ -22,6 +22,7 @@ import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { overviewHref } from "@/lib/overview";
 import type { SubscriptionConnection } from "@/lib/types";
 import { ServicePortfolioHistory } from "@/components/ServicePortfolioHistory";
+import { ServiceReliability } from "@/components/ServiceReliability";
 
 interface ServiceRow {
   name: string;
@@ -274,6 +275,7 @@ function ServicesWorkspace() {
         </>
       )}
 
+      <ServiceReliability scope={scope} />
       <ServicePortfolioHistory scope={scope} />
       <CopilotDrawer
         open={copilotOpen}

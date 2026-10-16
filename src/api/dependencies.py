@@ -23,6 +23,7 @@ from operations.predeploy_history import PredeployHistoryStore
 from operations.resource_health_history import ResourceHealthHistoryStore
 from operations.saved_views import SavedViewStore
 from operations.service_portfolio import ServicePortfolioStore
+from operations.service_reliability import ServiceObjectiveStore
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
 from semantic.twin_history import TwinHistoryStore
@@ -104,6 +105,8 @@ class ApiContext:
     inventory_export_store: InventoryExportStore | None = None
     overview_history_store: OverviewHistoryStore | None = None
     service_portfolio_store: ServicePortfolioStore | None = None
+    service_objective_store: ServiceObjectiveStore | None = None
+    service_request_metrics: Callable[[str, int, str], dict[str, Any]] | None = None
     resource_health_history_store: ResourceHealthHistoryStore | None = None
     network_intent_store: NetworkIntentStore | None = None
     network_history_store: NetworkHistoryStore | None = None

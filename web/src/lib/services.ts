@@ -564,6 +564,34 @@ export const SUPPORTED_SEARCH_PHRASES = [
 ] as const;
 
 /** Retained service portfolio reads and server-side acquisitions; counts cannot be submitted. */
+/** Explicit exact-scope component targets and resource-context aggregate telemetry. */
+export const serviceReliabilityApi = {
+  /** Recover declarations without a current component or telemetry read. */
+  objectives: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives", { query: scopeToSearchParams(scope), signal }),
+  /** Search one page of currently authorized published component mappings. */
+  components: (scope: ScopeSelection, q: string, offset: number, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("q", q); query.set("offset", String(offset)); query.set("limit", "25");
+    return apiRequest<{ components: import("./service-reliability").ServiceComponent[] }>("/service-reliability/components", { query, signal });
+  },
+  /** Save one explicit administrator target against the reviewed revision. */
+  save: (scope: ScopeSelection, objective: Pick<import("./service-reliability").ServiceObjective, "resource_id" | "success_target_basis_points" | "window_hours">, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives", {
+      method: "PUT", query: scopeToSearchParams(scope), body: { ...objective, expected_revision: expectedRevision }, signal,
+    }),
+  /** Remove only the identified declaration, never its Azure resource. */
+  remove: (scope: ScopeSelection, resourceId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives/remove", {
+      method: "POST", query: scopeToSearchParams(scope), body: { resource_id: resourceId, expected_revision: expectedRevision }, signal,
+    }),
+  /** Request fresh aggregate telemetry under the server-authorized saved objective. */
+  metrics: (scope: ScopeSelection, resourceId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope); query.set("resource_id", resourceId);
+    return apiRequest<import("./service-reliability").ServiceRequestMetrics>("/service-reliability/metrics", { query, signal });
+  },
+};
+
 export const servicePortfolioApi = {
   history: (scope: ScopeSelection = {}) =>
     apiRequest<import("./types").ServicePortfolioHistory>("/service-portfolio/history", { query: scopeToSearchParams(scope) }),

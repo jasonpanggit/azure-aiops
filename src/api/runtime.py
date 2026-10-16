@@ -4595,6 +4595,31 @@ def _twin_history_store():
     return TwinHistoryStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _service_objective_store():
+    """Keep explicit shared exact-scope component targets on the existing durable root."""
+    from operations.service_reliability import ServiceObjectiveStore
+
+    return ServiceObjectiveStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _service_request_metrics(onboarding, config, resource_id: str, window_hours: int, connection_id: str) -> dict[str, Any]:
+    """Select one enabled same-subscription connection, never an arbitrary first credential."""
+    from operations.service_reliability import component_id
+
+    identity = component_id(resource_id)
+    subscription = identity.split("/")[2]
+    connections = [
+        connection for connection in onboarding.registry.list(include_disabled=False)
+        if str(connection.subscription_id).casefold() == subscription
+        and (not connection_id or str(connection.connection_id).casefold() == connection_id.casefold())
+    ]
+    if len(connections) != 1:
+        raise RuntimeError("Component telemetry needs one unambiguous enabled subscription connection")
+    return build_connection_logs_client(
+        config, connections[0], onboarding.resolver,
+    ).query_request_telemetry(identity, window_hours)
+
+
 def _network_intent_store():
     """Persist personal connectivity suites on the existing durable document root."""
     from network.intents import NetworkIntentStore
@@ -5652,6 +5677,9 @@ def build_context() -> ApiContext:
             ),
         )
 
+    def service_request_metrics(resource_id: str, window_hours: int, connection_id: str) -> dict[str, Any]:
+        return _service_request_metrics(onboarding, arg_config, resource_id, window_hours, connection_id)
+
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
         # Live per-connection utilization: each request re-lists in-scope
         # compute resources via ARG and fetches fresh Monitor Metrics, so no
@@ -5797,6 +5825,8 @@ def build_context() -> ApiContext:
         saved_view_store=_saved_view_store(),
         predeploy_history_store=_predeploy_history_store(),
         twin_history_store=_twin_history_store(),
+        service_objective_store=_service_objective_store(),
+        service_request_metrics=service_request_metrics,
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

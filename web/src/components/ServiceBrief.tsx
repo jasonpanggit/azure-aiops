@@ -39,6 +39,7 @@ export function ServiceBrief({ context, risk, impact, scope }: { context: Source
           {" "}This is a source-defined heuristic, not availability, SLO attainment, or error budget.</p>
         {brief.factors.length > 0 && <details><summary>Reported risk factors</summary><ul>{brief.factors.map(([name, value]) => <li key={name}>{name}: {value}</li>)}</ul></details>}
         <p>Service availability, latency, SLO target/window, and error-budget telemetry are not supplied by these context contracts. Incident and registry counts cannot substitute for those measures.</p>
+        <p><Link href={`${overviewHref("/services", scope)}#component-request-reliability`}>Review declared component request targets and measured telemetry in Services</Link>. That separate evidence is not service-wide uptime or included in this brief.</p>
       </div>
     </section>
     <section className="card service-brief" aria-label="Service review readiness">

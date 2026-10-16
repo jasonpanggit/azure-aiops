@@ -5,9 +5,69 @@ Azure AI Operations Workbench UI.
 
 **The API owns no business logic.** Every route composes an existing service —
 `SubscriptionOnboardingService`, `SemanticEngine`, `IncidentEngine`,
-`RemediationPlanner` — and every read is served through the Semantic Knowledge
-Layer. No handler reads Fabric, ontology tables, or Azure Resource Graph
-directly.
+`RemediationPlanner` — with semantic reads served through the Semantic Knowledge
+Layer and explicitly requested telemetry through authorized domain adapters.
+No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
+
+## Declared component request objectives
+
+`GET /api/v1/service-reliability/components?q=...&offset=0&limit=25`
+projects currently published Application Insights components from Inventory.
+All nine effective scope dimensions are checked against allowlisted declared
+tag aliases, with native subscription identity taking precedence over tags.
+Missing constrained metadata is excluded, duplicate/malformed identities fail
+closed, and untagged business services remain unmapped. Raw tags/provider
+payloads are not returned. A component mapping is not full-service coverage.
+
+`GET /api/v1/service-reliability/objectives` recovers shared declarations for
+the **exact effective scope**, independently of Inventory or Azure availability.
+`PUT` accepts only `expected_revision`, `resource_id`,
+`success_target_basis_points` (integer 1–10000), and `window_hours` (1, 24, 168).
+Administrators must select an authorized current component with a declared
+business-service tag. There is no seeded/inherited target. The server binds
+the objective to the current mapping, not a caller-supplied service label.
+`POST /objectives/remove` requires an explicit resource ID and reviewed revision;
+it does not query/mutate the source, so retired declarations remain removable.
+Reader authority permits recovery and measured reads, not target changes.
+
+The existing `AIOPS_HOME` local/OneLake document root stores
+`state/service-objectives/<sha256(effective_scope)>.json`: at most 20 unique
+component objectives and 128 KiB of complete serialized policy. Revision plus
+ETag/create-only CAS prevents stale overwrites. No automatic eviction,
+personal isolation, full edit history, expiry, schedule or new Azure resource
+is implied. Last editor/time are retained. Corrupt/unavailable storage returns
+503, not an empty or default policy; stale writes return 409.
+
+`GET /api/v1/service-reliability/metrics?resource_id=...` rechecks current
+Inventory membership and the exact saved objective before any credential or
+telemetry access. Changed service mapping requires explicit replacement (409);
+missing/foreign components or objectives return 404. Runtime requires one
+unambiguous enabled same-subscription connection, additionally matching a
+declared connection tag when present; it never chooses the first credential.
+Existing per-connection credential resolution is reused. No grants, cloud
+resources or instrumentation are created.
+
+The fixed resource-context Azure Monitor Logs endpoint queries only aggregate
+`AppRequests` for that exact component and server-generated rolling window.
+No arbitrary KQL, workspace, raw requests, URLs or cross-resource queries are
+accepted. Only complete 200 responses with one validated aggregate row are used;
+partial queries, invalid identity/schema/window or provider errors fail closed.
+Measured reads return the policy revision, query boundaries, first/last source
+observation, observed/represented/failed counts and quality counters.
+Sample-weighted counts and budgets may be estimates; p95 is approximate and
+unweighted across observed records. Unknown success/invalid weights withhold
+success and budget; invalid durations withhold p95. No records mean unknown,
+not zero latency or 100% success. A 100% target has zero allowed failures and
+undefined consumed-budget percentage; negative remaining budget is preserved.
+
+The on-demand Services panel separates declarations, current component search
+and explicit measured reads. Target fields have no new-objective default.
+Writes require reviewed revision and removal confirmation; an uncertain write
+requires reload, never automatic replay. Scope/selection/target changes discard
+the displayed measurement, and in-flight work is aborted on close/scope change.
+The catalog-only Copilot and existing service brief do not ingest this panel.
+None of these facts establishes whole-service uptime, complete traffic coverage,
+contractual certification, continuous monitoring or execution approval.
 
 ## Portal scoped bookmarks
 
