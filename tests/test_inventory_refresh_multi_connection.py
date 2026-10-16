@@ -258,8 +258,9 @@ def test_refresh_rejects_registry_changes_after_discovery(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("separate_discovery", [False, True])
+@pytest.mark.parametrize("exposure_enabled", [False, True])
 def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
-    tmp_path: Path, monkeypatch, separate_discovery: bool
+    tmp_path: Path, monkeypatch, separate_discovery: bool, exposure_enabled: bool
 ) -> None:
     from api.inventory_orchestration import (
         run_inventory_refresh_all_connections,
@@ -300,6 +301,7 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     calls: list[Path | str] = []
     replay_calls: list[str] = []
     scope_calls: list[dict[str, list[str]] | None] = []
+    pointer_stores: list[Any] = []
 
     def fake_build(config: ConnectorConfig, connection, resolver=None):
         return pipelines[connection.connection_id]
@@ -309,10 +311,14 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
             self.source_root = source_root
             self.service = self
 
-        def sync(self, *, replay_source_run_id="", requested_scope=None):
+        def sync(
+            self, *, replay_source_run_id="", requested_scope=None,
+            exposure_pointer_store=None,
+        ):
             calls.append(self.source_root)
             replay_calls.append(replay_source_run_id)
             scope_calls.append(requested_scope)
+            pointer_stores.append(exposure_pointer_store)
             return type(
                 "Publication",
                 (),
@@ -327,6 +333,12 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     @dataclass(frozen=True)
     class FabricConfig:
         source_data_root: Path
+
+        @property
+        def exposure(self):
+            from fabric.config import ExposureRuntimeConfig
+
+            return ExposureRuntimeConfig(enabled=exposure_enabled)
 
     monkeypatch.setattr(
         "onboarding.runtime.build_connection_inventory_pipeline", fake_build
@@ -380,6 +392,17 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     assert entities_run_id != result["combined_manifest"]["runId"]
     assert replay_calls == [entities_run_id]
     assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
+    assert len(pointer_stores) == 1
+    if exposure_enabled:
+        from storage.onelake_documents import OneLakeDocumentStore
+
+        assert isinstance(pointer_stores[0], OneLakeDocumentStore)
+        pointer_stores[0].write(
+            "publication-probe.json", {"status": "verified"}, expected_revision=0,
+        )
+        assert (tmp_path / "compat" / "publication-probe.json").is_file()
+    else:
+        assert pointer_stores == [None]
     store = DatasetStore(tmp_path / "compat")
     expected_generation = Path(store.generation_path(entities_run_id) or "")
     assert (expected_generation / "manifest.json").is_file()

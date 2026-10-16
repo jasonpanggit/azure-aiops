@@ -291,3 +291,13 @@ default allowlist is `gold_exposure_facts`,
 `ontology_business_context`, and `ontology_compliance_context`. Sync invokes
 the advisory callback only after immutable publication finalization; callback
 failures are logged and do not fail publication.
+
+## Inventory publication and Exposure Gold
+
+When production Exposure is enabled, registered-connection inventory publication
+must pass the shared durable document store to Fabric sync. This publishes the
+Exposure Gold tables and their activation pointer in addition to inventory,
+bronze/silver and ontology tables. A successful inventory-only publication is
+not sufficient for API readiness: the SQL readiness gate requires the Gold
+schema. Keep the API candidate at zero traffic until that gate passes; do not
+disable the gate to mask missing publication products.

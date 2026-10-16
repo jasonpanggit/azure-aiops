@@ -161,6 +161,7 @@ def run_inventory_refresh_all_connections(
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
         from onboarding.activation import publish_combined_snapshot
         from storage.datasets import DatasetStore
+        from storage.onelake_documents import OneLakeDocumentStore
 
         combined_store = DatasetStore(config.output_dir)
         inventory_generation = combined_store.generation_path(
@@ -212,6 +213,11 @@ def run_inventory_refresh_all_connections(
         publication = runtime.service.sync(
             replay_source_run_id=str(entities_manifest["runId"]),
             requested_scope={"subscription": requested_subscriptions},
+            exposure_pointer_store=(
+                OneLakeDocumentStore(config.output_dir)
+                if fabric_config.exposure.enabled
+                else None
+            ),
         )
         fabric_publication = {
             "runId": publication.run_id,
