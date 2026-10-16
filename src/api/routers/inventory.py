@@ -249,9 +249,19 @@ def inventory_refresh_status(request: Request, response: Response, run_id: str) 
 
 
 @router.get("/inventory/os", summary="Grouped operating-system inventory")
-def os_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def os_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    os_name: str = Query("", max_length=120),
+    os_version: str = Query("", max_length=120),
+    source_type: str = Query("", pattern=r"^(|azure_vm|arc|logs)$"),
+    lifecycle: str = Query("", pattern=r"^(|expired|expiring|supported|review)$"),
+) -> dict[str, Any]:
+    """Return server-filtered scoped OS groups with complete group facets."""
     service = _service(context)
-    result = service.collection(scope, offset=page.offset, limit=page.limit)
+    result = service.collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "os_name": os_name, "os_version": os_version, "source_type": source_type, "lifecycle": lifecycle,
+    })
     return envelope(
         result["data"],
         evidence=_evidence(service),
@@ -356,9 +366,18 @@ def os_inventory_detail(
 
 
 @router.get("/inventory/software", summary="Grouped installed-software inventory")
-def software_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def software_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    software_name: str = Query("", max_length=256),
+    publisher: str = Query("", max_length=256),
+    source_type: str = Query("", pattern=r"^(|azure_vm|arc|logs|unlinked)$"),
+) -> dict[str, Any]:
+    """Return authorized installation-group facets and filters before paging."""
     service = _service(context)
-    result = service.software_collection(scope, offset=page.offset, limit=page.limit)
+    result = service.software_collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "software_name": software_name, "publisher": publisher, "source_type": source_type,
+    })
     return envelope(
         result["data"],
         evidence=_software_evidence(service),
@@ -387,9 +406,18 @@ def inventory_narrative(context: Context, scope: ReadScope) -> dict[str, Any]:
 
 
 @router.get("/inventory/paas", summary="Grouped PaaS resource inventory")
-def paas_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def paas_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    provider: str = Query("", max_length=256),
+    resource_type: str = Query("", max_length=256),
+    sku_tier: str = Query("", max_length=256),
+) -> dict[str, Any]:
+    """Return authorized type/SKU/tier groups, facets and matched summaries."""
     service = _service(context)
-    result = service.paas_collection(scope, offset=page.offset, limit=page.limit)
+    result = service.paas_collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "provider": provider, "resource_type": resource_type, "sku_tier": sku_tier,
+    })
     return envelope(
         result["data"],
         evidence=_resource_evidence(service),

@@ -373,10 +373,12 @@ export const ontologyAutomationApi = {
 };
 
 export const inventoryApi = {
-  os: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+  /** Filter authorized OS groups before the server selects a page. */
+  os: (scope: ScopeSelection = {}, offset = 0, limit = 100, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<OsInventoryCollection>("/inventory/os", { query });
   },
   osGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
@@ -409,10 +411,12 @@ export const inventoryApi = {
         body: payload,
       },
     ),
-  software: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+  /** Query installation groups at their own grain, not asset-list counts. */
+  software: (scope: ScopeSelection = {}, offset = 0, limit = 100, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<SoftwareInventoryCollection>("/inventory/software", { query });
   },
   softwareGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
@@ -421,10 +425,12 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
-  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+  /** Query complete authorized resource-type/SKU/tier groups and facets. */
+  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<import("./types").PaasInventoryCollection>("/inventory/paas", { query });
   },
   paasGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 200) => {

@@ -102,13 +102,40 @@ The Inventory **Explore assets** view (`/inventory/assets`) restores validated
 filters, page and exact resource bookmarks from its URL. Navigation preserves
 current scope but never grants access; asset reads reauthorize independently.
 Scope/query transitions immediately discard old facts. Resolved Situation
-Resource links use this same destination. Grouped-family filtering parity,
-pinned resumable export jobs and historical asset snapshots remain separate
-work; the existing browser CSV export is not such a job.
+Resource links use this same destination. Pinned resumable export jobs and
+historical asset snapshots remain separate work; the existing browser CSV
+export is not such a job.
 This navigation drilldown is explicitly excluded from model-bound Copilot
 snapshots until a selected-asset evidence/tool contract is reviewed; the
 existing governed Inventory Copilot is unchanged on `/inventory`. It never
 substitutes a group snapshot for the selected asset.
+
+The grouped `GET /api/v1/inventory/os`, `/inventory/software` and
+`/inventory/paas` endpoints now apply `q` and exact case-insensitive group
+filters before selecting the requested page. OS supports `os_name`,
+`os_version`, `source_type` and `lifecycle` (`expired`, `expiring`,
+`supported`, `review`). Software supports `software_name`, `publisher`
+and `source_type`. Azure supports the raw provider namespace, `resource_type`
+and the displayed `sku_tier` pair. Source/publisher filters select groups
+containing that value; they do not repartition installations or machines.
+
+`facets` count complete authorized groups before query filters, not
+distinct assets. `represented_group_count` and matched `pagination.total`
+remain distinct. `summary` covers all matching groups before pagination
+and preserves machine, installation and Azure-resource grains separately.
+An empty page retains those facets and totals. Source status counts remain
+scope-limited acquisition observations, independent of table filters.
+Internal full-group readers no longer silently stop at 10,000 groups.
+
+The grouped portal queries these contracts rather than filtering only the
+visible page. **Save view in URL** explicitly records all three tabs'
+filters and page settings for bookmarks/history; invalid bookmarks are
+reported, never silently converted to an unrelated view. Scope transitions
+discard previous rows and in-flight detail responses. Charts and detail CSV
+exports are explicitly visible-page evidence; source group memberships can
+overlap and are not installation counts. The scope narrative remains
+independent of table filters, and missing aggregate metadata is not presented
+as complete-estate coverage.
 
 `GET /api/v1/compliance/design-policy` returns a revisioned architecture
 assessment policy, exception decisions, and audit for the **exact effective

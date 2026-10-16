@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -13,7 +14,6 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
-import { DEFAULT_PAGE_SIZE } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { downloadCsv, serializeCsv } from "@/lib/csv";
 import { formatDateTime } from "@/lib/format";
@@ -25,10 +25,12 @@ import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
+import { inventoryViewQuery, parseInventoryView, type InventoryView } from "@/lib/inventory-view";
 import type {
   Envelope,
   FlatInventoryResource,
   InventorySourceStatus,
+  InventoryGroupMetadata,
   InventoryNarrative,
   LifecycleReview,
   OsInventoryGroup,
@@ -42,8 +44,6 @@ import type {
   SoftwareMapping,
 } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
-
-type InventoryTab = "os" | "software" | "azure";
 
 // Page sizes for the server-paginated tables. Kept below the API's `limit`
 // cap (500). The top-level tables let the operator pick their own row count;
@@ -170,6 +170,14 @@ function uniqueOptions(values: string[]): Array<{ value: string; label: string }
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
     .sort((a, b) => a.localeCompare(b))
     .map((value) => ({ value, label: value }));
+}
+
+function groupFacetOptions(data: InventoryGroupMetadata | undefined, field: string, fallback: string[], selected: string) {
+  const options = uniqueOptions(data?.facets?.[field]?.map(item => item.value) ?? fallback);
+  if (selected !== "all" && !options.some(option => option.value === selected)) {
+    options.push({ value: selected, label: `${selected} (bookmarked value)` });
+  }
+  return options;
 }
 
 async function withRequestFingerprint<T>(
@@ -312,19 +320,39 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
 }
 
 export default function InventoryPage() {
+  return <Suspense fallback={<StatePanel title="Loading inventory view" message="Reading bookmark context." tone="loading" />}><InventoryRoute /></Suspense>;
+}
+
+function InventoryRoute() {
+  const params = useSearchParams();
+  const { scope } = useScope();
+  let view: InventoryView;
+  try {
+    view = parseInventoryView(new URLSearchParams(params.toString()));
+    if (view.subscriptionFilter !== "all" && scope.subscription?.length &&
+      !scope.subscription.some(value => value.toLowerCase() === view.subscriptionFilter.toLowerCase())) {
+      throw new Error("The bookmarked subscription is outside the current selected scope.");
+    }
+  } catch (reason) {
+    return <StatePanel title="Inventory bookmark unavailable" message={reason instanceof Error ? reason.message : "Invalid inventory view."} />;
+  }
+  return <InventoryPageContent key={`${JSON.stringify(scope)}:${params}`} initialView={view} />;
+}
+
+function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   const { scope } = useScope();
   const [copilotOpen, setCopilotOpen] = useState(false);
-  const [tab, setTab] = useState<InventoryTab>("os");
-  const [subscriptionFilter, setSubscriptionFilter] = useState("all");
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "azure_vm" | "arc">("all");
-  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | "expired" | "expiring" | "supported" | "review">("all");
-  const [osNameFilter, setOsNameFilter] = useState("all");
-  const [osVersionFilter, setOsVersionFilter] = useState("all");
-  const [softwareSearch, setSoftwareSearch] = useState("");
-  const [softwareSourceFilter, setSoftwareSourceFilter] = useState<"all" | "azure_vm" | "arc" | "unlinked">("all");
-  const [softwareNameFilter, setSoftwareNameFilter] = useState("all");
-  const [softwarePublisherFilter, setSoftwarePublisherFilter] = useState("all");
+  const [tab, setTab] = useState(initialView.tab);
+  const [subscriptionFilter, setSubscriptionFilter] = useState(initialView.subscriptionFilter);
+  const [search, setSearch] = useState(initialView.search);
+  const [sourceFilter, setSourceFilter] = useState(initialView.sourceFilter);
+  const [lifecycleFilter, setLifecycleFilter] = useState(initialView.lifecycleFilter);
+  const [osNameFilter, setOsNameFilter] = useState(initialView.osNameFilter);
+  const [osVersionFilter, setOsVersionFilter] = useState(initialView.osVersionFilter);
+  const [softwareSearch, setSoftwareSearch] = useState(initialView.softwareSearch);
+  const [softwareSourceFilter, setSoftwareSourceFilter] = useState(initialView.softwareSourceFilter);
+  const [softwareNameFilter, setSoftwareNameFilter] = useState(initialView.softwareNameFilter);
+  const [softwarePublisherFilter, setSoftwarePublisherFilter] = useState(initialView.softwarePublisherFilter);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<OsInventoryMachine[]>([]);
   const [, setDetailGroup] = useState<OsInventoryGroup | null>(null);
@@ -340,10 +368,10 @@ export default function InventoryPage() {
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [mappingError, setMappingError] = useState<string | null>(null);
   const [mappingSubmitting, setMappingSubmitting] = useState<string | null>(null);
-  const [azureSearch, setAzureSearch] = useState("");
-  const [azureProviderFilter, setAzureProviderFilter] = useState("all");
-  const [azureTypeFilter, setAzureTypeFilter] = useState("all");
-  const [azureSkuFilter, setAzureSkuFilter] = useState("all");
+  const [azureSearch, setAzureSearch] = useState(initialView.azureSearch);
+  const [azureProviderFilter, setAzureProviderFilter] = useState(initialView.azureProviderFilter);
+  const [azureTypeFilter, setAzureTypeFilter] = useState(initialView.azureTypeFilter);
+  const [azureSkuFilter, setAzureSkuFilter] = useState(initialView.azureSkuFilter);
   const [azureSelectedKey, setAzureSelectedKey] = useState<string | null>(null);
   const [azureDetail, setAzureDetail] = useState<PaasInventoryResource[]>([]);
   const [azureDetailGroup, setAzureDetailGroup] = useState<PaasInventoryGroup | null>(null);
@@ -354,12 +382,12 @@ export default function InventoryPage() {
   const [azureDetailLoading, setAzureDetailLoading] = useState(false);
   const [azureDetailPagination, setAzureDetailPagination] = useState<Pagination | null>(null);
   const [azureDetailPage, setAzureDetailPage] = useState(0);
-  const [azurePage, setAzurePage] = useState(0);
-  const [osPage, setOsPage] = useState(0);
-  const [softwarePage, setSoftwarePage] = useState(0);
-  const [azurePageSize, setAzurePageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [osPageSize, setOsPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [softwarePageSize, setSoftwarePageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [azurePage, setAzurePage] = useState(initialView.azurePage);
+  const [osPage, setOsPage] = useState(initialView.osPage);
+  const [softwarePage, setSoftwarePage] = useState(initialView.softwarePage);
+  const [azurePageSize, setAzurePageSize] = useState(initialView.azurePageSize);
+  const [osPageSize, setOsPageSize] = useState(initialView.osPageSize);
+  const [softwarePageSize, setSoftwarePageSize] = useState(initialView.softwarePageSize);
   const [allResourcesExporting, setAllResourcesExporting] = useState(false);
   const [allResourcesError, setAllResourcesError] = useState<string | null>(null);
   const effectiveScope = useMemo(
@@ -369,34 +397,61 @@ export default function InventoryPage() {
     [scope, subscriptionFilter],
   );
   const scopeKey = useMemo(() => JSON.stringify(effectiveScope), [effectiveScope]);
+  const detailRequest = useRef(0);
+  const azureDetailRequest = useRef(0);
+  const reviewRequest = useRef(0);
+  const currentDetailScope = useRef(scopeKey);
+  currentDetailScope.current = scopeKey;
+  useEffect(() => () => { detailRequest.current += 1; azureDetailRequest.current += 1; reviewRequest.current += 1; }, []);
+  const filterValue = (value: string) => value === "all" ? "" : value;
+  const osFilters = { q: search, os_name: filterValue(osNameFilter), os_version: filterValue(osVersionFilter), source_type: filterValue(sourceFilter), lifecycle: filterValue(lifecycleFilter) };
+  const softwareFilters = { q: softwareSearch, software_name: filterValue(softwareNameFilter), publisher: filterValue(softwarePublisherFilter), source_type: filterValue(softwareSourceFilter) };
+  const azureFilters = { q: azureSearch, provider: filterValue(azureProviderFilter), resource_type: filterValue(azureTypeFilter), sku_tier: filterValue(azureSkuFilter) };
+  const osFilterKey = JSON.stringify(osFilters);
+  const softwareFilterKey = JSON.stringify(softwareFilters);
+  const azureFilterKey = JSON.stringify(azureFilters);
+  const previousScope = useRef(scopeKey);
+  const previousRefresh = useRef(refreshKey);
+  const previousOsFilters = useRef(osFilterKey);
+  const previousSoftwareFilters = useRef(softwareFilterKey);
+  const previousAzureFilters = useRef(azureFilterKey);
+  const viewQuery = inventoryViewQuery({
+    tab, subscriptionFilter, search, sourceFilter, lifecycleFilter, osNameFilter, osVersionFilter,
+    softwareSearch, softwareSourceFilter, softwareNameFilter, softwarePublisherFilter,
+    azureSearch, azureProviderFilter, azureTypeFilter, azureSkuFilter,
+    osPage, softwarePage, azurePage, osPageSize, softwarePageSize, azurePageSize,
+  }, scope);
   const inventoryRequestFingerprint = JSON.stringify({
     scope: scopeKey,
     refreshKey,
     page: osPage,
     pageSize: osPageSize,
+    filters: osFilters,
   });
   const softwareRequestFingerprint = JSON.stringify({
     scope: scopeKey,
     refreshKey,
     page: softwarePage,
     pageSize: softwarePageSize,
+    filters: softwareFilters,
   });
   const azureRequestFingerprint = JSON.stringify({
     scope: scopeKey,
     refreshKey,
     page: azurePage,
     pageSize: azurePageSize,
+    filters: azureFilters,
   });
-  const inventory = useApi(
+  const inventoryRequest = useApi(
     () => withRequestFingerprint(
-      inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize),
+      inventoryApi.os(effectiveScope, osPage * osPageSize, osPageSize, osFilters),
       inventoryRequestFingerprint,
     ),
     [inventoryRequestFingerprint],
   );
-  const softwareInventory = useApi(
+  const softwareRequest = useApi(
     () => withRequestFingerprint(
-      inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize),
+      inventoryApi.software(effectiveScope, softwarePage * softwarePageSize, softwarePageSize, softwareFilters),
       softwareRequestFingerprint,
     ),
     [softwareRequestFingerprint],
@@ -406,46 +461,29 @@ export default function InventoryPage() {
     () => inventoryApi.mappings(effectiveScope),
     [scopeKey, refreshKey],
   );
-  const azureInventory = useApi(
+  const azureRequest = useApi(
     () => withRequestFingerprint(
-      inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize),
+      inventoryApi.paas(effectiveScope, azurePage * azurePageSize, azurePageSize, azureFilters),
       azureRequestFingerprint,
     ),
     [azureRequestFingerprint],
   );
+  const inventory = { ...inventoryRequest, data: inventoryRequest.data?.requestFingerprint === inventoryRequestFingerprint ? inventoryRequest.data : null };
+  const softwareInventory = { ...softwareRequest, data: softwareRequest.data?.requestFingerprint === softwareRequestFingerprint ? softwareRequest.data : null };
+  const azureInventory = { ...azureRequest, data: azureRequest.data?.requestFingerprint === azureRequestFingerprint ? azureRequest.data : null };
 
   const azureGroups = useMemo(() => azureInventory.data?.data.groups ?? [], [azureInventory.data]);
-  const azureProviders = useMemo(
-    () => Array.from(new Set(azureGroups.map((group) => providerLabel(group.resource_type)))).sort(),
-    [azureGroups],
-  );
-  const azureTypeOptions = useMemo(
-    () => Array.from(new Set(azureGroups.map((group) => group.resource_type)))
-      .map((resourceType) => ({
-        value: resourceType,
-        label: resourceTypeLabel(resourceType),
-      }))
-      .sort((left, right) => left.label.localeCompare(right.label)),
-    [azureGroups],
-  );
-  const azureSkuOptions = useMemo(
-    () => uniqueOptions(azureGroups.map((group) => group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "No SKU")),
-    [azureGroups],
-  );
-  const filteredAzureGroups = useMemo(
-    () => azureGroups.filter((group) => {
-      const haystack = `${group.resource_type} ${group.sku} ${group.tier}`.toLowerCase();
-      const skuTier = group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "No SKU";
-      return (
-        haystack.includes(azureSearch.toLowerCase()) &&
-        (azureProviderFilter === "all" || providerLabel(group.resource_type) === azureProviderFilter) &&
-        (azureTypeFilter === "all" || group.resource_type === azureTypeFilter) &&
-        (azureSkuFilter === "all" || skuTier === azureSkuFilter)
-      );
-    }),
-    [azureGroups, azureProviderFilter, azureSearch, azureSkuFilter, azureTypeFilter],
-  );
-  const azureResourceTotal = filteredAzureGroups.reduce((total, group) => total + group.resource_count, 0);
+  const azureProviders = groupFacetOptions(azureInventory.data?.data, "provider",
+    azureGroups.map(group => group.resource_type.split("/")[0]), azureProviderFilter)
+    .map(option => ({ ...option, label: providerLabel(`${option.value}/`) }));
+  const azureTypeOptions = groupFacetOptions(azureInventory.data?.data, "resource_type",
+    azureGroups.map(group => group.resource_type), azureTypeFilter)
+    .map(option => ({ ...option, label: resourceTypeLabel(option.value) }));
+  const azureSkuOptions = groupFacetOptions(azureInventory.data?.data, "sku_tier",
+    azureGroups.map(group => group.sku || group.tier ? `${group.sku || "—"} / ${group.tier || "—"}` : "No SKU"), azureSkuFilter);
+  const filteredAzureGroups = azureGroups;
+  const visibleAzureResourceTotal = filteredAzureGroups.reduce((total, group) => total + group.resource_count, 0);
+  const azureResourceTotal = azureInventory.data?.data.summary?.resource_count ?? visibleAzureResourceTotal;
   const azureTopGroups = useMemo(
     () => [...filteredAzureGroups].sort((a, b) => b.resource_count - a.resource_count).slice(0, 5),
     [filteredAzureGroups],
@@ -473,35 +511,18 @@ export default function InventoryPage() {
   }, [filteredAzureGroups]);
 
   const groups = useMemo(() => inventory.data?.data.groups ?? [], [inventory.data]);
-  const osNameOptions = useMemo(
-    () => uniqueOptions(groups.map((group) => group.os_name)),
-    [groups],
-  );
-  const osVersionOptions = useMemo(
-    () => uniqueOptions(groups.map((group) => group.os_version)),
-    [groups],
-  );
-  const filteredGroups = useMemo(
-    () => groups.filter((group) => {
-      const haystack = `${group.os_name} ${group.os_version}`.toLowerCase();
-      return (
-        haystack.includes(search.toLowerCase()) &&
-        (osNameFilter === "all" || group.os_name === osNameFilter) &&
-        (osVersionFilter === "all" || group.os_version === osVersionFilter) &&
-        (sourceFilter === "all" || group.source_types.includes(sourceFilter)) &&
-        (lifecycleFilter === "all" || riskBucket(group) === lifecycleFilter)
-      );
-    }),
-    [groups, lifecycleFilter, osNameFilter, osVersionFilter, search, sourceFilter],
-  );
-  const totalMachines = filteredGroups.reduce((total, group) => total + group.machine_count, 0);
-  const reviewCount = filteredGroups.filter((group) => group.review_required).length;
+  const osNameOptions = groupFacetOptions(inventory.data?.data, "os_name", groups.map(group => group.os_name), osNameFilter);
+  const osVersionOptions = groupFacetOptions(inventory.data?.data, "os_version", groups.map(group => group.os_version), osVersionFilter);
+  const filteredGroups = groups;
+  const visibleMachineCount = filteredGroups.reduce((total, group) => total + group.machine_count, 0);
+  const totalMachines = inventory.data?.data.summary?.machine_count ?? visibleMachineCount;
+  const reviewCount = inventory.data?.data.summary?.review_group_count ?? filteredGroups.filter((group) => group.review_required).length;
   const machinesInBucket = (bucket: ReturnType<typeof riskBucket>) =>
     filteredGroups
       .filter((group) => riskBucket(group) === bucket)
       .reduce((total, group) => total + group.machine_count, 0);
-  const expiredCount = machinesInBucket("expired");
-  const expiringCount = machinesInBucket("expiring");
+  const expiredCount = inventory.data?.data.summary?.expired_machine_count ?? machinesInBucket("expired");
+  const expiringCount = inventory.data?.data.summary?.expiring_machine_count ?? machinesInBucket("expiring");
   const osRiskMix = useMemo(() => {
     const bucketMeta: Record<ReturnType<typeof riskBucket>, { label: string; color: string }> = {
       expired: { label: "Expired", color: "var(--color-critical)" },
@@ -535,28 +556,13 @@ export default function InventoryPage() {
   );
   const partialSource = Object.values(sourceStates).find((source) => source.state !== "ready");
   const softwareGroups = useMemo(() => softwareInventory.data?.data.groups ?? [], [softwareInventory.data]);
-  const softwareNameOptions = useMemo(
-    () => uniqueOptions(softwareGroups.map((group) => group.software_name)),
-    [softwareGroups],
-  );
-  const softwarePublisherOptions = useMemo(
-    () => uniqueOptions(softwareGroups.flatMap((group) => group.publishers)),
-    [softwareGroups],
-  );
-  const filteredSoftwareGroups = useMemo(
-    () => softwareGroups.filter((group) => {
-      const haystack = `${group.software_name} ${group.software_version}`.toLowerCase();
-      return (
-        haystack.includes(softwareSearch.toLowerCase()) &&
-        (softwareNameFilter === "all" || group.software_name === softwareNameFilter) &&
-        (softwarePublisherFilter === "all" || group.publishers.includes(softwarePublisherFilter)) &&
-        (softwareSourceFilter === "all" || group.source_types.includes(softwareSourceFilter))
-      );
-    }),
-    [softwareGroups, softwareNameFilter, softwarePublisherFilter, softwareSearch, softwareSourceFilter],
-  );
-  const softwareTotal = filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
-  const unlinkedSoftware = filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
+  const softwareNameOptions = groupFacetOptions(softwareInventory.data?.data, "software_name",
+    softwareGroups.map(group => group.software_name), softwareNameFilter);
+  const softwarePublisherOptions = groupFacetOptions(softwareInventory.data?.data, "publisher",
+    softwareGroups.flatMap(group => group.publishers), softwarePublisherFilter);
+  const filteredSoftwareGroups = softwareGroups;
+  const softwareTotal = softwareInventory.data?.data.summary?.install_count ?? filteredSoftwareGroups.reduce((total, group) => total + group.install_count, 0);
+  const unlinkedSoftware = softwareInventory.data?.data.summary?.unlinked_count ?? filteredSoftwareGroups.reduce((total, group) => total + group.unlinked_count, 0);
   const softwareTopBarData = useMemo(
     () =>
       [...filteredSoftwareGroups]
@@ -579,7 +585,7 @@ export default function InventoryPage() {
     const counts = new Map<string, number>();
     for (const group of filteredSoftwareGroups) {
       for (const source of group.source_types) {
-        counts.set(source, (counts.get(source) ?? 0) + group.install_count);
+        counts.set(source, (counts.get(source) ?? 0) + 1);
       }
     }
     return Array.from(counts.entries()).map(([key, value]) => ({
@@ -755,20 +761,26 @@ export default function InventoryPage() {
   }, [copilotReady]);
 
   const loadOsGroup = useCallback(async (key: string, page: number) => {
+    const request = ++detailRequest.current;
+    const requestedScope = JSON.stringify(effectiveScope);
+    const current = () => request === detailRequest.current && requestedScope === currentDetailScope.current;
     setDetailError(null);
     setDetailLoading(true);
+    setDetail([]);
     try {
       const response = await inventoryApi.osGroup(key, effectiveScope, page * OS_DETAIL_PAGE_SIZE, OS_DETAIL_PAGE_SIZE);
+      if (!current()) return;
       setDetail(response.data.machines);
       setDetailGroup(response.data.group);
       setDetailPagination(response.pagination ?? null);
     } catch (error) {
+      if (!current()) return;
       setDetail([]);
       setDetailGroup(null);
       setDetailPagination(null);
       setDetailError(error instanceof Error ? error.message : "Machine detail is unavailable.");
     } finally {
-      setDetailLoading(false);
+      if (current()) setDetailLoading(false);
     }
   }, [effectiveScope]);
 
@@ -781,6 +793,8 @@ export default function InventoryPage() {
   }
 
   function closeGroup() {
+    detailRequest.current += 1;
+    setDetailLoading(false);
     setSelectedKey(null);
     setDetail([]);
     setDetailGroup(null);
@@ -790,21 +804,27 @@ export default function InventoryPage() {
   }
 
   const loadSoftwareGroup = useCallback(async (key: string, page: number) => {
+    const request = ++detailRequest.current;
+    const requestedScope = JSON.stringify(effectiveScope);
+    const current = () => request === detailRequest.current && requestedScope === currentDetailScope.current;
     setDetailError(null);
     setDetailLoading(true);
+    setSoftwareDetail([]);
     try {
       const response = await inventoryApi.softwareGroup(key, effectiveScope, page * SOFTWARE_DETAIL_PAGE_SIZE, SOFTWARE_DETAIL_PAGE_SIZE);
+      if (!current()) return;
       setSoftwareDetail(response.data.machines);
       setSoftwareDetailGroup(response.data.group);
       setSoftwareDetailEnvelope(response);
       setDetailPagination(response.pagination ?? null);
     } catch (error) {
+      if (!current()) return;
       setSoftwareDetail([]);
       setSoftwareDetailGroup(null);
       setDetailPagination(null);
       setDetailError(error instanceof Error ? error.message : "Software detail is unavailable.");
     } finally {
-      setDetailLoading(false);
+      if (current()) setDetailLoading(false);
     }
   }, [effectiveScope]);
 
@@ -816,6 +836,8 @@ export default function InventoryPage() {
   }
 
   function closeSoftwareGroup() {
+    detailRequest.current += 1;
+    setDetailLoading(false);
     setSelectedKey(null);
     setSoftwareDetail([]);
     setSoftwareDetailGroup(null);
@@ -828,29 +850,45 @@ export default function InventoryPage() {
   // Scope changes re-query the server, so any page offset from the previous
   // scope is meaningless and would land the operator on an empty page.
   useEffect(() => {
+    if (previousScope.current === scopeKey && previousRefresh.current === refreshKey) return;
+    const scopeChanged = previousScope.current !== scopeKey;
+    previousScope.current = scopeKey;
+    previousRefresh.current = refreshKey;
     setOsPage(0);
     setSoftwarePage(0);
     setAzurePage(0);
-    setSelectedKey(null);
-    setAzureSelectedKey(null);
-    setDetailPage(0);
-    setAzureDetailPage(0);
+    closeGroup();
+    closeSoftwareGroup();
+    closeAzureGroup();
+    if (scopeChanged) {
+      reviewRequest.current += 1;
+      setReview(null);
+      setReviewGroup(null);
+      setReviewError(null);
+      setReviewSubmitting(false);
+    }
   }, [scopeKey, refreshKey]);
 
   useEffect(() => {
+    if (previousOsFilters.current === osFilterKey) return;
+    previousOsFilters.current = osFilterKey;
     setOsPage(0);
     closeGroup();
-  }, [lifecycleFilter, osNameFilter, osVersionFilter, search, sourceFilter]);
+  }, [osFilterKey]);
 
   useEffect(() => {
+    if (previousSoftwareFilters.current === softwareFilterKey) return;
+    previousSoftwareFilters.current = softwareFilterKey;
     setSoftwarePage(0);
     closeSoftwareGroup();
-  }, [softwareNameFilter, softwarePublisherFilter, softwareSearch, softwareSourceFilter]);
+  }, [softwareFilterKey]);
 
   useEffect(() => {
+    if (previousAzureFilters.current === azureFilterKey) return;
+    previousAzureFilters.current = azureFilterKey;
     setAzurePage(0);
     closeAzureGroup();
-  }, [azureProviderFilter, azureSearch, azureSkuFilter, azureTypeFilter]);
+  }, [azureFilterKey]);
 
   // Reload the open OS/software drill-down on page change. Page 0 is already
   // loaded by the open handlers, so skip it to avoid a duplicate request.
@@ -897,20 +935,26 @@ export default function InventoryPage() {
   }
 
   const loadAzureGroup = useCallback(async (key: string, page: number) => {
+    const request = ++azureDetailRequest.current;
+    const requestedScope = JSON.stringify(effectiveScope);
+    const current = () => request === azureDetailRequest.current && requestedScope === currentDetailScope.current;
     setAzureDetailError(null);
     setAzureDetailLoading(true);
+    setAzureDetail([]);
     try {
       const response = await inventoryApi.paasGroup(key, effectiveScope, page * AZURE_DETAIL_PAGE_SIZE, AZURE_DETAIL_PAGE_SIZE);
+      if (!current()) return;
       setAzureDetail(response.data.resources);
       setAzureDetailGroup(response.data.group);
       setAzureDetailPagination(response.pagination ?? null);
     } catch (error) {
+      if (!current()) return;
       setAzureDetail([]);
       setAzureDetailGroup(null);
       setAzureDetailPagination(null);
       setAzureDetailError(error instanceof Error ? error.message : "Resource detail is unavailable.");
     } finally {
-      setAzureDetailLoading(false);
+      if (current()) setAzureDetailLoading(false);
     }
   }, [effectiveScope]);
 
@@ -921,6 +965,8 @@ export default function InventoryPage() {
   }
 
   function closeAzureGroup() {
+    azureDetailRequest.current += 1;
+    setAzureDetailLoading(false);
     setAzureSelectedKey(null);
     setAzureDetail([]);
     setAzureDetailGroup(null);
@@ -1017,20 +1063,27 @@ export default function InventoryPage() {
   }
 
   async function openLifecycleReview(group: OsInventoryGroup) {
+    const request = ++reviewRequest.current;
+    const current = () => request === reviewRequest.current && scopeKey === currentDetailScope.current;
+    setReviewSubmitting(false);
     setReviewGroup(group);
     setReview(null);
     setReviewError(null);
     setManualDate("");
     try {
       const response = await inventoryApi.lifecycleReview(group.key, effectiveScope);
+      if (!current()) return;
       setReview(response.data);
     } catch (error) {
+      if (!current()) return;
       setReviewError(error instanceof Error ? error.message : "Lifecycle review is unavailable.");
     }
   }
 
   async function confirmLifecycle(candidateId?: string) {
     if (!review) return;
+    const request = ++reviewRequest.current;
+    const current = () => request === reviewRequest.current && scopeKey === currentDetailScope.current;
     setReviewSubmitting(true);
     setReviewError(null);
     try {
@@ -1043,12 +1096,14 @@ export default function InventoryPage() {
         },
         effectiveScope,
       );
+      if (!current()) return;
       setReview(response.data);
       setRefreshKey((value) => value + 1);
     } catch (error) {
+      if (!current()) return;
       setReviewError(error instanceof Error ? error.message : "Lifecycle confirmation failed.");
     } finally {
-      setReviewSubmitting(false);
+      if (current()) setReviewSubmitting(false);
     }
 
   }
@@ -1077,16 +1132,17 @@ export default function InventoryPage() {
         description="Find authorized operating-system, installed-software, and Azure resource coverage across native Azure VMs, Arc-enabled servers, and platform services."
         actions={<>
           <Link className="button" href={`/inventory/assets?${scopeToSearchParams(effectiveScope)}`}>Explore assets</Link>
+          <Link className="button" href={`/inventory?${viewQuery}`}>Save view in URL</Link>
           {copilotReady && <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about inventory" />}
         </>}
         metadata={
-          inventory.data && (
+          activeCopilotState.data && (
             <EvidenceBar
-              evidence={inventory.data.evidence}
+              evidence={activeCopilotState.data.evidence}
               sourceStatus={Object.fromEntries(
-                Object.entries(inventory.data.data.source_status).map(([source, status]) => [source, status.state]),
+                Object.entries(activeCopilotState.data.data.source_status).map(([source, status]) => [source, status.state]),
               )}
-              warnings={inventory.data.warnings}
+              warnings={activeCopilotState.data.warnings}
             />
           )
         }
@@ -1094,11 +1150,23 @@ export default function InventoryPage() {
 
       <CopilotInsights
         snapshot={copilotContext.snapshot}
-        ready={!inventory.loading}
+        ready={!activeCopilotState.loading}
         requestedScope={copilotContext.requestedScope}
         contextLabel="Inventory and data health"
         onOpenCopilot={() => setCopilotOpen(true)}
       />
+      <p className="muted">
+        Filters search authorized groups before pagination. Charts and CSV detail exports describe the visible page only.
+        {" "}Source and publisher filters select whole groups containing that value.
+        {" "}Save view in URL preserves all tabs, filters and page settings for bookmarks and browser history.
+        {activeCopilotState.data?.data.facets
+          ? ` Matched ${activeCopilotState.data.pagination?.total ?? 0} of ${activeCopilotState.data.data.represented_group_count} represented groups; facet choices cover the authorized group projection.`
+          : " Complete facet and aggregate coverage is not reported yet; displayed counts describe visible rows only."}
+      </p>
+      {activeCopilotState.data && (activeCopilotState.data.pagination?.total ?? 0) > 0 &&
+        activeCopilotState.data.data.groups.length === 0 &&
+        <StatePanel title="Inventory page is out of range" message="Matching groups exist, but this saved page has no rows."
+          action={<button type="button" className="button" onClick={() => { setOsPage(0); setSoftwarePage(0); setAzurePage(0); }}>Return to first page</button>} />}
 
       <div role="tablist" aria-label="Inventory views" className="tab-list">
         <button
@@ -1136,7 +1204,7 @@ export default function InventoryPage() {
         </button>
       </div>
 
-      {tab !== "azure" && <NarrativePanel narrative={narrative} />}
+      {tab !== "azure" && <><p className="muted">The scope-level narrative is independent of table filters.</p><NarrativePanel narrative={narrative} /></>}
       <InventorySetupHint
         error={
           tab === "azure"
@@ -1148,27 +1216,24 @@ export default function InventoryPage() {
       {tab === "software" ? (
         <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
           <section aria-label="Installed software summary" className="metric-grid">
-            <MetricCard label="Software groups" value={filteredSoftwareGroups.length} detail="Canonical name and version" />
-            <MetricCard label="Installations" value={softwareTotal} detail="Authorized current rows" />
+            <MetricCard label="Software groups" value={softwareInventory.data ? softwareInventory.data.pagination?.total ?? filteredSoftwareGroups.length : "—"} detail="Matching canonical name/version groups" />
+            <MetricCard label="Installations" value={softwareInventory.data ? softwareTotal : "—"} detail={softwareInventory.data?.data.summary ? "All matching authorized installations" : "Visible page only"} />
             <MetricCard
               label="Unlinked rows"
-              value={unlinkedSoftware}
+              value={softwareInventory.data ? unlinkedSoftware : "—"}
               detail="Exact resource join required"
               tone={unlinkedSoftware > 0 ? "warning" : "success"}
             />
           </section>
           <section aria-label="Installed software dashboard" className="dashboard-charts-row">
             <div className="chart-card">
-              <h3 className="chart-card-title">Top software by install count</h3>
+              <h3 className="chart-card-title">Top software by install count (visible page)</h3>
               <CountBarChart data={softwareTopBarData} unit="software" />
             </div>
             <div className="chart-card">
-              <h3 className="chart-card-title">Discovery source mix</h3>
-              <DonutChart
-                segments={softwareSourceMix}
-                centerValue={softwareTotal}
-                centerLabel="installs"
-              />
+              <h3 className="chart-card-title">Group source membership (visible page)</h3>
+              <CountBarChart data={softwareSourceMix.map(item => ({ ...item, id: item.label }))} unit="group memberships" />
+              <p className="muted">Source tags may overlap; these are not installation counts.</p>
             </div>
           </section>
           <div className="inventory-filters" aria-label="Installed software filters">
@@ -1201,7 +1266,7 @@ export default function InventoryPage() {
             </div>
           </div>
           <TableColumnFilters
-            totalCount={softwareGroups.length}
+            totalCount={softwareInventory.data?.pagination?.total ?? softwareGroups.length}
             resultCount={filteredSoftwareGroups.length}
             onReset={() => {
               setSoftwareNameFilter("all");
@@ -1245,10 +1310,10 @@ export default function InventoryPage() {
           {softwareInventory.error && (
             <StatePanel title="Installed software unavailable" message={inventoryUnavailableMessage(softwareInventory.error)} tone="error" />
           )}
-          {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length === 0 && (
+          {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length === 0 && !softwareInventory.data?.data.represented_group_count && (
             <StatePanel title="No installed software observations" message="The authorized scope has no successful ConfigurationData rows." />
           )}
-          {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length > 0 && filteredSoftwareGroups.length === 0 && (
+          {!softwareInventory.loading && !softwareInventory.error && (softwareInventory.data?.data.represented_group_count ?? 0) > 0 && (softwareInventory.data?.pagination?.total ?? 0) === 0 && (
             <StatePanel title="No matching installed software" message="Adjust the search, source, or subscription filters." />
           )}
           {softwarePartialSource && (
@@ -1434,9 +1499,9 @@ export default function InventoryPage() {
       ) : tab === "azure" ? (
         <section id="azure-inventory-panel" role="tabpanel" aria-labelledby="azure-inventory-tab" tabIndex={0}>
           <section aria-label="Azure inventory summary" className="metric-grid">
-            <MetricCard label="Resource types" value={filteredAzureGroups.length} detail="Grouped by type, SKU, and tier" />
-            <MetricCard label="Azure resources" value={azureResourceTotal} detail="Authorized current rows" />
-            <MetricCard label="Providers" value={azureProviders.length} detail="Distinct Azure resource providers" />
+            <MetricCard label="Azure groups" value={azureInventory.data ? azureInventory.data.pagination?.total ?? filteredAzureGroups.length : "—"} detail="Matching type, SKU and tier groups" />
+            <MetricCard label="Azure resources" value={azureInventory.data ? azureResourceTotal : "—"} detail={azureInventory.data?.data.summary ? "All matching authorized resources" : "Visible page only"} />
+            <MetricCard label="Providers" value={azureInventory.data ? azureInventory.data.data.summary?.provider_count ?? new Set(azureGroups.map(group => group.resource_type.split("/")[0])).size : "—"} detail="Distinct providers in matching groups" />
           </section>
 
           <div className="inventory-export-bar">
@@ -1456,14 +1521,14 @@ export default function InventoryPage() {
 
           <section aria-label="Azure inventory dashboard" className="dashboard-charts-row">
             <div className="chart-card">
-              <h3 className="chart-card-title">Top resource types by count</h3>
+              <h3 className="chart-card-title">Top resource types by count (visible page)</h3>
               <CountBarChart data={azureTopBarData} unit="resource type" />
             </div>
             <div className="chart-card">
-              <h3 className="chart-card-title">Resource provider mix</h3>
+              <h3 className="chart-card-title">Resource provider mix (visible page)</h3>
               <DonutChart
                 segments={azureProviderMix}
-                centerValue={azureResourceTotal}
+                centerValue={visibleAzureResourceTotal}
                 centerLabel="resources"
               />
             </div>
@@ -1483,7 +1548,7 @@ export default function InventoryPage() {
               <select value={azureProviderFilter} onChange={(event) => setAzureProviderFilter(event.target.value)}>
                 <option value="all">All providers</option>
                 {azureProviders.map((provider) => (
-                  <option key={provider} value={provider}>{provider}</option>
+                  <option key={provider.value} value={provider.value}>{provider.label}</option>
                 ))}
               </select>
             </label>
@@ -1498,7 +1563,7 @@ export default function InventoryPage() {
             </label>
           </div>
           <TableColumnFilters
-            totalCount={azureGroups.length}
+            totalCount={azureInventory.data?.pagination?.total ?? azureGroups.length}
             resultCount={filteredAzureGroups.length}
             onReset={() => {
               setAzureProviderFilter("all");
@@ -1511,7 +1576,7 @@ export default function InventoryPage() {
                 label: "Provider column",
                 value: azureProviderFilter,
                 allLabel: "All providers",
-                options: azureProviders.map((provider) => optionLabel(provider, provider)),
+                options: azureProviders,
                 onChange: setAzureProviderFilter,
               },
               {
@@ -1539,10 +1604,10 @@ export default function InventoryPage() {
           {azureInventory.error && (
             <StatePanel title="Azure inventory unavailable" message={inventoryUnavailableMessage(azureInventory.error)} tone="error" />
           )}
-          {!azureInventory.loading && !azureInventory.error && azureGroups.length === 0 && (
+          {!azureInventory.loading && !azureInventory.error && azureGroups.length === 0 && !azureInventory.data?.data.represented_group_count && (
             <StatePanel title="No Azure resources" message="The authorized scope has no published Azure resource inventory rows." />
           )}
-          {!azureInventory.loading && !azureInventory.error && azureGroups.length > 0 && filteredAzureGroups.length === 0 && (
+          {!azureInventory.loading && !azureInventory.error && (azureInventory.data?.data.represented_group_count ?? 0) > 0 && (azureInventory.data?.pagination?.total ?? 0) === 0 && (
             <StatePanel title="No matching Azure resources" message="Adjust the search, provider, or subscription filters." />
           )}
 
@@ -1669,32 +1734,32 @@ export default function InventoryPage() {
       ) : (
         <section id="os-inventory-panel" role="tabpanel" aria-labelledby="os-inventory-tab" tabIndex={0}>
           <section aria-label="OS inventory summary" className="metric-grid">
-            <MetricCard label="OS groups" value={groups.length} detail="Authorized OS identities" />
-            <MetricCard label="Machines" value={totalMachines} detail="After scope filtering" />
+            <MetricCard label="OS groups" value={inventory.data ? inventory.data.pagination?.total ?? groups.length : "—"} detail="Matching authorized OS identities" />
+            <MetricCard label="Machines" value={inventory.data ? totalMachines : "—"} detail={inventory.data?.data.summary ? "All matching authorized machines" : "Visible page only"} />
             <MetricCard
               label="At risk"
-              value={expiredCount + expiringCount}
+              value={inventory.data ? expiredCount + expiringCount : "—"}
               detail={`${expiredCount} expired · ${expiringCount} expiring within 90 days`}
               tone={expiredCount > 0 ? "critical" : expiringCount > 0 ? "warning" : "success"}
             />
             <MetricCard
               label="Needs review"
-              value={reviewCount}
+              value={inventory.data ? reviewCount : "—"}
               detail="Unknown lifecycle mapping"
               tone={reviewCount > 0 ? "warning" : "success"}
             />
           </section>
           <section aria-label="OS inventory dashboard" className="dashboard-charts-row">
             <div className="chart-card">
-              <h3 className="chart-card-title">EOL risk distribution</h3>
+              <h3 className="chart-card-title">EOL risk distribution (visible page)</h3>
               <DonutChart
                 segments={osRiskMix}
-                centerValue={totalMachines}
+                centerValue={visibleMachineCount}
                 centerLabel="machines"
               />
             </div>
             <div className="chart-card">
-              <h3 className="chart-card-title">Top OS versions</h3>
+              <h3 className="chart-card-title">Top OS versions (visible page)</h3>
               <CountBarChart data={osTopBarData} unit="OS version" />
             </div>
           </section>
@@ -1737,7 +1802,7 @@ export default function InventoryPage() {
             </div>
           </div>
           <TableColumnFilters
-            totalCount={groups.length}
+            totalCount={inventory.data?.pagination?.total ?? groups.length}
             resultCount={filteredGroups.length}
             onReset={() => {
               setOsNameFilter("all");
@@ -1793,10 +1858,10 @@ export default function InventoryPage() {
           {inventory.error && (
             <StatePanel title="OS inventory unavailable" message={inventoryUnavailableMessage(inventory.error)} tone="error" />
           )}
-          {!inventory.loading && !inventory.error && groups.length === 0 && (
+          {!inventory.loading && !inventory.error && groups.length === 0 && !inventory.data?.data.represented_group_count && (
             <StatePanel title="No OS observations" message="The authorized scope has no published OS inventory rows." />
           )}
-          {!inventory.loading && !inventory.error && groups.length > 0 && filteredGroups.length === 0 && (
+          {!inventory.loading && !inventory.error && (inventory.data?.data.represented_group_count ?? 0) > 0 && (inventory.data?.pagination?.total ?? 0) === 0 && (
             <StatePanel title="No matching OS observations" message="Adjust the search, source, lifecycle, or subscription filters." />
           )}
           {partialSource && (

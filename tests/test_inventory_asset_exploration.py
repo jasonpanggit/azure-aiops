@@ -127,3 +127,80 @@ def test_assets_require_authentication(tmp_path: Path) -> None:
     client = _client(_service(), tmp_path)
     assert client.get("/api/v1/inventory/asset?resource_id=missing").status_code == 401
     assert client.get("/api/v1/inventory/resources").status_code == 401
+
+
+def _grouped_service() -> InventoryService:
+    return InventoryService({
+        "observations": [
+            {"resource_id": f"/subscriptions/{sub}/vm-{index}", "machine_name": f"vm-{index}",
+             "source_type": "arc", "os_name": "Test OS" if sub == "sub-a" else "Hidden OS",
+             "os_version": str(index), "subscription_id": sub, "resource_group": "rg",
+             "observed_at": "2026-10-16T06:00:00Z"}
+            for sub in ("sub-a", "sub-b") for index in range(4)
+        ],
+        "software_observations": [
+            {"resource_id": f"/subscriptions/{sub}/vm-{index}", "machine_name": f"vm-{index}",
+             "software_name": "Test Software" if sub == "sub-a" else "Hidden Software",
+             "software_version": str(index), "publisher": f"Publisher {index}",
+             "join_status": "linked", "source_type": "arc", "subscription_id": sub,
+             "resource_group": "rg", "observed_at": "2026-10-16T06:00:00Z"}
+            for sub in ("sub-a", "sub-b") for index in range(4)
+        ],
+        "resource_observations": [
+            {"resource_id": f"/subscriptions/{sub}/site-{index}", "resource_name": f"site-{index}",
+             "resource_type": "microsoft.web/sites", "family": "paas",
+             "ingestion_run_id": "fixture-run",
+             "sku": f"SKU{index}" if sub == "sub-a" else "Hidden SKU",
+             "tier": "Standard", "subscription_id": sub, "resource_group": "rg",
+             "observed_at": "2026-10-16T06:00:00Z"}
+            for sub in ("sub-a", "sub-b") for index in range(4)
+        ],
+    })
+
+
+@pytest.mark.parametrize(("family", "query", "facet", "summary"), [
+    ("os", {"q": "Test", "os_name": "test os", "os_version": "3", "source_type": "arc", "lifecycle": "review"}, "os_version", "machine_count"),
+    ("software", {"q": "Test", "software_name": "test software", "publisher": "publisher 3", "source_type": "arc"}, "publisher", "install_count"),
+    ("paas", {"q": "SKU3", "provider": "MICROSOFT.WEB", "resource_type": "Microsoft.Web/Sites", "sku_tier": "SKU3 / Standard"}, "sku_tier", "resource_count"),
+])
+def test_grouped_filters_and_facets_cover_the_authorized_family_before_paging(
+    tmp_path: Path, family: str, query: dict[str, str], facet: str, summary: str,
+) -> None:
+    client = _client(_grouped_service(), tmp_path)
+    response = client.get(f"/api/v1/inventory/{family}", params={**query, "limit": 1}, headers=AUTH)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["data"]["groups"]) == body["pagination"]["total"] == 1
+    assert body["data"]["represented_group_count"] == 4
+    assert len(body["data"]["facets"][facet]) == 4
+    assert body["data"]["summary"][summary] == 1
+    assert all(status["row_count"] <= 4 for status in body["data"]["source_status"].values())
+    assert "Hidden" not in response.text
+    assert "sub-b" not in response.text
+
+    empty_page = client.get(f"/api/v1/inventory/{family}", params={"offset": 100, "limit": 1}, headers=AUTH).json()
+    assert empty_page["data"]["groups"] == []
+    assert empty_page["pagination"]["total"] == 4
+    assert len(empty_page["data"]["facets"][facet]) == 4
+    assert empty_page["data"]["summary"][summary] == 4
+
+    no_matches = client.get(f"/api/v1/inventory/{family}", params={"q": "does-not-exist"}, headers=AUTH).json()
+    assert no_matches["pagination"]["total"] == 0
+    assert no_matches["data"]["represented_group_count"] == 4
+    assert no_matches["data"]["summary"][summary] == 0
+
+
+def test_group_reads_have_no_hidden_ten_thousand_group_cutoff() -> None:
+    service = InventoryService({"observations": [
+        {"resource_id": f"/subscriptions/sub-a/vm-{index}", "machine_name": f"vm-{index}",
+         "source_type": "arc", "resource_group": "rg", "observed_at": "2026-10-16T06:00:00Z",
+         "os_name": "Test OS", "os_version": str(index), "subscription_id": "sub-a"}
+        for index in range(10_002)
+    ]})
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+    filtered = service.collection(scope, query="10001", limit=1)
+    assert filtered["total"] == 1
+    assert filtered["data"]["represented_group_count"] == 10_002
+    assert filtered["data"]["summary"]["machine_count"] == 1
+    grouped = InventoryReadPort(service).list_resources(scope, family="os", limit=1)
+    assert grouped["group_total"] == 10_002

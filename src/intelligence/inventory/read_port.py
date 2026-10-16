@@ -62,11 +62,11 @@ class InventoryReadPort:
                 )
             ]
         grouped_result = (
-            self.service.collection(scope, offset=0, limit=10_000)
+            self.service.collection(scope, offset=0, limit=None)
             if family == "os"
-            else self.service.software_collection(scope, offset=0, limit=10_000)
+            else self.service.software_collection(scope, offset=0, limit=None)
             if family == "software"
-            else self.service.paas_collection(scope, offset=0, limit=10_000)
+            else self.service.paas_collection(scope, offset=0, limit=None)
             if family == "paas"
             else None
         )

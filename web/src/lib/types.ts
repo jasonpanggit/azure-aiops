@@ -160,7 +160,14 @@ export interface LifecycleReview {
   provenance: Record<string, unknown> | null;
 }
 
-export interface OsInventoryCollection {
+/** Facets count authorized groups, not distinct machines or installations. */
+export interface InventoryGroupMetadata {
+  facets?: Record<string, Array<{ value: string; count: number }>>;
+  represented_group_count?: number;
+  summary?: Partial<Record<"machine_count" | "install_count" | "unlinked_count" | "resource_count" | "review_group_count" | "expired_machine_count" | "expiring_machine_count" | "provider_count", number>>;
+}
+
+export interface OsInventoryCollection extends InventoryGroupMetadata {
   groups: OsInventoryGroup[];
   source_status: Record<InventorySourceType, InventorySourceStatus>;
   observed_at: string;
@@ -207,7 +214,7 @@ export interface PaasInventoryResource {
   tags: Record<string, string>;
 }
 
-export interface PaasInventoryCollection {
+export interface PaasInventoryCollection extends InventoryGroupMetadata {
   groups: PaasInventoryGroup[];
   source_status: Record<string, InventorySourceStatus>;
   observed_at: string;
@@ -3159,7 +3166,7 @@ export interface SoftwareInventoryMachine {
   mapping_source_timestamp?: string;
 }
 
-export interface SoftwareInventoryCollection {
+export interface SoftwareInventoryCollection extends InventoryGroupMetadata {
   groups: SoftwareInventoryGroup[];
   source_status: Record<string, InventorySourceStatus>;
   observed_at: string;
