@@ -312,6 +312,36 @@ the Network page does. They do not require selecting a subscription first.
 Semantic-only searches still report deferred semantic providers explicitly;
 this does not enable full semantic hydration or optional Data Agent grounding.
 
+Twin composition enforces all nine scope dimensions on semantic and Network
+entities and on incident/remediation contribution metadata. Operational rows
+with missing constrained attributes or conflicting nested/root attributes are
+omitted, never assumed to belong to the requested estate. Relationships with
+absent endpoints are omitted. Missing incident scope coverage suppresses the
+heuristic index rather than manufacturing a zero.
+
+`/twin/graph`, `/timeline`, `/compare` and `/export` do not invent historical
+revisions: prior versions/counts are `null`, change history/differences are empty,
+and `/compare` reports `comparison_available: false` until a real retained
+comparison is selected. Timeline observations are not detected changes.
+`observed_at` on the graph is the legacy request composition timestamp;
+`observation_kind: request_time_composition` and envelope `composed_at` make
+that boundary explicit. Envelope `live_observed_at` is empty: composition time
+does not prove upstream freshness. Entity temporal metadata separately records
+known provider observations, event start times and generation times.
+
+`POST /twin/scenarios` is a read-only **bounded topology review**, not a causal
+simulation. It requires a supported scenario name and exact visible resource ID
+(native or `resource:` prefixed); unsupported scenarios return 400 and absent,
+substring/name-only or foreign targets return 404. Related entities follow
+observed links in either direction, deterministically, at most three hops and
+500 entities, with at most 25 returned. `impacted_total` is the number discovered
+within those bounds, not an estate-wide blast radius; `truncated` discloses
+traversal or display limits. `risk_delta` is `null`, `authority` is `none`, and
+assumptions explain missing causal, exploitability, reachability, compatibility
+and execution evidence. The current index, when both required inputs exist, is
+explicitly heuristic: `min(100, critical_count * 20 + visible_incidents * 12)`.
+It is not measured risk, probability, reliability or a historical trend.
+
 Fabric capacity health probes the configured platform subscription even when
 the page filters customer inventory to another subscription. Managed-identity
 deployments use the Terraform-configured Fabric identity for this read-only

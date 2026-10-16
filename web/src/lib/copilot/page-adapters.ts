@@ -2774,7 +2774,9 @@ export interface TwinScenarioObservation {
   scenario: string;
   target: string;
   likely_impact?: string;
-  risk_delta?: number;
+  risk_delta?: number | null;
+  analysis_kind?: "bounded_topology_review";
+  truncated?: boolean;
   impacted_count?: number;
   assumptions?: string[];
 }
@@ -2784,11 +2786,11 @@ export interface TwinCopilotPageInput {
   scope: ScopeSelection;
   twinId: string;
   version?: string;
-  previousVersion?: string;
+  previousVersion?: string | null;
   observedAt?: string;
   liveObservedAt?: string;
   confidence?: string;
-  /** Scenario-weighted risk score already rendered by the Twin page. */
+  /** Heuristic current index, not measured risk or a historical trend. */
   riskScore?: number | null;
   entities: TwinEntityObservation[];
   entitiesTotal: number;
@@ -6004,12 +6006,12 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       );
   const riskDetail = typeof input.riskScore === "number"
     ? (
-        `The current twin reports a scenario-weighted risk score of `
+        `The current twin reports a heuristic current index of `
         + `${input.riskScore} with ${vulnerabilityCount} visible vulnerability `
-        + `entit${vulnerabilityCount === 1 ? "y" : "ies"}.`
+        + `entit${vulnerabilityCount === 1 ? "y" : "ies"}; this is not measured risk, probability or reliability.`
       )
     : (
-        "The current twin has no scenario-weighted risk score, so a current "
+        "The current twin has no supported heuristic index, so a current "
         + "risk level cannot be asserted."
       );
   const records: CoreCopilotRecord[] = [
@@ -6115,6 +6117,8 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
         target: input.scenario.target,
         likely_impact: input.scenario.likely_impact,
         risk_delta: input.scenario.risk_delta,
+        analysis_kind: input.scenario.analysis_kind,
+        truncated: input.scenario.truncated,
         impacted_count: input.scenario.impacted_count,
         assumptions: input.scenario.assumptions,
         // Scenario projections are hypothetical, never observed reality.

@@ -4981,7 +4981,7 @@ describe("operational twin Copilot page adapter", () => {
         data: expect.objectContaining({
           business_service_count: 1,
           relationship_count: 1,
-          risk_detail: expect.stringContaining("risk score of 32"),
+          risk_detail: expect.stringContaining("heuristic current index of 32"),
           entity: expect.objectContaining({ type: "observation" }),
         }),
       }),

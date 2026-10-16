@@ -188,7 +188,9 @@ export default function OperationalTwinPage() {
           target: scenario.data.target,
           likely_impact: scenario.data.likely_impact,
           risk_delta: scenario.data.risk_delta,
-          impacted_count: scenario.data.impacted_entities.length,
+          analysis_kind: scenario.data.analysis_kind,
+          truncated: scenario.data.truncated,
+          impacted_count: scenario.data.impacted_total,
           assumptions: scenario.data.assumptions,
         }
       : null,
@@ -206,8 +208,8 @@ export default function OperationalTwinPage() {
     <main className="page-container twin-workspace" aria-label="Operational Digital Twin">
       <PageHeader
         eyebrow="Operational Digital Twin"
-        title="Current and historical model of operational reality"
-        description="A request-time twin that connects semantic relationships with live topology, vulnerabilities, incidents, and governed remediation outcomes."
+        title="Review mapped operational dependencies"
+        description="A request-time composition of semantic relationships, topology, vulnerabilities, incidents and remediation candidates. Observation events are not proof of changes or outcomes."
         actions={
           <div className="twin-header-actions" aria-label="Twin actions">
             <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about the twin" />
@@ -260,16 +262,17 @@ export default function OperationalTwinPage() {
       <div className="predeploy-summary">
         <section className="card">
           <div className="card-header">
-            <h2>Risk trend</h2>
+            <h2>Heuristic current index</h2>
           </div>
           <div className="card-body risk-gauge-body">
-            {observedRisk === null ? <p className="muted">Risk evidence unavailable; no healthy score is asserted.</p> : <RiskGauge score={observedRisk} label="Scenario-weighted risk" detail="Current twin risk signal" />}
+            {observedRisk === null ? <p className="muted">Risk evidence unavailable; no healthy score is asserted.</p> : <RiskGauge score={observedRisk} label="Heuristic index" detail="Not measured risk or reliability" />}
+            <p className="muted">min(100, critical vulnerabilities × 20 + visible incidents × 12). A single current index is not a historical trend.</p>
           </div>
         </section>
         <section className="metric-grid" aria-label="Twin summary">
           <MetricCard label="Entities" value={snapshot?.data.entities.length ?? 0} detail="Canonical current-state nodes" />
           <MetricCard label="Dependencies" value={snapshot?.data.relationships.length ?? 0} detail="Semantic and topology links" />
-          <MetricCard label="Changes" value={snapshot?.data.temporal.change_history.length ?? 0} detail="Temporal events in the latest revision" />
+          <MetricCard label="Observations" value={snapshot?.data.timeline.length ?? "—"} detail="Events, not verified changes" />
         </section>
       </div>
 
@@ -284,7 +287,7 @@ export default function OperationalTwinPage() {
               {resources.map(resource => <option key={resource.id} value={resource.id}>{resource.name} ({resource.id.replace(/^resource:/, "")})</option>)}
             </select>
           </label>
-          <p className="muted">Choose an observed resource for traversal and scenario estimates. No resource is selected automatically.</p>
+          <p className="muted">Choose an observed resource for traversal and hypothetical review. No resource is selected automatically.</p>
           <div className="entity-pill-row" aria-label="Twin entity counts">
             {["business_service", "application", "environment", "subscription", "resource", "vulnerability", "incident", "remediation", "owner"].map((kind) => (
               <span key={kind} className="entity-pill">
@@ -321,7 +324,7 @@ export default function OperationalTwinPage() {
         </section>
 
         <section className="card">
-          <div className="card-header"><div><h2>Temporal view</h2><p>Current state, previous revision, change history, and risk trend.</p></div></div>
+          <div className="card-header"><div><h2>Observation timeline</h2><p>Source events and request-time observations; no inferred revision history.</p></div></div>
           <div className="card-body">
           <p className="panel-lead">{comparison?.data.summary ?? "No comparison loaded."}</p>
           <ol className="timeline-list">
@@ -337,7 +340,7 @@ export default function OperationalTwinPage() {
         </section>
 
         <section className="card">
-          <div className="card-header"><div><h2>Scenario analysis</h2><p>Impact of failure, exploitation, patching, and architecture changes.</p></div></div>
+          <div className="card-header"><div><h2>Scenario review</h2><p>Hypothetical dependency review, not failure simulation or deployment authority.</p></div></div>
           <div className="card-body">
           <label className="field-label" htmlFor="scenario">
             Scenario
@@ -349,23 +352,27 @@ export default function OperationalTwinPage() {
               </option>
             ))}
           </select>
-          <p className="panel-lead">{scenario?.data.likely_impact ?? "Select a scenario to estimate impact."}</p>
+          <p className="panel-lead">{scenario?.data.likely_impact ?? "Select a resource and scenario to review mapped dependencies."}</p>
           <div className="split-kpis">
-            <MetricCard label="Risk delta" value={scenario?.data.risk_delta ?? "—"} detail="Estimated change" />
-            <MetricCard label="Impacted" value={scenario?.data.impacted_entities.length ?? "—"} detail="Related twin entities" />
+            <MetricCard label="Measured risk delta" value="—" detail="Not established by mapped links" />
+            <MetricCard label="Related entities" value={scenario?.data.impacted_total ?? "—"} detail="Bounded mapped associations" />
           </div>
+          {scenario ? <>
+            <p className="muted">{scenario.data.truncated ? "Partial projection: traversal or display bounds reached." : "Within the disclosed traversal bounds."} Showing {scenario.data.impacted_entities.length} of {scenario.data.impacted_total} discovered entities.</p>
+            <ul>{scenario.data.assumptions.map(assumption => <li key={assumption}>{assumption}</li>)}</ul>
+          </> : null}
           </div>
         </section>
 
         <section className="card">
-          <div className="card-header"><div><h2>Dependency evolution</h2><p>Relationship count changes by dependency type.</p></div></div>
+          <div className="card-header"><div><h2>Current dependencies</h2><p>Observed relationship counts. No historical counts are inferred.</p></div></div>
           <div className="card-body">
           <div className="compact-table" role="table" aria-label="Dependency evolution">
             {(snapshot?.data.temporal.dependency_evolution ?? []).slice(0, 8).map((row) => (
               <div className="compact-row" role="row" key={String(row.relationship_type)}>
                 <span>{String(row.relationship_type).replaceAll("_", " ")}</span>
                 <strong>{String(row.current_count)} current</strong>
-                <small>{String(row.previous_count)} prior</small>
+                <small>Prior count unavailable</small>
               </div>
             ))}
           </div>

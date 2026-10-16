@@ -10,6 +10,7 @@ from network.service import NetworkScope
 from semantic.operational_twin import OperationalTwinComposer
 
 from ..dependencies import Context, ReadScope, live_subscription_ids
+from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 
@@ -118,7 +119,8 @@ def _respond(data: dict[str, Any], scope: Scope, *, resource_id: str = "") -> di
     )
     payload = {
         **data,
-        "live_observed_at": str(data.get("observed_at") or data.get("exported_at") or ""),
+        "composed_at": str(data.get("observed_at") or data.get("exported_at") or ""),
+        "live_observed_at": "",
         "source_status": {
             "semantic_graph": (
                 "unavailable" if "semantic" in unavailable_sources else "current"
@@ -177,21 +179,28 @@ def timeline(context: Context, scope: ReadScope) -> dict[str, Any]:
     return _respond(data, scope)
 
 
-@router.get("/compare", summary="Compare current twin state with the prior revision")
+@router.get("/compare", summary="Report whether a retained comparison baseline is selected")
 def compare(context: Context, scope: ReadScope) -> dict[str, Any]:
     data = _composer(context, scope).compare()
     return _respond(data, scope)
 
 
-@router.post("/scenarios", summary="Simulate a twin scenario")
+@router.post("/scenarios", summary="Review bounded mapped dependencies for a hypothetical scenario")
 def scenario(
     context: Context,
     scope: ReadScope,
     payload: dict[str, Any] = Body(default_factory=dict),  # noqa: B008 - FastAPI dependency pattern
 ) -> dict[str, Any]:
-    scenario_type = str(payload.get("scenario") or payload.get("scenario_type") or "")
-    target = str(payload.get("target") or "")
-    data = _composer(context, scope).scenario(scenario_type, target)
+    scenario_type = payload.get("scenario", payload.get("scenario_type", ""))
+    target = payload.get("target", "")
+    if not isinstance(scenario_type, str) or not isinstance(target, str) or len(target) > 2048:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Provide a scenario name and bounded resource ID")
+    try:
+        data = _composer(context, scope).scenario(scenario_type, target)
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except LookupError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, str(exc)) from exc
     return _respond(data, scope, resource_id=target)
 
 

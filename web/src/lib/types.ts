@@ -477,7 +477,7 @@ export interface TwinTimelineEvent {
 
 export interface TwinTemporalState {
   current_state_version: string;
-  previous_state_version: string;
+  previous_state_version: string | null;
   change_history: Array<Record<string, unknown>>;
   risk_trend: Array<Record<string, unknown>>;
   dependency_evolution: Array<Record<string, unknown>>;
@@ -486,7 +486,7 @@ export interface TwinTemporalState {
 export interface TwinSnapshot {
   twin_id: string;
   version: string;
-  previous_version: string;
+  previous_version: string | null;
   observed_at: string;
   scope: Record<string, string[]>;
   entities: TwinEntity[];
@@ -510,7 +510,8 @@ export interface TwinQueryResult {
 
 export interface TwinComparison {
   current_version: string;
-  previous_version: string;
+  previous_version: string | null;
+  comparison_available: boolean;
   added: TwinEntity[];
   removed: TwinEntity[];
   changed: Array<Record<string, unknown>>;
@@ -522,7 +523,12 @@ export interface TwinScenarioResult {
   target: string;
   version: string;
   likely_impact: string;
-  risk_delta: number;
+  risk_delta: null;
+  analysis_kind: "bounded_topology_review";
+  authority: "none";
+  impacted_total: number;
+  truncated: boolean;
+  traversal: { direction: "undirected"; max_hops: number; max_entities: number };
   impacted_entities: TwinEntity[];
   assumptions: string[];
 }
