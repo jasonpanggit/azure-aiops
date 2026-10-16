@@ -27,8 +27,8 @@ from operations.copilot_canary_authorization import canary_authorization_health
 from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
 from .models import EnvelopeModel, ErrorModel
-from .routers import compliance as compliance_routes
 from .routers import (
+    changes,
     connections,
     fabric_medallion,
     graph,
@@ -44,6 +44,7 @@ from .routers import (
     twin,
     vulnerability,
 )
+from .routers import compliance as compliance_routes
 from .routers import context as context_routes
 from .routers import copilot as copilot_routes
 from .routers import governance as governance_routes
@@ -353,6 +354,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     telemetry = context.telemetry
 
     app.include_router(connections.router)
+    app.include_router(changes.router)
     app.include_router(fabric_medallion.router)
     app.include_router(compliance_routes.router)
     app.include_router(context_routes.router)

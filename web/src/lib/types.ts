@@ -9,6 +9,39 @@ import type { ScopeSelection } from "./scope";
 export type Confidence = "high" | "medium" | "low" | "unknown";
 export type Freshness = "fresh" | "aging" | "stale" | "unknown";
 
+/** Only allowlisted typed change-state values cross this read contract. */
+export type ChangeStateCell = { status: "reported"; value: string | boolean } | { status: "unreported" | "withheld" };
+
+/** An independent source observation, not an incident link or approval. */
+export interface ChangeObservation {
+  observation_id: string;
+  change_id: string;
+  change_type: string;
+  category: string;
+  changed_at: string;
+  source: string;
+  summary: string;
+  resource_name: string;
+  business_service: string;
+  application: string;
+  environment: string;
+  configuration: {
+    basis: "change_states";
+    fields: Array<{ field: string; before: ChangeStateCell; after: ChangeStateCell; comparison: "changed" | "unchanged" | "not_comparable" }>;
+    withheld_field_count: number;
+  };
+}
+
+/** Counts and facets cover authorized rows in the loaded projection, never the estate. */
+export interface ChangeObservationFeed {
+  observations: ChangeObservation[];
+  facets: { category: string[]; source: string[] };
+  facet_metadata: Record<"category" | "source", { total: number; returned: number; truncated: boolean }>;
+  authorized_count: number;
+  extent: "loaded_change_projection";
+  read_only: true;
+}
+
 export interface EvidenceItem {
   source_engine: string;
   source_table: string;

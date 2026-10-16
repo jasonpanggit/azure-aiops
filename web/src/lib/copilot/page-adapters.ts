@@ -3714,7 +3714,8 @@ function evidenceFreshness(value: EvidenceItem["freshness"]): CopilotFreshnessSt
   return "unavailable";
 }
 
-function envelopeSourceStatus(
+/** Preserve reported source freshness; HTTP success alone never establishes freshness. */
+export function envelopeSourceStatus(
   source: string,
   envelope: Envelope<unknown> | null | undefined,
 ): CoreCopilotSourceStatus {

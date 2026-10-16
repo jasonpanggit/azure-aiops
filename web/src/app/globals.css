@@ -5367,7 +5367,9 @@ body.topology-fullscreen-open {
 }
 
 .service-brief input:not([type="checkbox"]),
-.service-brief select {
+.service-brief select,
+.change-filters input,
+.change-filters select {
   min-height: 36px;
   min-width: 0;
   max-width: 100%;
@@ -5393,6 +5395,83 @@ body.topology-fullscreen-open {
 
 .changes-timeline {
   margin-top: 18px;
+}
+
+.changes-scope-summary {
+  max-width: 75ch;
+  overflow-wrap: anywhere;
+}
+
+.change-observations {
+  margin-block: 24px;
+  min-width: 0;
+}
+
+.change-observations p {
+  max-width: 75ch;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.change-observations > .section-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.change-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  margin-block: 20px;
+}
+
+.change-filters label {
+  display: grid;
+  gap: 8px;
+}
+
+.change-filters .button-row {
+  grid-column: 1 / -1;
+}
+
+.change-observation-list {
+  list-style: none;
+  padding: 0;
+}
+
+.change-observation-list > li {
+  padding-block: 20px;
+  border-top: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.change-observations summary {
+  padding-block: 12px;
+  cursor: pointer;
+}
+
+.change-observations .operations-table {
+  min-width: 680px;
+  table-layout: auto;
+}
+
+.change-observations .operations-table th,
+.change-observations .operations-table td {
+  white-space: nowrap;
+}
+
+.change-observations caption {
+  padding-block: 8px;
+  text-align: left;
+}
+
+.change-observations .button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .policy-editor {

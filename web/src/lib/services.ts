@@ -4,6 +4,7 @@ import { scopeToSearchParams } from "./scope";
 import type {
   BusinessMetadata,
   ChangeAssessment,
+  ChangeObservationFeed,
   ChangeAssessmentSources,
   ChangeAssessmentSummary,
   ComplianceDeviation,
@@ -888,6 +889,14 @@ export function toCanonicalInvestigationView(
 // ---------------------------------------------------------------------------
 
 export const operationsApi = {
+  /** Read independent governed changes without accepting filter overrides of the authorized scope. */
+  changeObservations: (scope: ScopeSelection, filters: Record<string, string>, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    for (const key of ["q", "category", "source", "since", "until", "order", "offset", "limit"]) {
+      if (filters[key]) query.set(key, filters[key]);
+    }
+    return apiRequest<ChangeObservationFeed>("/changes/observations", { query, signal });
+  },
   incidents: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));

@@ -73,6 +73,74 @@ cards are separate reads; capture does not silently replace the current cards.
 Scope changes immediately discard the prior comparison and late responses.
 No raw history is cached in browser storage.
 
+## Independent change observations
+
+`GET /api/v1/changes/observations` reads the existing governed ChangeIntelligence
+projection independently of incidents. Missing providers return 503, not empty
+success. Scope authorization/resource membership precedes facets, counts,
+filtering and paging. Selected connection membership must be authorized before
+provider resolution; a missing/inaccessible selection returns 404. Connection
+selection narrows subscriptions, **not event connection provenance**. Missing
+resource context cannot satisfy a constrained dimension. The route does not
+invoke the incident API/provider or start collection, mutation or deployment.
+Existing change-provider composition can read related snapshot tables/semantic
+context and can itself be unavailable; source independence is not a claim of
+zero underlying provider dependencies.
+
+Optional `q` searches change identity/summary, resource, application and service.
+`category` and `source` match exact projected labels; `since`/`until` are inclusive,
+timezone-explicit ISO instants; reversed/naive/invalid ranges fail with 400.
+`order=newest|oldest` uses time, normalized identity and source position for
+deterministic ties. Standard offset pagination allows at most **100 rows**;
+the portal requests 25. `pagination.total` counts matching authorized projection
+rows, `authorized_count` counts all authorized rows before filters. Neither is
+an estate or distinct-change count. Facets precede query filters and expose
+first **100 labels** plus exact returned/total/truncation metadata; an exact
+typed source beyond the suggestion cap still filters the full projection.
+Serialized response data is bounded at **1 MiB**; oversized pages fail
+explicitly instead of dropping rows. The source engine already bounds input
+acquisition. Offset pages are separate reads, not generation-pinned history.
+
+Observation IDs hash the resource join key, normalized source identity, time
+and original position in the loaded projection. This avoids normalized/redacted
+ID collisions and remains stable across filters/pages of that ordered
+projection; it is **not** a globally durable Azure change identity. Internal
+resource keys/IDs and raw states are not returned. Configuration comparison
+exposes only `publicNetworkAccess`, `encryption`, `minimumTlsVersion`,
+`httpsOnly`, `allowBlobPublicAccess`, `enableSoftDelete`, `sku`, and `vmSize`.
+The finite allowlist also admits their exact `properties.` paths, except VM
+size uses `properties.hardwareProfile.vmSize` and SKU uses `sku.name`.
+Different paths remain separate, never silently merged. Values must match
+finite named enums, booleans, or bounded conventional Azure
+VM-size syntax; other values are withheld. Arbitrary/nested property paths and
+values are withheld, with only a count of other names. Before/after absence
+means **unreported**, not null, zero, addition or deletion. Arithmetic equality
+is reported only when both typed values are known; this compares change
+states, not expected baseline versus current configuration.
+
+The portal restores scoped `change_q`, `change_category`, `change_source`,
+`change_since`, `change_until`, `change_order` and `change_page` URL bookmarks
+and browser Back/Forward. Invalid/duplicate continuations fail explicitly;
+applying filters resets paging. All nine bookmarked scope dimensions are
+restored before either provider is read, retaining/narrowing the in-memory
+operating context. An invalid/broader bookmark fails with a recovery link,
+never an unscoped fallback. The effective route scope is explicitly displayed;
+this route-local behavior does not silently replace the global selector.
+Scope/query changes discard prior observations
+and late responses immediately. Explicit reload permits recovery without
+changing filters. The read-only observation Copilot includes only loaded safe
+fields/comparisons and reported freshness, never execution authority. Long
+summary/resource/service/source text is excerpted with an explicit truncation
+marker to preserve the contextual row byte bound; full projected text remains
+visible in the portal.
+
+Legacy incident timeline associations remain a separate independently failing
+source: first 100 report rows, at most 50 rendered change-type events, reported
+extents, and their own scoped review links/Copilot. They are not the durable
+Situation queue and do not filter the independent feed. No HTTP success alone
+establishes freshness, complete estate history, causal contribution, resolved
+incident, confirmed outcome, baseline compliance or operational approval.
+
 ## Service catalog and detail interpretation
 
 The catalog joins the complete accessible connection registry with the existing

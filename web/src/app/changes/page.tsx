@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
+import { ChangeObservations } from "@/components/ChangeObservations";
 
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -10,12 +12,14 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
-import { buildChangesCopilotContext } from "@/lib/copilot/page-adapters";
+import { buildChangesCopilotContext, envelopeSourceStatus } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime, titleize } from "@/lib/format";
-import { useScope } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
+import { scopedBookmark } from "@/lib/scope";
 import { operationsApi } from "@/lib/services";
 import type { IncidentTimelineEvent } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { overviewHref } from "@/lib/overview";
 
 function sourceLink(event: IncidentTimelineEvent): string | null {
   for (const key of ["source_url", "source_link", "deep_link", "url"]) {
@@ -25,8 +29,24 @@ function sourceLink(event: IncidentTimelineEvent): string | null {
   return null;
 }
 
-/** Correlated change stream extracted from active Situation timelines. */
+/** Independent change projection and separately sourced legacy incident associations. */
 export default function ChangesPage() {
+  return <Suspense fallback={<StatePanel title="Loading change intelligence" message="Restoring the authorized view." tone="loading" />}><ScopedChangesPage /></Suspense>;
+}
+
+function ScopedChangesPage() {
+  const { scope } = useScope();
+  const params = useSearchParams();
+  let selected;
+  try {
+    selected = scopedBookmark(params, scope);
+  } catch (error) {
+    return <div className="page-container"><StatePanel title="Change bookmark scope unavailable" message={error instanceof Error ? error.message : "The bookmarked scope is invalid."} tone="error" action={<Link className="button button-secondary" href={overviewHref("/changes", scope)}>Use current operating context</Link>} /></div>;
+  }
+  return <ScopeProvider key={JSON.stringify(selected)} initialScope={selected}><ChangesWorkspace /></ScopeProvider>;
+}
+
+function ChangesWorkspace() {
   const { scope } = useScope();
   const [copilotOpen, setCopilotOpen] = useState(false);
   const incidents = useApi(() => operationsApi.incidents(scope), [scope]);
@@ -42,7 +62,7 @@ export default function ChangesPage() {
   // Correlation is advisory and never causal; no mutation authority (D-03, D-08, D-10).
   const changesCopilot = buildChangesCopilotContext({
     scope,
-    changes: changes.map(({ event, incident, services }) => ({
+    changes: changes.slice(0, 50).map(({ event, incident, services }) => ({
       event_id: event.event_id,
       incident_id: incident.incident_id,
       incident_title: incident.title,
@@ -52,10 +72,10 @@ export default function ChangesPage() {
       timestamp: event.timestamp,
       business_services: services,
     })),
-    loadedCount: changes.length,
+    loadedCount: Math.min(50, changes.length),
     totalCount: changes.length,
     available: !incidents.error && Boolean(incidents.data),
-    freshness: incidents.error || !incidents.data ? "unavailable" : "fresh",
+    freshness: envelopeSourceStatus("changes/incident-timeline", incidents.error ? null : incidents.data).status,
     observedAt: incidents.data?.evidence?.[0]?.timestamp,
     evidence: incidents.data?.evidence ?? [],
   });
@@ -64,38 +84,43 @@ export default function ChangesPage() {
     <div className="page-container">
       <PageHeader
         eyebrow="Change intelligence"
-        title="What changed near active situations?"
-        description="Review source events in temporal proximity to authorized situations. Proximity is a correlation signal, not a causal conclusion."
-        metadata={<><span>{changes.length} correlated changes</span><span>Correlation is not confirmation</span></>}
+        title="What changed in the observed estate?"
+        description="Review independent change observations and separately sourced incident timeline associations. Neither is a causal conclusion."
+        metadata={<><span>Governed projections only</span><span>Correlation is not confirmation</span></>}
         actions={
           <>
             <CopilotDrawerButton
               onClick={() => setCopilotOpen(true)}
-              label="Ask Copilot about changes"
+              label="Ask Copilot about timeline associations"
             />
-            <Link className="button button-secondary" href="/changes/predeploy">Assess a proposed change</Link>
+            <Link className="button button-secondary" href={overviewHref("/changes/predeploy", scope)}>Assess a proposed change</Link>
           </>
         }
       />
+      <p className="changes-scope-summary">Effective view scope: {Object.entries(scope).map(([key, values]) => `${key.replaceAll("_", " ")}: ${values?.join(", ")}`).join(" · ") || "Current authorized estate"}. Bookmarks can narrow, never broaden, the selected operating context; the API reauthorizes every read.</p>
 
+      <ChangeObservations />
+      <h2>Legacy incident timeline associations</h2>
+      <p>Change-type events from at most 100 loaded incident report rows, not the durable Situation queue or the independent feed. The timeline Copilot uses only this report. No loaded association establishes causality or source completeness.</p>
+      {incidents.data && !incidents.error && <p>{changes.length} change-type events in {incidents.data.data.incidents.length} loaded / {incidents.data.pagination?.total ?? "unreported"} reported incident rows; at most 50 events shown.</p>}
       <CopilotInsights
         snapshot={changesCopilot.snapshot}
         ready={!incidents.loading}
         requestedScope={changesCopilot.requestedScope}
-        contextLabel="Change intelligence"
+        contextLabel="Incident timeline associations"
         onOpenCopilot={() => setCopilotOpen(true)}
       />
       <EvidenceBar evidence={incidents.data?.evidence} knowledgeVersion={incidents.data?.knowledge_version} warnings={incidents.data?.warnings} />
       {incidents.error ? (
-        <StatePanel title="Change intelligence is unavailable" message={incidents.error.message} tone="error" />
+        <StatePanel title="Incident timeline associations unavailable" message={incidents.error.message} tone="error" />
       ) : incidents.loading ? (
-        <StatePanel title="Correlating changes" message="Aligning observed changes to Situation timelines." tone="loading" />
+        <StatePanel title="Loading incident associations" message="Reading the independent legacy incident report." tone="loading" />
       ) : changes.length === 0 ? (
-        <StatePanel title="No correlated changes" message="No change events are linked to active Situations in this scope." />
+        <StatePanel title="No change associations in the loaded report" message="This does not establish that no independent changes occurred." />
       ) : (
         <div className="card timeline-card changes-timeline">
           <div className="card-body timeline">
-            {changes.map(({ event, incident, services }) => (
+            {changes.slice(0, 50).map(({ event, incident, services }) => (
               <div className="timeline-event" key={`${incident.incident_id}-${event.event_id}`}>
                 <div className="timeline-marker" aria-hidden="true" />
                 <time dateTime={event.timestamp} title={formatDateTime(event.timestamp)}>{relativeTime(event.timestamp)}<span className="timeline-exact-time">{formatDateTime(event.timestamp)}</span></time>
@@ -106,7 +131,7 @@ export default function ChangesPage() {
                   </div>
                   <strong>{event.summary}</strong>
                   <span>{services.join(", ") || "Service not mapped"} · Source: {event.source || "unavailable"}</span>
-                  <span>Authorized situation: <Link className="table-primary-link" href={`/situations/${encodeURIComponent(incident.incident_id)}`}>{incident.title}</Link></span>
+                  <span>Incident report record: <Link className="table-primary-link" href={overviewHref(`/situations/${encodeURIComponent(incident.incident_id)}`, scope)}>{incident.title}</Link></span>
                   {event.evidence?.length ? (
                     <span>Evidence reference{event.evidence.length === 1 ? "" : "s"}: {event.evidence.join(", ")}</span>
                   ) : (
@@ -127,7 +152,7 @@ export default function ChangesPage() {
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
-        contextLabel="Change intelligence"
+        contextLabel="Incident timeline associations"
         requestedScope={changesCopilot.requestedScope}
         snapshot={changesCopilot.snapshot}
         starterQuestions={changesCopilot.starterQuestions}
