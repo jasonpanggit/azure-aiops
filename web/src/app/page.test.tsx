@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
 
 const mocks = vi.hoisted(() => ({
   situations: vi.fn(),
@@ -60,6 +60,13 @@ const situation = (id: string, priority: "P1" | "P3", startedAt: string) => ({
   unknowns: [],
   run_id: `run-${id}`,
 });
+
+const overviewConnection = {
+  connection_id: "fixture-connection", name: "Fixture connection", tenant_id: "fixture-tenant",
+  subscription_id: "fixture-sub", scope_key: "fixture", is_active: true, business_service: "Payments",
+  environment: "prod", owner: "Fixture owner", criticality: "high", sync_status: "succeeded",
+  health_status: "healthy", last_successful_sync_at: "2026-10-16T00:00:00Z",
+};
 
 describe("Overview Copilot adapter integration", () => {
   beforeEach(() => {
@@ -144,5 +151,50 @@ describe("Overview Copilot adapter integration", () => {
     expect(screen.queryByText("No active situations in this scope")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Posture score 100 out of 100")).not.toBeInTheDocument();
     expect(screen.getByText("Connection coverage is unavailable.")).toBeInTheDocument();
+  });
+
+  it("explains bounded contributors, raw saturation and finding units", async () => {
+    mocks.situations.mockResolvedValue({ ...envelope([situation("p1", "P1", "2026-01-01T00:00:00Z")]),
+      pagination: { offset: 0, limit: 100, total: 350, next_offset: 100 } });
+    mocks.network.mockResolvedValue(envelope({ gap_count: 30, rule_finding_count: 0 }));
+    mocks.vulnerabilities.mockResolvedValue(envelope({ internet_exposed_count: 2, reachable_server_count: 1 }));
+    render(<ScopeProvider initialScope={{ environment: ["prod"], owner: ["A&B"] }}><Home /></ScopeProvider>);
+    const region = await screen.findByRole("region", { name: "Overview score and evidence" });
+    expect(within(region).getByText(/Raw deduction: 152; displayed score: 0/)).toBeInTheDocument();
+    expect(within(region).getByText("1 loaded / 350 reported; partial page")).toBeInTheDocument();
+    expect(within(region).getByText(/A vulnerability finding is not a distinct CVE/)).toBeInTheDocument();
+    const href = within(region).getByRole("link", { name: "Review situations" }).getAttribute("href")!;
+    expect(new URL(href, "http://local").searchParams.get("owner")).toBe("A&B");
+    expect(screen.getAllByText("Internet-exposed findings").length).toBeGreaterThan(0);
+  });
+
+  it("puts actionable unknown and disabled connections before healthy registry rows", async () => {
+    mocks.connections.mockResolvedValue(envelope([
+      { ...overviewConnection, connection_id: "healthy", name: "A healthy" },
+      { ...overviewConnection, connection_id: "unknown&bookmark", name: "Z unknown", health_status: "unknown", owner: "" },
+      { ...overviewConnection, connection_id: "disabled", name: "B disabled", is_active: false },
+    ]));
+    render(<ScopeProvider><Home /></ScopeProvider>);
+    await screen.findByRole("region", { name: "Overview score and evidence" });
+    expect(screen.getByRole("img", { name: "1 healthy connection and 2 connections needing attention" })).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Review Z unknown" });
+    expect(new URL(link.getAttribute("href")!, "http://local").searchParams.get("connection")).toBe("unknown&bookmark");
+    expect(screen.getByText(/Registry health: unknown · Owner unmapped/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review B disabled" })).toHaveAttribute("href", "/connections");
+  });
+
+  it("discards prior-scope data immediately rather than evaluating it under a new scope", async () => {
+    function Switcher() {
+      const { setScope } = useScope();
+      return <button onClick={() => setScope({ environment: ["prod"] })}>Change scope</button>;
+    }
+    mocks.situations.mockResolvedValueOnce(envelope([situation("old-private", "P1", "2026-01-01T00:00:00Z")]));
+    render(<ScopeProvider><Switcher /><Home /></ScopeProvider>);
+    await screen.findByRole("link", { name: "old-private" });
+    mocks.situations.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
+    expect(screen.queryByRole("link", { name: "old-private" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Overview score and evidence" })).not.toBeInTheDocument();
+    expect(screen.getByText("Building your operational picture")).toBeInTheDocument();
   });
 });

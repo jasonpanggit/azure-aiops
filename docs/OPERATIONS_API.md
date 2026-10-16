@@ -9,6 +9,35 @@ Azure AI Operations Workbench UI.
 Layer. No handler reads Fabric, ontology tables, or Azure Resource Graph
 directly.
 
+## Overview interpretation
+
+The Overview reads Situations and Connections at offset 0 / limit 100,
+plus the existing Network and vulnerability summaries. Its v1 posture
+heuristic is `max(0, 100 - 18*loaded_P1 - 7*internet_exposed_count - 4*gap_count)`.
+The explanation shows each count/weight, the unclamped deduction, saturation,
+classification thresholds, and links preserving all selected scope dimensions.
+An unavailable/invalid input withholds the score instead of counting as zero.
+This formula is not an SLA, compliance result, complete-estate measure, or
+learned probability. Reads are not atomic; findings can overlap across sources.
+Situation rows can include closed lifecycle states; no active-only claim is
+made for an unfiltered page. Vulnerability `internet_exposed_count` and the
+legacy `reachable_server_count` are counts of findings in the current service,
+**not distinct CVEs or servers**. The UI labels those units accordingly.
+
+Source coverage shows loaded/reported page counts, partial-page indicators,
+reported evidence freshness, warnings, and a scoped next-check link for each
+source, including failed reads. Missing totals/evidence remain unreported.
+Connection reviews prioritize explicit non-healthy, disabled, incomplete-sync,
+missing successful-sync timestamp, and unmapped service/owner/environment rows.
+Only explicit healthy, active, succeeded, timestamped, mapped registry rows
+are ready in this local readiness view. This does not establish publication
+freshness, resource health, or estate completeness. Review links select only
+active connections; disabled rows link to the registry without an invalid
+readiness bookmark. A scope change remounts the workspace immediately so old
+observations are not scored or passed to Copilot under a new scope.
+Retained Overview snapshots/history are a separate unfinished contract; no
+synthetic trend or browser-cached history is presented.
+
 ## Running
 
 ```bash

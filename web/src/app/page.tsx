@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { SituationTable } from "@/components/SituationTable";
+import { OverviewEvidence } from "@/components/OverviewEvidence";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -15,6 +16,7 @@ import { buildOverviewCopilotContext } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, networkApi, situationsApi, vulnerabilityApi } from "@/lib/services";
 import { rankDurableSituations } from "@/lib/situations";
+import { connectionReviewReasons, overviewHref, overviewPosture } from "@/lib/overview";
 import type {
   Envelope,
   NetworkSummary,
@@ -33,6 +35,11 @@ interface DashboardState {
 
 /** Service-aware command center that ranks what needs operator attention now. */
 export default function Home() {
+  const { scope } = useScope();
+  return <OverviewWorkspace key={JSON.stringify(scope)} />;
+}
+
+function OverviewWorkspace() {
   const { scope } = useScope();
   const [state, setState] = useState<DashboardState>({ errors: [] });
   const [loading, setLoading] = useState(true);
@@ -74,21 +81,21 @@ export default function Home() {
     [state.situations]
   );
   const criticalSituations = situations.filter((situation) => situation.priority === "P1").length;
-  const staleConnections =
-    state.connections?.data.filter(
-      (connection) => connection.health_status === "stale" || connection.sync_status === "failed"
-    ).length ?? 0;
+  const connectionReviews = (state.connections?.data ?? []).map(connection => ({ connection, reasons: connectionReviewReasons(connection) }))
+    .sort((a, b) => Number(b.reasons.length > 0) - Number(a.reasons.length > 0) || a.connection.name.localeCompare(b.connection.name));
+  const attentionConnections = connectionReviews.filter(row => row.reasons.length > 0).length;
   const evidence = [
     ...(state.situations?.evidence ?? []),
     ...(state.vulnerabilities?.evidence ?? []),
     ...(state.network?.evidence ?? []),
+    ...(state.connections?.evidence ?? []),
   ];
   const exposureCount = state.vulnerabilities?.data.internet_exposed_count ?? 0;
   const gapCount = state.network?.data.gap_count ?? 0;
-  const postureAvailable = Boolean(state.situations && state.vulnerabilities && state.network);
-  const postureScore = postureAvailable
-    ? Math.max(0, Math.min(100, 100 - criticalSituations * 18 - exposureCount * 7 - gapCount * 4))
-    : null;
+  const posture = overviewPosture(state.situations ? criticalSituations : undefined,
+    state.vulnerabilities?.data.internet_exposed_count, state.network?.data.gap_count);
+  const postureScore = posture.score;
+  const postureAvailable = postureScore !== null;
   const postureLabel = postureScore === null ? "Not assessed" : postureScore >= 80 ? "Controlled" : postureScore >= 60 ? "Needs attention" : "Elevated";
   const postureTone = postureScore === null ? "warning" : postureScore >= 80 ? "success" : postureScore >= 60 ? "warning" : "critical";
   const scopeLabel =
@@ -116,7 +123,7 @@ export default function Home() {
         actions={
           <>
             <CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot what needs attention" />
-            <Link className="button button-primary" href="/situations">
+            <Link className="button button-primary" href={overviewHref("/situations", scope)}>
               Open Situation queue
             </Link>
           </>
@@ -146,14 +153,14 @@ export default function Home() {
                 <span className="live-pulse" /> Live operational posture
               </div>
               <h2>
-                {postureAvailable ? "Your environment is " : "Operational posture is "}
+                {postureAvailable ? "Loaded heuristic posture is " : "Operational posture is "}
                 <strong>{postureLabel.toLowerCase()}</strong>
               </h2>
               <p>
                 A single view of service health, exploitable exposure, network controls, and evidence confidence across the selected operating scope.
               </p>
               <div className="command-center-actions">
-                <Link className="button button-light" href={criticalSituations ? "/situations" : "/investigate"}>
+                <Link className="button button-light" href={overviewHref(criticalSituations ? "/situations" : "/investigate", scope)}>
                   {criticalSituations ? "Investigate top situation" : "Run an investigation"}
                 </Link>
                 <span className="command-center-updated">Scope: {scopeLabel}</span>
@@ -179,6 +186,7 @@ export default function Home() {
               ...(state.network?.warnings ?? []),
               ...(state.vulnerabilities?.warnings ?? []),
               ...state.errors,
+              ...(state.connections?.warnings ?? []),
             ]}
           />
 
@@ -196,21 +204,21 @@ export default function Home() {
               <MetricCard
                 label="Critical situations"
                 value={state.situations ? criticalSituations : "—"}
-                detail={state.situations ? `${situations.length} active situations ranked by business impact` : "Situation evidence unavailable"}
+                detail={state.situations ? `${situations.length} loaded situations ranked by priority and recency; lifecycle may include closed` : "Situation evidence unavailable"}
                 tone={!state.situations ? "warning" : criticalSituations > 0 ? "critical" : "success"}
                 action={
-                  <Link className="inline-link" href="/situations">
+                  <Link className="inline-link" href={overviewHref("/situations", scope)}>
                     Investigate now
                   </Link>
                 }
               />
               <MetricCard
-                label="Internet-reachable CVEs"
+                label="Internet-exposed findings"
                 value={state.vulnerabilities?.data.internet_exposed_count ?? "—"}
-                detail={state.vulnerabilities ? `${state.vulnerabilities.data.reachable_server_count} reachable servers require review` : "Exposure evidence unavailable"}
+                detail={state.vulnerabilities ? `${state.vulnerabilities.data.reachable_server_count} reachable findings in the legacy summary field; not distinct servers` : "Exposure evidence unavailable"}
                 tone={!state.vulnerabilities ? "warning" : exposureCount > 0 ? "critical" : "success"}
                 action={
-                  <Link className="inline-link" href="/exposure">
+                  <Link className="inline-link" href={overviewHref("/exposure", scope)}>
                     Review exposure
                   </Link>
                 }
@@ -221,18 +229,18 @@ export default function Home() {
                 detail={state.network ? `${state.network.data.rule_finding_count} rule findings across observed paths` : "Network evidence unavailable"}
                 tone={!state.network || gapCount > 0 ? "warning" : "success"}
                 action={
-                  <Link className="inline-link" href="/network">
+                  <Link className="inline-link" href={overviewHref("/network", scope)}>
                     Analyze paths
                   </Link>
                 }
               />
               <MetricCard
-                label="Data coverage risk"
-                value={state.connections ? staleConnections : "—"}
-                detail={state.connections ? `${state.connections.data.length} onboarded subscription connections` : "Connection evidence unavailable"}
-                tone={!state.connections || staleConnections > 0 ? "warning" : "success"}
+                label="Connection reviews"
+                value={state.connections ? attentionConnections : "—"}
+                detail={state.connections ? `${state.connections.data.length} loaded registry rows; not publication coverage` : "Connection evidence unavailable"}
+                tone={!state.connections || attentionConnections > 0 ? "warning" : "success"}
                 action={
-                  <Link className="inline-link" href="/connections">
+                  <Link className="inline-link" href={overviewHref("/connections", scope)}>
                     Check integrations
                   </Link>
                 }
@@ -240,13 +248,20 @@ export default function Home() {
             </div>
           </section>
 
+          <OverviewEvidence posture={posture} scope={scope} sources={[
+            { id: "situations", label: "Situations", path: "/situations", envelope: state.situations, loadedRows: state.situations?.data.length },
+            { id: "exposure", label: "Exposure", path: "/exposure", envelope: state.vulnerabilities },
+            { id: "network", label: "Network", path: "/network", envelope: state.network },
+            { id: "connections", label: "Connections", path: "/connections", envelope: state.connections, loadedRows: state.connections?.data.length },
+          ]} />
+
           <section className="dashboard-section">
             <div className="section-heading">
               <div>
                 <h2>Priority situations</h2>
-                <p>Ranked by severity, business blast radius, and recency—not alert volume.</p>
+                <p>Loaded page ranked by assigned priority and recency, not a complete-estate or lifecycle-filtered queue.</p>
               </div>
-              <Link className="section-link" href="/situations">
+              <Link className="section-link" href={overviewHref("/situations", scope)}>
                 View all
               </Link>
             </div>
@@ -275,9 +290,9 @@ export default function Home() {
                 {postureAvailable && state.connections ? <OperationsSignalChart
                   signals={[
                     { label: "Priority situations", value: criticalSituations, tone: "critical" },
-                    { label: "Reachable exposure", value: exposureCount, tone: "critical" },
+                    { label: "Internet-exposed findings", value: exposureCount, tone: "critical" },
                     { label: "Network gaps", value: gapCount, tone: "warning" },
-                    { label: "Stale connections", value: staleConnections, tone: "warning" },
+                    { label: "Connection reviews", value: attentionConnections, tone: "warning" },
                   ]}
                 /> : <p className="muted">Signal concentration is unavailable until all source reads succeed.</p>}
               </div>
@@ -285,8 +300,8 @@ export default function Home() {
             <article className="card">
               <div className="card-header">
                 <div>
-                  <h2>Service risk concentration</h2>
-                  <p>Where active situations create the greatest operational exposure.</p>
+                  <h2>Loaded service associations</h2>
+                  <p>Situation associations in this page; overlapping services are not unique incident counts.</p>
                 </div>
               </div>
               <div className="card-body service-risk-list">
@@ -309,7 +324,7 @@ export default function Home() {
                       <div className="service-risk-bar" style={{ width: `${(count / maxCount) * 100}%` }} aria-hidden />
                       <div>
                         <strong>{service}</strong>
-                        <span>{count} active situation{count === 1 ? "" : "s"}</span>
+                        <span>{count} loaded situation{count === 1 ? "" : "s"}</span>
                       </div>
                       <StatusBadge label={count > 1 ? "Elevated risk" : "Monitor"} tone={count > 1 ? "high" : "warning"} />
                     </div>
@@ -327,17 +342,20 @@ export default function Home() {
                 </div>
               </div>
               <div className="card-body coverage-list">
-                {(state.connections?.data ?? []).slice(0, 6).map((connection) => (
+                {connectionReviews.slice(0, 6).map(({ connection, reasons }) => (
                   <div className="coverage-row" key={connection.connection_id}>
                     <div>
                       <strong>{connection.name}</strong>
                       <span>
                         {connection.business_service || "Unmapped service"} · {connection.environment || "No environment"}
                       </span>
+                      <span>{reasons.length ? reasons.join(" · ") : "Registry reports healthy and sync succeeded; publication not verified"}</span>
+                      <Link className="inline-link" href={overviewHref("/connections", scope, connection.is_active ? connection.connection_id : undefined)}>Review {connection.name}</Link>
                     </div>
                     <StatusBadge label={connection.health_status} tone={statusTone(connection.health_status)} />
                   </div>
                 ))}
+                {connectionReviews.length > 6 && <Link href={overviewHref("/connections", scope)}>Review all {connectionReviews.length} loaded connections</Link>}
                 {(state.connections?.data.length ?? 0) === 0 && (
                   <span className="muted">{state.connections ? "No subscription connections are visible in this scope." : "Subscription connection evidence is unavailable."}</span>
                 )}
@@ -349,10 +367,12 @@ export default function Home() {
                   <h2>Connection coverage</h2>
                   <p>Health of the data sources behind recommendations.</p>
                 </div>
-                <Link className="section-link" href="/connections">Manage</Link>
+                <Link className="section-link" href={overviewHref("/connections", scope)}>Manage</Link>
               </div>
               <div className="card-body">
-                {state.connections ? <CoverageDonut healthy={Math.max(0, state.connections.data.length - staleConnections)} needsAttention={staleConnections} /> : <p className="muted">Connection coverage is unavailable.</p>}
+                {state.connections ? <><CoverageDonut healthy={Math.max(0, state.connections.data.length - attentionConnections)} needsAttention={attentionConnections} />
+                  <p className="muted">Loaded registry readiness only, not complete-estate, Fabric publication, or resource health coverage. Unknown and disabled states require review, not a healthy assumption.</p>
+                </> : <p className="muted">Connection coverage is unavailable.</p>}
               </div>
             </article>
           </section>
