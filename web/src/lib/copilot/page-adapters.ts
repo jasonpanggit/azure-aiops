@@ -2657,6 +2657,8 @@ export interface SituationDetailCopilotPageInput {
 
 /** Synthesized business-service catalog row the Services adapter cites. */
 export interface ServicesCatalogObservation {
+  /** Distinguishes a synthetic unmapped bucket from a real service with the same label. */
+  id?: string;
   name: string;
   environments: string[];
   subscriptionCount: number;
@@ -5798,7 +5800,7 @@ function situationDetailCoreInput(
 
 function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.services.slice(0, 50).map((service, index) => ({
-    identity: service.name,
+    identity: service.id ?? service.name,
     namespace: "operations",
     kind: "business_service",
     source: "services/catalog",
@@ -5811,9 +5813,9 @@ function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterI
       operational_state: service.operationalState,
       environments: service.environments,
       subscription_count: service.subscriptionCount,
-      situation_count: service.situationCount,
-      critical_count: service.criticalCount,
-      health_risk: service.healthRisk,
+      situation_count: input.incidentsAvailable ? service.situationCount : undefined,
+      critical_count: input.incidentsAvailable ? service.criticalCount : undefined,
+      health_risk: input.connectionsAvailable ? service.healthRisk : undefined,
     },
   }));
   return {

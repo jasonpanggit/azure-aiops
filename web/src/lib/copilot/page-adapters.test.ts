@@ -4689,6 +4689,25 @@ describe("situation detail and service Copilot page adapters", () => {
     );
   });
 
+  it("withholds unavailable incident counts and separates an unmapped bucket from an identically named real service", () => {
+    const context = buildServicesCopilotContext({
+      ...servicesInput,
+      incidentsAvailable: false,
+      services: [
+        { ...servicesInput.services[0], id: "unmapped", name: "Unmapped service", operationalState: "Incident evidence unavailable" },
+        { ...servicesInput.services[0], id: "service:Unmapped service", name: "Unmapped service", operationalState: "Incident evidence unavailable" },
+      ],
+    });
+    const rows = context.snapshot.evidence.filter(row => row.data.service === "Unmapped service");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.data.situation_count).toBeUndefined();
+      expect(row.data.critical_count).toBeUndefined();
+      expect(row.data.operational_state).toBe("Incident evidence unavailable");
+    }
+    expect(context.snapshot.freshness).toEqual(expect.arrayContaining([expect.objectContaining({ source: "incidents", status: "unavailable" })]));
+  });
+
   it("keeps rendered Services facts as non-authoritative observations when semantic resolution is unavailable", () => {
     const services = buildServicesCopilotContext(servicesInput);
     const serviceRow = services.snapshot.evidence.find(

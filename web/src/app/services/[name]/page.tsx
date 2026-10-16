@@ -14,43 +14,26 @@ import { buildServiceDetailCopilotContext, type ServiceDependencyObservation } f
 import { useScope } from "@/lib/scope-context";
 import type { CopilotFreshnessStatusV2, SemanticContext } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
-
-const DEPENDENCY_SECTION_KEYS = [
-  "impacted_resources",
-  "impacted_applications",
-  "impacted_services",
-  "impacted_business_services",
-  "upstream_dependencies",
-  "downstream_dependents",
-] as const;
+import { ServiceBrief } from "@/components/ServiceBrief";
+import { serviceDependencies, serviceSourceState } from "@/lib/service-brief";
+import { overviewHref } from "@/lib/overview";
+import type { Envelope } from "@/lib/types";
 
 /** Collects bounded dependency/blast-radius names from typed semantic sections. */
 function collectDependencies(...contexts: (SemanticContext | undefined)[]): ServiceDependencyObservation[] {
-  const seen = new Set<string>();
-  const dependencies: ServiceDependencyObservation[] = [];
-  for (const context of contexts) {
-    const sections = (context?.sections ?? {}) as Record<string, unknown>;
-    for (const key of DEPENDENCY_SECTION_KEYS) {
-      const value = sections[key];
-      if (!Array.isArray(value)) continue;
-      for (const item of value) {
-        if (typeof item !== "string" || !item || seen.has(item)) continue;
-        seen.add(item);
-        dependencies.push({
-          id: item,
-          name: item,
-          relation: key,
-          resource_id: item.startsWith("/subscriptions/") ? item : undefined,
-        });
-      }
-    }
-  }
-  return dependencies.slice(0, 50);
+  return serviceDependencies(...contexts).slice(0, 50).map(row => ({
+    id: `${row.relation}:${row.entityType}:${row.id}`, name: row.name, relation: row.relation, resource_id: row.resourceId || undefined,
+  }));
 }
 
 /** Business service operating view with semantic context, risk, and blast radius. */
 export default function ServiceDetailPage({ params }: { params: { name: string } }) {
   const name = params.name;
+  const { scope } = useScope();
+  return <ServiceWorkspace key={`${JSON.stringify(scope)}:${name}`} name={name} />;
+}
+
+function ServiceWorkspace({ name }: { name: string }) {
   const { scope } = useScope();
   const context = useApi(() => contextApi.businessService(name, scope), [name, scope]);
   const risk = useApi(() => contextApi.risk(name, scope), [name, scope]);
@@ -60,24 +43,15 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
   const sectionKeys = (context?: SemanticContext): string[] => Object.keys(context?.sections ?? {});
   const sectionState = (
     api: {
-      data?: {
-        data?: SemanticContext;
-        warnings?: string[];
-      } | null;
+      data?: Envelope<SemanticContext> | null;
       error?: Error | null;
     },
   ) => {
     const sourceStatus = api.data?.data?.source_status ?? {};
-    const statuses = Object.values(sourceStatus).map((status) =>
-      String(status).trim().toLowerCase());
-    const allUnavailable = statuses.length > 0
-      && statuses.every((status) =>
-        ["deferred", "empty", "unavailable"].includes(status));
-    const partiallyUnavailable = statuses.some((status) =>
-      ["deferred", "empty", "unavailable"].includes(status));
-    const available = !api.error && Boolean(api.data) && !allUnavailable;
+    const source = serviceSourceState(api.data, api.error);
+    const available = source.available;
     return {
-      subject: api.data?.data?.subject
+      subject: available && api.data?.data?.subject
         ? {
             entity_type: api.data.data.subject.entity_type,
             name: api.data.data.subject.name,
@@ -95,9 +69,7 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
       freshness: (
         !available
           ? "unavailable"
-          : partiallyUnavailable
-            ? "partial"
-            : "fresh"
+          : source.state
       ) as CopilotFreshnessStatusV2,
       observedAt: api.data?.data?.live_observed_at,
       sections: sectionKeys(api.data?.data ?? undefined),
@@ -118,13 +90,16 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
     context: sectionState(context),
     risk: sectionState(risk),
     impact: sectionState(impact),
-    dependencies: collectDependencies(context.data?.data ?? undefined, impact.data?.data ?? undefined),
+    dependencies: collectDependencies(
+      serviceSourceState(context.data, context.error).available ? context.data?.data : undefined,
+      serviceSourceState(impact.data, impact.error).available ? impact.data?.data : undefined,
+    ),
     evidence: [...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])],
   });
 
   return (
     <div className="page-container">
-      <div className="breadcrumb"><Link href="/services">Services</Link><span>/</span><span>{name}</span></div>
+      <div className="breadcrumb"><Link href={overviewHref("/services", scope)}>Services</Link><span>/</span><span>{name}</span></div>
       <PageHeader
         eyebrow="Business service"
         title={name}
@@ -150,11 +125,12 @@ export default function ServiceDetailPage({ params }: { params: { name: string }
       {context.loading || risk.loading || impact.loading ? (
         <StatePanel title="Building service operating view" message="Resolving context, risk, and blast radius." tone="loading" />
       ) : (
+        <><ServiceBrief context={context} risk={risk} impact={impact} scope={scope} />
         <div className="service-detail-grid">
-          <section className="card"><div className="card-header"><h2>Service context</h2></div><div className="card-body">{context.error ? <StatePanel title="Service context unavailable" message={context.error.message} tone="partial" /> : <StructuredData value={context.data?.data ?? {}} />}</div></section>
-          <section className="card"><div className="card-header"><h2>Aggregated risk</h2></div><div className="card-body">{risk.error ? <StatePanel title="Risk evidence unavailable" message={risk.error.message} tone="partial" /> : <StructuredData value={risk.data?.data ?? {}} />}</div></section>
-          <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body">{impact.error ? <StatePanel title="Dependency evidence unavailable" message={impact.error.message} tone="partial" /> : <StructuredData value={impact.data?.data ?? {}} />}</div></section>
-        </div>
+          <section className="card"><div className="card-header"><h2>Service context</h2></div><div className="card-body">{context.error ? <StatePanel title="Service context unavailable" message={context.error.message} tone="partial" /> : <details><summary>Inspect source context</summary><StructuredData value={context.data?.data ?? {}} /></details>}</div></section>
+          <section className="card"><div className="card-header"><h2>Aggregated risk</h2></div><div className="card-body">{risk.error ? <StatePanel title="Risk evidence unavailable" message={risk.error.message} tone="partial" /> : <details><summary>Inspect source risk</summary><StructuredData value={risk.data?.data ?? {}} /></details>}</div></section>
+          <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body">{impact.error ? <StatePanel title="Dependency evidence unavailable" message={impact.error.message} tone="partial" /> : <details><summary>Inspect source impact</summary><StructuredData value={impact.data?.data ?? {}} /></details>}</div></section>
+        </div></>
       )}
 
       <CopilotDrawer

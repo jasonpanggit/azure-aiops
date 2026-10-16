@@ -5315,11 +5315,68 @@ body.topology-fullscreen-open {
   overflow: hidden;
 }
 
+.service-catalog .operations-table {
+  min-width: 1080px;
+}
+
+.service-catalog .operations-table td:first-child {
+  min-width: 180px;
+}
+
+.service-catalog caption,
+.service-brief caption {
+  padding: 12px 20px;
+  color: var(--color-text-secondary);
+  text-align: left;
+  font-size: 12px;
+}
+
+.service-scroll-hint {
+  padding-inline: 20px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
 .service-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-top: 18px;
+  align-items: start;
+}
+
+.service-brief {
+  margin-top: 18px;
+}
+
+.service-brief p {
+  max-width: 75ch;
+  line-height: 1.6;
+  margin-block: 12px;
+}
+
+.service-brief li {
+  overflow-wrap: anywhere;
+  margin-block: 12px;
+}
+
+.service-brief a {
+  color: var(--color-brand);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.service-brief input,
+.service-brief select {
+  min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 12px;
+  color: var(--color-text);
+  font: inherit;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
 }
 
 .service-impact-card {

@@ -73,6 +73,41 @@ cards are separate reads; capture does not silently replace the current cards.
 Scope changes immediately discard the prior comparison and late responses.
 No raw history is cached in browser storage.
 
+## Service catalog and detail interpretation
+
+The catalog joins the complete accessible connection registry with the existing
+incident report, **not** the durable Situation queue. Its mapping denominator is
+loaded authorized connection rows, including disabled connections; it is not
+an inventory/resource denominator or authoritative service registry. A row
+requires service, owner, support team and environment to count as mapped in
+this view. Missing mappings link to Connections; an unmapped label is not
+treated as a real service detail identity. Incident associations can overlap
+between services. Failed/loading incident reads withhold counts, chart and
+clean-state claims in both the UI and contextual Copilot. Even an available
+empty report means no associations in that report, never healthy availability.
+
+Service detail projects known subject ownership, criticality, environment and
+source-defined heuristic risk facts. Missing/ambiguous fields stay unreported;
+risk is not SLO attainment. Object-based applications/infrastructure/dependencies
+and top-level impact arrays retain relation, type and identity. Explicit
+resource IDs navigate to the authorized asset explorer; supported named domain
+references navigate to reauthorized lookups, and unsupported/untyped names
+remain unlinked. Filters work across all loaded relationship observations,
+with a visible 50-row render cap and loaded counts, not an asserted complete
+dependency graph. Original source payloads remain behind disclosures.
+
+Operational review prerequisites distinguish missing ownership/escalation,
+unavailable/partial/stale/fresh source evidence and corresponding scoped
+review links. HTTP success is not freshness: missing evidence stays partial,
+explicit stale evidence stays stale. A reported owner is not tested on-call
+coverage; no execution, rollback, failover or production-readiness approval is
+inferred. These source contracts do not supply service availability, latency,
+SLO windows/targets or error budgets. Those remain unreported rather than
+being synthesized from incident counts. Scope changes remount both workspaces
+immediately; all generated review and dependency links preserve selected scope.
+Retained service portfolio comparisons and sourced reliability telemetry are
+separate pending work, not delivered by this interpretation layer.
+
 ## Running
 
 ```bash
