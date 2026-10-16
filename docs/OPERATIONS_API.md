@@ -48,6 +48,11 @@ Fabric capacity health probes the configured platform subscription even when
 the page filters customer inventory to another subscription. Managed-identity
 deployments use the Terraform-configured Fabric identity for this read-only
 ARM request; the identity's capacity-scoped Reader assignment remains required.
+When global Terraform role management is disabled, explicitly set
+`enable_fabric_capacity_health_reader = true` to provision only this read-only
+capacity-scoped assignment. This does not enable other role assignments or
+change Container Apps registry authentication. Without this permission, the
+capacity health remains unknown rather than reporting a healthy capacity.
 
 For local browser testing, run the API and web app separately. The API must be
 running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must
