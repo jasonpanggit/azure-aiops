@@ -36,11 +36,6 @@ function entityCount(snapshot: Envelope<TwinSnapshot> | null, kind: string): num
   return snapshot?.data.entities.filter((entity) => entity.kind === kind).length ?? 0;
 }
 
-function firstResource(snapshot: Envelope<TwinSnapshot> | null): string {
-  const resource = snapshot?.data.entities.find((entity) => entity.kind === "resource");
-  return resource?.id.replace(/^resource:/, "") ?? "";
-}
-
 function riskScore(snapshot: Envelope<TwinSnapshot> | null): number | null {
   const point = snapshot?.data.temporal.risk_trend[0];
   return typeof point?.risk_score === "number" ? point.risk_score : null;
@@ -61,6 +56,7 @@ export default function OperationalTwinPage() {
   const [refresh, setRefresh] = useState(0);
   const [detailErrors, setDetailErrors] = useState<string[]>([]);
   const [copyError, setCopyError] = useState("");
+  const [selectedResourceId, setSelectedResourceId] = useState("");
   const loadedScope = useRef<typeof scope | null>(null);
 
   useEffect(() => {
@@ -69,6 +65,7 @@ export default function OperationalTwinPage() {
     setError("");
     loadedScope.current = null;
     setSnapshot(null);
+    setSelectedResourceId("");
     setComparison(null);
     setScenario(null);
     setTraversal(null);
@@ -92,32 +89,41 @@ export default function OperationalTwinPage() {
     };
   }, [scope, refresh]);
 
-  const selectedResource = useMemo(() => firstResource(snapshot), [snapshot]);
+  const resources = useMemo(() => snapshot?.data.entities.filter((entity) => entity.kind === "resource") ?? [], [snapshot]);
+  const selectedResource = resources.some((entity) => entity.id === selectedResourceId)
+    ? selectedResourceId.replace(/^resource:/, "") : "";
 
   useEffect(() => {
-    if (!selectedResource || loadedScope.current !== scope) return;
     let active = true;
     setScenario(null);
     setTraversal(null);
-    setExported(null);
+    if (!selectedResource || loadedScope.current !== scope) return;
     Promise.allSettled([
       twinApi.scenario(scenarioType, selectedResource, scope),
       twinApi.traverse(selectedResource, scope),
-      twinApi.export(scope),
-    ]).then(([scenarioResult, traversalResult, exportResult]) => {
+    ]).then(([scenarioResult, traversalResult]) => {
       if (!active) return;
       if (scenarioResult.status === "fulfilled") setScenario(scenarioResult.value);
       if (traversalResult.status === "fulfilled") setTraversal(traversalResult.value);
-      if (exportResult.status === "fulfilled") setExported(exportResult.value);
-      const labels = ["Scenario analysis", "Business traversal", "Twin export"];
-      const errors = [scenarioResult, traversalResult, exportResult]
+      const labels = ["Scenario analysis", "Business traversal"];
+      const errors = [scenarioResult, traversalResult]
         .flatMap((result, index) => result.status === "rejected" ? [`${labels[index]} is unavailable.`] : []);
-      setDetailErrors(current => [...current.filter(message => message.startsWith("Temporal")), ...errors]);
+      setDetailErrors(current => [...current.filter(message => !message.startsWith("Scenario") && !message.startsWith("Business")), ...errors]);
     });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [scenarioType, scope, selectedResource]);
+
+  useEffect(() => {
+    let active = true;
+    setExported(null);
+    if (!snapshot || loadedScope.current !== scope) return;
+    twinApi.export(scope).then(result => {
+      if (active) setExported(result);
+    }).catch(() => {
+      if (active) setDetailErrors(current => [...current, "Twin export is unavailable."]);
+    });
+    return () => { active = false; };
+  }, [snapshot, scope]);
 
   const observedRisk = snapshot?.source_status?.live_operational_sources === "unavailable"
     ? null
@@ -271,6 +277,14 @@ export default function OperationalTwinPage() {
         <section className="card">
           <div className="card-header"><div><h2>Twin model</h2><p>Canonical entities, relationships, versions, provenance, and confidence.</p></div><StatusBadge label={`${snapshot?.data.confidence ?? "unknown"} confidence`} tone={statusTone(snapshot?.data.confidence)} /></div>
           <div className="card-body">
+          <label>
+            Resource for impact analysis
+            <select value={selectedResourceId} disabled={loading || resources.length === 0} onChange={(event) => setSelectedResourceId(event.target.value)}>
+              <option value="">Select a resource</option>
+              {resources.map(resource => <option key={resource.id} value={resource.id}>{resource.name} ({resource.id.replace(/^resource:/, "")})</option>)}
+            </select>
+          </label>
+          <p className="muted">Choose an observed resource for traversal and scenario estimates. No resource is selected automatically.</p>
           <div className="entity-pill-row" aria-label="Twin entity counts">
             {["business_service", "application", "environment", "subscription", "resource", "vulnerability", "incident", "remediation", "owner"].map((kind) => (
               <span key={kind} className="entity-pill">
@@ -301,7 +315,7 @@ export default function OperationalTwinPage() {
               <p className="muted">Consequence: {traversal.data.business_consequence.join(" -> ")}</p>
             </>
           ) : (
-            <p className="muted">No resource traversal is available for the current scope.</p>
+            <p className="muted">{selectedResource ? "No resource traversal is available for this selection." : "Select a resource to inspect business impact."}</p>
           )}
           </div>
         </section>
@@ -328,7 +342,7 @@ export default function OperationalTwinPage() {
           <label className="field-label" htmlFor="scenario">
             Scenario
           </label>
-          <select id="scenario" value={scenarioType} onChange={(event) => setScenarioType(event.target.value as (typeof SCENARIOS)[number])}>
+          <select id="scenario" value={scenarioType} disabled={!selectedResource} onChange={(event) => setScenarioType(event.target.value as (typeof SCENARIOS)[number])}>
             {SCENARIOS.map((item) => (
               <option key={item} value={item}>
                 {item.replaceAll("_", " ")}

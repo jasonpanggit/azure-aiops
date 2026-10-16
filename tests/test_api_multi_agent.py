@@ -173,6 +173,39 @@ def test_human_controls_update_principal_scoped_ledger(tmp_path):
     assert reloaded["decisions"][-1]["payload"]["owner"] == "Finance Ops"
 
 
+@pytest.mark.parametrize("action", ["accept_finding", "reject_finding"])
+def test_finding_decisions_require_observed_identity_and_reason(tmp_path, action):
+    client = _client(tmp_path)
+    ledger = client.post(
+        "/api/v1/agents/investigations?subscription=sub-prod",
+        headers=_auth(),
+        json={"objective": 'Investigate "Payroll" incident network CVE', "timeout_seconds": 5},
+    ).json()["data"]
+    findings = [
+        finding for run in ledger["agent_runs"] for finding in run["findings"]
+    ]
+    assert len(findings) >= 2
+    selected = findings[1]["finding_id"]
+    path = f"/api/v1/agents/investigations/{ledger['ledger_id']}/actions?subscription=sub-prod"
+    for invalid in (
+        {"finding_id": "not-in-this-ledger", "reason": "Reviewed"},
+        {"finding_id": selected, "reason": " "},
+        {"finding_id": selected, "reason": "x" * 1001},
+        {"reason": "Reviewed"},
+    ):
+        assert client.post(path, headers=_auth(), json={
+            "action": action, "payload": invalid,
+        }).status_code == 400
+    result = client.post(path, headers=_auth(), json={
+        "action": action,
+        "payload": {"finding_id": selected, "reason": "Reviewed exact evidence"},
+    })
+    assert result.status_code == 200, result.text
+    decisions = result.json()["data"]["decisions"]
+    assert len(decisions) == 1
+    assert decisions[0]["payload"]["finding_id"] == selected
+
+
 def test_findings_name_subjects_and_severity_not_only_counts(tmp_path):
     """Findings must state what was observed, not just how many rows returned."""
     response = _client(tmp_path).post(

@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -215,6 +216,16 @@ function ResourceCard({
           <div className="cell-subtext resource-health-error">
             {detail.error ? detail.error : `Observed ${detail.observed_at}`}
           </div>
+          {(detail.unavailable_metrics?.length ?? 0) > 0 ? (
+            <details>
+              <summary>Missing metric diagnostics</summary>
+              <p>Unavailable: {detail.unavailable_metrics?.join(", ")}. A missing metric is not a healthy measurement.</p>
+              <p>{isContainerApp
+                ? "Check Azure Monitor platform metric availability and the connection's monitoring permissions."
+                : "Check guest metric collection, workspace association, agent/collection-rule configuration, and monitoring permissions. These are checks to perform, not confirmed causes."}</p>
+              <Link href="/connections">Review connection health</Link>
+            </details>
+          ) : null}
         </>
       ) : null}
     </article>
@@ -235,6 +246,24 @@ export default function ResourceHealthPage() {
   const [inventoryError, setInventoryError] = useState<string | null>(null);
   const [healthById, setHealthById] = useState<Record<string, CardHealth>>({});
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [healthFilter, setHealthFilter] = useState("all");
+  const [resourceSearch, setResourceSearch] = useState("");
+
+  function healthState(resource: FlatInventoryResource): string {
+    const health = healthById[resourceKey(resource.resource_id)];
+    if (!health || health.loading) return "loading";
+    if (health.error) return "failed";
+    return health.data?.status ?? "unknown";
+  }
+  const visibleResources = resources.filter(resource =>
+    (healthFilter === "all" || healthState(resource) === healthFilter)
+    && `${resource.resource_name} ${resource.resource_id} ${resource.resource_group}`.toLowerCase().includes(resourceSearch.trim().toLowerCase()),
+  );
+  const coverage = resources.reduce<Record<string, number>>((counts, resource) => {
+    const state = healthState(resource);
+    counts[state] = (counts[state] ?? 0) + 1;
+    return counts;
+  }, {});
 
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
@@ -622,6 +651,19 @@ export default function ResourceHealthPage() {
 
       {!inventoryLoading && !inventoryError && resources.length > 0 ? (
         <>
+          <section className="card" aria-label="Health coverage and triage">
+            <div className="card-header"><h2>Health coverage and triage</h2></div>
+            <div className="card-body">
+              <p role="status">{details.length} of {resources.length} resources returned health evidence. {coverage.loading ?? 0} loading; {coverage.failed ?? 0} failed; {coverage.unknown ?? 0} unknown. Missing evidence is not healthy.</p>
+              <label>Health state
+                <select value={healthFilter} onChange={event => setHealthFilter(event.target.value)}>
+                  {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state}</option>)}
+                </select>
+              </label>
+              <label>Find compute resource<input type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>
+              <p>{visibleResources.length} matching resources of {resources.length} observed.</p>
+            </div>
+          </section>
           <div className="metric-grid" style={{ marginBottom: "1.5rem" }}>
             <MetricCard
               label="Resources observed"
@@ -667,8 +709,9 @@ export default function ResourceHealthPage() {
               className="card"
               style={{ marginBottom: "1.5rem", padding: "1rem" }}
             >
+              <h2>CPU for matching resources</h2>
               <UtilizationBarChart
-                data={details.map((resource) => ({
+                data={details.filter(resource => visibleResources.some(row => resourceKey(row.resource_id) === resourceKey(resource.resource_id))).map((resource) => ({
                   id: resource.resource_id,
                   label: resource.resource_name,
                   value: resource.cpu_percent,
@@ -684,7 +727,7 @@ export default function ResourceHealthPage() {
               gap: "1rem",
             }}
           >
-            {resources.map((resource) => (
+            {visibleResources.map((resource) => (
               <ResourceCard
                 key={resourceKey(resource.resource_id)}
                 resource={resource}
@@ -693,6 +736,7 @@ export default function ResourceHealthPage() {
               />
             ))}
           </div>
+          {visibleResources.length === 0 ? <StatePanel title="No resources match these filters" message="Change the health state or resource search. This does not change the observed inventory." /> : null}
         </>
       ) : null}
 

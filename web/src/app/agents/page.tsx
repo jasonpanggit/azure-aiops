@@ -22,6 +22,8 @@ export default function MultiAgentInvestigationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [owner, setOwner] = useState("Service owner");
+  const [selectedFindingId, setSelectedFindingId] = useState("");
+  const [decisionReason, setDecisionReason] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
   const requestId = useRef(0);
@@ -32,6 +34,8 @@ export default function MultiAgentInvestigationPage() {
     setCatalogLoading(true);
     setCatalogError("");
     setLedger(null);
+    setSelectedFindingId("");
+    setDecisionReason("");
     setError("");
     setLoading(false);
     multiAgentApi.catalog(scope).then((result) => {
@@ -53,6 +57,8 @@ export default function MultiAgentInvestigationPage() {
     const id = ++requestId.current;
     setLoading(true);
     setError("");
+    setSelectedFindingId("");
+    setDecisionReason("");
     try {
       const result = await multiAgentApi.investigate(nextObjective, scope);
       if (id === requestId.current) setLedger(result);
@@ -80,6 +86,7 @@ export default function MultiAgentInvestigationPage() {
 
   const evidence = ledger?.data.agent_runs.flatMap((run) => run.evidence) ?? [];
   const findings = ledger?.data.agent_runs.flatMap((run) => run.findings) ?? [];
+  const selectedFinding = findings.find((finding) => finding.finding_id === selectedFindingId);
   const activeAgents = ledger?.data.agent_runs.length ?? 0;
   const configuredAgents = catalog.filter(
     (agent) => agent.foundry?.configured,
@@ -255,13 +262,36 @@ export default function MultiAgentInvestigationPage() {
               <div className="card-header"><div><h2>Human-in-the-loop controls</h2><p>Operator decisions are appended to the ledger audit trail.</p></div></div>
               <div className="card-body agents-controls">
                 <label>
+                  Finding to review
+                  <select value={selectedFinding?.finding_id ?? ""} disabled={loading} onChange={(event) => {
+                    setSelectedFindingId(event.target.value);
+                    setDecisionReason("");
+                  }}>
+                    <option value="">Select a finding</option>
+                    {findings.map((finding) => (
+                      <option key={finding.finding_id} value={finding.finding_id}>{finding.summary} ({finding.finding_id})</option>
+                    ))}
+                  </select>
+                </label>
+                {selectedFinding ? (
+                  <div aria-label="Selected finding review">
+                    <p>{selectedFinding.summary}</p>
+                    <p>Finding {selectedFinding.finding_id} | {selectedFinding.confidence} confidence | {selectedFinding.evidence_count} evidence items</p>
+                    <details><summary>Specialist-run evidence for this finding</summary><StructuredData value={ledger.data.agent_runs.find((run) => run.findings.some((finding) => finding.finding_id === selectedFinding.finding_id))?.evidence ?? []} /></details>
+                  </div>
+                ) : null}
+                <label>
+                  Finding decision reason
+                  <textarea value={decisionReason} maxLength={1000} disabled={loading} onChange={(event) => setDecisionReason(event.target.value)} rows={2} />
+                </label>
+                <label>
                   Owner
                   <input value={owner} onChange={(event) => setOwner(event.target.value)} />
                 </label>
                 <div className="mode-toggle">
                   <button type="button" disabled={loading} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
-                  <button type="button" disabled={loading || !findings.length} onClick={() => applyAction("accept_finding", { finding_id: findings[0]?.finding_id ?? "" })}>Accept finding</button>
-                  <button type="button" disabled={loading || !findings.length} onClick={() => applyAction("reject_finding", { finding_id: findings[0]?.finding_id ?? "", reason: "Insufficient evidence" })}>Reject finding</button>
+                  <button type="button" disabled={loading || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("accept_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Accept finding</button>
+                  <button type="button" disabled={loading || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("reject_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Reject finding</button>
                   <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
                   <button type="button" disabled={loading || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
                   <button type="button" disabled={loading} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>

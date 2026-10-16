@@ -119,6 +119,27 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(screen.getByRole("heading", { name: "Specialist plan activity" })).toBeInTheDocument();
   });
 
+  it("requires an explicit finding and reason and submits that exact identity", async () => {
+    investigate.mockResolvedValueOnce(envelope({
+      ...ledger,
+      agent_runs: [{ ...ledger.agent_runs[0], findings: [
+        ...ledger.agent_runs[0].findings,
+        { ...ledger.agent_runs[0].findings[0], finding_id: "network:2", summary: "Second finding" },
+      ] }],
+    }));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Run deterministic investigation" }));
+    expect(await screen.findByRole("button", { name: "Reject finding" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Finding to review"), { target: { value: "network:2" } });
+    expect(screen.getByRole("button", { name: "Reject finding" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Finding decision reason"), { target: { value: "Contradicted by current route evidence" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reject finding" }));
+    await waitFor(() => expect(action).toHaveBeenCalledWith("mai-123", "reject_finding", {
+      finding_id: "network:2", reason: "Contradicted by current route evidence",
+    }, {}));
+    expect(screen.getByRole("button", { name: "Reject finding" })).toBeDisabled();
+  });
+
   it("runs agents, shows evidence-backed synthesis, and records human decisions", async () => {
     renderPage();
 

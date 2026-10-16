@@ -22,6 +22,7 @@ import { useScope } from "@/lib/scope-context";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type ConnectionCreateRequest, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { ConnectionReadiness } from "@/components/ConnectionReadiness";
 
 const EMPTY_FORM = {
   connectionId: "",
@@ -95,6 +96,7 @@ export default function ConnectionsPage() {
   const [ontologyRefreshKey, setOntologyRefreshKey] = useState(0);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
   const [selectedOntologyConnectionId, setSelectedOntologyConnectionId] = useState("");
+  const [readinessConnectionId, setReadinessConnectionId] = useState("");
   const [ontologyStatus, setOntologyStatus] = useState<OntologyStatusState>({
     data: null,
     error: null,
@@ -103,6 +105,8 @@ export default function ConnectionsPage() {
   const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
   const activeConnections = useMemo(() => rows.filter((connection) => connection.is_active), [rows]);
+  const readinessConnection = activeConnections.find(connection => connection.connection_id === readinessConnectionId)
+    ?? activeConnections[0];
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "health", label: "Health", getValues: (connection) => connection.health_status },
     { id: "sync", label: "Sync", getValues: (connection) => connection.sync_status || "unknown" },
@@ -523,6 +527,15 @@ export default function ConnectionsPage() {
           Ontology automation
         </button>
       </div>
+
+      {tab === "subscriptions" && readinessConnection ? <>
+        <label>Connection readiness scope
+          <select value={readinessConnection.connection_id} onChange={event => setReadinessConnectionId(event.target.value)}>
+            {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
+          </select>
+        </label>
+        <ConnectionReadiness key={`${JSON.stringify(scope)}:${readinessConnection.connection_id}`} connection={readinessConnection} scope={scope} refreshKey={refreshKey} />
+      </> : null}
 
       {(actionError || actionMessage || syncProgress) && (
         <div className={`callout ${actionError ? "callout-critical" : syncProgress?.state.status.toLowerCase() === "failed" ? "callout-critical" : "callout-info"}`} role="status">

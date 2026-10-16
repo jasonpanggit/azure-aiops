@@ -9,6 +9,8 @@ import type {
   ComplianceDeviation,
   ComplianceResourcePosture,
   ComplianceSummary,
+  ComplianceDesignPolicy,
+  CompliancePolicyState,
   ConnectionCreateRequest,
   ConnectionCreateResult,
   ConnectionHealthReport,
@@ -1636,6 +1638,19 @@ export const patchingApi = {
  * `SecurityDeviation`, `ConfigurationDrift`).
  */
 export const complianceApi = {
+  /** Read the exact selected scope's durable assessment policy and decisions. */
+  designPolicy: (scope: ScopeSelection = {}) =>
+    apiRequest<CompliancePolicyState>("/compliance/design-policy", { query: scopeToSearchParams(scope) }),
+  /** Replace a reviewed policy only if its revision is still current. */
+  saveDesignPolicy: (expected_revision: number, policy: ComplianceDesignPolicy, reason: string, scope: ScopeSelection = {}) =>
+    apiRequest<CompliancePolicyState>("/compliance/design-policy", {
+      method: "PUT", query: scopeToSearchParams(scope), body: { expected_revision, policy, reason },
+    }),
+  /** Record a revision-bound architecture risk decision with server actor identity. */
+  decideException: (body: { expected_revision: number; action: "accept" | "revoke"; violationId: string; owner: string; reason: string; expiresAt: string }, scope: ScopeSelection = {}) =>
+    apiRequest<CompliancePolicyState>("/compliance/design-policy/exceptions", {
+      method: "POST", query: scopeToSearchParams(scope), body,
+    }),
   posture: (scope: ScopeSelection = {}) =>
     apiRequest<ComplianceResourcePosture[]>("/compliance/posture", { query: scopeToSearchParams(scope) }),
   policyDeviations: (scope: ScopeSelection = {}) =>

@@ -22,7 +22,20 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ..dependencies import Context, Page, ReadScope, live_subscription_ids
+from intelligence.governance.compliance_policy import (
+    ExceptionDecision,
+    PolicyChange,
+)
+from storage.onelake_documents import DocumentConflictError
+
+from ..dependencies import (
+    Context,
+    Page,
+    ReadScope,
+    WritePrincipal,
+    live_subscription_ids,
+)
+from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope, scope_attributes
 
@@ -31,6 +44,56 @@ router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 SOURCE_ENGINE = "intelligence.change.ChangeIntelligence"
 
 _HIDDEN = object()
+
+
+def _policy_store(context: Context) -> Any:
+    if context.compliance_policy_store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable architecture assessment policy storage is unavailable",
+        )
+    return context.compliance_policy_store
+
+
+@router.get("/design-policy", summary="Scope-exact architecture assessment policy and audit")
+def read_design_policy(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Read server decisions; browser-local preferences are never approvals."""
+    return envelope(_policy_store(context).read(scope.to_dict()), scope=scope.to_dict())
+
+
+def _update_policy(
+    principal: WritePrincipal,
+    context: Context,
+    scope: ReadScope,
+    change: PolicyChange | ExceptionDecision,
+) -> dict[str, Any]:
+    for action in ("write", "approve") if isinstance(change, ExceptionDecision) else ("write",):
+        allowed = context.authorizer.effective_scope(principal, action, scope)
+        if allowed != scope:
+            raise ApiError(ErrorCode.FORBIDDEN, "The complete policy scope must be authorized")
+    try:
+        state = _policy_store(context).update(scope.to_dict(), change, principal.subject)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Policy changed; reload and review before retrying") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return envelope(state, scope=scope.to_dict())
+
+
+@router.put("/design-policy", summary="Replace architecture assessment policy")
+def replace_design_policy(
+    principal: WritePrincipal, context: Context, scope: ReadScope, change: PolicyChange,
+) -> dict[str, Any]:
+    """Require a writer authorized for the entire exact scope and revision."""
+    return _update_policy(principal, context, scope, change)
+
+
+@router.post("/design-policy/exceptions", summary="Record or revoke architecture risk acceptance")
+def decide_design_exception(
+    principal: WritePrincipal, context: Context, scope: ReadScope, change: ExceptionDecision,
+) -> dict[str, Any]:
+    """Record the authenticated approver, never a caller-supplied identity."""
+    return _update_policy(principal, context, scope, change)
 
 
 def _service(context: Context, scope: Scope) -> Any:

@@ -17,6 +17,9 @@ import type {
   OntologyRunNowRequest,
 } from "@/lib/types";
 
+// The readiness journey has its own independent contract and failure tests.
+vi.mock("@/components/ConnectionReadiness", () => ({ ConnectionReadiness: () => null }));
+
 const {
   create,
   fabricCapabilities,
