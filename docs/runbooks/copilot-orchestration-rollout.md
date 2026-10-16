@@ -434,6 +434,9 @@ the Agents page. Preserve its validated candidate/promotion contract:
   This consumer route uses the existing endpoint-interaction grant instead
   of adding agent-management permissions for the legacy project proxy.
   See [the Foundry endpoint model](https://learn.microsoft.com/azure/foundry/agents/how-to/migrate-agent-applications).
+  Empty rejected-version history in a restored project is compared by its
+  JSON value, not Terraform's inferred empty-list type. An absent, malformed
+  or different history still fails the coordinator activation gate.
   Coordinator publication and its live validator both support
   `FOUNDRY_AUTH_MODE=azure_cli` without storing client credentials.
   `foundry_coordinator_rejected_versions` preserves the historical default

@@ -354,7 +354,7 @@ locals {
     try(local.foundry_coordinator_artifact.model, "") == local.foundry_model_deployment_name &&
     try(local.foundry_coordinator_artifact.planning_probe, "") == "pass" &&
     try(local.foundry_coordinator_artifact.synthesis_probe, "") == "pass" &&
-    try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions), null) == var.foundry_coordinator_rejected_versions &&
+    jsonencode(try(tolist(local.foundry_coordinator_artifact.supersedes_unusable_versions), null)) == jsonencode(var.foundry_coordinator_rejected_versions) &&
     !contains(var.foundry_coordinator_rejected_versions, try(local.foundry_coordinator_artifact.provider_version_id, "")) &&
     try(local.foundry_coordinator_artifact.validation_digest, "") == sha256(jsonencode(local.foundry_coordinator_validation_payload))
   )
