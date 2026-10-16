@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,42 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 coordinator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coordinator)
+
+
+def test_prompt_runtime_role_grants_only_agent_reads_and_response_execution():
+    terraform = (ROOT / "infra/terraform/foundry.tf").read_text()
+    role = terraform.split(
+        'resource "azurerm_role_definition" "apps_foundry_prompt_runtime" {', 1
+    )[1].split('\nresource ', 1)[0]
+    permissions = re.search(r"data_actions\s*=\s*\[(.*?)\]", role, re.DOTALL)
+    assert permissions is not None
+    assert re.findall(r'"([^"]+)"', permissions[1]) == [
+        "Microsoft.CognitiveServices/accounts/AIServices/agents/read",
+        "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
+        "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
+    ]
+    assert re.search(r"\n\s+actions\s*=\s*\[\]", role)
+    assert "assignable_scopes = [azurerm_resource_group.main.id]" in role
+    assert "var.enable_role_assignments || var.enable_foundry_role_assignments" in role
+
+
+def test_prompt_runtime_assignment_is_limited_to_project_and_api_identity():
+    terraform = (ROOT / "infra/terraform/foundry.tf").read_text()
+    assignment = terraform.split(
+        'resource "azurerm_role_assignment" "apps_foundry_prompt_runtime" {', 1
+    )[1].split('\nresource ', 1)[0]
+    assert re.search(
+        r"scope\s*=\s*azurerm_cognitive_account_project\.ops\.id", assignment
+    )
+    assert re.search(
+        r"principal_id\s*=\s*azurerm_user_assigned_identity\.apps\.principal_id",
+        assignment,
+    )
+    assert (
+        "azurerm_role_definition.apps_foundry_prompt_runtime[0].role_definition_resource_id"
+        in assignment
+    )
+    assert "var.enable_role_assignments || var.enable_foundry_role_assignments" in assignment
 
 
 def test_cli_auth_does_not_require_or_use_client_secret(monkeypatch):

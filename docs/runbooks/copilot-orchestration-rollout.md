@@ -400,6 +400,13 @@ the Agents page. Preserve its validated candidate/promotion contract:
 - Set `enable_foundry_role_assignments` when an Owner deployer must restore
   project-scoped runtime and knowledge-search grants without enabling
   unrelated subscription-wide execution permissions.
+  Named prompt-agent calls also require agent-definition reads and OpenAI
+  Responses access. Terraform's `apps_foundry_prompt_runtime` custom role
+  grants only `AIServices/agents/read` and `OpenAI/responses/read`/`write`,
+  assigned to the API identity at the project. It does not grant agent
+  mutation, model deployment, key access or role management. Verify a real
+  pinned call from that identity; built-in runtime-role presence alone is
+  not sufficient.
 - Set `enable_mcp_role_assignments` for the MCP identities' read-only Azure
   and vault grants. Terraform adds the Foundry project identity to API gateway
   grants as a subscription-scoped reader; existing browser grants are retained.
