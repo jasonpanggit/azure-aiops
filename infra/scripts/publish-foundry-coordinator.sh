@@ -43,4 +43,5 @@ PYTHONPATH="${repo_root}/src" \
   --provider-version-id "${provider_version_id}" \
   --expected-model "${FOUNDRY_AGENT_MODEL}" \
   --manifest-digest "${FOUNDRY_SPECIALIST_MANIFEST_DIGEST}" \
+  --rejected-versions-json "${FOUNDRY_COORDINATOR_REJECTED_VERSIONS_JSON:-[\"1\",\"2\",\"3\",\"4\"]}" \
   --out "${FOUNDRY_COORDINATOR_RECORD}"

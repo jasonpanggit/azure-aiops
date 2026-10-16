@@ -863,6 +863,20 @@ variable "foundry_coordinator_activation_artifact" {
   default     = ""
 }
 
+variable "foundry_coordinator_rejected_versions" {
+  description = "Reviewed unusable coordinator provider versions in the target project. Use an empty list for a new project with no rejected history."
+  type        = list(string)
+  default     = ["1", "2", "3", "4"]
+
+  validation {
+    condition = (
+      length(distinct(var.foundry_coordinator_rejected_versions)) == length(var.foundry_coordinator_rejected_versions) &&
+      alltrue([for version in var.foundry_coordinator_rejected_versions : trimspace(version) != ""])
+    )
+    error_message = "Rejected coordinator versions must be distinct nonempty strings."
+  }
+}
+
 variable "enable_foundry_coordinator_candidate_publish" {
   description = "Publish and live-validate one additive Operations Copilot coordinator version without publishing specialist agents."
   type        = bool

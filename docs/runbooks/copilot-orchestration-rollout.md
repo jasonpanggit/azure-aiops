@@ -404,6 +404,13 @@ the Agents page. Preserve its validated candidate/promotion contract:
   and vault grants. Terraform adds the Foundry project identity to API gateway
   grants as a subscription-scoped reader; existing browser grants are retained.
 - Restore governed knowledge search before specialist candidate publication.
+  Coordinator publication and its live validator both support
+  `FOUNDRY_AUTH_MODE=azure_cli` without storing client credentials.
+  `foundry_coordinator_rejected_versions` preserves the historical default
+  `["1", "2", "3", "4"]`; set it explicitly to `[]` only for a newly created
+  project with no unusable coordinator history. The live validator rejects
+  listed versions before provider I/O, and its digest-bound validation
+  payload must carry the same reviewed list before Terraform can activate it.
   Publish candidates with the existing Terraform provisioner, validate actual
   provider version IDs, then use a separate reviewed activation plan.
 - With an Azure CLI deployer, leave Terraform `client_id` and `client_secret`
