@@ -315,9 +315,11 @@ export default function NetworkPage() {
 
       <div className="metric-grid network-metrics">
         <MetricCard
-          label="Observed network"
-          value={summary ? `${summary.hub_count} / ${summary.spoke_count}` : "—"}
-          detail="Hub / spoke VNets across the current scope"
+          label="Observed VNets"
+          value={summary ? summary.hub_count + summary.spoke_count + summary.isolated_vnet_count : "—"}
+          detail={summary
+            ? `${summary.hub_count} hub / ${summary.spoke_count} spoke / ${summary.isolated_vnet_count} isolated`
+            : "VNets across the current scope"}
         />
         <MetricCard
           label="Inspection bypass findings"

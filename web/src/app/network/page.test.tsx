@@ -922,7 +922,7 @@ describe("Network page honest totals and server pagination", () => {
     const insights = screen.getByRole("heading", { name: "Topology insights" });
     const evidence = await screen.findByLabelText("Data trust and provenance");
     expect(screen.getByText("Reviewing the bounded topology evidence…")).toBeInTheDocument();
-    expect(screen.getByText("Observed network")).toBeInTheDocument();
+    expect(screen.getByText("Observed VNets")).toBeInTheDocument();
     expect(
       insights.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -1076,8 +1076,11 @@ describe("Network page honest totals and server pagination", () => {
         screen.getByTestId("topology-workspace").parentElement,
       ).toHaveAttribute("aria-busy", "true");
       expect(
-        screen.getByText("Observed network").closest("article"),
-      ).toHaveTextContent("1 / 1");
+        screen.getByText("Observed VNets").closest("article"),
+      ).toHaveTextContent("1 hub / 1 spoke / 0 isolated");
+      expect(
+        within(screen.getByText("Observed VNets").closest("article")!).getByText("2"),
+      ).toBeInTheDocument();
 
       await act(async () => {
         full.resolve(buildTopologyEnvelope());
@@ -1169,6 +1172,45 @@ describe("Network page honest totals and server pagination", () => {
     expect(
       await screen.findByText("Showing 1–20 of 77 inspection gaps"),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    { hubs: 0, spokes: 0, isolated: 1, total: 1 },
+    { hubs: 1, spokes: 2, isolated: 3, total: 6 },
+    { hubs: 0, spokes: 0, isolated: 0, total: 0 },
+  ])("counts all observed VNets for $hubs hubs, $spokes spokes, and $isolated isolated", async ({
+    hubs, spokes, isolated, total,
+  }) => {
+    const topology = buildTopologyEnvelope();
+    topology.data.summary = buildNetworkSummary({
+      hub_count: hubs,
+      spoke_count: spokes,
+      isolated_vnet_count: isolated,
+      resource_counts: { vnets: total },
+    });
+    mocks.topology.mockResolvedValue(topology);
+
+    renderPage();
+
+    await waitFor(() => {
+      const metric = screen.getByText("Observed VNets").closest("article")!;
+      expect(within(metric).getByText(String(total))).toBeInTheDocument();
+      expect(metric).toHaveTextContent(
+        `${hubs} hub / ${spokes} spoke / ${isolated} isolated`,
+      );
+    });
+  });
+
+  it("does not report zero observed VNets when topology is unavailable", async () => {
+    mocks.topology.mockRejectedValue(new Error("Topology unavailable"));
+
+    renderPage();
+
+    await waitFor(() => expect(mocks.topology).toHaveBeenCalled());
+    const metric = screen.getByText("Observed VNets").closest("article")!;
+    expect(within(metric).getByText("—")).toBeInTheDocument();
+    expect(metric).toHaveTextContent("VNets across the current scope");
+    expect(within(metric).queryByText("0")).not.toBeInTheDocument();
   });
 
   it("qualifies trust dimensions and describes the bypass finding population", async () => {
