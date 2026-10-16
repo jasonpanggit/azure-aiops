@@ -9820,3 +9820,18 @@ body.topology-fullscreen-open {
 .governance-campaign-detail { padding-top: 1.25rem; min-width: 0; }
 .governance-campaigns details { margin: 1rem 0; }
 .governance-campaigns summary { cursor: pointer; padding: 0.5rem 0; }
+.remediation-decision-summary { padding: 1.25rem; border-bottom: 1px solid var(--color-border); min-width: 0; overflow-wrap: anywhere; }
+.remediation-decision-summary h2 { font-size: 1.125rem; margin-bottom: 1rem; }
+.remediation-decision-summary p { margin-block: 0.75rem; max-width: 75ch; }
+.remediation-decision-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; margin: 0; }
+.remediation-decision-target { grid-column: 1 / -1; }
+.remediation-decision-summary dt { color: var(--color-text-secondary); font-size: 0.875rem; }
+.remediation-decision-summary dd { margin: 0.25rem 0 0; }
+.remediation-decision-summary code { white-space: normal; overflow-wrap: anywhere; }
+.remediation-decision-summary .button { min-height: 44px; white-space: normal; text-align: start; max-width: 100%; }
+.remediation-decision-disclosures { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+.remediation-decision-disclosures details { min-width: 0; max-width: 100%; }
+.remediation-decision-disclosures details[open] { flex-basis: 100%; }
+.remediation-decision-disclosures summary { cursor: pointer; min-height: 44px; padding-block: 0.625rem; }
+.remediation-decision-disclosures li { margin-block: 0.5rem; }
+.remediation-decision-boundary { font-size: 0.875rem; color: var(--color-text-secondary); }

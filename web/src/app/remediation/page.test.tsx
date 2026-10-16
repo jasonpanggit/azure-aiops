@@ -2,7 +2,8 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@te
 import userEvent from "@testing-library/user-event";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
+import { SCOPE_DIMENSIONS, type ScopeSelection } from "@/lib/scope";
 
 const {
   abandon,
@@ -230,6 +231,11 @@ function renderPage() {
   );
 }
 
+function ChangeScope({ scope }: { scope: ScopeSelection }) {
+  const { setScope } = useScope();
+  return <button onClick={() => setScope(scope)}>Change test scope</button>;
+}
+
 describe("Governed remediation workflow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -323,6 +329,247 @@ describe("Governed remediation workflow", () => {
     expect(screen.getByText("Patch payroll database")).toBeInTheDocument();
     expect(screen.queryByText("Unified remediation backlog")).not.toBeInTheDocument();
     expect(await screen.findByText("Evidence and audit history")).toBeInTheDocument();
+  });
+
+  it("keeps exact read-time decision context across all five steps without mutations", async () => {
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    const summary = await screen.findByRole("region", { name: "Decision summary" });
+    const navigation = within(screen.getByRole("navigation", { name: "Remediation workflow" }));
+    for (const step of ["Select fix", "Review impact", "Approve", "Run", "Verify"]) {
+      fireEvent.click(navigation.getByRole("button", { name: new RegExp(step) }));
+      expect(summary).toBeVisible();
+      expect(within(summary).getByText(TARGET)).toBeVisible();
+      expect(within(summary).getByText("Install Patches")).toBeVisible();
+      expect(summary).toHaveTextContent("No approval recorded");
+    }
+    fireEvent.click(within(summary).getByText("Preview binding: 1 selected update"));
+    expect(within(summary).getByText("snapshot-hash-1")).toBeVisible();
+    expect(within(summary).getByText("KB600001")).toBeVisible();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{}, "Review approval requirements"],
+    [{ canApprove: false }, "Ask an authorized approver"],
+    [{ approvalCurrent: true }, "Review the approved operation"],
+    [{ approvalCurrent: true, canOperate: false }, "Ask an authorized operator"],
+    [{ preview: null }, "Resolve the executable preview"],
+    [{ business_decision: { unknowns: ["Ownership missing"] } }, "Resolve decision evidence"],
+    [{ execution: executionRecord({ status: "succeeded" }) }, "Inspect recorded execution"],
+    [{ action: { ...workflowFixture().action, executable: false, can_operate: false } }, "Review with the resource owner"],
+  ])("uses current capabilities and evidence for navigation only: %s", async (changes, label) => {
+    workflow.mockResolvedValue(envelope(workflowFixture(changes)));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    const summary = await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(within(summary).getByRole("button", { name: label }));
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    if ("preview" in changes && changes.preview === null) {
+      expect(summary).toHaveTextContent("No executable target in this preview");
+      expect(within(summary).queryByText(TARGET)).not.toBeInTheDocument();
+    }
+  });
+
+  it("distinguishes a recorded execution target and hash from the current preview", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      execution: executionRecord({
+        status: "succeeded",
+        execution_snapshot: { target_id: OTHER_TARGET, operation: "install_patches", snapshot_hash: "old-recorded-hash" },
+      }),
+      blockers: [
+        { code: "stale_approval", step: "approve", next_action: "Review the changed version" },
+        { code: "decision_evidence_missing", step: "review", next_action: "Acquire missing source evidence" },
+        { code: "already_succeeded", step: "verify" },
+      ],
+    })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    const summary = await screen.findByRole("region", { name: "Decision summary" });
+    expect(within(summary).getByText(TARGET)).toBeVisible();
+    fireEvent.click(within(summary).getByText(/Recorded execution binding:/));
+    expect(within(summary).getByText(OTHER_TARGET)).toBeVisible();
+    expect(within(summary).getByText("old-recorded-hash")).toBeVisible();
+    fireEvent.click(within(summary).getByText(/2 reported blockers/));
+    expect(summary).toHaveTextContent("Review the changed version");
+    expect(summary).toHaveTextContent("Acquire missing source evidence");
+    expect(summary).not.toHaveTextContent("Already Succeeded");
+  });
+
+  it.each(SCOPE_DIMENSIONS)("discards approval drafts and context on %s scope change", async dimension => {
+    workflow.mockResolvedValue(envelope(workflowFixture()));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    render(<ScopeProvider><ChangeScope scope={{ [dimension]: ["changed"] }} /><RemediationPage /></ScopeProvider>);
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "Old scope approval draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change test scope" }));
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-1", { [dimension]: ["changed"] }, []));
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    expect(screen.getByLabelText("Rationale")).toHaveValue("");
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it.each(SCOPE_DIMENSIONS)("blocks a %s bookmark wider than the selected context before any acquisition", dimension => {
+    searchParams.current = new URLSearchParams({ [dimension]: "outside" });
+    render(<ScopeProvider initialScope={{ [dimension]: ["selected"] }}><RemediationPage /></ScopeProvider>);
+    expect(screen.getByText("Remediation bookmark unavailable")).toBeInTheDocument();
+    expect(remediationPlans).not.toHaveBeenCalled();
+    expect(workflow).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves all nine bookmarked dimensions and repeated scope values in the workflow request", async () => {
+    const selected: ScopeSelection = Object.fromEntries(SCOPE_DIMENSIONS.map(key => [key, [key + "-a", key + "-b"]]));
+    const query = new URLSearchParams({ resource_key: TARGET });
+    for (const [key, values] of Object.entries(selected)) for (const value of values) query.append(key, value);
+    searchParams.current = query;
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    expect(workflow).toHaveBeenLastCalledWith("plan-1", selected, []);
+  });
+
+  it("surfaces a foreign execution response without attaching it to the current plan", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({ approvalCurrent: true })));
+    execute.mockResolvedValue(envelope(executionRecord({ plan_id: "foreign-plan" })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^4 Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+    expect(await screen.findByText(/The returned execution does not belong to this plan/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Decision summary" })).not.toHaveTextContent("Recorded execution binding");
+  });
+
+  it.each(["plan", "scope"] as const)("does not continue an old run preflight after a %s change", async change => {
+    const current = workflowFixture({ approvalCurrent: true });
+    let resolve!: (value: ReturnType<typeof envelope<typeof current>>) => void;
+    const pending = new Promise<ReturnType<typeof envelope<typeof current>>>(done => { resolve = done; });
+    workflow.mockResolvedValueOnce(envelope(current)).mockImplementationOnce(() => pending)
+      .mockResolvedValue(envelope(workflowFixture({
+        plan: { ...current.plan, plan_id: "plan-other" },
+        preview: null,
+      })));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    const view = renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^4 Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+    await waitFor(() => expect(workflow).toHaveBeenCalledTimes(2));
+    if (change === "plan") fireEvent.click(screen.getByRole("button", { name: /Review configuration baseline/ }));
+    else {
+      searchParams.current = new URLSearchParams("subscription=sub-other");
+      view.rerender(<ScopeProvider><RemediationPage /></ScopeProvider>);
+    }
+    await screen.findByText("No executable target in this preview");
+    await act(async () => resolve(envelope(current)));
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "Decision summary" })).toHaveTextContent("No executable target in this preview");
+  });
+
+  it("does not attach a late execution poll to another selected plan", async () => {
+    const current = workflowFixture({ execution: executionRecord() });
+    let resolve!: (value: ReturnType<typeof envelope<ReturnType<typeof executionRecord>>>) => void;
+    execution.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    workflow.mockImplementation((id: string) => Promise.resolve(envelope(
+      id === "plan-1" ? current : workflowFixture({ plan: { ...current.plan, plan_id: "plan-other" }, preview: null }),
+    )));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    await waitFor(() => expect(execution).toHaveBeenCalled(), { timeout: 2500 });
+    fireEvent.click(screen.getByRole("button", { name: /Review configuration baseline/ }));
+    await screen.findByText("No executable target in this preview");
+    await act(async () => resolve(envelope(executionRecord({ status: "succeeded" }))));
+    expect(screen.getByRole("region", { name: "Decision summary" })).not.toHaveTextContent("Recorded execution binding");
+  });
+
+  it.each(["resolved", "rejected"] as const)("keeps a new plan's submission locked after an old preflight is %s", async outcome => {
+    const current = workflowFixture({ approvalCurrent: true });
+    const other = workflowFixture({ approvalCurrent: true, plan: { ...current.plan, plan_id: "plan-other" } });
+    type Response = ReturnType<typeof envelope<typeof current>>;
+    let resolveOld!: (value: Response) => void;
+    let rejectOld!: (error: Error) => void;
+    let rejectNew!: (error: Error) => void;
+    const oldPending = new Promise<Response>((resolve, reject) => { resolveOld = resolve; rejectOld = reject; });
+    const newPending = new Promise<Response>((_, reject) => { rejectNew = reject; });
+    const calls = new Map<string, number>();
+    workflow.mockImplementation((id: string) => {
+      const count = (calls.get(id) ?? 0) + 1;
+      calls.set(id, count);
+      return count === 1 ? Promise.resolve(envelope(id === "plan-1" ? current : other))
+        : id === "plan-1" ? oldPending : newPending;
+    });
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^4 Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+    fireEvent.click(screen.getByRole("button", { name: /Review configuration baseline/ }));
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-other", {}, []));
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^4 Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run" }));
+    expect(screen.getByRole("button", { name: "Submitting…" })).toBeDisabled();
+    await act(async () => {
+      if (outcome === "resolved") resolveOld(envelope(current));
+      else rejectOld(new Error("Obsolete preflight failure"));
+    });
+    expect(screen.getByRole("button", { name: "Submitting…" })).toBeDisabled();
+    expect(screen.queryByText("Obsolete preflight failure")).not.toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+    await act(async () => rejectNew(new Error("Current preflight failure")));
+    expect(await screen.findByText("Current preflight failure")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Decision summary" })).queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("clears the rationale and decision when selecting a different plan", async () => {
+    workflow.mockImplementation((id: string) => Promise.resolve(envelope(workflowFixture({
+      plan: { ...workflowFixture().plan, plan_id: id },
+    }))));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "Old plan rationale" } });
+    fireEvent.click(screen.getByRole("button", { name: /Review configuration baseline/ }));
+    await waitFor(() => expect(workflow).toHaveBeenLastCalledWith("plan-other", {}, []));
+    await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    expect(screen.getByLabelText("Rationale")).toHaveValue("");
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("locks approval and run navigation while narrowed or restored patch selection is debouncing", async () => {
+    const current = workflowFixture({
+      approvalCurrent: true, availablePatches: [{ patch_id: "KB600001" }, { patch_id: "KB600002" }],
+    });
+    current.preview.execution_snapshot.patch_ids = ["KB600001", "KB600002"];
+    workflow.mockResolvedValue(envelope(current));
+    searchParams.current = new URLSearchParams(`resource_key=${encodeURIComponent(TARGET)}`);
+    renderPage();
+    const summary = await screen.findByRole("region", { name: "Decision summary" });
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    expect(within(summary).getByRole("status")).toHaveTextContent("Resolve the pending request");
+    expect(within(summary).queryByRole("button")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    expect(screen.getByRole("button", { name: "Record decision" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^4 Run/ }));
+    expect(screen.queryByRole("button", { name: "Review and run" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^2 Review impact/ }));
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    expect(within(summary).getByRole("status")).toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("uses resource and subscription handoff to select the matching fix", async () => {

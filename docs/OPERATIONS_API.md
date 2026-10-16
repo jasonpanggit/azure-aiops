@@ -9,6 +9,32 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Remediation decision context
+
+The portal's compact decision summary remains present across Select, Review,
+Approve, Run and Verify. It reuses the existing authorized workflow response:
+exact preview operation/target, snapshot hash, action version, all selected
+update identifiers, approval status/required roles, reported blockers and
+current actor capabilities. The separate recorded-execution disclosure preserves
+its own target and snapshot; a historical run is not silently relabelled as the
+current preview. Approval is explicitly **at last read**, not a new permission
+or a guaranteed validity period. Provider success is not refreshed estate proof.
+
+Next-step controls navigate only; none submit approval, execution or recovery.
+Existing server gates remain authoritative. Pending patch changes (including
+the debounce interval and restoration of all updates) cannot enable approval or
+execution using an older preview. Complete nine-dimensional bookmarks must
+preserve or narrow the current selector context; invalid/wider bookmarks fail
+before acquisition. Scope/URL changes discard approval drafts and responses;
+plan changes invalidate old polling/mutation results. A run preflight completing
+after navigation cannot start execution. Already submitted provider work is not
+cancelled by navigation. Foreign-plan execution responses surface an explicit
+error instead of being attached to the selected workflow.
+
+This summary is not backend-enforced multi-target rollout planning. Maintenance
+windows, waves and stop conditions require their own approved snapshot-bound
+execution contract; deferred container execution remains disabled.
+
 ## Shared advisory access-review campaigns
 
 `GET /api/v1/governance/access-campaigns` reads a shared workspace keyed by the
