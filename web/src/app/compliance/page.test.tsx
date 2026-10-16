@@ -266,7 +266,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Violations" })).toBeInTheDocument();
-    expect(screen.getAllByText("Firewall bypass path").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Firewall bypass path")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Any-any NSG rule").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Public PaaS exposure").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Public PaaS exposure/ }));
