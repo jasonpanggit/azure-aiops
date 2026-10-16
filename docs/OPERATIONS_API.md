@@ -53,6 +53,25 @@ The existing Stop action records a review decision; it is not cancellation of
 an in-flight provider call. Asynchronous run admission, durable progress and
 actual provider cancellation are separate unfinished contracts.
 
+## Agents runtime observations
+
+`GET /agents/runtime-readiness` requires ordinary read authorization and
+preserves all nine effective scope dimensions in its envelope. It only reads
+`ProviderRuntime.health(refresh=False)`: no loader, source refresh, Foundry/MCP
+invocation, APIM probe or operational mutation. Missing managed runtime is503;
+absent individual providers are explicit null observations, never ready.
+Only the fixed investigation-provider roster and allowlisted public state
+fields are returned. This is process-local cached state, not estate coverage.
+
+The on-demand Agents disclosure shows the existing catalog's activation source,
+active version/pinning declaration and separately identified inactive candidate,
+independent of provider observations/errors. The report assembly time is not
+provider observation time: last attempt, last successful load and source
+freshness remain distinct, and absent times/versions are explicitly unreported.
+Reload only rereads cached state; it does not initiate a provider refresh.
+Neither configuration, a loaded SDK adapter nor a catalog candidate proves live
+agent/tool execution or end-to-end MCP/APIM connectivity.
+
 ## Governed remediation rollouts
 
 The on-demand Remediation rollout planner declares exact existing patch or

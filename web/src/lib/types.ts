@@ -568,6 +568,25 @@ export interface AgentDeploymentStatus {
   };
 }
 
+/** Cached process observations; absent providers have no readiness evidence. */
+export interface AgentRuntimeReadiness {
+  source: "api.ProviderRuntime";
+  report_kind: "cached_process_state";
+  reported_at: string;
+  providers: Record<string, {
+    state: string | null;
+    configured: boolean | null;
+    loaded: boolean | null;
+    freshness: string | null;
+    ontology_version: string | null;
+    loaded_at: string | null;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    degraded_reason: string | null;
+    cache_key_stale: boolean | null;
+  } | null>;
+}
+
 export interface AutonomousAgent {
   id: string;
   name: string;

@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { AgentRuntimeReadiness } from "@/components/AgentRuntimeReadiness";
 import { useScope } from "@/lib/scope-context";
 import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { multiAgentApi } from "@/lib/services";
@@ -216,6 +217,8 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
           </div>
         </div>
       </section>
+
+      <AgentRuntimeReadiness scope={scope} agents={catalog} catalogLoading={catalogLoading} catalogError={catalogError} />
 
       {ledger ? (
         <>

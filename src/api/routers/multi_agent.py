@@ -17,6 +17,7 @@ from operations.autonomous_investigation import (
     project_legacy_ledger,
     run_autonomous_investigation,
 )
+from operations.foundry_agent import SPECIALIST_IDS
 from operations.investigation_thread_store import (
     ThreadRevisionConflict,
     ThreadStoreUnavailable,
@@ -283,6 +284,53 @@ def _project_deterministic_activation(
 @router.get("/catalog", summary="Specialized autonomous investigation agents")
 def catalog(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope({"agents": agent_catalog()}, evidence=_evidence(), scope=scope.to_dict())
+
+
+@router.get("/runtime-readiness", summary="Cached investigation provider observations")
+def runtime_readiness(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Read cached process state without acquiring providers or probing agents."""
+    if context.provider_runtime is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Cached agent runtime observations are not configured",
+        )
+    health = context.provider_runtime.health(refresh=False)
+    names = (
+        "copilot", "semantic", "network", "exposure_query", "incidents",
+        "remediation", "governance", "inventory", "fabric_iq",
+        *(f"{specialist}_agent" for specialist in SPECIALIST_IDS),
+    )
+    fields = (
+        "state", "configured", "loaded", "freshness", "ontology_version",
+        "loaded_at", "last_attempt_at", "last_success_at", "degraded_reason",
+        "cache_key_stale",
+    )
+    providers = health["providers"]
+    return envelope(
+        {
+            "source": "api.ProviderRuntime",
+            "report_kind": "cached_process_state",
+            "reported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "providers": {
+                name: {field: providers[name].get(field) for field in fields}
+                if name in providers else None
+                for name in names
+            },
+        },
+        evidence=Evidence(
+            source_engine="api.ProviderRuntime",
+            source_table="cached_provider_states",
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        warnings=[
+            (
+                "Process-local cached observations, not a live Foundry, APIM or MCP "
+                "probe, estate coverage, tool execution or operational authorization. "
+                "Report time is not provider observation time."
+            )
+        ],
+    )
 
 
 def _create_investigation_canonical(

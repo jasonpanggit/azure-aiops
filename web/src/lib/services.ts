@@ -1915,6 +1915,9 @@ export const twinApi = {
 };
 
 export const multiAgentApi = {
+  /** Read cached provider observations without refreshing or starting tools. */
+  runtimeReadiness: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<import("./types").AgentRuntimeReadiness>("/agents/runtime-readiness", { query: scopeToSearchParams(scope), signal: options.signal }),
   catalog: (scope: ScopeSelection = {}) =>
     apiRequest<{ agents: AutonomousAgent[] }>("/agents/catalog", { query: scopeToSearchParams(scope) }),
   investigate: (objective: string, scope: ScopeSelection = {}, timeoutSeconds = 8) =>
