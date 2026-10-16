@@ -21,7 +21,7 @@ coordinator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coordinator)
 
 
-def test_prompt_runtime_role_grants_only_agent_reads_and_response_execution():
+def test_prompt_runtime_role_grants_only_project_reads_and_response_execution():
     terraform = (ROOT / "infra/terraform/foundry.tf").read_text()
     role = terraform.split(
         'resource "azurerm_role_definition" "apps_foundry_prompt_runtime" {', 1
@@ -30,6 +30,7 @@ def test_prompt_runtime_role_grants_only_agent_reads_and_response_execution():
     assert permissions is not None
     assert re.findall(r'"([^"]+)"', permissions[1]) == [
         "Microsoft.CognitiveServices/accounts/AIServices/agents/read",
+        "Microsoft.CognitiveServices/accounts/AIServices/deployments/read",
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
     ]
@@ -57,7 +58,7 @@ def test_prompt_runtime_assignment_is_limited_to_project_and_api_identity():
     assert "var.enable_role_assignments || var.enable_foundry_role_assignments" in assignment
 
 
-def test_response_runtime_role_grants_only_response_reads_and_execution():
+def test_response_runtime_role_grants_only_account_read_and_response_execution():
     terraform = (ROOT / "infra/terraform/foundry.tf").read_text()
     role = terraform.split(
         'resource "azurerm_role_definition" "apps_foundry_response_runtime" {', 1
@@ -68,7 +69,11 @@ def test_response_runtime_role_grants_only_response_reads_and_execution():
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
         "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
     ]
-    assert re.search(r"\n\s+actions\s*=\s*\[\]", role)
+    actions = re.search(r"(?<!data_)actions\s*=\s*\[(.*?)\]", role, re.DOTALL)
+    assert actions is not None
+    assert re.findall(r'"([^"]+)"', actions[1]) == [
+        "Microsoft.CognitiveServices/accounts/read",
+    ]
     assert re.search(r"\n\s+not_actions\s*=\s*\[\]", role)
     assert re.search(r"\n\s+not_data_actions\s*=\s*\[\]", role)
     assert "assignable_scopes = [azurerm_resource_group.main.id]" in role

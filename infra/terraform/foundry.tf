@@ -930,13 +930,14 @@ resource "azurerm_role_definition" "apps_foundry_prompt_runtime" {
 
   name        = "${local.base}-foundry-prompt-runtime"
   scope       = azurerm_resource_group.main.id
-  description = "Read prompt agent definitions and invoke OpenAI Responses without managing agents."
+  description = "Read project agents and deployments and invoke Responses without managing agents."
 
   permissions {
     actions     = []
     not_actions = []
     data_actions = [
       "Microsoft.CognitiveServices/accounts/AIServices/agents/read",
+      "Microsoft.CognitiveServices/accounts/AIServices/deployments/read",
       "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
       "Microsoft.CognitiveServices/accounts/OpenAI/responses/write",
     ]
@@ -962,10 +963,12 @@ resource "azurerm_role_definition" "apps_foundry_response_runtime" {
 
   name        = "${local.base}-foundry-response-runtime"
   scope       = azurerm_resource_group.main.id
-  description = "Create and read OpenAI Responses without managing agents or models."
+  description = "Read account metadata and execute Responses without managing agents or models."
 
   permissions {
-    actions     = []
+    actions = [
+      "Microsoft.CognitiveServices/accounts/read",
+    ]
     not_actions = []
     data_actions = [
       "Microsoft.CognitiveServices/accounts/OpenAI/responses/read",
