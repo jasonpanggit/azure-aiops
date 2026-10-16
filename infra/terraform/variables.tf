@@ -1009,6 +1009,12 @@ variable "enable_fabric" {
   default     = false
 }
 
+variable "enable_fabric_capacity_health_reader" {
+  description = "Provision only the apps identity's capacity-scoped Reader for portal health when global role assignment management is disabled."
+  type        = bool
+  default     = false
+}
+
 variable "fabric_capacity_sku" {
   description = "Fabric capacity SKU. F2 is the smallest that supports a real workspace."
   type        = string

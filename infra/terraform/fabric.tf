@@ -36,7 +36,7 @@ resource "azurerm_fabric_capacity" "main" {
 }
 
 resource "azurerm_role_assignment" "fabric_capacity_reader_apps" {
-  count = var.enable_fabric && var.enable_role_assignments ? 1 : 0
+  count = var.enable_fabric && (var.enable_role_assignments || var.enable_fabric_capacity_health_reader) ? 1 : 0
 
   scope                            = azurerm_fabric_capacity.main[0].id
   role_definition_name             = "Reader"
