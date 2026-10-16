@@ -31,6 +31,47 @@ new authority is restored from a URL.
 Global selector/account controls and continuity sign-out handling remain active
 while an invalid bookmark withholds page data.
 
+## Retained Resource Health observations
+
+`GET /api/v1/resource-health/resource/history?resource_id=...` reads personal
+receipts for the exact principal, effective scope and case-insensitive resource
+address. Current Inventory membership and supported compute type are checked
+before storage access. Reads do not need Monitor to be available, but cannot
+recover a resource outside current Inventory authorization.
+
+`POST` to the same route accepts only `{"expected_revision": 0}`, using the
+reviewed revision. After a revision precheck, the server acquires the existing
+authorized **per-resource** live detail/cache projection, never a subscription
+bulk snapshot or browser measurements. Exactly one matching resource must have
+no provider-reported error. Membership is checked again before CAS append.
+Conflicts return 409; failed/invalid collections do not advance the revision.
+Personal capture requires read authority, not permission to execute changes.
+
+The existing `AIOPS_HOME` local/OneLake document root stores
+`state/resource-health-history/<sha256([principal,effective_scope,resource_address])>.json`.
+Latest 30 captures and a 256 KiB complete-document bound apply; capture 31
+replaces the oldest. Strict schema, identity, duplicate, aware-time, chronology
+and revision checks reject corruption instead of substituting empty history.
+Retention is explicit, with no schedule, time-based purge or historical backfill.
+
+Only eight finite nonnegative metric values/nulls, reported CPU classification,
+collection/request/capture times, cache flag/TTL and diagnostic counts are
+retained. Raw provider errors, warning text, credentials, arbitrary properties
+and CPU series are not stored. Absent metrics stay null, not zero/healthy.
+Collection time is not original metric sample time; aggregation windows, rate
+semantics and threshold configuration are unreported. Cached receipts are not
+independent telemetry samples. Comparisons are arithmetic only, not continuous
+trends, availability, SLOs, verified improvement or causation. A deleted/recreated
+resource at the same address is not proven to be the same incarnation.
+
+The portal opens history on demand for a selected Inventory resource, independently
+of live cards. The existing six-request **card** scheduler is unchanged; explicit
+retention capture performs one separate server acquisition. This is not a
+cross-tab/server-wide Monitor concurrency limit. Scope/resource changes discard
+the prior panel and ignore late responses. A failed/unconfirmed capture withholds
+the revision until explicit reload; aborting/closing cannot undo a capture
+already received by the server. History is not mixed into current-health Copilot.
+
 ## Overview interpretation
 
 The Overview reads Situations and Connections at offset 0 / limit 100,

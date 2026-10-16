@@ -1214,6 +1214,63 @@ textarea:focus-visible {
   word-break: break-word;
 }
 
+.resource-health-history {
+  min-width: 0;
+  margin-top: 24px;
+  overflow-wrap: anywhere;
+  scroll-margin-top: 76px;
+}
+
+.resource-health-history h2 {
+  scroll-margin-top: 76px;
+}
+
+.resource-health-history .card-header {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.resource-health-history .card-body > p {
+  max-width: 75ch;
+}
+
+.resource-health-history .card-body > p + p,
+.resource-health-history details p {
+  margin-top: 8px;
+}
+
+.resource-health-history .overview-history-controls > div {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resource-health-history select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.resource-health-receipts {
+  padding-left: 20px;
+}
+
+.resource-health-receipts > li + li {
+  margin-top: 24px;
+}
+
+.resource-health-receipt-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.resource-health-receipt-values dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+
 .metric-card-actionable:hover {
   border-color: #a8cbe7;
   box-shadow: 0 12px 28px rgb(16 37 63 / 11%);
@@ -5233,7 +5290,8 @@ body.topology-fullscreen-open {
   max-width: 100%;
 }
 
-.overview-history select {
+.overview-history select,
+.resource-health-history select {
   min-height: 36px;
   max-width: 100%;
   padding: 6px 12px;

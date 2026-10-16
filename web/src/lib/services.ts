@@ -1849,6 +1849,22 @@ export const healthApi = {
 };
 
 export const resourceHealthApi = {
+  /** Read personal retained receipts after current Inventory membership authorization. */
+  history: (resourceId: string, scope: ScopeSelection, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<import("./types").ResourceHealthHistory>("/resource-health/resource/history", {
+      query, signal: options.signal,
+    });
+  },
+  /** Acquire measurements on the server and append with the reviewed revision only. */
+  captureHistory: (resourceId: string, scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<import("./types").ResourceHealthHistory>("/resource-health/resource/history", {
+      method: "POST", query, body: { expected_revision: expectedRevision }, signal: options.signal,
+    });
+  },
   /** Live CPU/network/disk utilization for in-scope compute resources. */
   snapshot: (scope: ScopeSelection = {}, forceRefresh = false) => {
     const query = scopeToSearchParams(scope);

@@ -13,6 +13,8 @@ import type {
 const mocks = vi.hoisted(() => ({
   inventoryResources: vi.fn(),
   resourceHealth: vi.fn(),
+  retainedHealth: vi.fn(),
+  captureRetainedHealth: vi.fn(),
   scope: { current: { subscription: ["sub-a"] } as ScopeSelection },
 }));
 
@@ -20,6 +22,8 @@ vi.mock("@/lib/services", () => ({
   inventoryApi: { resources: mocks.inventoryResources },
   resourceHealthApi: {
     resource: mocks.resourceHealth,
+    history: mocks.retainedHealth,
+    captureHistory: mocks.captureRetainedHealth,
   },
 }));
 
@@ -210,7 +214,49 @@ describe("ResourceHealthPage inventory-first hydration", () => {
   beforeEach(() => {
     mocks.inventoryResources.mockReset();
     mocks.resourceHealth.mockReset();
+    mocks.retainedHealth.mockReset();
+    mocks.captureRetainedHealth.mockReset();
     mocks.scope.current = { subscription: ["sub-a"] };
+  });
+
+  it("opens history independently of live hydration and restores the invoking card focus", async () => {
+    const rows = [inventoryResource(1), inventoryResource(2)];
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(rows));
+    mocks.retainedHealth.mockRejectedValue(new Error("Retained store is offline"));
+    const harness = installDeferredHealthMock();
+    render(<ResourceHealthPage />);
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    expect(mocks.retainedHealth).not.toHaveBeenCalled();
+    const trigger = screen.getByRole("button", { name: "Review retained health for vm-1" });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Retained store is offline");
+    expect(mocks.retainedHealth).toHaveBeenCalledWith(rows[0].resource_id, mocks.scope.current, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(mocks.captureRetainedHealth).not.toHaveBeenCalled();
+    expect(harness.calls).toHaveLength(2);
+    expect(harness.calls.every(call => !call.signal.aborted)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Close retained health" }));
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("region", { name: "Retained health for vm-1" })).not.toBeInTheDocument();
+    await act(async () => {
+      harness.settle(harness.calls[0], { value: healthEnvelope(rows[0]) });
+      harness.settle(harness.calls[1], { value: healthEnvelope(rows[1]) });
+    });
+    expect(screen.getByText(/2 of 2 resources returned health evidence/)).toBeInTheDocument();
+  });
+
+  it("returns focus to resource search if filtering removed the invoking card", async () => {
+    const rows = [inventoryResource(1), inventoryResource(2)];
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(rows));
+    mocks.retainedHealth.mockRejectedValue(new Error("Retained store is offline"));
+    installDeferredHealthMock();
+    render(<ResourceHealthPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review retained health for vm-1" }));
+    await screen.findByRole("alert");
+    const search = screen.getByRole("searchbox", { name: "Find compute resource" });
+    fireEvent.change(search, { target: { value: "vm-2" } });
+    expect(screen.queryByRole("button", { name: "Review retained health for vm-1" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close retained health" }));
+    expect(search).toHaveFocus();
   });
 
   it("filters coverage states without starting new hydration requests and explains absent metrics", async () => {

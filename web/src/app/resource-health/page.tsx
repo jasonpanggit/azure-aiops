@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
+import { ResourceHealthHistory } from "@/components/ResourceHealthHistory";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -83,10 +84,12 @@ function ResourceCard({
   resource,
   health,
   onRetry,
+  onReviewHistory,
 }: {
   resource: FlatInventoryResource;
   health: CardHealth | undefined;
   onRetry: () => void;
+  onReviewHistory: (trigger: HTMLButtonElement) => void;
 }) {
   const detail = health?.data;
   const isContainerApp =
@@ -228,6 +231,10 @@ function ResourceCard({
           ) : null}
         </>
       ) : null}
+      <button type="button" className="button button-secondary"
+        aria-label={`Review retained health for ${resource.resource_name}`} onClick={event => onReviewHistory(event.currentTarget)}>
+        Review retained health
+      </button>
     </article>
   );
 }
@@ -235,12 +242,15 @@ function ResourceCard({
 /**
  * Inventory-first compute utilization with independently hydrated health cards.
  *
- * One page-lifetime scheduler owns all initial, retry, refresh, and scope-change
+ * One page-lifetime scheduler owns all live-card initial, retry, refresh, and scope-change
  * requests. Aborted requests continue occupying their slots until their
- * promises settle, keeping the global active request count at six or fewer.
+ * promises settle, keeping the active card request count at six or fewer.
  */
 export default function ResourceHealthPage() {
   const { scope } = useScope();
+  const [historyResourceId, setHistoryResourceId] = useState<string | null>(null);
+  const historyTrigger = useRef<HTMLButtonElement | null>(null);
+  const resourceSearchInput = useRef<HTMLInputElement | null>(null);
   const [resources, setResources] = useState<FlatInventoryResource[]>([]);
   const [inventoryLoading, setInventoryLoading] = useState(true);
   const [inventoryError, setInventoryError] = useState<string | null>(null);
@@ -660,7 +670,7 @@ export default function ResourceHealthPage() {
                   {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state}</option>)}
                 </select>
               </label>
-              <label>Find compute resource<input type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>
+              <label>Find compute resource<input ref={resourceSearchInput} type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>
               <p>{visibleResources.length} matching resources of {resources.length} observed.</p>
             </div>
           </section>
@@ -733,10 +743,23 @@ export default function ResourceHealthPage() {
                 resource={resource}
                 health={healthById[resourceKey(resource.resource_id)]}
                 onRetry={() => retryResource(resource)}
+                onReviewHistory={trigger => {
+                  historyTrigger.current = trigger;
+                  setHistoryResourceId(resource.resource_id);
+                }}
               />
             ))}
           </div>
           {visibleResources.length === 0 ? <StatePanel title="No resources match these filters" message="Change the health state or resource search. This does not change the observed inventory." /> : null}
+          {resources.filter(resource => resource.resource_id === historyResourceId).map(resource =>
+            <ResourceHealthHistory key={resource.resource_id} scope={scope} resource={resource}
+              onClose={() => {
+                setHistoryResourceId(null);
+                const target = historyTrigger.current?.isConnected ? historyTrigger.current : resourceSearchInput.current;
+                target?.focus();
+                historyTrigger.current = null;
+              }} />
+          )}
         </>
       ) : null}
 

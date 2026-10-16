@@ -3409,6 +3409,38 @@ export interface ResourceHealthSnapshot {
   cache_ttl_seconds: number;
 }
 
+/** Eight reported utilization measurements; null is not zero or healthy. */
+export type RetainedHealthMetrics = Pick<ResourceUtilization,
+  "cpu_percent" | "network_in_bytes" | "network_out_bytes" | "disk_read_bytes" |
+  "disk_write_bytes" | "os_disk_queue_depth" | "memory_percent" | "disk_free_percent"
+>;
+
+/** Server acquisition receipt, with collection time distinct from retention time. */
+export interface RetainedHealthObservation {
+  observation_id: string;
+  captured_at: string;
+  started_at: string;
+  finished_at: string;
+  resource_observed_at: string;
+  snapshot_observed_at: string;
+  classification: ResourceHealthStatus;
+  cached: boolean;
+  cache_ttl_seconds: number;
+  warning_count: number;
+  unavailable_metric_count: number;
+  metrics: RetainedHealthMetrics;
+}
+
+/** Latest 30 explicit receipts for an exact principal/scope/resource address. */
+export interface ResourceHealthHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  resource_id: string;
+  revision: number;
+  observations: RetainedHealthObservation[];
+}
+
 export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "remediation" | "resource" | "investigate";
 export type CopilotSnapshotStatus = "ok" | "empty" | "unavailable" | "denied";
 export interface CopilotSelectedResource { resource_id: string; resource_type: string; name?: string; attributes?: Record<string, string>; }
