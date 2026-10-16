@@ -26,6 +26,14 @@ export function parseInventoryView(params: URLSearchParams) {
     }
     return parsed;
   }
+  const exportId = text("export_id", "", 36);
+  const rawOffset = params.get("export_offset") ?? "0";
+  const exportOffset = Number(rawOffset);
+  if ((exportId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(exportId)) ||
+    !/^\d+$/.test(rawOffset) || !Number.isSafeInteger(exportOffset) || exportOffset > 49_500 ||
+    exportOffset % 500 !== 0 || (!exportId && params.has("export_offset"))) {
+    throw new Error("Invalid inventory export bookmark.");
+  }
   return {
     tab: choice("tab", ["os", "software", "azure"], "os"),
     subscriptionFilter: text("subscriptionFilter", "all"),
@@ -46,6 +54,7 @@ export function parseInventoryView(params: URLSearchParams) {
     osPageSize: number("osPageSize", DEFAULT_PAGE_SIZE, true),
     softwarePageSize: number("softwarePageSize", DEFAULT_PAGE_SIZE, true),
     azurePageSize: number("azurePageSize", DEFAULT_PAGE_SIZE, true),
+    export_id: exportId, export_offset: exportOffset,
   };
 }
 

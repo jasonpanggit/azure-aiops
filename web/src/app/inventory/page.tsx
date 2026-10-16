@@ -26,9 +26,9 @@ import { scopeToSearchParams } from "@/lib/scope";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import { inventoryViewQuery, parseInventoryView, type InventoryView } from "@/lib/inventory-view";
+import { InventoryExport } from "@/components/InventoryExport";
 import type {
   Envelope,
-  FlatInventoryResource,
   InventorySourceStatus,
   InventoryGroupMetadata,
   InventoryNarrative,
@@ -388,8 +388,6 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   const [azurePageSize, setAzurePageSize] = useState(initialView.azurePageSize);
   const [osPageSize, setOsPageSize] = useState(initialView.osPageSize);
   const [softwarePageSize, setSoftwarePageSize] = useState(initialView.softwarePageSize);
-  const [allResourcesExporting, setAllResourcesExporting] = useState(false);
-  const [allResourcesError, setAllResourcesError] = useState<string | null>(null);
   const effectiveScope = useMemo(
     () => subscriptionFilter === "all"
       ? scope
@@ -416,6 +414,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   const previousSoftwareFilters = useRef(softwareFilterKey);
   const previousAzureFilters = useRef(azureFilterKey);
   const viewQuery = inventoryViewQuery({
+    export_id: initialView.export_id, export_offset: initialView.export_offset,
     tab, subscriptionFilter, search, sourceFilter, lifecycleFilter, osNameFilter, osVersionFilter,
     softwareSearch, softwareSourceFilter, softwareNameFilter, softwarePublisherFilter,
     azureSearch, azureProviderFilter, azureTypeFilter, azureSkuFilter,
@@ -1014,54 +1013,6 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
     );
   }
 
-  async function exportAllResources() {
-    setAllResourcesExporting(true);
-    setAllResourcesError(null);
-    try {
-      // The API caps `limit` at 500, so page until the envelope stops
-      // handing back a next offset rather than assuming one page holds
-      // every resource as the estate grows.
-      const collected: FlatInventoryResource[] = [];
-      let offset = 0;
-      for (let guard = 0; guard < 100; guard += 1) {
-        const response = await inventoryApi.resources(effectiveScope, offset, 500);
-        collected.push(...response.data.resources);
-        const next = response.pagination?.next_offset;
-        if (next === null || next === undefined) break;
-        offset = next;
-      }
-      if (collected.length === 0) {
-        setAllResourcesError("No resources are in scope to export.");
-        return;
-      }
-      const columns = [
-        "family",
-        "resource_name",
-        "resource_type",
-        "resource_id",
-        "subscription_id",
-        "resource_group",
-        "environment",
-      ] as const;
-      const rows = collected.map((resource) => ({
-        family: resource.family,
-        resource_name: resource.resource_name,
-        resource_type: resource.resource_type,
-        resource_id: resource.resource_id,
-        subscription_id: resource.subscription_id,
-        resource_group: resource.resource_group,
-        environment: resource.environment,
-      }));
-      downloadCsv(serializeCsv(rows, columns), "azure-inventory-all-resources.csv");
-    } catch (error) {
-      setAllResourcesError(
-        error instanceof Error ? inventoryUnavailableMessage(error) : "Resource export is unavailable.",
-      );
-    } finally {
-      setAllResourcesExporting(false);
-    }
-  }
-
   async function openLifecycleReview(group: OsInventoryGroup) {
     const request = ++reviewRequest.current;
     const current = () => request === reviewRequest.current && scopeKey === currentDetailScope.current;
@@ -1504,20 +1455,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
             <MetricCard label="Providers" value={azureInventory.data ? azureInventory.data.data.summary?.provider_count ?? new Set(azureGroups.map(group => group.resource_type.split("/")[0])).size : "—"} detail="Distinct providers in matching groups" />
           </section>
 
-          <div className="inventory-export-bar">
-            <div>
-              <strong>Full resource export</strong>
-              <span className="muted">
-                Every in-scope resource across OS and platform families, for topology, policy, and audit joins.
-              </span>
-            </div>
-            <button type="button" onClick={exportAllResources} disabled={allResourcesExporting}>
-              {allResourcesExporting ? "Preparing export…" : "Export all resources (CSV)"}
-            </button>
-          </div>
-          {allResourcesError && (
-            <StatePanel title="Resource export unavailable" message={allResourcesError} tone="error" />
-          )}
+          <InventoryExport scope={effectiveScope} generationId={azureInventory.data?.data.generation_id ?? ""}
+            viewQuery={viewQuery.toString()} initialId={initialView.export_id} initialOffset={initialView.export_offset} />
 
           <section aria-label="Azure inventory dashboard" className="dashboard-charts-row">
             <div className="chart-card">

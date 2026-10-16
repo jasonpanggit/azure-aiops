@@ -102,9 +102,9 @@ The Inventory **Explore assets** view (`/inventory/assets`) restores validated
 filters, page and exact resource bookmarks from its URL. Navigation preserves
 current scope but never grants access; asset reads reauthorize independently.
 Scope/query transitions immediately discard old facts. Resolved Situation
-Resource links use this same destination. Pinned resumable export jobs and
-historical asset snapshots remain separate work; the existing browser CSV
-export is not such a job.
+Resource links use this same destination. Historical asset snapshots and
+queued export workers remain separate work; the retained export capture
+below supplies bounded resume/cancellation without pretending to be a worker.
 This navigation drilldown is explicitly excluded from model-bound Copilot
 snapshots until a selected-asset evidence/tool contract is reviewed; the
 existing governed Inventory Copilot is unchanged on `/inventory`. It never
@@ -136,6 +136,53 @@ exports are explicitly visible-page evidence; source group memberships can
 overlap and are not installation counts. The scope narrative remains
 independent of table filters, and missing aggregate metadata is not presented
 as complete-estate coverage.
+
+**Retained resource exports** replace the old multi-request live scan.
+`POST /api/v1/inventory/exports` accepts `expected_generation_id`, which must
+match the real publication generation on one resolved InventoryService
+instance. An empty or changed generation returns 409; a query contract is
+never substituted for the pin. The server captures all authorized normalized
+OS/platform observations from that instance exactly once, independently of
+table filters. Only nine string columns are retained: family, resource_name,
+resource_type, resource_id, subscription_id, resource_group, environment,
+location, observed_at. Raw properties, tags and credentials are excluded.
+This is published-observation evidence, not complete-estate or live-health
+certification. No capture truncates silently: 1–50,000 rows and 16 MiB maximum
+complete serialized document size; over-limit/empty requests return 400.
+
+`GET /api/v1/inventory/exports/current` recovers the exact principal/effective
+scope's manifest (or `null`). Each principal/scope has at most one ready
+capture; replacement requires cancellation or expiry and otherwise returns
+409. `GET /api/v1/inventory/exports/{export_id}/batches?offset=0` reads up to
+500 retained rows. Offsets must be existing multiples of 500. The response
+includes immutable manifest, offset, next_offset, and resources. Reloading,
+retrying, or changing the active provider cannot mix capture generations.
+Each request reauthenticates and reauthorizes current read scope; an ID is
+not a bearer capability. Other authorized identities/scopes and replaced
+IDs return 404; requests outside the caller's grants remain forbidden.
+Recovery/batches/cancellation do not need the active inventory provider.
+
+`POST /api/v1/inventory/exports/{export_id}/cancel` requires the manifest's
+`expected_revision`. ETag compare-and-swap clears retained rows and revokes
+future reads; conflicts return 409 and require review. It cannot revoke an
+in-flight response or a downloaded file. Access expires at 24 hours, including
+the exact expiry instant; the next access/create lazily clears the row body.
+There is **no scheduled physical-purge guarantee** for idle documents.
+Manifest metadata remains. Documents live in the existing
+`AIOPS_HOME/state/inventory-exports/` store, keyed by hashed actor/exact scope.
+Unreadable/corrupt storage fails explicitly, never resets to empty;
+unconfigured storage returns 503.
+
+The portal offers explicit separately downloaded CSV batches, a batch selector,
+current-capture recovery, and a validated identity/offset resume URL.
+It carries no resource payload in URLs or browser storage. The SHA-256 covers
+the generation ID and complete sorted allowlisted rows, not a query version.
+The client compares manifest identity, revision, scope and whole-capture
+checksum, and checks row shape, count and offsets before emitting a batch;
+it does not independently recompute the whole-capture digest per batch.
+It neutralizes spreadsheet
+formulas. An offered browser download is not a saved-file receipt. Pending
+old-scope/unmounted/cancelled callbacks cannot emit a later download.
 
 `GET /api/v1/compliance/design-policy` returns a revisioned architecture
 assessment policy, exception decisions, and audit for the **exact effective

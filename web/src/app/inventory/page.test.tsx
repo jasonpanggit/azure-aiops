@@ -4,6 +4,7 @@ import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
 
 const navigation = vi.hoisted(() => ({ query: "" }));
+const exportApi = vi.hoisted(() => ({ current: vi.fn(), create: vi.fn(), batch: vi.fn(), cancel: vi.fn() }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(navigation.query),
 }));
@@ -26,6 +27,7 @@ const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrat
 }));
 
 vi.mock("@/lib/services", () => ({
+  inventoryExportApi: exportApi,
   inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping },
   copilotApi: { investigate },
 }));
@@ -144,6 +146,7 @@ describe("Inventory OS tracer", () => {
 
   beforeEach(() => {
     navigation.query = "";
+    exportApi.current.mockResolvedValue(envelope({ export: null }));
     investigate.mockResolvedValue({
       data: {
         contract_version: "1",
@@ -745,58 +748,17 @@ describe("Inventory OS tracer", () => {
     expect(screen.getByRole("button", { name: /View resources for Container Apps/ })).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("exports every in-scope resource, following API pagination across pages", async () => {
-    // The API caps `limit` at 500, so the export must keep requesting until
-    // next_offset is null rather than shipping only the first page.
-    resources
-      .mockResolvedValueOnce({
-        ...envelope({
-          resources: [{
-            family: "paas",
-            resource_id: "/subscriptions/sub-a/app-1",
-            resource_name: "app-1",
-            resource_type: "microsoft.app/containerapps",
-            subscription_id: "sub-a",
-            resource_group: "rg-1",
-            environment: "prod",
-          }],
-          family_availability: {},
-          requested_scope: {},
-          query_version: "inventory-resources-v1",
-        }),
-        pagination: { offset: 0, limit: 500, total: 2, next_offset: 500 },
-      })
-      .mockResolvedValueOnce({
-        ...envelope({
-          resources: [{
-            family: "os",
-            resource_id: "/subscriptions/sub-a/vm1",
-            resource_name: "vm1",
-            resource_type: "microsoft.compute/virtualmachines",
-            subscription_id: "sub-a",
-            resource_group: "rg-2",
-            environment: "dev",
-          }],
-          family_availability: {},
-          requested_scope: {},
-          query_version: "inventory-resources-v1",
-        }),
-        pagination: { offset: 500, limit: 500, total: 2, next_offset: null },
-      });
-
+  it("captures the reviewed Azure generation instead of live-paginating an export", async () => {
+    exportApi.create.mockRejectedValue(new Error("Synthetic capture stopped before persistence"));
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Export all resources/ }));
-
-    await waitFor(() => expect(downloadCsv).toHaveBeenCalled());
-    expect(resources).toHaveBeenCalledTimes(2);
-    expect(resources).toHaveBeenLastCalledWith(expect.anything(), 500, 500);
-
-    const [csv, filename] = downloadCsv.mock.calls[0];
-    expect(filename).toBe("azure-inventory-all-resources.csv");
-    // Both pages must survive into the export, not just the first.
-    expect(csv).toContain("app-1");
-    expect(csv).toContain("vm1");
+    const button = await screen.findByRole("button", { name: "Capture resource export" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByText("Synthetic capture stopped before persistence");
+    expect(exportApi.create).toHaveBeenCalledWith({}, "gen-1");
+    expect(resources).not.toHaveBeenCalled();
+    expect(downloadCsv).not.toHaveBeenCalled();
   });
 
   it("explains how to load inventory when the API provider has no snapshot", async () => {

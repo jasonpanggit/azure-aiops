@@ -372,6 +372,32 @@ export const ontologyAutomationApi = {
     }),
 };
 
+/** Exact-principal, exact-scope durable export operations; every request reauthorizes. */
+export const inventoryExportApi = {
+  /** Recover this caller's exact effective-scope capture without the active provider. */
+  current: (scope: ScopeSelection) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest | null }>("/inventory/exports/current", {
+      query: scopeToSearchParams(scope),
+    }),
+  /** Capture only the publication generation the caller reviewed. */
+  create: (scope: ScopeSelection, expectedGenerationId: string) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest }>("/inventory/exports", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { expected_generation_id: expectedGenerationId },
+    }),
+  /** Read a repeatable aligned 500-row batch, with independent scope authorization. */
+  batch: (scope: ScopeSelection, exportId: string, offset: number) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    return apiRequest<import("./types").InventoryExportBatch>(`/inventory/exports/${encodeURIComponent(exportId)}/batches`, { query });
+  },
+  /** Revoke future reads only if the capture still has the reviewed revision. */
+  cancel: (scope: ScopeSelection, exportId: string, expectedRevision: number) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest }>(`/inventory/exports/${encodeURIComponent(exportId)}/cancel`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision },
+    }),
+};
+
 export const inventoryApi = {
   /** Filter authorized OS groups before the server selects a page. */
   os: (scope: ScopeSelection = {}, offset = 0, limit = 100, filters: Record<string, string> = {}) => {

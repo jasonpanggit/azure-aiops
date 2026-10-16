@@ -5,6 +5,8 @@ from __future__ import annotations
 import hmac
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
@@ -14,6 +16,11 @@ from intelligence.inventory.eol_repository import (
     DuplicateCatalogConfirmation,
 )
 from intelligence.inventory.eol_review import normalize_os_key
+from intelligence.inventory.exports import (
+    ExportCancel,
+    ExportCreate,
+    InventoryExportStore,
+)
 from intelligence.inventory.mapping_repository import (
     MappingNotFound,
     MappingRevisionConflict,
@@ -22,9 +29,10 @@ from intelligence.inventory.mapping_repository import (
 from intelligence.inventory.narrative import build_inventory_narrative
 from intelligence.inventory.read_port import InventoryReadPort
 from intelligence.inventory.service import InventoryService
+from storage.onelake_documents import DocumentConflictError
 
 from .. import inventory_refresh_runs
-from ..dependencies import Context, OperatePrincipal, Page, ReadScope
+from ..dependencies import Context, CurrentPrincipal, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
 from ..models import (
@@ -511,6 +519,118 @@ def inventory_asset(
         scope=scope.to_dict(),
         knowledge_version=service.query_version,
     )
+
+
+@contextmanager
+def _export_store(context: Context) -> Iterator[InventoryExportStore]:
+    store = context.inventory_export_store
+    if store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable inventory export storage is unavailable",
+        )
+    try:
+        yield store
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+
+
+def _export_envelope(data: dict[str, Any], scope: ReadScope) -> dict[str, Any]:
+    manifest = data.get("manifest") or data.get("export") or {}
+    return envelope(
+        data,
+        scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="inventory.captured_export",
+            source_table="inventory/resource_observations",
+            timestamp=manifest.get("observed_at", ""),
+            confidence="high" if manifest else "unknown",
+        ),
+        knowledge_version=manifest.get("query_version", ""),
+    )
+
+
+@router.post(
+    "/inventory/exports",
+    status_code=201,
+    summary="Capture a bounded generation-pinned inventory export",
+)
+def create_inventory_export(
+    payload: ExportCreate,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    """Capture one authorized provider instance, with no background job or live-page mixing."""
+    with _export_store(context) as store:
+        service = _service(context)
+        if (
+            not service.generation_id
+            or service.generation_id != payload.expected_generation_id
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Inventory generation changed or is unreported; reload before capturing",
+            )
+        rows = service.resources(scope, limit=None)["data"]["resources"]
+        manifest = store.create(
+            principal.subject,
+            scope.to_dict(),
+            generation_id=service.generation_id,
+            query_version=service.query_version,
+            observed_at=service.observed_at,
+            rows=rows,
+        )
+    return _export_envelope({"export": manifest}, scope)
+
+
+@router.get(
+    "/inventory/exports/current",
+    summary="Find this principal's exact-scope export capture",
+)
+def current_inventory_export(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope
+) -> dict[str, Any]:
+    """Recover a durable capture after refresh, without requiring the active provider."""
+    with _export_store(context) as store:
+        manifest = store.current(principal.subject, scope.to_dict())
+    return _export_envelope({"export": manifest}, scope)
+
+
+@router.get(
+    "/inventory/exports/{export_id}/batches",
+    summary="Read an immutable inventory export batch",
+)
+def inventory_export_batch(
+    export_id: str,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+    offset: int = Query(0, ge=0, le=49_999),
+) -> dict[str, Any]:
+    """Reauthorize exact caller scope for every bounded batch, including retries."""
+    with _export_store(context) as store:
+        batch = store.batch(principal.subject, scope.to_dict(), export_id, offset)
+    return _export_envelope(batch, scope)
+
+
+@router.post(
+    "/inventory/exports/{export_id}/cancel",
+    summary="Cancel an export and remove its captured rows",
+)
+def cancel_inventory_export(
+    export_id: str,
+    payload: ExportCancel,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    """Cancel only the reviewed revision; previously downloaded files cannot be revoked."""
+    with _export_store(context) as store:
+        manifest = store.cancel(
+            principal.subject, scope.to_dict(), export_id, payload.expected_revision
+        )
+    return _export_envelope({"export": manifest}, scope)
 
 
 @router.get(

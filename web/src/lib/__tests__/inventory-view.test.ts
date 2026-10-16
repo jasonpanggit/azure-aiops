@@ -24,6 +24,19 @@ describe("Grouped Inventory bookmark contracts", () => {
     expect(inventoryViewQuery(view, {}).toString()).toBe("");
   });
 
+  it("round-trips a retained export identity and aligned batch offset", () => {
+    const params = new URLSearchParams("tab=azure&export_id=11111111-1111-4111-8111-111111111111&export_offset=49500");
+    expect(parseInventoryView(inventoryViewQuery(parseInventoryView(params), {}))).toEqual(parseInventoryView(params));
+  });
+
+  it.each([
+    "export_id=private", "export_offset=0", "export_id=11111111-1111-4111-8111-111111111111&export_offset=501",
+    "export_id=11111111-1111-4111-8111-111111111111&export_offset=50000",
+    "export_id=11111111-1111-4111-8111-111111111111&export_offset=-500",
+  ])("rejects malformed retained export bookmark %s", (query) => {
+    expect(() => parseInventoryView(new URLSearchParams(query))).toThrow("Invalid inventory export bookmark.");
+  });
+
   it.each([
     ["tab", "bogus"], ["osPage", "-1"], ["azurePage", "10001"], ["softwarePage", "2x"],
     ["osPageSize", "500"], ["softwarePageSize", "0"], ["sourceFilter", "invented"],

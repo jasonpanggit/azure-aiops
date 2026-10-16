@@ -4553,6 +4553,13 @@ def _situation_notes_store():
     return SituationNotesStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _inventory_export_store():
+    """Use the existing local/OneLake root for exact-scope captured exports."""
+    from intelligence.inventory.exports import InventoryExportStore
+
+    return InventoryExportStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 #: Module-level so every provider closure that builds a NetworkIntelligenceService
 #: (local, fabric, hybrid) shares one store and observes the same edits.
 _NETWORK_POLICY_STORE: NetworkDesignPolicyStore | None = None
@@ -5725,6 +5732,7 @@ def build_context() -> ApiContext:
         settings_store=_settings_store(),
         compliance_policy_store=_compliance_policy_store(),
         situation_notes_store=_situation_notes_store(),
+        inventory_export_store=_inventory_export_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

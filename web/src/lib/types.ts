@@ -233,6 +233,34 @@ export interface PaasInventoryDetail {
   requested_scope: Record<string, string[]>;
 }
 
+/** Durable allowlisted inventory capture; not a queued worker or download receipt. */
+export interface InventoryExportManifest {
+  schema_version: 1;
+  export_id: string;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  status: "ready" | "cancelled" | "expired";
+  generation_id: string;
+  query_version: string;
+  observed_at: string;
+  created_at: string;
+  expires_at: string;
+  total: number;
+  sha256: string;
+  columns: string[];
+  batch_size: 500;
+  resume_basis: "captured_rows_not_active_generation";
+}
+
+/** An immutable, separately downloadable batch within a retained capture. */
+export interface InventoryExportBatch {
+  manifest: InventoryExportManifest;
+  resources: Record<string, string>[];
+  offset: number;
+  next_offset: number | null;
+}
+
 export interface FlatInventoryResource {
   family: string;
   resource_id: string;
