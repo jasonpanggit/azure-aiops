@@ -143,6 +143,17 @@ variable "api_image_digest" {
   }
 }
 
+variable "api_traffic_revision" {
+  description = "Existing full API revision name to keep at 100% while validating a new zero-traffic revision. Empty routes traffic to latest."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.api_traffic_revision == "" || can(regex("^[a-z][a-z0-9-]*--[a-z0-9][a-z0-9-]*$", var.api_traffic_revision))
+    error_message = "api_traffic_revision must be empty or a full Container Apps revision name containing --."
+  }
+}
+
 variable "copilot_default_base_image_digest" {
   description = "Exact immutable canary-tested API image digest from which a default-promotion image was derived. Required only for default rollout."
   type        = string

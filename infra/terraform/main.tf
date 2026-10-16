@@ -50,6 +50,12 @@ resource "random_password" "exposure_cursor" {
   for_each = var.enable_role_assignments ? toset([]) : toset(["active", "previous"])
   length   = 64
   special  = false
+
+  # Imported bootstrap keys have different generation metadata. Rotation must
+  # be explicit (-replace), not a side effect of adopting existing secrets.
+  lifecycle {
+    ignore_changes = [length, special]
+  }
 }
 
 data "azurerm_client_config" "current" {}

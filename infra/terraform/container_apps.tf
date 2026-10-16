@@ -175,7 +175,8 @@ resource "azurerm_container_app" "api" {
     transport        = "auto"
 
     traffic_weight {
-      latest_revision = true
+      latest_revision = var.api_traffic_revision == ""
+      revision_suffix = var.api_traffic_revision == "" ? null : trimprefix(var.api_traffic_revision, "${local.base}-api--")
       percentage      = 100
     }
   }
@@ -771,6 +772,11 @@ resource "azurerm_container_app" "api" {
   ]
 
   lifecycle {
+    precondition {
+      condition     = var.api_traffic_revision == "" || startswith(var.api_traffic_revision, "${local.base}-api--")
+      error_message = "api_traffic_revision must belong to this API container app."
+    }
+
     precondition {
       condition     = !var.enable_sre_agent_patch_execution || local.sre_agent_patch_execution_config_valid
       error_message = "API SRE Agent execution requires bootstrapped RBAC and the complete canonical trigger, secret, endpoint, and managed target configuration."

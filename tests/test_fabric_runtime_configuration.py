@@ -9,6 +9,36 @@ from fabric.config import FabricRuntimeConfig
 from onboarding.config import ConnectorConfig
 
 
+def test_api_staging_pins_traffic_without_changing_default():
+    root = Path(__file__).resolve().parents[1] / "infra" / "terraform"
+    variables = (root / "variables.tf").read_text()
+    apps = (root / "container_apps.tf").read_text()
+    variable = variables.split('variable "api_traffic_revision" {', 1)[1].split(
+        'variable "copilot_default_base_image_digest"', 1
+    )[0]
+    api = apps.split('resource "azurerm_container_app" "api" {', 1)[1].split(
+        'resource "azurerm_container_app" "web"', 1
+    )[0]
+    assert 'default     = ""' in variable
+    assert 'latest_revision = var.api_traffic_revision == ""' in api
+    assert (
+        'revision_suffix = var.api_traffic_revision == "" ? null : '
+        'trimprefix(var.api_traffic_revision, "${local.base}-api--")'
+    ) in api
+    assert 'percentage      = 100' in api
+    assert 'startswith(var.api_traffic_revision, "${local.base}-api--")' in api
+
+
+def test_imported_cursor_key_metadata_does_not_trigger_rotation():
+    root = Path(__file__).resolve().parents[1] / "infra" / "terraform"
+    resource = (root / "main.tf").read_text().split(
+        'resource "random_password" "exposure_cursor" {', 1
+    )[1].split('data "azurerm_client_config"', 1)[0]
+    assert "ignore_changes = [length, special]" in resource
+    assert "length   = 64" in resource
+    assert "special  = false" in resource
+
+
 def test_terraform_config_replaces_baked_resource_ids(tmp_path, monkeypatch):
     path = tmp_path / "fabric.yaml"
     path.write_text("fabric:\n  workspace_id: deleted-workspace\n")
