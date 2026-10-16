@@ -42,6 +42,12 @@ describe("Personal saved view continuation", () => {
       .toBe("/situations");
   });
 
+  it("restores the explicit deadline-state filter, not a declaration or stale selection", () => {
+    const url = new URL(savedViewHref({ ...triage, kind: "situations", response_deadline: "overdue" }, scope), "http://127.0.0.1");
+    expect(url.searchParams.get("response_deadline")).toBe("overdue");
+    expect(url.searchParams.has("due_at")).toBe(false);
+  });
+
   it.each(["read", "replace"])("preserves all scope dimensions and cancellation for %s", async action => {
     const controller = new AbortController();
     if (action === "read") await savedViewsApi.read(scope, { signal: controller.signal });

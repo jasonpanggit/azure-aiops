@@ -106,6 +106,8 @@ def objectives(context: Context, scope: ReadScope) -> dict:
 @router.put("/objectives")
 def save_objective(payload: ObjectiveRequest, context: Context, principal: WritePrincipal, scope: ReadScope) -> dict:
     """Authorize a current component mapping before saving an explicit administrator target."""
+    if context.authorizer.effective_scope(principal, "write", scope) != scope:
+        raise ApiError(ErrorCode.FORBIDDEN, "The complete objective scope must be authorized")
     def save():
         store = _store(context)
         if store.read(scope.to_dict())["revision"] != payload.expected_revision:
@@ -125,6 +127,8 @@ def save_objective(payload: ObjectiveRequest, context: Context, principal: Write
 @router.post("/objectives/remove")
 def remove_objective(payload: ObjectiveRemoval, context: Context, principal: WritePrincipal, scope: ReadScope) -> dict:
     """Explicitly remove a reviewed objective; do not mutate or query its source resource."""
+    if context.authorizer.effective_scope(principal, "write", scope) != scope:
+        raise ApiError(ErrorCode.FORBIDDEN, "The complete objective scope must be authorized")
     def remove():
         try:
             return _store(context).update(

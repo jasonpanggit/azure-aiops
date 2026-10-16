@@ -4553,6 +4553,13 @@ def _situation_notes_store():
     return SituationNotesStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _situation_deadline_store():
+    """Keep explicit case response-review declarations on the existing durable root."""
+    from situations.deadlines import SituationDeadlineStore
+
+    return SituationDeadlineStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _inventory_export_store():
     """Use the existing local/OneLake root for exact-scope captured exports."""
     from intelligence.inventory.exports import InventoryExportStore
@@ -5816,6 +5823,7 @@ def build_context() -> ApiContext:
         settings_store=_settings_store(),
         compliance_policy_store=_compliance_policy_store(),
         situation_notes_store=_situation_notes_store(),
+        situation_deadline_store=_situation_deadline_store(),
         inventory_export_store=_inventory_export_store(),
         overview_history_store=_overview_history_store(),
         service_portfolio_store=_service_portfolio_store(),

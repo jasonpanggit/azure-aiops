@@ -27,6 +27,7 @@ from operations.service_reliability import ServiceObjectiveStore
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
 from semantic.twin_history import TwinHistoryStore
+from situations.deadlines import SituationDeadlineStore
 from situations.notes import SituationNotesStore
 
 from .auth import Authenticator
@@ -102,6 +103,7 @@ class ApiContext:
     settings_store: Any | None = None
     compliance_policy_store: Any | None = None
     situation_notes_store: SituationNotesStore | None = None
+    situation_deadline_store: SituationDeadlineStore | None = None
     inventory_export_store: InventoryExportStore | None = None
     overview_history_store: OverviewHistoryStore | None = None
     service_portfolio_store: ServicePortfolioStore | None = None

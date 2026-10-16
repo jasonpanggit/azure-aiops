@@ -3384,6 +3384,21 @@ export interface SituationAuditEvent {
   run_id: string;
 }
 
+/** Current-time interpretation of an explicit case/run-bound response-review declaration. */
+export interface SituationResponseDeadline {
+  state: "due" | "overdue" | "unknown" | "closed";
+  reason: string;
+  evaluated_at: string;
+  policy_revision: number | null;
+  declaration: {
+    situation_id: string; evidence_run_id: string; due_at: string; reason: string;
+    actor: string; declared_at: string; revision: number;
+  } | null;
+  authority: "none";
+  interpretation: string;
+  can_write?: boolean;
+}
+
 export interface DurableSituation {
   situation_id: string;
   resource_id: string;
@@ -3407,6 +3422,7 @@ export interface DurableSituation {
   evidence?: DurableEvidence[];
   links?: DurableSituationLink[];
   source_status?: DurableSourceStatus[];
+  response_deadline?: SituationResponseDeadline;
 }
 
 export type SoftwareSourceType = InventorySourceType | "unlinked";

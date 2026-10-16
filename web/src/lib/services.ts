@@ -2183,6 +2183,14 @@ export const predeployApi = {
 
 /** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
 export const situationsApi = {
+  /** Read an authorized current case's run-bound response-review declaration. */
+  deadline: (id: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").SituationResponseDeadline>(`/situations/${encodeURIComponent(id)}/response-deadline`, { query: scopeToSearchParams(scope), signal }),
+  /** Set or explicitly clear a declaration; never approve execution or certify an SLA. */
+  declareDeadline: (id: string, scope: ScopeSelection, change: { expected_revision: number; evidence_run_id: string; due_at: string | null; reason: string }, signal?: AbortSignal) =>
+    apiRequest<import("./types").SituationResponseDeadline>(`/situations/${encodeURIComponent(id)}/response-deadline`, {
+      method: "PUT", query: scopeToSearchParams(scope), body: change, signal,
+    }),
   /** Read exact-scope, server-attributed handover annotations. */
   notes: (id: string, scope: ScopeSelection) =>
     apiRequest<import("./types").SituationNotesState>(`/situations/${encodeURIComponent(id)}/notes`, { query: scopeToSearchParams(scope) }),
@@ -2193,6 +2201,7 @@ export const situationsApi = {
     }),
   list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100, triage?: {
     owner: string; lifecycle_state: string; older_than_hours: number | null; sort: "default" | "oldest" | "newest";
+    response_deadline?: "" | "due" | "overdue" | "unknown" | "closed";
   }) => {
     const params = scopeToSearchParams(scope);
     if (query) params.set("q", query);
@@ -2204,6 +2213,7 @@ export const situationsApi = {
       if (triage.lifecycle_state) params.set("lifecycle_state", triage.lifecycle_state);
       if (triage.older_than_hours !== null) params.set("older_than_hours", String(triage.older_than_hours));
       if (triage.sort !== "default") params.set("sort", triage.sort);
+      if (triage.response_deadline) params.set("response_deadline", triage.response_deadline);
     }
     return apiRequest<import("./types").DurableSituation[]>("/situations", { query: params });
   },

@@ -15,6 +15,7 @@ export type SituationViewSettings = {
   lifecycle_state: string;
   older_than_hours: 24 | 168 | 720 | null;
   sort: "default" | "oldest" | "newest";
+  response_deadline?: "" | "due" | "overdue" | "unknown" | "closed";
 };
 export type SavedViewSettings = SearchViewSettings | SituationViewSettings;
 export type SavedView = SavedViewSettings & { view_id: string; name: string };
@@ -40,6 +41,7 @@ export function savedViewHref(view: SavedViewSettings, scope: ScopeSelection): s
     if (view.lifecycle_state) params.set("lifecycle_state", view.lifecycle_state);
     if (view.older_than_hours !== null) params.set("older_than_hours", String(view.older_than_hours));
     if (view.sort !== "default") params.set("sort", view.sort);
+    if (view.response_deadline) params.set("response_deadline", view.response_deadline);
   }
   return `/${view.kind}${params.size ? `?${params}` : ""}`;
 }

@@ -10,10 +10,18 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from situations.deadlines import DeadlineChange, project_deadline
 from situations.notes import NoteAppend, SituationNotesStore
 from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, CurrentPrincipal, OperatePrincipal, Page, ReadScope
+from ..dependencies import (
+    Context,
+    CurrentPrincipal,
+    OperatePrincipal,
+    Page,
+    ReadScope,
+    WritePrincipal,
+)
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
 
@@ -50,6 +58,20 @@ def _not_found(subject: str) -> ApiError:
     return ApiError(ErrorCode.NOT_FOUND, "Situation not found", {"subject": subject})
 
 
+def _deadline_state(context: Context, scope: ReadScope):
+    if context.situation_deadline_store is None:
+        return None
+    try:
+        return context.situation_deadline_store.read(scope.to_dict())
+    except (ValueError, TypeError, RuntimeError, OSError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Response deadlines could not be confirmed; reload before retrying") from exc
+
+
+def _with_deadlines(rows: list[dict], context: Context, scope: ReadScope) -> list[dict]:
+    state, now = _deadline_state(context, scope), datetime.now(UTC)
+    return [{**row, "response_deadline": project_deadline(row, state, now)} for row in rows]
+
+
 @router.get("/situations", summary="List authorized durable situations")
 def list_situations(
     context: Context,
@@ -61,16 +83,19 @@ def list_situations(
     lifecycle_state: str = Query("", max_length=64),
     older_than_hours: int | None = Query(None, ge=0, le=87600),
     sort: str = Query("default", pattern="^(default|oldest|newest)$"),
+    response_deadline: str = Query("", pattern="^(|due|overdue|unknown|closed)$"),
 ) -> dict[str, Any]:
     provider = _provider(context)
     if provider is None:
         raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Situation provider is unavailable")
     rows = provider.list(scope, query=q, priority=priority)
+    rows = _with_deadlines(rows, context, scope)
     now = datetime.now(UTC)
     rows = [
         row for row in rows
         if (not assigned_owner or str(row.get("owner") or "").casefold() == assigned_owner.strip().casefold())
         and (not lifecycle_state or str(row.get("lifecycle_state") or "").casefold() == lifecycle_state.strip().casefold())
+        and (not response_deadline or row["response_deadline"]["state"] == response_deadline)
         and (older_than_hours is None or (
             (started := _started_at(row)) is not None
             and (now - started).total_seconds() >= older_than_hours * 3600
@@ -127,6 +152,7 @@ def situation_handoff(payload: HandoffRequest, context: Context, scope: ReadScop
             str(item["evidence_id"]) for item in row.get("evidence", []) if item.get("evidence_id")
         })
         rows.append(record)
+    rows = _with_deadlines(rows, context, scope)
     artifact = {
         "schema_version": "situation-handoff.v1",
         "scope": scope.to_dict(), "exported_at": datetime.now(UTC).isoformat(),
@@ -153,6 +179,52 @@ def _notes_target(situation_id: str, context: Context, scope: ReadScope) -> tupl
     if context.situation_notes_store is None:
         raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable Situation handover storage is unavailable")
     return row, context.situation_notes_store
+
+
+@router.get("/situations/{situation_id:path}/response-deadline")
+def response_deadline(situation_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal) -> dict:
+    """Read current run-bound declarations, not age-derived SLA assertions."""
+    provider = _provider(context)
+    if provider is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Situation provider is unavailable")
+    row = provider.get(situation_id, scope)
+    if row is None:
+        raise _not_found(situation_id)
+    state = _deadline_state(context, scope)
+    can_write = bool(principal.grants_for("write")) and context.authorizer.effective_scope(principal, "write", scope) == scope
+    return envelope({
+        **project_deadline(row, state, datetime.now(UTC)), "can_write": can_write and state is not None,
+    }, scope=scope.to_dict())
+
+
+@router.put("/situations/{situation_id:path}/response-deadline")
+def declare_response_deadline(
+    situation_id: str, payload: DeadlineChange, context: Context, scope: ReadScope, principal: WritePrincipal,
+) -> dict:
+    """Set/clear an explicit administrator commitment at a reviewed scope revision."""
+    if context.authorizer.effective_scope(principal, "write", scope) != scope:
+        raise ApiError(ErrorCode.FORBIDDEN, "The complete response deadline scope must be authorized")
+    provider = _provider(context)
+    if provider is None or context.situation_deadline_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Response deadline sources are unavailable")
+    row = provider.get(situation_id, scope)
+    if row is None:
+        raise _not_found(situation_id)
+    if payload.evidence_run_id != row.get("run_id"):
+        raise ApiError(ErrorCode.CONFLICT, "Situation evidence changed; reload before declaring")
+    try:
+        state = context.situation_deadline_store.change(scope.to_dict(), situation_id, principal.subject, payload)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, "Response deadlines changed; reload before retrying") from exc
+    except KeyError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "No response deadline is declared") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Response deadline write was not confirmed; reload before retrying") from exc
+    return envelope({
+        **project_deadline(row, state, datetime.now(UTC)), "can_write": True,
+    }, scope=scope.to_dict())
 
 
 @router.get("/situations/{situation_id:path}/notes", summary="Read exact-scope Situation handover notes")
@@ -206,7 +278,7 @@ def get_situation(situation_id: str, context: Context, scope: ReadScope) -> dict
     if row is None:
         raise _not_found(situation_id)
     return envelope(
-        row,
+        _with_deadlines([row], context, scope)[0],
         evidence=[
             Evidence(
                 source_engine="aiops.situations",

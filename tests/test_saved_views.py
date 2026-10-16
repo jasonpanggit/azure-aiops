@@ -65,7 +65,7 @@ def test_reader_can_save_replace_delete_and_recover_without_source_acquisition(t
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["actor"] == "reader" and data["revision"] == 1 and data["updated_at"]
-    assert data["views"] == [SEARCH, TRIAGE]
+    assert data["views"] == [SEARCH, {**TRIAGE, "response_deadline": ""}]
     recovered = SavedViewStore(store.documents).read("reader", {})
     assert recovered == data
     replaced = _replace(client, [{**SEARCH, "query": "production applications"}], 1)
@@ -73,6 +73,20 @@ def test_reader_can_save_replace_delete_and_recover_without_source_acquisition(t
     assert replaced.json()["data"]["views"][0]["query"] == "production applications"
     assert _replace(client, [], 2).json()["data"]["revision"] == 3
     assert store.read("reader", {})["views"] == []
+    provider.assert_not_called()
+
+
+def test_deadline_filter_recovers_legacy_documents_and_never_saves_a_declaration(tmp_path):
+    client, _, store, provider = _client(tmp_path)
+    _replace(client, [TRIAGE])
+    name = store._name("reader", {})
+    snapshot = store.documents.read_snapshot(name)
+    snapshot.payload["views"][0].pop("response_deadline")
+    store.documents.replace_if_match(name, snapshot.payload, expected_etag=snapshot.etag)
+    assert store.read("reader", {})["views"][0]["response_deadline"] == ""
+    assert _replace(client, [{**TRIAGE, "response_deadline": "overdue"}], 1).json()["data"]["views"][0]["response_deadline"] == "overdue"
+    assert _replace(client, [{**TRIAGE, "response_deadline": "invented"}], 2).status_code == 400
+    assert _replace(client, [{**TRIAGE, "due_at": "2026-10-20T00:00:00Z"}], 2).status_code == 400
     provider.assert_not_called()
 
 

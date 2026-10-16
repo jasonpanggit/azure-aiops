@@ -8,6 +8,8 @@ import { TableColumnFilters } from "./ui/TableColumnFilters";
 import { TablePagination } from "./ui/TablePagination";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { overviewHref } from "@/lib/overview";
+import type { ScopeSelection } from "@/lib/scope";
 
 export interface SituationTableProps {
   situations: SituationSummary[];
@@ -16,10 +18,12 @@ export interface SituationTableProps {
   onSelect?: (id: string) => void;
   showFilters?: boolean;
   paginate?: boolean;
+  scope?: ScopeSelection;
+  showDeadlines?: boolean;
 }
 
 /** Ranked Situation queue optimized for fast operational scanning. */
-export function SituationTable({ situations, compact = false, selectedIds, onSelect, showFilters = true, paginate = true }: SituationTableProps) {
+export function SituationTable({ situations, compact = false, selectedIds, onSelect, showFilters = true, paginate = true, scope, showDeadlines = false }: SituationTableProps) {
   const { filteredRows, filters, resetFilters } = useColumnFilters(situations, [
     { id: "priority", label: "Priority", getValues: (situation) => situation.priority },
     { id: "status", label: "Status", getValues: (situation) => situation.status },
@@ -50,6 +54,7 @@ export function SituationTable({ situations, compact = false, selectedIds, onSel
             <th>Business impact</th>
             <th>Likely cause</th>
             <th>Owner</th>
+            {showDeadlines && <th className="situation-deadline-cell">Declared response review</th>}
             {!compact && <th>Latest change</th>}
             <th aria-label="Open" />
           </tr>
@@ -70,7 +75,7 @@ export function SituationTable({ situations, compact = false, selectedIds, onSel
                 />
               </td>
               <td>
-                <Link className="table-primary-link" href={`/situations/${encodeURIComponent(situation.id)}`}>
+                <Link className="table-primary-link" href={overviewHref(`/situations/${encodeURIComponent(situation.id)}`, scope ?? {})}>
                   {situation.title}
                 </Link>
                 <div className="table-secondary">
@@ -92,6 +97,10 @@ export function SituationTable({ situations, compact = false, selectedIds, onSel
                 <strong>{situation.owner}</strong>
                 <div className="table-secondary">{situation.supportTeam}</div>
               </td>
+              {showDeadlines && <td className="situation-deadline-cell"><StatusBadge label={situation.responseDeadline?.state ?? "unknown"} tone={situation.responseDeadline?.state === "overdue" ? "warning" : "neutral"} />
+                <div className="table-secondary">{situation.responseDeadline?.declaration ? formatDateTime(situation.responseDeadline.declaration.due_at) : "No confirmed deadline"}</div>
+                <div className="table-secondary">{situation.responseDeadline?.reason || "No sourced timing commitment"}</div>
+                {situation.responseDeadline && <div className="table-secondary">Evaluated {formatDateTime(situation.responseDeadline.evaluated_at)}</div>}</td>}
               {!compact && (
                 <td>
                   {situation.latestChange ? (
@@ -107,7 +116,7 @@ export function SituationTable({ situations, compact = false, selectedIds, onSel
               <td>
                 <Link
                   className="table-open-link"
-                  href={`/situations/${encodeURIComponent(situation.id)}`}
+                  href={overviewHref(`/situations/${encodeURIComponent(situation.id)}`, scope ?? {})}
                   aria-label={`Investigate ${situation.title}`}
                 >
                   →

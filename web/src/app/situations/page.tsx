@@ -36,6 +36,8 @@ function SituationsPageContent() {
   const urlAge = ["24", "168", "720"].includes(rawAge) ? rawAge : "";
   const rawSort = params.get("sort");
   const urlSort = rawSort === "oldest" || rawSort === "newest" ? rawSort : "default";
+  const rawDeadline = params.get("response_deadline");
+  const urlDeadline = rawDeadline === "due" || rawDeadline === "overdue" || rawDeadline === "unknown" || rawDeadline === "closed" ? rawDeadline : "";
   const rawPage = Number(params.get("page") || 1);
   const urlPage = Number.isSafeInteger(rawPage) && rawPage > 0 && rawPage <= 4001 ? rawPage - 1 : 0;
   const [envelope, setEnvelope] = useState<Envelope<DurableSituation[]> | null>(null);
@@ -48,6 +50,7 @@ function SituationsPageContent() {
   const [lifecycleState, setLifecycleState] = useState(urlState);
   const [age, setAge] = useState(urlAge);
   const [sort, setSort] = useState<"default" | "oldest" | "newest">(urlSort);
+  const [deadline, setDeadline] = useState<typeof urlDeadline>(urlDeadline);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exportError, setExportError] = useState("");
   const [exporting, setExporting] = useState(false);
@@ -58,12 +61,14 @@ function SituationsPageContent() {
   useEffect(() => {
     setQuery(urlQuery); setPriority(urlPriority); setPage(urlPage);
     setOwner(urlOwner); setLifecycleState(urlState); setAge(urlAge); setSort(urlSort);
-  }, [urlQuery, urlPriority, urlPage, urlOwner, urlState, urlAge, urlSort]);
+    setDeadline(urlDeadline);
+  }, [urlQuery, urlPriority, urlPage, urlOwner, urlState, urlAge, urlSort, urlDeadline]);
 
-  const updateView = useCallback((patch: Partial<{ query: string; priority: typeof priority; page: number; owner: string; lifecycleState: string; age: string; sort: typeof sort }>) => {
-    const next = { query, priority, owner, lifecycleState, age, sort, page: 0, ...patch };
+  const updateView = useCallback((patch: Partial<{ query: string; priority: typeof priority; page: number; owner: string; lifecycleState: string; age: string; sort: typeof sort; deadline: typeof deadline }>) => {
+    const next = { query, priority, owner, lifecycleState, age, sort, deadline, page: 0, ...patch };
     setQuery(next.query); setPriority(next.priority); setPage(next.page);
     setOwner(next.owner); setLifecycleState(next.lifecycleState); setAge(next.age); setSort(next.sort);
+    setDeadline(next.deadline);
     const saved = scopeToSearchParams(scope);
     if (next.query) saved.set("q", next.query);
     if (next.priority !== "all") saved.set("priority", next.priority);
@@ -71,10 +76,11 @@ function SituationsPageContent() {
     if (next.lifecycleState) saved.set("lifecycle_state", next.lifecycleState);
     if (next.age) saved.set("older_than_hours", next.age);
     if (next.sort !== "default") saved.set("sort", next.sort);
+    if (next.deadline) saved.set("response_deadline", next.deadline);
     if (next.page) saved.set("page", String(next.page + 1));
     const suffix = saved.toString();
     router.replace(`/situations${suffix ? `?${suffix}` : ""}`, { scroll: false });
-  }, [scope, query, priority, owner, lifecycleState, age, sort, router]);
+  }, [scope, query, priority, owner, lifecycleState, age, sort, deadline, router]);
 
   useEffect(() => {
     const key = JSON.stringify(scope);
@@ -84,7 +90,7 @@ function SituationsPageContent() {
     }
   }, [scope, updateView]);
 
-  const viewKey = JSON.stringify({ scope, query, priority, page, owner, lifecycleState, age, sort, reloadRevision });
+  const viewKey = JSON.stringify({ scope, query, priority, page, owner, lifecycleState, age, sort, deadline, reloadRevision });
   useEffect(() => {
     exportRequest.current += 1;
     setSelectedIds(new Set()); setExportError(""); setExporting(false);
@@ -95,8 +101,8 @@ function SituationsPageContent() {
     setError("");
     setEnvelope(null);
     const args = [scope, query, priority === "all" ? "" : priority, page * 25, 25] as const;
-    const request = owner || lifecycleState || age || sort !== "default"
-      ? situationsApi.list(...args, { owner, lifecycle_state: lifecycleState, older_than_hours: age ? Number(age) : null, sort })
+    const request = owner || lifecycleState || age || sort !== "default" || deadline
+      ? situationsApi.list(...args, { owner, lifecycle_state: lifecycleState, older_than_hours: age ? Number(age) : null, sort, ...(deadline ? { response_deadline: deadline } : {}) })
       : situationsApi.list(...args);
     request
       .then((result) => active && setEnvelope(result))
@@ -104,7 +110,7 @@ function SituationsPageContent() {
     return () => {
       active = false;
     };
-  }, [page, priority, query, scope, owner, lifecycleState, age, sort, reloadRevision]);
+  }, [page, priority, query, scope, owner, lifecycleState, age, sort, deadline, reloadRevision]);
 
   const situations = useMemo(() => {
     const ranked = rankDurableSituations(envelope?.data ?? []);
@@ -189,6 +195,7 @@ function SituationsPageContent() {
       <SavedViews scope={scope} atFirstPage={page === 0} onRestoreCurrent={() => setReloadRevision(value => value + 1)} current={{
         kind: "situations", query, priority, assigned_owner: owner, lifecycle_state: lifecycleState,
         older_than_hours: age === "24" ? 24 : age === "168" ? 168 : age === "720" ? 720 : null, sort,
+        ...(deadline ? { response_deadline: deadline } : {}),
       }} />
 
       <div className="queue-toolbar situations-queue-toolbar">
@@ -222,8 +229,15 @@ function SituationsPageContent() {
         <label className="form-field"><span>Queue order</span><select className="form-control" value={sort} onChange={event => updateView({ sort: event.target.value === "oldest" ? "oldest" : event.target.value === "newest" ? "newest" : "default" })}>
           <option value="default">Priority, then newest</option><option value="oldest">Oldest first</option><option value="newest">Newest first</option>
         </select></label>
+        <label className="form-field"><span>Declared response review</span><select className="form-control" value={deadline} onChange={event => {
+          const value = event.target.value;
+          updateView({ deadline: value === "due" || value === "overdue" || value === "unknown" || value === "closed" ? value : "" });
+        }}>
+          <option value="">Any deadline state</option><option value="overdue">Declared deadline passed</option>
+          <option value="due">Before declared deadline</option><option value="unknown">Unknown / changed evidence</option><option value="closed">Source closed; attainment unverified</option>
+        </select></label>
       </div>
-      <p>Bookmark the URL to restore this triage view. Age uses observed start timestamps, not an SLA deadline; overdue status requires sourced SLA evidence.</p>
+      <p>Bookmark or save this triage view. Age uses observed start timestamps, not an SLA deadline. Response review compares an explicit administrator declaration for the current evidence run with the displayed evaluation time; it never certifies a contractual SLA or completed response. Source-only Copilot excludes these administrator annotations.</p>
       <button type="button" className="button" disabled={!selectedIds.size || exporting} onClick={() => void exportHandoff()}>
         {exporting ? "Exporting handoff..." : `Export selected handoff (${selectedIds.size}/25)`}
       </button>
@@ -243,16 +257,16 @@ function SituationsPageContent() {
         />
       ) : situations.length === 0 ? (
         <StatePanel
-          title={query.trim() || priority !== "all" || owner || lifecycleState || age ? "No situations match these filters" : "No active situations in this scope"}
+          title={query.trim() || priority !== "all" || owner || lifecycleState || age || deadline ? "No situations match these filters" : "No active situations in this scope"}
           message={
-            query.trim() || priority !== "all" || owner || lifecycleState || age
+            query.trim() || priority !== "all" || owner || lifecycleState || age || deadline
               ? "Adjust the priority or search criteria. This result reflects the current operating scope."
               : "No durable situation records are currently available for the selected operating scope. This is not a source-health confirmation; review data coverage below."
           }
         />
       ) : (
         <div className="card queue-card">
-          <SituationTable situations={situations} showFilters={false} paginate={false} selectedIds={selectedIds} onSelect={id => setSelectedIds(current => {
+          <SituationTable situations={situations} scope={scope} showDeadlines showFilters={false} paginate={false} selectedIds={selectedIds} onSelect={id => setSelectedIds(current => {
             const next = new Set(current);
             if (next.has(id)) next.delete(id);
             else if (next.size < 25) next.add(id);

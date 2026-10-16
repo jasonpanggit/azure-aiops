@@ -50,6 +50,7 @@ class SituationView(ViewIdentity):
     lifecycle_state: str = Field(default="", max_length=64)
     older_than_hours: Literal[24, 168, 720] | None = None
     sort: Literal["default", "oldest", "newest"] = "default"
+    response_deadline: Literal["", "due", "overdue", "unknown", "closed"] = ""
 
     @field_validator("older_than_hours", mode="before")
     @classmethod

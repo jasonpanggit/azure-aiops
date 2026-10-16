@@ -5661,6 +5661,21 @@ body.topology-fullscreen-open {
   .service-reliability .button, .service-reliability input, .service-reliability select { min-height: 44px; }
 }
 
+.situation-response-deadline .card-body { display: grid; gap: 16px; }
+.situation-response-deadline .card-body > .button { justify-self: start; }
+.situation-response-deadline button:disabled { opacity: .55; cursor: not-allowed; }
+.situation-response-deadline p { max-width: 75ch; }
+.situation-response-deadline fieldset { display: grid; gap: 16px; min-width: 0; border: 1px solid var(--color-border); padding: 16px; }
+.situation-response-deadline input, .situation-response-deadline textarea { width: 100%; min-width: 0; max-width: 100%; }
+.situation-response-deadline code, .situation-response-deadline dd { overflow-wrap: anywhere; }
+.situation-response-deadline dd { margin: 4px 0 12px; }
+.situation-deadline-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+.situation-deadline-cell { min-width: 220px; width: 250px; }
+@media (max-width: 600px) {
+  .situation-response-deadline .card-header { flex-wrap: wrap; }
+  .situation-response-deadline .button, .situation-response-deadline input { min-height: 44px; }
+}
+
 .service-scroll-hint {
   padding-inline: 20px;
   color: var(--color-text-secondary);

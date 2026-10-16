@@ -21,6 +21,7 @@ import type {
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { SituationHandoverNotes } from "@/components/SituationHandoverNotes";
 import { SituationEvidenceTimeline } from "@/components/SituationEvidenceTimeline";
+import { SituationResponseDeadline } from "@/components/SituationResponseDeadline";
 import { situationEntityHref } from "@/lib/situations";
 
 function allEvidence(situation: DurableSituation): DurableEvidence[] {
@@ -297,6 +298,7 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
         </div>
       </section>
 
+      <SituationResponseDeadline scope={scope} situationId={record.situation_id} evidenceRunId={record.run_id} />
       <SituationHandoverNotes key={`notes:${JSON.stringify(scope)}:${record.situation_id}:${record.run_id}`}
         scope={scope} situationId={record.situation_id} evidenceRunId={record.run_id} />
       <SituationEvidenceTimeline key={`timeline:${JSON.stringify(scope)}:${record.situation_id}:${record.run_id}`} evidence={evidence} />

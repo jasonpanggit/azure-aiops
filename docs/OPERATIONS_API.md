@@ -69,6 +69,54 @@ The catalog-only Copilot and existing service brief do not ingest this panel.
 None of these facts establishes whole-service uptime, complete traffic coverage,
 contractual certification, continuous monitoring or execution approval.
 
+## Declared Situation response reviews
+
+`GET /api/v1/situations/{situation_id}/response-deadline` reauthorizes current
+case membership and returns the exact-scope declaration, evaluation time,
+collection revision and effective write capability. `PUT` requires administrator
+rights across the **complete effective read scope**, reviewed `expected_revision`,
+current `evidence_run_id`, explicit aware ISO `due_at` and a nonempty reason.
+There is no inferred/default severity-based target. A null `due_at` explicitly
+removes the declaration; the portal requires confirmation and a reason.
+Server-normalized UTC timestamps can be past commitments. Run drift and CAS
+conflicts return 409; foreign/absent cases return 404. Reads do not confer write
+authority, including when an unrestricted reader also has a narrower admin grant.
+Service objective mutations enforce this same complete-scope boundary.
+
+Existing `AIOPS_HOME` local/OneLake documents store
+`state/situation-deadlines/<sha256(effective_scope)>.json`, shared only within
+that exact effective scope. Create-only/ETag CAS, a strict schema, 200 unique
+declarations and a **512 KiB actual serialized** document bound apply. No
+silent eviction, full edit history, timed purge, inheritance, backfill, schedule,
+notification or Azure resource creation is implied. Last declaration actor/time
+and collection editor/time are retained; a removal reason is required but no
+immutable removal event history is claimed. Corruption/unavailable configured
+storage is 503, never an empty policy or successful write.
+
+Queue/detail and read-only handoff responses carry `response_deadline`.
+`response_deadline=due|overdue|unknown|closed` is a server-side queue filter
+applied **before pagination** and restored by URLs/personal saved views.
+Old saved-view documents without this field recover to an empty filter; saved
+views contain preferences, not declarations. Each queue/handoff projects one
+consistent collection revision and evaluation time for all authorized cases.
+Unconfigured storage produces explicit unknown timing, not a default deadline.
+
+Due/overdue compare the evaluation time with an administrator-declared
+response-review deadline only for the matching evidence run and a recognized
+active published lifecycle. Equality is overdue. A different run, unrecognized
+lifecycle or absent declaration is unknown. Closed/resolved means only the
+published source state: neither actual response time nor historical attainment
+is verified. Source freshness is not upgraded by this clock comparison.
+
+The on-demand detail editor uses explicit UTC input, server capability, current
+run and reviewed revision; it never automatically acknowledges a case. Failed
+or uncertain writes discard the editable revision and require reload without
+replay. Close/scope/case/run changes abort and discard in-flight results.
+Queue/detail observations and handoff exports are independently evaluated;
+reload after declaration changes. Source-only Copilot deliberately excludes
+these administrator annotations. Nothing here certifies a contractual SLA,
+response completion, live source status or execution approval.
+
 ## Portal scoped bookmarks
 
 The shared shell restores all nine repeated scope dimensions from each page URL
@@ -296,8 +344,9 @@ inferred. These source contracts do not supply service availability, latency,
 SLO windows/targets or error budgets. Those remain unreported rather than
 being synthesized from incident counts. Scope changes remount both workspaces
 immediately; all generated review and dependency links preserve selected scope.
-Sourced reliability telemetry remains separate pending work; an interpretation
-layer or a retained mapping count does not supply availability measurements.
+The explicit component reliability panel described above is a separate source;
+an interpretation layer or retained mapping count does not supply availability
+measurements or whole-service uptime.
 
 ### Retained service portfolios
 

@@ -45,6 +45,7 @@ export interface SituationSummary {
   confidence: number;
   latestChange: IncidentTimelineEvent | null;
   impactScore: number;
+  responseDeadline?: import("./types").SituationResponseDeadline;
 }
 
 function priorityFor(incident: IncidentIdentity, blastRadius: IncidentBlastRadius): SituationPriority {
@@ -134,6 +135,7 @@ export function durableSituationSummary(situation: import("./types").DurableSitu
     confidence: situation.evidence_state === "complete" ? 1 : 0,
     latestChange: null,
     impactScore: situation.priority === "P1" ? 100 : situation.priority === "P2" ? 50 : 10,
+    responseDeadline: situation.response_deadline,
   };
 }
 

@@ -216,3 +216,16 @@ def test_runtime_connection_choice_is_unambiguous_and_uses_current_factory(tmp_p
         factory.return_value.query_request_telemetry.assert_called_once_with(RESOURCE, 24)
     monkeypatch.setenv("AIOPS_HOME", str(tmp_path))
     assert _service_objective_store().read({})["objectives"] == []
+
+
+def test_partial_admin_grant_never_authorizes_broader_shared_objective_writes(tmp_path):
+    client = _http(tmp_path)
+    context = client.app.state.context
+    context.authenticator = StaticTokenAuthenticator({TOKEN: Principal(subject="mixed", grants=(
+        Grant("reader"), Grant("admin", Scope.from_mapping({"subscription": ["foreign"]})),
+    ))})
+    assert _save(client).status_code == 403
+    assert client.post("/api/v1/service-reliability/objectives/remove", headers=_auth(), params=PARAMS, json={
+        "expected_revision": 0, "resource_id": RESOURCE,
+    }).status_code == 403
+    context.service_request_metrics.assert_not_called()

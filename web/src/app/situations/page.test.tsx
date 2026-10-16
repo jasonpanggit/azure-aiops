@@ -76,6 +76,18 @@ describe("durable Situation queue", () => {
     } });
   });
 
+  it("restores and updates the pre-page deadline filter without deriving an SLA", async () => {
+    navigation.query = "response_deadline=overdue";
+    render(<ScopeProvider><SituationsPage /></ScopeProvider>);
+    await screen.findByText("Database unavailable");
+    expect(list.mock.calls[0][5]).toMatchObject({ response_deadline: "overdue" });
+    expect(screen.getByRole("combobox", { name: /Declared response review/ })).toHaveValue("overdue");
+    fireEvent.change(screen.getByRole("combobox", { name: /Declared response review/ }), { target: { value: "unknown" } });
+    await waitFor(() => expect(list.mock.lastCall?.[5]).toMatchObject({ response_deadline: "unknown" }));
+    expect(navigation.replace.mock.lastCall?.[0]).toContain("response_deadline=unknown");
+    expect(screen.getByText(/Source-only Copilot excludes/)).toBeInTheDocument();
+  });
+
   it("reaquires a current saved queue and invalidates reviewed handoff selections", async () => {
     render(<ScopeProvider><SituationsPage /></ScopeProvider>);
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Database unavailable for handoff" }));
