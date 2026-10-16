@@ -889,6 +889,7 @@ Served by `NetworkIntelligenceService` over the ontology snapshot.
 | `/api/v1/network/intents/run` | POST explicitly analyze the saved reviewed suite against current scoped configuration |
 | `/api/v1/network/topology/history` | GET personal exact-scope retained projections; POST explicitly capture reviewed history revision |
 | `/api/v1/network/topology/history/compare` | GET paginated fixed-field differences between two retained captures |
+| `/api/v1/network/review` | GET reauthorized exact gap/rule evidence for a separate advisory proposed-change review |
 
 **Saved connectivity tests** are personal reader state, not global design policy,
 deployment approvals or infrastructure execution. The server keys documents by
@@ -948,6 +949,38 @@ zero differences do not establish unchanged infrastructure. No background
 collection, historical backfill, time expiry, packet probing, execution approval
 or infrastructure mutation occurs. Personal retained contents are not added to
 the Network Copilot context.
+
+**Finding-to-predeploy handoff** adds `reviewed_digest` to current gap and rule
+rows. The digest binds the full source finding, current policy digest, reported
+source observation time, safe fixed context and exact effective scope. Network
+links carry only kind (`gap`/`rule`), finding identity, digest and repeated scope
+query parameters; raw evidence, rules and finding text are not carried in URLs.
+GET `/network/review` requires `kind`, `finding_id` and `reviewed_digest`. It
+acquires one currently scoped Network service, finds that exact current result
+and rejects missing/foreign results404 or evidence drift409. Provider failure
+remains503. Safe context is bounded to64KiB; full source properties are hash-bound
+only, not forwarded. Repeated source times and missing generations do not prove
+independent source refreshes.
+
+The predeploy page requires explicit attachment to a separately entered artifact.
+Malformed/incomplete references or failed evidence reads block linked submission;
+removing context is a separate visible action. POST `/changes/assess` accepts
+optional `network_review: {kind, finding_id, reviewed_digest}` only, reauthorizes
+the current requested `ReadScope` (including all nine dimensions) and rechecks
+the digest before assessment. Existing admin-level `WritePrincipal` authorization
+is preserved, not broadened to readers/operators. Stored assessment context is
+server-acquired and attributed to the submitting subject. Linked list/detail/
+explain reads require that same subject and exact effective scope; they cannot
+leak through a broader/narrower query or a direct ID. The assessment list wire
+data remains an array, now consumed as such by the portal.
+
+Assessment storage still follows the existing bounded **process-local** service;
+this handoff does not claim a durable cross-replica audit trail. A separately
+prepared artifact is never auto-generated from a finding. Neither attachment,
+simulation nor CAB recommendation verifies that the artifact addresses the
+finding, certifies a fix, approves deployment or grants execution. Failed/
+unconfirmed submissions require explicit evidence reload/reattachment; there
+is no automatic assessment retry or infrastructure mutation.
 
 Three properties are load-bearing:
 

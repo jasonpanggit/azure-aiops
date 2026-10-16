@@ -2,6 +2,8 @@ import { apiRequest, resolveApiBaseUrl } from "./api-client";
 import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
 import type {
+  NetworkReviewReference,
+  NetworkFindingReview,
   NetworkTopologyHistory,
   NetworkTopologyComparison,
   NetworkIntentSuite,
@@ -1417,6 +1419,12 @@ export const remediationApi = {
 // ---------------------------------------------------------------------------
 
 export const networkApi = {
+  /** Reauthorize exact current finding evidence without writing or generating a fix. */
+  review: (scope: ScopeSelection, reference: NetworkReviewReference, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    Object.entries(reference).forEach(([key, value]) => query.set(key, value));
+    return apiRequest<NetworkFindingReview>("/network/review", { query, signal: options.signal });
+  },
   topology: (
     scope: ScopeSelection = {},
     options: { detail: "summary" | "full" } = { detail: "full" },
@@ -2048,23 +2056,29 @@ export const governanceApi = {
 
 /** Pre-deployment change risk and impact assessment. */
 export const predeployApi = {
-  sources: () => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources"),
+  sources: (scope: ScopeSelection = {}) => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources", {
+    query: scopeToSearchParams(scope),
+  }),
 
-  assess: (source: string, payload: Record<string, unknown>, changeId = "") =>
+  /** Assess only the selected scope; optional exact finding context is rechecked server-side. */
+  assess: (source: string, payload: Record<string, unknown>, changeId = "", options: {
+    scope?: ScopeSelection; networkReview?: NetworkReviewReference; signal?: AbortSignal;
+  } = {}) =>
     apiRequest<ChangeAssessment>("/changes/assess", {
-      method: "POST",
-      body: { source, payload, change_id: changeId },
+      method: "POST", query: scopeToSearchParams(options.scope ?? {}), signal: options.signal,
+      body: { source, payload, change_id: changeId, ...(options.networkReview ? { network_review: options.networkReview } : {}) },
     }),
 
   assessments: (scope: ScopeSelection = {}) =>
-    apiRequest<{ assessments: ChangeAssessmentSummary[]; count: number }>(
+    apiRequest<ChangeAssessmentSummary[]>(
       "/changes/assessments",
       { query: scopeToSearchParams(scope) },
     ),
 
-  assessment: (assessmentId: string) =>
+  assessment: (assessmentId: string, scope: ScopeSelection = {}) =>
     apiRequest<ChangeAssessment>(
       `/changes/assessments/${encodeURIComponent(assessmentId)}`,
+      { query: scopeToSearchParams(scope) },
     ),
 };
 

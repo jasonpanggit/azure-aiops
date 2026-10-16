@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from network.review import NetworkReviewReference
+
 from .evidence import CONFIDENCE_LEVELS, FRESHNESS_UNKNOWN
 
 
@@ -345,6 +347,7 @@ class ChangeAssessmentRequest(ApiModel):
         description="Raw change artifact from the source system"
     )
     change_id: str = Field("", description="Caller-supplied change identifier; generated when omitted")
+    network_review: NetworkReviewReference | None = None
 
 
 # --------------------------------------------------------------------------

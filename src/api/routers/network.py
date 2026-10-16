@@ -41,6 +41,12 @@ from network.intents import (
     SuiteRevision,
     SuiteUpdate,
 )
+from network.review import (
+    DIGEST_PATTERN,
+    NetworkReviewReference,
+    ReviewKind,
+    finding_review,
+)
 from network.rule_engine import (
     SUPPORTED_OPERATORS,
     SUPPORTED_TARGET_NAMES,
@@ -352,6 +358,49 @@ def _evidence(
     )
 
 
+def _review_projection(finding, kind: ReviewKind, service: NetworkIntelligenceService, scope: Scope) -> dict:
+    try:
+        return finding_review(finding, kind, service, scope.to_dict())
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Exact Network review evidence is unavailable") from exc
+
+
+def resolve_finding_review(context: Context, scope: Scope, reference: NetworkReviewReference) -> dict:
+    """Reacquire a currently authorized finding and require its exact reviewed evidence."""
+    service = _service(context, scope)
+    analysis = service.analyze()
+    candidates = analysis.gaps if reference.kind == "gap" else analysis.rule_findings
+    for finding in candidates:
+        identity = finding.gap_id if reference.kind == "gap" else finding.finding_id
+        if identity != reference.finding_id:
+            continue
+        result = _review_projection(finding, reference.kind, service, scope)
+        if result["reviewed_digest"] != reference.reviewed_digest:
+            raise ApiError(ErrorCode.CONFLICT, "Network finding evidence changed; review the current Network finding again")
+        return result
+    raise ApiError(ErrorCode.NOT_FOUND, "Network finding was not found in the current authorized scope")
+
+
+@router.get("/review")
+def network_review(
+    context: Context, scope: ReadScope,
+    kind: Annotated[ReviewKind, Query()],
+    finding_id: Annotated[str, Query(min_length=1, max_length=256)],
+    reviewed_digest: Annotated[str, Query(pattern=DIGEST_PATTERN)],
+) -> dict:
+    """Resolve exact evidence for a separate proposed-change review without a mutation."""
+    data = resolve_finding_review(context, scope, NetworkReviewReference(
+        kind=kind, finding_id=finding_id, reviewed_digest=reviewed_digest,
+    ))
+    return envelope(data, scope=scope.to_dict(), evidence=Evidence(
+        source_engine="network.review_handoff", source_table="ontology_entities",
+        timestamp=data["source_observed_at"], confidence="unknown",
+    ), warnings=[
+        "Finding context is advisory, not a generated fix, artifact validation, approval or execution authority.",
+        "The relationship between this finding and a separately submitted change artifact must be reviewed by the operator.",
+    ])
+
+
 @router.get("/topology", summary="Hub-spoke network topology")
 def network_topology(
     context: Context,
@@ -601,7 +650,10 @@ def network_gaps(
     }
     return envelope(
         {
-            "gaps": [gap.to_dict() for gap in visible],
+            "gaps": [
+                {**gap.to_dict(), "reviewed_digest": _review_projection(gap, "gap", service, scope)["reviewed_digest"]}
+                for gap in visible
+            ],
             # An absent design policy is a reportable state, not an error: it
             # means conformance gaps cannot be assessed, only structural ones.
             "intended_design_declared": analysis.policy.is_declared,
@@ -654,7 +706,10 @@ def rule_findings(
     )
     return envelope(
         {
-            "findings": [finding.to_dict() for finding in visible],
+            "findings": [
+                {**finding.to_dict(), "reviewed_digest": _review_projection(finding, "rule", service, scope)["reviewed_digest"]}
+                for finding in visible
+            ],
             "summary": analysis.summary(),
             "coverage": coverage,
         },

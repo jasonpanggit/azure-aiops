@@ -2558,6 +2558,7 @@ export interface NetworkGap {
   subscription_id: string;
   environment: string;
   vnet_id?: string;
+  reviewed_digest?: string;
 }
 
 /** One rule in the rule-based, UI-editable network design policy. */
@@ -2622,6 +2623,30 @@ export interface RuleFinding {
   connection_id: string;
   subscription_id: string;
   environment: string;
+  reviewed_digest?: string;
+}
+
+/** Server-issued reference to exact evidence, not a change artifact or approval. */
+export interface NetworkReviewReference {
+  kind: "gap" | "rule";
+  finding_id: string;
+  reviewed_digest: string;
+}
+
+/** Safe reauthorized current finding context; complete source evidence is hash-bound only. */
+export interface NetworkFindingReview extends NetworkReviewReference {
+  title: string;
+  severity: string;
+  category: string;
+  detail: string;
+  recommendation: string;
+  resource_ids: string[];
+  basis: string;
+  flow_log_state: string;
+  source_observed_at: string;
+  scope: Record<string, string[]>;
+  policy_digest: string;
+  source_finding_digest: string;
 }
 
 export interface FlowEndpoint {
@@ -3163,6 +3188,8 @@ export interface ChangeAssessment {
   scope: Record<string, string[]>;
   scope_excluded_resource_count: number;
   confirmed_cause: boolean;
+  network_review?: NetworkFindingReview;
+  network_review_subject?: string;
 }
 
 export interface ChangeAssessmentSummary {

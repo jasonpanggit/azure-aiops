@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +66,8 @@ class PreDeploymentImpactService:
         scope: Scope | None = None,
         change_id: str = "",
         vulnerability_index: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+        network_review: Mapping[str, Any] | None = None,
+        reviewed_by: str = "",
     ) -> dict[str, Any]:
         """Run the full pipeline for one submitted change."""
         effective_scope = scope or unrestricted_scope()
@@ -116,6 +119,9 @@ class PreDeploymentImpactService:
             "source_engine": SOURCE_ENGINE,
             "confirmed_cause": False,
         }
+        if network_review is not None:
+            assessment["network_review"] = deepcopy(dict(network_review))
+            assessment["network_review_subject"] = reviewed_by
         self._remember(assessment)
         return assessment
 
@@ -171,6 +177,8 @@ def _summary_in_scope(assessment: Mapping[str, Any], scope: Scope) -> bool:
     requested under a narrower one, so it is re-checked against the impacted
     resources it actually recorded.
     """
+    if "network_review" in assessment:
+        return assessment.get("scope") == scope.to_dict()
     if scope.is_unrestricted():
         return True
     if not scope.is_satisfiable():
