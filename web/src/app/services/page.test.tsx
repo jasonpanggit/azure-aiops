@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   buildServicesCopilotContext: vi.fn(),
   incidents: vi.fn(),
   listAll: vi.fn(),
+  history: vi.fn(),
 }));
 
 vi.mock("@/lib/services", () => ({
   connectionsApi: { listAll: mocks.listAll },
   operationsApi: { incidents: mocks.incidents },
+  servicePortfolioApi: { history: mocks.history },
 }));
 
 vi.mock("@/lib/copilot/page-adapters", () => ({
@@ -56,6 +58,7 @@ describe("Services catalog provider states", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.history.replaceState({}, "", "/services");
+    mocks.history.mockResolvedValue(envelope({ schema_version: 1, actor: "fixture", scope: {}, revision: 0, observations: [] }));
     mocks.listAll.mockResolvedValue(envelope([
       {
         connection_id: "prod",
@@ -142,6 +145,7 @@ describe("Services catalog provider states", () => {
     mocks.listAll.mockReturnValue(new Promise(() => {}));
     mocks.incidents.mockReturnValue(new Promise(() => {}));
     fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
+    await screen.findByText(/Portfolio revision 0/);
     expect(screen.queryByRole("link", { name: "Payments" })).not.toBeInTheDocument();
     expect(mocks.buildServicesCopilotContext).toHaveBeenLastCalledWith(expect.objectContaining({
       scope: { subscription: ["new-sub"] }, services: [], incidentsAvailable: false,

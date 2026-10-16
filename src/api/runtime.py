@@ -4567,6 +4567,13 @@ def _overview_history_store():
     return OverviewHistoryStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _service_portfolio_store():
+    """Retain authorized service portfolio observations on the existing durable root."""
+    from operations.service_portfolio import ServicePortfolioStore
+
+    return ServicePortfolioStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 #: Module-level so every provider closure that builds a NetworkIntelligenceService
 #: (local, fabric, hybrid) shares one store and observes the same edits.
 _NETWORK_POLICY_STORE: NetworkDesignPolicyStore | None = None
@@ -5741,6 +5748,7 @@ def build_context() -> ApiContext:
         situation_notes_store=_situation_notes_store(),
         inventory_export_store=_inventory_export_store(),
         overview_history_store=_overview_history_store(),
+        service_portfolio_store=_service_portfolio_store(),
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

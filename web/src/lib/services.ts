@@ -542,6 +542,16 @@ export const SUPPORTED_SEARCH_PHRASES = [
   "critical infrastructure",
 ] as const;
 
+/** Retained service portfolio reads and server-side acquisitions; counts cannot be submitted. */
+export const servicePortfolioApi = {
+  history: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").ServicePortfolioHistory>("/service-portfolio/history", { query: scopeToSearchParams(scope) }),
+  capture: (scope: ScopeSelection, expectedRevision: number) =>
+    apiRequest<import("./types").ServicePortfolioHistory>("/service-portfolio/history", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision },
+    }),
+};
+
 export const contextApi = {
   /** Inspect configuration prerequisites without hydrating deferred providers. */
   searchCapabilities: (scope: ScopeSelection = {}) =>

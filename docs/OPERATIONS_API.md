@@ -105,8 +105,46 @@ inferred. These source contracts do not supply service availability, latency,
 SLO windows/targets or error budgets. Those remain unreported rather than
 being synthesized from incident counts. Scope changes remount both workspaces
 immediately; all generated review and dependency links preserve selected scope.
-Retained service portfolio comparisons and sourced reliability telemetry are
-separate pending work, not delivered by this interpretation layer.
+Sourced reliability telemetry remains separate pending work; an interpretation
+layer or a retained mapping count does not supply availability measurements.
+
+### Retained service portfolios
+
+`GET/POST /api/v1/service-portfolio/history` reauthorizes the exact principal and
+effective scope on every read/capture. The POST body is only
+`{"expected_revision": 0}`; service metrics cannot be submitted. The server
+composes existing authorized Connections (up to 10,000, including disabled)
+and incident report (first 100 rows, reported total retained) handlers. A
+partial connection registry, failed provider, invalid aggregate, changed
+revision/ETag or exceeded bound leaves the previous history unchanged.
+Collection is sequential, not an atomic or generation-pinned estate snapshot.
+
+Only up to **250 service labels** and their mapping/incident-association counts,
+plus bounded source extents, collection/source times, query versions, reported
+freshness and warning counts are retained. An incident counts once per distinct
+trimmed service label in that report row; associations can overlap between
+services. No raw connection/resource identities, owner names or credentials
+are stored. Unmapped labels have a separate identity from a real service named
+"Unmapped service". Counts refer to loaded source observations, not unique
+resources, service requests or resolved incidents.
+
+Storage uses existing `AIOPS_HOME` local/OneLake documents at
+`state/service-portfolio/<sha256([principal,effective_scope])>.json`, with CAS
+and a strict versioned, identity/chronology/count-validated schema. Retain latest
+**20 explicit observations**, **2 MiB including serialization**; observation 21
+evicts the oldest. Limits are conjunctive: 250 labels does not waive the byte
+bound. No automatic cadence, timed expiry/physical purge or historical backfill
+is claimed. Reads need no current provider, but retained access still requires
+authorization to the identical scope. Missing storage is explicit 503;
+corruption is explicit failure, never an empty-history fallback.
+
+The portal selects two chronologically ordered receipts, filters their loaded
+label union and renders at most 50 comparisons. Arithmetic is shown only for
+labels represented in both collections. Absence is not zero, newly
+created/deleted service, new/resolved incident, verified improvement or cause.
+Reported source extents/freshness remain inspectable; capture receipt time
+does not assert fresh source data. Scope changes immediately discard prior
+comparisons and late responses. Capturing does not overwrite the live catalog.
 
 ## Running
 

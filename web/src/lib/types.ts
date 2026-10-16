@@ -30,6 +30,49 @@ export interface OverviewHistory {
   observations: OverviewObservation[];
 }
 
+/** Exact-caller/effective-scope server captures, not an inferred service time series. */
+export interface ServicePortfolioHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: ServicePortfolioObservation[];
+}
+
+export interface PortfolioService {
+  service_key: string;
+  kind: "service" | "unmapped";
+  name: string;
+  connection_rows: number;
+  mapped_rows: number;
+  missing_owner: number;
+  missing_support_team: number;
+  missing_environment: number;
+  subscription_count: number;
+  incident_associations: number;
+  critical_associations: number;
+}
+
+/** The 100-row incident extent and reported freshness remain explicit. */
+export interface ServicePortfolioObservation {
+  observation_id: string;
+  captured_at: string;
+  services: PortfolioService[];
+  sources: Array<{
+    id: "connections" | "incidents";
+    started_at: string;
+    finished_at: string;
+    observed_at: string[];
+    source_tables: string[];
+    knowledge_version: string;
+    reported_freshness: Freshness[];
+    loaded: number;
+    total: number;
+    partial: boolean;
+    warning_count: number;
+  }>;
+}
+
 /** Capture time is collection time, not an assertion that all source data was fresh. */
 export interface OverviewObservation {
   observation_id: string;

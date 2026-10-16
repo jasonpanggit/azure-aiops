@@ -21,6 +21,7 @@ import { rankSituations } from "@/lib/situations";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { overviewHref } from "@/lib/overview";
 import type { SubscriptionConnection } from "@/lib/types";
+import { ServicePortfolioHistory } from "@/components/ServicePortfolioHistory";
 
 interface ServiceRow {
   name: string;
@@ -67,8 +68,9 @@ function ServicesWorkspace() {
       rows.set(key, row);
     }
     for (const situation of rankSituations(incidents.data?.data.incidents ?? [])) {
-      for (const name of situation.businessServices.length ? situation.businessServices : ["Unmapped service"]) {
-        const unmapped = !situation.businessServices.length;
+      const names = Array.from(new Set(situation.businessServices.map(name => name.trim()).filter(Boolean)));
+      for (const name of names.length ? names : ["Unmapped service"]) {
+        const unmapped = !names.length;
         const key = unmapped ? "unmapped" : `service:${name}`;
         const row = rows.get(key) ?? {
           name,
@@ -272,6 +274,7 @@ function ServicesWorkspace() {
         </>
       )}
 
+      <ServicePortfolioHistory scope={scope} />
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
