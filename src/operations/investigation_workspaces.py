@@ -1,4 +1,4 @@
-"""Revisioned team navigation workspaces, never retained provider evidence."""
+"""Revisioned team navigation and operator annotations, never provider evidence."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStor
 MAX_REVISIONS = 40
 MAX_BYTES = 256 * 1024
 WORKSPACE_ID = r"^wrk-[0-9a-f]{32}$"
+HYPOTHESIS_ID = r"^hyp-[0-9a-f]{32}$"
 Subject = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")]
+EntryType = Literal[
+    "BusinessService", "Application", "Environment", "SubscriptionConnection",
+    "Incident", "CVE", "NetworkGap", "RemediationPlan",
+]
 
 
 class WorkspaceView(BaseModel):
@@ -22,10 +27,7 @@ class WorkspaceView(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     title: str = Field(min_length=1, max_length=120)
-    entry_type: Literal[
-        "BusinessService", "Application", "Environment", "SubscriptionConnection",
-        "Incident", "CVE", "NetworkGap", "RemediationPlan",
-    ]
+    entry_type: EntryType
     subject: str = Field(max_length=512, pattern=r"^[^\x00\r\n]*$")
     mode: Literal["executive", "engineer"]
 
@@ -62,6 +64,55 @@ class WorkspaceAccess(BaseModel):
         return self
 
 
+class HypothesisReference(BaseModel):
+    """Operator-declared reference text, never dereferenced or treated as verified evidence."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    source: str = Field(min_length=1, max_length=128)
+    reference: str = Field(min_length=1, max_length=512)
+    declared_version: str = Field(default="", max_length=128)
+    note: str = Field(default="", max_length=512)
+
+
+class HypothesisDraft(BaseModel):
+    """Visible operator explanations and disposition, not hidden model reasoning."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    explanation: str = Field(min_length=1, max_length=2000)
+    supporting: list[HypothesisReference] = Field(default_factory=list, max_length=6)
+    contradicting: list[HypothesisReference] = Field(default_factory=list, max_length=6)
+    unknowns: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(default_factory=list, max_length=8)
+    disposition: Literal["proposed", "investigating", "supported", "contradicted", "inconclusive", "dismissed"] = "proposed"
+    rationale: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def disposition_context(self):
+        """A disposition beyond proposal needs the operator's explicit rationale."""
+        if self.disposition != "proposed" and not self.rationale:
+            raise ValueError("A non-proposed hypothesis disposition requires an operator rationale")
+        return self
+
+
+class HypothesisUpdate(BaseModel):
+    """One explicit annotation change against the reviewed latest workspace revision."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_revision: int = Field(ge=1, le=MAX_REVISIONS)
+    hypothesis: HypothesisDraft
+
+
+class WorkspaceHypothesis(HypothesisDraft):
+    """Server-attributed annotation with an immutable original saved-subject anchor."""
+
+    hypothesis_id: str = Field(pattern=HYPOTHESIS_ID)
+    entry_type: EntryType
+    subject: str = Field(max_length=512)
+    created_revision: int = Field(ge=2, le=MAX_REVISIONS)
+    updated_revision: int = Field(ge=2, le=MAX_REVISIONS)
+    actor: Subject
+    recorded_at: str
+
+
 class WorkspaceRevision(BaseModel):
     """Immutable server-attributed navigation and membership revision."""
 
@@ -69,10 +120,11 @@ class WorkspaceRevision(BaseModel):
     revision: int = Field(ge=1, le=MAX_REVISIONS)
     actor: Subject
     recorded_at: str
-    change: Literal["created", "view_updated", "access_updated"]
+    change: Literal["created", "view_updated", "access_updated", "hypothesis_updated"]
     view: WorkspaceView
     readers: list[Subject] = Field(max_length=20)
     editors: list[Subject] = Field(max_length=20)
+    hypotheses: list[WorkspaceHypothesis] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def valid_metadata(self):
@@ -80,6 +132,8 @@ class WorkspaceRevision(BaseModel):
         if datetime.fromisoformat(self.recorded_at).tzinfo is None:
             raise ValueError("Workspace revision time must be timezone-aware")
         WorkspaceAccess(expected_revision=self.revision, readers=self.readers, editors=self.editors)
+        if len({row.hypothesis_id for row in self.hypotheses}) != len(self.hypotheses):
+            raise ValueError("Workspace hypothesis identities must be unique")
         return self
 
 
@@ -103,21 +157,49 @@ class WorkspaceState(BaseModel):
             if previous is None:
                 if (
                     revision.actor != self.owner or revision.change != "created"
-                    or revision.readers or revision.editors
+                    or revision.readers or revision.editors or revision.hypotheses
                 ):
                     raise ValueError("Workspace creation attribution is invalid")
             else:
                 if datetime.fromisoformat(revision.recorded_at) < datetime.fromisoformat(previous.recorded_at):
                     raise ValueError("Workspace revision times are out of order")
                 if revision.change == "access_updated":
-                    if revision.actor != self.owner or revision.view != previous.view:
+                    if (
+                        revision.actor != self.owner or revision.view != previous.view
+                        or revision.hypotheses != previous.hypotheses
+                    ):
                         raise ValueError("Workspace access change attribution is invalid")
                 elif revision.change == "view_updated":
                     if (
                         revision.actor not in [self.owner, *previous.editors]
                         or revision.readers != previous.readers or revision.editors != previous.editors
+                        or revision.hypotheses != previous.hypotheses
                     ):
                         raise ValueError("Workspace view change attribution is invalid")
+                elif revision.change == "hypothesis_updated":
+                    if (
+                        revision.actor not in [self.owner, *previous.editors]
+                        or revision.readers != previous.readers or revision.editors != previous.editors
+                        or revision.view != previous.view
+                    ):
+                        raise ValueError("Workspace hypothesis change attribution is invalid")
+                    before = {row.hypothesis_id: row for row in previous.hypotheses}
+                    after = {row.hypothesis_id: row for row in revision.hypotheses}
+                    changed = [row for key, row in after.items() if before.get(key) != row]
+                    if not before.keys() <= after.keys() or len(changed) != 1:
+                        raise ValueError("Workspace hypothesis updates must preserve every other entry")
+                    row = changed[0]
+                    original = before.get(row.hypothesis_id)
+                    anchor = (
+                        (original.entry_type, original.subject, original.created_revision)
+                        if original else (previous.view.entry_type, previous.view.subject, index)
+                    )
+                    if (
+                        (row.entry_type, row.subject, row.created_revision) != anchor
+                        or row.updated_revision != index or row.actor != revision.actor
+                        or row.recorded_at != revision.recorded_at
+                    ):
+                        raise ValueError("Workspace hypothesis attribution or original subject is invalid")
                 else:
                     raise ValueError("Only the first workspace revision can be creation")
             previous = revision
@@ -201,7 +283,10 @@ class InvestigationWorkspaceStore:
         self.documents.create_only(self._name(change.workspace_id), payload)
         return self._present(state, actor)
 
-    def _append(self, snapshot, state: WorkspaceState, actor: str, expected_revision: int, changes: dict) -> dict:
+    def _append(
+        self, snapshot, state: WorkspaceState, actor: str, expected_revision: int,
+        changes: dict, *, recorded_at: str | None = None,
+    ) -> dict:
         latest = state.revisions[-1]
         if latest.revision != expected_revision:
             raise DocumentConflictError("Workspace changed; reload the latest revision before saving")
@@ -209,7 +294,7 @@ class InvestigationWorkspaceStore:
             raise ValueError("Workspace reached 40 revisions; administrative archival is required")
         row = WorkspaceRevision.model_validate({
             **latest.model_dump(), **changes, "revision": latest.revision + 1,
-            "actor": actor, "recorded_at": datetime.now(UTC).isoformat(),
+            "actor": actor, "recorded_at": recorded_at or datetime.now(UTC).isoformat(),
         })
         updated = WorkspaceState.model_validate({
             **state.model_dump(), "revisions": [*state.revisions, row],
@@ -238,3 +323,36 @@ class InvestigationWorkspaceStore:
         return self._append(snapshot, state, actor, change.expected_revision, {
             "change": "access_updated", "readers": change.readers, "editors": change.editors,
         })
+
+    def update_hypothesis(
+        self, workspace_id: str, hypothesis_id: str, actor: str,
+        scope: dict[str, list[str]], change: HypothesisUpdate,
+    ) -> dict:
+        """Append one attributed annotation; membership, subject anchor and other entries stay intact."""
+        if not re.fullmatch(HYPOTHESIS_ID, hypothesis_id):
+            raise ValueError("Hypothesis identity is invalid")
+        snapshot, state = self._read(workspace_id, actor, scope)
+        latest = state.revisions[-1]
+        if actor not in [state.owner, *latest.editors]:
+            raise WorkspacePermissionError("Hypothesis editing requires the workspace owner or an explicit editor")
+        if latest.revision != change.expected_revision:
+            raise DocumentConflictError("Workspace changed; reload before editing a hypothesis")
+        existing = next((row for row in latest.hypotheses if row.hypothesis_id == hypothesis_id), None)
+        if not existing and len(latest.hypotheses) >= 20:
+            raise ValueError("Workspace reached 20 hypotheses; dismiss existing entries without deleting history")
+        if existing and existing.model_dump(include=set(HypothesisDraft.model_fields)) == change.hypothesis.model_dump():
+            raise ValueError("The hypothesis has no changes to save")
+        recorded_at = datetime.now(UTC).isoformat()
+        row = WorkspaceHypothesis(
+            **change.hypothesis.model_dump(), hypothesis_id=hypothesis_id,
+            entry_type=existing.entry_type if existing else latest.view.entry_type,
+            subject=existing.subject if existing else latest.view.subject,
+            created_revision=existing.created_revision if existing else latest.revision + 1,
+            updated_revision=latest.revision + 1, actor=actor, recorded_at=recorded_at,
+        )
+        hypotheses = [
+            row if item.hypothesis_id == hypothesis_id else item for item in latest.hypotheses
+        ] if existing else [*latest.hypotheses, row]
+        return self._append(snapshot, state, actor, change.expected_revision, {
+            "change": "hypothesis_updated", "hypotheses": hypotheses,
+        }, recorded_at=recorded_at)

@@ -100,6 +100,13 @@ A 20–30 minute walkthrough proving the end-to-end value chain:
    historical revisions. Applying saved navigation loads current evidence,
    not past provider conditions. Local saves remain browser-local fallbacks,
    and JSON exports include the effective scope; neither is team authorization.
+   The Operator hypothesis board records visible team explanations, supporting
+   and contradicting reference text, unknowns and explicit dispositions. These
+   are operator assessments, not verified source facts or model reasoning.
+   Owners/editors save one annotation per reviewed CAS revision; the original
+   saved subject stays fixed, and dismissal retains history. Current membership
+   and scope protect historical boards. References are not fetched or validated;
+   keep secrets out, and copy unsaved drafts before reopening or leaving.
    Current-signal counts describe the loaded subset, not a historical trend;
    unavailable incident or exposure sources do not imply quiet conditions.
 2. **Drill into a real finding** — pick a live vulnerability or network gap

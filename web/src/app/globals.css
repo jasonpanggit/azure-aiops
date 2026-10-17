@@ -126,6 +126,47 @@
   overflow-wrap: anywhere;
 }
 
+.investigation-hypotheses {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.investigation-hypothesis-list > details {
+  padding-block: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.investigation-hypothesis-list summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.investigation-hypotheses h4,
+.investigation-hypotheses h5 {
+  margin-top: 24px;
+}
+
+.investigation-hypotheses ul {
+  margin-block: 12px;
+  padding-left: 24px;
+  max-width: 75ch;
+}
+
+.investigation-hypotheses li + li {
+  margin-top: 8px;
+}
+
+.investigation-hypothesis-text {
+  white-space: pre-wrap;
+}
+
+.investigation-hypothesis-editor,
+.investigation-hypothesis-reference-editor > fieldset {
+  margin-block: 20px;
+}
+
 .segmented-control {
   display: inline-flex;
   overflow: hidden;

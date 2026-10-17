@@ -11,6 +11,7 @@ import {
 import type { ScopeSelection } from "@/lib/scope";
 import type { Envelope } from "@/lib/types";
 import { StatePanel } from "./ui/StatePanel";
+import { InvestigationHypothesisBoard } from "./InvestigationHypothesisBoard";
 
 interface Props {
   scope: ScopeSelection;
@@ -22,7 +23,7 @@ interface Props {
 
 const validId = (value: string) => /^wrk-[0-9a-f]{32}$/.test(value);
 const members = (value: string) => value.split("\n").map(line => line.trim()).filter(Boolean);
-const changeLabels = { created: "Created", view_updated: "Navigation saved", access_updated: "Membership changed" };
+const changeLabels = { created: "Created", view_updated: "Navigation saved", access_updated: "Membership changed", hypothesis_updated: "Operator explanation saved" };
 const recordedTime = (value: string) => `${new Date(value).toLocaleString(undefined, { timeZone: "UTC", dateStyle: "medium", timeStyle: "medium" })} UTC`;
 
 /** Explicit exact-scope team navigation, current ACLs and reviewed revision history. */
@@ -50,7 +51,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
     setError("");
     try {
       const result = await action(abort.signal);
-      if (current !== generation.current) return;
+      if (current !== generation.current) return false;
       const matchesRevision = expectedRevision === undefined
         ? result.data.revision.revision === result.data.latest_revision
         : result.data.revision.revision === expectedRevision;
@@ -62,9 +63,11 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
       setRevision(String(result.data.revision.revision));
       setReaders(result.data.current_access.readers.join("\n"));
       setEditors(result.data.current_access.editors.join("\n"));
+      return true;
     } catch (failure) {
-      if (current !== generation.current) return;
+      if (current !== generation.current) return false;
       setError(failure instanceof Error ? failure.message : "Workspace operation was not confirmed. Open its known identity and latest revision before retrying.");
+      return false;
     } finally {
       if (current === generation.current) setBusy(false);
     }
@@ -97,7 +100,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
     <details className="card investigation-team-workspace" aria-label="Team investigation workspace" open={initialId ? true : undefined}>
       <summary>Team workspace: open or save server-backed navigation</summary>
       <div className="card-body">
-        <p>Save navigation for explicit collaborators. This retains no provider evidence or Copilot answer. Membership does not grant platform access.</p>
+        <p>Save navigation and operator explanations for explicit collaborators. This retains no provider evidence or Copilot answer. Membership does not grant platform access.</p>
         <div className="investigation-team-controls">
           <label>Workspace identity<input value={workspaceId} maxLength={36} placeholder="wrk- followed by 32 lowercase hex characters" disabled={busy} onChange={event => {
             setWorkspaceId(event.target.value.trim());
@@ -139,7 +142,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
             <p><Link href={investigationWorkspaceHref(workspace)}>Open or share this exact navigation revision</Link></p>
             <fieldset disabled={busy || !workspace.can_share || !latestSelected}>
               <legend>Owner-managed membership</legend>
-              <p>Use exact authenticated principal subjects, one per line. Readers can review; editors can also save navigation. Only the owner can change membership. Removing a member revokes historical access too.</p>
+              <p>Use exact authenticated principal subjects, one per line. Readers can review; editors can also save navigation and explanations. Only the owner can change membership. Removing a member revokes historical access too.</p>
               <div className="investigation-team-controls">
                 <label>Reader subjects<textarea value={readers} onChange={event => setReaders(event.target.value)} rows={3} maxLength={5140} /></label>
                 <label>Editor subjects<textarea value={editors} onChange={event => setEditors(event.target.value)} rows={3} maxLength={5140} /></label>
@@ -148,6 +151,9 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
                 void run(workspaceId, signal => investigationWorkspacesApi.share(workspaceId, workspace.revision.revision, members(readers), members(editors), scope, signal), workspace.revision.revision + 1)
               }>Save membership revision</button>
             </fieldset>
+            {Array.isArray(workspace.revision.hypotheses) ? <InvestigationHypothesisBoard workspace={workspace} busy={busy} onSave={(id, expectedRevision, hypothesis) =>
+              run(workspaceId, signal => investigationWorkspacesApi.hypothesis(workspaceId, id, expectedRevision, hypothesis, scope, signal), expectedRevision + 1)
+            } /> : <StatePanel title="Hypothesis board unavailable" message="The workspace service did not return an annotation board. Navigation remains available; reopen after the service is updated. No empty board is inferred." tone="error" />}
           </>
         )}
       </div>

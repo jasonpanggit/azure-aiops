@@ -9,15 +9,45 @@ export interface InvestigationWorkspaceView {
   mode: "executive" | "engineer";
 }
 
-/** Immutable server-attributed navigation and membership revision. */
+/** Operator-declared text only; reference identifiers and versions are not verified or fetched. */
+export interface InvestigationHypothesisReference {
+  source: string;
+  reference: string;
+  declared_version: string;
+  note: string;
+}
+
+/** Visible operator annotations, not verified evidence, model reasoning or execution authority. */
+export interface InvestigationHypothesisDraft {
+  explanation: string;
+  supporting: InvestigationHypothesisReference[];
+  contradicting: InvestigationHypothesisReference[];
+  unknowns: string[];
+  disposition: "proposed" | "investigating" | "supported" | "contradicted" | "inconclusive" | "dismissed";
+  rationale: string;
+}
+
+/** Server-attributed annotation, anchored to the saved subject when first proposed. */
+export interface InvestigationHypothesis extends InvestigationHypothesisDraft {
+  hypothesis_id: string;
+  entry_type: InvestigationWorkspaceView["entry_type"];
+  subject: string;
+  created_revision: number;
+  updated_revision: number;
+  actor: string;
+  recorded_at: string;
+}
+
+/** Immutable server-attributed navigation, membership and annotation revision. */
 export interface InvestigationWorkspaceRevision {
   revision: number;
   actor: string;
   recorded_at: string;
-  change: "created" | "view_updated" | "access_updated";
+  change: "created" | "view_updated" | "access_updated" | "hypothesis_updated";
   view: InvestigationWorkspaceView;
   readers: string[];
   editors: string[];
+  hypotheses: InvestigationHypothesis[];
 }
 
 /** Current authorization governs access to the selected historical revision. */
@@ -57,6 +87,11 @@ export const investigationWorkspacesApi = {
   share: (workspaceId: string, expectedRevision: number, readers: string[], editors: string[], scope: ScopeSelection, signal?: AbortSignal) =>
     apiRequest<InvestigationTeamWorkspace>(`${base}/${encodeURIComponent(workspaceId)}/access`, {
       method: "PUT", body: { expected_revision: expectedRevision, readers, editors }, query: scopeToSearchParams(scope), signal,
+    }),
+  /** Save one explicit operator annotation without fetching or validating its declared references. */
+  hypothesis: (workspaceId: string, hypothesisId: string, expectedRevision: number, hypothesis: InvestigationHypothesisDraft, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<InvestigationTeamWorkspace>(`${base}/${encodeURIComponent(workspaceId)}/hypotheses/${encodeURIComponent(hypothesisId)}`, {
+      method: "PUT", body: { expected_revision: expectedRevision, hypothesis }, query: scopeToSearchParams(scope), signal,
     }),
 };
 

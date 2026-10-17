@@ -16,6 +16,7 @@ from api.scope import SCOPE_DIMENSIONS, Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 from operations.investigation_workspaces import (
+    HypothesisUpdate,
     InvestigationWorkspaceStore,
     WorkspaceAccess,
     WorkspaceCreate,
@@ -26,6 +27,13 @@ from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStor
 ID = "wrk-" + "a" * 32
 BASE = "/api/v1/investigation-workspaces"
 VIEW = {"title": "Payments review", "entry_type": "BusinessService", "subject": "Payments", "mode": "executive"}
+HYP = "hyp-" + "b" * 32
+DRAFT = {
+    "explanation": "A routing change may explain the observed failures.",
+    "supporting": [{"source": "Incident", "reference": "inc-7", "declared_version": "operator-v1", "note": "Timing overlaps"}],
+    "contradicting": [{"source": "Network", "reference": "gap-2", "declared_version": "", "note": "Not all paths affected"}],
+    "unknowns": ["Whether the affected route was used"], "disposition": "proposed", "rationale": "",
+}
 
 
 def auth(actor="owner"):
@@ -69,6 +77,12 @@ def share(client, *, revision=1, readers=None, editors=None, actor="owner", para
 def update(client, *, revision=1, actor="owner", params=None):
     return client.put(f"{BASE}/{ID}", headers=auth(actor), params=params, json={
         "expected_revision": revision, "view": {**VIEW, "title": "Updated title"},
+    })
+
+
+def hypothesis(client, *, revision=1, actor="owner", params=None, draft=None, identity=HYP):
+    return client.put(f"{BASE}/{ID}/hypotheses/{identity}", headers=auth(actor), params=params, json={
+        "expected_revision": revision, "hypothesis": draft or DRAFT,
     })
 
 
@@ -355,3 +369,201 @@ def test_failed_replace_leaves_prior_history_and_acl_unchanged(tmp_path, monkeyp
     assert share(client, readers=["reader"]).status_code == 503
     assert store.documents.read_snapshot(store._name(ID)) == before
     assert client.get(f"{BASE}/{ID}", headers=auth("reader")).status_code == 404
+
+
+def test_hypotheses_are_attributed_operator_annotations_with_immutable_history_and_original_subject(tmp_path):
+    client, _, store, provider = client_fixture(tmp_path)
+    create(client)
+    response = hypothesis(client)
+    assert response.status_code == 200, response.text
+    row = response.json()["data"]["revision"]
+    entry = row["hypotheses"][0]
+    assert entry == {
+        **DRAFT, "hypothesis_id": HYP, "entry_type": "BusinessService", "subject": "Payments",
+        "created_revision": 2, "updated_revision": 2, "actor": "owner", "recorded_at": row["recorded_at"],
+    }
+    assert row["change"] == "hypothesis_updated"
+    assert share(client, revision=2, editors=["editor"], readers=["reader"]).status_code == 200
+    changed = client.put(f"{BASE}/{ID}", headers=auth(), json={
+        "expected_revision": 3, "view": {**VIEW, "subject": "Different subject"},
+    })
+    assert changed.status_code == 200
+    assert changed.json()["data"]["revision"]["hypotheses"] == [entry]
+    dismissed = hypothesis(client, revision=4, actor="editor", draft={
+        **DRAFT, "disposition": "dismissed", "rationale": "Operator review did not support the explanation.",
+    })
+    assert dismissed.status_code == 200, dismissed.text
+    current = dismissed.json()["data"]["revision"]["hypotheses"][0]
+    assert current["subject"] == "Payments"
+    assert current["created_revision"] == 2 and current["updated_revision"] == 5
+    assert current["actor"] == "editor"
+    retained = store.read(ID, "reader", {}, 2)["revision"]["hypotheses"]
+    assert retained == [entry]
+    assert store.read(ID, "reader", {}, 1)["revision"]["hypotheses"] == []
+    assert store.read(ID, "owner", {})["revision"]["view"]["subject"] == "Different subject"
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("actor,status", [("reader", 403), ("foreign", 404), ("nonreader", 403)])
+def test_hypothesis_membership_and_read_role_are_required(tmp_path, actor, status):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    share(client, readers=["reader"])
+    assert hypothesis(client, revision=2, actor=actor).status_code == status
+    assert store.read(ID, "owner", {})["revision"]["hypotheses"] == []
+    assert client.put(f"{BASE}/{ID}/hypotheses/{HYP}", json={
+        "expected_revision": 2, "hypothesis": DRAFT,
+    }).status_code == 401
+
+
+@pytest.mark.parametrize("dimension", SCOPE_DIMENSIONS)
+def test_hypothesis_scope_and_revoked_history_remain_fail_closed(tmp_path, dimension):
+    client, _, _, provider = client_fixture(tmp_path)
+    params = {dimension: "value"}
+    create(client, params=params)
+    share(client, editors=["editor"], params=params)
+    assert hypothesis(client, revision=2, actor="editor").status_code == 404
+    assert hypothesis(client, revision=2, actor="editor", params=params).status_code == 200
+    assert share(client, revision=3, params=params).status_code == 200
+    assert hypothesis(client, revision=4, actor="editor", params=params).status_code == 404
+    assert client.get(f"{BASE}/{ID}", headers=auth("editor"), params={**params, "revision": 3}).status_code == 404
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("patch", [
+    {"explanation": " "}, {"explanation": "x" * 2001}, {"disposition": "verified"},
+    {"disposition": "supported", "rationale": " "}, {"rationale": "x" * 1001},
+    {"unknowns": ["x"] * 9}, {"unknowns": ["x" * 513]}, {"unknowns": [" "]},
+    {"supporting": [{"source": " ", "reference": "id"}]},
+    {"supporting": [{"source": "src", "reference": "x" * 513}]},
+    {"supporting": [{"source": "src", "reference": "id", "verified": True}]},
+    {"contradicting": [{"source": "src", "reference": "id"}] * 7},
+    {"owner": "foreign"}, {"actor": "foreign"}, {"subject": "Other"}, {"created_revision": 1},
+    {"retained_evidence": {}}, {"model_reasoning": "hidden"}, {"execute": True},
+])
+def test_hypothesis_strict_bounds_reject_authority_and_evidence_fields(tmp_path, patch):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    before = store.documents.read_snapshot(store._name(ID))
+    assert hypothesis(client, draft={**DRAFT, **patch}).status_code == 400
+    assert store.documents.read_snapshot(store._name(ID)) == before
+
+
+def test_hypothesis_conflicts_noops_bad_ids_and_no_implicit_retry(tmp_path):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    assert hypothesis(client, identity="invalid").status_code == 400
+    assert hypothesis(client).status_code == 200
+    assert hypothesis(client).status_code == 409
+    assert hypothesis(client, revision=2).status_code == 400
+    assert hypothesis(client, revision=2, draft={**DRAFT, "explanation": "New interpretation"}).status_code == 200
+    assert store.read(ID, "owner", {})["latest_revision"] == 3
+
+
+def test_existing_v1_navigation_documents_read_as_empty_boards_without_writeback(tmp_path):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    name = store._name(ID)
+    snapshot = store.documents.read_snapshot(name)
+    del snapshot.payload["revisions"][0]["hypotheses"]
+    store.documents.replace_if_match(name, snapshot.payload, expected_etag=snapshot.etag)
+    before = store.documents.read_snapshot(name)
+    assert store.read(ID, "owner", {})["revision"]["hypotheses"] == []
+    assert store.documents.read_snapshot(name) == before
+    assert hypothesis(client).status_code == 200
+    assert store.read(ID, "owner", {}, 1)["revision"]["hypotheses"] == []
+
+
+def test_hypothesis_limit_keeps_existing_entries_and_history(tmp_path):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    for index in range(20):
+        response = hypothesis(client, revision=index + 1, identity=f"hyp-{index:032x}")
+        assert response.status_code == 200, response.text
+    before = store.documents.read_snapshot(store._name(ID))
+    assert hypothesis(client, revision=21).status_code == 400
+    assert store.documents.read_snapshot(store._name(ID)) == before
+    assert hypothesis(client, revision=21, identity="hyp-" + "0" * 32, draft={
+        **DRAFT, "disposition": "dismissed", "rationale": "No supporting source captured",
+    }).status_code == 200
+    assert len(store.read(ID, "owner", {})["revision"]["hypotheses"]) == 20
+
+
+@pytest.mark.parametrize("corruption", ["anchor", "actor", "time", "create", "update", "membership", "remove", "collateral"])
+def test_corrupt_hypothesis_history_never_becomes_authoritative(tmp_path, corruption):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    hypothesis(client)
+    hypothesis(client, revision=2, identity="hyp-" + "c" * 32)
+    name = store._name(ID)
+    snapshot = store.documents.read_snapshot(name)
+    latest = snapshot.payload["revisions"][-1]
+    row = latest["hypotheses"][-1]
+    if corruption == "anchor":
+        row["subject"] = "Other"
+    elif corruption == "actor":
+        row["actor"] = "foreign"
+    elif corruption == "time":
+        row["recorded_at"] = "2026-01-01T00:00:00Z"
+    elif corruption == "create":
+        row["created_revision"] = 2
+    elif corruption == "update":
+        row["updated_revision"] = 2
+    elif corruption == "membership":
+        latest["editors"] = ["foreign"]
+    elif corruption == "remove":
+        latest["hypotheses"].pop(0)
+    else:
+        latest["hypotheses"][0]["explanation"] = "Unattributed second change"
+    store.documents.replace_if_match(name, snapshot.payload, expected_etag=snapshot.etag)
+    assert client.get(f"{BASE}/{ID}", headers=auth()).status_code == 503
+    assert hypothesis(client, revision=3).status_code == 503
+    assert store.documents.read_snapshot(name).payload == snapshot.payload
+
+
+def test_hypothesis_lost_reply_requires_explicit_latest_read_and_does_not_duplicate(tmp_path, monkeypatch):
+    client, _, store, _ = client_fixture(tmp_path)
+    create(client)
+    original = store.documents.replace_if_match
+
+    def lost_response(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OSError("fixture reply lost after successful annotation write")
+
+    monkeypatch.setattr(store.documents, "replace_if_match", lost_response)
+    assert hypothesis(client).status_code == 503
+    result = client.get(f"{BASE}/{ID}", headers=auth()).json()["data"]
+    assert result["latest_revision"] == 2
+    assert result["revision"]["hypotheses"][0]["hypothesis_id"] == HYP
+    assert hypothesis(client).status_code == 409
+    assert hypothesis(client, revision=2).status_code == 400
+
+
+def test_hypothesis_and_navigation_compete_for_the_same_cas_revision(tmp_path, monkeypatch):
+    stores = [InvestigationWorkspaceStore(OneLakeDocumentStore(tmp_path)) for _ in range(2)]
+    stores[0].create("owner", {}, WorkspaceCreate(workspace_id=ID, view=VIEW))
+    barrier = Barrier(2)
+    original = InvestigationWorkspaceStore._read
+
+    def synchronized(self, *args):
+        result = original(self, *args)
+        barrier.wait(timeout=10)
+        return result
+
+    def attempt(index):
+        try:
+            if index:
+                stores[index].update_hypothesis(ID, HYP, "owner", {}, HypothesisUpdate(expected_revision=1, hypothesis=DRAFT))
+            else:
+                stores[index].replace(ID, "owner", {}, WorkspaceUpdate(expected_revision=1, view=VIEW))
+            return "saved"
+        except DocumentConflictError:
+            return "conflict"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(InvestigationWorkspaceStore, "_read", synchronized)
+        with ThreadPoolExecutor(2) as pool:
+            assert sorted(pool.map(attempt, [0, 1])) == ["conflict", "saved"]
+    result = stores[0].read(ID, "owner", {})
+    assert result["latest_revision"] == 2
+    assert len(result["revision"]["hypotheses"]) == (1 if result["revision"]["change"] == "hypothesis_updated" else 0)

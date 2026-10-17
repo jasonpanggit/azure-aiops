@@ -1,12 +1,14 @@
-"""Access-controlled navigation revisions; no provider reads or execution authority."""
+"""Access-controlled navigation and operator annotations; no provider reads."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Query
 
 from operations.investigation_workspaces import (
+    HYPOTHESIS_ID,
     MAX_REVISIONS,
     WORKSPACE_ID,
+    HypothesisUpdate,
     InvestigationWorkspaceStore,
     WorkspaceAccess,
     WorkspaceCreate,
@@ -40,7 +42,7 @@ def _response(data: dict, scope: ReadScope) -> dict:
         ),
         warnings=[
             (
-                "Workspace navigation and operator membership only, not retained provider evidence, "
+                "Workspace navigation, membership and operator annotations only, not retained provider evidence, "
                 "platform access grants, approvals or execution authority. Restoring reacquires current authorized evidence. "
                 "All history is governed by current membership and exact effective scope."
             )
@@ -73,6 +75,21 @@ def create_workspace(
     """Create private navigation state once at a caller-known identity."""
     try:
         data = _store(context).create(principal.subject, scope.to_dict(), payload)
+    except _ERRORS as exc:
+        raise _failure(exc) from exc
+    return _response(data, scope)
+
+
+@router.put("/{workspace_id}/hypotheses/{hypothesis_id}")
+def update_hypothesis(
+    workspace_id: WorkspaceId, hypothesis_id: Annotated[str, Path(pattern=HYPOTHESIS_ID)],
+    payload: HypothesisUpdate, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Append one owner/editor annotation with server attribution and revision CAS."""
+    try:
+        data = _store(context).update_hypothesis(
+            workspace_id, hypothesis_id, principal.subject, scope.to_dict(), payload,
+        )
     except _ERRORS as exc:
         raise _failure(exc) from exc
     return _response(data, scope)

@@ -52,7 +52,7 @@ describe("team Investigation client contracts", () => {
   });
 
   it("links the selected navigation revision and stored effective scope, not the latest revision or client authority", () => {
-    const revision = { revision: 2, actor: "owner", recorded_at: "2026-10-16T12:00:00Z", change: "view_updated" as const, view, readers: [], editors: [] };
+    const revision = { revision: 2, actor: "owner", recorded_at: "2026-10-16T12:00:00Z", change: "view_updated" as const, view, readers: [], editors: [], hypotheses: [] };
     const workspace: InvestigationTeamWorkspace = {
       workspace_id: id, owner: "owner", scope, latest_revision: 4, revision,
       current_access: { readers: ["reviewer"], editors: [] }, can_edit: false, can_share: false, history: [revision],
@@ -65,5 +65,21 @@ describe("team Investigation client contracts", () => {
     expect(url.searchParams.has("owner")).toBe(true);
     expect(url.searchParams.has("readers")).toBe(false);
     expect(url.searchParams.has("can_share")).toBe(false);
+  });
+
+  it("saves one browser-known hypothesis at the exact reviewed revision without provider or authority fields", async () => {
+    const signal = new AbortController().signal;
+    const hypothesisId = `hyp-${"b".repeat(32)}`;
+    const hypothesis = {
+      explanation: "Operator explanation", supporting: [], contradicting: [], unknowns: [],
+      disposition: "proposed" as const, rationale: "",
+    };
+    await investigationWorkspacesApi.hypothesis(id, hypothesisId, 3, hypothesis, scope, signal);
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0][0]).toBe(`/investigation-workspaces/${id}/hypotheses/${hypothesisId}`);
+    expect(request.mock.calls[0][1]).toMatchObject({
+      method: "PUT", body: { expected_revision: 3, hypothesis }, signal,
+    });
+    for (const dimension of SCOPE_DIMENSIONS) expect(queryAt(0).getAll(dimension)).toEqual(scope[dimension]);
   });
 });

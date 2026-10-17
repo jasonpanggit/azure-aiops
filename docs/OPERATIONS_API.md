@@ -9,7 +9,7 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
-## Team investigation navigation workspaces
+## Team investigation workspaces and operator hypotheses
 
 `POST /investigation-workspaces` creates private navigation using a caller-known
 `wrk-<32 lowercase hex>` identity and a strict `view` (`title`, `entry_type`,
@@ -50,7 +50,38 @@ Older revisions are review-only until the latest is reopened for editing. Entry
 links are separate from team sharing, never change membership, and expose an
 explicit manual link when clipboard copying is unavailable.
 
-These revisions retain **navigation and membership**, not a hypothesis board,
+`PUT /investigation-workspaces/{id}/hypotheses/{hypothesis_id}` appends one
+owner/editor annotation against `expected_revision`. The browser knows the
+`hyp-<32 lowercase hex>` identity before submitting and sends `hypothesis` with
+`explanation` (1..2000 characters), `supporting` and `contradicting` references
+(at most six each), `unknowns` (at most eight, 1..512 characters each),
+`disposition` and `rationale` (at most 1000 characters). Each reference contains
+`source` (1..128), `reference` (1..512), optional `declared_version` (up to 128)
+and `note` (up to 512). These are **operator-declared, unverified plain text**,
+never fetched, resolved or promoted into provider evidence. Do not enter secrets.
+Dispositions are proposed, investigating, supported, contradicted, inconclusive
+or dismissed; anything beyond proposed requires an explicit operator rationale.
+These are operator assessments, not verified findings, execution approval or model
+reasoning. Unknowns omitted from an annotation do not establish completeness.
+
+At most 20 stable hypotheses are retained. There is no delete endpoint: dismissal
+retains prior revisions. The server records actor/time, first/last revision and
+the saved navigation subject at first proposal; changing workspace navigation
+cannot reanchor an existing hypothesis. A hypothesis write cannot change other
+entries, navigation, memberships or owner. The same CAS, current ACL/scope and
+40-revision/256-KiB workspace limits apply. Identical no-op writes return 400;
+stale writes return 409, including retry after an earlier lost reply committed.
+Inspect the known annotation in the latest workspace before retrying.
+
+Revision responses include `hypotheses`; historical reads expose the board as it
+was in that revision under **current** access. This is an additive schema-v1
+extension: previously saved navigation documents read as empty boards without
+rewriting storage. Legacy service responses without a board are displayed as
+unavailable, not inferred empty. The editor keeps a failed-write draft and its
+known identity, never retries or silently rebases it; copy unsaved text before
+reopening the workspace, changing scope or leaving the page.
+
+These revisions retain **navigation, membership and operator annotations**, not
 historical provider results, exact past estate state or retained evidence replay.
 Local saves/export remain separate browser fallbacks, not team authorization.
 

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InvestigationTeamWorkspacePanel } from "./InvestigationTeamWorkspace";
 import type { InvestigationTeamWorkspace, InvestigationWorkspaceView } from "@/lib/investigation-workspaces";
 
-const api = vi.hoisted(() => ({ create: vi.fn(), read: vi.fn(), replace: vi.fn(), share: vi.fn() }));
+const api = vi.hoisted(() => ({ create: vi.fn(), read: vi.fn(), replace: vi.fn(), share: vi.fn(), hypothesis: vi.fn() }));
 vi.mock("@/lib/investigation-workspaces", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/investigation-workspaces")>(),
   investigationWorkspacesApi: api,
@@ -14,7 +14,7 @@ const SCOPE = { subscription: ["sub-a"], support_team: ["sre"], criticality: ["h
 const VIEW: InvestigationWorkspaceView = { title: "Payments review", entry_type: "BusinessService", subject: "Payments", mode: "executive" };
 const row = {
   revision: 1, actor: "owner", recorded_at: "2026-10-16T12:00:00+00:00", change: "created" as const,
-  view: VIEW, readers: [], editors: [],
+  view: VIEW, readers: [], editors: [], hypotheses: [],
 };
 const record = (overrides: Partial<InvestigationTeamWorkspace> = {}): InvestigationTeamWorkspace => ({
   workspace_id: ID, owner: "owner", scope: SCOPE, latest_revision: 1, revision: row,
@@ -34,6 +34,13 @@ describe("team Investigation navigation", () => {
     api.share.mockImplementation((_id, revision, readers, editors) => Promise.resolve(envelope(record({
       latest_revision: revision + 1, revision: { ...row, revision: revision + 1, readers, editors, change: "access_updated" },
       current_access: { readers, editors },
+    }))));
+    api.hypothesis.mockImplementation((_id, id, revision, hypothesis) => Promise.resolve(envelope(record({
+      latest_revision: revision + 1,
+      revision: { ...row, revision: revision + 1, change: "hypothesis_updated", hypotheses: [{
+        ...hypothesis, hypothesis_id: id, entry_type: VIEW.entry_type, subject: VIEW.subject,
+        created_revision: revision + 1, updated_revision: revision + 1, actor: "owner", recorded_at: row.recorded_at,
+      }] },
     }))));
   });
 
@@ -190,5 +197,42 @@ describe("team Investigation navigation", () => {
     render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} initialId={ID} initialRevision={1} onRestore={vi.fn()} />);
     await screen.findByText("Workspace operation not confirmed");
     expect(screen.queryByText("Saved subject")).not.toBeInTheDocument();
+  });
+
+  it("saves a hypothesis through the reviewed workspace, scope and storage boundary", async () => {
+    render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} initialId={ID} onRestore={vi.fn()} />);
+    await screen.findByText("Saved subject");
+    fireEvent.click(screen.getByRole("button", { name: "Propose explanation" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Proposed explanation" }), { target: { value: "Review the routing change" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save explanation revision" }));
+    await screen.findByText("2 of 2");
+    expect(api.hypothesis).toHaveBeenCalledWith(ID, expect.stringMatching(/^hyp-/), 1, {
+      explanation: "Review the routing change", supporting: [], contradicting: [], unknowns: [], disposition: "proposed", rationale: "",
+    }, SCOPE, expect.any(AbortSignal));
+    expect(screen.getByText("Explanation 1: proposed (operator assessment)")).toBeInTheDocument();
+    expect(api.replace).not.toHaveBeenCalled();
+    expect(api.share).not.toHaveBeenCalled();
+  });
+
+  it("preserves the hypothesis draft after an unconfirmed write instead of showing false success", async () => {
+    api.hypothesis.mockRejectedValueOnce(new Error("Storage write outcome unknown"));
+    render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} initialId={ID} onRestore={vi.fn()} />);
+    await screen.findByText("Saved subject");
+    fireEvent.click(screen.getByRole("button", { name: "Propose explanation" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Proposed explanation" }), { target: { value: "Unconfirmed proposal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save explanation revision" }));
+    await screen.findByText("Workspace operation not confirmed");
+    expect(screen.getByRole("textbox", { name: "Proposed explanation" })).toHaveValue("Unconfirmed proposal");
+    expect(screen.getByText("1 of 1")).toBeInTheDocument();
+    expect(api.hypothesis).toHaveBeenCalledOnce();
+    expect(api.read).toHaveBeenCalledOnce();
+  });
+
+  it("reports an older service's missing board explicitly instead of crashing or inferring an empty board", async () => {
+    api.read.mockResolvedValueOnce({ data: { ...record(), revision: { ...row, hypotheses: undefined } } });
+    render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} initialId={ID} onRestore={vi.fn()} />);
+    await screen.findByText("Hypothesis board unavailable");
+    expect(screen.queryByRole("button", { name: "Propose explanation" })).not.toBeInTheDocument();
+    expect(screen.getByText("Saved subject")).toBeInTheDocument();
   });
 });
